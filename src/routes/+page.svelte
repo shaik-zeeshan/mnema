@@ -30,7 +30,9 @@
   }
 
   interface CaptureOutputFiles {
-    combinedCaptureFile: string | null;
+    screenFile: string | null;
+    microphoneFile: string | null;
+    systemAudioFile: string | null;
   }
 
   interface CaptureSession {
@@ -167,6 +169,13 @@
       setResponse(result);
     } catch (err) {
       setError(err);
+      try {
+        const permissionsResult = await invoke<GetPermissionsResponse>("get_capture_permissions");
+        permissions = permissionsResult.permissions;
+        session = permissionsResult.session;
+      } catch {
+        // Keep the original stop error visible; best-effort UI sync only.
+      }
     } finally {
       loadingStop = false;
     }
@@ -357,11 +366,19 @@
           </li>
         {/if}
       </ul>
-      {#if session.outputFiles?.combinedCaptureFile}
+      {#if session.outputFiles?.screenFile || session.outputFiles?.microphoneFile || session.outputFiles?.systemAudioFile}
         <div class="output-files">
-          <span class="output-files__label">Combined capture file</span>
+          <span class="output-files__label">Capture output files</span>
           <ul class="output-files__list">
-            <li class="output-files__item">{session.outputFiles.combinedCaptureFile}</li>
+            {#if session.outputFiles?.screenFile}
+              <li class="output-files__item">screen: {session.outputFiles.screenFile}</li>
+            {/if}
+            {#if session.outputFiles?.microphoneFile}
+              <li class="output-files__item">microphone: {session.outputFiles.microphoneFile}</li>
+            {/if}
+            {#if session.outputFiles?.systemAudioFile}
+              <li class="output-files__item">system-audio: {session.outputFiles.systemAudioFile}</li>
+            {/if}
           </ul>
         </div>
       {/if}
