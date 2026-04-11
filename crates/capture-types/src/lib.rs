@@ -39,6 +39,7 @@ pub struct CapturePermissions {
 pub struct CaptureOutputFiles {
     pub screen_file: Option<String>,
     pub microphone_file: Option<String>,
+    pub microphone_files: Vec<String>,
     pub system_audio_file: Option<String>,
 }
 
@@ -78,4 +79,49 @@ pub struct NativeCaptureSessionResponse {
 pub struct CaptureErrorResponse {
     pub code: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrophoneDevice {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MicrophonePreferenceMode {
+    Default,
+    SpecificDevice,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrophonePreference {
+    pub mode: MicrophonePreferenceMode,
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MicrophoneDisconnectPolicy {
+    FallbackToDefault,
+    WaitForSameDevice,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrophoneControllerState {
+    pub devices: Vec<MicrophoneDevice>,
+    pub preference: MicrophonePreference,
+    pub disconnect_policy: MicrophoneDisconnectPolicy,
+    pub effective_device: Option<MicrophoneDevice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMicrophoneControllerRequest {
+    pub preference: MicrophonePreference,
+    pub disconnect_policy: MicrophoneDisconnectPolicy,
 }

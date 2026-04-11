@@ -1,9 +1,38 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
 
   // ─── Types mirroring Rust structs ─────────────────────────────────────────
 
   type PermissionStatus = "granted" | "denied" | "not_determined" | "restricted";
+
+  // Microphone controller types (serialized from Rust via serde)
+  type MicrophonePreferenceMode = "default" | "specific_device";
+  type MicrophoneDisconnectPolicy = "fallback_to_default" | "wait_for_same_device";
+
+  interface MicrophoneDevice {
+    id: string;
+    name: string;
+    isDefault: boolean;
+  }
+
+  interface MicrophonePreference {
+    mode: MicrophonePreferenceMode;
+    deviceId: string | null;
+  }
+
+  interface MicrophoneControllerState {
+    devices: MicrophoneDevice[];
+    preference: MicrophonePreference;
+    disconnectPolicy: MicrophoneDisconnectPolicy;
+    effectiveDevice: MicrophoneDevice | null;
+  }
+
+  interface MicrophoneAutoDisconnectTransitionFailedEvent {
+    context: string;
+    code: string;
+    message: string;
+  }
 
   interface SupportedSources {
     screen: boolean;
@@ -32,6 +61,7 @@
   interface CaptureOutputFiles {
     screenFile: string | null;
     microphoneFile: string | null;
+    microphoneFiles: string[];
     systemAudioFile: string | null;
   }
 
@@ -72,6 +102,15 @@
   let loadingPermissions = $state(false);
   let loadingStart = $state(false);
   let loadingStop = $state(false);
+
+  // Microphone controller state
+  let micState = $state<MicrophoneControllerState | null>(null);
+  let loadingMicState = $state(false);
+  let loadingMicUpdate = $state(false);
+  // Draft edits (pending apply)
+  let draftPreferenceMode = $state<MicrophonePreferenceMode>("default");
+  let draftDeviceId = $state<string | null>(null);
+  let draftDisconnectPolicy = $state<MicrophoneDisconnectPolicy>("fallback_to_default");
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -181,7 +220,100 @@
     }
   }
 
+  // ─── Microphone controller actions ────────────────────────────────────────
+
+  function syncDraftsFromMicState(state: MicrophoneControllerState) {
+    draftPreferenceMode = state.preference.mode;
+    draftDeviceId = state.preference.deviceId ?? null;
+    draftDisconnectPolicy = state.disconnectPolicy;
+  }
+
+  async function loadMicState() {
+    loadingMicState = true;
+    clearError();
+    try {
+      const result = await invoke<MicrophoneControllerState>("get_microphone_controller_state");
+      micState = result;
+      syncDraftsFromMicState(result);
+      setResponse(result);
+    } catch (err) {
+      setError(err);
+    } finally {
+      loadingMicState = false;
+    }
+  }
+
+  async function applyMicSettings() {
+    loadingMicUpdate = true;
+    clearError();
+    try {
+      const result = await invoke<MicrophoneControllerState>("update_microphone_controller", {
+        request: {
+          preference: {
+            mode: draftPreferenceMode,
+            deviceId: draftPreferenceMode === "specific_device" ? draftDeviceId : null,
+          },
+          disconnectPolicy: draftDisconnectPolicy,
+        },
+      });
+      micState = result;
+      syncDraftsFromMicState(result);
+      setResponse(result);
+    } catch (err) {
+      setError(err);
+    } finally {
+      loadingMicUpdate = false;
+    }
+  }
+
   const isCapturing = $derived(session?.isRunning === true);
+
+  // Block Apply when Specific Device mode has no real device selected.
+  const applyBlocked = $derived(
+    draftPreferenceMode === "specific_device" && !draftDeviceId
+  );
+
+  // Load initial state and subscribe to backend-driven change notifications.
+  $effect(() => {
+    let unlistenControllerChanged: (() => void) | undefined;
+    let unlistenAutoDisconnectFailure: (() => void) | undefined;
+    let destroyed = false;
+    // Fetch state immediately on mount so the panel is populated without
+    // requiring a manual Refresh click.
+    loadMicState();
+    listen<MicrophoneControllerState>("microphone_controller_changed", (event) => {
+      micState = event.payload;
+      syncDraftsFromMicState(event.payload);
+      lastError = null;
+    }).then((fn) => {
+      // If the effect already cleaned up before listen() resolved, unsubscribe
+      // immediately to prevent a permanent leak.
+      if (destroyed) {
+        fn();
+      } else {
+        unlistenControllerChanged = fn;
+      }
+    });
+
+    listen<MicrophoneAutoDisconnectTransitionFailedEvent>(
+      "microphone_auto_disconnect_transition_failed",
+      (event) => {
+        const { context, code, message } = event.payload;
+        lastError = `[${context}] [${code}] ${message}`;
+      }
+    ).then((fn) => {
+      if (destroyed) {
+        fn();
+      } else {
+        unlistenAutoDisconnectFailure = fn;
+      }
+    });
+    return () => {
+      destroyed = true;
+      unlistenControllerChanged?.();
+      unlistenAutoDisconnectFailure?.();
+    };
+  });
 
   function formatTimestamp(ms: number): string {
     return new Date(ms).toLocaleTimeString();
@@ -328,6 +460,138 @@
     {/if}
   </section>
 
+  <!-- ── Microphone Controller ─────────────────────────────────────────── -->
+  <section class="card">
+    <h2 class="card__title">
+      Microphone Controller
+      <button
+        class="btn btn--ghost btn--sm"
+        onclick={loadMicState}
+        disabled={loadingMicState}
+        style="margin-left: auto;"
+      >
+        {loadingMicState ? "…" : "Refresh"}
+      </button>
+    </h2>
+
+    {#if micState}
+      <!-- Effective device banner -->
+      <div class="mic-effective">
+        <span class="kv-key">effective</span>
+        {#if micState.effectiveDevice}
+          <span class="kv-val">{micState.effectiveDevice.name}</span>
+          {#if micState.effectiveDevice.isDefault}
+            <span class="badge badge--neutral badge--sm">default</span>
+          {/if}
+        {:else}
+          <span class="empty">none</span>
+        {/if}
+      </div>
+
+      <!-- Available devices list -->
+      {#if micState.devices.length > 0}
+        <div class="mic-devices">
+          <span class="mic-section-label">Available Devices</span>
+          <ul class="kv-list">
+            {#each micState.devices as device (device.id)}
+              <li>
+                <span class="kv-val mic-device-name">{device.name}</span>
+                {#if device.isDefault}
+                  <span class="badge badge--neutral badge--sm">default</span>
+                {/if}
+                {#if micState.effectiveDevice?.id === device.id}
+                  <span class="badge badge--ok badge--sm">active</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {:else}
+        <p class="empty">No microphone devices found.</p>
+      {/if}
+
+      <!-- Preference controls -->
+      <div class="mic-controls">
+        <span class="mic-section-label">Preference</span>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input
+              type="radio"
+              name="mic-mode"
+              value="default"
+              bind:group={draftPreferenceMode}
+            />
+            <span class="radio-text">System Default</span>
+          </label>
+          <label class="radio-label">
+            <input
+              type="radio"
+              name="mic-mode"
+              value="specific_device"
+              bind:group={draftPreferenceMode}
+            />
+            <span class="radio-text">Specific Device</span>
+          </label>
+        </div>
+
+        {#if draftPreferenceMode === "specific_device"}
+          <div class="mic-select-wrap">
+            <select
+              class="mic-select"
+              class:mic-select--warn={!draftDeviceId}
+              bind:value={draftDeviceId}
+            >
+              <option value={null}>— pick a device —</option>
+              {#each micState.devices as device (device.id)}
+                <option value={device.id}>{device.name}{device.isDefault ? " (default)" : ""}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Disconnect policy controls -->
+      <div class="mic-controls">
+        <span class="mic-section-label">On Disconnect</span>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input
+              type="radio"
+              name="mic-disconnect"
+              value="fallback_to_default"
+              bind:group={draftDisconnectPolicy}
+            />
+            <span class="radio-text">Fallback to Default</span>
+          </label>
+          <label class="radio-label">
+            <input
+              type="radio"
+              name="mic-disconnect"
+              value="wait_for_same_device"
+              bind:group={draftDisconnectPolicy}
+            />
+            <span class="radio-text">Wait for Same Device</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="action-row">
+        <button
+          class="btn btn--primary"
+          onclick={applyMicSettings}
+          disabled={loadingMicUpdate || applyBlocked}
+        >
+          {loadingMicUpdate ? "Applying…" : "Apply"}
+        </button>
+      </div>
+      {#if applyBlocked}
+        <p class="hint hint--warn">Select a device before applying Specific Device mode.</p>
+      {/if}
+    {:else}
+      <p class="empty">No state loaded. Use Refresh to query the backend.</p>
+    {/if}
+  </section>
+
   <!-- ── Session controls ──────────────────────────────────────────────── -->
   <section class="card">
     <h2 class="card__title">Session</h2>
@@ -366,15 +630,19 @@
           </li>
         {/if}
       </ul>
-      {#if session.outputFiles?.screenFile || session.outputFiles?.microphoneFile || session.outputFiles?.systemAudioFile}
+      {#if session.outputFiles?.screenFile || session.outputFiles?.microphoneFiles?.length || session.outputFiles?.microphoneFile || session.outputFiles?.systemAudioFile}
         <div class="output-files">
           <span class="output-files__label">Capture output files</span>
           <ul class="output-files__list">
             {#if session.outputFiles?.screenFile}
               <li class="output-files__item">screen: {session.outputFiles.screenFile}</li>
             {/if}
-            {#if session.outputFiles?.microphoneFile}
-              <li class="output-files__item">microphone: {session.outputFiles.microphoneFile}</li>
+            {#if session.outputFiles?.microphoneFiles?.length}
+              {#each session.outputFiles.microphoneFiles as microphoneFile, index}
+                <li class="output-files__item">microphone[{index}]: {microphoneFile}</li>
+              {/each}
+            {:else if session.outputFiles?.microphoneFile}
+              <li class="output-files__item">microphone[0]: {session.outputFiles.microphoneFile}</li>
             {/if}
             {#if session.outputFiles?.systemAudioFile}
               <li class="output-files__item">system-audio: {session.outputFiles.systemAudioFile}</li>
@@ -863,6 +1131,141 @@
     color: #44445a;
     font-size: 11px;
     font-style: italic;
+  }
+
+  .hint--warn {
+    color: #c47a30;
+    font-style: normal;
+    font-weight: 600;
+  }
+
+  /* ── Microphone Controller ───────────────────────────────────────────── */
+  .mic-effective {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #0e0e16;
+    border: 1px solid #1a1a2a;
+    border-radius: 4px;
+  }
+
+  .mic-devices {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .mic-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #44445a;
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  .mic-device-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mic-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .radio-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .radio-label input[type="radio"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border: 1px solid #2a2a3a;
+    border-radius: 50%;
+    background: #1a1a2a;
+    flex-shrink: 0;
+    position: relative;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+  }
+
+  .radio-label input[type="radio"]:checked {
+    background: #0f2e1f;
+    border-color: #3dffa0;
+  }
+
+  .radio-label input[type="radio"]:checked::after {
+    content: "";
+    display: block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #3dffa0;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  .radio-text {
+    color: #b0b0c8;
+    font-size: 12px;
+  }
+
+  .mic-select-wrap {
+    margin-top: 2px;
+  }
+
+  .mic-select {
+    width: 100%;
+    background: #0e0e16;
+    border: 1px solid #2a2a3a;
+    border-radius: 4px;
+    padding: 6px 10px;
+    color: #c0c0d0;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.12s;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+
+  .mic-select:focus {
+    border-color: #3dffa0;
+  }
+
+  .mic-select--warn {
+    border-color: #7a4a18;
+    color: #c47a30;
+  }
+
+  .mic-select--warn:focus {
+    border-color: #c47a30;
+  }
+
+  .mic-select option {
+    background: #13131a;
+    color: #c0c0d0;
   }
 
   /* ── Scrollbar ───────────────────────────────────────────────────────── */

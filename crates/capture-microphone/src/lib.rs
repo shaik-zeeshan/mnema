@@ -1,33 +1,240 @@
-use capture_types::{CaptureErrorResponse, CapturePermissionState};
+use capture_types::{
+    CaptureErrorResponse, CapturePermissionState, MicrophoneControllerState, MicrophoneDevice,
+    MicrophoneDisconnectPolicy, MicrophonePreference, MicrophonePreferenceMode,
+};
 
 #[cfg(target_os = "macos")]
 use capture_writers::{
-    append_audio_sample_to_writer, create_audio_asset_writer,
+    append_audio_sample_to_writer, create_audio_asset_writer_for_sample_format,
+    derive_audio_sample_format_from_sample_buf,
     finalize_microphone_output_context as writers_finalize_microphone_output_context,
-    AudioAssetWriterState,
+    AudioAssetWriterState, AudioSampleFormat,
 };
 
 #[cfg(target_os = "macos")]
 use cidre::objc;
 #[cfg(target_os = "macos")]
-use cidre::{av, dispatch};
+use cidre::{av, core_audio as ca, dispatch, os};
+#[cfg(target_os = "macos")]
+use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
 struct MicrophoneOutputContext {
-    writer: AudioAssetWriterState,
+    writer: Option<AudioAssetWriterState>,
+    output_url: cidre::arc::R<cidre::ns::Url>,
     first_error: Option<CaptureErrorResponse>,
+    format_state: MicFormatStabilityState,
+    logged_format_samples: u32,
+    pending_samples: VecDeque<BufferedMicSample>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Default, Clone, Copy)]
+struct MicFormatStabilityState {
+    observed_format_count: u32,
+    candidate_format: Option<AudioSampleFormat>,
+    candidate_format_streak: u32,
+    stable_format: Option<AudioSampleFormat>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct BufferedMicSample {
+    sample_buf: cidre::arc::R<cidre::cm::SampleBuf>,
+    format: AudioSampleFormat,
+}
+
+#[cfg(target_os = "macos")]
+const FORMAT_STABILITY_REQUIRED_CONSECUTIVE: u32 = 3;
+#[cfg(target_os = "macos")]
+const FORMAT_STABILITY_MIN_OBSERVED: u32 = 5;
+#[cfg(target_os = "macos")]
+const FORMAT_LOG_SAMPLE_LIMIT: u32 = 8;
+#[cfg(target_os = "macos")]
+const MAX_PENDING_MIC_SAMPLES: usize = 64;
+
+#[cfg(target_os = "macos")]
+fn record_observed_audio_format(
+    context: &mut MicrophoneOutputContext,
+    sample_format: AudioSampleFormat,
+) {
+    let was_stable = context.format_state.stable_format.is_some();
+    observe_microphone_format(&mut context.format_state, sample_format);
+
+    if context.logged_format_samples < FORMAT_LOG_SAMPLE_LIMIT {
+        context.logged_format_samples += 1;
+        eprintln!(
+            "[capture-microphone] sample_format_observed index={} sample_rate_hz={} channels={} bits_per_channel={} bytes_per_frame={} format_id={} format_flags={}",
+            context.format_state.observed_format_count,
+            sample_format.sample_rate_hz,
+            sample_format.channels_per_frame,
+            sample_format.bits_per_channel,
+            sample_format.bytes_per_frame,
+            sample_format.format_id,
+            sample_format.format_flags,
+        );
+    }
+
+    if !was_stable {
+        let Some(stable_format) = context.format_state.stable_format else {
+            return;
+        };
+        eprintln!(
+            "[capture-microphone] sample_format_stabilized observed={} streak={} sample_rate_hz={} channels={} bits_per_channel={} bytes_per_frame={} format_id={} format_flags={}",
+            context.format_state.observed_format_count,
+            context.format_state.candidate_format_streak,
+            stable_format.sample_rate_hz,
+            stable_format.channels_per_frame,
+            stable_format.bits_per_channel,
+            stable_format.bytes_per_frame,
+            stable_format.format_id,
+            stable_format.format_flags,
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fallback_microphone_format(context: &MicrophoneOutputContext) -> Option<AudioSampleFormat> {
+    resolve_microphone_finalize_format(&context.format_state)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::{
+        observe_microphone_format, resolve_microphone_finalize_format,
+        resolve_microphone_live_format, AudioSampleFormat, MicFormatStabilityState,
+    };
+
+    fn format(bits_per_channel: u32, bytes_per_frame: u32) -> AudioSampleFormat {
+        AudioSampleFormat {
+            sample_rate_hz: 48_000.0,
+            format_id: 1,
+            format_flags: 2,
+            bytes_per_packet: bytes_per_frame,
+            frames_per_packet: 1,
+            bytes_per_frame,
+            channels_per_frame: 2,
+            bits_per_channel,
+        }
+    }
+
+    #[test]
+    fn live_format_waits_until_stable_threshold_met() {
+        let mut state = MicFormatStabilityState::default();
+        let fmt = format(32, 8);
+
+        for _ in 0..4 {
+            observe_microphone_format(&mut state, fmt);
+            assert_eq!(resolve_microphone_live_format(&state), None);
+        }
+
+        observe_microphone_format(&mut state, fmt);
+        assert_eq!(resolve_microphone_live_format(&state), Some(fmt));
+    }
+
+    #[test]
+    fn transient_24_bit_then_32_bit_stabilizes_on_32_bit() {
+        let mut state = MicFormatStabilityState::default();
+        let fmt24 = format(24, 6);
+        let fmt32 = format(32, 8);
+
+        observe_microphone_format(&mut state, fmt24);
+        observe_microphone_format(&mut state, fmt24);
+        observe_microphone_format(&mut state, fmt32);
+        observe_microphone_format(&mut state, fmt32);
+        assert_eq!(resolve_microphone_live_format(&state), None);
+
+        observe_microphone_format(&mut state, fmt32);
+        assert_eq!(resolve_microphone_live_format(&state), Some(fmt32));
+    }
+
+    #[test]
+    fn finalize_format_falls_back_to_candidate_for_short_recording() {
+        let mut state = MicFormatStabilityState::default();
+        let fmt = format(32, 8);
+
+        observe_microphone_format(&mut state, fmt);
+        observe_microphone_format(&mut state, fmt);
+
+        assert_eq!(resolve_microphone_live_format(&state), None);
+        assert_eq!(resolve_microphone_finalize_format(&state), Some(fmt));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn observe_microphone_format(
+    state: &mut MicFormatStabilityState,
+    sample_format: AudioSampleFormat,
+) {
+    state.observed_format_count += 1;
+
+    match state.candidate_format {
+        Some(current_candidate) if current_candidate == sample_format => {
+            state.candidate_format_streak += 1;
+        }
+        _ => {
+            state.candidate_format = Some(sample_format);
+            state.candidate_format_streak = 1;
+        }
+    }
+
+    if state.stable_format.is_none()
+        && state.observed_format_count >= FORMAT_STABILITY_MIN_OBSERVED
+        && state.candidate_format_streak >= FORMAT_STABILITY_REQUIRED_CONSECUTIVE
+    {
+        state.stable_format = state.candidate_format;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_microphone_live_format(state: &MicFormatStabilityState) -> Option<AudioSampleFormat> {
+    state.stable_format
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_microphone_finalize_format(
+    state: &MicFormatStabilityState,
+) -> Option<AudioSampleFormat> {
+    state.stable_format.or(state.candidate_format)
+}
+
+#[cfg(target_os = "macos")]
+fn flush_pending_microphone_samples(
+    context: &mut MicrophoneOutputContext,
+) -> Result<(), CaptureErrorResponse> {
+    let selected_format = fallback_microphone_format(context);
+    let Some(writer) = context.writer.as_mut() else {
+        return Ok(());
+    };
+
+    while let Some(sample) = context.pending_samples.pop_front() {
+        if selected_format.is_some() && Some(sample.format) != selected_format {
+            continue;
+        }
+
+        append_audio_sample_to_writer(writer, sample.sample_buf.as_ref())?;
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
 mod microphone_delegate {
     #![allow(clippy::useless_transmute)]
 
-    use super::{append_audio_sample_to_writer, objc, MicrophoneOutputContext};
+    use super::{
+        append_audio_sample_to_writer, create_audio_asset_writer_for_sample_format,
+        derive_audio_sample_format_from_sample_buf, flush_pending_microphone_samples, objc,
+        record_observed_audio_format, resolve_microphone_live_format, BufferedMicSample,
+        MicrophoneOutputContext, MAX_PENDING_MIC_SAMPLES,
+    };
     use cidre::av::capture::AudioDataOutputSampleBufDelegate;
 
     cidre::define_obj_type!(
@@ -53,7 +260,46 @@ mod microphone_delegate {
                 return;
             }
 
-            if let Err(error) = append_audio_sample_to_writer(&mut ctx.writer, sample_buf) {
+            if let Some(writer) = ctx.writer.as_mut() {
+                if let Err(error) = append_audio_sample_to_writer(writer, sample_buf) {
+                    ctx.first_error = Some(error);
+                }
+                return;
+            }
+
+            let Some(sample_format) = derive_audio_sample_format_from_sample_buf(sample_buf) else {
+                return;
+            };
+
+            record_observed_audio_format(ctx, sample_format);
+
+            ctx.pending_samples.push_back(BufferedMicSample {
+                sample_buf: sample_buf.retained(),
+                format: sample_format,
+            });
+            while ctx.pending_samples.len() > MAX_PENDING_MIC_SAMPLES {
+                let _ = ctx.pending_samples.pop_front();
+            }
+
+            if ctx.writer.is_none() {
+                let Some(stable_format) = resolve_microphone_live_format(&ctx.format_state) else {
+                    return;
+                };
+
+                match create_audio_asset_writer_for_sample_format(
+                    ctx.output_url.as_ref(),
+                    "microphone",
+                    stable_format,
+                ) {
+                    Ok(writer) => ctx.writer = Some(writer),
+                    Err(error) => {
+                        ctx.first_error = Some(error);
+                        return;
+                    }
+                }
+            }
+
+            if let Err(error) = flush_pending_microphone_samples(ctx) {
                 ctx.first_error = Some(error);
             }
         }
@@ -92,22 +338,270 @@ fn synchronize_stream_output_queue(queue: Option<&dispatch::Queue>) {
 fn finalize_microphone_output_context(
     context: &mut MicrophoneOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
-    writers_finalize_microphone_output_context(&mut context.writer, context.first_error.take())
+    if context.writer.is_none() && !context.pending_samples.is_empty() {
+        if let Some(format) = resolve_microphone_finalize_format(&context.format_state) {
+            match create_audio_asset_writer_for_sample_format(
+                context.output_url.as_ref(),
+                "microphone",
+                format,
+            ) {
+                Ok(writer) => {
+                    context.writer = Some(writer);
+                    if let Err(error) = flush_pending_microphone_samples(context) {
+                        context.first_error = Some(error);
+                    }
+                }
+                Err(error) => context.first_error = Some(error),
+            }
+        }
+    }
+
+    writers_finalize_microphone_output_context(context.writer.as_mut(), context.first_error.take())
+}
+
+pub fn resolve_effective_microphone_device(
+    devices: &[MicrophoneDevice],
+    preference: &MicrophonePreference,
+    disconnect_policy: MicrophoneDisconnectPolicy,
+) -> Option<MicrophoneDevice> {
+    let default_device = || devices.iter().find(|device| device.is_default).cloned();
+
+    match preference.mode {
+        MicrophonePreferenceMode::Default => default_device(),
+        MicrophonePreferenceMode::SpecificDevice => {
+            let configured_id = preference.device_id.as_deref()?;
+            let selected = devices
+                .iter()
+                .find(|device| device.id == configured_id)
+                .cloned();
+
+            if selected.is_some() {
+                return selected;
+            }
+
+            match disconnect_policy {
+                MicrophoneDisconnectPolicy::FallbackToDefault => default_device(),
+                MicrophoneDisconnectPolicy::WaitForSameDevice => None,
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {
+    let default_device_id = av::CaptureDevice::default_with_media(av::MediaType::audio())
+        .map(|device| device.unique_id().to_string());
+
+    let mut devices = Vec::new();
+    for device in av::CaptureDevice::devices().iter() {
+        if !device.has_media_type(av::MediaType::audio()) || !device.is_connected() {
+            continue;
+        }
+
+        let id = device.unique_id().to_string();
+        let name = device.localized_name().to_string();
+        let is_default = default_device_id.as_deref() == Some(id.as_str());
+        devices.push(MicrophoneDevice {
+            id,
+            name,
+            is_default,
+        });
+    }
+
+    Ok(devices)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {
+    Ok(Vec::new())
+}
+
+pub fn microphone_controller_state(
+    preference: MicrophonePreference,
+    disconnect_policy: MicrophoneDisconnectPolicy,
+) -> Result<MicrophoneControllerState, CaptureErrorResponse> {
+    let devices = list_microphone_devices()?;
+    let effective_device =
+        resolve_effective_microphone_device(&devices, &preference, disconnect_policy.clone());
+
+    Ok(MicrophoneControllerState {
+        devices,
+        preference,
+        disconnect_policy,
+        effective_device,
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct MicrophoneDeviceChangeNotifier {
+    _connected_observer: cidre::ns::NotificationGuard,
+    _disconnected_observer: cidre::ns::NotificationGuard,
+    _default_input_listener: Option<DefaultInputDeviceListener>,
+}
+
+#[cfg(target_os = "macos")]
+type DeviceChangeCallback = dyn Fn() + Send + Sync + 'static;
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct DefaultInputDeviceListener {
+    callback_ptr_addr: usize,
+}
+
+#[cfg(target_os = "macos")]
+extern "C-unwind" fn default_input_device_changed_listener(
+    _obj_id: ca::Obj,
+    _number_addresses: u32,
+    _addresses: *const ca::PropAddr,
+    callback_ptr: *mut Arc<DeviceChangeCallback>,
+) -> os::Status {
+    let Some(callback) = (unsafe { callback_ptr.as_ref() }) else {
+        return os::Status::NO_ERR;
+    };
+
+    callback();
+    os::Status::NO_ERR
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for DefaultInputDeviceListener {
+    fn drop(&mut self) {
+        let _ = ca::System::OBJ.remove_prop_listener(
+            &ca::PropSelector::HW_DEFAULT_INPUT_DEVICE.global_addr(),
+            default_input_device_changed_listener,
+            self.callback_ptr_addr as *mut Arc<DeviceChangeCallback>,
+        );
+
+        unsafe {
+            drop(Box::from_raw(
+                self.callback_ptr_addr as *mut Arc<DeviceChangeCallback>,
+            ));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+trait IntoNotificationName<'a> {
+    fn into_notification_name(self) -> &'a cidre::ns::NotificationName;
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> IntoNotificationName<'a> for &'a cidre::ns::NotificationName {
+    fn into_notification_name(self) -> &'a cidre::ns::NotificationName {
+        self
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> IntoNotificationName<'a> for Option<&'a cidre::ns::NotificationName> {
+    fn into_notification_name(self) -> &'a cidre::ns::NotificationName {
+        self.expect("AVCaptureDevice notification unavailable")
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_microphone_device_change_notifier(
+    callback: impl Fn() + Send + Sync + 'static,
+) -> MicrophoneDeviceChangeNotifier {
+    let mut center = cidre::ns::NotificationCenter::default();
+    let callback: Arc<DeviceChangeCallback> = Arc::new(callback);
+    let connected_notification = IntoNotificationName::into_notification_name(
+        av::capture::device::notifications::was_connected(),
+    );
+    let disconnected_notification = IntoNotificationName::into_notification_name(
+        av::capture::device::notifications::was_disconnected(),
+    );
+
+    let callback_connected = Arc::clone(&callback);
+    let connected_observer =
+        center.add_observer_guard(connected_notification, None, None, move |_notification| {
+            callback_connected()
+        });
+
+    let callback_disconnected = Arc::clone(&callback);
+    let disconnected_observer = center.add_observer_guard(
+        disconnected_notification,
+        None,
+        None,
+        move |_notification| callback_disconnected(),
+    );
+
+    let callback_ptr = Box::into_raw(Box::new(Arc::clone(&callback)));
+    let default_input_listener = if ca::System::OBJ
+        .add_prop_listener(
+            &ca::PropSelector::HW_DEFAULT_INPUT_DEVICE.global_addr(),
+            default_input_device_changed_listener,
+            callback_ptr,
+        )
+        .is_ok()
+    {
+        Some(DefaultInputDeviceListener {
+            callback_ptr_addr: callback_ptr as usize,
+        })
+    } else {
+        unsafe {
+            drop(Box::from_raw(callback_ptr));
+        }
+        None
+    };
+
+    MicrophoneDeviceChangeNotifier {
+        _connected_observer: connected_observer,
+        _disconnected_observer: disconnected_observer,
+        _default_input_listener: default_input_listener,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Default)]
+pub struct MicrophoneDeviceChangeNotifier;
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_microphone_device_change_notifier(
+    _callback: impl Fn() + Send + Sync + 'static,
+) -> MicrophoneDeviceChangeNotifier {
+    MicrophoneDeviceChangeNotifier
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_capture_device_for_id(
+    device_id: Option<&str>,
+) -> Result<cidre::arc::R<av::CaptureDevice>, CaptureErrorResponse> {
+    match device_id {
+        Some(device_id) => {
+            let ns_device_id = cidre::ns::String::with_str(device_id);
+            av::CaptureDevice::with_unique_id(ns_device_id.as_ref()).ok_or_else(|| {
+                CaptureErrorResponse {
+                    code: "microphone_input_unavailable".to_string(),
+                    message: "Failed to resolve requested microphone device".to_string(),
+                }
+            })
+        }
+        None => av::CaptureDevice::default_with_media(av::MediaType::audio()).ok_or_else(|| {
+            CaptureErrorResponse {
+                code: "microphone_input_unavailable".to_string(),
+                message: "Failed to resolve microphone device".to_string(),
+            }
+        }),
+    }
 }
 
 #[cfg(target_os = "macos")]
 pub fn start_avfoundation_microphone_capture_session(
     output_url: &cidre::ns::Url,
 ) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
+    start_avfoundation_microphone_capture_session_with_device_id(output_url, None)
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_avfoundation_microphone_capture_session_with_device_id(
+    output_url: &cidre::ns::Url,
+    device_id: Option<&str>,
+) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
     let mut capture_session = av::CaptureSession::new();
 
-    let mic_device =
-        av::CaptureDevice::default_with_media(av::MediaType::audio()).ok_or_else(|| {
-            CaptureErrorResponse {
-                code: "microphone_input_unavailable".to_string(),
-                message: "Failed to resolve microphone device".to_string(),
-            }
-        })?;
+    let mic_device = resolve_capture_device_for_id(device_id)?;
 
     let mic_input = av::CaptureDeviceInput::with_device(mic_device.as_ref()).map_err(|_| {
         CaptureErrorResponse {
@@ -117,10 +611,13 @@ pub fn start_avfoundation_microphone_capture_session(
     })?;
 
     let mut audio_output = av::capture::AudioDataOutput::new();
-    let writer = create_audio_asset_writer(output_url, "microphone")?;
     let output_delegate = MicAudioDataOutputDelegate::with(MicrophoneOutputContext {
-        writer,
+        writer: None,
+        output_url: output_url.retained(),
         first_error: None,
+        format_state: MicFormatStabilityState::default(),
+        logged_format_samples: 0,
+        pending_samples: VecDeque::new(),
     });
     let output_queue = dispatch::Queue::serial_with_ar_pool();
     audio_output.set_sample_buf_delegate(Some(output_delegate.as_ref()), Some(&output_queue));
@@ -161,8 +658,16 @@ pub fn start_avfoundation_microphone_capture_session(
 pub fn start_avfoundation_microphone_capture_session_for_file(
     output_file: &str,
 ) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
+    start_avfoundation_microphone_capture_session_for_file_with_device_id(output_file, None)
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_avfoundation_microphone_capture_session_for_file_with_device_id(
+    output_file: &str,
+    device_id: Option<&str>,
+) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
     let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
-    start_avfoundation_microphone_capture_session(&output_url)
+    start_avfoundation_microphone_capture_session_with_device_id(&output_url, device_id)
 }
 
 #[cfg(target_os = "macos")]

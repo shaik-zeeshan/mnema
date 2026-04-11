@@ -2,11 +2,16 @@ use capture_microphone as microphone_capture;
 use capture_screen::StopScreenCaptureSessionArgs;
 use capture_types::{
     CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, CapturePermissions,
-    CapturePermissionsResponse, CaptureSources, CaptureSupportResponse, NativeCaptureSession,
-    NativeCaptureSessionResponse, StartNativeCaptureRequest,
+    CapturePermissionsResponse, CaptureSources, CaptureSupportResponse, MicrophoneControllerState,
+    MicrophoneDisconnectPolicy, MicrophonePreference, MicrophonePreferenceMode,
+    NativeCaptureSession, NativeCaptureSessionResponse, StartNativeCaptureRequest,
+    UpdateMicrophoneControllerRequest,
 };
+use serde::Serialize;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
+use tauri::Manager;
 
 #[cfg(target_os = "macos")]
 fn maybe_remove_intermediate_file(file: &str, label: &str, failures: &mut Vec<String>) {
@@ -18,6 +23,23 @@ fn maybe_remove_intermediate_file(file: &str, label: &str, failures: &mut Vec<St
                 "failed to remove intermediate {label} recording file: {error}"
             ));
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_output_files(output_files: &CaptureOutputFiles) -> Vec<&str> {
+    if !output_files.microphone_files.is_empty() {
+        output_files
+            .microphone_files
+            .iter()
+            .map(String::as_str)
+            .collect()
+    } else {
+        output_files
+            .microphone_file
+            .as_deref()
+            .into_iter()
+            .collect()
     }
 }
 
@@ -34,8 +56,13 @@ fn finalize_capture_outputs(
     };
 
     let mut failures: Vec<String> = Vec::new();
+    let microphone_files = microphone_output_files(output_files);
 
-    if let Some(microphone_file) = output_files.microphone_file.as_deref() {
+    if output_files.microphone_file.is_some() && output_files.microphone_files.is_empty() {
+        let microphone_file = output_files
+            .microphone_file
+            .as_deref()
+            .expect("checked microphone_file is present");
         let source_recording = microphone_recording_file.or(recording_file);
 
         if let Some(source_recording) = source_recording {
@@ -88,7 +115,7 @@ fn finalize_capture_outputs(
     }
 
     if let Some(microphone_recording_file) = microphone_recording_file {
-        if output_files.microphone_file.as_deref() != Some(microphone_recording_file) {
+        if !microphone_files.contains(&microphone_recording_file) {
             maybe_remove_intermediate_file(microphone_recording_file, "microphone", &mut failures);
         }
     }
@@ -126,6 +153,125 @@ pub struct NativeCaptureRuntime {
 }
 
 pub type NativeCaptureState = Mutex<NativeCaptureRuntime>;
+
+#[derive(Debug, Clone)]
+pub struct MicrophoneControllerPreferencesRuntime {
+    pub preference: MicrophonePreference,
+    pub disconnect_policy: MicrophoneDisconnectPolicy,
+}
+
+impl Default for MicrophoneControllerPreferencesRuntime {
+    fn default() -> Self {
+        Self {
+            preference: MicrophonePreference {
+                mode: MicrophonePreferenceMode::Default,
+                device_id: None,
+            },
+            disconnect_policy: MicrophoneDisconnectPolicy::FallbackToDefault,
+        }
+    }
+}
+
+pub type MicrophoneControllerPreferencesState = Mutex<MicrophoneControllerPreferencesRuntime>;
+pub type MicrophoneDeviceChangeNotifierState =
+    Mutex<Option<microphone_capture::MicrophoneDeviceChangeNotifier>>;
+
+const MICROPHONE_CONTROLLER_CHANGED_EVENT: &str = "microphone_controller_changed";
+const MICROPHONE_AUTO_DISCONNECT_TRANSITION_FAILED_EVENT: &str =
+    "microphone_auto_disconnect_transition_failed";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MicrophoneAutoDisconnectTransitionFailedEvent {
+    context: String,
+    code: String,
+    message: String,
+}
+
+fn microphone_auto_disconnect_transition_failed_event(
+    error: &CaptureErrorResponse,
+) -> MicrophoneAutoDisconnectTransitionFailedEvent {
+    MicrophoneAutoDisconnectTransitionFailedEvent {
+        context: "stop_before_wait_for_same_device".to_string(),
+        code: error.code.clone(),
+        message: error.message.clone(),
+    }
+}
+
+fn validate_microphone_preference(
+    preference: MicrophonePreference,
+) -> Result<MicrophonePreference, CaptureErrorResponse> {
+    if preference.mode != MicrophonePreferenceMode::SpecificDevice {
+        return Ok(preference);
+    }
+
+    let device_id = preference
+        .device_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| CaptureErrorResponse {
+            code: "microphone_specific_device_id_required".to_string(),
+            message: "A non-empty device_id is required when preference.mode is specific_device"
+                .to_string(),
+        })?;
+
+    Ok(MicrophonePreference {
+        mode: preference.mode,
+        device_id: Some(device_id),
+    })
+}
+
+pub fn emit_microphone_controller_changed(
+    app_handle: &tauri::AppHandle,
+    state: MicrophoneControllerState,
+) {
+    let _ = app_handle.emit(MICROPHONE_CONTROLLER_CHANGED_EVENT, state);
+}
+
+fn emit_microphone_auto_disconnect_transition_failed(
+    app_handle: &tauri::AppHandle,
+    error: &CaptureErrorResponse,
+) {
+    let payload = microphone_auto_disconnect_transition_failed_event(error);
+    let _ = app_handle.emit(MICROPHONE_AUTO_DISCONNECT_TRANSITION_FAILED_EVENT, payload);
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_microphone_device_change_notifier(app_handle: tauri::AppHandle) {
+    let notifier = microphone_capture::start_microphone_device_change_notifier({
+        let app_handle = app_handle.clone();
+        move || {
+            let preferences_state = app_handle.state::<MicrophoneControllerPreferencesState>();
+            let runtime = match preferences_state.lock() {
+                Ok(runtime) => runtime,
+                Err(_) => return,
+            };
+
+            let controller_state = match microphone_capture::microphone_controller_state(
+                runtime.preference.clone(),
+                runtime.disconnect_policy.clone(),
+            ) {
+                Ok(state) => state,
+                Err(_) => return,
+            };
+
+            maybe_reconnect_waiting_microphone_session(&app_handle, &controller_state);
+
+            emit_microphone_controller_changed(&app_handle, controller_state);
+        }
+    });
+
+    let notifier_state = app_handle.state::<MicrophoneDeviceChangeNotifierState>();
+    let mut notifier_slot = notifier_state
+        .lock()
+        .expect("microphone device change notifier state poisoned");
+    *notifier_slot = Some(notifier);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_microphone_device_change_notifier(_app_handle: tauri::AppHandle) {}
 
 fn now_unix_ms() -> u64 {
     SystemTime::now()
@@ -213,6 +359,154 @@ fn validate_start_request(
     })
 }
 
+fn should_wait_for_same_microphone_device(state: &MicrophoneControllerState) -> bool {
+    state.preference.mode == MicrophonePreferenceMode::SpecificDevice
+        && state.disconnect_policy == MicrophoneDisconnectPolicy::WaitForSameDevice
+        && state.preference.device_id.is_some()
+        && state.effective_device.is_none()
+}
+
+#[cfg(target_os = "macos")]
+fn should_move_microphone_capture_to_waiting_state(
+    runtime_is_running: bool,
+    requested_sources: Option<&CaptureSources>,
+    has_active_microphone_session: bool,
+    state: &MicrophoneControllerState,
+) -> bool {
+    runtime_is_running
+        && requested_sources.is_some_and(|sources| sources.microphone)
+        && has_active_microphone_session
+        && should_wait_for_same_microphone_device(state)
+}
+
+#[cfg(target_os = "macos")]
+fn next_microphone_output_file_for_runtime(
+    runtime: &NativeCaptureRuntime,
+) -> Result<String, CaptureErrorResponse> {
+    let file_name = format!("microphone-{}.m4a", now_unix_ms());
+
+    if let Some(existing_screen_file) = runtime
+        .output_files
+        .as_ref()
+        .and_then(|output_files| output_files.screen_file.as_deref())
+    {
+        return Ok(std::path::Path::new(existing_screen_file)
+            .parent()
+            .expect("screen output path should have parent")
+            .join(file_name)
+            .to_string_lossy()
+            .to_string());
+    }
+
+    let session_id = runtime
+        .session_id
+        .as_deref()
+        .ok_or_else(|| CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Capture session id missing while reconnecting microphone".to_string(),
+        })?;
+
+    let session_dir = std::env::temp_dir()
+        .join("z-native-capture")
+        .join(session_id);
+    std::fs::create_dir_all(&session_dir).map_err(|e| CaptureErrorResponse {
+        code: "io_error".to_string(),
+        message: format!("Failed to create capture session directory: {e}"),
+    })?;
+
+    Ok(session_dir.join(file_name).to_string_lossy().to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn should_reconnect_waiting_microphone_session(
+    runtime: &NativeCaptureRuntime,
+    state: &MicrophoneControllerState,
+) -> bool {
+    runtime.is_running
+        && runtime
+            .requested_sources
+            .as_ref()
+            .is_some_and(|sources| sources.microphone)
+        && runtime.active_microphone_session.is_none()
+        && state.preference.mode == MicrophonePreferenceMode::SpecificDevice
+        && state.disconnect_policy == MicrophoneDisconnectPolicy::WaitForSameDevice
+        && state.preference.device_id.is_some()
+        && state.effective_device.is_some()
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_reconnect_waiting_microphone_session(
+    app_handle: &tauri::AppHandle,
+    state: &MicrophoneControllerState,
+) {
+    let capture_state = app_handle.state::<NativeCaptureState>();
+    let mut runtime = match capture_state.lock() {
+        Ok(runtime) => runtime,
+        Err(_) => return,
+    };
+
+    let mut stop_failed_while_waiting = false;
+
+    if should_move_microphone_capture_to_waiting_state(
+        runtime.is_running,
+        runtime.requested_sources.as_ref(),
+        runtime.active_microphone_session.is_some(),
+        state,
+    ) {
+        if let Some(session) = runtime.active_microphone_session.as_mut() {
+            if let Err(error) = session.stop() {
+                eprintln!(
+                    "failed to stop microphone session while waiting for same device: [{}] {}",
+                    error.code, error.message
+                );
+                emit_microphone_auto_disconnect_transition_failed(app_handle, &error);
+                stop_failed_while_waiting = true;
+            }
+        }
+        if !stop_failed_while_waiting {
+            runtime.active_microphone_session = None;
+        }
+    }
+
+    if stop_failed_while_waiting || !should_reconnect_waiting_microphone_session(&runtime, state) {
+        return;
+    }
+
+    let microphone_recording_file = match next_microphone_output_file_for_runtime(&runtime) {
+        Ok(path) => path,
+        Err(_) => return,
+    };
+
+    let mic_start =
+        microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id(
+            &microphone_recording_file,
+            state.preference.device_id.as_deref(),
+        );
+
+    if let Ok(session) = mic_start {
+        runtime.active_microphone_session = Some(session);
+        runtime.microphone_recording_file = Some(microphone_recording_file.clone());
+        if let Some(output_files) = runtime.output_files.as_mut() {
+            set_current_microphone_output_file(output_files, microphone_recording_file);
+        }
+    }
+}
+
+fn resolve_capture_microphone_device_id(state: &MicrophoneControllerState) -> Option<String> {
+    state.effective_device.as_ref().and_then(|device| {
+        if device.is_default {
+            None
+        } else {
+            Some(device.id.clone())
+        }
+    })
+}
+
+fn set_current_microphone_output_file(output_files: &mut CaptureOutputFiles, file: String) {
+    output_files.microphone_file = Some(file.clone());
+    output_files.microphone_files.push(file);
+}
+
 fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
     #[cfg(target_os = "macos")]
@@ -238,12 +532,72 @@ pub fn get_capture_permissions(
 }
 
 #[tauri::command]
+pub fn get_microphone_controller_state(
+    state: tauri::State<'_, MicrophoneControllerPreferencesState>,
+) -> Result<MicrophoneControllerState, CaptureErrorResponse> {
+    let runtime = state
+        .lock()
+        .expect("microphone controller preferences state poisoned");
+    microphone_capture::microphone_controller_state(
+        runtime.preference.clone(),
+        runtime.disconnect_policy.clone(),
+    )
+}
+
+#[tauri::command]
+pub fn update_microphone_controller(
+    request: UpdateMicrophoneControllerRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, MicrophoneControllerPreferencesState>,
+) -> Result<MicrophoneControllerState, CaptureErrorResponse> {
+    let preference = validate_microphone_preference(request.preference)?;
+    let disconnect_policy = request.disconnect_policy;
+    let controller_state = microphone_capture::microphone_controller_state(
+        preference.clone(),
+        disconnect_policy.clone(),
+    )?;
+
+    let mut runtime = state
+        .lock()
+        .expect("microphone controller preferences state poisoned");
+    runtime.preference = preference;
+    runtime.disconnect_policy = disconnect_policy;
+
+    emit_microphone_controller_changed(&app_handle, controller_state.clone());
+
+    Ok(controller_state)
+}
+
+#[tauri::command]
 pub fn start_native_capture(
     request: StartNativeCaptureRequest,
     state: tauri::State<'_, NativeCaptureState>,
+    microphone_controller_preferences_state: tauri::State<'_, MicrophoneControllerPreferencesState>,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let support = get_capture_support();
     let sources = validate_start_request(&request, &support)?;
+
+    let microphone_device_id_for_capture = if request.capture_microphone {
+        let preferences_runtime = microphone_controller_preferences_state
+            .lock()
+            .expect("microphone controller preferences state poisoned");
+        let controller_state = microphone_capture::microphone_controller_state(
+            preferences_runtime.preference.clone(),
+            preferences_runtime.disconnect_policy.clone(),
+        )?;
+
+        if should_wait_for_same_microphone_device(&controller_state) {
+            return Err(CaptureErrorResponse {
+                code: "microphone_device_unavailable_waiting_for_selected_device".to_string(),
+                message: "The selected microphone is unavailable. Reconnect the same device or change microphone preference."
+                    .to_string(),
+            });
+        }
+
+        resolve_capture_microphone_device_id(&controller_state)
+    } else {
+        None
+    };
 
     let mut runtime = state.lock().expect("native capture state poisoned");
     if runtime.is_running {
@@ -292,6 +646,7 @@ pub fn start_native_capture(
         let mut output_files = CaptureOutputFiles {
             screen_file: None,
             microphone_file: None,
+            microphone_files: Vec::new(),
             system_audio_file: None,
         };
 
@@ -341,13 +696,17 @@ pub fn start_native_capture(
                 };
 
             let mic_start =
-                microphone_capture::start_avfoundation_microphone_capture_session_for_file(
+                microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id(
                     &microphone_output_file,
+                    microphone_device_id_for_capture.as_deref(),
                 );
 
             match mic_start {
                 Ok(session) => {
-                    output_files.microphone_file = Some(microphone_output_file.clone());
+                    set_current_microphone_output_file(
+                        &mut output_files,
+                        microphone_output_file.clone(),
+                    );
                     microphone_recording_file = Some(microphone_output_file);
                     active_microphone_session = Some(session);
                 }
@@ -386,6 +745,7 @@ pub fn start_native_capture(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = sources;
+        let _ = microphone_device_id_for_capture;
         return Err(CaptureErrorResponse {
             code: "unsupported_platform".to_string(),
             message: "Native capture is currently supported only on macOS".to_string(),
@@ -522,6 +882,7 @@ mod tests {
             output_files: Some(CaptureOutputFiles {
                 screen_file: Some("/tmp/screen.mov".to_string()),
                 microphone_file: Some("/tmp/microphone.m4a".to_string()),
+                microphone_files: vec!["/tmp/microphone.m4a".to_string()],
                 system_audio_file: None,
             }),
             #[cfg(target_os = "macos")]
@@ -559,6 +920,7 @@ mod tests {
             output_files: Some(CaptureOutputFiles {
                 screen_file: Some("/tmp/screen.mov".to_string()),
                 microphone_file: Some("/tmp/microphone.m4a".to_string()),
+                microphone_files: vec!["/tmp/microphone.m4a".to_string()],
                 system_audio_file: Some("/tmp/system-audio.m4a".to_string()),
             }),
             #[cfg(target_os = "macos")]
@@ -581,5 +943,188 @@ mod tests {
         assert!(session.requested_sources.as_ref().is_some_and(|sources| {
             sources.screen && sources.microphone && sources.system_audio
         }));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_reconnect_waiting_microphone_session_when_device_returns() {
+        let runtime = NativeCaptureRuntime {
+            is_running: true,
+            session_id: Some("session-1".to_string()),
+            started_at_unix_ms: Some(123),
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: false,
+            }),
+            output_files: Some(CaptureOutputFiles {
+                screen_file: Some("/tmp/screen.mov".to_string()),
+                microphone_file: Some("/tmp/microphone.m4a".to_string()),
+                microphone_files: vec!["/tmp/microphone.m4a".to_string()],
+                system_audio_file: None,
+            }),
+            recording_file: Some("/tmp/screen.mov".to_string()),
+            microphone_recording_file: Some("/tmp/microphone.m4a".to_string()),
+            system_audio_recording_file: None,
+            active_screen_session: None,
+            active_microphone_session: None,
+        };
+        let state = MicrophoneControllerState {
+            devices: vec![capture_types::MicrophoneDevice {
+                id: "mic-1".to_string(),
+                name: "Mic 1".to_string(),
+                is_default: false,
+            }],
+            preference: MicrophonePreference {
+                mode: MicrophonePreferenceMode::SpecificDevice,
+                device_id: Some("mic-1".to_string()),
+            },
+            disconnect_policy: MicrophoneDisconnectPolicy::WaitForSameDevice,
+            effective_device: Some(capture_types::MicrophoneDevice {
+                id: "mic-1".to_string(),
+                name: "Mic 1".to_string(),
+                is_default: false,
+            }),
+        };
+
+        assert!(should_reconnect_waiting_microphone_session(
+            &runtime, &state
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
+        let runtime = NativeCaptureRuntime {
+            is_running: true,
+            session_id: Some("session-1".to_string()),
+            started_at_unix_ms: Some(123),
+            requested_sources: Some(CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: false,
+            }),
+            output_files: Some(CaptureOutputFiles {
+                screen_file: None,
+                microphone_file: Some("/tmp/microphone.m4a".to_string()),
+                microphone_files: vec!["/tmp/microphone.m4a".to_string()],
+                system_audio_file: None,
+            }),
+            recording_file: None,
+            microphone_recording_file: Some("/tmp/microphone.m4a".to_string()),
+            system_audio_recording_file: None,
+            active_screen_session: None,
+            active_microphone_session: None,
+        };
+        let state = MicrophoneControllerState {
+            devices: vec![],
+            preference: MicrophonePreference {
+                mode: MicrophonePreferenceMode::SpecificDevice,
+                device_id: Some("mic-1".to_string()),
+            },
+            disconnect_policy: MicrophoneDisconnectPolicy::WaitForSameDevice,
+            effective_device: None,
+        };
+
+        assert!(!should_reconnect_waiting_microphone_session(
+            &runtime, &state
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_move_microphone_capture_to_waiting_state_when_selected_device_missing() {
+        let state = MicrophoneControllerState {
+            devices: vec![],
+            preference: MicrophonePreference {
+                mode: MicrophonePreferenceMode::SpecificDevice,
+                device_id: Some("mic-1".to_string()),
+            },
+            disconnect_policy: MicrophoneDisconnectPolicy::WaitForSameDevice,
+            effective_device: None,
+        };
+
+        assert!(should_move_microphone_capture_to_waiting_state(
+            true,
+            Some(&CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: false,
+            }),
+            true,
+            &state,
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn next_microphone_output_file_for_runtime_uses_new_segment_name() {
+        let runtime = NativeCaptureRuntime {
+            is_running: true,
+            session_id: Some("session-1".to_string()),
+            started_at_unix_ms: Some(123),
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: false,
+            }),
+            output_files: Some(CaptureOutputFiles {
+                screen_file: Some("/tmp/screen.mov".to_string()),
+                microphone_file: Some("/tmp/microphone.m4a".to_string()),
+                microphone_files: vec!["/tmp/microphone.m4a".to_string()],
+                system_audio_file: None,
+            }),
+            recording_file: Some("/tmp/screen.mov".to_string()),
+            microphone_recording_file: Some("/tmp/microphone.m4a".to_string()),
+            system_audio_recording_file: None,
+            active_screen_session: None,
+            active_microphone_session: None,
+        };
+
+        let path = next_microphone_output_file_for_runtime(&runtime)
+            .expect("should build next microphone segment path");
+
+        assert!(path.starts_with("/tmp/microphone-"));
+        assert!(path.ends_with(".m4a"));
+        assert_ne!(path, "/tmp/microphone.m4a");
+    }
+
+    #[test]
+    fn set_current_microphone_output_file_tracks_all_segments() {
+        let mut output_files = CaptureOutputFiles {
+            screen_file: Some("/tmp/screen.mov".to_string()),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+        };
+
+        set_current_microphone_output_file(&mut output_files, "/tmp/microphone-1.m4a".to_string());
+        set_current_microphone_output_file(&mut output_files, "/tmp/microphone-2.m4a".to_string());
+
+        assert_eq!(
+            output_files.microphone_file,
+            Some("/tmp/microphone-2.m4a".to_string())
+        );
+        assert_eq!(
+            output_files.microphone_files,
+            vec![
+                "/tmp/microphone-1.m4a".to_string(),
+                "/tmp/microphone-2.m4a".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn microphone_auto_disconnect_transition_failed_event_has_expected_payload() {
+        let error = CaptureErrorResponse {
+            code: "microphone_stop_failed".to_string(),
+            message: "stop failed".to_string(),
+        };
+
+        let payload = microphone_auto_disconnect_transition_failed_event(&error);
+
+        assert_eq!(payload.context, "stop_before_wait_for_same_device");
+        assert_eq!(payload.code, "microphone_stop_failed");
+        assert_eq!(payload.message, "stop failed");
     }
 }

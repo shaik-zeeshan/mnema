@@ -12,7 +12,84 @@ pub struct AudioAssetWriterState {
     input: cidre::arc::R<cidre::av::AssetWriterInput>,
     started: bool,
     appended_samples: u64,
+    expected_sample_format: Option<AudioSampleFormat>,
     label: &'static str,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy)]
+pub struct AudioWriterFormatSpec {
+    sample_rate_hz: f64,
+    channel_count: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioSampleFormat {
+    pub sample_rate_hz: f64,
+    pub format_id: u32,
+    pub format_flags: u32,
+    pub bytes_per_packet: u32,
+    pub frames_per_packet: u32,
+    pub bytes_per_frame: u32,
+    pub channels_per_frame: u32,
+    pub bits_per_channel: u32,
+}
+
+#[cfg(target_os = "macos")]
+impl AudioSampleFormat {
+    pub const fn to_writer_format(self) -> AudioWriterFormatSpec {
+        AudioWriterFormatSpec::new(self.sample_rate_hz, self.channels_per_frame)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl AudioWriterFormatSpec {
+    pub const fn new(sample_rate_hz: f64, channel_count: u32) -> Self {
+        Self {
+            sample_rate_hz,
+            channel_count,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+const DEFAULT_AUDIO_WRITER_FORMAT: AudioWriterFormatSpec = AudioWriterFormatSpec::new(48_000.0, 2);
+
+#[cfg(target_os = "macos")]
+pub fn derive_audio_writer_format_from_sample_buf(
+    sample_buf: &cidre::cm::SampleBuf,
+) -> Option<AudioWriterFormatSpec> {
+    derive_audio_sample_format_from_sample_buf(sample_buf).map(AudioSampleFormat::to_writer_format)
+}
+
+#[cfg(target_os = "macos")]
+pub fn derive_audio_sample_format_from_sample_buf(
+    sample_buf: &cidre::cm::SampleBuf,
+) -> Option<AudioSampleFormat> {
+    let format_desc = sample_buf.format_desc()?;
+    if format_desc.media_type() != cidre::cm::MediaType::AUDIO {
+        return None;
+    }
+
+    let audio_format_desc: &cidre::cm::AudioFormatDesc =
+        unsafe { &*(format_desc as *const _ as *const cidre::cm::AudioFormatDesc) };
+
+    let stream_basic_desc = audio_format_desc.stream_basic_desc()?;
+    if stream_basic_desc.sample_rate <= 0.0 || stream_basic_desc.channels_per_frame == 0 {
+        return None;
+    }
+
+    Some(AudioSampleFormat {
+        sample_rate_hz: stream_basic_desc.sample_rate,
+        format_id: stream_basic_desc.format.0,
+        format_flags: stream_basic_desc.format_flags.0,
+        bytes_per_packet: stream_basic_desc.bytes_per_packet,
+        frames_per_packet: stream_basic_desc.frames_per_packet,
+        bytes_per_frame: stream_basic_desc.bytes_per_frame,
+        channels_per_frame: stream_basic_desc.channels_per_frame,
+        bits_per_channel: stream_basic_desc.bits_per_channel,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -20,11 +97,57 @@ pub fn create_audio_asset_writer(
     output_url: &cidre::ns::Url,
     label: &'static str,
 ) -> Result<AudioAssetWriterState, CaptureErrorResponse> {
+    create_audio_asset_writer_with_format(output_url, label, DEFAULT_AUDIO_WRITER_FORMAT)
+}
+
+#[cfg(target_os = "macos")]
+pub fn create_audio_asset_writer_for_sample_buf(
+    output_url: &cidre::ns::Url,
+    label: &'static str,
+    sample_buf: &cidre::cm::SampleBuf,
+) -> Result<AudioAssetWriterState, CaptureErrorResponse> {
+    let sample_format = derive_audio_sample_format_from_sample_buf(sample_buf);
+    let format = sample_format
+        .map(AudioSampleFormat::to_writer_format)
+        .unwrap_or(DEFAULT_AUDIO_WRITER_FORMAT);
+    create_audio_asset_writer_with_format_internal(output_url, label, format, sample_format)
+}
+
+#[cfg(target_os = "macos")]
+pub fn create_audio_asset_writer_for_sample_format(
+    output_url: &cidre::ns::Url,
+    label: &'static str,
+    sample_format: AudioSampleFormat,
+) -> Result<AudioAssetWriterState, CaptureErrorResponse> {
+    create_audio_asset_writer_with_format_internal(
+        output_url,
+        label,
+        sample_format.to_writer_format(),
+        Some(sample_format),
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub fn create_audio_asset_writer_with_format(
+    output_url: &cidre::ns::Url,
+    label: &'static str,
+    format: AudioWriterFormatSpec,
+) -> Result<AudioAssetWriterState, CaptureErrorResponse> {
+    create_audio_asset_writer_with_format_internal(output_url, label, format, None)
+}
+
+#[cfg(target_os = "macos")]
+fn create_audio_asset_writer_with_format_internal(
+    output_url: &cidre::ns::Url,
+    label: &'static str,
+    format: AudioWriterFormatSpec,
+    expected_sample_format: Option<AudioSampleFormat>,
+) -> Result<AudioAssetWriterState, CaptureErrorResponse> {
     use cidre::{av, cat, ns};
 
     let format_id = ns::Number::with_u32(cat::audio::Format::MPEG4_AAC.0);
-    let sample_rate = ns::Number::with_i64(48_000);
-    let channel_count = ns::Number::with_i64(2);
+    let sample_rate = ns::Number::with_f64(format.sample_rate_hz);
+    let channel_count = ns::Number::with_i64(format.channel_count as i64);
 
     let output_settings: cidre::arc::R<ns::Dictionary<ns::String, ns::Id>> =
         ns::Dictionary::with_keys_values(
@@ -76,6 +199,7 @@ pub fn create_audio_asset_writer(
         input,
         started: false,
         appended_samples: 0,
+        expected_sample_format,
         label,
     })
 }
@@ -87,6 +211,16 @@ pub fn append_audio_sample_to_writer(
 ) -> Result<(), CaptureErrorResponse> {
     if !sample_buf.data_is_ready() {
         return Ok(());
+    }
+
+    if let Some(expected_format) = writer_state.expected_sample_format {
+        let Some(actual_format) = derive_audio_sample_format_from_sample_buf(sample_buf) else {
+            return Ok(());
+        };
+
+        if actual_format != expected_format {
+            return Ok(());
+        }
     }
 
     if !writer_state.started {
@@ -247,7 +381,7 @@ pub fn finalize_stream_output_context(
 
 #[cfg(target_os = "macos")]
 pub fn finalize_microphone_output_context(
-    writer: &mut AudioAssetWriterState,
+    writer: Option<&mut AudioAssetWriterState>,
     first_error: Option<CaptureErrorResponse>,
 ) -> Result<(), CaptureErrorResponse> {
     let mut failures: Vec<String> = Vec::new();
@@ -259,8 +393,12 @@ pub fn finalize_microphone_output_context(
         ));
     }
 
-    if let Err(error) = finish_audio_asset_writer(writer) {
-        failures.push(format!("microphone writer failed: {}", error.message));
+    if let Some(writer) = writer {
+        if let Err(error) = finish_audio_asset_writer(writer) {
+            failures.push(format!("microphone writer failed: {}", error.message));
+        }
+    } else {
+        failures.push(no_audio_samples_error("microphone").message);
     }
 
     aggregate_output_processing_failures(failures)

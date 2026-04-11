@@ -52,6 +52,7 @@ fn output_files_for_session(
             .screen
             .then_some(session_dir.join("screen.mov").to_string_lossy().to_string()),
         microphone_file: None,
+        microphone_files: Vec::new(),
         system_audio_file: sources.system_audio.then_some(
             session_dir
                 .join("system-audio.m4a")
