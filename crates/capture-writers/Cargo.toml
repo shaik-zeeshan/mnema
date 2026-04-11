@@ -1,0 +1,10 @@
+[package]
+name = "capture-writers"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+capture-types = { path = "../capture-types" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cidre = { version = "0.15", default-features = false, features = ["av", "async", "blocks", "cm"] }
