@@ -1,10 +1,14 @@
-use capture_types::{CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState};
+use capture_types::{
+    CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, ScreenResolution,
+    ScreenResolutionPreset,
+};
 
 #[cfg(target_os = "macos")]
 use capture_writers::{
-    append_audio_sample_to_writer, create_audio_asset_writer,
+    append_audio_sample_to_writer, append_video_sample_to_writer, create_audio_asset_writer,
+    create_video_asset_writer_for_sample_buf,
     finalize_stream_output_context as writers_finalize_stream_output_context,
-    AudioAssetWriterState,
+    AudioAssetWriterState, VideoAssetWriterState,
 };
 
 #[cfg(target_os = "macos")]
@@ -19,7 +23,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 #[cfg(target_os = "macos")]
 use std::fmt::Display;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "macos")]
@@ -36,6 +40,66 @@ pub struct ScreenCaptureSources {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenCaptureResolution {
+    pub width: u32,
+    pub height: u32,
+}
+
+fn even_dimension(value: u32) -> u32 {
+    let at_least_two = value.max(2);
+    if at_least_two % 2 == 0 {
+        at_least_two
+    } else {
+        at_least_two + 1
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_stream_resolution(
+    requested: &ScreenResolution,
+    display_width: u32,
+    display_height: u32,
+) -> ScreenCaptureResolution {
+    let display_width = display_width.max(1);
+    let display_height = display_height.max(1);
+
+    let requested_height = match requested {
+        ScreenResolution::Preset { preset } => match preset {
+            ScreenResolutionPreset::Original => {
+                return ScreenCaptureResolution {
+                    width: display_width,
+                    height: display_height,
+                }
+            }
+            ScreenResolutionPreset::P1080 => 1080,
+            ScreenResolutionPreset::P720 => 720,
+            ScreenResolutionPreset::P540 => 540,
+        },
+        ScreenResolution::Custom { width, height } => {
+            return ScreenCaptureResolution {
+                width: even_dimension(*width),
+                height: even_dimension(*height),
+            };
+        }
+    };
+
+    if requested_height >= display_height {
+        return ScreenCaptureResolution {
+            width: display_width,
+            height: display_height,
+        };
+    }
+
+    let width = ((display_width as f64) * (requested_height as f64) / (display_height as f64))
+        .round() as u32;
+
+    ScreenCaptureResolution {
+        width: even_dimension(width),
+        height: even_dimension(requested_height),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenCaptureSupport {
     pub platform: String,
     pub native_capture_supported: bool,
@@ -47,18 +111,23 @@ fn output_files_for_session(
     session_dir: &Path,
     sources: &ScreenCaptureSources,
 ) -> CaptureOutputFiles {
+    let screen_file = sources
+        .screen
+        .then_some(session_dir.join("screen.mov").to_string_lossy().to_string());
+    let system_audio_file = sources.system_audio.then_some(
+        session_dir
+            .join("system-audio.m4a")
+            .to_string_lossy()
+            .to_string(),
+    );
+
     CaptureOutputFiles {
-        screen_file: sources
-            .screen
-            .then_some(session_dir.join("screen.mov").to_string_lossy().to_string()),
+        screen_file: screen_file.clone(),
+        screen_files: screen_file.into_iter().collect(),
         microphone_file: None,
         microphone_files: Vec::new(),
-        system_audio_file: sources.system_audio.then_some(
-            session_dir
-                .join("system-audio.m4a")
-                .to_string_lossy()
-                .to_string(),
-        ),
+        system_audio_file: system_audio_file.clone(),
+        system_audio_files: system_audio_file.into_iter().collect(),
     }
 }
 
@@ -66,32 +135,24 @@ fn output_files_for_session(
 static SCREEN_PERMISSION_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "macos")]
-type ScreenCaptureKitRecordingStreamStart = (
-    cidre::arc::R<cidre::sc::Stream>,
-    cidre::arc::R<cidre::sc::RecordingOutput>,
-    cidre::arc::R<ScRecordingOutputDelegate>,
-    mpsc::Receiver<()>,
-    mpsc::Receiver<FinishResult>,
-);
-
-#[cfg(target_os = "macos")]
 #[derive(Debug)]
 struct StreamOutputContext {
+    screen_video_output_file: Option<String>,
+    screen_video_writer: Option<VideoAssetWriterState>,
+    video_bitrate_bps: Option<u32>,
     system_audio_writer: Option<AudioAssetWriterState>,
     first_error: Option<CaptureErrorResponse>,
-}
-
-#[cfg(target_os = "macos")]
-struct RecordingOutputContext {
-    started_tx: Option<mpsc::Sender<()>>,
-    finish_tx: Option<mpsc::Sender<FinishResult>>,
 }
 
 #[cfg(target_os = "macos")]
 mod stream_output_delegate {
     #![allow(clippy::useless_transmute)]
 
-    use super::{append_audio_sample_to_writer, objc, StreamOutputContext};
+    use super::{
+        append_audio_sample_to_writer, append_video_sample_to_writer,
+        create_video_asset_writer_for_sample_buf, objc, StreamOutputContext,
+    };
+    use cidre::ns;
     use cidre::sc::StreamOutput;
 
     cidre::define_obj_type!(
@@ -113,16 +174,45 @@ mod stream_output_delegate {
         ) {
             let ctx = self.inner_mut();
 
-            let writer_state = match kind {
-                cidre::sc::OutputType::Audio => ctx.system_audio_writer.as_mut(),
-                cidre::sc::OutputType::Mic | cidre::sc::OutputType::Screen => None,
+            let append_result = match kind {
+                cidre::sc::OutputType::Screen => {
+                    if !super::should_append_screen_sample(sample_buf) {
+                        return;
+                    }
+
+                    if ctx.screen_video_writer.is_none() {
+                        let Some(output_file) = ctx.screen_video_output_file.as_deref() else {
+                            return;
+                        };
+                        let output_url = ns::Url::with_fs_path_str(output_file, false);
+                        match create_video_asset_writer_for_sample_buf(
+                            &output_url,
+                            "screen",
+                            sample_buf,
+                            ctx.video_bitrate_bps,
+                        ) {
+                            Ok(writer) => ctx.screen_video_writer = Some(writer),
+                            Err(error) => {
+                                if ctx.first_error.is_none() {
+                                    ctx.first_error = Some(error);
+                                }
+                                return;
+                            }
+                        }
+                    }
+
+                    ctx.screen_video_writer
+                        .as_mut()
+                        .map(|writer| append_video_sample_to_writer(writer, sample_buf))
+                }
+                cidre::sc::OutputType::Audio => ctx
+                    .system_audio_writer
+                    .as_mut()
+                    .map(|writer| append_audio_sample_to_writer(writer, sample_buf)),
+                cidre::sc::OutputType::Mic => None,
             };
 
-            let Some(writer_state) = writer_state else {
-                return;
-            };
-
-            if let Err(error) = append_audio_sample_to_writer(writer_state, sample_buf) {
+            if let Some(Err(error)) = append_result {
                 if ctx.first_error.is_none() {
                     ctx.first_error = Some(error);
                 }
@@ -135,6 +225,70 @@ mod stream_output_delegate {
 use stream_output_delegate::ScStreamOutputDelegate;
 
 #[cfg(target_os = "macos")]
+fn should_append_screen_sample(sample_buf: &cidre::cm::SampleBuf) -> bool {
+    use cidre::{cf, cm, sc};
+
+    let mut attachment_mode = cm::AttachMode::Propagate;
+    let status_key = sc::FrameInfo::status().as_type_ref().try_as_string();
+    let status_value = status_key
+        .and_then(|key| sample_buf.attach(key, &mut attachment_mode))
+        .and_then(cf::Type::try_as_number)
+        .and_then(|status| status.to_i32());
+
+    match status_value {
+        Some(value) => value == sc::FrameStatus::Complete as i32,
+        None => true,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_remove_screen_video_file(path: &str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => eprintln!("failed to remove invalid screen video artifact {path}: {error}"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn validate_screen_video_file(path: &str) -> Result<(), CaptureErrorResponse> {
+    use cidre::{av, ns};
+
+    let metadata = std::fs::metadata(path).map_err(|error| CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message: format!("Failed to inspect finalized screen recording: {error}"),
+    })?;
+    if metadata.len() == 0 {
+        return Err(CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: "Finalized screen recording is empty".to_string(),
+        });
+    }
+
+    let output_url = ns::Url::with_fs_path_str(path, false);
+    let asset = av::UrlAsset::with_url(&output_url, None).ok_or_else(|| CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message: "Failed to open finalized screen recording for validation".to_string(),
+    })?;
+
+    let tracks = load_asset_tracks_with_timeout(
+        asset.as_ref(),
+        av::MediaType::video(),
+        "capture_output_processing_failed",
+        "Timed out while validating finalized screen recording video track",
+    )?;
+
+    if tracks.is_empty() {
+        return Err(CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: "Finalized screen recording has no playable video track".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 pub struct StartedCaptureSession {
     pub session: ActiveCaptureSession,
     pub recording_file: String,
@@ -143,11 +297,16 @@ pub struct StartedCaptureSession {
 }
 
 #[cfg(target_os = "macos")]
-type FinishResult = Result<(), CaptureErrorResponse>;
+pub struct RotatedCaptureOutputs {
+    pub recording_file: String,
+    pub system_audio_recording_file: Option<String>,
+    pub output_files: CaptureOutputFiles,
+}
+
 #[cfg(target_os = "macos")]
 type StartCallbackMap = HashMap<usize, mpsc::Sender<()>>;
 #[cfg(target_os = "macos")]
-type FinishCallbackMap = HashMap<usize, mpsc::Sender<FinishResult>>;
+type FinishCallbackMap = HashMap<usize, mpsc::Sender<Result<(), CaptureErrorResponse>>>;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
@@ -156,18 +315,17 @@ struct AvFoundationCaptureSession {
     movie_output: objc2::rc::Retained<objc2_av_foundation::AVCaptureMovieFileOutput>,
     _delegate: objc2::rc::Retained<objc2_foundation::NSObject>,
     delegate_key: usize,
-    finish_rx: mpsc::Receiver<FinishResult>,
+    finish_rx: mpsc::Receiver<Result<(), CaptureErrorResponse>>,
 }
 
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
 struct ScreenCaptureKitCaptureSession {
     stream: cidre::arc::R<cidre::sc::Stream>,
-    _screen_recording_output: cidre::arc::R<cidre::sc::RecordingOutput>,
-    _screen_delegate: cidre::arc::R<ScRecordingOutputDelegate>,
-    recording_finish_rx: mpsc::Receiver<FinishResult>,
-    _stream_output_delegate: Option<cidre::arc::R<ScStreamOutputDelegate>>,
-    _stream_output_queue: Option<cidre::arc::R<dispatch::Queue>>,
+    stream_output_delegate: cidre::arc::R<ScStreamOutputDelegate>,
+    stream_output_queue: cidre::arc::R<dispatch::Queue>,
+    sources: ScreenCaptureSources,
+    video_bitrate_bps: Option<u32>,
 }
 
 #[cfg(target_os = "macos")]
@@ -233,75 +391,6 @@ impl AvFoundationCaptureSession {
 }
 
 #[cfg(target_os = "macos")]
-mod recording_output_delegate {
-    #![allow(clippy::useless_transmute)]
-
-    use super::{objc, CaptureErrorResponse, RecordingOutputContext};
-    use cidre::sc::RecordingOutputDelegate;
-
-    cidre::define_obj_type!(
-        pub(super) ScRecordingOutputDelegate + cidre::sc::RecordingOutputDelegateImpl,
-        RecordingOutputContext,
-        ZScRecordingOutputDelegate
-    );
-
-    impl cidre::sc::RecordingOutputDelegate for ScRecordingOutputDelegate {}
-
-    #[cidre::objc::add_methods]
-    impl cidre::sc::RecordingOutputDelegateImpl for ScRecordingOutputDelegate {
-        extern "C" fn impl_recording_output_did_start_recording(
-            &mut self,
-            _cmd: Option<&cidre::objc::Sel>,
-            _recording_output: &mut cidre::sc::RecordingOutput,
-        ) {
-            if let Some(tx) = self.inner_mut().started_tx.take() {
-                let _ = tx.send(());
-            }
-        }
-
-        extern "C" fn impl_recording_output_did_fail_with_err(
-            &mut self,
-            _cmd: Option<&cidre::objc::Sel>,
-            _recording_output: &mut cidre::sc::RecordingOutput,
-            error: &cidre::ns::Error,
-        ) {
-            let ctx = self.inner_mut();
-            let failure = CaptureErrorResponse {
-                code: "capture_finalize_failed".to_string(),
-                message: format!(
-                    "Native capture finalization failed: {} (code: {})",
-                    error.localized_desc(),
-                    error.code(),
-                ),
-            };
-
-            if let Some(tx) = ctx.finish_tx.take() {
-                let _ = tx.send(Err(failure));
-            }
-        }
-
-        extern "C" fn impl_recording_output_did_finish_recording(
-            &mut self,
-            _cmd: Option<&cidre::objc::Sel>,
-            _recording_output: &mut cidre::sc::RecordingOutput,
-        ) {
-            let ctx = self.inner_mut();
-
-            if let Some(tx) = ctx.started_tx.take() {
-                let _ = tx.send(());
-            }
-
-            if let Some(tx) = ctx.finish_tx.take() {
-                let _ = tx.send(Ok(()));
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-use recording_output_delegate::ScRecordingOutputDelegate;
-
-#[cfg(target_os = "macos")]
 impl ScreenCaptureKitCaptureSession {
     fn is_stop_timeout_code(code: &str) -> bool {
         matches!(
@@ -356,32 +445,12 @@ impl ScreenCaptureKitCaptureSession {
         };
 
         if stream_stopped {
-            synchronize_stream_output_queue(self._stream_output_queue.as_deref());
-
-            match self
-                .recording_finish_rx
-                .recv_timeout(Duration::from_secs(15))
+            synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+            if let Err(error) =
+                finalize_stream_output_context(self.stream_output_delegate.inner_mut())
             {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    if stop_error.is_none() {
-                        stop_error = Some(error);
-                    }
-                }
-                Err(_) => {
-                    return Err(CaptureErrorResponse {
-                        code: "capture_stop_incomplete".to_string(),
-                        message: "Timed out waiting for ScreenCaptureKit recording finalization"
-                            .to_string(),
-                    });
-                }
-            }
-
-            if let Some(delegate) = self._stream_output_delegate.as_mut() {
-                if let Err(error) = finalize_stream_output_context(delegate.inner_mut()) {
-                    if stop_error.is_none() {
-                        stop_error = Some(error);
-                    }
+                if stop_error.is_none() {
+                    stop_error = Some(error);
                 }
             }
         }
@@ -391,6 +460,43 @@ impl ScreenCaptureKitCaptureSession {
         } else {
             Ok(())
         }
+    }
+
+    fn rotate_output_files(
+        &mut self,
+        segment_dir: &Path,
+    ) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
+        let output_files = output_files_for_session(segment_dir, &self.sources);
+        let recording_file = segment_dir.join("screen.mov").to_string_lossy().to_string();
+        let system_audio_recording_file = self.sources.system_audio.then_some(
+            segment_dir
+                .join("system-audio.m4a")
+                .to_string_lossy()
+                .to_string(),
+        );
+
+        std::fs::create_dir_all(segment_dir).map_err(|e| CaptureErrorResponse {
+            code: "io_error".to_string(),
+            message: format!("Failed to create capture session directory: {e}"),
+        })?;
+
+        let next_context = stream_output_context_for_segment(
+            &recording_file,
+            system_audio_recording_file.as_deref(),
+            &self.sources,
+            self.video_bitrate_bps,
+        )?;
+
+        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+        let mut previous_context =
+            std::mem::replace(self.stream_output_delegate.inner_mut(), next_context);
+        finalize_stream_output_context(&mut previous_context)?;
+
+        Ok(RotatedCaptureOutputs {
+            recording_file,
+            system_audio_recording_file,
+            output_files,
+        })
     }
 }
 
@@ -424,24 +530,11 @@ pub fn new_session_id() -> Result<String, CaptureErrorResponse> {
 }
 
 #[cfg(target_os = "macos")]
-fn capture_root() -> Result<PathBuf, CaptureErrorResponse> {
-    let root = std::env::temp_dir().join("z-native-capture");
-    std::fs::create_dir_all(&root).map_err(|e| CaptureErrorResponse {
-        code: "io_error".to_string(),
-        message: format!("Failed to create capture temp directory: {e}"),
-    })?;
-    Ok(root)
-}
-
-#[cfg(target_os = "macos")]
-fn create_session_dir(session_id: &str) -> Result<PathBuf, CaptureErrorResponse> {
-    let root = capture_root()?;
-    let session_dir = root.join(session_id);
-    std::fs::create_dir(&session_dir).map_err(|e| CaptureErrorResponse {
+fn create_session_dir(session_dir: &Path) -> Result<(), CaptureErrorResponse> {
+    std::fs::create_dir_all(session_dir).map_err(|e| CaptureErrorResponse {
         code: "io_error".to_string(),
         message: format!("Failed to create capture session directory: {e}"),
-    })?;
-    Ok(session_dir)
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -599,20 +692,31 @@ fn delegate_start_callbacks() -> &'static Mutex<StartCallbackMap> {
 
 #[cfg(target_os = "macos")]
 pub fn start_capture_session(
-    session_id: &str,
+    session_dir: &Path,
     sources: &ScreenCaptureSources,
+    screen_frame_rate: u32,
+    screen_resolution: &ScreenResolution,
+    video_bitrate_bps: Option<u32>,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     if sources.screen && supports_screen_capture_kit_backend() {
-        return start_screen_capture_kit_session(session_id, sources);
+        return start_screen_capture_kit_session(
+            session_dir,
+            sources,
+            screen_frame_rate,
+            screen_resolution,
+            video_bitrate_bps,
+        );
     }
 
-    start_avfoundation_capture_session(session_id, sources)
+    start_avfoundation_capture_session(session_dir, sources, screen_resolution, video_bitrate_bps)
 }
 
 #[cfg(target_os = "macos")]
 fn start_avfoundation_capture_session(
-    session_id: &str,
+    session_dir: &Path,
     sources: &ScreenCaptureSources,
+    screen_resolution: &ScreenResolution,
+    _video_bitrate_bps: Option<u32>,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     use objc2_av_foundation::{
         AVCaptureInput, AVCaptureMovieFileOutput, AVCaptureOutput, AVCaptureScreenInput,
@@ -620,7 +724,19 @@ fn start_avfoundation_capture_session(
     };
     use objc2_foundation::{NSObject, NSURL};
 
-    let session_dir = create_session_dir(session_id)?;
+    create_session_dir(session_dir)?;
+
+    if sources.screen
+        && *screen_resolution
+            != (ScreenResolution::Preset {
+                preset: ScreenResolutionPreset::Original,
+            })
+    {
+        return Err(CaptureErrorResponse {
+            code: "screen_resolution_unsupported".to_string(),
+            message: "Selected screen resolution requires the ScreenCaptureKit backend (macOS 15+). On this backend, only the original display resolution is supported.".to_string(),
+        });
+    }
 
     let start_result = (|| {
         let output_file = session_dir.join("screen.mov");
@@ -672,7 +788,7 @@ fn start_avfoundation_capture_session(
             unsafe { objc2::msg_send![recording_delegate_class(), new] };
         let delegate_key = (&*delegate_object as *const NSObject) as usize;
         let (start_tx, start_rx) = mpsc::channel::<()>();
-        let (finish_tx, finish_rx) = mpsc::channel::<FinishResult>();
+        let (finish_tx, finish_rx) = mpsc::channel::<Result<(), CaptureErrorResponse>>();
         delegate_start_callbacks()
             .lock()
             .expect("delegate callback map poisoned")
@@ -730,8 +846,11 @@ fn start_avfoundation_capture_session(
 
 #[cfg(target_os = "macos")]
 fn start_screen_capture_kit_session(
-    session_id: &str,
+    session_dir: &Path,
     sources: &ScreenCaptureSources,
+    screen_frame_rate: u32,
+    screen_resolution: &ScreenResolution,
+    video_bitrate_bps: Option<u32>,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     use cidre::{api, cm, ns, sc};
 
@@ -742,16 +861,13 @@ fn start_screen_capture_kit_session(
         });
     }
 
-    let session_dir = create_session_dir(session_id)?;
+    create_session_dir(session_dir)?;
 
     let start_result = (|| {
         let output_file = session_dir.join("screen.mov");
         let output_file_str = output_file.to_string_lossy().to_string();
-        let output_url = ns::Url::with_fs_path_str(&output_file_str, false);
         let system_audio_output_file = session_dir.join("system-audio.m4a");
         let system_audio_output_file_str = system_audio_output_file.to_string_lossy().to_string();
-        let system_audio_output_url =
-            ns::Url::with_fs_path_str(&system_audio_output_file_str, false);
 
         let output_files = output_files_for_session(&session_dir, sources);
 
@@ -795,10 +911,16 @@ fn start_screen_capture_kit_session(
         let excluded_windows = ns::Array::<sc::Window>::new();
         let filter = sc::ContentFilter::with_display_excluding_windows(display, &excluded_windows);
 
+        let stream_resolution = resolve_stream_resolution(
+            screen_resolution,
+            display.width().max(1) as u32,
+            display.height().max(1) as u32,
+        );
+
         let mut screen_stream_cfg = sc::StreamCfg::new();
-        screen_stream_cfg.set_width(display.width().max(1) as usize);
-        screen_stream_cfg.set_height(display.height().max(1) as usize);
-        screen_stream_cfg.set_minimum_frame_interval(cm::Time::new(1, 60));
+        screen_stream_cfg.set_width(stream_resolution.width as usize);
+        screen_stream_cfg.set_height(stream_resolution.height as usize);
+        screen_stream_cfg.set_minimum_frame_interval(cm::Time::new(1, screen_frame_rate as i32));
         screen_stream_cfg.set_shows_cursor(sources.screen);
         screen_stream_cfg.set_captures_audio(sources.system_audio);
         screen_stream_cfg.set_capture_mic(false);
@@ -807,64 +929,60 @@ fn start_screen_capture_kit_session(
             screen_stream_cfg.set_channel_count(2);
         }
 
-        let (stream, recording_output, recording_delegate, recording_start_rx, recording_finish_rx) =
-            start_screen_capture_kit_recording_stream(&filter, &screen_stream_cfg, &output_url)?;
+        let stream = cidre::sc::Stream::new(&filter, &screen_stream_cfg);
+        let stream_output_queue = dispatch::Queue::serial_with_ar_pool();
+        let stream_output_delegate =
+            ScStreamOutputDelegate::with(stream_output_context_for_segment(
+                &output_file_str,
+                sources
+                    .system_audio
+                    .then_some(system_audio_output_file_str.as_str()),
+                sources,
+                video_bitrate_bps,
+            )?);
 
-        let (stream_output_delegate, stream_output_queue) = if sources.system_audio {
-            let system_audio_writer = if sources.system_audio {
-                Some(create_audio_asset_writer(
-                    &system_audio_output_url,
-                    "system audio",
-                )?)
-            } else {
-                None
-            };
+        if sources.screen {
+            stream
+                .add_stream_output(
+                    stream_output_delegate.as_ref(),
+                    sc::OutputType::Screen,
+                    Some(&stream_output_queue),
+                )
+                .map_err(|error| {
+                    error_with_ns_error(
+                        "capture_stream_output_attach_failed",
+                        "Failed to attach ScreenCaptureKit screen output",
+                        error,
+                    )
+                })?;
+        }
 
-            let delegate = ScStreamOutputDelegate::with(StreamOutputContext {
-                system_audio_writer,
-                first_error: None,
-            });
-            let queue = dispatch::Queue::serial_with_ar_pool();
-
-            if sources.system_audio {
-                stream
-                    .add_stream_output(delegate.as_ref(), sc::OutputType::Audio, Some(&queue))
-                    .map_err(|error| {
-                        error_with_ns_error(
-                            "capture_stream_output_attach_failed",
-                            "Failed to attach ScreenCaptureKit system audio output",
-                            error,
-                        )
-                    })?;
-            }
-
-            (Some(delegate), Some(queue))
-        } else {
-            (None, None)
-        };
+        if sources.system_audio {
+            stream
+                .add_stream_output(
+                    stream_output_delegate.as_ref(),
+                    sc::OutputType::Audio,
+                    Some(&stream_output_queue),
+                )
+                .map_err(|error| {
+                    error_with_ns_error(
+                        "capture_stream_output_attach_failed",
+                        "Failed to attach ScreenCaptureKit system audio output",
+                        error,
+                    )
+                })?;
+        }
 
         start_screen_capture_kit_stream(&stream)?;
-
-        if recording_start_rx
-            .recv_timeout(Duration::from_secs(5))
-            .is_err()
-        {
-            return Err(CaptureErrorResponse {
-                code: "capture_stream_start_timeout".to_string(),
-                message: "Timed out while waiting for ScreenCaptureKit recording to start"
-                    .to_string(),
-            });
-        }
 
         Ok(StartedCaptureSession {
             session: ActiveCaptureSession {
                 backend: CaptureBackendSession::ScreenCaptureKit(ScreenCaptureKitCaptureSession {
                     stream,
-                    _screen_recording_output: recording_output,
-                    _screen_delegate: recording_delegate,
-                    recording_finish_rx,
-                    _stream_output_delegate: stream_output_delegate,
-                    _stream_output_queue: stream_output_queue,
+                    stream_output_delegate,
+                    stream_output_queue,
+                    sources: *sources,
+                    video_bitrate_bps,
                 }),
             },
             recording_file: output_file_str,
@@ -879,40 +997,39 @@ fn start_screen_capture_kit_session(
 }
 
 #[cfg(target_os = "macos")]
-fn start_screen_capture_kit_recording_stream(
-    filter: &cidre::sc::ContentFilter,
-    stream_cfg: &cidre::sc::StreamCfg,
-    output_url: &cidre::ns::Url,
-) -> Result<ScreenCaptureKitRecordingStreamStart, CaptureErrorResponse> {
-    let mut stream = cidre::sc::Stream::new(filter, stream_cfg);
-    let mut recording_cfg = cidre::sc::RecordingOutputCfg::new();
-    recording_cfg.set_output_url(output_url);
+fn stream_output_context_for_segment(
+    recording_file: &str,
+    system_audio_recording_file: Option<&str>,
+    sources: &ScreenCaptureSources,
+    video_bitrate_bps: Option<u32>,
+) -> Result<StreamOutputContext, CaptureErrorResponse> {
+    use cidre::ns;
 
-    let (recording_start_tx, recording_start_rx) = mpsc::channel::<()>();
-    let (recording_finish_tx, recording_finish_rx) = mpsc::channel::<FinishResult>();
-    let recording_delegate = ScRecordingOutputDelegate::with(RecordingOutputContext {
-        started_tx: Some(recording_start_tx),
-        finish_tx: Some(recording_finish_tx),
-    });
-    let recording_output =
-        cidre::sc::RecordingOutput::with_cfg(&recording_cfg, recording_delegate.as_ref());
-    stream
-        .add_recording_output(&recording_output)
-        .map_err(|error| {
-            error_with_ns_error(
-                "capture_recording_output_attach_failed",
-                "Failed to attach ScreenCaptureKit recording output",
-                error,
-            )
+    let screen_video_output_file = if sources.screen {
+        Some(recording_file.to_string())
+    } else {
+        None
+    };
+    let screen_video_writer = None;
+
+    let system_audio_writer = if sources.system_audio {
+        let output_file = system_audio_recording_file.ok_or_else(|| CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Missing system audio output file while creating segment writer".to_string(),
         })?;
+        let output_url = ns::Url::with_fs_path_str(output_file, false);
+        Some(create_audio_asset_writer(&output_url, "system audio")?)
+    } else {
+        None
+    };
 
-    Ok((
-        stream,
-        recording_output,
-        recording_delegate,
-        recording_start_rx,
-        recording_finish_rx,
-    ))
+    Ok(StreamOutputContext {
+        screen_video_output_file,
+        screen_video_writer,
+        video_bitrate_bps,
+        system_audio_writer,
+        first_error: None,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -951,11 +1068,66 @@ fn synchronize_stream_output_queue(queue: Option<&dispatch::Queue>) {
 fn finalize_stream_output_context(
     context: &mut StreamOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
-    writers_finalize_stream_output_context(
-        None,
+    let screen_video_output_file = context.screen_video_output_file.as_deref();
+
+    if context.screen_video_output_file.is_some() && context.screen_video_writer.is_none() {
+        if let Some(path) = screen_video_output_file {
+            maybe_remove_screen_video_file(path);
+        }
+
+        if let Some(error) = context.first_error.take() {
+            return Err(error);
+        }
+        return Err(capture_writers::no_video_samples_error("screen"));
+    }
+
+    if let Err(error) = writers_finalize_stream_output_context(
+        context.screen_video_writer.as_mut(),
         context.system_audio_writer.as_mut(),
         context.first_error.take(),
-    )
+    ) {
+        if let Some(path) = screen_video_output_file {
+            maybe_remove_screen_video_file(path);
+        }
+        return Err(error);
+    }
+
+    if let Some(path) = screen_video_output_file {
+        if let Err(error) = validate_screen_video_file(path) {
+            maybe_remove_screen_video_file(path);
+            return Err(error);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub struct RotateScreenCaptureSessionArgs<'a> {
+    pub active_session: &'a mut Option<ActiveCaptureSession>,
+    pub segment_dir: &'a Path,
+}
+
+#[cfg(target_os = "macos")]
+pub fn rotate_screen_capture_session(
+    args: RotateScreenCaptureSessionArgs<'_>,
+) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
+    let Some(session) = args.active_session.as_mut() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Missing active screen capture session for segment rotation".to_string(),
+        });
+    };
+
+    match &mut session.backend {
+        CaptureBackendSession::ScreenCaptureKit(session) => {
+            session.rotate_output_files(args.segment_dir)
+        }
+        CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
+            code: "capture_rotation_requires_restart".to_string(),
+            message: "This capture backend requires full restart for segment rotation".to_string(),
+        }),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1053,8 +1225,21 @@ pub struct StartedCaptureSession {
 }
 
 #[cfg(not(target_os = "macos"))]
+pub struct RotatedCaptureOutputs {
+    pub recording_file: String,
+    pub system_audio_recording_file: Option<String>,
+    pub output_files: CaptureOutputFiles,
+}
+
+#[cfg(not(target_os = "macos"))]
 pub struct StopScreenCaptureSessionArgs<'a> {
     pub active_session: &'a mut Option<ActiveCaptureSession>,
+}
+
+#[cfg(not(target_os = "macos"))]
+pub struct RotateScreenCaptureSessionArgs<'a> {
+    pub active_session: &'a mut Option<ActiveCaptureSession>,
+    pub segment_dir: &'a Path,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1067,8 +1252,11 @@ pub fn new_session_id() -> Result<String, CaptureErrorResponse> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn start_capture_session(
-    _session_id: &str,
+    _session_dir: &Path,
     _sources: &ScreenCaptureSources,
+    _screen_frame_rate: u32,
+    _screen_resolution: &ScreenResolution,
+    _video_bitrate_bps: Option<u32>,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
@@ -1081,6 +1269,16 @@ pub fn stop_screen_capture_session(
     _args: StopScreenCaptureSessionArgs<'_>,
 ) -> Result<(), CaptureErrorResponse> {
     Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn rotate_screen_capture_session(
+    _args: RotateScreenCaptureSessionArgs<'_>,
+) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "Native capture is currently supported only on macOS".to_string(),
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1127,6 +1325,57 @@ pub fn support_for_current_platform() -> ScreenCaptureSupport {
             screen: false,
             system_audio: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resolve_stream_resolution_scales_preset_with_display_aspect_ratio() {
+        let resolved = resolve_stream_resolution(
+            &ScreenResolution::Preset {
+                preset: ScreenResolutionPreset::P720,
+            },
+            2560,
+            1440,
+        );
+
+        assert_eq!(resolved.width, 1280);
+        assert_eq!(resolved.height, 720);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resolve_stream_resolution_clamps_preset_to_display_size() {
+        let resolved = resolve_stream_resolution(
+            &ScreenResolution::Preset {
+                preset: ScreenResolutionPreset::P1080,
+            },
+            1366,
+            768,
+        );
+
+        assert_eq!(resolved.width, 1366);
+        assert_eq!(resolved.height, 768);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resolve_stream_resolution_keeps_custom_dimensions() {
+        let resolved = resolve_stream_resolution(
+            &ScreenResolution::Custom {
+                width: 1001,
+                height: 777,
+            },
+            1920,
+            1080,
+        );
+
+        assert_eq!(resolved.width, 1002);
+        assert_eq!(resolved.height, 778);
     }
 }
 

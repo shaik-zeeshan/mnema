@@ -1,6 +1,12 @@
 use capture_types::CaptureErrorResponse;
 
 #[cfg(target_os = "macos")]
+#[link(name = "AVFoundation", kind = "framework")]
+unsafe extern "C" {
+    static AVVideoAverageBitRateKey: &'static cidre::ns::String;
+}
+
+#[cfg(target_os = "macos")]
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
@@ -13,6 +19,16 @@ pub struct AudioAssetWriterState {
     started: bool,
     appended_samples: u64,
     expected_sample_format: Option<AudioSampleFormat>,
+    label: &'static str,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct VideoAssetWriterState {
+    writer: cidre::arc::R<cidre::av::AssetWriter>,
+    input: cidre::arc::R<cidre::av::AssetWriterInput>,
+    started: bool,
+    appended_samples: u64,
     label: &'static str,
 }
 
@@ -270,10 +286,220 @@ pub fn append_audio_sample_to_writer(
 }
 
 #[cfg(target_os = "macos")]
+pub fn create_video_asset_writer(
+    output_url: &cidre::ns::Url,
+    label: &'static str,
+) -> Result<VideoAssetWriterState, CaptureErrorResponse> {
+    create_video_asset_writer_with_source_hint(output_url, label, None, None)
+}
+
+#[cfg(target_os = "macos")]
+pub fn create_video_asset_writer_for_sample_buf(
+    output_url: &cidre::ns::Url,
+    label: &'static str,
+    sample_buf: &cidre::cm::SampleBuf,
+    target_bitrate_bps: Option<u32>,
+) -> Result<VideoAssetWriterState, CaptureErrorResponse> {
+    create_video_asset_writer_with_source_hint(
+        output_url,
+        label,
+        sample_buf.format_desc(),
+        target_bitrate_bps,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn create_video_asset_writer_with_source_hint(
+    output_url: &cidre::ns::Url,
+    label: &'static str,
+    source_format_hint: Option<&cidre::cm::FormatDesc>,
+    target_bitrate_bps: Option<u32>,
+) -> Result<VideoAssetWriterState, CaptureErrorResponse> {
+    use cidre::{av, ns};
+
+    let build_output_settings = |include_bitrate: bool| {
+        source_format_hint.and_then(|format_desc| {
+            if format_desc.media_type() != cidre::cm::MediaType::VIDEO {
+                return None;
+            }
+
+            let video_format_desc: &cidre::cm::VideoFormatDesc =
+                unsafe { &*(format_desc as *const _ as *const cidre::cm::VideoFormatDesc) };
+            let dims = video_format_desc.dims();
+            if dims.width <= 0 || dims.height <= 0 {
+                return None;
+            }
+
+            let width = ns::Number::with_i32(dims.width);
+            let height = ns::Number::with_i32(dims.height);
+
+            let compression_properties = if include_bitrate {
+                target_bitrate_bps.map(|bitrate_bps| {
+                    let average_bitrate = ns::Number::with_u32(bitrate_bps);
+                    ns::Dictionary::with_keys_values(
+                        &[unsafe { AVVideoAverageBitRateKey }],
+                        &[average_bitrate.as_id_ref()],
+                    )
+                })
+            } else {
+                None
+            };
+
+            if let Some(compression_properties) = compression_properties {
+                Some(ns::Dictionary::with_keys_values(
+                    &[
+                        av::video_settings_keys::codec(),
+                        av::video_settings_keys::width(),
+                        av::video_settings_keys::height(),
+                        av::video_settings_keys::compression_props(),
+                    ],
+                    &[
+                        av::VideoCodec::h264().as_id_ref(),
+                        width.as_id_ref(),
+                        height.as_id_ref(),
+                        compression_properties.as_id_ref(),
+                    ],
+                ))
+            } else {
+                Some(ns::Dictionary::with_keys_values(
+                    &[
+                        av::video_settings_keys::codec(),
+                        av::video_settings_keys::width(),
+                        av::video_settings_keys::height(),
+                    ],
+                    &[
+                        av::VideoCodec::h264().as_id_ref(),
+                        width.as_id_ref(),
+                        height.as_id_ref(),
+                    ],
+                ))
+            }
+        })
+    };
+
+    let create_writer_state = |output_settings: Option<
+        cidre::arc::R<ns::Dictionary<ns::String, ns::Id>>,
+    >| {
+        let mut writer = av::AssetWriter::with_url_and_file_type(output_url, av::FileType::qt())
+            .map_err(|error| {
+                error_with_ns_error(
+                    "capture_output_unavailable",
+                    "Failed to create video asset writer",
+                    error,
+                )
+            })?;
+
+        let mut input = av::AssetWriterInput::with_media_type_output_settings_source_format_hint(
+            av::MediaType::video(),
+            output_settings.as_deref(),
+            source_format_hint,
+        )
+        .map_err(|_| CaptureErrorResponse {
+            code: "capture_output_unavailable".to_string(),
+            message: format!("Failed to create {label} video asset writer input"),
+        })?;
+        input.set_expects_media_data_in_real_time(true);
+
+        if !writer.can_add_input(&input) {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_unavailable".to_string(),
+                message: format!("Failed to add {label} video asset writer input"),
+            });
+        }
+
+        writer.add_input(&input).map_err(|_| CaptureErrorResponse {
+            code: "capture_output_unavailable".to_string(),
+            message: format!("Failed to attach {label} video asset writer input"),
+        })?;
+
+        Ok(VideoAssetWriterState {
+            writer,
+            input,
+            started: false,
+            appended_samples: 0,
+            label,
+        })
+    };
+
+    let primary_output_settings = build_output_settings(true);
+    match create_writer_state(primary_output_settings) {
+        Ok(writer_state) => Ok(writer_state),
+        Err(primary_error) if target_bitrate_bps.is_some() => {
+            let fallback_output_settings = build_output_settings(false);
+            create_writer_state(fallback_output_settings).or(Err(primary_error))
+        }
+        Err(primary_error) => Err(primary_error),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn append_video_sample_to_writer(
+    writer_state: &mut VideoAssetWriterState,
+    sample_buf: &cidre::cm::SampleBuf,
+) -> Result<(), CaptureErrorResponse> {
+    if !sample_buf.data_is_ready() {
+        return Ok(());
+    }
+
+    if !writer_state.started {
+        if !writer_state.writer.start_writing() {
+            return Err(writer_error_response(
+                &writer_state.writer,
+                "capture_output_processing_failed",
+                &format!("Failed to start {} video asset writer", writer_state.label),
+            ));
+        }
+
+        writer_state
+            .writer
+            .start_session_at_src_time(sample_buf.pts());
+        writer_state.started = true;
+    }
+
+    if !writer_state.input.is_ready_for_more_media_data() {
+        return Ok(());
+    }
+
+    let appended = writer_state
+        .input
+        .append_sample_buf(sample_buf)
+        .map_err(|_| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to append {} video sample to asset writer",
+                writer_state.label
+            ),
+        })?;
+
+    if !appended {
+        return Err(writer_error_response(
+            &writer_state.writer,
+            "capture_output_processing_failed",
+            &format!(
+                "Failed to append {} video sample to asset writer",
+                writer_state.label
+            ),
+        ));
+    }
+
+    writer_state.appended_samples += 1;
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 pub fn no_audio_samples_error(label: &str) -> CaptureErrorResponse {
     CaptureErrorResponse {
         code: "capture_output_processing_failed".to_string(),
         message: format!("No {label} audio samples were received; no output file was produced"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn no_video_samples_error(label: &str) -> CaptureErrorResponse {
+    CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message: format!("No {label} video samples were received; no output file was produced"),
     }
 }
 
@@ -333,6 +559,45 @@ pub fn finish_audio_asset_writer(
 }
 
 #[cfg(target_os = "macos")]
+pub fn finish_video_asset_writer(
+    writer_state: &mut VideoAssetWriterState,
+) -> Result<(), CaptureErrorResponse> {
+    if !writer_state.started || writer_state.appended_samples == 0 {
+        return Err(no_video_samples_error(writer_state.label));
+    }
+
+    writer_state.input.mark_as_finished();
+    writer_state.writer.finish_writing();
+
+    let wait_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        match writer_state.writer.status() {
+            cidre::av::asset::WriterStatus::Completed => return Ok(()),
+            cidre::av::asset::WriterStatus::Failed => {
+                return Err(writer_error_response(
+                    &writer_state.writer,
+                    "capture_output_processing_failed",
+                    &format!(
+                        "Failed to finalize {} video asset writer",
+                        writer_state.label
+                    ),
+                ));
+            }
+            status if Instant::now() >= wait_deadline => {
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Timed out while finalizing {} video asset writer (status: {:?})",
+                        writer_state.label, status
+                    ),
+                });
+            }
+            _ => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub fn aggregate_output_processing_failures(
     failures: Vec<String>,
 ) -> Result<(), CaptureErrorResponse> {
@@ -351,7 +616,7 @@ pub fn aggregate_output_processing_failures(
 
 #[cfg(target_os = "macos")]
 pub fn finalize_stream_output_context(
-    microphone_writer: Option<&mut AudioAssetWriterState>,
+    screen_video_writer: Option<&mut VideoAssetWriterState>,
     system_audio_writer: Option<&mut AudioAssetWriterState>,
     first_error: Option<CaptureErrorResponse>,
 ) -> Result<(), CaptureErrorResponse> {
@@ -364,9 +629,9 @@ pub fn finalize_stream_output_context(
         ));
     }
 
-    if let Some(writer) = microphone_writer {
-        if let Err(error) = finish_audio_asset_writer(writer) {
-            failures.push(format!("microphone writer failed: {}", error.message));
+    if let Some(writer) = screen_video_writer {
+        if let Err(error) = finish_video_asset_writer(writer) {
+            failures.push(format!("screen video writer failed: {}", error.message));
         }
     }
 

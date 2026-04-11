@@ -378,6 +378,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "capture-runtime"
+version = "0.1.0"
+
+[[package]]
 name = "capture-screen"
 version = "0.1.0"
 dependencies = [
@@ -5339,6 +5343,7 @@ name = "z"
 version = "0.1.0"
 dependencies = [
  "capture-microphone",
+ "capture-runtime",
  "capture-screen",
  "capture-types",
  "capture-writers",

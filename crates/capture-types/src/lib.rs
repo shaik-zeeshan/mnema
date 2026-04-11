@@ -38,9 +38,11 @@ pub struct CapturePermissions {
 #[serde(rename_all = "camelCase")]
 pub struct CaptureOutputFiles {
     pub screen_file: Option<String>,
+    pub screen_files: Vec<String>,
     pub microphone_file: Option<String>,
     pub microphone_files: Vec<String>,
     pub system_audio_file: Option<String>,
+    pub system_audio_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,6 +68,117 @@ pub struct StartNativeCaptureRequest {
     pub capture_screen: bool,
     pub capture_microphone: bool,
     pub capture_system_audio: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenResolutionPreset {
+    Original,
+    #[serde(rename = "1080p")]
+    P1080,
+    #[serde(rename = "720p")]
+    P720,
+    #[serde(rename = "540p")]
+    P540,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ScreenResolution {
+    Preset { preset: ScreenResolutionPreset },
+    Custom { width: u32, height: u32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoBitratePreset {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoBitrateMode {
+    Preset,
+    Custom,
+}
+
+pub fn default_video_bitrate_mode() -> VideoBitrateMode {
+    VideoBitrateMode::Preset
+}
+
+pub fn default_video_bitrate_preset() -> Option<VideoBitratePreset> {
+    Some(VideoBitratePreset::Medium)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoBitrateSettings {
+    #[serde(default = "default_video_bitrate_mode")]
+    pub mode: VideoBitrateMode,
+    #[serde(default = "default_video_bitrate_preset")]
+    pub preset: Option<VideoBitratePreset>,
+    #[serde(default)]
+    pub custom_mbps: Option<u32>,
+}
+
+pub fn default_screen_resolution() -> ScreenResolution {
+    ScreenResolution::Preset {
+        preset: ScreenResolutionPreset::Original,
+    }
+}
+
+pub fn default_video_bitrate() -> VideoBitrateSettings {
+    VideoBitrateSettings {
+        mode: VideoBitrateMode::Preset,
+        preset: Some(VideoBitratePreset::Medium),
+        custom_mbps: None,
+    }
+}
+
+impl Default for VideoBitrateSettings {
+    fn default() -> Self {
+        default_video_bitrate()
+    }
+}
+
+impl Default for ScreenResolution {
+    fn default() -> Self {
+        default_screen_resolution()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSettings {
+    pub capture_screen: bool,
+    pub capture_microphone: bool,
+    pub capture_system_audio: bool,
+    pub segment_duration_seconds: u64,
+    pub screen_frame_rate: u32,
+    #[serde(default = "default_screen_resolution")]
+    pub screen_resolution: ScreenResolution,
+    #[serde(default = "default_video_bitrate")]
+    pub video_bitrate: VideoBitrateSettings,
+    pub save_directory: String,
+    pub auto_start: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRecordingSettingsRequest {
+    pub capture_screen: bool,
+    pub capture_microphone: bool,
+    pub capture_system_audio: bool,
+    pub segment_duration_seconds: u64,
+    pub screen_frame_rate: u32,
+    #[serde(default = "default_screen_resolution")]
+    pub screen_resolution: ScreenResolution,
+    #[serde(default = "default_video_bitrate")]
+    pub video_bitrate: VideoBitrateSettings,
+    pub save_directory: String,
+    pub auto_start: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

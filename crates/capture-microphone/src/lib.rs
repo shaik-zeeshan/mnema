@@ -325,6 +325,18 @@ impl AvFoundationMicrophoneCaptureSession {
         synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
         finalize_microphone_output_context(self.output_delegate.inner_mut())
     }
+
+    pub fn rotate_output_file(&mut self, output_file: &str) -> Result<(), CaptureErrorResponse> {
+        let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
+        let next_context = microphone_output_context_for_output_url(&output_url);
+
+        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
+        let mut previous_context =
+            std::mem::replace(self.output_delegate.inner_mut(), next_context);
+        finalize_microphone_output_context(&mut previous_context)?;
+
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -357,6 +369,20 @@ fn finalize_microphone_output_context(
     }
 
     writers_finalize_microphone_output_context(context.writer.as_mut(), context.first_error.take())
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_output_context_for_output_url(
+    output_url: &cidre::ns::Url,
+) -> MicrophoneOutputContext {
+    MicrophoneOutputContext {
+        writer: None,
+        output_url: output_url.retained(),
+        first_error: None,
+        format_state: MicFormatStabilityState::default(),
+        logged_format_samples: 0,
+        pending_samples: VecDeque::new(),
+    }
 }
 
 pub fn resolve_effective_microphone_device(
@@ -611,14 +637,8 @@ pub fn start_avfoundation_microphone_capture_session_with_device_id(
     })?;
 
     let mut audio_output = av::capture::AudioDataOutput::new();
-    let output_delegate = MicAudioDataOutputDelegate::with(MicrophoneOutputContext {
-        writer: None,
-        output_url: output_url.retained(),
-        first_error: None,
-        format_state: MicFormatStabilityState::default(),
-        logged_format_samples: 0,
-        pending_samples: VecDeque::new(),
-    });
+    let output_delegate =
+        MicAudioDataOutputDelegate::with(microphone_output_context_for_output_url(output_url));
     let output_queue = dispatch::Queue::serial_with_ar_pool();
     audio_output.set_sample_buf_delegate(Some(output_delegate.as_ref()), Some(&output_queue));
 

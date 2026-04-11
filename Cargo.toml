@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/desktop/src-tauri",
+    "crates/capture-runtime",
     "crates/capture-microphone",
     "crates/capture-screen",
     "crates/capture-types",
