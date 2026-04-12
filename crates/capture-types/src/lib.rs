@@ -49,6 +49,7 @@ pub struct CaptureOutputFiles {
 #[serde(rename_all = "camelCase")]
 pub struct NativeCaptureSession {
     pub is_running: bool,
+    pub is_inactivity_paused: bool,
     pub session_id: Option<String>,
     pub started_at_unix_ms: Option<u64>,
     pub requested_sources: Option<CaptureSources>,
@@ -137,6 +138,30 @@ pub fn default_video_bitrate() -> VideoBitrateSettings {
     }
 }
 
+pub fn default_pause_capture_on_inactivity() -> bool {
+    true
+}
+
+pub fn default_idle_timeout_seconds() -> u64 {
+    10
+}
+
+pub fn default_audio_activity_sensitivity() -> u8 {
+    50
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InactivityActivityMode {
+    SystemInputOnly,
+    SystemInputOrScreen,
+    SystemInputOrScreenOrAudio,
+}
+
+pub fn default_inactivity_activity_mode() -> InactivityActivityMode {
+    InactivityActivityMode::SystemInputOrScreen
+}
+
 impl Default for VideoBitrateSettings {
     fn default() -> Self {
         default_video_bitrate()
@@ -163,6 +188,18 @@ pub struct RecordingSettings {
     pub video_bitrate: VideoBitrateSettings,
     pub save_directory: String,
     pub auto_start: bool,
+    #[serde(default = "default_pause_capture_on_inactivity")]
+    pub pause_capture_on_inactivity: bool,
+    #[serde(default = "default_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+    #[serde(default = "default_audio_activity_sensitivity")]
+    pub audio_activity_sensitivity: u8,
+    #[serde(
+        default = "default_inactivity_activity_mode",
+        rename = "activityMode",
+        alias = "inactivityActivityMode"
+    )]
+    pub inactivity_activity_mode: InactivityActivityMode,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -179,6 +216,18 @@ pub struct UpdateRecordingSettingsRequest {
     pub video_bitrate: VideoBitrateSettings,
     pub save_directory: String,
     pub auto_start: bool,
+    #[serde(default = "default_pause_capture_on_inactivity")]
+    pub pause_capture_on_inactivity: bool,
+    #[serde(default = "default_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+    #[serde(default = "default_audio_activity_sensitivity")]
+    pub audio_activity_sensitivity: u8,
+    #[serde(
+        default = "default_inactivity_activity_mode",
+        rename = "activityMode",
+        alias = "inactivityActivityMode"
+    )]
+    pub inactivity_activity_mode: InactivityActivityMode,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -237,4 +286,39 @@ pub struct MicrophoneControllerState {
 pub struct UpdateMicrophoneControllerRequest {
     pub preference: MicrophonePreference,
     pub disconnect_policy: MicrophoneDisconnectPolicy,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_settings_deserialize_defaults_audio_sensitivity_and_supports_alias_mode_field() {
+        let settings: RecordingSettings = serde_json::from_str(
+            r#"{
+                "captureScreen": true,
+                "captureMicrophone": true,
+                "captureSystemAudio": true,
+                "segmentDurationSeconds": 60,
+                "screenFrameRate": 30,
+                "screenResolution": { "mode": "preset", "preset": "original" },
+                "videoBitrate": { "mode": "preset", "preset": "medium" },
+                "saveDirectory": "/tmp",
+                "autoStart": false,
+                "pauseCaptureOnInactivity": true,
+                "idleTimeoutSeconds": 10,
+                "inactivityActivityMode": "system_input_or_screen_or_audio"
+            }"#,
+        )
+        .expect("settings should deserialize");
+
+        assert_eq!(
+            settings.audio_activity_sensitivity,
+            default_audio_activity_sensitivity()
+        );
+        assert_eq!(
+            settings.inactivity_activity_mode,
+            InactivityActivityMode::SystemInputOrScreenOrAudio
+        );
+    }
 }

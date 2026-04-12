@@ -27,3 +27,6 @@ capture-runtime = { path = "../../../crates/capture-runtime" }
 capture-screen = { path = "../../../crates/capture-screen" }
 capture-microphone = { path = "../../../crates/capture-microphone" }
 capture-writers = { path = "../../../crates/capture-writers" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.25"

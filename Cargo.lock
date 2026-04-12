@@ -398,6 +398,7 @@ name = "capture-types"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -5347,6 +5348,7 @@ dependencies = [
  "capture-screen",
  "capture-types",
  "capture-writers",
+ "core-graphics",
  "serde",
  "serde_json",
  "tauri",
