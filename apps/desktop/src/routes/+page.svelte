@@ -11,6 +11,9 @@
     PermissionsMap,
     PermissionStatus,
     RecordingSettings,
+    AppInfraStatus,
+    AppJobDto,
+    BackgroundJobStatus,
   } from "$lib/types";
   import { captureSession, setSession } from "$lib/session.svelte";
 
@@ -266,6 +269,179 @@
 
     return () => {
       clearInterval(idleDebugInterval);
+    };
+  });
+
+  // ─── App Infra ────────────────────────────────────────────────────────────
+
+  let infraStatus = $state<AppInfraStatus | null>(null);
+  let infraStatusError = $state<string | null>(null);
+  let loadingInfraStatus = $state(false);
+
+  let jobs = $state<AppJobDto[]>([]);
+  let jobsError = $state<string | null>(null);
+  let loadingJobs = $state(false);
+
+  let selectedJobId = $state<number | null>(null);
+  let selectedJob = $state<AppJobDto | null>(null);
+  let loadingSelectedJob = $state(false);
+  let selectedJobError = $state<string | null>(null);
+
+  let submitDocName = $state("");
+  let submitSourceText = $state("");
+  let submitting = $state(false);
+  let submitError = $state<string | null>(null);
+
+  // Tracks the active post-submit polling interval so it can be cancelled.
+  let postSubmitPollInterval = $state<ReturnType<typeof setInterval> | null>(null);
+  let postSubmitPollCount = $state(0);
+  const POST_SUBMIT_POLL_MAX = 8;  // poll up to ~8s after submit then stop
+  const POST_SUBMIT_POLL_MS = 1000;
+
+  async function fetchInfraStatus() {
+    loadingInfraStatus = true;
+    infraStatusError = null;
+    try {
+      infraStatus = await invoke<AppInfraStatus>("get_app_infra_status");
+    } catch (err) {
+      infraStatusError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      loadingInfraStatus = false;
+    }
+  }
+
+  async function fetchJobs() {
+    loadingJobs = true;
+    jobsError = null;
+    try {
+      jobs = await invoke<AppJobDto[]>("list_app_jobs");
+      // Keep selected job detail in sync with the refreshed list.
+      // If the selected job is now present in the list, update its detail
+      // snapshot so status/result are coherent without a separate round-trip.
+      if (selectedJobId != null) {
+        const match = jobs.find((j) => j.id === selectedJobId);
+        if (match) {
+          selectedJob = match;
+        } else {
+          // Job not found in list — clear stale detail explicitly.
+          selectedJob = null;
+          selectedJobId = null;
+        }
+      }
+    } catch (err) {
+      jobsError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      loadingJobs = false;
+    }
+  }
+
+  /** Refresh both infra counts and job list together so they stay in sync. */
+  async function refreshAll() {
+    await Promise.all([fetchInfraStatus(), fetchJobs()]);
+  }
+
+  function stopPostSubmitPolling() {
+    if (postSubmitPollInterval != null) {
+      clearInterval(postSubmitPollInterval);
+      postSubmitPollInterval = null;
+      postSubmitPollCount = 0;
+    }
+  }
+
+  async function selectJob(job: AppJobDto) {
+    selectedJobId = job.id;
+    selectedJobError = null;
+    loadingSelectedJob = true;
+    try {
+      const result = await invoke<AppJobDto | null>("get_app_job", { request: { jobId: job.id } });
+      if (result != null) {
+        selectedJob = result;
+      } else {
+        // Backend says the job no longer exists — clear selection explicitly.
+        selectedJob = null;
+        selectedJobId = null;
+      }
+    } catch (err) {
+      selectedJobError = typeof err === "string" ? err : JSON.stringify(err);
+      selectedJob = job;
+    } finally {
+      loadingSelectedJob = false;
+    }
+  }
+
+  async function refreshSelectedJob() {
+    if (selectedJobId == null) return;
+    selectedJobError = null;
+    loadingSelectedJob = true;
+    try {
+      const result = await invoke<AppJobDto | null>("get_app_job", { request: { jobId: selectedJobId } });
+      if (result != null) {
+        selectedJob = result;
+      } else {
+        // Job no longer found — clear stale detail explicitly.
+        selectedJob = null;
+        selectedJobId = null;
+      }
+    } catch (err) {
+      selectedJobError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      loadingSelectedJob = false;
+    }
+  }
+
+  async function submitDebugJob() {
+    submitting = true;
+    submitError = null;
+    // Cancel any existing post-submit poll before starting a new one.
+    stopPostSubmitPolling();
+    try {
+      const newJob = await invoke<AppJobDto>("submit_debug_cpu_job", {
+        request: {
+          documentName: submitDocName,
+          sourceText: submitSourceText,
+        },
+      });
+      jobs = [newJob, ...jobs];
+      submitDocName = "";
+      submitSourceText = "";
+      // Start a short-lived polling window to catch status updates quickly.
+      // The interval is tracked and cleaned up on component destroy or when
+      // a new submit replaces it.
+      postSubmitPollCount = 0;
+      postSubmitPollInterval = setInterval(async () => {
+        postSubmitPollCount += 1;
+        await refreshAll();
+        if (postSubmitPollCount >= POST_SUBMIT_POLL_MAX) {
+          stopPostSubmitPolling();
+        }
+      }, POST_SUBMIT_POLL_MS);
+    } catch (err) {
+      submitError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      submitting = false;
+    }
+  }
+
+  function jobStatusBadgeClass(status: BackgroundJobStatus): string {
+    if (status === "completed") return "badge badge--ok badge--sm";
+    if (status === "failed") return "badge badge--err badge--sm";
+    if (status === "running") return "badge badge--running badge--sm";
+    return "badge badge--neutral badge--sm";
+  }
+
+  function formatJobTs(ts: string | null | undefined): string {
+    if (!ts) return "—";
+    // Timestamps from SQLite are ISO-like strings; try to parse them
+    const d = new Date(ts.endsWith("Z") ? ts : ts + "Z");
+    return isNaN(d.getTime()) ? ts : d.toLocaleTimeString();
+  }
+
+  $effect(() => {
+    fetchInfraStatus();
+    fetchJobs();
+    // Clean up any in-flight post-submit poll when the component is destroyed.
+    return () => {
+      stopPostSubmitPolling();
     };
   });
 </script>
@@ -653,6 +829,179 @@
     </ul>
   {:else}
     <p class="empty">—</p>
+  {/if}
+</section>
+
+<!-- ── App Infra / Background Jobs ───────────────────────────────────────── -->
+<section class="card card--debug">
+  <h2 class="card__title">
+    <span class="debug-tag">dbg</span>
+    App Infra
+    <button class="btn btn--ghost btn--sm" onclick={refreshAll} disabled={loadingInfraStatus || loadingJobs}>
+      {loadingInfraStatus || loadingJobs ? "…" : "↻"}
+    </button>
+  </h2>
+
+  {#if infraStatusError}
+    <p class="debug-err">{infraStatusError}</p>
+  {:else if infraStatus}
+    <ul class="kv-list">
+      <li>
+        <span class="kv-key kv-key--wide">migrations</span>
+        <span class={infraStatus.migrationsRan ? "badge badge--ok badge--sm" : "badge badge--warn badge--sm"}>
+          {infraStatus.migrationsRan ? "ran" : "pending"}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">workers</span>
+        <span class="kv-val kv-val--mono">{infraStatus.workerThreadCount}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">jobs total</span>
+        <span class="kv-val kv-val--mono">{infraStatus.jobCounts.total}</span>
+      </li>
+    </ul>
+    <div class="job-count-row">
+      {#if infraStatus.jobCounts.queued > 0}
+        <span class="badge badge--neutral badge--sm">queued {infraStatus.jobCounts.queued}</span>
+      {/if}
+      {#if infraStatus.jobCounts.running > 0}
+        <span class="badge badge--running badge--sm">running {infraStatus.jobCounts.running}</span>
+      {/if}
+      {#if infraStatus.jobCounts.completed > 0}
+        <span class="badge badge--ok badge--sm">done {infraStatus.jobCounts.completed}</span>
+      {/if}
+      {#if infraStatus.jobCounts.failed > 0}
+        <span class="badge badge--err badge--sm">failed {infraStatus.jobCounts.failed}</span>
+      {/if}
+    </div>
+    <div class="idle-section-label">DB path</div>
+    <p class="infra-db-path">{infraStatus.databasePath}</p>
+  {:else}
+    <p class="empty">—</p>
+  {/if}
+</section>
+
+<!-- ── Background Jobs ───────────────────────────────────────────────────── -->
+<section class="card card--debug">
+  <h2 class="card__title">
+    <span class="debug-tag">dbg</span>
+    Background Jobs
+    <button class="btn btn--ghost btn--sm" onclick={refreshAll} disabled={loadingJobs || loadingInfraStatus}>
+      {loadingJobs ? "…" : "↻ list"}
+    </button>
+    {#if postSubmitPollInterval != null}
+      <span class="idle-note">polling ({POST_SUBMIT_POLL_MAX - postSubmitPollCount} left)</span>
+    {/if}
+  </h2>
+
+  <!-- Submit form -->
+  <div class="idle-section-label">Submit debug CPU job</div>
+  <form class="job-submit-form" onsubmit={(e) => { e.preventDefault(); submitDebugJob(); }}>
+    <input
+      class="job-input"
+      type="text"
+      placeholder="document name"
+      bind:value={submitDocName}
+      disabled={submitting}
+    />
+    <input
+      class="job-input"
+      type="text"
+      placeholder="source text"
+      bind:value={submitSourceText}
+      disabled={submitting}
+    />
+    <button class="btn btn--primary btn--sm" type="submit" disabled={submitting}>
+      {submitting ? "…" : "submit"}
+    </button>
+  </form>
+  {#if submitError}
+    <p class="debug-err">{submitError}</p>
+  {/if}
+
+  <!-- Job list -->
+  <div class="idle-section-label">
+    Recent jobs
+    {#if loadingJobs}<span class="idle-note">loading…</span>{/if}
+  </div>
+  {#if jobsError}
+    <p class="debug-err">{jobsError}</p>
+  {:else if jobs.length === 0}
+    <p class="empty">no jobs yet</p>
+  {:else}
+    <ul class="job-list">
+      {#each jobs as job (job.id)}
+        {@const isSelected = selectedJobId === job.id}
+        <li>
+          <button
+            class="job-row"
+            class:job-row--selected={isSelected}
+            type="button"
+            onclick={() => selectJob(job)}
+          >
+            <span class="job-row__id">#{job.id}</span>
+            <span class="job-row__kind">{job.kind}</span>
+            <span class={jobStatusBadgeClass(job.status)}>{job.status}</span>
+            <span class="job-row__ts">{formatJobTs(job.createdAt)}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
+  <!-- Selected job detail -->
+  {#if selectedJobId != null}
+    <div class="idle-section-label">
+      Job #{selectedJobId}
+      <button
+        class="btn btn--ghost btn--sm"
+        onclick={refreshSelectedJob}
+        disabled={loadingSelectedJob}
+        style="margin-left: 6px;"
+      >
+        {loadingSelectedJob ? "…" : "↻"}
+      </button>
+    </div>
+    {#if selectedJobError}
+      <p class="debug-err">{selectedJobError}</p>
+    {/if}
+    {#if selectedJob}
+      <ul class="kv-list">
+        <li>
+          <span class="kv-key kv-key--wide">status</span>
+          <span class={jobStatusBadgeClass(selectedJob.status)}>{selectedJob.status}</span>
+        </li>
+        <li>
+          <span class="kv-key kv-key--wide">attempts</span>
+          <span class="kv-val kv-val--mono">{selectedJob.attemptCount}</span>
+        </li>
+        {#if selectedJob.startedAt}
+          <li>
+            <span class="kv-key kv-key--wide">started</span>
+            <span class="kv-val kv-val--mono">{formatJobTs(selectedJob.startedAt)}</span>
+          </li>
+        {/if}
+        {#if selectedJob.finishedAt}
+          <li>
+            <span class="kv-key kv-key--wide">finished</span>
+            <span class="kv-val kv-val--mono">{formatJobTs(selectedJob.finishedAt)}</span>
+          </li>
+        {/if}
+        {#if selectedJob.resultText}
+          <li class="kv-list-block">
+            <span class="kv-key kv-key--wide">result</span>
+            <span class="job-detail-text">{selectedJob.resultText}</span>
+          </li>
+        {/if}
+        {#if selectedJob.lastError}
+          <li class="kv-list-block">
+            <span class="kv-key kv-key--wide">error</span>
+            <span class="job-detail-text job-detail-text--err">{selectedJob.lastError}</span>
+          </li>
+        {/if}
+      </ul>
+    {/if}
   {/if}
 </section>
 
@@ -1168,5 +1517,144 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: #8a6a18;
+  }
+
+  /* ── App Infra ──────────────────────────────────────────────── */
+  .job-count-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .infra-db-path {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 9px;
+    color: #44445a;
+    word-break: break-all;
+    line-height: 1.5;
+  }
+
+  /* ── Background Jobs ────────────────────────────────────────── */
+  .job-submit-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .job-input {
+    background: #0d0d14;
+    border: 1px solid #2a2a3e;
+    border-radius: 3px;
+    padding: 4px 8px;
+    font-family: inherit;
+    font-size: 11px;
+    color: #9090b0;
+    outline: none;
+    flex: 1;
+    min-width: 80px;
+    transition: border-color 0.12s;
+  }
+
+  .job-input:focus {
+    border-color: #4a4a7a;
+  }
+
+  .job-input::placeholder {
+    color: #33334a;
+  }
+
+  .job-input:disabled {
+    opacity: 0.4;
+  }
+
+  .job-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .job-list li {
+    display: contents;
+  }
+
+  .job-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 3px;
+    background: transparent;
+    border: 1px solid transparent;
+    cursor: pointer;
+    width: 100%;
+    text-align: left;
+    font-family: inherit;
+    transition: background 0.1s, border-color 0.1s;
+  }
+
+  .job-row:hover {
+    background: #0e0e18;
+    border-color: #2a2a40;
+  }
+
+  .job-row--selected {
+    background: #0e0e20;
+    border-color: #3a3a60;
+  }
+
+  .job-row__id {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 9px;
+    color: #44445a;
+    min-width: 28px;
+    flex-shrink: 0;
+  }
+
+  .job-row__kind {
+    font-size: 10px;
+    color: #6060a0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .job-row__ts {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 9px;
+    color: #33334a;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
+  .badge--running {
+    background: #0c1a2e;
+    color: #60b0ff;
+    border: 1px solid #1a3050;
+  }
+
+  .kv-list-block {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 4px !important;
+  }
+
+  .job-detail-text {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 10px;
+    color: #7070a0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.5;
+    max-height: 80px;
+    overflow-y: auto;
+    display: block;
+    padding: 4px 0;
+  }
+
+  .job-detail-text--err {
+    color: #a05050;
   }
 </style>

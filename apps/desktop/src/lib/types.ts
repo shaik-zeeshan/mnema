@@ -261,3 +261,40 @@ export interface IdleDebugActivitySource {
 	/** Activity threshold for this source (normalised 0–1); null for non-audio sources. */
 	activityThreshold: number | null;
 }
+
+// ─── App Infra ──────────────────────────────────────────────────────────────
+
+/** Mirrors the Rust `BackgroundJobStatus` enum (snake_case wire values). */
+export type BackgroundJobStatus = "queued" | "running" | "completed" | "failed";
+
+/** Mirrors the Rust `JobCounts` struct returned inside `AppInfraStatus`. */
+export interface JobCounts {
+	total: number;
+	queued: number;
+	running: number;
+	completed: number;
+	failed: number;
+}
+
+/** Mirrors the Rust `AppInfraStatus` struct returned by `get_app_infra_status`. */
+export interface AppInfraStatus {
+	databasePath: string;
+	migrationsRan: boolean;
+	workerThreadCount: number;
+	jobCounts: JobCounts;
+}
+
+/** Mirrors the Rust `AppJobDto` struct returned by job-related commands. */
+export interface AppJobDto {
+	id: number;
+	kind: string;
+	status: BackgroundJobStatus;
+	payloadJson: string | null;
+	resultText: string | null;
+	attemptCount: number;
+	lastError: string | null;
+	createdAt: string;
+	updatedAt: string;
+	startedAt: string | null;
+	finishedAt: string | null;
+}
