@@ -20,6 +20,8 @@ use cidre::objc;
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
+use std::ffi::c_void;
+#[cfg(target_os = "macos")]
 use std::ffi::CString;
 #[cfg(target_os = "macos")]
 use std::fmt::Display;
@@ -159,6 +161,41 @@ const SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT: usize = 8;
 const SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE: usize = 4;
 #[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+#[cfg(target_os = "macos")]
+const MAX_ACTIVE_DISPLAY_COUNT: u32 = 16;
+
+#[cfg(target_os = "macos")]
+type CGDirectDisplayID = u32;
+#[cfg(target_os = "macos")]
+type CGImageRef = *const c_void;
+#[cfg(target_os = "macos")]
+type CGDataProviderRef = *const c_void;
+#[cfg(target_os = "macos")]
+type CFDataRef = *const c_void;
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGGetActiveDisplayList(
+        max_displays: u32,
+        active_displays: *mut CGDirectDisplayID,
+        display_count: *mut u32,
+    ) -> i32;
+    fn CGDisplayCreateImage(display: CGDirectDisplayID) -> CGImageRef;
+    fn CGImageGetWidth(image: CGImageRef) -> usize;
+    fn CGImageGetHeight(image: CGImageRef) -> usize;
+    fn CGImageGetBytesPerRow(image: CGImageRef) -> usize;
+    fn CGImageGetDataProvider(image: CGImageRef) -> CGDataProviderRef;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRelease(cf: *const c_void);
+    fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
+    fn CFDataGetLength(data: CFDataRef) -> isize;
+    fn CGDataProviderCopyData(provider: CGDataProviderRef) -> CFDataRef;
+}
 
 #[cfg(target_os = "macos")]
 fn now_unix_ms() -> u64 {
@@ -437,18 +474,7 @@ fn should_mark_screen_activity_for_fingerprint(
 
 #[cfg(target_os = "macos")]
 fn maybe_mark_screen_activity_for_sample(sample_buf: &mut cidre::cm::SampleBuf) {
-    let fingerprint = screen_activity_sample_fingerprint(sample_buf);
-    let last_activity_fingerprint = LAST_SCREEN_ACTIVITY_FINGERPRINT.load(Ordering::Relaxed);
-
-    if !should_mark_screen_activity_for_fingerprint(last_activity_fingerprint, fingerprint) {
-        return;
-    }
-
-    if mark_screen_activity(now_monotonic_marker_ms(), now_unix_ms()) {
-        if let Some(fingerprint) = fingerprint {
-            LAST_SCREEN_ACTIVITY_FINGERPRINT.store(fingerprint, Ordering::Relaxed);
-        }
-    }
+    maybe_mark_screen_activity_for_fingerprint(screen_activity_sample_fingerprint(sample_buf));
 }
 
 #[cfg(target_os = "macos")]
@@ -473,6 +499,145 @@ fn mark_screen_activity(now_monotonic_ms: u64, now_unix_ms: u64) -> bool {
             Err(current) => last_activity_monotonic_ms = current,
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_mark_screen_activity_for_fingerprint(fingerprint: Option<u64>) -> bool {
+    let last_activity_fingerprint = LAST_SCREEN_ACTIVITY_FINGERPRINT.load(Ordering::Relaxed);
+
+    if !should_mark_screen_activity_for_fingerprint(last_activity_fingerprint, fingerprint) {
+        return false;
+    }
+
+    if mark_screen_activity(now_monotonic_marker_ms(), now_unix_ms()) {
+        if let Some(fingerprint) = fingerprint {
+            LAST_SCREEN_ACTIVITY_FINGERPRINT.store(fingerprint, Ordering::Relaxed);
+        }
+
+        return true;
+    }
+
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn screen_activity_bitmap_fingerprint(
+    bytes: &[u8],
+    bytes_per_row: usize,
+    width: usize,
+    height: usize,
+) -> Option<u64> {
+    if bytes.is_empty() || bytes_per_row == 0 || width == 0 || height == 0 {
+        return None;
+    }
+
+    let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
+    let row_stride = (height / SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT).max(1);
+    let column_stride =
+        ((width.saturating_mul(4)) / SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT).max(1);
+    let max_column_offset =
+        bytes_per_row.saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
+    let mut has_content_signal = false;
+
+    for probe_index in 0..SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT {
+        let row = (probe_index.saturating_mul(row_stride)).min(height.saturating_sub(1));
+        let row_offset = row.saturating_mul(bytes_per_row);
+        let column_offset = (probe_index.saturating_mul(column_stride)).min(max_column_offset);
+        let probe_offset = row_offset.saturating_add(column_offset);
+        let Some(sample) = bytes.get(
+            probe_offset..probe_offset.saturating_add(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE),
+        ) else {
+            continue;
+        };
+
+        let mut probe_bytes = [0u8; SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE];
+        probe_bytes.copy_from_slice(sample);
+        let value = u32::from_le_bytes(probe_bytes) as u64;
+        has_content_signal |= value != 0;
+        mix_screen_activity_fingerprint(&mut hash, value);
+    }
+
+    has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
+}
+
+#[cfg(target_os = "macos")]
+fn screen_activity_display_fingerprint(display_id: CGDirectDisplayID) -> Option<u64> {
+    let image = unsafe { CGDisplayCreateImage(display_id) };
+    if image.is_null() {
+        return None;
+    }
+
+    let fingerprint = (|| {
+        let width = unsafe { CGImageGetWidth(image) };
+        let height = unsafe { CGImageGetHeight(image) };
+        let bytes_per_row = unsafe { CGImageGetBytesPerRow(image) };
+        let provider = unsafe { CGImageGetDataProvider(image) };
+        if provider.is_null() {
+            return None;
+        }
+
+        let data = unsafe { CGDataProviderCopyData(provider) };
+        if data.is_null() {
+            return None;
+        }
+
+        let fingerprint = unsafe {
+            let length = CFDataGetLength(data);
+            let bytes = CFDataGetBytePtr(data);
+            if bytes.is_null() || length <= 0 {
+                None
+            } else {
+                let slice = std::slice::from_raw_parts(bytes, length as usize);
+                screen_activity_bitmap_fingerprint(slice, bytes_per_row, width, height)
+            }
+        };
+
+        unsafe { CFRelease(data) };
+        fingerprint
+    })();
+
+    unsafe { CFRelease(image) };
+    fingerprint
+}
+
+#[cfg(target_os = "macos")]
+fn polled_screen_activity_fingerprint() -> Option<u64> {
+    let mut display_ids = [0; MAX_ACTIVE_DISPLAY_COUNT as usize];
+    let mut display_count = 0;
+    let status = unsafe {
+        CGGetActiveDisplayList(
+            MAX_ACTIVE_DISPLAY_COUNT,
+            display_ids.as_mut_ptr(),
+            &mut display_count,
+        )
+    };
+    if status != 0 || display_count == 0 {
+        return None;
+    }
+
+    let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
+    let mut has_content_signal = false;
+
+    for display_id in display_ids.into_iter().take(display_count as usize) {
+        let Some(fingerprint) = screen_activity_display_fingerprint(display_id) else {
+            continue;
+        };
+
+        has_content_signal = true;
+        mix_screen_activity_fingerprint(&mut hash, fingerprint);
+    }
+
+    has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
+}
+
+#[cfg(target_os = "macos")]
+pub fn poll_screen_activity() -> bool {
+    maybe_mark_screen_activity_for_fingerprint(polled_screen_activity_fingerprint())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn poll_screen_activity() -> bool {
+    false
 }
 
 #[cfg(target_os = "macos")]
@@ -1873,6 +2038,31 @@ mod tests {
         LAST_SCREEN_ACTIVITY_FINGERPRINT.store(11, Ordering::Relaxed);
 
         assert!(should_mark_screen_activity_for_fingerprint(11, Some(12)));
+
+        reset_last_screen_activity_unix_ms();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn maybe_mark_screen_activity_updates_state_for_changed_fingerprint() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+
+        assert!(maybe_mark_screen_activity_for_fingerprint(Some(11)));
+        let first_timestamp = LAST_SCREEN_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
+
+        assert!(!maybe_mark_screen_activity_for_fingerprint(Some(11)));
+        assert_eq!(
+            LAST_SCREEN_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed),
+            first_timestamp
+        );
+
+        std::thread::sleep(Duration::from_millis(
+            SCREEN_ACTIVITY_DEBOUNCE_WINDOW_MS + 10,
+        ));
+
+        assert!(maybe_mark_screen_activity_for_fingerprint(Some(12)));
+        assert!(LAST_SCREEN_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed) > first_timestamp);
 
         reset_last_screen_activity_unix_ms();
     }
