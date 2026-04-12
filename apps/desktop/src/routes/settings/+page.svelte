@@ -6,6 +6,7 @@
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
   import type {
+    ActivityMode,
     CaptureSupport,
     RecordingSettings,
     ResolutionMode,
@@ -51,6 +52,11 @@
   let draftPreferenceMode = $state<MicrophonePreferenceMode>("default");
   let draftDeviceId = $state<string | null>(null);
   let draftDisconnectPolicy = $state<MicrophoneDisconnectPolicy>("fallback_to_default");
+
+  // Inactivity drafts
+  let draftPauseCaptureOnInactivity = $state(false);
+  let draftIdleTimeoutSeconds = $state(30);
+  let draftActivityMode = $state<ActivityMode>("system_input_only");
 
   // Loading / error state
   let loadingRecSettings = $state(false);
@@ -119,6 +125,9 @@
     draftFrameRate = s.screenFrameRate;
     draftSaveDirectory = s.saveDirectory;
     draftAutoStart = s.autoStart;
+    draftPauseCaptureOnInactivity = s.pauseCaptureOnInactivity;
+    draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
+    draftActivityMode = s.activityMode ?? "system_input_only";
     if (s.screenResolution.mode === "custom") {
       draftResolutionMode = "custom";
       draftCustomWidth = s.screenResolution.width;
@@ -216,6 +225,9 @@
           screenFrameRate: draftFrameRate,
           saveDirectory: draftSaveDirectory,
           autoStart: draftAutoStart,
+          pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
+          idleTimeoutSeconds: draftIdleTimeoutSeconds,
+          activityMode: draftActivityMode,
           screenResolution: draftResolutionMode === "custom"
             ? {
                 mode: "custom",
@@ -777,6 +789,63 @@
         label="Auto-start recording on launch"
         description="Begin capturing immediately when the app opens"
       />
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <div class="settings-group">
+      <span class="group-label">Inactivity Pause</span>
+      <Switch
+        bind:checked={draftPauseCaptureOnInactivity}
+        label="Pause capture when idle"
+        description="Automatically pause recording after the system has been idle, and resume when system activity is detected"
+      />
+      {#if draftPauseCaptureOnInactivity}
+        <div class="idle-timeout-row">
+          <Slider
+            bind:value={draftIdleTimeoutSeconds}
+            min={5}
+            max={300}
+            step={5}
+            label="Idle timeout"
+            unit="s"
+            formatValue={(v) => v >= 60 ? `${Math.floor(v/60)}m ${v%60 > 0 ? ` ${v%60}s` : ""}`.trim() : `${v}s`}
+          />
+        </div>
+        <p class="group-hint">
+          Capture pauses after <strong>{draftIdleTimeoutSeconds}s</strong> of system-wide inactivity (no mouse, keyboard,
+          or other input anywhere on the Mac). It resumes automatically when system activity is detected again.
+        </p>
+
+        <div class="settings-divider"></div>
+
+        <span class="group-label">Activity Mode</span>
+        <RadioGroup
+          bind:value={draftActivityMode}
+          options={[
+            {
+              value: "system_input_only",
+              label: "Input only",
+              description: "Only keyboard and mouse/pointer events count as activity. Recording pauses whenever direct input stops, even during video calls or media playback.",
+            },
+            {
+              value: "system_input_or_screen",
+              label: "Input or screen change",
+              description: "Keyboard/mouse input AND visible on-screen changes (video calls, animations, media) both count as activity. Helps keep recordings running during calls or video playback with no direct input.",
+            },
+          ]}
+        />
+        <p class="group-hint">
+          {#if draftActivityMode === "system_input_or_screen"}
+            <strong>Screen change mode</strong> monitors on-screen activity in addition to input events — useful for
+            keeping recordings active during video calls, live streams, or media playback where you may not be
+            typing or moving the mouse.
+          {:else}
+            <strong>Input-only mode</strong> triggers the idle timeout strictly on keyboard and mouse inactivity.
+            Suitable for general screen recording when you want pauses to match direct interaction gaps exactly.
+          {/if}
+        </p>
+      {/if}
     </div>
 
     {#if recError}
@@ -1665,5 +1734,10 @@
     color: #4a5a88;
     letter-spacing: 0.02em;
     line-height: 1.55;
+  }
+
+  /* ── Inactivity pause ─────────────────────────────────────────────── */
+  .idle-timeout-row {
+    margin-top: 2px;
   }
 </style>

@@ -5,19 +5,24 @@
     CaptureSupport,
     CaptureSession,
     GetPermissionsResponse,
+    IdleDebugInfo,
     MicrophoneControllerState,
     MicrophoneAutoDisconnectTransitionFailedEvent,
     PermissionsMap,
     PermissionStatus,
     RecordingSettings,
   } from "$lib/types";
+  import { captureSession, setSession } from "$lib/session.svelte";
 
   // ─── State ────────────────────────────────────────────────────────────────
 
   let support = $state<CaptureSupport | null>(null);
   let permissions = $state<PermissionsMap | null>(null);
-  let session = $state<CaptureSession | null>(null);
   let recordingSettings = $state<RecordingSettings | null>(null);
+
+  // Read-only alias — writes go through captureSession.value so the shared
+  // store (and the layout's activity reporter) always see fresh state.
+  const session = $derived(captureSession.value);
 
   let lastError = $state<string | null>(null);
   let loadingSupport = $state(false);
@@ -25,6 +30,72 @@
   let loadingStart = $state(false);
   let loadingStop = $state(false);
   let loadingSettings = $state(false);
+
+  // ─── Idle debug ──────────────────────────────────────────────────────────
+  let idleDebug = $state<IdleDebugInfo | null>(null);
+  let idleDebugError = $state<string | null>(null);
+
+  async function fetchIdleDebug() {
+    // Skip the round-trip when the page is hidden or no capture session is active —
+    // the debug panel is only meaningful while recording (or briefly after stop).
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    if (!session?.isRunning) return;
+    try {
+      idleDebug = await invoke<IdleDebugInfo>("get_idle_debug");
+      idleDebugError = null;
+    } catch (err) {
+      idleDebugError = typeof err === "string" ? err : JSON.stringify(err);
+    }
+  }
+
+  function formatIdleMs(ms: number | null | undefined): string {
+    if (ms == null) return "unavailable";
+    if (ms < 1000) return `${ms} ms`;
+    return `${(ms / 1000).toFixed(1)} s`;
+  }
+
+  /**
+   * Computes screen-activity idle ms from a unix-ms timestamp by comparing
+   * against the current wall clock.  Returns null when the timestamp is absent.
+   * Computed inline in the template on each render cycle so it tracks the
+   * polling interval automatically.
+   */
+  function screenIdleMsFromTimestamp(lastUnixMs: number | null): number | null {
+    if (lastUnixMs == null) return null;
+    return Math.max(0, Date.now() - lastUnixMs);
+  }
+
+  /**
+   * Human-readable label for the activity mode, clarifying hybrid behaviour.
+   */
+  function formatActivityMode(mode: string): string {
+    if (mode === "system_input_only") return "input-only";
+    if (mode === "system_input_or_screen") return "hybrid (input + screen)";
+    return mode;
+  }
+
+  /**
+   * Human-readable label for the effective idle source.
+   */
+  function formatEffectiveSource(src: string): string {
+    if (src === "system_input") return "system input";
+    if (src === "screen_capture") return "screen activity";
+    if (src === "internal_fallback") return "internal fallback";
+    return src;
+  }
+
+  function sourceKindLabel(src: string): string {
+    if (src === "system_input") return "system input";
+    if (src === "screen_capture") return "screen activity";
+    if (src === "internal_fallback") return "internal fallback";
+    return src;
+  }
+
+  function sourceDecisionSummary(available: boolean, selected: boolean): string {
+    if (selected) return "selected";
+    if (!available) return "unavailable";
+    return "available, not selected";
+  }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -75,7 +146,7 @@
     try {
       const result = await invoke<GetPermissionsResponse>("get_capture_permissions");
       permissions = result.permissions;
-      if (result.session) session = result.session;
+      if (result.session) setSession(result.session);
     } catch (err) {
       permissions = null;
       setError(err);
@@ -108,7 +179,7 @@
           captureSystemAudio: recordingSettings?.captureSystemAudio ?? false,
         },
       });
-      session = result.session;
+      setSession(result.session);
     } catch (err) {
       setError(err);
     } finally {
@@ -121,13 +192,13 @@
     clearError();
     try {
       const result = await invoke<{ session: CaptureSession }>("stop_native_capture");
-      session = result.session;
+      setSession(result.session);
     } catch (err) {
       setError(err);
       try {
         const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
         permissions = r.permissions;
-        session = r.session;
+        if (r.session) setSession(r.session);
       } catch { /* best-effort */ }
     } finally {
       loadingStop = false;
@@ -135,8 +206,15 @@
   }
 
   const isCapturing = $derived(session?.isRunning === true);
+  const isInactivityPaused = $derived(session?.isInactivityPaused === true);
 
   // ─── Init ─────────────────────────────────────────────────────────────────
+  // Inactivity detection is handled natively by the backend (macOS system-wide
+  // idle). This effect only handles data loading and microphone event listeners.
+  // NOTE: fetchIdleDebug() reads session?.isRunning, so it must NOT be called
+  // synchronously here — doing so would make `session` a reactive dependency of
+  // this effect, causing loadPermissions() to re-run on every session change and
+  // flickering the Start Recording button's disabled state.
 
   $effect(() => {
     loadSettings();
@@ -170,6 +248,20 @@
       unlistenAutoDisconnectFailure?.();
     };
   });
+
+  // ─── Idle debug polling ────────────────────────────────────────────────────
+  // Kept in a separate effect so that its session-reactivity (fetchIdleDebug
+  // reads session?.isRunning) never triggers a re-run of the init effect above.
+
+  $effect(() => {
+    fetchIdleDebug();
+
+    const idleDebugInterval = setInterval(fetchIdleDebug, 2000);
+
+    return () => {
+      clearInterval(idleDebugInterval);
+    };
+  });
 </script>
 
 <!-- ── Page header ──────────────────────────────────────────────────────── -->
@@ -189,6 +281,15 @@
       <span class="session-id">{session.sessionId}</span>
     {/if}
   </div>
+
+  {#if isInactivityPaused}
+    <div class="inactivity-hint">
+      <span class="inactivity-hint__dot"></span>
+      <span class="inactivity-hint__text">
+        Paused — effective idle exceeded timeout; waiting for activity
+      </span>
+    </div>
+  {/if}
 
   {#if session && session.startedAtUnixMs != null}
     <ul class="kv-list kv-list--row">
@@ -379,6 +480,118 @@
       {/if}
     </div>
   </div>
+</section>
+
+<!-- ── Native idle debug ─────────────────────────────────────────────────── -->
+<section class="card card--debug">
+  <h2 class="card__title">
+    <span class="debug-tag">dbg</span>
+    Inactivity Policy
+    <button class="btn btn--ghost btn--sm" onclick={fetchIdleDebug}>↻</button>
+  </h2>
+
+  {#if idleDebugError}
+    <p class="debug-err">{idleDebugError}</p>
+  {:else if idleDebug}
+    <!-- ── Status row ──────────────────────────────────── -->
+    <ul class="kv-list">
+      <li>
+        <span class="kv-key">gating</span>
+        <span class={idleDebug.inactivityEnabled ? "badge badge--ok badge--sm" : "badge badge--neutral badge--sm"}>
+          {idleDebug.inactivityEnabled ? "enabled" : "disabled"}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key">paused</span>
+        <span class={idleDebug.isInactivityPaused ? "badge badge--warn badge--sm" : "badge badge--neutral badge--sm"}>
+          {idleDebug.isInactivityPaused ? "yes" : "no"}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key">timeout</span>
+        <span class="kv-val kv-val--mono">
+          {idleDebug.inactivityEnabled ? `${idleDebug.idleTimeoutSeconds}s` : "—"}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key">mode</span>
+        <span class="kv-val kv-val--mono">{formatActivityMode(idleDebug.activityMode)}</span>
+      </li>
+    </ul>
+
+    <!-- ── Signal readings ────────────────────────────── -->
+    <div class="idle-section-label">Input signals</div>
+    <ul class="kv-list">
+      <li>
+        <span class="kv-key kv-key--wide">system input idle</span>
+        <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.systemIdleMs)}</span>
+        {#if idleDebug.activityMode === "system_input_or_screen"}
+          <span class="idle-note">keyboard/mouse only</span>
+        {/if}
+      </li>
+      {#if idleDebug.activityMode === "system_input_or_screen"}
+        <li>
+          <span class="kv-key kv-key--wide">screen activity idle</span>
+          <span class="kv-val kv-val--mono">{formatIdleMs(screenIdleMsFromTimestamp(idleDebug.screenActivityLastUnixMs))}</span>
+          <span class="idle-note">time since last screen change</span>
+        </li>
+      {/if}
+    </ul>
+
+    <!-- ── Effective idle (the actual pause signal) ───── -->
+    <div class="idle-section-label">Pause decision</div>
+    <div class="effective-idle-block">
+      <div class="effective-idle-block__row">
+        <span class="effective-idle-block__label">effective idle</span>
+        <span class="effective-idle-block__value">{formatIdleMs(idleDebug.effectiveIdleMs)}</span>
+      </div>
+      <div class="effective-idle-block__row">
+        <span class="effective-idle-block__label">decided by</span>
+        <span class="effective-idle-block__source">{formatEffectiveSource(idleDebug.effectiveActivitySource)}</span>
+      </div>
+      {#if idleDebug.activityMode === "system_input_or_screen"}
+        <p class="effective-idle-block__note">
+          Hybrid mode: system input idle alone will not trigger pause while screen activity is detected.
+          Pause requires <em>both</em> input and screen to be idle for ≥ {idleDebug.idleTimeoutSeconds}s.
+        </p>
+      {:else}
+        <p class="effective-idle-block__note">
+          Input-only mode: pause triggers when system input idle ≥ {idleDebug.idleTimeoutSeconds}s,
+          regardless of on-screen activity.
+        </p>
+      {/if}
+    </div>
+
+    <div class="idle-section-label">Activity sources</div>
+    <ul class="kv-list">
+      {#each idleDebug.activitySources as source (source.kind)}
+        <li>
+          <span class="kv-key kv-key--wide">{sourceKindLabel(source.kind)}</span>
+          <span class="kv-val kv-val--mono">{formatIdleMs(source.idleMs)}</span>
+          <span class={source.selected ? "badge badge--ok badge--sm" : source.available ? "badge badge--neutral badge--sm" : "badge badge--warn badge--sm"}>
+            {sourceDecisionSummary(source.available, source.selected)}
+          </span>
+        </li>
+      {/each}
+    </ul>
+
+    <!-- ── Probe info ─────────────────────────────────── -->
+    <div class="idle-section-label">Probe</div>
+    <ul class="kv-list">
+      <li>
+        <span class="kv-key kv-key--wide">detector source</span>
+        <span class="kv-val kv-val--mono">{idleDebug.detectorSource}</span>
+      </li>
+      {#if idleDebug.screenActivityLastUnixMs != null}
+        <li>
+          <span class="kv-key kv-key--wide">last screen sample</span>
+          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.screenActivityLastUnixMs)}</span>
+        </li>
+      {/if}
+    </ul>
+  {:else}
+    <p class="empty">—</p>
+  {/if}
 </section>
 
 <!-- ── Error display ─────────────────────────────────────────────────────── -->
@@ -743,5 +956,155 @@
     color: #2a2a40;
     font-size: 11px;
     font-style: italic;
+  }
+
+  /* ── Debug card ─────────────────────────────────────────────── */
+  .card--debug {
+    border-style: dashed;
+    border-color: #252535;
+    background: #0e0e15;
+    opacity: 0.92;
+  }
+
+  .debug-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 5px;
+    background: #1a1a2a;
+    border: 1px solid #2a2a40;
+    border-radius: 2px;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    color: #5a5a7a;
+    text-transform: uppercase;
+  }
+
+  .kv-key--wide {
+    min-width: 120px;
+  }
+
+  .kv-val--mono {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 10px;
+    color: #8080a8;
+  }
+
+  /* ── Idle debug sub-sections ────────────────────────── */
+  .idle-section-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #33334a;
+    margin-top: 4px;
+  }
+
+  .idle-note {
+    font-size: 9px;
+    color: #33334a;
+    font-style: italic;
+    margin-left: 4px;
+  }
+
+  /* ── Effective idle block ─────────────────────────────── */
+  .effective-idle-block {
+    background: #0b0b12;
+    border: 1px solid #2a2240;
+    border-left: 2px solid #5a4aaa;
+    border-radius: 4px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .effective-idle-block__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .effective-idle-block__label {
+    font-size: 10px;
+    color: #5a4aaa;
+    min-width: 84px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .effective-idle-block__value {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 13px;
+    font-weight: 700;
+    color: #c0b0ff;
+    letter-spacing: 0.04em;
+  }
+
+  .effective-idle-block__source {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 10px;
+    color: #8070cc;
+  }
+
+  .effective-idle-block__note {
+    font-size: 9px;
+    color: #4a4470;
+    line-height: 1.5;
+    margin-top: 4px;
+    border-top: 1px solid #1e1a30;
+    padding-top: 6px;
+  }
+
+  .effective-idle-block__note em {
+    font-style: normal;
+    color: #7060a8;
+    font-weight: 600;
+  }
+
+  .debug-err {
+    font-size: 10px;
+    color: #a05050;
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+  }
+
+  .badge--warn {
+    background: #201608;
+    color: #c09030;
+    border: 1px solid #3a2810;
+  }
+
+  /* ── Inactivity hint ────────────────────────────────────────── */
+  .inactivity-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #0d0c0a;
+    border: 1px solid #3a3010;
+    border-radius: 4px;
+  }
+
+  .inactivity-hint__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #a07820;
+    flex-shrink: 0;
+    animation: pulse-idle 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-idle {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .inactivity-hint__text {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #8a6a18;
   }
 </style>
