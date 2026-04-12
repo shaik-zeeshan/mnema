@@ -71,6 +71,7 @@
   function formatActivityMode(mode: string): string {
     if (mode === "system_input_only") return "input-only";
     if (mode === "system_input_or_screen") return "hybrid (input + screen)";
+    if (mode === "system_input_or_screen_or_audio") return "audio (input + screen + audio)";
     return mode;
   }
 
@@ -80,6 +81,8 @@
   function formatEffectiveSource(src: string): string {
     if (src === "system_input") return "system input";
     if (src === "screen_capture") return "screen activity";
+    if (src === "microphone_capture") return "microphone audio";
+    if (src === "system_audio_capture") return "system audio";
     if (src === "internal_fallback") return "internal fallback";
     return src;
   }
@@ -87,13 +90,16 @@
   function sourceKindLabel(src: string): string {
     if (src === "system_input") return "system input";
     if (src === "screen_capture") return "screen activity";
+    if (src === "microphone_capture") return "microphone audio";
+    if (src === "system_audio_capture") return "system audio";
     if (src === "internal_fallback") return "internal fallback";
     return src;
   }
 
-  function sourceDecisionSummary(available: boolean, selected: boolean): string {
+  function sourceDecisionSummary(available: boolean, selected: boolean, enabled?: boolean): string {
     if (selected) return "selected";
     if (!available) return "unavailable";
+    if (enabled === false) return "available, disabled";
     return "available, not selected";
   }
 
@@ -525,15 +531,37 @@
       <li>
         <span class="kv-key kv-key--wide">system input idle</span>
         <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.systemIdleMs)}</span>
-        {#if idleDebug.activityMode === "system_input_or_screen"}
+        {#if idleDebug.activityMode !== "system_input_only"}
           <span class="idle-note">keyboard/mouse only</span>
         {/if}
       </li>
-      {#if idleDebug.activityMode === "system_input_or_screen"}
+      {#if idleDebug.activityMode === "system_input_or_screen" || idleDebug.activityMode === "system_input_or_screen_or_audio"}
         <li>
           <span class="kv-key kv-key--wide">screen activity idle</span>
           <span class="kv-val kv-val--mono">{formatIdleMs(screenIdleMsFromTimestamp(idleDebug.screenActivityLastUnixMs))}</span>
           <span class="idle-note">time since last screen change</span>
+        </li>
+      {/if}
+      {#if idleDebug.activityMode === "system_input_or_screen_or_audio"}
+        <li>
+          <span class="kv-key kv-key--wide">mic audio idle</span>
+          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.microphoneActivityIdleMs)}</span>
+          {#if idleDebug.microphoneActivityLevel != null}
+            <span class="idle-note">level {(idleDebug.microphoneActivityLevel * 100).toFixed(0)}%</span>
+          {/if}
+          {#if !idleDebug.microphoneActivityEnabled}
+            <span class="badge badge--neutral badge--sm">off</span>
+          {/if}
+        </li>
+        <li>
+          <span class="kv-key kv-key--wide">sys audio idle</span>
+          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.systemAudioActivityIdleMs)}</span>
+          {#if idleDebug.systemAudioActivityLevel != null}
+            <span class="idle-note">level {(idleDebug.systemAudioActivityLevel * 100).toFixed(0)}%</span>
+          {/if}
+          {#if !idleDebug.systemAudioActivityEnabled}
+            <span class="badge badge--neutral badge--sm">off</span>
+          {/if}
         </li>
       {/if}
     </ul>
@@ -549,7 +577,13 @@
         <span class="effective-idle-block__label">decided by</span>
         <span class="effective-idle-block__source">{formatEffectiveSource(idleDebug.effectiveActivitySource)}</span>
       </div>
-      {#if idleDebug.activityMode === "system_input_or_screen"}
+      {#if idleDebug.activityMode === "system_input_or_screen_or_audio"}
+        <p class="effective-idle-block__note">
+          Audio mode: system input, on-screen changes, <em>and</em> audio levels from microphone
+          and system audio are all monitored. Any source below idle threshold pauses capture only when
+          <em>all</em> sources exceed the timeout. Sensitivity: {idleDebug.audioActivitySensitivity ?? "—"}{idleDebug.audioActivitySensitivity != null ? "%" : ""}.
+        </p>
+      {:else if idleDebug.activityMode === "system_input_or_screen"}
         <p class="effective-idle-block__note">
           Hybrid mode: system input idle alone will not trigger pause while screen activity is detected.
           Pause requires <em>both</em> input and screen to be idle for ≥ {idleDebug.idleTimeoutSeconds}s.
@@ -568,8 +602,11 @@
         <li>
           <span class="kv-key kv-key--wide">{sourceKindLabel(source.kind)}</span>
           <span class="kv-val kv-val--mono">{formatIdleMs(source.idleMs)}</span>
+          {#if source.latestNormalizedLevel != null}
+            <span class="idle-note">lvl {(source.latestNormalizedLevel * 100).toFixed(0)}%{source.activityThreshold != null ? ` / thr ${(source.activityThreshold * 100).toFixed(0)}%` : ""}</span>
+          {/if}
           <span class={source.selected ? "badge badge--ok badge--sm" : source.available ? "badge badge--neutral badge--sm" : "badge badge--warn badge--sm"}>
-            {sourceDecisionSummary(source.available, source.selected)}
+            {sourceDecisionSummary(source.available, source.selected, source.enabled)}
           </span>
         </li>
       {/each}
@@ -586,6 +623,31 @@
         <li>
           <span class="kv-key kv-key--wide">last screen sample</span>
           <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.screenActivityLastUnixMs)}</span>
+        </li>
+      {/if}
+      {#if idleDebug.audioActivitySensitivity != null}
+        <li>
+          <span class="kv-key kv-key--wide">audio sensitivity</span>
+          <span class="kv-val kv-val--mono">{idleDebug.audioActivitySensitivity}%</span>
+        </li>
+      {/if}
+      {#if idleDebug.audioActivityThreshold != null}
+        <li>
+          <span class="kv-key kv-key--wide">audio threshold</span>
+          <span class="kv-val kv-val--mono">{(idleDebug.audioActivityThreshold * 100).toFixed(1)}%</span>
+          <span class="idle-note">normalised level; audio above this counts as activity</span>
+        </li>
+      {/if}
+      {#if idleDebug.microphoneActivityLastUnixMs != null}
+        <li>
+          <span class="kv-key kv-key--wide">last mic activity</span>
+          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.microphoneActivityLastUnixMs)}</span>
+        </li>
+      {/if}
+      {#if idleDebug.systemAudioActivityLastUnixMs != null}
+        <li>
+          <span class="kv-key kv-key--wide">last sys-audio activity</span>
+          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.systemAudioActivityLastUnixMs)}</span>
         </li>
       {/if}
     </ul>

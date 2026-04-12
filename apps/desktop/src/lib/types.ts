@@ -89,14 +89,25 @@ export interface StopCaptureResponse {
  * Controls which signals are considered "activity" for the inactivity-gating
  * feature.
  *
- * - `system_input_only`       — only keyboard/mouse/pointer events count.
- * - `system_input_or_screen`  — keyboard/mouse/pointer OR visible on-screen
+ * - `system_input_only`                   — only keyboard/mouse/pointer events count.
+ * - `system_input_or_screen`              — keyboard/mouse/pointer OR visible on-screen
  *   changes (video, animations, calls) also count, preventing spurious pauses
  *   during calls or video playback with no direct user input.
+ * - `system_input_or_screen_or_audio`     — all of the above PLUS microphone and system
+ *   audio levels: if either audio source is above the configured sensitivity threshold,
+ *   capture stays active.  Higher sensitivity means quieter audio counts as activity.
  */
-export type ActivityMode = "system_input_only" | "system_input_or_screen";
+export type ActivityMode =
+	| "system_input_only"
+	| "system_input_or_screen"
+	| "system_input_or_screen_or_audio";
 
-export type ActivitySourceKind = "system_input" | "screen_capture" | "internal_fallback";
+export type ActivitySourceKind =
+	| "system_input"
+	| "screen_capture"
+	| "microphone_capture"
+	| "system_audio_capture"
+	| "internal_fallback";
 
 export interface RecordingSettings {
 	captureScreen: boolean;
@@ -112,6 +123,13 @@ export interface RecordingSettings {
 	idleTimeoutSeconds: number;
 	/** Which signals count as "activity" for the inactivity-gating feature. */
 	activityMode: ActivityMode;
+	/**
+	 * Audio activity sensitivity (0–100). Only relevant when `activityMode` is
+	 * `system_input_or_screen_or_audio`. Higher values mean quieter audio is
+	 * treated as activity (more sensitive). Lower values require louder audio
+	 * before it is counted as activity.
+	 */
+	audioActivitySensitivity: number;
 }
 
 // ─── Video Bitrate ──────────────────────────────────────────────────────────
@@ -172,8 +190,9 @@ export interface IdleDebugInfo {
 	/**
 	 * The configured activity mode as reported by the backend at runtime.
 	 * "system_input_only" — only keyboard/mouse idle is considered.
-	 * "system_input_or_screen" — hybrid mode: min(system input idle, screen idle) is used,
-	 *   so visible on-screen changes (video, calls) prevent pause even without direct input.
+	 * "system_input_or_screen" — hybrid mode: min(system input idle, screen idle) is used.
+	 * "system_input_or_screen_or_audio" — audio mode: microphone and system audio levels
+	 *   also contribute; audio above the sensitivity threshold counts as activity.
 	 */
 	activityMode: ActivityMode;
 	/**
@@ -195,11 +214,39 @@ export interface IdleDebugInfo {
 	 * "system_input" — system keyboard/mouse idle is driving the decision.
 	 * "screen_capture" — screen-change detection is driving the decision (hybrid mode,
 	 *   screen is less idle than system input).
+	 * "microphone_capture" — microphone audio level is driving the decision (audio mode).
+	 * "system_audio_capture" — system audio level is driving the decision (audio mode).
 	 * "internal_fallback" — neither probe returned a usable reading; using internal timer.
 	 */
 	effectiveActivitySource: ActivitySourceKind;
 	/** Per-source idle samples used for policy evaluation. */
 	activitySources: IdleDebugActivitySource[];
+	/**
+	 * Configured audio activity sensitivity (0–100). Present when the backend supports
+	 * audio activity detection. Higher = more sensitive (quieter audio triggers activity).
+	 */
+	audioActivitySensitivity: number | null;
+	/**
+	 * Derived audio activity threshold (normalised 0–1 level below which audio is
+	 * considered "silent"). Computed from sensitivity by the backend.
+	 */
+	audioActivityThreshold: number | null;
+	/** Unix timestamp (ms) of the last microphone activity detection, or null. */
+	microphoneActivityLastUnixMs: number | null;
+	/** Milliseconds since last microphone activity (derived from last timestamp). */
+	microphoneActivityIdleMs: number | null;
+	/** Latest normalised microphone level (0–1), or null if unavailable. */
+	microphoneActivityLevel: number | null;
+	/** Whether microphone audio activity detection is currently enabled. */
+	microphoneActivityEnabled: boolean;
+	/** Unix timestamp (ms) of the last system audio activity detection, or null. */
+	systemAudioActivityLastUnixMs: number | null;
+	/** Milliseconds since last system audio activity (derived from last timestamp). */
+	systemAudioActivityIdleMs: number | null;
+	/** Latest normalised system audio level (0–1), or null if unavailable. */
+	systemAudioActivityLevel: number | null;
+	/** Whether system audio activity detection is currently enabled. */
+	systemAudioActivityEnabled: boolean;
 }
 
 export interface IdleDebugActivitySource {
@@ -207,4 +254,10 @@ export interface IdleDebugActivitySource {
 	available: boolean;
 	idleMs: number | null;
 	selected: boolean;
+	/** Whether this source is actively contributing to activity detection. */
+	enabled: boolean;
+	/** Latest normalised signal level for audio sources (0–1); null for non-audio sources. */
+	latestNormalizedLevel: number | null;
+	/** Activity threshold for this source (normalised 0–1); null for non-audio sources. */
+	activityThreshold: number | null;
 }
