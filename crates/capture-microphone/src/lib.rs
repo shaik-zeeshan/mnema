@@ -6,7 +6,7 @@ use capture_types::{
 #[cfg(target_os = "macos")]
 use capture_writers::{
     append_audio_sample_to_writer, create_audio_asset_writer_for_sample_format,
-    derive_audio_sample_format_from_sample_buf,
+    derive_audio_activity_level_from_sample_buf, derive_audio_sample_format_from_sample_buf,
     finalize_microphone_output_context as writers_finalize_microphone_output_context,
     AudioAssetWriterState, AudioSampleFormat,
 };
@@ -18,11 +18,110 @@ use cidre::{av, core_audio as ca, dispatch, os};
 #[cfg(target_os = "macos")]
 use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+#[cfg(target_os = "macos")]
 use std::sync::mpsc;
 #[cfg(target_os = "macos")]
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 #[cfg(target_os = "macos")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[cfg(target_os = "macos")]
+static LAST_MICROPHONE_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "macos")]
+static LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "macos")]
+static LAST_MICROPHONE_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(target_os = "macos")]
+fn microphone_activity_monotonic_epoch() -> &'static Instant {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now)
+}
+
+#[cfg(target_os = "macos")]
+fn now_microphone_activity_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "macos")]
+fn now_microphone_activity_monotonic_ms() -> u64 {
+    microphone_activity_monotonic_epoch()
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(target_os = "macos")]
+fn now_microphone_activity_marker_ms() -> u64 {
+    now_microphone_activity_monotonic_ms().saturating_add(1)
+}
+
+#[cfg(target_os = "macos")]
+fn store_microphone_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u64) {
+    LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS.store(now_monotonic_ms, Ordering::Relaxed);
+    LAST_MICROPHONE_ACTIVITY_UNIX_MS.store(now_unix_ms, Ordering::Relaxed);
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_track_microphone_activity(sample_buf: &cidre::cm::SampleBuf) {
+    let Some(level) = derive_audio_activity_level_from_sample_buf(sample_buf) else {
+        return;
+    };
+
+    store_microphone_activity(
+        level,
+        now_microphone_activity_marker_ms(),
+        now_microphone_activity_unix_ms(),
+    );
+}
+
+#[cfg(target_os = "macos")]
+pub fn reset_last_microphone_activity_unix_ms() {
+    LAST_MICROPHONE_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
+    LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
+    LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn reset_last_microphone_activity_unix_ms() {}
+
+#[cfg(target_os = "macos")]
+pub fn last_microphone_activity_unix_ms() -> Option<u64> {
+    let ts = LAST_MICROPHONE_ACTIVITY_UNIX_MS.load(Ordering::Relaxed);
+    (ts > 0).then_some(ts)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn last_microphone_activity_unix_ms() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+pub fn microphone_activity_idle_ms() -> Option<u64> {
+    let ts = LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
+    (ts > 0).then_some(now_microphone_activity_marker_ms().saturating_sub(ts))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn microphone_activity_idle_ms() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+pub fn microphone_activity_level() -> Option<f32> {
+    last_microphone_activity_unix_ms()
+        .map(|_| f32::from_bits(LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.load(Ordering::Relaxed)))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn microphone_activity_level() -> Option<f32> {
+    None
+}
 
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
@@ -108,9 +207,19 @@ fn fallback_microphone_format(context: &MicrophoneOutputContext) -> Option<Audio
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
-        observe_microphone_format, resolve_microphone_finalize_format,
-        resolve_microphone_live_format, AudioSampleFormat, MicFormatStabilityState,
+        last_microphone_activity_unix_ms, microphone_activity_idle_ms, microphone_activity_level,
+        observe_microphone_format, reset_last_microphone_activity_unix_ms,
+        resolve_microphone_finalize_format, resolve_microphone_live_format,
+        store_microphone_activity, AudioSampleFormat, MicFormatStabilityState, OnceLock,
     };
+
+    fn microphone_activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn format(bits_per_channel: u32, bytes_per_frame: u32) -> AudioSampleFormat {
         AudioSampleFormat {
@@ -165,6 +274,24 @@ mod tests {
 
         assert_eq!(resolve_microphone_live_format(&state), None);
         assert_eq!(resolve_microphone_finalize_format(&state), Some(fmt));
+    }
+
+    #[test]
+    fn microphone_activity_state_tracks_latest_level_and_reset() {
+        let _guard = microphone_activity_state_test_guard();
+        reset_last_microphone_activity_unix_ms();
+
+        store_microphone_activity(0.75, 10_000, 20_000);
+
+        assert_eq!(last_microphone_activity_unix_ms(), Some(20_000));
+        assert_eq!(microphone_activity_level(), Some(0.75));
+        assert_eq!(microphone_activity_idle_ms(), Some(0));
+
+        reset_last_microphone_activity_unix_ms();
+
+        assert_eq!(last_microphone_activity_unix_ms(), None);
+        assert_eq!(microphone_activity_level(), None);
+        assert_eq!(microphone_activity_idle_ms(), None);
     }
 }
 
@@ -231,9 +358,10 @@ mod microphone_delegate {
 
     use super::{
         append_audio_sample_to_writer, create_audio_asset_writer_for_sample_format,
-        derive_audio_sample_format_from_sample_buf, flush_pending_microphone_samples, objc,
-        record_observed_audio_format, resolve_microphone_live_format, BufferedMicSample,
-        MicrophoneOutputContext, MAX_PENDING_MIC_SAMPLES,
+        derive_audio_sample_format_from_sample_buf, flush_pending_microphone_samples,
+        maybe_track_microphone_activity, objc, record_observed_audio_format,
+        resolve_microphone_live_format, BufferedMicSample, MicrophoneOutputContext,
+        MAX_PENDING_MIC_SAMPLES,
     };
     use cidre::av::capture::AudioDataOutputSampleBufDelegate;
 
@@ -259,6 +387,8 @@ mod microphone_delegate {
             if ctx.first_error.is_some() {
                 return;
             }
+
+            maybe_track_microphone_activity(sample_buf);
 
             if let Some(writer) = ctx.writer.as_mut() {
                 if let Err(error) = append_audio_sample_to_writer(writer, sample_buf) {
@@ -625,6 +755,8 @@ pub fn start_avfoundation_microphone_capture_session_with_device_id(
     output_url: &cidre::ns::Url,
     device_id: Option<&str>,
 ) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
+    reset_last_microphone_activity_unix_ms();
+
     let mut capture_session = av::CaptureSession::new();
 
     let mic_device = resolve_capture_device_for_id(device_id)?;

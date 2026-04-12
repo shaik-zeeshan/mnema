@@ -1,8 +1,8 @@
 use capture_types::{
-    default_idle_timeout_seconds, default_inactivity_activity_mode,
-    default_pause_capture_on_inactivity, default_video_bitrate, CaptureErrorResponse,
-    RecordingSettings, ScreenResolution, ScreenResolutionPreset, UpdateRecordingSettingsRequest,
-    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    default_audio_activity_sensitivity, default_idle_timeout_seconds,
+    default_inactivity_activity_mode, default_pause_capture_on_inactivity, default_video_bitrate,
+    CaptureErrorResponse, RecordingSettings, ScreenResolution, ScreenResolutionPreset,
+    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -12,6 +12,8 @@ const MIN_CUSTOM_VIDEO_BITRATE_MBPS: u32 = 1;
 const MAX_CUSTOM_VIDEO_BITRATE_MBPS: u32 = 40;
 const MIN_IDLE_TIMEOUT_SECONDS: u64 = 1;
 const MAX_IDLE_TIMEOUT_SECONDS: u64 = 3600;
+const MIN_AUDIO_ACTIVITY_SENSITIVITY: u8 = 0;
+const MAX_AUDIO_ACTIVITY_SENSITIVITY: u8 = 100;
 const MIN_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 500_000;
 const MAX_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 120_000_000;
 const VIDEO_BITRATE_ROUND_STEP_BPS: u32 = 250_000;
@@ -39,6 +41,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         auto_start: false,
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
+        audio_activity_sensitivity: default_audio_activity_sensitivity(),
         inactivity_activity_mode: default_inactivity_activity_mode(),
     }
 }
@@ -102,6 +105,19 @@ fn validate_video_bitrate(
             })
         }
     }
+}
+
+fn validate_audio_activity_sensitivity(value: u8) -> Result<u8, CaptureErrorResponse> {
+    if !(MIN_AUDIO_ACTIVITY_SENSITIVITY..=MAX_AUDIO_ACTIVITY_SENSITIVITY).contains(&value) {
+        return Err(CaptureErrorResponse {
+            code: "invalid_recording_settings".to_string(),
+            message: format!(
+                "audioActivitySensitivity must be between {MIN_AUDIO_ACTIVITY_SENSITIVITY} and {MAX_AUDIO_ACTIVITY_SENSITIVITY}"
+            ),
+        });
+    }
+
+    Ok(value)
 }
 
 fn video_bitrate_preset_factor(preset: VideoBitratePreset) -> f64 {
@@ -237,6 +253,8 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
 
     let screen_resolution = validate_screen_resolution(request.screen_resolution)?;
     let video_bitrate = validate_video_bitrate(request.video_bitrate)?;
+    let audio_activity_sensitivity =
+        validate_audio_activity_sensitivity(request.audio_activity_sensitivity)?;
 
     if request.capture_screen
         && !non_original_resolution_supported
@@ -260,6 +278,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         auto_start: request.auto_start,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
+        audio_activity_sensitivity,
         inactivity_activity_mode: request.inactivity_activity_mode,
     })
 }
@@ -290,6 +309,7 @@ pub(crate) fn load_recording_settings_from_disk(
         auto_start: parsed.auto_start,
         pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
         idle_timeout_seconds: parsed.idle_timeout_seconds,
+        audio_activity_sensitivity: parsed.audio_activity_sensitivity,
         inactivity_activity_mode: parsed.inactivity_activity_mode,
     })
     .ok()

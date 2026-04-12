@@ -1,5 +1,5 @@
 use crate::native_capture_inactivity::{
-    ActivityPolicyEvaluation, ActivitySnapshot, InactivityState,
+    ActivityPolicyEvaluation, ActivitySnapshot, AudioActivitySourceState, InactivityState,
 };
 use crate::native_capture_output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
@@ -577,11 +577,32 @@ fn current_system_idle_ms() -> Option<u64> {
     crate::native_capture_system_idle::current_system_idle_ms()
 }
 
-#[cfg(target_os = "macos")]
-fn current_activity_snapshot() -> ActivitySnapshot {
+#[cfg(not(target_os = "macos"))]
+fn current_system_idle_ms() -> Option<u64> {
+    None
+}
+
+fn capture_source_requested(
+    runtime: &NativeCaptureRuntime,
+    selector: fn(&CaptureSources) -> bool,
+) -> bool {
+    runtime.is_running && runtime.requested_sources.as_ref().is_some_and(selector)
+}
+
+fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> ActivitySnapshot {
     ActivitySnapshot {
         system_input_idle_ms: current_system_idle_ms(),
         screen_activity_idle_ms: capture_screen::screen_activity_idle_ms(),
+        microphone_activity: AudioActivitySourceState {
+            enabled: capture_source_requested(runtime, |sources| sources.microphone),
+            idle_ms: microphone_capture::microphone_activity_idle_ms(),
+            latest_normalized_level: microphone_capture::microphone_activity_level(),
+        },
+        system_audio_activity: AudioActivitySourceState {
+            enabled: capture_source_requested(runtime, |sources| sources.system_audio),
+            idle_ms: capture_screen::system_audio_activity_idle_ms(),
+            latest_normalized_level: capture_screen::system_audio_activity_level(),
+        },
     }
 }
 
@@ -863,7 +884,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
         }
 
         let now = now_monotonic_marker_ms();
-        let activity_snapshot = current_activity_snapshot();
+        let activity_snapshot = current_activity_snapshot(&runtime);
         let effective_idle = runtime
             .inactivity
             .effective_idle_for_snapshot(now, activity_snapshot);
@@ -1381,6 +1402,7 @@ pub fn start_native_capture(
             let first_segment_dir = segment_planner.segment_dir(segment_index);
             let effective_screen_bitrate_bps = compute_effective_screen_bitrate_bps(&settings);
             capture_screen::reset_last_screen_activity_unix_ms();
+            microphone_capture::reset_last_microphone_activity_unix_ms();
 
             let (
                 segment_outputs,
@@ -1475,10 +1497,30 @@ pub struct IdleDebugInfo {
     pub detector_source: String,
     /// Configured activity policy mode used for inactivity decisions.
     pub activity_mode: String,
+    /// Configured audio sensitivity used by audio-aware inactivity modes.
+    pub audio_activity_sensitivity: u8,
+    /// Derived normalized threshold used to decide whether audio counts as activity.
+    pub audio_activity_threshold: f32,
     /// Last observed screen sample timestamp in unix milliseconds, if any.
     pub screen_activity_last_unix_ms: Option<u64>,
     /// Current screen activity idle derived from latest screen sample, if any.
     pub screen_activity_idle_ms: Option<u64>,
+    /// Last observed microphone activity timestamp in unix milliseconds, if any.
+    pub microphone_activity_last_unix_ms: Option<u64>,
+    /// Current microphone activity idle derived from latest microphone sample, if any.
+    pub microphone_activity_idle_ms: Option<u64>,
+    /// Latest normalized microphone activity level in [0, 1], if any.
+    pub microphone_activity_level: Option<f32>,
+    /// Whether microphone capture is currently configured for this runtime.
+    pub microphone_activity_enabled: bool,
+    /// Last observed system-audio activity timestamp in unix milliseconds, if any.
+    pub system_audio_activity_last_unix_ms: Option<u64>,
+    /// Current system-audio activity idle derived from latest system-audio sample, if any.
+    pub system_audio_activity_idle_ms: Option<u64>,
+    /// Latest normalized system-audio activity level in [0, 1], if any.
+    pub system_audio_activity_level: Option<f32>,
+    /// Whether system-audio capture is currently configured for this runtime.
+    pub system_audio_activity_enabled: bool,
     /// Effective idle time used by inactivity policy for this sample.
     pub effective_idle_ms: u64,
     /// Source selected for effective idle determination.
@@ -1492,26 +1534,34 @@ pub struct IdleDebugInfo {
 #[serde(rename_all = "camelCase")]
 pub struct IdleDebugActivitySource {
     pub kind: String,
+    pub enabled: bool,
     pub available: bool,
     pub idle_ms: Option<u64>,
+    pub latest_normalized_level: Option<f32>,
+    pub activity_threshold: Option<f32>,
     pub selected: bool,
 }
 
 #[tauri::command]
 pub fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
-    let runtime = state.lock().expect("native capture state poisoned");
+    let mut runtime = state.lock().expect("native capture state poisoned");
     let now = now_monotonic_marker_ms();
     let system_idle_ms = crate::native_capture_system_idle::current_system_idle_ms();
     let screen_activity_last_unix_ms = capture_screen::last_screen_activity_unix_ms();
     let screen_activity_idle_ms = capture_screen::screen_activity_idle_ms();
-    let activity_snapshot = ActivitySnapshot {
-        system_input_idle_ms: system_idle_ms,
-        screen_activity_idle_ms,
-    };
+    let microphone_activity_last_unix_ms = microphone_capture::last_microphone_activity_unix_ms();
+    let microphone_activity_idle_ms = microphone_capture::microphone_activity_idle_ms();
+    let microphone_activity_level = microphone_capture::microphone_activity_level();
+    let system_audio_activity_last_unix_ms = capture_screen::last_system_audio_activity_unix_ms();
+    let system_audio_activity_idle_ms = capture_screen::system_audio_activity_idle_ms();
+    let system_audio_activity_level = capture_screen::system_audio_activity_level();
+    let activity_snapshot = current_activity_snapshot(&runtime);
     let policy = runtime
         .inactivity
         .evaluate_policy_for_snapshot(now, activity_snapshot);
     let effective_idle = policy.effective_idle;
+    let microphone_activity_enabled = activity_snapshot.microphone_activity.enabled;
+    let system_audio_activity_enabled = activity_snapshot.system_audio_activity.enabled;
     // Reflect actual probe availability: the probe is only considered available
     // when it returned a valid reading.  A None result (invalid value, non-macOS,
     // or a future platform stub) maps to unavailable so the UI can distinguish
@@ -1540,9 +1590,22 @@ pub fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugI
             capture_types::InactivityActivityMode::SystemInputOrScreen => {
                 "system_input_or_screen".to_string()
             }
+            capture_types::InactivityActivityMode::SystemInputOrScreenOrAudio => {
+                "system_input_or_screen_or_audio".to_string()
+            }
         },
+        audio_activity_sensitivity: runtime.inactivity.audio_activity_sensitivity,
+        audio_activity_threshold: runtime.inactivity.audio_activity_threshold(),
         screen_activity_last_unix_ms,
         screen_activity_idle_ms,
+        microphone_activity_last_unix_ms,
+        microphone_activity_idle_ms,
+        microphone_activity_level,
+        microphone_activity_enabled,
+        system_audio_activity_last_unix_ms,
+        system_audio_activity_idle_ms,
+        system_audio_activity_level,
+        system_audio_activity_enabled,
         effective_idle_ms: effective_idle.idle_ms,
         effective_idle_source: effective_idle.source.as_str().to_string(),
         activity_sources: idle_debug_activity_sources(&policy),
@@ -1555,8 +1618,11 @@ fn idle_debug_activity_sources(policy: &ActivityPolicyEvaluation) -> Vec<IdleDeb
         .iter()
         .map(|source| IdleDebugActivitySource {
             kind: source.kind.as_str().to_string(),
+            enabled: source.enabled,
             available: source.available,
             idle_ms: source.idle_ms,
+            latest_normalized_level: source.latest_normalized_level,
+            activity_threshold: source.activity_threshold,
             selected: source.kind == policy.effective_idle.source,
         })
         .collect()
@@ -1676,8 +1742,8 @@ pub fn stop_native_capture(
 mod tests {
     use super::*;
     use capture_types::{
-        default_inactivity_activity_mode, default_video_bitrate, ScreenResolutionPreset,
-        VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+        default_inactivity_activity_mode, default_video_bitrate, InactivityActivityMode,
+        ScreenResolutionPreset, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
     };
 
     #[test]
@@ -1718,6 +1784,7 @@ mod tests {
             auto_start: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
+            audio_activity_sensitivity: 50,
             inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect_err("all sources disabled must be rejected");
@@ -1742,6 +1809,7 @@ mod tests {
             auto_start: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
+            audio_activity_sensitivity: 50,
             inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect_err("system audio without screen must be rejected");
@@ -1771,6 +1839,7 @@ mod tests {
                 auto_start: false,
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
+                audio_activity_sensitivity: 50,
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             true,
@@ -1804,6 +1873,7 @@ mod tests {
                 auto_start: false,
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
+                audio_activity_sensitivity: 50,
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             false,
@@ -1836,6 +1906,7 @@ mod tests {
                 auto_start: false,
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
+                audio_activity_sensitivity: 50,
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             false,
@@ -1862,6 +1933,7 @@ mod tests {
             auto_start: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
+            audio_activity_sensitivity: 50,
             inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect_err("too small resolution should be rejected");
@@ -1889,6 +1961,7 @@ mod tests {
             auto_start: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
+            audio_activity_sensitivity: 50,
             inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect("preset mode should normalize bitrate values");
@@ -1921,6 +1994,7 @@ mod tests {
             auto_start: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
+            audio_activity_sensitivity: 50,
             inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect_err("custom bitrate above max should be rejected");
@@ -1929,6 +2003,62 @@ mod tests {
         assert_eq!(
             error.message,
             "videoBitrate.customMbps must be between 1 and 40"
+        );
+    }
+
+    #[test]
+    fn validate_recording_settings_accepts_audio_activity_mode_and_sensitivity() {
+        let settings = validate_recording_settings(UpdateRecordingSettingsRequest {
+            capture_screen: true,
+            capture_microphone: true,
+            capture_system_audio: true,
+            segment_duration_seconds: 60,
+            screen_frame_rate: 30,
+            screen_resolution: ScreenResolution::Preset {
+                preset: ScreenResolutionPreset::Original,
+            },
+            video_bitrate: default_video_bitrate(),
+            save_directory: "/tmp".to_string(),
+            auto_start: false,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            audio_activity_sensitivity: 75,
+            inactivity_activity_mode: InactivityActivityMode::SystemInputOrScreenOrAudio,
+        })
+        .expect("audio-aware inactivity settings should be valid");
+
+        assert_eq!(settings.audio_activity_sensitivity, 75);
+        assert_eq!(
+            settings.inactivity_activity_mode,
+            InactivityActivityMode::SystemInputOrScreenOrAudio
+        );
+    }
+
+    #[test]
+    fn validate_recording_settings_rejects_audio_activity_sensitivity_above_max() {
+        let error = validate_recording_settings(UpdateRecordingSettingsRequest {
+            capture_screen: true,
+            capture_microphone: false,
+            capture_system_audio: false,
+            segment_duration_seconds: 60,
+            screen_frame_rate: 30,
+            screen_resolution: ScreenResolution::Preset {
+                preset: ScreenResolutionPreset::Original,
+            },
+            video_bitrate: default_video_bitrate(),
+            save_directory: "/tmp".to_string(),
+            auto_start: false,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            audio_activity_sensitivity: 101,
+            inactivity_activity_mode: default_inactivity_activity_mode(),
+        })
+        .expect_err("sensitivity above max must be rejected");
+
+        assert_eq!(error.code, "invalid_recording_settings");
+        assert_eq!(
+            error.message,
+            "audioActivitySensitivity must be between 0 and 100"
         );
     }
 
@@ -1952,6 +2082,7 @@ mod tests {
             auto_start: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
+            audio_activity_sensitivity: 50,
             inactivity_activity_mode: default_inactivity_activity_mode(),
         };
 
@@ -1981,6 +2112,7 @@ mod tests {
             auto_start: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
+            audio_activity_sensitivity: 50,
             inactivity_activity_mode: default_inactivity_activity_mode(),
         };
 
@@ -2006,6 +2138,7 @@ mod tests {
             auto_start: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
+            audio_activity_sensitivity: 50,
             inactivity_activity_mode: default_inactivity_activity_mode(),
         };
 
@@ -2121,6 +2254,53 @@ mod tests {
         assert!(session.requested_sources.as_ref().is_some_and(|sources| {
             sources.screen && sources.microphone && sources.system_audio
         }));
+    }
+
+    #[test]
+    fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources() {
+        let runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            }),
+            ..Default::default()
+        };
+
+        let snapshot = current_activity_snapshot(&runtime);
+
+        assert!(snapshot.microphone_activity.enabled);
+        assert!(snapshot.system_audio_activity.enabled);
+    }
+
+    #[test]
+    fn idle_debug_activity_sources_include_audio_fields() {
+        let policy = ActivityPolicyEvaluation {
+            effective_idle: crate::native_capture_inactivity::EffectiveIdle {
+                source: crate::native_capture_inactivity::ActivitySourceKind::MicrophoneCapture,
+                idle_ms: 250,
+            },
+            sources: vec![crate::native_capture_inactivity::ActivitySourceSample {
+                kind: crate::native_capture_inactivity::ActivitySourceKind::MicrophoneCapture,
+                enabled: true,
+                available: true,
+                idle_ms: Some(250),
+                latest_normalized_level: Some(0.35),
+                activity_threshold: Some(0.4),
+            }],
+        };
+
+        let sources = idle_debug_activity_sources(&policy);
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].kind, "microphone_capture");
+        assert!(sources[0].enabled);
+        assert!(sources[0].available);
+        assert_eq!(sources[0].idle_ms, Some(250));
+        assert_eq!(sources[0].latest_normalized_level, Some(0.35));
+        assert_eq!(sources[0].activity_threshold, Some(0.4));
+        assert!(sources[0].selected);
     }
 
     #[cfg(target_os = "macos")]

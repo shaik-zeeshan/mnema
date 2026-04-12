@@ -109,6 +109,161 @@ pub fn derive_audio_sample_format_from_sample_buf(
 }
 
 #[cfg(target_os = "macos")]
+const AUDIO_ACTIVITY_MAX_PROBES_PER_BUFFER: usize = 256;
+
+#[cfg(target_os = "macos")]
+pub fn derive_audio_activity_level_from_sample_buf(
+    sample_buf: &cidre::cm::SampleBuf,
+) -> Option<f32> {
+    if !sample_buf.data_is_ready() {
+        return None;
+    }
+
+    let sample_format = derive_audio_sample_format_from_sample_buf(sample_buf)?;
+    let mut audio_buf_list = cidre::cat::AudioBufListN::default();
+    let audio_buf_list = sample_buf.audio_buf_list_n(&mut audio_buf_list).ok()?;
+
+    peak_audio_activity_level_from_audio_buffers(audio_buf_list.list.buffers(), sample_format)
+}
+
+#[cfg(target_os = "macos")]
+fn peak_audio_activity_level_from_audio_buffers(
+    buffers: &[cidre::cat::AudioBuf],
+    sample_format: AudioSampleFormat,
+) -> Option<f32> {
+    let mut peak = 0.0_f32;
+    let mut sampled_any = false;
+
+    for buffer in buffers {
+        let byte_len = buffer.data_bytes_size as usize;
+        if buffer.data.is_null() || byte_len == 0 {
+            continue;
+        }
+
+        let bytes = unsafe { std::slice::from_raw_parts(buffer.data as *const u8, byte_len) };
+        let Some(buffer_peak) = peak_audio_activity_level_from_pcm_bytes(
+            bytes,
+            sample_format,
+            AUDIO_ACTIVITY_MAX_PROBES_PER_BUFFER,
+        ) else {
+            continue;
+        };
+
+        sampled_any = true;
+        peak = peak.max(buffer_peak);
+
+        if peak >= 1.0 {
+            return Some(1.0);
+        }
+    }
+
+    sampled_any.then_some(peak)
+}
+
+#[cfg(target_os = "macos")]
+fn peak_audio_activity_level_from_pcm_bytes(
+    bytes: &[u8],
+    sample_format: AudioSampleFormat,
+    max_probes: usize,
+) -> Option<f32> {
+    let format_id = cidre::cat::AudioFormat(sample_format.format_id);
+    if format_id != cidre::cat::AudioFormat::LINEAR_PCM {
+        return None;
+    }
+
+    let format_flags = cidre::cat::AudioFormatFlags(sample_format.format_flags);
+    let is_float = format_flags.contains(cidre::cat::AudioFormatFlags::IS_FLOAT);
+    let is_signed_integer = format_flags.contains(cidre::cat::AudioFormatFlags::IS_SIGNED_INTEGER);
+    let is_packed = format_flags.contains(cidre::cat::AudioFormatFlags::IS_PACKED);
+    let is_native_endian = format_flags.0 & cidre::cat::AudioFormatFlags::IS_BIG_ENDIAN.0
+        == cidre::cat::AudioFormatFlags::NATIVE_ENDIAN.0;
+    let bytes_per_sample = sample_format.bits_per_channel.saturating_add(7) / 8;
+    let bytes_per_sample = bytes_per_sample as usize;
+
+    if !is_native_endian || !is_packed || bytes_per_sample == 0 || bytes.len() < bytes_per_sample {
+        return None;
+    }
+
+    let sample_count = bytes.len() / bytes_per_sample;
+    if sample_count == 0 {
+        return None;
+    }
+
+    let probe_count = max_probes.max(1).min(sample_count);
+    let step = sample_count.div_ceil(probe_count);
+    let mut peak = 0.0_f32;
+
+    for sample_index in (0..sample_count).step_by(step) {
+        let offset = sample_index * bytes_per_sample;
+        let sample = &bytes[offset..offset + bytes_per_sample];
+        let sample_peak = if is_float {
+            normalized_float_pcm_sample(sample, sample_format.bits_per_channel)
+        } else if is_signed_integer {
+            normalized_signed_pcm_sample(sample, sample_format.bits_per_channel)
+        } else {
+            None
+        }?;
+
+        peak = peak.max(sample_peak);
+        if peak >= 1.0 {
+            return Some(1.0);
+        }
+    }
+
+    Some(peak)
+}
+
+#[cfg(target_os = "macos")]
+fn normalized_float_pcm_sample(sample: &[u8], bits_per_channel: u32) -> Option<f32> {
+    let value = match bits_per_channel {
+        32 if sample.len() >= std::mem::size_of::<f32>() => {
+            f32::from_ne_bytes(sample[..4].try_into().ok()?).abs()
+        }
+        64 if sample.len() >= std::mem::size_of::<f64>() => {
+            f64::from_ne_bytes(sample[..8].try_into().ok()?).abs() as f32
+        }
+        _ => return None,
+    };
+
+    value.is_finite().then_some(value.clamp(0.0, 1.0))
+}
+
+#[cfg(target_os = "macos")]
+fn normalized_signed_pcm_sample(sample: &[u8], bits_per_channel: u32) -> Option<f32> {
+    let magnitude = match bits_per_channel {
+        8 if !sample.is_empty() => (sample[0] as i8).unsigned_abs() as f32 / i8::MAX as f32,
+        16 if sample.len() >= 2 => {
+            i16::from_ne_bytes(sample[..2].try_into().ok()?).unsigned_abs() as f32 / i16::MAX as f32
+        }
+        24 if sample.len() >= 3 => {
+            let value = if cfg!(target_endian = "little") {
+                i32::from_le_bytes([
+                    sample[0],
+                    sample[1],
+                    sample[2],
+                    if sample[2] & 0x80 != 0 { 0xFF } else { 0x00 },
+                ])
+            } else {
+                i32::from_be_bytes([
+                    if sample[0] & 0x80 != 0 { 0xFF } else { 0x00 },
+                    sample[0],
+                    sample[1],
+                    sample[2],
+                ])
+            };
+
+            value.unsigned_abs() as f32 / 8_388_607.0
+        }
+        32 if sample.len() >= 4 => {
+            i32::from_ne_bytes(sample[..4].try_into().ok()?).unsigned_abs() as f32 / i32::MAX as f32
+        }
+        _ => return None,
+    };
+
+    Some(magnitude.clamp(0.0, 1.0))
+}
+
+#[cfg(target_os = "macos")]
 pub fn create_audio_asset_writer(
     output_url: &cidre::ns::Url,
     label: &'static str,
@@ -709,5 +864,76 @@ fn error_with_ns_error(code: &str, prefix: &str, error: &cidre::ns::Error) -> Ca
     CaptureErrorResponse {
         code: code.to_string(),
         message: format!("{prefix}: {error} (code: {})", error.code(),),
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    fn pcm_format(
+        bits_per_channel: u32,
+        format_flags: cidre::cat::AudioFormatFlags,
+    ) -> AudioSampleFormat {
+        AudioSampleFormat {
+            sample_rate_hz: 48_000.0,
+            format_id: cidre::cat::AudioFormat::LINEAR_PCM.0,
+            format_flags: format_flags.0,
+            bytes_per_packet: bits_per_channel.saturating_add(7) / 8,
+            frames_per_packet: 1,
+            bytes_per_frame: bits_per_channel.saturating_add(7) / 8,
+            channels_per_frame: 1,
+            bits_per_channel,
+        }
+    }
+
+    #[test]
+    fn audio_activity_level_detects_signed_pcm_peaks() {
+        let format = pcm_format(
+            16,
+            cidre::cat::AudioFormatFlags::IS_SIGNED_INTEGER
+                | cidre::cat::AudioFormatFlags::IS_PACKED,
+        );
+        let bytes = [0_u8, 0_u8, 0x00, 0x40, 0xff, 0x7f];
+
+        let level = peak_audio_activity_level_from_pcm_bytes(&bytes, format, 256);
+
+        assert_eq!(level, Some(1.0));
+    }
+
+    #[test]
+    fn audio_activity_level_detects_float_pcm_peaks() {
+        let format = pcm_format(
+            32,
+            cidre::cat::AudioFormatFlags::IS_FLOAT | cidre::cat::AudioFormatFlags::IS_PACKED,
+        );
+        let bytes = [
+            0.0_f32.to_ne_bytes(),
+            0.5_f32.to_ne_bytes(),
+            (-0.25_f32).to_ne_bytes(),
+        ]
+        .concat();
+
+        let level = peak_audio_activity_level_from_pcm_bytes(&bytes, format, 256);
+
+        assert_eq!(level, Some(0.5));
+    }
+
+    #[test]
+    fn audio_activity_level_rejects_non_pcm_formats() {
+        let format = AudioSampleFormat {
+            sample_rate_hz: 48_000.0,
+            format_id: cidre::cat::AudioFormat::MPEG4_AAC.0,
+            format_flags: 0,
+            bytes_per_packet: 1,
+            frames_per_packet: 1,
+            bytes_per_frame: 1,
+            channels_per_frame: 1,
+            bits_per_channel: 16,
+        };
+
+        let level = peak_audio_activity_level_from_pcm_bytes(&[1, 2, 3, 4], format, 256);
+
+        assert_eq!(level, None);
     }
 }
