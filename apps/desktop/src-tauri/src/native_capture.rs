@@ -590,6 +590,9 @@ fn capture_source_requested(
 }
 
 fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> ActivitySnapshot {
+    #[cfg(target_os = "macos")]
+    capture_screen::poll_screen_activity();
+
     ActivitySnapshot {
         system_input_idle_ms: current_system_idle_ms(),
         screen_activity_idle_ms: capture_screen::screen_activity_idle_ms(),
