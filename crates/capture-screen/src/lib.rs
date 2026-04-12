@@ -25,13 +25,15 @@ use std::ffi::CString;
 use std::fmt::Display;
 use std::path::Path;
 #[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicU64;
+#[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
 #[cfg(target_os = "macos")]
 use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "macos")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScreenCaptureSources {
@@ -133,6 +135,333 @@ fn output_files_for_session(
 
 #[cfg(target_os = "macos")]
 static SCREEN_PERMISSION_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static LAST_SCREEN_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "macos")]
+static LAST_SCREEN_ACTIVITY_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "macos")]
+static LAST_SCREEN_ACTIVITY_FINGERPRINT: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "macos")]
+// Coalesce noisy per-frame screen samples without approaching the minimum
+// supported inactivity timeout (1s), which would risk false inactivity pauses
+// for low-FPS or jittery sessions.
+const SCREEN_ACTIVITY_DEBOUNCE_WINDOW_MS: u64 = 250;
+#[cfg(target_os = "macos")]
+const SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT: usize = 8;
+#[cfg(target_os = "macos")]
+const SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE: usize = 4;
+#[cfg(target_os = "macos")]
+const SCREEN_ACTIVITY_FINGERPRINT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+#[cfg(target_os = "macos")]
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "macos")]
+fn screen_activity_monotonic_epoch() -> &'static Instant {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now)
+}
+
+#[cfg(target_os = "macos")]
+fn now_monotonic_ms() -> u64 {
+    screen_activity_monotonic_epoch()
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(target_os = "macos")]
+fn now_monotonic_marker_ms() -> u64 {
+    // Reserve 0 as the "no sample observed" sentinel in the atomic state.
+    now_monotonic_ms().saturating_add(1)
+}
+
+#[cfg(target_os = "macos")]
+fn should_mark_screen_activity(last_activity_monotonic_ms: u64, now_monotonic_ms: u64) -> bool {
+    last_activity_monotonic_ms == 0
+        || now_monotonic_ms.saturating_sub(last_activity_monotonic_ms)
+            >= SCREEN_ACTIVITY_DEBOUNCE_WINDOW_MS
+}
+
+#[cfg(target_os = "macos")]
+fn mix_screen_activity_fingerprint(hash: &mut u64, value: u64) {
+    *hash ^= value.wrapping_add(0x9E37_79B9_7F4A_7C15).rotate_left(25);
+    *hash = hash.rotate_left(27).wrapping_mul(0x94D0_49BB_1331_11EB);
+}
+
+#[cfg(target_os = "macos")]
+fn mix_screen_activity_fingerprint_bytes(hash: &mut u64, bytes: &[u8]) {
+    let mut chunk = [0_u8; 8];
+    chunk[..bytes.len()].copy_from_slice(bytes);
+    mix_screen_activity_fingerprint(hash, u64::from_le_bytes(chunk) ^ (bytes.len() as u64));
+}
+
+#[cfg(target_os = "macos")]
+fn finalize_screen_activity_fingerprint(mut hash: u64) -> u64 {
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+    hash ^= hash >> 33;
+
+    if hash == 0 {
+        SCREEN_ACTIVITY_FINGERPRINT_SEED
+    } else {
+        hash
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn screen_activity_attachment_value<'a>(
+    sample_buf: &'a cidre::cm::SampleBuf,
+    key: &cidre::sc::FrameInfo,
+) -> Option<&'a cidre::cf::Type> {
+    use cidre::cm;
+
+    let mut attachment_mode = cm::AttachMode::Propagate;
+    let key = key.as_type_ref().try_as_string()?;
+    sample_buf.attach(key, &mut attachment_mode)
+}
+
+#[cfg(target_os = "macos")]
+fn mix_screen_activity_attachment_fingerprint(
+    hash: &mut u64,
+    sample_buf: &cidre::cm::SampleBuf,
+    key: &cidre::sc::FrameInfo,
+) -> bool {
+    use cidre::cf;
+
+    let Some(value) = screen_activity_attachment_value(sample_buf, key) else {
+        return false;
+    };
+
+    mix_screen_activity_fingerprint(hash, value.hash() as u64);
+
+    if value.get_type_id() == cf::Array::type_id() {
+        let array: &cf::Array = unsafe { std::mem::transmute(value) };
+        mix_screen_activity_fingerprint(hash, array.len() as u64);
+    }
+
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn non_planar_screen_activity_sample_width(
+    pixel_buf: &cidre::cv::PixelBuf,
+    bytes_per_row: usize,
+) -> usize {
+    let estimated_bytes_per_pixel = match pixel_buf.pixel_format() {
+        cidre::cv::PixelFormat::_32_BGRA
+        | cidre::cv::PixelFormat::_32_ARGB
+        | cidre::cv::PixelFormat::_32_ABGR
+        | cidre::cv::PixelFormat::_32_RGBA
+        | cidre::cv::PixelFormat::_30_RGB
+        | cidre::cv::PixelFormat::_30_RGB_R210
+        | cidre::cv::PixelFormat::ARGB_2101010_LE_PACKED => 4,
+        cidre::cv::PixelFormat::_64_ARGB
+        | cidre::cv::PixelFormat::_64_RGBALE
+        | cidre::cv::PixelFormat::_64_RGBA_HALF => 8,
+        cidre::cv::PixelFormat::_128_RGBA_FLOAT => 16,
+        _ => 1,
+    };
+
+    bytes_per_row
+        .min(pixel_buf.width().saturating_mul(estimated_bytes_per_pixel))
+        .max(1)
+}
+
+#[cfg(target_os = "macos")]
+fn mix_screen_activity_pixel_probe_bytes(
+    hash: &mut u64,
+    base_address: *const u8,
+    bytes_per_row: usize,
+    sample_width: usize,
+    height: usize,
+) -> bool {
+    if base_address.is_null() || bytes_per_row == 0 || sample_width == 0 || height == 0 {
+        return false;
+    }
+
+    let last_row = height.saturating_sub(1);
+    let probe_denominator = SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT
+        .saturating_sub(1)
+        .max(1);
+    let max_start_col = sample_width.saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
+
+    for probe_index in 0..SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT {
+        let row = if last_row == 0 {
+            0
+        } else {
+            probe_index.saturating_mul(last_row) / probe_denominator
+        };
+        let col = if max_start_col == 0 {
+            0
+        } else {
+            probe_index.wrapping_mul(1_103_515_245) % (max_start_col + 1)
+        };
+        let sample_len = (sample_width - col).min(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
+        let sample_start = row.saturating_mul(bytes_per_row).saturating_add(col);
+        let sample =
+            unsafe { std::slice::from_raw_parts(base_address.add(sample_start), sample_len) };
+
+        mix_screen_activity_fingerprint(hash, row as u64);
+        mix_screen_activity_fingerprint(hash, col as u64);
+        mix_screen_activity_fingerprint_bytes(hash, sample);
+    }
+
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn screen_activity_pixel_fingerprint(sample_buf: &mut cidre::cm::SampleBuf) -> Option<u64> {
+    let pixel_buf = sample_buf.image_buf_mut()?;
+    let plane_count = pixel_buf.plane_count();
+    let width = pixel_buf.width();
+    let height = pixel_buf.height();
+    let pixel_format = pixel_buf.pixel_format();
+    let lock_flags = cidre::cv::pixel_buffer::LockFlags::READ_ONLY;
+
+    unsafe {
+        pixel_buf.lock_base_addr(lock_flags).result().ok()?;
+    }
+
+    let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
+    mix_screen_activity_fingerprint(&mut hash, width as u64);
+    mix_screen_activity_fingerprint(&mut hash, height as u64);
+    mix_screen_activity_fingerprint(&mut hash, pixel_format.0 as u64);
+    mix_screen_activity_fingerprint(&mut hash, plane_count as u64);
+
+    let mut sampled_any_plane = false;
+
+    if plane_count == 0 {
+        let bytes_per_row = unsafe { CVPixelBufferGetBytesPerRow(pixel_buf) };
+        let sample_width = non_planar_screen_activity_sample_width(pixel_buf, bytes_per_row);
+        let base_address = unsafe { CVPixelBufferGetBaseAddress(pixel_buf) } as *const u8;
+
+        sampled_any_plane = mix_screen_activity_pixel_probe_bytes(
+            &mut hash,
+            base_address,
+            bytes_per_row,
+            sample_width,
+            height,
+        );
+    } else {
+        for plane_index in 0..plane_count {
+            let plane_bytes_per_row = pixel_buf.plane_bytes_per_row(plane_index);
+            let plane_width = pixel_buf.plane_width(plane_index).max(1);
+            let plane_height = pixel_buf.plane_height(plane_index);
+            let plane_base_address = pixel_buf.plane_base_address(plane_index);
+
+            mix_screen_activity_fingerprint(&mut hash, plane_index as u64);
+            mix_screen_activity_fingerprint(&mut hash, plane_width as u64);
+            mix_screen_activity_fingerprint(&mut hash, plane_height as u64);
+
+            sampled_any_plane |= mix_screen_activity_pixel_probe_bytes(
+                &mut hash,
+                plane_base_address,
+                plane_bytes_per_row,
+                plane_bytes_per_row.min(plane_width).max(1),
+                plane_height,
+            );
+        }
+    }
+
+    let _ = unsafe { pixel_buf.unlock_lock_base_addr(lock_flags).result() };
+
+    sampled_any_plane.then(|| finalize_screen_activity_fingerprint(hash))
+}
+
+#[cfg(target_os = "macos")]
+fn screen_activity_sample_fingerprint(sample_buf: &mut cidre::cm::SampleBuf) -> Option<u64> {
+    let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
+    let mut has_content_signal = false;
+
+    for key in [
+        cidre::sc::FrameInfo::dirty_rects(),
+        cidre::sc::FrameInfo::content_rect(),
+        cidre::sc::FrameInfo::screen_rect(),
+        cidre::sc::FrameInfo::bounding_rect(),
+    ] {
+        has_content_signal |=
+            mix_screen_activity_attachment_fingerprint(&mut hash, sample_buf, key);
+    }
+
+    if let Some(pixel_hash) = screen_activity_pixel_fingerprint(sample_buf) {
+        mix_screen_activity_fingerprint(&mut hash, pixel_hash);
+        has_content_signal = true;
+    }
+
+    has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
+}
+
+#[cfg(target_os = "macos")]
+fn should_mark_screen_activity_for_fingerprint(
+    last_activity_fingerprint: u64,
+    fingerprint: Option<u64>,
+) -> bool {
+    match fingerprint {
+        None => false,
+        Some(fingerprint) => {
+            last_activity_fingerprint == 0 || last_activity_fingerprint != fingerprint
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_mark_screen_activity_for_sample(sample_buf: &mut cidre::cm::SampleBuf) {
+    let fingerprint = screen_activity_sample_fingerprint(sample_buf);
+    let last_activity_fingerprint = LAST_SCREEN_ACTIVITY_FINGERPRINT.load(Ordering::Relaxed);
+
+    if !should_mark_screen_activity_for_fingerprint(last_activity_fingerprint, fingerprint) {
+        return;
+    }
+
+    if mark_screen_activity(now_monotonic_marker_ms(), now_unix_ms()) {
+        if let Some(fingerprint) = fingerprint {
+            LAST_SCREEN_ACTIVITY_FINGERPRINT.store(fingerprint, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn mark_screen_activity(now_monotonic_ms: u64, now_unix_ms: u64) -> bool {
+    let mut last_activity_monotonic_ms = LAST_SCREEN_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
+
+    loop {
+        if !should_mark_screen_activity(last_activity_monotonic_ms, now_monotonic_ms) {
+            return false;
+        }
+
+        match LAST_SCREEN_ACTIVITY_MONOTONIC_MS.compare_exchange_weak(
+            last_activity_monotonic_ms,
+            now_monotonic_ms,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => {
+                LAST_SCREEN_ACTIVITY_UNIX_MS.fetch_max(now_unix_ms, Ordering::Relaxed);
+                return true;
+            }
+            Err(current) => last_activity_monotonic_ms = current,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn reset_last_screen_activity_unix_ms() {
+    LAST_SCREEN_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
+    LAST_SCREEN_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
+    LAST_SCREEN_ACTIVITY_FINGERPRINT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn reset_last_screen_activity_unix_ms() {}
 
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
@@ -179,6 +508,7 @@ mod stream_output_delegate {
                     if !super::should_append_screen_sample(sample_buf) {
                         return;
                     }
+                    super::maybe_mark_screen_activity_for_sample(sample_buf);
 
                     if ctx.screen_video_writer.is_none() {
                         let Some(output_file) = ctx.screen_video_output_file.as_deref() else {
@@ -239,6 +569,13 @@ fn should_append_screen_sample(sample_buf: &cidre::cm::SampleBuf) -> bool {
         Some(value) => value == sc::FrameStatus::Complete as i32,
         None => true,
     }
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreVideo", kind = "framework")]
+unsafe extern "C-unwind" {
+    fn CVPixelBufferGetBaseAddress(pixel_buffer: &cidre::cv::PixelBuf) -> *const std::ffi::c_void;
+    fn CVPixelBufferGetBytesPerRow(pixel_buffer: &cidre::cv::PixelBuf) -> usize;
 }
 
 #[cfg(target_os = "macos")]
@@ -1328,9 +1665,40 @@ pub fn support_for_current_platform() -> ScreenCaptureSupport {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub fn last_screen_activity_unix_ms() -> Option<u64> {
+    let ts = LAST_SCREEN_ACTIVITY_UNIX_MS.load(Ordering::Relaxed);
+    (ts > 0).then_some(ts)
+}
+
+#[cfg(target_os = "macos")]
+pub fn screen_activity_idle_ms() -> Option<u64> {
+    let ts = LAST_SCREEN_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
+    (ts > 0).then_some(now_monotonic_marker_ms().saturating_sub(ts))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn last_screen_activity_unix_ms() -> Option<u64> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn screen_activity_idle_ms() -> Option<u64> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    fn screen_activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -1376,6 +1744,125 @@ mod tests {
 
         assert_eq!(resolved.width, 1002);
         assert_eq!(resolved.height, 778);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_marks_initial_sample_without_delay() {
+        assert!(should_mark_screen_activity(0, 10_000));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_debounce_window_stays_below_minimum_idle_timeout() {
+        assert!(SCREEN_ACTIVITY_DEBOUNCE_WINDOW_MS < 1_000);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_debounces_samples_inside_window() {
+        assert!(!should_mark_screen_activity(
+            10_000,
+            10_000 + SCREEN_ACTIVITY_DEBOUNCE_WINDOW_MS - 1,
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_marks_samples_once_window_elapses() {
+        assert!(should_mark_screen_activity(
+            10_000,
+            10_000 + SCREEN_ACTIVITY_DEBOUNCE_WINDOW_MS,
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_content_gate_marks_initial_fingerprint() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+
+        assert!(should_mark_screen_activity_for_fingerprint(0, Some(11)));
+
+        reset_last_screen_activity_unix_ms();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_content_gate_skips_repeated_fingerprints_after_activity() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+
+        assert!(should_mark_screen_activity_for_fingerprint(0, Some(11)));
+        assert!(mark_screen_activity(10_000, 20_000));
+        LAST_SCREEN_ACTIVITY_FINGERPRINT.store(11, Ordering::Relaxed);
+
+        assert!(!should_mark_screen_activity_for_fingerprint(11, Some(11)));
+
+        reset_last_screen_activity_unix_ms();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_content_gate_marks_changed_fingerprints_after_activity() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+
+        assert!(should_mark_screen_activity_for_fingerprint(0, Some(11)));
+        assert!(mark_screen_activity(10_000, 20_000));
+        LAST_SCREEN_ACTIVITY_FINGERPRINT.store(11, Ordering::Relaxed);
+
+        assert!(should_mark_screen_activity_for_fingerprint(11, Some(12)));
+
+        reset_last_screen_activity_unix_ms();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_content_gate_skips_unknown_fingerprints_after_activity() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+        assert!(mark_screen_activity(10_000, 20_000));
+        LAST_SCREEN_ACTIVITY_FINGERPRINT.store(11, Ordering::Relaxed);
+
+        assert!(!should_mark_screen_activity_for_fingerprint(11, None));
+
+        reset_last_screen_activity_unix_ms();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_content_gate_skips_unknown_initial_fingerprint() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+
+        assert!(!should_mark_screen_activity_for_fingerprint(0, None));
+
+        reset_last_screen_activity_unix_ms();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reset_last_screen_activity_clears_monotonic_and_unix_samples() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+
+        assert!(should_mark_screen_activity_for_fingerprint(0, Some(11)));
+        LAST_SCREEN_ACTIVITY_FINGERPRINT.store(11, Ordering::Relaxed);
+        assert!(mark_screen_activity(10_000, 20_000));
+
+        assert_eq!(last_screen_activity_unix_ms(), Some(20_000));
+        assert_eq!(
+            LAST_SCREEN_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed),
+            10_000
+        );
+        assert_ne!(LAST_SCREEN_ACTIVITY_FINGERPRINT.load(Ordering::Relaxed), 0);
+
+        reset_last_screen_activity_unix_ms();
+
+        assert_eq!(last_screen_activity_unix_ms(), None);
+        assert_eq!(LAST_SCREEN_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed), 0);
+        assert_eq!(LAST_SCREEN_ACTIVITY_FINGERPRINT.load(Ordering::Relaxed), 0);
     }
 }
 

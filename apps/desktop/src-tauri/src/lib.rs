@@ -1,4 +1,8 @@
 mod native_capture;
+mod native_capture_inactivity;
+mod native_capture_output;
+mod native_capture_settings;
+mod native_capture_system_idle;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -11,6 +15,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             native_capture::get_capture_support,
             native_capture::get_capture_permissions,
+            native_capture::get_idle_debug,
             native_capture::get_recording_settings,
             native_capture::update_recording_settings,
             native_capture::get_microphone_controller_state,

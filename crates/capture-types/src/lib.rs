@@ -49,6 +49,7 @@ pub struct CaptureOutputFiles {
 #[serde(rename_all = "camelCase")]
 pub struct NativeCaptureSession {
     pub is_running: bool,
+    pub is_inactivity_paused: bool,
     pub session_id: Option<String>,
     pub started_at_unix_ms: Option<u64>,
     pub requested_sources: Option<CaptureSources>,
@@ -137,6 +138,25 @@ pub fn default_video_bitrate() -> VideoBitrateSettings {
     }
 }
 
+pub fn default_pause_capture_on_inactivity() -> bool {
+    true
+}
+
+pub fn default_idle_timeout_seconds() -> u64 {
+    10
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InactivityActivityMode {
+    SystemInputOnly,
+    SystemInputOrScreen,
+}
+
+pub fn default_inactivity_activity_mode() -> InactivityActivityMode {
+    InactivityActivityMode::SystemInputOrScreen
+}
+
 impl Default for VideoBitrateSettings {
     fn default() -> Self {
         default_video_bitrate()
@@ -163,6 +183,16 @@ pub struct RecordingSettings {
     pub video_bitrate: VideoBitrateSettings,
     pub save_directory: String,
     pub auto_start: bool,
+    #[serde(default = "default_pause_capture_on_inactivity")]
+    pub pause_capture_on_inactivity: bool,
+    #[serde(default = "default_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+    #[serde(
+        default = "default_inactivity_activity_mode",
+        rename = "activityMode",
+        alias = "inactivityActivityMode"
+    )]
+    pub inactivity_activity_mode: InactivityActivityMode,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -179,6 +209,16 @@ pub struct UpdateRecordingSettingsRequest {
     pub video_bitrate: VideoBitrateSettings,
     pub save_directory: String,
     pub auto_start: bool,
+    #[serde(default = "default_pause_capture_on_inactivity")]
+    pub pause_capture_on_inactivity: bool,
+    #[serde(default = "default_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+    #[serde(
+        default = "default_inactivity_activity_mode",
+        rename = "activityMode",
+        alias = "inactivityActivityMode"
+    )]
+    pub inactivity_activity_mode: InactivityActivityMode,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -5347,6 +5347,7 @@ dependencies = [
  "capture-screen",
  "capture-types",
  "capture-writers",
+ "core-graphics",
  "serde",
  "serde_json",
  "tauri",

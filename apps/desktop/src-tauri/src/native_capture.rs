@@ -1,3 +1,17 @@
+use crate::native_capture_inactivity::{
+    ActivityPolicyEvaluation, ActivitySnapshot, InactivityState,
+};
+use crate::native_capture_output::{
+    append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
+    finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
+    set_current_system_audio_output_file,
+};
+#[cfg(test)]
+use crate::native_capture_settings::validate_recording_settings_with_resolution_support;
+use crate::native_capture_settings::{
+    compute_effective_screen_bitrate_bps, default_recording_settings,
+    load_recording_settings_from_disk, persist_recording_settings, validate_recording_settings,
+};
 use capture_microphone as microphone_capture;
 use capture_runtime::{
     CaptureClock, RuntimeController, RuntimeSignal, RuntimeState, SegmentPlanner, SegmentSchedule,
@@ -6,211 +20,22 @@ use capture_runtime::{
 use capture_screen::RotateScreenCaptureSessionArgs;
 use capture_screen::StopScreenCaptureSessionArgs;
 use capture_types::{
-    default_video_bitrate, CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState,
-    CapturePermissions, CapturePermissionsResponse, CaptureSources, CaptureSupportResponse,
-    MicrophoneControllerState, MicrophoneDisconnectPolicy, MicrophonePreference,
-    MicrophonePreferenceMode, NativeCaptureSession, NativeCaptureSessionResponse,
-    RecordingSettings, ScreenResolution, ScreenResolutionPreset, StartNativeCaptureRequest,
-    UpdateMicrophoneControllerRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
-    VideoBitratePreset, VideoBitrateSettings,
+    CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, CapturePermissions,
+    CapturePermissionsResponse, CaptureSources, CaptureSupportResponse, MicrophoneControllerState,
+    MicrophoneDisconnectPolicy, MicrophonePreference, MicrophonePreferenceMode,
+    NativeCaptureSession, NativeCaptureSessionResponse, RecordingSettings, ScreenResolution,
+    StartNativeCaptureRequest, UpdateMicrophoneControllerRequest, UpdateRecordingSettingsRequest,
 };
 use serde::Serialize;
-#[cfg(target_os = "macos")]
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
-
-#[cfg(target_os = "macos")]
-fn maybe_remove_intermediate_file(file: &str, label: &str, failures: &mut Vec<String>) {
-    match std::fs::remove_file(file) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            failures.push(format!(
-                "failed to remove intermediate {label} recording file: {error}"
-            ));
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn microphone_output_files(output_files: &CaptureOutputFiles) -> Vec<&str> {
-    if !output_files.microphone_files.is_empty() {
-        output_files
-            .microphone_files
-            .iter()
-            .map(String::as_str)
-            .collect()
-    } else {
-        output_files
-            .microphone_file
-            .as_deref()
-            .into_iter()
-            .collect()
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn finalize_capture_outputs(
-    output_files: Option<&CaptureOutputFiles>,
-    recording_file: Option<&str>,
-    microphone_recording_file: Option<&str>,
-    system_audio_recording_file: Option<&str>,
-    requested_sources: Option<&CaptureSources>,
-) -> Result<(), CaptureErrorResponse> {
-    let Some(output_files) = output_files else {
-        return Ok(());
-    };
-
-    let mut failures: Vec<String> = Vec::new();
-    let microphone_files = microphone_output_files(output_files);
-
-    if output_files.microphone_file.is_some() && output_files.microphone_files.is_empty() {
-        let microphone_file = output_files
-            .microphone_file
-            .as_deref()
-            .expect("checked microphone_file is present");
-        let source_recording = microphone_recording_file.or(recording_file);
-
-        if let Some(source_recording) = source_recording {
-            if source_recording != microphone_file {
-                if let Err(error) = capture_writers::convert_recording_audio_to_m4a(
-                    source_recording,
-                    microphone_file,
-                ) {
-                    failures.push(format!(
-                        "microphone output conversion failed: {}",
-                        error.message
-                    ));
-                }
-            }
-        } else {
-            failures
-                .push("microphone output conversion failed: missing source recording".to_string());
-        }
-    }
-
-    if let Some(system_audio_file) = output_files.system_audio_file.as_deref() {
-        if let Some(source_recording) = system_audio_recording_file {
-            if source_recording != system_audio_file {
-                if let Err(error) = capture_writers::convert_recording_audio_to_m4a(
-                    source_recording,
-                    system_audio_file,
-                ) {
-                    failures.push(format!(
-                        "system audio output conversion failed: {}",
-                        error.message
-                    ));
-                }
-            }
-        } else {
-            failures.push(
-                "system audio output conversion failed: missing source recording".to_string(),
-            );
-        }
-    }
-
-    if requested_sources.is_some_and(|sources| sources.system_audio) {
-        if let Some(recording_file) = recording_file {
-            if let Err(error) = capture_screen::strip_audio_from_recording_file(recording_file) {
-                failures.push(format!(
-                    "screen output video-only conversion failed: {}",
-                    error.message
-                ));
-            }
-        }
-    }
-
-    if let Some(microphone_recording_file) = microphone_recording_file {
-        if !microphone_files.contains(&microphone_recording_file) {
-            maybe_remove_intermediate_file(microphone_recording_file, "microphone", &mut failures);
-        }
-    }
-
-    if let Some(system_audio_recording_file) = system_audio_recording_file {
-        if output_files.system_audio_file.as_deref() != Some(system_audio_recording_file) {
-            maybe_remove_intermediate_file(
-                system_audio_recording_file,
-                "system audio",
-                &mut failures,
-            );
-        }
-    }
-
-    capture_writers::aggregate_output_processing_failures(failures)
-}
-
-#[cfg(target_os = "macos")]
-fn append_committed_segment_output_files(
-    committed: &mut CaptureOutputFiles,
-    segment: &CaptureOutputFiles,
-) {
-    if let Some(file) = segment.screen_file.as_ref() {
-        set_current_screen_output_file(committed, file.clone());
-    }
-    if let Some(file) = segment.microphone_file.as_ref() {
-        set_current_microphone_output_file(committed, file.clone());
-    }
-    if let Some(file) = segment.system_audio_file.as_ref() {
-        set_current_system_audio_output_file(committed, file.clone());
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn cleanup_unusable_segment_artifacts(
-    output_files: Option<&CaptureOutputFiles>,
-    recording_file: Option<&str>,
-    microphone_recording_file: Option<&str>,
-    system_audio_recording_file: Option<&str>,
-) {
-    let mut files_to_remove: BTreeSet<String> = BTreeSet::new();
-
-    if let Some(output_files) = output_files {
-        for file in &output_files.screen_files {
-            let _ = files_to_remove.insert(file.clone());
-        }
-        for file in &output_files.microphone_files {
-            let _ = files_to_remove.insert(file.clone());
-        }
-        for file in &output_files.system_audio_files {
-            let _ = files_to_remove.insert(file.clone());
-        }
-
-        if let Some(file) = output_files.screen_file.as_ref() {
-            let _ = files_to_remove.insert(file.clone());
-        }
-        if let Some(file) = output_files.microphone_file.as_ref() {
-            let _ = files_to_remove.insert(file.clone());
-        }
-        if let Some(file) = output_files.system_audio_file.as_ref() {
-            let _ = files_to_remove.insert(file.clone());
-        }
-    }
-
-    if let Some(file) = recording_file {
-        let _ = files_to_remove.insert(file.to_string());
-    }
-    if let Some(file) = microphone_recording_file {
-        let _ = files_to_remove.insert(file.to_string());
-    }
-    if let Some(file) = system_audio_recording_file {
-        let _ = files_to_remove.insert(file.to_string());
-    }
-
-    for file in files_to_remove {
-        if let Err(error) = std::fs::remove_file(&file) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("failed removing unusable segment artifact {file}: {error}");
-            }
-        }
-    }
-}
 
 #[cfg(target_os = "macos")]
 fn stop_active_sessions_after_failure(runtime: &mut NativeCaptureRuntime) {
@@ -263,6 +88,7 @@ pub struct NativeCaptureRuntime {
     pub segment_planner: Option<SegmentPlanner>,
     pub runtime_controller: RuntimeController,
     pub runtime_state: RuntimeState,
+    pub inactivity: InactivityState,
     #[cfg(target_os = "macos")]
     pub recording_file: Option<String>,
     #[cfg(target_os = "macos")]
@@ -302,12 +128,6 @@ pub type MicrophoneDeviceChangeNotifierState =
 const MICROPHONE_CONTROLLER_CHANGED_EVENT: &str = "microphone_controller_changed";
 const MICROPHONE_AUTO_DISCONNECT_TRANSITION_FAILED_EVENT: &str =
     "microphone_auto_disconnect_transition_failed";
-const RECORDING_SETTINGS_FILE_NAME: &str = "recording-settings.json";
-const MIN_CUSTOM_VIDEO_BITRATE_MBPS: u32 = 1;
-const MAX_CUSTOM_VIDEO_BITRATE_MBPS: u32 = 40;
-const MIN_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 500_000;
-const MAX_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 120_000_000;
-const VIDEO_BITRATE_ROUND_STEP_BPS: u32 = 250_000;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SegmentLoopControl {
@@ -429,285 +249,20 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn default_save_directory() -> String {
-    std::env::var("HOME")
-        .map(|home| Path::new(&home).join(".z_records"))
-        .unwrap_or_else(|_| PathBuf::from(".z_records"))
-        .to_string_lossy()
-        .to_string()
+fn monotonic_epoch() -> &'static Instant {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now)
 }
 
-fn default_recording_settings() -> RecordingSettings {
-    RecordingSettings {
-        capture_screen: true,
-        capture_microphone: false,
-        capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: default_save_directory(),
-        auto_start: false,
-    }
+fn now_monotonic_ms() -> u64 {
+    monotonic_epoch()
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
 }
 
-fn validate_screen_resolution(
-    value: ScreenResolution,
-) -> Result<ScreenResolution, CaptureErrorResponse> {
-    match value {
-        ScreenResolution::Preset { .. } => Ok(value),
-        ScreenResolution::Custom { width, height } => {
-            const MIN_DIMENSION: u32 = 16;
-            const MAX_DIMENSION: u32 = 8192;
-
-            if !(MIN_DIMENSION..=MAX_DIMENSION).contains(&width)
-                || !(MIN_DIMENSION..=MAX_DIMENSION).contains(&height)
-            {
-                return Err(CaptureErrorResponse {
-                    code: "invalid_recording_settings".to_string(),
-                    message: format!(
-                        "Custom screen resolution width/height must be between {MIN_DIMENSION} and {MAX_DIMENSION}"
-                    ),
-                });
-            }
-
-            Ok(ScreenResolution::Custom { width, height })
-        }
-    }
-}
-
-fn validate_video_bitrate(
-    value: VideoBitrateSettings,
-) -> Result<VideoBitrateSettings, CaptureErrorResponse> {
-    match value.mode {
-        VideoBitrateMode::Preset => Ok(VideoBitrateSettings {
-            mode: VideoBitrateMode::Preset,
-            preset: Some(value.preset.unwrap_or(VideoBitratePreset::Medium)),
-            custom_mbps: None,
-        }),
-        VideoBitrateMode::Custom => {
-            let custom_mbps = value.custom_mbps.ok_or_else(|| CaptureErrorResponse {
-                code: "invalid_recording_settings".to_string(),
-                message: "videoBitrate.customMbps is required when videoBitrate.mode is custom"
-                    .to_string(),
-            })?;
-
-            if !(MIN_CUSTOM_VIDEO_BITRATE_MBPS..=MAX_CUSTOM_VIDEO_BITRATE_MBPS)
-                .contains(&custom_mbps)
-            {
-                return Err(CaptureErrorResponse {
-                    code: "invalid_recording_settings".to_string(),
-                    message: format!(
-                        "videoBitrate.customMbps must be between {MIN_CUSTOM_VIDEO_BITRATE_MBPS} and {MAX_CUSTOM_VIDEO_BITRATE_MBPS}"
-                    ),
-                });
-            }
-
-            Ok(VideoBitrateSettings {
-                mode: VideoBitrateMode::Custom,
-                preset: None,
-                custom_mbps: Some(custom_mbps),
-            })
-        }
-    }
-}
-
-fn video_bitrate_preset_factor(preset: VideoBitratePreset) -> f64 {
-    match preset {
-        VideoBitratePreset::Low => 0.07,
-        VideoBitratePreset::Medium => 0.10,
-        VideoBitratePreset::High => 0.14,
-    }
-}
-
-fn resolve_bitrate_dimensions(screen_resolution: &ScreenResolution) -> Option<(u32, u32)> {
-    match screen_resolution {
-        ScreenResolution::Preset { preset } => match preset {
-            ScreenResolutionPreset::Original => None,
-            ScreenResolutionPreset::P1080 => Some((1920, 1080)),
-            ScreenResolutionPreset::P720 => Some((1280, 720)),
-            ScreenResolutionPreset::P540 => Some((960, 540)),
-        },
-        ScreenResolution::Custom { width, height } => Some((*width, *height)),
-    }
-}
-
-fn clamp_and_round_bitrate_bits_per_second(raw_bps: f64) -> u32 {
-    let clamped = raw_bps
-        .clamp(
-            MIN_EFFECTIVE_VIDEO_BITRATE_BPS as f64,
-            MAX_EFFECTIVE_VIDEO_BITRATE_BPS as f64,
-        )
-        .round() as u64;
-    let step = VIDEO_BITRATE_ROUND_STEP_BPS as u64;
-    let rounded = ((clamped + (step / 2)) / step) * step;
-    rounded as u32
-}
-
-fn compute_effective_screen_bitrate_bps(settings: &RecordingSettings) -> Option<u32> {
-    if !settings.capture_screen {
-        return None;
-    }
-
-    let bitrate = match settings.video_bitrate.mode {
-        VideoBitrateMode::Custom => {
-            let custom_mbps = settings.video_bitrate.custom_mbps? as f64;
-            custom_mbps * 1_000_000.0
-        }
-        VideoBitrateMode::Preset => {
-            let preset = settings
-                .video_bitrate
-                .preset
-                .clone()
-                .unwrap_or(VideoBitratePreset::Medium);
-            let factor = video_bitrate_preset_factor(preset);
-            let (width, height) =
-                resolve_bitrate_dimensions(&settings.screen_resolution).unwrap_or((1920, 1080));
-            (width as f64) * (height as f64) * (settings.screen_frame_rate as f64) * factor
-        }
-    };
-
-    Some(clamp_and_round_bitrate_bits_per_second(bitrate))
-}
-
-fn is_original_screen_resolution(value: &ScreenResolution) -> bool {
-    matches!(
-        value,
-        ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original
-        }
-    )
-}
-
-fn supports_non_original_screen_resolution() -> bool {
-    capture_screen::support_for_current_platform().system_audio
-}
-
-fn validate_recording_settings(
-    request: UpdateRecordingSettingsRequest,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
-    validate_recording_settings_with_resolution_support(
-        request,
-        supports_non_original_screen_resolution(),
-    )
-}
-
-fn validate_recording_settings_with_resolution_support(
-    request: UpdateRecordingSettingsRequest,
-    non_original_resolution_supported: bool,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
-    if !request.capture_screen && !request.capture_microphone && !request.capture_system_audio {
-        return Err(CaptureErrorResponse {
-            code: "invalid_recording_settings".to_string(),
-            message: "At least one capture source must be enabled".to_string(),
-        });
-    }
-
-    if request.capture_system_audio && !request.capture_screen {
-        return Err(CaptureErrorResponse {
-            code: "invalid_recording_settings".to_string(),
-            message: "System audio capture requires screen capture".to_string(),
-        });
-    }
-
-    let save_directory = request.save_directory.trim().to_string();
-    if save_directory.is_empty() {
-        return Err(CaptureErrorResponse {
-            code: "invalid_recording_settings".to_string(),
-            message: "saveDirectory must be non-empty".to_string(),
-        });
-    }
-
-    if request.segment_duration_seconds == 0 {
-        return Err(CaptureErrorResponse {
-            code: "invalid_recording_settings".to_string(),
-            message: "segmentDurationSeconds must be greater than 0".to_string(),
-        });
-    }
-
-    if !(1..=120).contains(&request.screen_frame_rate) {
-        return Err(CaptureErrorResponse {
-            code: "invalid_recording_settings".to_string(),
-            message: "screenFrameRate must be between 1 and 120".to_string(),
-        });
-    }
-
-    let screen_resolution = validate_screen_resolution(request.screen_resolution)?;
-    let video_bitrate = validate_video_bitrate(request.video_bitrate)?;
-
-    if request.capture_screen
-        && !non_original_resolution_supported
-        && !is_original_screen_resolution(&screen_resolution)
-    {
-        return Err(CaptureErrorResponse {
-            code: "screen_resolution_unsupported".to_string(),
-            message: "Selected screen resolution requires the ScreenCaptureKit backend (macOS 15+). On this backend, only the original display resolution is supported.".to_string(),
-        });
-    }
-
-    Ok(RecordingSettings {
-        capture_screen: request.capture_screen,
-        capture_microphone: request.capture_microphone,
-        capture_system_audio: request.capture_system_audio,
-        segment_duration_seconds: request.segment_duration_seconds,
-        screen_frame_rate: request.screen_frame_rate,
-        screen_resolution,
-        video_bitrate,
-        save_directory,
-        auto_start: request.auto_start,
-    })
-}
-
-fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
-    if let Ok(config_dir) = app_handle.path().app_config_dir() {
-        return config_dir.join(RECORDING_SETTINGS_FILE_NAME);
-    }
-
-    PathBuf::from(default_save_directory()).join(RECORDING_SETTINGS_FILE_NAME)
-}
-
-fn load_recording_settings_from_disk(app_handle: &tauri::AppHandle) -> Option<RecordingSettings> {
-    let path = recording_settings_file_path(app_handle);
-    let raw = std::fs::read_to_string(path).ok()?;
-    let parsed = serde_json::from_str::<RecordingSettings>(&raw).ok()?;
-    validate_recording_settings(UpdateRecordingSettingsRequest {
-        capture_screen: parsed.capture_screen,
-        capture_microphone: parsed.capture_microphone,
-        capture_system_audio: parsed.capture_system_audio,
-        segment_duration_seconds: parsed.segment_duration_seconds,
-        screen_frame_rate: parsed.screen_frame_rate,
-        screen_resolution: parsed.screen_resolution,
-        video_bitrate: parsed.video_bitrate,
-        save_directory: parsed.save_directory,
-        auto_start: parsed.auto_start,
-    })
-    .ok()
-}
-
-fn persist_recording_settings(
-    app_handle: &tauri::AppHandle,
-    settings: &RecordingSettings,
-) -> Result<(), CaptureErrorResponse> {
-    let file_path = recording_settings_file_path(app_handle);
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| CaptureErrorResponse {
-            code: "io_error".to_string(),
-            message: format!("Failed to create settings directory: {error}"),
-        })?;
-    }
-
-    let serialized =
-        serde_json::to_string_pretty(settings).map_err(|error| CaptureErrorResponse {
-            code: "serialization_error".to_string(),
-            message: format!("Failed to serialize recording settings: {error}"),
-        })?;
-
-    std::fs::write(file_path, serialized).map_err(|error| CaptureErrorResponse {
-        code: "io_error".to_string(),
-        message: format!("Failed to persist recording settings: {error}"),
-    })
+fn now_monotonic_marker_ms() -> u64 {
+    now_monotonic_ms().saturating_add(1)
 }
 
 #[tauri::command]
@@ -732,6 +287,7 @@ pub fn get_capture_support() -> CaptureSupportResponse {
 fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCaptureSession {
     NativeCaptureSession {
         is_running: runtime.is_running,
+        is_inactivity_paused: runtime.inactivity.is_paused,
         session_id: runtime.session_id.clone(),
         started_at_unix_ms: runtime.started_at_unix_ms,
         requested_sources: runtime.requested_sources.clone(),
@@ -742,6 +298,7 @@ fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCaptureSession 
 fn stopped_session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCaptureSession {
     NativeCaptureSession {
         is_running: false,
+        is_inactivity_paused: false,
         session_id: runtime.session_id.clone(),
         started_at_unix_ms: runtime.started_at_unix_ms,
         requested_sources: runtime.requested_sources.clone(),
@@ -856,6 +413,7 @@ fn should_reconnect_waiting_microphone_session(
     state: &MicrophoneControllerState,
 ) -> bool {
     runtime.is_running
+        && !runtime.inactivity.is_paused
         && runtime
             .requested_sources
             .as_ref()
@@ -935,23 +493,9 @@ fn resolve_capture_microphone_device_id(state: &MicrophoneControllerState) -> Op
     })
 }
 
-fn set_current_microphone_output_file(output_files: &mut CaptureOutputFiles, file: String) {
-    output_files.microphone_file = Some(file.clone());
-    output_files.microphone_files.push(file);
-}
-
-fn set_current_screen_output_file(output_files: &mut CaptureOutputFiles, file: String) {
-    output_files.screen_file = Some(file.clone());
-    output_files.screen_files.push(file);
-}
-
-fn set_current_system_audio_output_file(output_files: &mut CaptureOutputFiles, file: String) {
-    output_files.system_audio_file = Some(file.clone());
-    output_files.system_audio_files.push(file);
-}
-
 fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
+    runtime.inactivity = InactivityState::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;
     runtime.segment_schedule = None;
@@ -973,6 +517,7 @@ fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
 
 fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
+    runtime.inactivity = InactivityState::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;
     runtime.segment_schedule = None;
@@ -1021,6 +566,135 @@ fn apply_runtime_signal(
 fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime) {
     runtime.runtime_controller = RuntimeController::default();
     runtime.runtime_state = RuntimeState::Idle;
+}
+
+fn should_rotate_segment(current_segment_index: u64, scheduled_segment_index: u64) -> bool {
+    scheduled_segment_index > current_segment_index
+}
+
+#[cfg(target_os = "macos")]
+fn current_system_idle_ms() -> Option<u64> {
+    crate::native_capture_system_idle::current_system_idle_ms()
+}
+
+#[cfg(target_os = "macos")]
+fn current_activity_snapshot() -> ActivitySnapshot {
+    ActivitySnapshot {
+        system_input_idle_ms: current_system_idle_ms(),
+        screen_activity_idle_ms: capture_screen::screen_activity_idle_ms(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn pause_runtime_for_inactivity(
+    runtime: &mut NativeCaptureRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    if runtime.inactivity.is_paused {
+        return Ok(());
+    }
+
+    let current_segment_output_files = runtime.current_segment_output_files.clone();
+    let recording_file = runtime.recording_file.clone();
+    let microphone_recording_file = runtime.microphone_recording_file.clone();
+    let system_audio_recording_file = runtime.system_audio_recording_file.clone();
+    let requested_sources = runtime.requested_sources.clone();
+
+    if let Some(session) = runtime.active_microphone_session.as_mut() {
+        session.stop()?;
+    }
+    runtime.active_microphone_session = None;
+
+    capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
+        active_session: &mut runtime.active_screen_session,
+    })?;
+
+    finalize_capture_outputs(
+        current_segment_output_files.as_ref(),
+        recording_file.as_deref(),
+        microphone_recording_file.as_deref(),
+        system_audio_recording_file.as_deref(),
+        requested_sources.as_ref(),
+    )?;
+
+    if let (Some(committed), Some(segment)) = (
+        runtime.output_files.as_mut(),
+        current_segment_output_files.as_ref(),
+    ) {
+        append_committed_segment_output_files(committed, segment);
+    }
+
+    runtime.current_segment_output_files = None;
+    runtime.recording_file = None;
+    runtime.microphone_recording_file = None;
+    runtime.system_audio_recording_file = None;
+    runtime.inactivity.is_paused = true;
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn resume_runtime_from_inactivity(
+    runtime: &mut NativeCaptureRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    if !runtime.inactivity.is_paused {
+        return Ok(());
+    }
+
+    let Some(planner) = runtime.segment_planner.clone() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Capture segment planner missing while resuming inactivity".to_string(),
+        });
+    };
+    let Some(sources) = runtime.requested_sources.clone() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Capture sources missing while resuming inactivity".to_string(),
+        });
+    };
+    let Some(schedule) = runtime.segment_schedule.clone() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Capture schedule missing while resuming inactivity".to_string(),
+        });
+    };
+    let Some(clock) = runtime.capture_clock.clone() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "Capture clock missing while resuming inactivity".to_string(),
+        });
+    };
+
+    let scheduled_index = schedule.current_segment_index(clock.elapsed());
+    let next_index = (runtime.current_segment_index + 1).max(scheduled_index);
+    let segment_dir = planner.segment_dir(next_index);
+
+    let (
+        segment_outputs,
+        recording_file,
+        microphone_recording_file,
+        system_audio_recording_file,
+        active_screen_session,
+        active_microphone_session,
+    ) = start_segment(
+        &segment_dir,
+        &sources,
+        runtime.screen_frame_rate,
+        &runtime.screen_resolution,
+        runtime.effective_screen_bitrate_bps,
+        runtime.microphone_device_id_for_capture.as_deref(),
+    )?;
+
+    runtime.current_segment_index = next_index;
+    runtime.current_segment_output_files = Some(segment_outputs);
+    runtime.recording_file = recording_file;
+    runtime.microphone_recording_file = microphone_recording_file;
+    runtime.system_audio_recording_file = system_audio_recording_file;
+    runtime.active_screen_session = active_screen_session;
+    runtime.active_microphone_session = active_microphone_session;
+    runtime.inactivity.is_paused = false;
+
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1166,7 +840,8 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 break;
             };
 
-            schedule.sleep_until_next_boundary(clock)
+            let until_boundary = schedule.sleep_until_next_boundary(clock);
+            until_boundary.min(Duration::from_secs(1))
         };
 
         if !sleep_duration.is_zero() {
@@ -1185,6 +860,55 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
 
         if !runtime.is_running || stop.load(Ordering::Relaxed) {
             break;
+        }
+
+        let now = now_monotonic_marker_ms();
+        let activity_snapshot = current_activity_snapshot();
+        let effective_idle = runtime
+            .inactivity
+            .effective_idle_for_snapshot(now, activity_snapshot);
+
+        if runtime
+            .inactivity
+            .should_resume_from_inactivity(now, activity_snapshot)
+        {
+            if let Err(error) = resume_runtime_from_inactivity(&mut runtime) {
+                if !capture_screen::should_preserve_runtime_on_stop_error(&error) {
+                    mark_runtime_session_failed(&mut runtime);
+                    break;
+                }
+            } else {
+                eprintln!(
+                    "resumed native capture after activity (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
+                    effective_idle.idle_ms,
+                    effective_idle.source.as_str(),
+                    runtime.inactivity.idle_timeout_seconds
+                );
+            }
+        }
+
+        if runtime
+            .inactivity
+            .should_pause_for_inactivity(now, activity_snapshot)
+        {
+            if let Err(error) = pause_runtime_for_inactivity(&mut runtime) {
+                if !capture_screen::should_preserve_runtime_on_stop_error(&error) {
+                    mark_runtime_session_failed(&mut runtime);
+                    break;
+                }
+            } else {
+                eprintln!(
+                    "paused native capture for inactivity threshold crossing (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
+                    effective_idle.idle_ms,
+                    effective_idle.source.as_str(),
+                    runtime.inactivity.idle_timeout_seconds
+                );
+            }
+            continue;
+        }
+
+        if runtime.inactivity.is_paused {
+            continue;
         }
 
         let previous_segment_output_files = runtime.current_segment_output_files.clone();
@@ -1210,12 +934,16 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             break;
         };
 
+        let scheduled_index = schedule.current_segment_index(clock.elapsed());
+        if !should_rotate_segment(runtime.current_segment_index, scheduled_index) {
+            continue;
+        }
+
         if apply_runtime_signal(&mut runtime, RuntimeSignal::RotateRequested).is_err() {
             mark_runtime_session_failed(&mut runtime);
             break;
         }
 
-        let scheduled_index = schedule.current_segment_index(clock.elapsed());
         let next_index = (runtime.current_segment_index + 1).max(scheduled_index);
         let segment_dir = planner.segment_dir(next_index);
         if let Err(_error) = std::fs::create_dir_all(&segment_dir) {
@@ -1540,12 +1268,14 @@ pub fn update_recording_settings(
 
 #[tauri::command]
 pub fn start_native_capture(
-    _request: StartNativeCaptureRequest,
+    request: StartNativeCaptureRequest,
     state: tauri::State<'_, NativeCaptureState>,
     microphone_controller_preferences_state: tauri::State<'_, MicrophoneControllerPreferencesState>,
     recording_settings_state: tauri::State<'_, RecordingSettingsState>,
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    let _ = request;
+
     let settings = {
         recording_settings_state
             .lock()
@@ -1633,6 +1363,7 @@ pub fn start_native_capture(
         #[cfg(target_os = "macos")]
         {
             let started = now_unix_ms();
+            let started_monotonic = now_monotonic_marker_ms();
             let session_id = capture_screen::new_session_id()?;
             let segment_planner =
                 SegmentPlanner::new(settings.save_directory.clone(), session_id.clone());
@@ -1649,6 +1380,7 @@ pub fn start_native_capture(
             let segment_index = 1;
             let first_segment_dir = segment_planner.segment_dir(segment_index);
             let effective_screen_bitrate_bps = compute_effective_screen_bitrate_bps(&settings);
+            capture_screen::reset_last_screen_activity_unix_ms();
 
             let (
                 segment_outputs,
@@ -1678,6 +1410,8 @@ pub fn start_native_capture(
             let segment_loop_control = spawn_segment_loop(app_handle);
 
             runtime.is_running = true;
+            runtime.inactivity =
+                InactivityState::from_recording_settings(&settings, started_monotonic);
             runtime.started_at_unix_ms = Some(started);
             runtime.session_id = Some(session_id);
             runtime.requested_sources = Some(sources);
@@ -1720,6 +1454,112 @@ pub fn start_native_capture(
     Ok(NativeCaptureSessionResponse {
         session: session_from_runtime(&runtime),
     })
+}
+
+// ─── Idle Debug ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdleDebugInfo {
+    /// Current system-level idle time in milliseconds, if available.
+    pub system_idle_ms: Option<u64>,
+    /// Whether native system idle readings are available on this platform.
+    pub system_idle_available: bool,
+    /// Whether the inactivity gating feature is enabled.
+    pub inactivity_enabled: bool,
+    /// Configured inactivity timeout in seconds (0 when feature is disabled).
+    pub idle_timeout_seconds: u64,
+    /// Whether capture is currently paused due to inactivity.
+    pub is_inactivity_paused: bool,
+    /// Detector source identifier.  "core_graphics" on macOS, "unavailable" elsewhere.
+    pub detector_source: String,
+    /// Configured activity policy mode used for inactivity decisions.
+    pub activity_mode: String,
+    /// Last observed screen sample timestamp in unix milliseconds, if any.
+    pub screen_activity_last_unix_ms: Option<u64>,
+    /// Current screen activity idle derived from latest screen sample, if any.
+    pub screen_activity_idle_ms: Option<u64>,
+    /// Effective idle time used by inactivity policy for this sample.
+    pub effective_idle_ms: u64,
+    /// Source selected for effective idle determination.
+    #[serde(rename = "effectiveActivitySource")]
+    pub effective_idle_source: String,
+    /// Raw evaluated source samples for this snapshot.
+    pub activity_sources: Vec<IdleDebugActivitySource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdleDebugActivitySource {
+    pub kind: String,
+    pub available: bool,
+    pub idle_ms: Option<u64>,
+    pub selected: bool,
+}
+
+#[tauri::command]
+pub fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
+    let runtime = state.lock().expect("native capture state poisoned");
+    let now = now_monotonic_marker_ms();
+    let system_idle_ms = crate::native_capture_system_idle::current_system_idle_ms();
+    let screen_activity_last_unix_ms = capture_screen::last_screen_activity_unix_ms();
+    let screen_activity_idle_ms = capture_screen::screen_activity_idle_ms();
+    let activity_snapshot = ActivitySnapshot {
+        system_input_idle_ms: system_idle_ms,
+        screen_activity_idle_ms,
+    };
+    let policy = runtime
+        .inactivity
+        .evaluate_policy_for_snapshot(now, activity_snapshot);
+    let effective_idle = policy.effective_idle;
+    // Reflect actual probe availability: the probe is only considered available
+    // when it returned a valid reading.  A None result (invalid value, non-macOS,
+    // or a future platform stub) maps to unavailable so the UI can distinguish
+    // "no reading yet" from "probe not functional".
+    let system_idle_available = system_idle_ms.is_some();
+    let detector_source = if cfg!(target_os = "macos") {
+        if system_idle_available {
+            "core_graphics".to_string()
+        } else {
+            "core_graphics_unavailable".to_string()
+        }
+    } else {
+        "unavailable".to_string()
+    };
+    IdleDebugInfo {
+        system_idle_ms,
+        system_idle_available,
+        inactivity_enabled: runtime.inactivity.enabled,
+        idle_timeout_seconds: runtime.inactivity.idle_timeout_seconds,
+        is_inactivity_paused: runtime.inactivity.is_paused,
+        detector_source,
+        activity_mode: match runtime.inactivity.activity_mode {
+            capture_types::InactivityActivityMode::SystemInputOnly => {
+                "system_input_only".to_string()
+            }
+            capture_types::InactivityActivityMode::SystemInputOrScreen => {
+                "system_input_or_screen".to_string()
+            }
+        },
+        screen_activity_last_unix_ms,
+        screen_activity_idle_ms,
+        effective_idle_ms: effective_idle.idle_ms,
+        effective_idle_source: effective_idle.source.as_str().to_string(),
+        activity_sources: idle_debug_activity_sources(&policy),
+    }
+}
+
+fn idle_debug_activity_sources(policy: &ActivityPolicyEvaluation) -> Vec<IdleDebugActivitySource> {
+    policy
+        .sources
+        .iter()
+        .map(|source| IdleDebugActivitySource {
+            kind: source.kind.as_str().to_string(),
+            available: source.available,
+            idle_ms: source.idle_ms,
+            selected: source.kind == policy.effective_idle.source,
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -1835,6 +1675,10 @@ pub fn stop_native_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use capture_types::{
+        default_inactivity_activity_mode, default_video_bitrate, ScreenResolutionPreset,
+        VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    };
 
     #[test]
     fn validate_start_request_rejects_system_audio_when_not_supported() {
@@ -1872,6 +1716,9 @@ mod tests {
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect_err("all sources disabled must be rejected");
 
@@ -1893,6 +1740,9 @@ mod tests {
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect_err("system audio without screen must be rejected");
 
@@ -1919,6 +1769,9 @@ mod tests {
                 video_bitrate: default_video_bitrate(),
                 save_directory: "/tmp".to_string(),
                 auto_start: false,
+                pause_capture_on_inactivity: true,
+                idle_timeout_seconds: 10,
+                inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             true,
         )
@@ -1949,6 +1802,9 @@ mod tests {
                 video_bitrate: default_video_bitrate(),
                 save_directory: "/tmp".to_string(),
                 auto_start: false,
+                pause_capture_on_inactivity: true,
+                idle_timeout_seconds: 10,
+                inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             false,
         )
@@ -1978,6 +1834,9 @@ mod tests {
                 video_bitrate: default_video_bitrate(),
                 save_directory: "/tmp".to_string(),
                 auto_start: false,
+                pause_capture_on_inactivity: true,
+                idle_timeout_seconds: 10,
+                inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             false,
         )
@@ -2001,6 +1860,9 @@ mod tests {
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect_err("too small resolution should be rejected");
 
@@ -2025,6 +1887,9 @@ mod tests {
             },
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect("preset mode should normalize bitrate values");
 
@@ -2054,6 +1919,9 @@ mod tests {
             },
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect_err("custom bitrate above max should be rejected");
 
@@ -2082,6 +1950,9 @@ mod tests {
             },
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            inactivity_activity_mode: default_inactivity_activity_mode(),
         };
 
         let bitrate = compute_effective_screen_bitrate_bps(&settings)
@@ -2108,6 +1979,9 @@ mod tests {
             },
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            inactivity_activity_mode: default_inactivity_activity_mode(),
         };
 
         let bitrate = compute_effective_screen_bitrate_bps(&settings)
@@ -2130,6 +2004,9 @@ mod tests {
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            inactivity_activity_mode: default_inactivity_activity_mode(),
         };
 
         assert_eq!(compute_effective_screen_bitrate_bps(&settings), None);
@@ -2178,6 +2055,7 @@ mod tests {
             active_microphone_session: None,
             runtime_controller: RuntimeController::default(),
             runtime_state: RuntimeState::Idle,
+            inactivity: InactivityState::default(),
         };
 
         mark_runtime_session_stopped(&mut runtime);
@@ -2232,6 +2110,7 @@ mod tests {
             active_microphone_session: None,
             runtime_controller: RuntimeController::default(),
             runtime_state: RuntimeState::Idle,
+            inactivity: InactivityState::default(),
         };
 
         let session = stopped_session_from_runtime(&runtime);
@@ -2283,6 +2162,7 @@ mod tests {
             active_microphone_session: None,
             runtime_controller: RuntimeController::default(),
             runtime_state: RuntimeState::Idle,
+            inactivity: InactivityState::default(),
         };
         let state = MicrophoneControllerState {
             devices: vec![capture_types::MicrophoneDevice {
@@ -2346,6 +2226,7 @@ mod tests {
             active_microphone_session: None,
             runtime_controller: RuntimeController::default(),
             runtime_state: RuntimeState::Idle,
+            inactivity: InactivityState::default(),
         };
         let state = MicrophoneControllerState {
             devices: vec![],
@@ -2426,6 +2307,7 @@ mod tests {
             active_microphone_session: None,
             runtime_controller: RuntimeController::default(),
             runtime_state: RuntimeState::Idle,
+            inactivity: InactivityState::default(),
         };
 
         let path = next_microphone_output_file_for_runtime(&runtime)
@@ -2461,6 +2343,13 @@ mod tests {
                 "/tmp/microphone-2.m4a".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn should_rotate_segment_only_after_boundary_crossing() {
+        assert!(!should_rotate_segment(1, 1));
+        assert!(should_rotate_segment(1, 2));
+        assert!(should_rotate_segment(3, 5));
     }
 
     #[test]
