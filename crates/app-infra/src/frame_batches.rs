@@ -675,10 +675,7 @@ impl FrameBatchRuntime {
             }
         }
 
-        let batch = self
-            .store
-            .mark_batch_completed(batch_id, None)
-            .await?;
+        let batch = self.store.mark_batch_completed(batch_id, None).await?;
 
         let result = FrameBatchFinalizeResult {
             batch: batch.clone(),
@@ -731,7 +728,10 @@ fn is_safe_frame_artifact_path(path: &Path) -> bool {
     if !path.is_absolute() {
         return false;
     }
-    if path.components().any(|c| c == std::path::Component::ParentDir) {
+    if path
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
         return false;
     }
     let frames_dir = match path.parent() {
@@ -740,7 +740,7 @@ fn is_safe_frame_artifact_path(path: &Path) -> bool {
     };
     let parent_is_frames = frames_dir
         .file_name()
-        .map_or(false, |name| name == "frames");
+        .is_some_and(|name| name == "frames");
     if !parent_is_frames {
         return false;
     }
@@ -1133,7 +1133,10 @@ mod tests {
             let processing = crate::ProcessingStore::new(pool.clone());
             let store = FrameBatchStore::new(pool.clone());
 
-            let frames_dir = dir.path().join("session-cleanup-segment-0001").join("frames");
+            let frames_dir = dir
+                .path()
+                .join("session-cleanup-segment-0001")
+                .join("frames");
             fs::create_dir_all(&frames_dir).expect("frames directory should be created");
             let frame_path = frames_dir.join("frame-1.png");
             fs::write(&frame_path, b"fake png").expect("frame file should be written");
@@ -1174,7 +1177,10 @@ mod tests {
                 .await
                 .expect("finalization should succeed");
             assert_eq!(result.batch.status, FrameBatchStatus::Completed);
-            assert!(!frame_path.exists(), "PNG frame artifact should be deleted after finalization");
+            assert!(
+                !frame_path.exists(),
+                "PNG frame artifact should be deleted after finalization"
+            );
         });
     }
 
@@ -1228,9 +1234,7 @@ mod tests {
         assert!(!is_safe_frame_artifact_path(Path::new(
             "/data/session-a-segment-0001/frame-1.png"
         )));
-        assert!(!is_safe_frame_artifact_path(Path::new(
-            "/etc/passwd"
-        )));
+        assert!(!is_safe_frame_artifact_path(Path::new("/etc/passwd")));
     }
 
     #[test]
@@ -1265,7 +1269,10 @@ mod tests {
 
         let errors = cleanup_frame_artifacts(&frames);
         assert!(errors.is_empty(), "no errors expected for skipped paths");
-        assert!(bad_file.exists(), "file with unsafe path must not be deleted");
+        assert!(
+            bad_file.exists(),
+            "file with unsafe path must not be deleted"
+        );
     }
 
     #[test]
@@ -1353,13 +1360,12 @@ mod tests {
             );
 
             // Verify at the SQL level that the column is actually NULL, not an empty string.
-            let raw_value: Option<String> = sqlx::query_scalar(
-                "SELECT finalized_output_path FROM frame_batches WHERE id = ?1",
-            )
-            .bind(batch.id)
-            .fetch_one(&pool)
-            .await
-            .expect("query should succeed");
+            let raw_value: Option<String> =
+                sqlx::query_scalar("SELECT finalized_output_path FROM frame_batches WHERE id = ?1")
+                    .bind(batch.id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("query should succeed");
             assert!(
                 raw_value.is_none(),
                 "finalized_output_path should be SQL NULL, got: {:?}",
@@ -1473,13 +1479,12 @@ mod tests {
                 "finalized_output_path should be None when passed None"
             );
 
-            let raw: Option<String> = sqlx::query_scalar(
-                "SELECT finalized_output_path FROM frame_batches WHERE id = ?1",
-            )
-            .bind(batch.id)
-            .fetch_one(&pool)
-            .await
-            .expect("query should succeed");
+            let raw: Option<String> =
+                sqlx::query_scalar("SELECT finalized_output_path FROM frame_batches WHERE id = ?1")
+                    .bind(batch.id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("query should succeed");
             assert!(raw.is_none(), "SQL column should be NULL, got: {:?}", raw);
         });
     }

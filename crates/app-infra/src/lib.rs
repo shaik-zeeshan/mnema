@@ -12,8 +12,8 @@ use sqlx::SqlitePool;
 pub use error::{AppInfraError, Result};
 pub use frame_batches::{
     FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchRuntime,
-    FrameBatchStatus, FrameBatchStore, FrameBatchWindow,
-    FRAME_BATCH_FINALIZE_JOB_KIND, FRAME_BATCH_DURATION_MINUTES,
+    FrameBatchStatus, FrameBatchStore, FrameBatchWindow, FRAME_BATCH_DURATION_MINUTES,
+    FRAME_BATCH_FINALIZE_JOB_KIND,
 };
 pub use jobs::{
     default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
