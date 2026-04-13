@@ -28,6 +28,8 @@ capture-runtime = { path = "../../../crates/capture-runtime" }
 capture-screen = { path = "../../../crates/capture-screen" }
 capture-microphone = { path = "../../../crates/capture-microphone" }
 capture-writers = { path = "../../../crates/capture-writers" }
+tokio = { version = "1", features = ["time"] }
+time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.25"
