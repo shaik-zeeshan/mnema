@@ -6,7 +6,7 @@ use capture_types::{
 #[cfg(target_os = "macos")]
 use capture_writers::{
     append_audio_sample_to_writer, append_video_sample_to_writer, create_audio_asset_writer,
-    create_video_asset_writer_for_sample_buf, derive_audio_activity_level_from_sample_buf,
+    create_video_asset_writer_for_sample_buf,
     finalize_stream_output_context as writers_finalize_stream_output_context,
     AudioAssetWriterState, VideoAssetWriterState,
 };
@@ -271,11 +271,13 @@ fn store_system_audio_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u
 
 #[cfg(target_os = "macos")]
 fn maybe_mark_system_audio_activity_for_sample(sample_buf: &cidre::cm::SampleBuf) {
-    let Some(level) = derive_audio_activity_level_from_sample_buf(sample_buf) else {
+    if !sample_buf.data_is_ready() {
         return;
-    };
+    }
 
-    store_system_audio_activity(level, now_monotonic_marker_ms(), now_unix_ms());
+    // Treat any ready system-audio sample as recent activity and avoid probing
+    // raw sample bytes on ScreenCaptureKit's callback queue.
+    store_system_audio_activity(1.0, now_monotonic_marker_ms(), now_unix_ms());
 }
 
 #[cfg(target_os = "macos")]

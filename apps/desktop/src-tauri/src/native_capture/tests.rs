@@ -65,6 +65,7 @@ fn validate_recording_settings_rejects_all_sources_disabled() {
         video_bitrate: default_video_bitrate(),
         save_directory: "/tmp".to_string(),
         auto_start: false,
+        native_capture_debug_logging_enabled: false,
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         audio_activity_sensitivity: 50,
@@ -90,6 +91,7 @@ fn validate_recording_settings_rejects_system_audio_without_screen() {
         video_bitrate: default_video_bitrate(),
         save_directory: "/tmp".to_string(),
         auto_start: false,
+        native_capture_debug_logging_enabled: false,
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         audio_activity_sensitivity: 50,
@@ -120,6 +122,7 @@ fn validate_recording_settings_allows_storing_resolution_when_screen_disabled() 
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            native_capture_debug_logging_enabled: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             audio_activity_sensitivity: 50,
@@ -154,6 +157,7 @@ fn validate_recording_settings_allows_non_original_resolution_when_screen_disabl
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            native_capture_debug_logging_enabled: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             audio_activity_sensitivity: 50,
@@ -187,6 +191,7 @@ fn validate_recording_settings_rejects_non_original_resolution_when_screen_enabl
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            native_capture_debug_logging_enabled: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             audio_activity_sensitivity: 50,
@@ -214,6 +219,7 @@ fn validate_recording_settings_rejects_too_small_custom_resolution() {
         video_bitrate: default_video_bitrate(),
         save_directory: "/tmp".to_string(),
         auto_start: false,
+        native_capture_debug_logging_enabled: false,
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         audio_activity_sensitivity: 50,
@@ -242,6 +248,7 @@ fn validate_recording_settings_defaults_preset_bitrate_when_preset_value_missing
         },
         save_directory: "/tmp".to_string(),
         auto_start: false,
+        native_capture_debug_logging_enabled: false,
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         audio_activity_sensitivity: 50,
@@ -275,6 +282,7 @@ fn validate_recording_settings_rejects_custom_bitrate_out_of_range() {
         },
         save_directory: "/tmp".to_string(),
         auto_start: false,
+        native_capture_debug_logging_enabled: false,
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         audio_activity_sensitivity: 50,
@@ -303,6 +311,7 @@ fn validate_recording_settings_accepts_audio_activity_mode_and_sensitivity() {
         video_bitrate: default_video_bitrate(),
         save_directory: "/tmp".to_string(),
         auto_start: false,
+        native_capture_debug_logging_enabled: false,
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         audio_activity_sensitivity: 75,
@@ -315,6 +324,31 @@ fn validate_recording_settings_accepts_audio_activity_mode_and_sensitivity() {
         settings.inactivity_activity_mode,
         InactivityActivityMode::SystemInputOrScreenOrAudio
     );
+}
+
+#[test]
+fn validate_recording_settings_preserves_native_capture_debug_logging_flag() {
+    let settings = validate_recording_settings(UpdateRecordingSettingsRequest {
+        capture_screen: true,
+        capture_microphone: false,
+        capture_system_audio: false,
+        segment_duration_seconds: 60,
+        screen_frame_rate: 30,
+        screen_resolution: ScreenResolution::Preset {
+            preset: ScreenResolutionPreset::Original,
+        },
+        video_bitrate: default_video_bitrate(),
+        save_directory: "/tmp".to_string(),
+        auto_start: false,
+        native_capture_debug_logging_enabled: true,
+        pause_capture_on_inactivity: true,
+        idle_timeout_seconds: 10,
+        audio_activity_sensitivity: 50,
+        inactivity_activity_mode: default_inactivity_activity_mode(),
+    })
+    .expect("debug logging flag should round-trip through validation");
+
+    assert!(settings.native_capture_debug_logging_enabled);
 }
 
 #[test]
@@ -331,6 +365,7 @@ fn validate_recording_settings_rejects_audio_activity_sensitivity_above_max() {
         video_bitrate: default_video_bitrate(),
         save_directory: "/tmp".to_string(),
         auto_start: false,
+        native_capture_debug_logging_enabled: false,
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         audio_activity_sensitivity: 101,
@@ -363,6 +398,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         },
         save_directory: "/tmp".to_string(),
         auto_start: false,
+        native_capture_debug_logging_enabled: false,
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         audio_activity_sensitivity: 50,
@@ -393,6 +429,7 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         },
         save_directory: "/tmp".to_string(),
         auto_start: false,
+        native_capture_debug_logging_enabled: false,
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         audio_activity_sensitivity: 50,
@@ -419,6 +456,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         video_bitrate: default_video_bitrate(),
         save_directory: "/tmp".to_string(),
         auto_start: false,
+        native_capture_debug_logging_enabled: false,
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         audio_activity_sensitivity: 50,
@@ -867,7 +905,10 @@ fn try_forward_frame_artifact_enqueues_when_capacity_available() {
 
     assert_eq!(result, FrameArtifactForwardingResult::Enqueued);
 
-    let queued = rx.try_recv().expect("frame should be queued").unwrap_artifact();
+    let queued = rx
+        .try_recv()
+        .expect("frame should be queued")
+        .unwrap_artifact();
     assert_eq!(queued.file_path, "/tmp/frame-1.png");
 }
 
@@ -1035,19 +1076,21 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
     flush_frame_artifacts(&tx);
 
     // After flush returns, all prior artifacts must have been processed.
-    let processed = seen
-        .lock()
-        .expect("seen state should lock")
-        .clone();
+    let processed = seen.lock().expect("seen state should lock").clone();
     assert_eq!(
         processed,
-        vec!["/tmp/frame-1.png".to_string(), "/tmp/frame-2.png".to_string()],
+        vec![
+            "/tmp/frame-1.png".to_string(),
+            "/tmp/frame-2.png".to_string()
+        ],
         "flush must drain all artifacts enqueued before the barrier"
     );
 
     // Drop the sender so the consumer exits.
     drop(tx);
-    consumer.join().expect("consumer thread should exit cleanly");
+    consumer
+        .join()
+        .expect("consumer thread should exit cleanly");
 }
 
 #[test]

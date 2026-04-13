@@ -76,6 +76,14 @@ fn sync_finalized_screen_output_file(
 }
 
 #[cfg(target_os = "macos")]
+fn missing_requested_screen_output_failure(recording_file: Option<&str>) -> String {
+    let path_detail = recording_file
+        .map(|path| format!(" at {path}"))
+        .unwrap_or_default();
+    format!("screen output missing: expected screen recording file{path_detail}")
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn finalize_capture_outputs(
     output_files: Option<&mut CaptureOutputFiles>,
     recording_file: Option<&str>,
@@ -90,6 +98,10 @@ pub(crate) fn finalize_capture_outputs(
     let mut failures: Vec<String> = Vec::new();
     let has_screen_output = sync_finalized_screen_output_file(output_files, recording_file);
     let microphone_files = microphone_output_files(output_files);
+
+    if requested_sources.is_some_and(|sources| sources.screen) && !has_screen_output {
+        failures.push(missing_requested_screen_output_failure(recording_file));
+    }
 
     if output_files.microphone_file.is_some() && output_files.microphone_files.is_empty() {
         let microphone_file = output_files
@@ -236,14 +248,19 @@ mod tests {
             system_audio_files: Vec::new(),
         };
 
-        finalize_capture_outputs(
+        let error = finalize_capture_outputs(
             Some(&mut output_files),
             Some(&recording_file),
             None,
             None,
             Some(&requested_sources),
         )
-        .expect("missing screen recording should be treated as an empty segment output");
+        .expect_err("missing requested screen recording must fail finalization");
+
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert!(error
+            .message
+            .contains("screen output missing: expected screen recording file"));
 
         assert_eq!(output_files.screen_file, None);
         assert!(output_files.screen_files.is_empty());
@@ -294,7 +311,9 @@ pub(crate) fn cleanup_unusable_segment_artifacts(
     for file in files_to_remove {
         if let Err(error) = std::fs::remove_file(&file) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("failed removing unusable segment artifact {file}: {error}");
+                crate::native_capture_debug_log::log(format!(
+                    "failed removing unusable segment artifact {file}: {error}"
+                ));
             }
         }
     }

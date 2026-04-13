@@ -1,5 +1,6 @@
 mod app_infra;
 mod native_capture;
+mod native_capture_debug_log;
 mod native_capture_inactivity;
 mod native_capture_output;
 mod native_capture_settings;
@@ -31,6 +32,8 @@ pub fn run() {
             native_capture::get_idle_debug,
             native_capture::get_recording_settings,
             native_capture::update_recording_settings,
+            native_capture::get_native_capture_debug_log_status,
+            native_capture::delete_native_capture_debug_log,
             native_capture::get_microphone_controller_state,
             native_capture::update_microphone_controller,
             native_capture::start_native_capture,

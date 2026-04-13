@@ -389,6 +389,7 @@ mod tests {
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
+            native_capture_debug_logging_enabled: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             audio_activity_sensitivity: 50,

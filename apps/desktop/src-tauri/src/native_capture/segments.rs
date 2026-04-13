@@ -73,9 +73,7 @@ pub(super) fn try_forward_frame_artifact(
 /// Uses `try_send` with a brief retry so the call is safe from any thread
 /// context (including tokio-associated threads where `blocking_send` would
 /// panic).
-pub(super) fn flush_frame_artifacts(
-    frame_artifact_tx: &mpsc::Sender<FrameArtifactMessage>,
-) {
+pub(super) fn flush_frame_artifacts(frame_artifact_tx: &mpsc::Sender<FrameArtifactMessage>) {
     let (response_tx, response_rx) = std::sync::mpsc::sync_channel(1);
     let mut message = FrameArtifactMessage::Flush(response_tx);
     loop {
@@ -109,11 +107,11 @@ fn stop_active_sessions_after_failure(runtime: &mut NativeCaptureRuntime) {
 fn cleanup_failed_segment_dir(segment_dir: &Path) {
     if let Err(error) = std::fs::remove_dir_all(segment_dir) {
         if error.kind() != std::io::ErrorKind::NotFound {
-            eprintln!(
+            crate::native_capture_debug_log::log(format!(
                 "failed removing unusable segment directory {}: {}",
                 segment_dir.display(),
                 error
-            );
+            ));
         }
     }
 }
@@ -146,8 +144,8 @@ fn frame_export_options(
                 match try_forward_frame_artifact(&frame_artifact_tx, artifact) {
                     FrameArtifactForwardingResult::Enqueued => {}
                     FrameArtifactForwardingResult::ReceiverClosed => {
-                        eprintln!(
-                            "failed to forward native frame artifact for persistence: worker channel closed"
+                        crate::native_capture_debug_log::log(
+                            "failed to forward native frame artifact for persistence: worker channel closed",
                         );
                     }
                 }
@@ -174,7 +172,9 @@ fn spawn_frame_artifact_worker(
                     )
                     .await
                     {
-                        eprintln!("failed to persist native frame artifact: {error}");
+                        crate::native_capture_debug_log::log(format!(
+                            "failed to persist native frame artifact: {error}"
+                        ));
                     }
                 }
                 FrameArtifactMessage::Flush(response_tx) => {
@@ -480,12 +480,12 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                     break;
                 }
             } else {
-                eprintln!(
+                crate::native_capture_debug_log::log(format!(
                     "resumed native capture after activity (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
                     effective_idle.idle_ms,
                     effective_idle.source.as_str(),
                     runtime.inactivity.idle_timeout_seconds
-                );
+                ));
             }
         }
 
@@ -499,12 +499,12 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                     break;
                 }
             } else {
-                eprintln!(
+                crate::native_capture_debug_log::log(format!(
                     "paused native capture for inactivity threshold crossing (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
                     effective_idle.idle_ms,
                     effective_idle.source.as_str(),
                     runtime.inactivity.idle_timeout_seconds
-                );
+                ));
             }
             continue;
         }

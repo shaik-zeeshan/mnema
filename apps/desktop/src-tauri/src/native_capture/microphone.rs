@@ -252,10 +252,10 @@ fn maybe_reconnect_waiting_microphone_session(
     ) {
         if let Some(session) = runtime.active_microphone_session.as_mut() {
             if let Err(error) = session.stop() {
-                eprintln!(
+                crate::native_capture_debug_log::log(format!(
                     "failed to stop microphone session while waiting for same device: [{}] {}",
                     error.code, error.message
-                );
+                ));
                 emit_microphone_auto_disconnect_transition_failed(app_handle, &error);
                 stop_failed_while_waiting = true;
             }

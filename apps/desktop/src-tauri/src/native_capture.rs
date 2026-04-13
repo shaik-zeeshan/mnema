@@ -11,7 +11,7 @@ use crate::native_capture_settings::{
 use capture_microphone as microphone_capture;
 use capture_types::{
     CaptureErrorResponse, CapturePermissionState, CapturePermissions, CapturePermissionsResponse,
-    CaptureSources, CaptureSupportResponse, MicrophoneControllerState,
+    CaptureSources, CaptureSupportResponse, MicrophoneControllerState, NativeCaptureDebugLogStatus,
     NativeCaptureSessionResponse, RecordingSettings, StartNativeCaptureRequest,
     UpdateMicrophoneControllerRequest, UpdateRecordingSettingsRequest,
 };
@@ -100,6 +100,10 @@ pub fn initialize_recording_settings_from_disk(app_handle: &tauri::AppHandle) {
         .lock()
         .expect("recording settings state poisoned");
     runtime.settings = load_recording_settings_or_default(app_handle);
+    crate::native_capture_debug_log::configure(
+        app_handle,
+        runtime.settings.native_capture_debug_logging_enabled,
+    );
 }
 
 pub fn maybe_auto_start_native_capture(app_handle: &tauri::AppHandle) {
@@ -130,10 +134,10 @@ pub fn maybe_auto_start_native_capture(app_handle: &tauri::AppHandle) {
     );
 
     if let Err(error) = result {
-        eprintln!(
+        crate::native_capture_debug_log::log(format!(
             "failed to auto-start native capture: [{}] {}",
             error.code, error.message
-        );
+        ));
     }
 }
 
@@ -149,6 +153,34 @@ pub fn get_recording_settings(
 }
 
 #[tauri::command]
+pub fn get_native_capture_debug_log_status(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> NativeCaptureDebugLogStatus {
+    let enabled = state
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .native_capture_debug_logging_enabled;
+
+    crate::native_capture_debug_log::status(&app_handle, enabled)
+}
+
+#[tauri::command]
+pub fn delete_native_capture_debug_log(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<NativeCaptureDebugLogStatus, CaptureErrorResponse> {
+    let enabled = state
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .native_capture_debug_logging_enabled;
+
+    crate::native_capture_debug_log::delete(&app_handle, enabled)
+}
+
+#[tauri::command]
 pub fn update_recording_settings(
     request: UpdateRecordingSettingsRequest,
     app_handle: tauri::AppHandle,
@@ -161,11 +193,16 @@ pub fn update_recording_settings(
     let previous_save_directory = runtime.settings.save_directory.clone();
     runtime.settings = settings.clone();
 
+    crate::native_capture_debug_log::configure(
+        &app_handle,
+        settings.native_capture_debug_logging_enabled,
+    );
+
     if previous_save_directory != settings.save_directory {
-        eprintln!(
+        crate::native_capture_debug_log::log(format!(
             "recording save directory changed from '{}' to '{}'; app infrastructure database location will update on next app start",
             previous_save_directory, settings.save_directory
-        );
+        ));
     }
 
     Ok(settings)

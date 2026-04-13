@@ -1,8 +1,9 @@
 use capture_types::{
     default_audio_activity_sensitivity, default_idle_timeout_seconds,
-    default_inactivity_activity_mode, default_pause_capture_on_inactivity, default_video_bitrate,
-    CaptureErrorResponse, RecordingSettings, ScreenResolution, ScreenResolutionPreset,
-    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    default_inactivity_activity_mode, default_native_capture_debug_logging_enabled,
+    default_pause_capture_on_inactivity, default_video_bitrate, CaptureErrorResponse,
+    RecordingSettings, ScreenResolution, ScreenResolutionPreset, UpdateRecordingSettingsRequest,
+    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -39,6 +40,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         video_bitrate: default_video_bitrate(),
         save_directory: default_save_directory(),
         auto_start: false,
+        native_capture_debug_logging_enabled: default_native_capture_debug_logging_enabled(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         audio_activity_sensitivity: default_audio_activity_sensitivity(),
@@ -276,6 +278,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         video_bitrate,
         save_directory,
         auto_start: request.auto_start,
+        native_capture_debug_logging_enabled: request.native_capture_debug_logging_enabled,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         audio_activity_sensitivity,
@@ -304,6 +307,7 @@ fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
         video_bitrate: parsed.video_bitrate,
         save_directory: parsed.save_directory,
         auto_start: parsed.auto_start,
+        native_capture_debug_logging_enabled: parsed.native_capture_debug_logging_enabled,
         pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
         idle_timeout_seconds: parsed.idle_timeout_seconds,
         audio_activity_sensitivity: parsed.audio_activity_sensitivity,
@@ -427,5 +431,29 @@ mod tests {
             load_recording_settings_from_path_or_default(&path).save_directory,
             default_recording_settings().save_directory
         );
+    }
+
+    #[test]
+    fn default_recording_settings_disable_native_capture_debug_logging() {
+        assert!(!default_recording_settings().native_capture_debug_logging_enabled);
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_preserves_native_capture_debug_logging_flag() {
+        let dir = TestDir::new("debug-log-enabled");
+        let path = dir.path().join("recording-settings.json");
+        let mut settings = default_recording_settings();
+        settings.native_capture_debug_logging_enabled = true;
+
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&settings).expect("settings should serialize"),
+        )
+        .expect("settings file should write");
+
+        let loaded =
+            load_recording_settings_from_path(&path).expect("settings should load from disk");
+
+        assert!(loaded.native_capture_debug_logging_enabled);
     }
 }
