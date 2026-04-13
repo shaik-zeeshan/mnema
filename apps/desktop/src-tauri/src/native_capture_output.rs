@@ -1,6 +1,8 @@
 use capture_types::{CaptureErrorResponse, CaptureOutputFiles, CaptureSources};
 #[cfg(target_os = "macos")]
 use std::collections::BTreeSet;
+#[cfg(target_os = "macos")]
+use std::path::Path;
 
 pub(crate) fn set_current_microphone_output_file(
     output_files: &mut CaptureOutputFiles,
@@ -13,6 +15,11 @@ pub(crate) fn set_current_microphone_output_file(
 pub(crate) fn set_current_screen_output_file(output_files: &mut CaptureOutputFiles, file: String) {
     output_files.screen_file = Some(file.clone());
     output_files.screen_files.push(file);
+}
+
+pub(crate) fn clear_current_screen_output_file(output_files: &mut CaptureOutputFiles) {
+    output_files.screen_file = None;
+    output_files.screen_files.clear();
 }
 
 pub(crate) fn set_current_system_audio_output_file(
@@ -54,8 +61,23 @@ fn microphone_output_files(output_files: &CaptureOutputFiles) -> Vec<&str> {
 }
 
 #[cfg(target_os = "macos")]
+fn sync_finalized_screen_output_file(
+    output_files: &mut CaptureOutputFiles,
+    recording_file: Option<&str>,
+) -> bool {
+    let Some(recording_file) = recording_file.filter(|path| Path::new(path).is_file()) else {
+        clear_current_screen_output_file(output_files);
+        return false;
+    };
+
+    clear_current_screen_output_file(output_files);
+    set_current_screen_output_file(output_files, recording_file.to_string());
+    true
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn finalize_capture_outputs(
-    output_files: Option<&CaptureOutputFiles>,
+    output_files: Option<&mut CaptureOutputFiles>,
     recording_file: Option<&str>,
     microphone_recording_file: Option<&str>,
     system_audio_recording_file: Option<&str>,
@@ -66,6 +88,7 @@ pub(crate) fn finalize_capture_outputs(
     };
 
     let mut failures: Vec<String> = Vec::new();
+    let has_screen_output = sync_finalized_screen_output_file(output_files, recording_file);
     let microphone_files = microphone_output_files(output_files);
 
     if output_files.microphone_file.is_some() && output_files.microphone_files.is_empty() {
@@ -113,7 +136,7 @@ pub(crate) fn finalize_capture_outputs(
         }
     }
 
-    if requested_sources.is_some_and(|sources| sources.system_audio) {
+    if has_screen_output && requested_sources.is_some_and(|sources| sources.system_audio) {
         if let Some(recording_file) = recording_file {
             if let Err(error) = capture_screen::strip_audio_from_recording_file(recording_file) {
                 failures.push(format!(
@@ -156,6 +179,74 @@ pub(crate) fn append_committed_segment_output_files(
     }
     if let Some(file) = segment.system_audio_file.as_ref() {
         set_current_system_audio_output_file(committed, file.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[cfg(target_os = "macos")]
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("native-capture-output-{label}-{unique}"));
+            fs::create_dir_all(&path).expect("test directory should exist");
+            Self { path }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_capture_outputs_drops_missing_screen_output_and_skips_video_only_conversion() {
+        let dir = TestDir::new("missing-screen-output");
+        let recording_file = dir.path.join("screen.mov");
+        let recording_file = recording_file.to_string_lossy().to_string();
+        let requested_sources = CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: true,
+        };
+        let mut output_files = CaptureOutputFiles {
+            screen_file: Some(recording_file.clone()),
+            screen_files: vec![recording_file.clone()],
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        };
+
+        finalize_capture_outputs(
+            Some(&mut output_files),
+            Some(&recording_file),
+            None,
+            None,
+            Some(&requested_sources),
+        )
+        .expect("missing screen recording should be treated as an empty segment output");
+
+        assert_eq!(output_files.screen_file, None);
+        assert!(output_files.screen_files.is_empty());
     }
 }
 

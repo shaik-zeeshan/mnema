@@ -291,10 +291,7 @@ fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
     PathBuf::from(default_save_directory()).join(RECORDING_SETTINGS_FILE_NAME)
 }
 
-pub(crate) fn load_recording_settings_from_disk(
-    app_handle: &tauri::AppHandle,
-) -> Option<RecordingSettings> {
-    let path = recording_settings_file_path(app_handle);
+fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
     let raw = std::fs::read_to_string(path).ok()?;
     let parsed = serde_json::from_str::<RecordingSettings>(&raw).ok()?;
     validate_recording_settings(UpdateRecordingSettingsRequest {
@@ -313,6 +310,23 @@ pub(crate) fn load_recording_settings_from_disk(
         inactivity_activity_mode: parsed.inactivity_activity_mode,
     })
     .ok()
+}
+
+#[cfg(test)]
+fn load_recording_settings_from_path_or_default(path: &Path) -> RecordingSettings {
+    load_recording_settings_from_path(path).unwrap_or_else(default_recording_settings)
+}
+
+pub(crate) fn load_recording_settings_from_disk(
+    app_handle: &tauri::AppHandle,
+) -> Option<RecordingSettings> {
+    load_recording_settings_from_path(&recording_settings_file_path(app_handle))
+}
+
+pub(crate) fn load_recording_settings_or_default(
+    app_handle: &tauri::AppHandle,
+) -> RecordingSettings {
+    load_recording_settings_from_disk(app_handle).unwrap_or_else(default_recording_settings)
 }
 
 pub(crate) fn persist_recording_settings(
@@ -337,4 +351,81 @@ pub(crate) fn persist_recording_settings(
         code: "io_error".to_string(),
         message: format!("Failed to persist recording settings: {error}"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("desktop-settings-{label}-{unique}"));
+
+            fs::create_dir_all(&path).expect("test directory should be created");
+
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_returns_none_for_missing_file() {
+        let dir = TestDir::new("missing");
+
+        assert!(load_recording_settings_from_path(&dir.path().join("missing.json")).is_none());
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_returns_none_for_invalid_file() {
+        let dir = TestDir::new("invalid");
+        let path = dir.path().join("recording-settings.json");
+        fs::write(&path, "not valid json").expect("invalid file should write");
+
+        assert!(load_recording_settings_from_path(&path).is_none());
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_or_default_uses_defaults_for_missing_file() {
+        let dir = TestDir::new("missing-default");
+
+        assert_eq!(
+            load_recording_settings_from_path_or_default(&dir.path().join("missing.json"))
+                .save_directory,
+            default_recording_settings().save_directory
+        );
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_or_default_uses_defaults_for_invalid_file() {
+        let dir = TestDir::new("invalid-default");
+        let path = dir.path().join("recording-settings.json");
+        fs::write(&path, "not valid json").expect("invalid file should write");
+
+        assert_eq!(
+            load_recording_settings_from_path_or_default(&path).save_directory,
+            default_recording_settings().save_directory
+        );
+    }
 }

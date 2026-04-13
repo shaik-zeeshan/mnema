@@ -25,7 +25,7 @@ use std::ffi::c_void;
 use std::ffi::CString;
 #[cfg(target_os = "macos")]
 use std::fmt::Display;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "macos")]
@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
 #[cfg(target_os = "macos")]
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,35 @@ pub struct ScreenCaptureResolution {
     pub height: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenFrameArtifact {
+    pub file_path: String,
+    pub captured_at_unix_ms: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub content_fingerprint: Option<u64>,
+}
+
+pub type ScreenFrameArtifactHandler =
+    std::sync::Arc<dyn Fn(ScreenFrameArtifact) + Send + Sync + 'static>;
+
+#[derive(Clone)]
+pub struct ScreenFrameExportConfig {
+    pub on_frame_exported: ScreenFrameArtifactHandler,
+}
+
+impl std::fmt::Debug for ScreenFrameExportConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScreenFrameExportConfig")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ScreenCaptureSessionOptions {
+    pub frame_export: Option<ScreenFrameExportConfig>,
+}
+
 fn even_dimension(value: u32) -> u32 {
     let at_least_two = value.max(2);
     if at_least_two % 2 == 0 {
@@ -56,6 +85,14 @@ fn even_dimension(value: u32) -> u32 {
     } else {
         at_least_two + 1
     }
+}
+
+fn screen_frame_artifact_path(
+    artifact_dir: &Path,
+    frame_index: u64,
+    captured_at_unix_ms: u64,
+) -> PathBuf {
+    artifact_dir.join(format!("frame-{captured_at_unix_ms}-{frame_index:06}.png"))
 }
 
 #[cfg(target_os = "macos")]
@@ -473,11 +510,6 @@ fn should_mark_screen_activity_for_fingerprint(
 }
 
 #[cfg(target_os = "macos")]
-fn maybe_mark_screen_activity_for_sample(sample_buf: &mut cidre::cm::SampleBuf) {
-    maybe_mark_screen_activity_for_fingerprint(screen_activity_sample_fingerprint(sample_buf));
-}
-
-#[cfg(target_os = "macos")]
 fn mark_screen_activity(now_monotonic_ms: u64, now_unix_ms: u64) -> bool {
     let mut last_activity_monotonic_ms = LAST_SCREEN_ACTIVITY_MONOTONIC_MS.load(Ordering::Relaxed);
 
@@ -660,7 +692,202 @@ struct StreamOutputContext {
     screen_video_writer: Option<VideoAssetWriterState>,
     video_bitrate_bps: Option<u32>,
     system_audio_writer: Option<AudioAssetWriterState>,
+    frame_export: Option<ScreenFrameExportRuntime>,
     first_error: Option<CaptureErrorResponse>,
+}
+
+#[cfg(target_os = "macos")]
+struct ScreenFrameExportRuntime {
+    artifact_dir: PathBuf,
+    callback_queue: cidre::arc::R<dispatch::Queue>,
+    on_frame_exported: ScreenFrameArtifactHandler,
+    first_error: Arc<Mutex<Option<CaptureErrorResponse>>>,
+    next_frame_index: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for ScreenFrameExportRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScreenFrameExportRuntime")
+            .field("artifact_dir", &self.artifact_dir)
+            .field("next_frame_index", &self.next_frame_index)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn store_first_frame_export_error(
+    cell: &Arc<Mutex<Option<CaptureErrorResponse>>>,
+    error: CaptureErrorResponse,
+) {
+    let mut guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.is_none() {
+        *guard = Some(error);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn take_frame_export_error(
+    cell: &Arc<Mutex<Option<CaptureErrorResponse>>>,
+) -> Option<CaptureErrorResponse> {
+    cell.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+}
+
+#[cfg(target_os = "macos")]
+struct PreparedScreenFrameExport {
+    file_path: PathBuf,
+    captured_at_unix_ms: u64,
+    width: Option<u32>,
+    height: Option<u32>,
+    content_fingerprint: Option<u64>,
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_screen_frame_export(
+    runtime: &mut ScreenFrameExportRuntime,
+    sample_buf: &cidre::cm::SampleBuf,
+    content_fingerprint: Option<u64>,
+) -> PreparedScreenFrameExport {
+    let captured_at_unix_ms = now_unix_ms();
+    let frame_index = runtime.next_frame_index;
+    runtime.next_frame_index = runtime.next_frame_index.saturating_add(1);
+
+    let (width, height) = sample_buf
+        .image_buf()
+        .map(|image_buf| {
+            let pixel_buf: &cidre::cv::PixelBuf = image_buf;
+            (pixel_buf.width() as u32, pixel_buf.height() as u32)
+        })
+        .map(|(width, height)| (Some(width), Some(height)))
+        .unwrap_or((None, None));
+
+    PreparedScreenFrameExport {
+        file_path: screen_frame_artifact_path(
+            &runtime.artifact_dir,
+            frame_index,
+            captured_at_unix_ms,
+        ),
+        captured_at_unix_ms,
+        width,
+        height,
+        content_fingerprint,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn save_screen_sample_as_png(
+    sample_buf: &cidre::cm::SampleBuf,
+    output_path: &Path,
+) -> Result<(), CaptureErrorResponse> {
+    use cidre::{cg, ut, vt};
+
+    let image_buf = sample_buf.image_buf().ok_or_else(|| CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message: "Screen frame sample did not contain an image buffer".to_string(),
+    })?;
+    let pixel_buf: &cidre::cv::PixelBuf = image_buf;
+    let cg_image =
+        vt::cg_image_from_cv_pixel_buf(pixel_buf, None).map_err(|status| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to create CGImage from screen frame sample (status: {:?})",
+                status
+            ),
+        })?;
+
+    let output_url =
+        cidre::cf::Url::with_file_path(output_path).ok_or_else(|| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to create output URL for screen frame artifact: {}",
+                output_path.display()
+            ),
+        })?;
+
+    let png_type_id = ut::Type::png().id();
+
+    let mut destination = cg::ImageDst::with_url(output_url.as_ref(), png_type_id.as_cf(), 1)
+        .ok_or_else(|| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to create PNG destination for screen frame artifact: {}",
+                output_path.display()
+            ),
+        })?;
+    destination.add_image(cg_image.as_ref(), None);
+
+    if destination.finalize() {
+        Ok(())
+    } else {
+        Err(CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to finalize PNG screen frame artifact: {}",
+                output_path.display()
+            ),
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn export_screen_frame_artifact(
+    runtime: &mut ScreenFrameExportRuntime,
+    sample_buf: cidre::arc::R<cidre::cm::SampleBuf>,
+    content_fingerprint: Option<u64>,
+) -> Result<(), CaptureErrorResponse> {
+    let prepared = prepare_screen_frame_export(runtime, sample_buf.as_ref(), content_fingerprint);
+    let callback_queue = runtime.callback_queue.retained();
+    let on_frame_exported = runtime.on_frame_exported.clone();
+    let first_error = runtime.first_error.clone();
+    let file_path = prepared.file_path.clone();
+
+    callback_queue.async_once(move || {
+        if let Err(error) = save_screen_sample_as_png(sample_buf.as_ref(), &file_path) {
+            store_first_frame_export_error(&first_error, error.clone());
+            eprintln!(
+                "failed to export screen frame artifact {}: {}",
+                file_path.display(),
+                error.message
+            );
+            return;
+        }
+
+        (on_frame_exported)(ScreenFrameArtifact {
+            file_path: file_path.to_string_lossy().to_string(),
+            captured_at_unix_ms: prepared.captured_at_unix_ms,
+            width: prepared.width,
+            height: prepared.height,
+            content_fingerprint: prepared.content_fingerprint,
+        });
+    });
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn screen_frame_export_runtime(
+    session_dir: &Path,
+    config: Option<ScreenFrameExportConfig>,
+) -> Result<Option<ScreenFrameExportRuntime>, CaptureErrorResponse> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+
+    let artifact_dir = session_dir.join("frames");
+    std::fs::create_dir_all(&artifact_dir).map_err(|error| CaptureErrorResponse {
+        code: "io_error".to_string(),
+        message: format!("Failed to create screen frame artifact directory: {error}"),
+    })?;
+
+    Ok(Some(ScreenFrameExportRuntime {
+        artifact_dir,
+        callback_queue: dispatch::Queue::serial_with_ar_pool(),
+        on_frame_exported: config.on_frame_exported,
+        first_error: Arc::new(Mutex::new(None)),
+        next_frame_index: 0,
+    }))
 }
 
 #[cfg(target_os = "macos")]
@@ -669,7 +896,8 @@ mod stream_output_delegate {
 
     use super::{
         append_audio_sample_to_writer, append_video_sample_to_writer,
-        create_video_asset_writer_for_sample_buf, objc, StreamOutputContext,
+        create_video_asset_writer_for_sample_buf, export_screen_frame_artifact, objc,
+        StreamOutputContext,
     };
     use cidre::ns;
     use cidre::sc::StreamOutput;
@@ -698,7 +926,23 @@ mod stream_output_delegate {
                     if !super::should_append_screen_sample(sample_buf) {
                         return;
                     }
-                    super::maybe_mark_screen_activity_for_sample(sample_buf);
+                    let screen_activity_fingerprint =
+                        super::screen_activity_sample_fingerprint(sample_buf);
+                    let _ = super::maybe_mark_screen_activity_for_fingerprint(
+                        screen_activity_fingerprint,
+                    );
+
+                    if let Some(frame_export) = ctx.frame_export.as_mut() {
+                        if let Err(error) = export_screen_frame_artifact(
+                            frame_export,
+                            sample_buf.retained(),
+                            screen_activity_fingerprint,
+                        ) {
+                            if ctx.first_error.is_none() {
+                                ctx.first_error = Some(error);
+                            }
+                        }
+                    }
 
                     if ctx.screen_video_writer.is_none() {
                         let Some(output_file) = ctx.screen_video_output_file.as_deref() else {
@@ -855,6 +1099,7 @@ struct ScreenCaptureKitCaptureSession {
     stream_output_queue: cidre::arc::R<dispatch::Queue>,
     sources: ScreenCaptureSources,
     video_bitrate_bps: Option<u32>,
+    frame_export: Option<ScreenFrameExportConfig>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1010,10 +1255,12 @@ impl ScreenCaptureKitCaptureSession {
         })?;
 
         let next_context = stream_output_context_for_segment(
+            segment_dir,
             &recording_file,
             system_audio_recording_file.as_deref(),
             &self.sources,
             self.video_bitrate_bps,
+            self.frame_export.clone(),
         )?;
 
         synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
@@ -1227,6 +1474,25 @@ pub fn start_capture_session(
     screen_resolution: &ScreenResolution,
     video_bitrate_bps: Option<u32>,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
+    start_capture_session_with_options(
+        session_dir,
+        sources,
+        screen_frame_rate,
+        screen_resolution,
+        video_bitrate_bps,
+        ScreenCaptureSessionOptions::default(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_capture_session_with_options(
+    session_dir: &Path,
+    sources: &ScreenCaptureSources,
+    screen_frame_rate: u32,
+    screen_resolution: &ScreenResolution,
+    video_bitrate_bps: Option<u32>,
+    options: ScreenCaptureSessionOptions,
+) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     if sources.screen && supports_screen_capture_kit_backend() {
         return start_screen_capture_kit_session(
             session_dir,
@@ -1234,10 +1500,17 @@ pub fn start_capture_session(
             screen_frame_rate,
             screen_resolution,
             video_bitrate_bps,
+            options,
         );
     }
 
-    start_avfoundation_capture_session(session_dir, sources, screen_resolution, video_bitrate_bps)
+    start_avfoundation_capture_session(
+        session_dir,
+        sources,
+        screen_resolution,
+        video_bitrate_bps,
+        options,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -1246,6 +1519,7 @@ fn start_avfoundation_capture_session(
     sources: &ScreenCaptureSources,
     screen_resolution: &ScreenResolution,
     _video_bitrate_bps: Option<u32>,
+    options: ScreenCaptureSessionOptions,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     use objc2_av_foundation::{
         AVCaptureInput, AVCaptureMovieFileOutput, AVCaptureOutput, AVCaptureScreenInput,
@@ -1254,6 +1528,13 @@ fn start_avfoundation_capture_session(
     use objc2_foundation::{NSObject, NSURL};
 
     create_session_dir(session_dir)?;
+
+    if options.frame_export.is_some() {
+        return Err(CaptureErrorResponse {
+            code: "capture_frame_export_unsupported".to_string(),
+            message: "Frame export requires the ScreenCaptureKit backend (macOS 15+)".to_string(),
+        });
+    }
 
     if sources.screen
         && *screen_resolution
@@ -1380,6 +1661,7 @@ fn start_screen_capture_kit_session(
     screen_frame_rate: u32,
     screen_resolution: &ScreenResolution,
     video_bitrate_bps: Option<u32>,
+    options: ScreenCaptureSessionOptions,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     use cidre::{api, cm, ns, sc};
 
@@ -1462,12 +1744,14 @@ fn start_screen_capture_kit_session(
         let stream_output_queue = dispatch::Queue::serial_with_ar_pool();
         let stream_output_delegate =
             ScStreamOutputDelegate::with(stream_output_context_for_segment(
+                session_dir,
                 &output_file_str,
                 sources
                     .system_audio
                     .then_some(system_audio_output_file_str.as_str()),
                 sources,
                 video_bitrate_bps,
+                options.frame_export.clone(),
             )?);
 
         if sources.screen {
@@ -1512,6 +1796,7 @@ fn start_screen_capture_kit_session(
                     stream_output_queue,
                     sources: *sources,
                     video_bitrate_bps,
+                    frame_export: options.frame_export,
                 }),
             },
             recording_file: output_file_str,
@@ -1527,10 +1812,12 @@ fn start_screen_capture_kit_session(
 
 #[cfg(target_os = "macos")]
 fn stream_output_context_for_segment(
+    session_dir: &Path,
     recording_file: &str,
     system_audio_recording_file: Option<&str>,
     sources: &ScreenCaptureSources,
     video_bitrate_bps: Option<u32>,
+    frame_export: Option<ScreenFrameExportConfig>,
 ) -> Result<StreamOutputContext, CaptureErrorResponse> {
     use cidre::ns;
 
@@ -1557,6 +1844,11 @@ fn stream_output_context_for_segment(
         screen_video_writer,
         video_bitrate_bps,
         system_audio_writer,
+        frame_export: if sources.screen {
+            screen_frame_export_runtime(session_dir, frame_export)?
+        } else {
+            None
+        },
         first_error: None,
     })
 }
@@ -1594,6 +1886,23 @@ fn synchronize_stream_output_queue(queue: Option<&dispatch::Queue>) {
 }
 
 #[cfg(target_os = "macos")]
+fn finalize_screen_frame_export(
+    frame_export: Option<&mut ScreenFrameExportRuntime>,
+) -> Result<(), CaptureErrorResponse> {
+    let Some(frame_export) = frame_export else {
+        return Ok(());
+    };
+
+    synchronize_stream_output_queue(Some(frame_export.callback_queue.as_ref()));
+
+    if let Some(error) = take_frame_export_error(&frame_export.first_error) {
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn finalize_stream_output_context(
     context: &mut StreamOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
@@ -1618,6 +1927,10 @@ fn finalize_stream_output_context(
         if let Some(path) = screen_video_output_file {
             maybe_remove_screen_video_file(path);
         }
+        return Err(error);
+    }
+
+    if let Err(error) = finalize_screen_frame_export(context.frame_export.as_mut()) {
         return Err(error);
     }
 
@@ -1742,6 +2055,18 @@ fn supports_screen_capture_kit_backend() -> bool {
     cidre::api::version!(macos = 15.0)
 }
 
+pub fn supports_frame_export() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        supports_screen_capture_kit_backend()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 pub struct ActiveCaptureSession;
 
@@ -1786,6 +2111,21 @@ pub fn start_capture_session(
     _screen_frame_rate: u32,
     _screen_resolution: &ScreenResolution,
     _video_bitrate_bps: Option<u32>,
+) -> Result<StartedCaptureSession, CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "Native capture is currently supported only on macOS".to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_capture_session_with_options(
+    _session_dir: &Path,
+    _sources: &ScreenCaptureSources,
+    _screen_frame_rate: u32,
+    _screen_resolution: &ScreenResolution,
+    _video_bitrate_bps: Option<u32>,
+    _options: ScreenCaptureSessionOptions,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
@@ -1969,6 +2309,17 @@ mod tests {
 
         assert_eq!(resolved.width, 1002);
         assert_eq!(resolved.height, 778);
+    }
+
+    #[test]
+    fn screen_frame_artifact_path_uses_timestamp_and_sequence() {
+        let path =
+            screen_frame_artifact_path(Path::new("/tmp/session/frames"), 42, 1_717_000_123_456);
+
+        assert_eq!(
+            path,
+            Path::new("/tmp/session/frames/frame-1717000123456-000042.png")
+        );
     }
 
     #[cfg(target_os = "macos")]
