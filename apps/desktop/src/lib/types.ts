@@ -119,6 +119,8 @@ export interface RecordingSettings {
 	autoStart: boolean;
 	screenResolution: ScreenResolution;
 	videoBitrate: VideoBitrate;
+	/** Whether native-capture debug logging is enabled. */
+	nativeCaptureDebugLoggingEnabled: boolean;
 	pauseCaptureOnInactivity: boolean;
 	idleTimeoutSeconds: number;
 	/** Which signals count as "activity" for the inactivity-gating feature. */
@@ -130,6 +132,15 @@ export interface RecordingSettings {
 	 * before it is counted as activity.
 	 */
 	audioActivitySensitivity: number;
+}
+
+// ─── Native Capture Debug Log ──────────────────────────────────────────────
+
+/** Status of the native-capture debug log file, returned by Tauri commands. */
+export interface NativeCaptureDebugLogStatus {
+	enabled: boolean;
+	path: string;
+	exists: boolean;
 }
 
 // ─── Video Bitrate ──────────────────────────────────────────────────────────
