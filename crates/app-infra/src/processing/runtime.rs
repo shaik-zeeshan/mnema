@@ -250,18 +250,21 @@ mod tests {
     }
 
     #[test]
-    fn runtime_processes_queued_ocr_jobs_and_persists_results() {
+    fn runtime_processes_queued_ocr_jobs_and_round_trips_structured_results() {
         run_async_test(async {
             let dir = TestDir::new("processing-runtime-ocr-success");
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
             let store = ProcessingStore::new(database.pool().clone());
+            let structured_payload_json = r#"{"blocks":[{"text":"recognized text"}]}"#;
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
                     response: MockOcrResponse::Success(
-                        OcrOutput::new("recognized text").with_engine_version("vision-1.0"),
+                        OcrOutput::new("recognized text")
+                            .with_structured_payload_json(structured_payload_json)
+                            .with_engine_version("vision-1.0"),
                     ),
                 })),
             );
@@ -296,6 +299,10 @@ mod tests {
                 Some("recognized text")
             );
             assert_eq!(
+                completion.result.structured_payload_json.as_deref(),
+                Some(structured_payload_json)
+            );
+            assert_eq!(
                 completion.result.processor_version.as_deref(),
                 Some("apple_vision:vision-1.0")
             );
@@ -312,7 +319,13 @@ mod tests {
                 .await
                 .expect("result should be readable")
                 .expect("result should exist");
-            assert_eq!(stored_result.id, completion.result.id);
+            assert_eq!(stored_result, completion.result);
+
+            let subject_results = store
+                .list_results_for_subject(&ProcessingSubject::frame(persisted.frame.id))
+                .await
+                .expect("subject results should be readable");
+            assert_eq!(subject_results, vec![completion.result]);
         });
     }
 
