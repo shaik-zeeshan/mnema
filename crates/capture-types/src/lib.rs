@@ -150,6 +150,10 @@ pub fn default_audio_activity_sensitivity() -> u8 {
     50
 }
 
+pub fn default_native_capture_debug_logging_enabled() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InactivityActivityMode {
@@ -188,6 +192,8 @@ pub struct RecordingSettings {
     pub video_bitrate: VideoBitrateSettings,
     pub save_directory: String,
     pub auto_start: bool,
+    #[serde(default = "default_native_capture_debug_logging_enabled")]
+    pub native_capture_debug_logging_enabled: bool,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -216,6 +222,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub video_bitrate: VideoBitrateSettings,
     pub save_directory: String,
     pub auto_start: bool,
+    #[serde(default = "default_native_capture_debug_logging_enabled")]
+    pub native_capture_debug_logging_enabled: bool,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -234,6 +242,21 @@ pub struct UpdateRecordingSettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct NativeCaptureSessionResponse {
     pub session: NativeCaptureSession,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeCaptureDebugLogStatus {
+    pub enabled: bool,
+    pub path: String,
+    pub exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneralAppLogStatus {
+    pub path: String,
+    pub exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -317,8 +340,39 @@ mod tests {
             default_audio_activity_sensitivity()
         );
         assert_eq!(
+            settings.native_capture_debug_logging_enabled,
+            default_native_capture_debug_logging_enabled()
+        );
+        assert_eq!(
             settings.inactivity_activity_mode,
             InactivityActivityMode::SystemInputOrScreenOrAudio
+        );
+    }
+
+    #[test]
+    fn update_recording_settings_request_deserialize_defaults_debug_logging_flag() {
+        let request: UpdateRecordingSettingsRequest = serde_json::from_str(
+            r#"{
+                "captureScreen": true,
+                "captureMicrophone": false,
+                "captureSystemAudio": false,
+                "segmentDurationSeconds": 60,
+                "screenFrameRate": 30,
+                "screenResolution": { "mode": "preset", "preset": "original" },
+                "videoBitrate": { "mode": "preset", "preset": "medium" },
+                "saveDirectory": "/tmp",
+                "autoStart": false,
+                "pauseCaptureOnInactivity": true,
+                "idleTimeoutSeconds": 10,
+                "audioActivitySensitivity": 50,
+                "activityMode": "system_input_or_screen"
+            }"#,
+        )
+        .expect("request should deserialize");
+
+        assert_eq!(
+            request.native_capture_debug_logging_enabled,
+            default_native_capture_debug_logging_enabled()
         );
     }
 }

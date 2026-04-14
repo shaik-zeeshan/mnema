@@ -32,7 +32,9 @@ pub(crate) fn current_system_idle_ms() -> Option<u64> {
             .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
         {
-            eprintln!("received invalid system idle reading from CoreGraphics: {seconds}");
+            crate::native_capture_debug_log::log(format!(
+                "received invalid system idle reading from CoreGraphics: {seconds}"
+            ));
         }
         return None;
     }

@@ -119,6 +119,8 @@ export interface RecordingSettings {
 	autoStart: boolean;
 	screenResolution: ScreenResolution;
 	videoBitrate: VideoBitrate;
+	/** Whether native-capture debug logging is enabled. */
+	nativeCaptureDebugLoggingEnabled: boolean;
 	pauseCaptureOnInactivity: boolean;
 	idleTimeoutSeconds: number;
 	/** Which signals count as "activity" for the inactivity-gating feature. */
@@ -130,6 +132,23 @@ export interface RecordingSettings {
 	 * before it is counted as activity.
 	 */
 	audioActivitySensitivity: number;
+}
+
+// ─── Native Capture Debug Log ──────────────────────────────────────────────
+
+/** Status of the native-capture debug log file, returned by Tauri commands. */
+export interface NativeCaptureDebugLogStatus {
+	enabled: boolean;
+	path: string;
+	exists: boolean;
+}
+
+// ─── General Application Log ───────────────────────────────────────────────
+
+/** Status of the general application log file, returned by Tauri commands. */
+export interface GeneralAppLogStatus {
+	path: string;
+	exists: boolean;
 }
 
 // ─── Video Bitrate ──────────────────────────────────────────────────────────
@@ -260,4 +279,41 @@ export interface IdleDebugActivitySource {
 	latestNormalizedLevel: number | null;
 	/** Activity threshold for this source (normalised 0–1); null for non-audio sources. */
 	activityThreshold: number | null;
+}
+
+// ─── App Infra ──────────────────────────────────────────────────────────────
+
+/** Mirrors the Rust `BackgroundJobStatus` enum (snake_case wire values). */
+export type BackgroundJobStatus = "queued" | "running" | "completed" | "failed";
+
+/** Mirrors the Rust `JobCounts` struct returned inside `AppInfraStatus`. */
+export interface JobCounts {
+	total: number;
+	queued: number;
+	running: number;
+	completed: number;
+	failed: number;
+}
+
+/** Mirrors the Rust `AppInfraStatus` struct returned by `get_app_infra_status`. */
+export interface AppInfraStatus {
+	databasePath: string;
+	migrationsRan: boolean;
+	workerThreadCount: number;
+	jobCounts: JobCounts;
+}
+
+/** Mirrors the Rust `AppJobDto` struct returned by job-related commands. */
+export interface AppJobDto {
+	id: number;
+	kind: string;
+	status: BackgroundJobStatus;
+	payloadJson: string | null;
+	resultText: string | null;
+	attemptCount: number;
+	lastError: string | null;
+	createdAt: string;
+	updatedAt: string;
+	startedAt: string | null;
+	finishedAt: string | null;
 }

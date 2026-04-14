@@ -1,3 +1,17 @@
+mod debug_log;
+
+pub use debug_log::{
+    configure_debug_log, debug_log_files_exist, delete_debug_log_files, write_debug_log,
+    write_debug_log_fmt, write_debug_log_to_file,
+};
+
+#[macro_export]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        $crate::write_debug_log_fmt(format_args!($($arg)*))
+    };
+}
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 

@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+capture-runtime = { path = "../capture-runtime" }
 capture-types = { path = "../capture-types" }
 capture-writers = { path = "../capture-writers" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-cidre = { version = "0.15", default-features = false, features = ["av", "async", "blocks", "cg", "cm", "dispatch", "sc", "macos_15_0"] }
+cidre = { version = "0.15", default-features = false, features = ["av", "async", "blocks", "cg", "cm", "dispatch", "iio", "sc", "ut", "vt", "macos_15_0"] }
 objc2 = "0.6"
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVCaptureFileOutput", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVMediaFormat"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSError", "NSObject", "NSURL"] }

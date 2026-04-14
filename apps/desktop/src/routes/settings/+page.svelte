@@ -8,6 +8,8 @@
   import type {
     ActivityMode,
     CaptureSupport,
+    GeneralAppLogStatus,
+    NativeCaptureDebugLogStatus,
     RecordingSettings,
     ResolutionMode,
     ResolutionPreset,
@@ -58,6 +60,24 @@
   let draftIdleTimeoutSeconds = $state(30);
   let draftActivityMode = $state<ActivityMode>("system_input_only");
   let draftAudioActivitySensitivity = $state(50);
+
+  // Debug logging draft
+  let draftNativeCaptureDebugLoggingEnabled = $state(false);
+
+  // Debug log status
+  let debugLogStatus = $state<NativeCaptureDebugLogStatus | null>(null);
+  let loadingDebugLogStatus = $state(false);
+  let deletingDebugLog = $state(false);
+  let debugLogError = $state<string | null>(null);
+  let debugLogDeleted = $state(false);
+
+  // General app log status
+  let generalLogStatus = $state<GeneralAppLogStatus | null>(null);
+  let loadingGeneralLogStatus = $state(false);
+  let openingGeneralLog = $state(false);
+  let deletingGeneralLog = $state(false);
+  let generalLogError = $state<string | null>(null);
+  let generalLogDeleted = $state(false);
 
   // Loading / error state
   let loadingRecSettings = $state(false);
@@ -130,6 +150,7 @@
     draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
     draftActivityMode = s.activityMode ?? "system_input_only";
     draftAudioActivitySensitivity = s.audioActivitySensitivity ?? 50;
+    draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
     if (s.screenResolution.mode === "custom") {
       draftResolutionMode = "custom";
       draftCustomWidth = s.screenResolution.width;
@@ -194,6 +215,72 @@
     }
   }
 
+  async function loadDebugLogStatus() {
+    loadingDebugLogStatus = true;
+    debugLogError = null;
+    try {
+      debugLogStatus = await invoke<NativeCaptureDebugLogStatus>("get_native_capture_debug_log_status");
+    } catch (err) {
+      debugLogError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      loadingDebugLogStatus = false;
+    }
+  }
+
+  async function deleteDebugLog() {
+    deletingDebugLog = true;
+    debugLogError = null;
+    debugLogDeleted = false;
+    try {
+      debugLogStatus = await invoke<NativeCaptureDebugLogStatus>("delete_native_capture_debug_log");
+      debugLogDeleted = true;
+      setTimeout(() => { debugLogDeleted = false; }, 2200);
+    } catch (err) {
+      debugLogError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      deletingDebugLog = false;
+    }
+  }
+
+  async function loadGeneralLogStatus() {
+    loadingGeneralLogStatus = true;
+    generalLogError = null;
+    try {
+      generalLogStatus = await invoke<GeneralAppLogStatus>("get_general_app_log_status");
+    } catch (err) {
+      generalLogError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      loadingGeneralLogStatus = false;
+    }
+  }
+
+  async function openGeneralLog() {
+    openingGeneralLog = true;
+    generalLogError = null;
+    try {
+      generalLogStatus = await invoke<GeneralAppLogStatus>("open_general_app_log");
+    } catch (err) {
+      generalLogError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      openingGeneralLog = false;
+    }
+  }
+
+  async function deleteGeneralLog() {
+    deletingGeneralLog = true;
+    generalLogError = null;
+    generalLogDeleted = false;
+    try {
+      generalLogStatus = await invoke<GeneralAppLogStatus>("delete_general_app_log");
+      generalLogDeleted = true;
+      setTimeout(() => { generalLogDeleted = false; }, 2200);
+    } catch (err) {
+      generalLogError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      deletingGeneralLog = false;
+    }
+  }
+
   async function loadRecordingSettings() {
     loadingRecSettings = true;
     recError = null;
@@ -231,6 +318,7 @@
           idleTimeoutSeconds: draftIdleTimeoutSeconds,
           activityMode: draftActivityMode,
           audioActivitySensitivity: draftAudioActivitySensitivity,
+          nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
           screenResolution: draftResolutionMode === "custom"
             ? {
                 mode: "custom",
@@ -250,6 +338,8 @@
       syncRecDrafts(updated);
       recSaved = true;
       setTimeout(() => { recSaved = false; }, 2200);
+      // Refresh debug log status since the enabled flag may have changed.
+      loadDebugLogStatus();
     } catch (err) {
       recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
@@ -420,6 +510,8 @@
     loadCaptureSupport();
     loadRecordingSettings();
     loadMicState();
+    loadDebugLogStatus();
+    loadGeneralLogStatus();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -896,6 +988,131 @@
             </span>
           </div>
         {/if}
+      {/if}
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- ── Native Capture Debug Logging ──────────────────────── -->
+    <div class="settings-group">
+      <span class="group-label">Native Capture Debug Logging</span>
+      <Switch
+        bind:checked={draftNativeCaptureDebugLoggingEnabled}
+        label="Enable debug logging"
+        description="Write native capture diagnostic output to a log file on disk"
+      />
+      <p class="group-hint">
+        When enabled, native capture internals are logged to a file for troubleshooting.
+        Save settings to apply the change.
+      </p>
+
+      {#if debugLogStatus}
+        <div class="debug-log-status">
+          <div class="debug-log-status__row">
+            <span class="debug-log-status__label">Status</span>
+            <span class="debug-log-status__value">
+              {#if debugLogStatus.enabled}
+                <span class="debug-log-status__dot debug-log-status__dot--on"></span> Active
+              {:else}
+                <span class="debug-log-status__dot"></span> Inactive
+              {/if}
+            </span>
+          </div>
+          <div class="debug-log-status__row">
+            <span class="debug-log-status__label">Path</span>
+            <span class="debug-log-status__path" title={debugLogStatus.path}>{debugLogStatus.path}</span>
+          </div>
+          <div class="debug-log-status__row">
+            <span class="debug-log-status__label">File</span>
+            <span class="debug-log-status__value">{debugLogStatus.exists ? "Exists on disk" : "Not found"}</span>
+          </div>
+        </div>
+
+        {#if debugLogStatus.exists}
+          <div class="debug-log-actions">
+            <button
+              class="btn btn--danger btn--sm"
+              onclick={deleteDebugLog}
+              disabled={deletingDebugLog}
+            >
+              {deletingDebugLog ? "Deleting…" : "Delete Log File"}
+            </button>
+            {#if debugLogDeleted}
+              <span class="saved-badge">✓ Deleted</span>
+            {/if}
+          </div>
+        {/if}
+      {:else if loadingDebugLogStatus}
+        <p class="loading-text">Loading log status…</p>
+      {/if}
+
+      {#if debugLogError}
+        <div class="inline-error">
+          <span class="inline-error__icon">⚠</span>
+          <span class="inline-error__msg">{debugLogError}</span>
+          <button class="btn btn--ghost btn--sm" onclick={() => debugLogError = null}>×</button>
+        </div>
+      {/if}
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- ── General Application Log ───────────────────────────── -->
+    <div class="settings-group">
+      <span class="group-label">General Application Log</span>
+      <p class="group-hint">
+        The general application log captures high-level runtime events and errors.
+      </p>
+
+      {#if generalLogStatus}
+        <div class="debug-log-status">
+          <div class="debug-log-status__row">
+            <span class="debug-log-status__label">Path</span>
+            <span class="debug-log-status__path" title={generalLogStatus.path}>{generalLogStatus.path}</span>
+          </div>
+          <div class="debug-log-status__row">
+            <span class="debug-log-status__label">File</span>
+            <span class="debug-log-status__value">{generalLogStatus.exists ? "Exists on disk" : "Not found"}</span>
+          </div>
+        </div>
+
+        <div class="debug-log-actions">
+          <button
+            class="btn btn--ghost btn--sm"
+            onclick={openGeneralLog}
+            disabled={openingGeneralLog}
+          >
+            {#if openingGeneralLog}
+              Opening…
+            {:else if generalLogStatus.exists}
+              Open Log File
+            {:else}
+              Open Containing Folder
+            {/if}
+          </button>
+          {#if generalLogStatus.exists}
+            <button
+              class="btn btn--danger btn--sm"
+              onclick={deleteGeneralLog}
+              disabled={deletingGeneralLog}
+            >
+              {deletingGeneralLog ? "Deleting…" : "Delete Log File"}
+            </button>
+          {/if}
+          {#if generalLogDeleted}
+            <span class="saved-badge">✓ Deleted</span>
+          {/if}
+        </div>
+      {:else if loadingGeneralLogStatus}
+        <p class="loading-text">Loading log status…</p>
+      {/if}
+
+      {#if generalLogError}
+        <div class="inline-error">
+          <span class="inline-error__icon">⚠</span>
+          <span class="inline-error__msg">{generalLogError}</span>
+          <button class="btn btn--ghost btn--sm" onclick={() => generalLogError = null}>×</button>
+        </div>
       {/if}
     </div>
 
@@ -1820,5 +2037,80 @@
   .audio-activity-notice__text strong {
     color: #3dffa0;
     font-weight: 700;
+  }
+
+  /* ── Debug log status ────────────────────────────────────────────── */
+  .debug-log-status {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    background: #0e0e16;
+    border: 1px solid #1a1a2a;
+    border-radius: 4px;
+  }
+
+  .debug-log-status__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .debug-log-status__label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #33334a;
+    width: 48px;
+    flex-shrink: 0;
+  }
+
+  .debug-log-status__value {
+    font-size: 11px;
+    color: #9090b0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .debug-log-status__path {
+    font-size: 10px;
+    color: #6060a0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: monospace;
+  }
+
+  .debug-log-status__dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #33334a;
+    flex-shrink: 0;
+  }
+
+  .debug-log-status__dot--on {
+    background: #3dffa0;
+  }
+
+  .debug-log-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* ── Danger button variant ───────────────────────────────────────── */
+  .btn--danger {
+    background: #1e0a0a;
+    color: #ff6b7a;
+    border-color: #3a1a20;
+  }
+
+  .btn--danger:not(:disabled):hover {
+    background: #2a1010;
+    border-color: #ff6b7a;
   }
 </style>

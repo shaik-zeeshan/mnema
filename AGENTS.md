@@ -1,34 +1,38 @@
 # AGENTS
 
 ## Workspace
-- This is a Bun workspace monorepo driven from the repo root with Turborepo. Root scripts are the source of truth.
-- Current app layout is minimal: `apps/desktop` is the only app, and there are no existing `packages/*` entries yet.
+- This repo has two roots of truth: the Bun/Turbo workspace in `package.json` and the Rust Cargo workspace in `Cargo.toml`.
+- `apps/desktop` is the only JS app. Shared native/backend code lives in `crates/*`, not `packages/*`.
 
 ## Commands
-- Run from the repo root unless a note says otherwise.
-- `bun run dev` runs `turbo run dev --filter=desktop`.
-- `bun run build` runs the desktop frontend build through Turbo.
-- `bun run check` is the main frontend verification step and currently runs `svelte-kit sync && svelte-check --tsconfig ./tsconfig.json` for `apps/desktop`.
-- `bun run tauri -- dev` is the correct way to launch the desktop app in Tauri dev mode from the root.
-- For Rust-only verification, use `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
+- Run repo commands from the repo root.
+- Frontend flow: `bun run dev`, `bun run check`, `bun run build`.
+- Tauri CLI from the root: `bun run tauri -- dev` or `bun run tauri -- build`.
+- Rust-only verification for the desktop app: `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
+- Focused Rust work: `cargo check -p <crate>` and `cargo test -p <crate>`.
 
-## Desktop App Boundaries
-- Frontend code lives in `apps/desktop/src`.
-- Native Tauri/Rust code lives in `apps/desktop/src-tauri/src`.
-- Tauri command registration happens in `apps/desktop/src-tauri/src/lib.rs`; wire new commands there.
-- The current Svelte entry UI is `apps/desktop/src/routes/+page.svelte`.
+## Boundaries
+- Svelte UI lives in `apps/desktop/src`. The shell is `src/routes/+layout.svelte`, the dashboard is `src/routes/+page.svelte`, and settings live in `src/routes/settings/+page.svelte`.
+- Tauri startup and command registration live in `apps/desktop/src-tauri/src/lib.rs`; keep new `#[tauri::command]` functions wired there and keep frontend `invoke(...)` names in sync.
+- `crates/app-infra` owns SQLite, embedded sqlx migrations, background jobs, frame batches, and the OCR/processing pipeline.
+- `crates/capture-types` owns serde types shared across frontend, Tauri, and native layers.
+- `crates/capture-screen`, `crates/capture-microphone`, and `crates/capture-writers` own capture primitives and media output.
+- `crates/capture-runtime` holds generic runtime helpers.
 
-## Framework Quirks
-- The desktop frontend is a SvelteKit SPA, not SSR: `apps/desktop/src/routes/+layout.ts` sets `ssr = false`, and `apps/desktop/svelte.config.js` uses `@sveltejs/adapter-static` with `fallback: "index.html"`.
-- Vite is pinned to port `1420` with HMR on `1421` in Tauri mode. Do not casually change those ports; `tauri.conf.json` expects `http://localhost:1420`.
-- `apps/desktop/src-tauri/tauri.conf.json` runs `beforeDevCommand: bun run dev` and `beforeBuildCommand: cargo clean --manifest-path src-tauri/Cargo.toml && bun run build`. Expect Tauri builds to clean the Rust crate first.
-
-## Change Strategy
-- If a feature is explicitly desktop-app-specific, implement it in `apps/desktop` / `apps/desktop/src-tauri` as needed.
-- Otherwise, prefer creating a separate Rust crate for the intended task and calling it from the desktop Tauri crate instead of putting general-purpose logic directly into `apps/desktop/src-tauri`.
-- This repo does not currently define a Cargo workspace, so an added crate will also need to be wired into `apps/desktop/src-tauri/Cargo.toml` as a dependency.
+## Quirks
+- The desktop frontend is SPA-only: `apps/desktop/src/routes/+layout.ts` sets `ssr = false`, and `apps/desktop/svelte.config.js` uses `@sveltejs/adapter-static` with `fallback: "index.html"`.
+- Tauri expects Vite on port `1420` with HMR on `1421`; `apps/desktop/vite.config.js` hard-pins those ports and ignores `src-tauri/**` in the watcher.
+- `apps/desktop/src-tauri/tauri.conf.json` runs `beforeDevCommand: bun run dev` and `beforeBuildCommand: cargo clean --manifest-path src-tauri/Cargo.toml && bun run build`; `tauri build` always cleans the Rust crate first.
+- Recording settings persist to `recording-settings.json` under Tauri `app_config_dir()` when available. App infra state lives under `<saveDirectory>/.z`, with SQLite at `<saveDirectory>/.z/db/app.sqlite3`; changing `saveDirectory` changes that DB location on the next app start.
+- App infra schema changes belong in `crates/app-infra/migrations`; migrations are embedded via `sqlx::migrate!`.
+- Native capture is macOS-oriented; many capture code paths and tests are behind `cfg(target_os = "macos")`.
 
 ## Verification
-- For frontend/UI changes, run `bun run check`.
-- For Rust/Tauri changes, run `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
-- For cross-stack changes or anything affecting packaging/build wiring, run both.
+- UI-only changes: `bun run check`.
+- Rust changes in one crate: start with `cargo check -p <crate>` or `cargo test -p <crate>`.
+- Tauri wiring or cross-crate Rust changes: run `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
+- Cross-stack or settings/storage changes: run both `bun run check` and `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
+- Focused tests in `apps/desktop/src-tauri/src/lib.rs` may need `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib <test-filter>`; without `--lib`, filtered Tauri tests may not run as expected.
+
+## Workflow
+- When new repo-specific behavior, commands, structure, or gotchas are discovered during a change, ask the user whether that context should also be added to `AGENTS.md`.
