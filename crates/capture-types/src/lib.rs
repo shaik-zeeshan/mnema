@@ -254,6 +254,13 @@ pub struct NativeCaptureDebugLogStatus {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GeneralAppLogStatus {
+    pub path: String,
+    pub exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CaptureErrorResponse {
     pub code: String,
     pub message: String,

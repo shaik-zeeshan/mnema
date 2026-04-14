@@ -169,7 +169,7 @@ fn record_observed_audio_format(
 
     if context.logged_format_samples < FORMAT_LOG_SAMPLE_LIMIT {
         context.logged_format_samples += 1;
-        eprintln!(
+        capture_runtime::debug_log!(
             "[capture-microphone] sample_format_observed index={} sample_rate_hz={} channels={} bits_per_channel={} bytes_per_frame={} format_id={} format_flags={}",
             context.format_state.observed_format_count,
             sample_format.sample_rate_hz,
@@ -185,7 +185,7 @@ fn record_observed_audio_format(
         let Some(stable_format) = context.format_state.stable_format else {
             return;
         };
-        eprintln!(
+        capture_runtime::debug_log!(
             "[capture-microphone] sample_format_stabilized observed={} streak={} sample_rate_hz={} channels={} bits_per_channel={} bytes_per_frame={} format_id={} format_flags={}",
             context.format_state.observed_format_count,
             context.format_state.candidate_format_streak,
