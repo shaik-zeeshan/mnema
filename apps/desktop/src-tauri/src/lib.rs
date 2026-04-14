@@ -21,10 +21,7 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)
-                .level_for(
-                    "capture_runtime",
-                    tauri_plugin_log::log::LevelFilter::Debug,
-                )
+                .level_for("capture_runtime", tauri_plugin_log::log::LevelFilter::Debug)
                 .level_for("z_lib", tauri_plugin_log::log::LevelFilter::Debug)
                 .targets([
                     Target::new(TargetKind::Stderr),
@@ -50,6 +47,7 @@ pub fn run() {
             app_infra::list_processing_results,
             general_app_log::get_general_app_log_status,
             general_app_log::open_general_app_log,
+            general_app_log::delete_general_app_log,
             native_capture::get_capture_support,
             native_capture::get_capture_permissions,
             native_capture::get_idle_debug,
