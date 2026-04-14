@@ -31,6 +31,13 @@ pub(crate) fn set_current_system_audio_output_file(
 }
 
 #[cfg(target_os = "macos")]
+const MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX: &str =
+    "screen output missing: expected screen recording file";
+#[cfg(target_os = "macos")]
+const MISSING_REQUESTED_SCREEN_OUTPUT_AT_PATH_PREFIX: &str =
+    "screen output missing: expected screen recording file at ";
+
+#[cfg(target_os = "macos")]
 fn maybe_remove_intermediate_file(file: &str, label: &str, failures: &mut Vec<String>) {
     match std::fs::remove_file(file) {
         Ok(()) => {}
@@ -80,7 +87,13 @@ fn missing_requested_screen_output_failure(recording_file: Option<&str>) -> Stri
     let path_detail = recording_file
         .map(|path| format!(" at {path}"))
         .unwrap_or_default();
-    format!("screen output missing: expected screen recording file{path_detail}")
+    format!("{MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX}{path_detail}")
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn is_missing_requested_screen_output_failure_detail(detail: &str) -> bool {
+    detail == MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX
+        || detail.starts_with(MISSING_REQUESTED_SCREEN_OUTPUT_AT_PATH_PREFIX)
 }
 
 #[cfg(target_os = "macos")]

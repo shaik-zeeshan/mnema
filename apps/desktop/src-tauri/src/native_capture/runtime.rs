@@ -239,6 +239,25 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
     runtime.runtime_state = RuntimeState::Idle;
 }
 
+pub(super) fn should_recover_from_segment_finalize_error(error: &CaptureErrorResponse) -> bool {
+    let is_missing_requested_screen_output =
+        capture_writers::single_output_processing_failure_detail(
+            &error.message,
+            &[
+                "microphone output conversion failed: ",
+                "system audio output conversion failed: ",
+                "screen output video-only conversion failed: ",
+                "failed to remove intermediate ",
+            ],
+        )
+        .is_some_and(
+            crate::native_capture_output::is_missing_requested_screen_output_failure_detail,
+        );
+
+    capture_screen::should_recover_from_segment_finalize_error(error)
+        || (error.code == "capture_output_processing_failed" && is_missing_requested_screen_output)
+}
+
 pub(super) fn should_rotate_segment(
     current_segment_index: u64,
     scheduled_segment_index: u64,

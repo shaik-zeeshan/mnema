@@ -602,9 +602,10 @@ impl FrameBatchStore {
         let mut first_error: Option<AppInfraError> = None;
         for batch in &closed {
             if let Err(error) = self.enqueue_finalize_job_if_needed(batch.id).await {
-                eprintln!(
-                    "failed to schedule finalize job for batch {}: {error}",
-                    batch.id
+                capture_runtime::debug_log!(
+                    "[app-infra][frame-batches] failed to schedule finalize job for batch {}: {}",
+                    batch.id,
+                    error
                 );
                 if first_error.is_none() {
                     first_error = Some(error);
@@ -666,12 +667,14 @@ impl FrameBatchRuntime {
         // a crash during cleanup leaves both the batch and job retryable.
         let cleanup_errors = cleanup_frame_artifacts(&batch_with_frames.frames);
         if !cleanup_errors.is_empty() {
-            eprintln!(
-                "frame artifact cleanup for batch {batch_id}: {} file(s) failed to delete",
+            capture_runtime::debug_log!(
+                "[app-infra][frame-batches] frame artifact cleanup for batch {batch_id}: {} file(s) failed to delete",
                 cleanup_errors.len()
             );
             for (path, error) in &cleanup_errors {
-                eprintln!("  failed to delete {path}: {error}");
+                capture_runtime::debug_log!(
+                    "[app-infra][frame-batches] failed to delete {path}: {error}"
+                );
             }
         }
 
@@ -738,9 +741,7 @@ fn is_safe_frame_artifact_path(path: &Path) -> bool {
         Some(p) => p,
         None => return false,
     };
-    let parent_is_frames = frames_dir
-        .file_name()
-        .is_some_and(|name| name == "frames");
+    let parent_is_frames = frames_dir.file_name().is_some_and(|name| name == "frames");
     if !parent_is_frames {
         return false;
     }
@@ -765,8 +766,8 @@ fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io::Error)> {
     for frame in frames {
         let path = Path::new(&frame.file_path);
         if !is_safe_frame_artifact_path(path) {
-            eprintln!(
-                "skipping cleanup of frame artifact with unsafe path: {}",
+            capture_runtime::debug_log!(
+                "[app-infra][frame-batches] skipping cleanup of frame artifact with unsafe path: {}",
                 frame.file_path
             );
             continue;

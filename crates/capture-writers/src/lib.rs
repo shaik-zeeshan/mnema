@@ -752,7 +752,34 @@ pub fn finish_video_asset_writer(
     }
 }
 
-#[cfg(target_os = "macos")]
+pub const OUTPUT_PROCESSING_FAILURE_PREFIX: &str = "Failed to finalize capture outputs: ";
+const NO_VIDEO_SAMPLES_ERROR_PREFIX: &str = "No ";
+const NO_VIDEO_SAMPLES_ERROR_SUFFIX: &str =
+    " video samples were received; no output file was produced";
+
+pub fn strip_output_processing_failure_prefix(message: &str) -> Option<&str> {
+    message.strip_prefix(OUTPUT_PROCESSING_FAILURE_PREFIX)
+}
+
+pub fn single_output_processing_failure_detail<'a>(
+    message: &'a str,
+    additional_failure_prefixes: &[&str],
+) -> Option<&'a str> {
+    let detail = strip_output_processing_failure_prefix(message)?;
+    (!detail.is_empty()
+        && !additional_failure_prefixes
+            .iter()
+            .any(|prefix| detail.contains(&format!("; {prefix}"))))
+    .then_some(detail)
+}
+
+pub fn is_no_video_samples_error_message(label: &str, message: &str) -> bool {
+    message
+        .strip_prefix(NO_VIDEO_SAMPLES_ERROR_PREFIX)
+        .and_then(|detail| detail.strip_suffix(NO_VIDEO_SAMPLES_ERROR_SUFFIX))
+        .is_some_and(|actual_label| actual_label == label)
+}
+
 pub fn aggregate_output_processing_failures(
     failures: Vec<String>,
 ) -> Result<(), CaptureErrorResponse> {
@@ -762,10 +789,7 @@ pub fn aggregate_output_processing_failures(
 
     Err(CaptureErrorResponse {
         code: "capture_output_processing_failed".to_string(),
-        message: format!(
-            "Failed to finalize capture outputs: {}",
-            failures.join("; ")
-        ),
+        message: format!("{OUTPUT_PROCESSING_FAILURE_PREFIX}{}", failures.join("; ")),
     })
 }
 
@@ -870,6 +894,56 @@ fn error_with_ns_error(code: &str, prefix: &str, error: &cidre::ns::Error) -> Ca
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_output_processing_failure_detail_extracts_single_failure() {
+        let error = aggregate_output_processing_failures(vec!["screen output missing".to_string()])
+            .expect_err("single failure should aggregate");
+
+        assert_eq!(
+            single_output_processing_failure_detail(&error.message, &["system audio failed"]),
+            Some("screen output missing")
+        );
+    }
+
+    #[test]
+    fn single_output_processing_failure_detail_rejects_multiple_failures() {
+        let error = aggregate_output_processing_failures(vec![
+            "screen output missing".to_string(),
+            "system audio failed".to_string(),
+        ])
+        .expect_err("multiple failures should aggregate");
+
+        assert_eq!(
+            single_output_processing_failure_detail(&error.message, &["system audio failed"]),
+            None
+        );
+    }
+
+    #[test]
+    fn single_output_processing_failure_detail_allows_semicolons_inside_single_failure() {
+        let error = aggregate_output_processing_failures(vec![
+            "No screen video samples were received; no output file was produced".to_string(),
+        ])
+        .expect_err("single failure should aggregate");
+
+        assert_eq!(
+            single_output_processing_failure_detail(&error.message, &["system audio failed"]),
+            Some("No screen video samples were received; no output file was produced")
+        );
+    }
+
+    #[test]
+    fn is_no_video_samples_error_message_matches_label_shape() {
+        assert!(is_no_video_samples_error_message(
+            "screen",
+            "No screen video samples were received; no output file was produced"
+        ));
+        assert!(!is_no_video_samples_error_message(
+            "screen",
+            "No microphone video samples were received; no output file was produced"
+        ));
+    }
 
     fn pcm_format(
         bits_per_channel: u32,

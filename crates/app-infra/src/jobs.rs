@@ -410,10 +410,11 @@ impl JobRuntime {
         let (sender, receiver) = oneshot::channel();
         let descriptor = JobDescriptor::new(job.kind.clone());
         let job_id = job.id;
+        let job_kind = job.kind.clone();
         let pool = Arc::clone(&self.pool);
 
         runtime.spawn(async move {
-            let output = run_cpu_job(pool, jobs, job_id, task).await;
+            let output = run_cpu_job(pool, jobs, job_id, job_kind, task).await;
             let _ = sender.send(output);
         });
 
@@ -451,6 +452,7 @@ async fn run_cpu_job<F, T>(
     pool: Arc<ThreadPool>,
     jobs: JobStore,
     job_id: i64,
+    job_kind: String,
     task: F,
 ) -> Result<CpuJobResult<T>>
 where
@@ -464,7 +466,13 @@ where
     pool.spawn(move || {
         let output = match panic::catch_unwind(AssertUnwindSafe(task)) {
             Ok(output) => output,
-            Err(payload) => Err(format_cpu_job_panic(payload)),
+            Err(payload) => {
+                let error = format_cpu_job_panic(payload);
+                capture_runtime::debug_log!(
+                    "[app-infra][jobs] captured panic in cpu job {job_id} ({job_kind}): {error}"
+                );
+                Err(error)
+            }
         };
         let _ = sender.send(output);
     });

@@ -10,6 +10,12 @@ const APP_INFRA_BASE_DIR_NAME: &str = ".z";
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
+#[derive(Debug, Clone)]
+struct ResolvedAppInfraBaseDir {
+    save_directory: String,
+    base_dir: PathBuf,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitDebugCpuJobRequest {
@@ -325,33 +331,91 @@ pub async fn persist_screen_frame_artifact(
 }
 
 pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
-    let base_dir = resolve_base_dir(app.handle())?;
-    let infra = tauri::async_runtime::block_on(::app_infra::AppInfra::initialize(&base_dir))
-        .map_err(|error| {
-            format!(
-                "failed to initialize app infrastructure at {}: {error}",
-                base_dir.display()
-            )
-        })?;
+    let resolved_base_dir = resolve_base_dir(app.handle())?;
+    crate::native_capture_debug_log::log(format!(
+        "initializing app infrastructure (save_directory='{}', base_dir='{}')",
+        resolved_base_dir.save_directory,
+        resolved_base_dir.base_dir.display()
+    ));
+
+    let infra = tauri::async_runtime::block_on(::app_infra::AppInfra::initialize(
+        &resolved_base_dir.base_dir,
+    ))
+    .map_err(|error| {
+        crate::native_capture_debug_log::log(format!(
+            "failed to initialize app infrastructure (save_directory='{}', base_dir='{}'): {error}",
+            resolved_base_dir.save_directory,
+            resolved_base_dir.base_dir.display()
+        ));
+
+        format!(
+            "failed to initialize app infrastructure at {}: {error}",
+            resolved_base_dir.base_dir.display()
+        )
+    })?;
     let infra = Arc::new(infra);
 
     if !app.manage(Arc::clone(&infra)) {
+        crate::native_capture_debug_log::log(
+            "app infrastructure state was already initialized; refusing duplicate setup",
+        );
         return Err("app infrastructure state was already initialized".to_string());
     }
 
-    spawn_processing_worker(infra);
+    crate::native_capture_debug_log::log(format!(
+        "initialized app infrastructure successfully (base_dir='{}')",
+        resolved_base_dir.base_dir.display()
+    ));
+
+    spawn_processing_worker(infra, resolved_base_dir.base_dir);
 
     Ok(())
 }
 
-fn spawn_processing_worker(infra: AppInfraState) {
+fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf) {
+    let base_dir_display = base_dir.display().to_string();
+    crate::native_capture_debug_log::log(format!(
+        "starting app infrastructure processing worker (base_dir='{}', idle_poll_ms={}, error_retry_ms={})",
+        base_dir_display,
+        PROCESSING_WORKER_IDLE_POLL_INTERVAL.as_millis(),
+        PROCESSING_WORKER_ERROR_RETRY_INTERVAL.as_millis()
+    ));
+
     tauri::async_runtime::spawn(async move {
+        let mut consecutive_failures = 0u64;
+
         loop {
             match process_pending_jobs_once(&infra).await {
-                Ok(Some(_)) => continue,
-                Ok(None) => tokio::time::sleep(PROCESSING_WORKER_IDLE_POLL_INTERVAL).await,
+                Ok(Some(_)) => {
+                    if consecutive_failures > 0 {
+                        crate::native_capture_debug_log::log(format!(
+                            "app infrastructure processing worker recovered after {} failed iteration(s) (base_dir='{}')",
+                            consecutive_failures, base_dir_display
+                        ));
+                        consecutive_failures = 0;
+                    }
+
+                    continue;
+                }
+                Ok(None) => {
+                    if consecutive_failures > 0 {
+                        crate::native_capture_debug_log::log(format!(
+                            "app infrastructure processing worker recovered after {} failed iteration(s) (base_dir='{}')",
+                            consecutive_failures, base_dir_display
+                        ));
+                        consecutive_failures = 0;
+                    }
+
+                    tokio::time::sleep(PROCESSING_WORKER_IDLE_POLL_INTERVAL).await;
+                }
                 Err(error) => {
-                    eprintln!("processing worker loop failed: {error}");
+                    consecutive_failures += 1;
+                    crate::native_capture_debug_log::log(format!(
+                        "app infrastructure processing worker iteration failed (base_dir='{}', consecutive_failures={}, retry_in_ms={}): {error}",
+                        base_dir_display,
+                        consecutive_failures,
+                        PROCESSING_WORKER_ERROR_RETRY_INTERVAL.as_millis()
+                    ));
                     tokio::time::sleep(PROCESSING_WORKER_ERROR_RETRY_INTERVAL).await;
                 }
             }
@@ -367,7 +431,9 @@ async fn process_pending_jobs_once(
     let did_finalize = match infra.process_next_frame_batch_job().await {
         Ok(result) => result.is_some(),
         Err(error) => {
-            eprintln!("finalize job failed (state already updated): {error}");
+            crate::native_capture_debug_log::log(format!(
+                "app infrastructure frame-batch finalization failed after state update; worker will continue: {error}"
+            ));
             true
         }
     };
@@ -379,12 +445,20 @@ async fn process_pending_jobs_once(
     }
 }
 
-fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBaseDir, String> {
     let settings = crate::native_capture_settings::load_recording_settings_or_default(app_handle);
+    let base_dir = resolve_base_dir_from_save_directory(&settings.save_directory);
 
-    Ok(resolve_base_dir_from_save_directory(
-        &settings.save_directory,
-    ))
+    crate::native_capture_debug_log::log(format!(
+        "resolved app infrastructure base directory (save_directory='{}', base_dir='{}')",
+        settings.save_directory,
+        base_dir.display()
+    ));
+
+    Ok(ResolvedAppInfraBaseDir {
+        save_directory: settings.save_directory,
+        base_dir,
+    })
 }
 
 fn resolve_base_dir_from_save_directory(save_directory: &str) -> PathBuf {

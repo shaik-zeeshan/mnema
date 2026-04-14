@@ -3,6 +3,7 @@ use crate::native_capture_inactivity::{
 };
 use capture_microphone as microphone_capture;
 use serde::Serialize;
+use std::sync::MutexGuard;
 
 use super::runtime::{now_monotonic_marker_ms, NativeCaptureRuntime, NativeCaptureState};
 
@@ -83,8 +84,22 @@ pub(super) fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> Activ
     }
 }
 
+pub(super) fn lock_runtime_for_idle_debug(
+    state: &NativeCaptureState,
+) -> MutexGuard<'_, NativeCaptureRuntime> {
+    match state.lock() {
+        Ok(runtime) => runtime,
+        Err(poisoned) => {
+            crate::native_capture_debug_log::log(
+                "native capture state poisoned while reading idle debug; returning best-effort snapshot",
+            );
+            poisoned.into_inner()
+        }
+    }
+}
+
 pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
-    let mut runtime = state.lock().expect("native capture state poisoned");
+    let mut runtime = lock_runtime_for_idle_debug(&state);
     let now = now_monotonic_marker_ms();
     let system_idle_ms = crate::native_capture_system_idle::current_system_idle_ms();
     let screen_activity_last_unix_ms = capture_screen::last_screen_activity_unix_ms();
