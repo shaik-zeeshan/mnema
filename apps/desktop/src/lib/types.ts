@@ -143,6 +143,14 @@ export interface NativeCaptureDebugLogStatus {
 	exists: boolean;
 }
 
+// ─── General Application Log ───────────────────────────────────────────────
+
+/** Status of the general application log file, returned by Tauri commands. */
+export interface GeneralAppLogStatus {
+	path: string;
+	exists: boolean;
+}
+
 // ─── Video Bitrate ──────────────────────────────────────────────────────────
 
 /** Named bitrate presets. */

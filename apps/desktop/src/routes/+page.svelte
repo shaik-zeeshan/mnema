@@ -27,6 +27,12 @@
   // store (and the layout's activity reporter) always see fresh state.
   const session = $derived(captureSession.value);
 
+  // Generation counter that increments on every *authoritative* session write
+  // (start / stop).  Reconciliation polling captures the value before its
+  // async IPC and skips the write if the generation advanced while in-flight,
+  // preventing a slow response from overwriting a newer stopped state.
+  let sessionGeneration = $state(0);
+
   let lastError = $state<string | null>(null);
   let loadingSupport = $state(false);
   let loadingPermissions = $state(false);
@@ -152,10 +158,13 @@
   async function loadPermissions() {
     loadingPermissions = true;
     clearError();
+    const gen = sessionGeneration;
     try {
       const result = await invoke<GetPermissionsResponse>("get_capture_permissions");
       permissions = result.permissions;
-      if (result.session) setSession(result.session);
+      // Only apply the session when no authoritative action (start/stop)
+      // occurred while this request was in-flight.
+      if (result.session && sessionGeneration === gen) setSession(result.session);
     } catch (err) {
       permissions = null;
       setError(err);
@@ -188,6 +197,7 @@
           captureSystemAudio: recordingSettings?.captureSystemAudio ?? false,
         },
       });
+      sessionGeneration += 1;
       setSession(result.session);
     } catch (err) {
       setError(err);
@@ -201,13 +211,17 @@
     clearError();
     try {
       const result = await invoke<{ session: CaptureSession }>("stop_native_capture");
+      sessionGeneration += 1;
       setSession(result.session);
     } catch (err) {
       setError(err);
       try {
         const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
         permissions = r.permissions;
-        if (r.session) setSession(r.session);
+        if (r.session) {
+          sessionGeneration += 1;
+          setSession(r.session);
+        }
       } catch { /* best-effort */ }
     } finally {
       loadingStop = false;
@@ -269,6 +283,42 @@
 
     return () => {
       clearInterval(idleDebugInterval);
+    };
+  });
+
+  // ─── Session reconciliation polling ───────────────────────────────────────
+  // While the UI believes capture is running, periodically re-fetch the
+  // session from the backend so that an unexpected stop (crash, timeout, etc.)
+  // is reflected in the shared session store.  Isolated in its own $effect so
+  // that `isCapturing` reactivity here never causes the init effect to re-run.
+
+  $effect(() => {
+    // Capture the reactive dep — only poll while the UI thinks we're recording.
+    if (!isCapturing) return;
+
+    const RECONCILE_MS = 5_000;
+
+    async function reconcileSession() {
+      // Skip when the tab is hidden — avoids unnecessary IPC while inactive.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      // Snapshot the generation before the async round-trip.  If an
+      // authoritative action (start/stop) lands while this request is
+      // in-flight, the generation will have advanced and we must discard
+      // this (now-stale) response to avoid overwriting the newer state.
+      const gen = sessionGeneration;
+      try {
+        const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
+        if (sessionGeneration !== gen) return; // stale — discard
+        if (r.session) setSession(r.session);
+      } catch {
+        // Best-effort — a transient backend error should not crash the UI.
+      }
+    }
+
+    const interval = setInterval(reconcileSession, RECONCILE_MS);
+
+    return () => {
+      clearInterval(interval);
     };
   });
 

@@ -8,6 +8,7 @@
   import type {
     ActivityMode,
     CaptureSupport,
+    GeneralAppLogStatus,
     NativeCaptureDebugLogStatus,
     RecordingSettings,
     ResolutionMode,
@@ -69,6 +70,12 @@
   let deletingDebugLog = $state(false);
   let debugLogError = $state<string | null>(null);
   let debugLogDeleted = $state(false);
+
+  // General app log status
+  let generalLogStatus = $state<GeneralAppLogStatus | null>(null);
+  let loadingGeneralLogStatus = $state(false);
+  let openingGeneralLog = $state(false);
+  let generalLogError = $state<string | null>(null);
 
   // Loading / error state
   let loadingRecSettings = $state(false);
@@ -230,6 +237,30 @@
       debugLogError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
       deletingDebugLog = false;
+    }
+  }
+
+  async function loadGeneralLogStatus() {
+    loadingGeneralLogStatus = true;
+    generalLogError = null;
+    try {
+      generalLogStatus = await invoke<GeneralAppLogStatus>("get_general_app_log_status");
+    } catch (err) {
+      generalLogError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      loadingGeneralLogStatus = false;
+    }
+  }
+
+  async function openGeneralLog() {
+    openingGeneralLog = true;
+    generalLogError = null;
+    try {
+      generalLogStatus = await invoke<GeneralAppLogStatus>("open_general_app_log");
+    } catch (err) {
+      generalLogError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      openingGeneralLog = false;
     }
   }
 
@@ -463,6 +494,7 @@
     loadRecordingSettings();
     loadMicState();
     loadDebugLogStatus();
+    loadGeneralLogStatus();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -1002,6 +1034,55 @@
           <span class="inline-error__icon">⚠</span>
           <span class="inline-error__msg">{debugLogError}</span>
           <button class="btn btn--ghost btn--sm" onclick={() => debugLogError = null}>×</button>
+        </div>
+      {/if}
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- ── General Application Log ───────────────────────────── -->
+    <div class="settings-group">
+      <span class="group-label">General Application Log</span>
+      <p class="group-hint">
+        The general application log captures high-level runtime events and errors.
+      </p>
+
+      {#if generalLogStatus}
+        <div class="debug-log-status">
+          <div class="debug-log-status__row">
+            <span class="debug-log-status__label">Path</span>
+            <span class="debug-log-status__path" title={generalLogStatus.path}>{generalLogStatus.path}</span>
+          </div>
+          <div class="debug-log-status__row">
+            <span class="debug-log-status__label">File</span>
+            <span class="debug-log-status__value">{generalLogStatus.exists ? "Exists on disk" : "Not found"}</span>
+          </div>
+        </div>
+
+        <div class="debug-log-actions">
+          <button
+            class="btn btn--ghost btn--sm"
+            onclick={openGeneralLog}
+            disabled={openingGeneralLog}
+          >
+            {#if openingGeneralLog}
+              Opening…
+            {:else if generalLogStatus.exists}
+              Open Log File
+            {:else}
+              Open Containing Folder
+            {/if}
+          </button>
+        </div>
+      {:else if loadingGeneralLogStatus}
+        <p class="loading-text">Loading log status…</p>
+      {/if}
+
+      {#if generalLogError}
+        <div class="inline-error">
+          <span class="inline-error__icon">⚠</span>
+          <span class="inline-error__msg">{generalLogError}</span>
+          <button class="btn btn--ghost btn--sm" onclick={() => generalLogError = null}>×</button>
         </div>
       {/if}
     </div>
