@@ -479,10 +479,24 @@
     return "badge badge--neutral badge--sm";
   }
 
+  function normalizeJobTsForDate(ts: string): string {
+    const trimmed = ts.trim();
+    // SQLite CURRENT_TIMESTAMP is typically "YYYY-MM-DD HH:MM:SS" in UTC.
+    // Convert that shape to a browser-safe ISO-8601 string before parsing.
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)) {
+      return trimmed.replace(" ", "T") + "Z";
+    }
+    // If a timestamp already includes a timezone or is already ISO-like,
+    // preserve it and only normalize the date/time separator when needed.
+    if (trimmed.includes(" ") && /(?:Z|[+-]\d{2}:\d{2})$/.test(trimmed)) {
+      return trimmed.replace(" ", "T");
+    }
+    return trimmed;
+  }
+
   function formatJobTs(ts: string | null | undefined): string {
     if (!ts) return "—";
-    // Timestamps from SQLite are ISO-like strings; try to parse them
-    const d = new Date(ts.endsWith("Z") ? ts : ts + "Z");
+    const d = new Date(normalizeJobTsForDate(ts));
     return isNaN(d.getTime()) ? ts : d.toLocaleTimeString();
   }
 

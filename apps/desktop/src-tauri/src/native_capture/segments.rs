@@ -1008,7 +1008,6 @@ pub(super) fn start_capture_runtime(
         {
             let _ = sources;
             let _ = microphone_device_id_for_capture;
-            let _ = frame_artifact_tx;
             let _ = app_handle;
             Err(CaptureErrorResponse {
                 code: "unsupported_platform".to_string(),
