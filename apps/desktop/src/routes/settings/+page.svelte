@@ -75,7 +75,9 @@
   let generalLogStatus = $state<GeneralAppLogStatus | null>(null);
   let loadingGeneralLogStatus = $state(false);
   let openingGeneralLog = $state(false);
+  let deletingGeneralLog = $state(false);
   let generalLogError = $state<string | null>(null);
+  let generalLogDeleted = $state(false);
 
   // Loading / error state
   let loadingRecSettings = $state(false);
@@ -261,6 +263,21 @@
       generalLogError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
       openingGeneralLog = false;
+    }
+  }
+
+  async function deleteGeneralLog() {
+    deletingGeneralLog = true;
+    generalLogError = null;
+    generalLogDeleted = false;
+    try {
+      generalLogStatus = await invoke<GeneralAppLogStatus>("delete_general_app_log");
+      generalLogDeleted = true;
+      setTimeout(() => { generalLogDeleted = false; }, 2200);
+    } catch (err) {
+      generalLogError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      deletingGeneralLog = false;
     }
   }
 
@@ -1073,6 +1090,18 @@
               Open Containing Folder
             {/if}
           </button>
+          {#if generalLogStatus.exists}
+            <button
+              class="btn btn--danger btn--sm"
+              onclick={deleteGeneralLog}
+              disabled={deletingGeneralLog}
+            >
+              {deletingGeneralLog ? "Deleting…" : "Delete Log File"}
+            </button>
+          {/if}
+          {#if generalLogDeleted}
+            <span class="saved-badge">✓ Deleted</span>
+          {/if}
         </div>
       {:else if loadingGeneralLogStatus}
         <p class="loading-text">Loading log status…</p>
