@@ -849,6 +849,31 @@ fn stream_output_callback_panic_error(
 }
 
 #[cfg(target_os = "macos")]
+fn stream_output_callback_objc_exception_error(
+    exception: &cidre::ns::Exception,
+) -> CaptureErrorResponse {
+    let name_ref = exception.name();
+    // ExceptionName is a newtype over ns::String; deref twice to reach &ns::String.
+    let name = fmt_ns(&**name_ref);
+    let reason = exception
+        .reason()
+        .map(|r| fmt_ns(r.as_ref()))
+        .unwrap_or_else(|| "unknown reason".to_string());
+
+    let error = CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message: format!("ScreenCaptureKit output callback ObjC exception: {name} - {reason}"),
+    };
+
+    log_capture_error(
+        "ObjC exception boundary captured in ScreenCaptureKit output callback",
+        &error,
+    );
+
+    error
+}
+
+#[cfg(target_os = "macos")]
 struct PreparedScreenFrameExport {
     file_path: PathBuf,
     captured_at_unix_ms: u64,
@@ -1011,7 +1036,8 @@ mod stream_output_delegate {
     use super::{
         append_audio_sample_to_writer, append_video_sample_to_writer,
         create_video_asset_writer_for_sample_buf, export_screen_frame_artifact, objc,
-        store_first_stream_output_error, stream_output_callback_panic_error, StreamOutputContext,
+        store_first_stream_output_error, stream_output_callback_objc_exception_error,
+        stream_output_callback_panic_error, StreamOutputContext,
     };
     use cidre::ns;
     use cidre::sc::StreamOutput;
@@ -1095,16 +1121,25 @@ mod stream_output_delegate {
             sample_buf: &mut cidre::cm::SampleBuf,
             kind: cidre::sc::OutputType,
         ) {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let ctx = self.inner_mut();
+            let objc_result = ns::try_catch(|| {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let ctx = self.inner_mut();
 
-                handle_stream_did_output_sample_buf(ctx, sample_buf, kind);
-            }));
+                    handle_stream_did_output_sample_buf(ctx, sample_buf, kind);
+                }));
 
-            if let Err(payload) = result {
+                if let Err(payload) = result {
+                    store_first_stream_output_error(
+                        &mut self.inner_mut().first_error,
+                        stream_output_callback_panic_error(payload),
+                    );
+                }
+            });
+
+            if let Err(exception) = objc_result {
                 store_first_stream_output_error(
                     &mut self.inner_mut().first_error,
-                    stream_output_callback_panic_error(payload),
+                    stream_output_callback_objc_exception_error(exception),
                 );
             }
         }
@@ -1366,7 +1401,7 @@ impl AvFoundationCaptureSession {
                 Err(_) => {
                     let mut callbacks = delegate_finish_callbacks()
                         .lock()
-                        .expect("delegate callback map poisoned");
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     callbacks.remove(&self.delegate_key);
                     let error = CaptureErrorResponse {
                         code: "capture_stop_incomplete".to_string(),
@@ -1640,7 +1675,7 @@ fn recording_delegate_class() -> &'static objc2::runtime::AnyClass {
             let key = this as usize;
             if let Some(tx) = delegate_start_callbacks()
                 .lock()
-                .expect("delegate callback map poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&key)
             {
                 let _ = tx.send(());
@@ -1658,7 +1693,7 @@ fn recording_delegate_class() -> &'static objc2::runtime::AnyClass {
             let key = this as usize;
             if let Some(tx) = delegate_finish_callbacks()
                 .lock()
-                .expect("delegate callback map poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&key)
             {
                 let result = if error.is_null() {
@@ -1891,11 +1926,11 @@ fn start_avfoundation_capture_session(
         let (finish_tx, finish_rx) = mpsc::channel::<Result<(), CaptureErrorResponse>>();
         delegate_start_callbacks()
             .lock()
-            .expect("delegate callback map poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(delegate_key, start_tx);
         delegate_finish_callbacks()
             .lock()
-            .expect("delegate callback map poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(delegate_key, finish_tx);
 
         unsafe { capture_session.startRunning() };
@@ -1912,11 +1947,11 @@ fn start_avfoundation_capture_session(
             unsafe { capture_session.stopRunning() };
             delegate_start_callbacks()
                 .lock()
-                .expect("delegate callback map poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&delegate_key);
             delegate_finish_callbacks()
                 .lock()
-                .expect("delegate callback map poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&delegate_key);
             return Err(CaptureErrorResponse {
                 code: "capture_start_timeout".to_string(),
@@ -2699,6 +2734,45 @@ mod tests {
         assert_eq!(
             error.message,
             "ScreenCaptureKit output callback panicked with a non-string payload"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stream_output_callback_objc_exception_error_contains_expected_wording() {
+        let reason = cidre::ns::str!(c"test reason");
+        let exception =
+            cidre::ns::try_catch(|| cidre::ns::Exception::raise(reason)).expect_err("should catch");
+        let error = stream_output_callback_objc_exception_error(exception);
+
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert!(
+            error
+                .message
+                .contains("ScreenCaptureKit output callback ObjC exception"),
+            "message should contain ObjC exception wording: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("test reason"),
+            "message should contain exception reason: {}",
+            error.message
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stream_output_callback_objc_exception_error_includes_exception_name() {
+        let reason = cidre::ns::str!(c"some reason");
+        let exception =
+            cidre::ns::try_catch(|| cidre::ns::Exception::raise(reason)).expect_err("should catch");
+        let error = stream_output_callback_objc_exception_error(exception);
+
+        // Exception::raise uses NSGenericException by default
+        assert!(
+            error.message.contains("NSGenericException"),
+            "message should contain exception name: {}",
+            error.message
         );
     }
 
