@@ -775,10 +775,53 @@ fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io::Error)> {
         if path.exists() {
             if let Err(error) = std::fs::remove_file(path) {
                 errors.push((frame.file_path.clone(), error));
+                continue;
+            }
+        }
+        // Try to remove the now-possibly-empty frames/ and segment dirs,
+        // even when the frame file was already absent (retry/race/partial prior cleanup).
+        if let Some(frames_dir) = path.parent() {
+            try_remove_empty_dir(frames_dir, &mut errors);
+            if let Some(segment_dir) = frames_dir.parent() {
+                try_remove_empty_dir(segment_dir, &mut errors);
             }
         }
     }
     errors
+}
+
+/// Attempts to remove a directory only if it is empty.
+/// `NotFound` and "directory not empty" errors are silently ignored.
+/// Other IO errors are appended to `errors`.
+fn try_remove_empty_dir(dir: &Path, errors: &mut Vec<(String, std::io::Error)>) {
+    match std::fs::remove_dir(dir) {
+        Ok(()) => {}
+        Err(e) if is_benign_dir_remove_error(&e) => {}
+        Err(e) => {
+            errors.push((dir.to_string_lossy().to_string(), e));
+        }
+    }
+}
+
+/// Returns `true` for IO errors that are expected/benign when attempting to
+/// remove a directory that may not exist or may not be empty.
+fn is_benign_dir_remove_error(e: &std::io::Error) -> bool {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => true,
+        // "Directory not empty" surfaces as Other on some platforms;
+        // check the OS error code for ENOTEMPTY (66 on macOS, 39 on Linux).
+        _ => {
+            #[cfg(unix)]
+            {
+                matches!(e.raw_os_error(), Some(66) | Some(39))
+            }
+            #[cfg(not(unix))]
+            {
+                // On Windows, ERROR_DIR_NOT_EMPTY = 145
+                matches!(e.raw_os_error(), Some(145))
+            }
+        }
+    }
 }
 
 fn map_frame(row: SqliteRow) -> Result<Frame> {
@@ -1488,5 +1531,103 @@ mod tests {
                     .expect("query should succeed");
             assert!(raw.is_none(), "SQL column should be NULL, got: {:?}", raw);
         });
+    }
+
+    #[test]
+    fn cleanup_removes_empty_frames_and_segment_dirs() {
+        let dir = TestDir::new("empty-dir-cleanup");
+        let segment_dir = dir.path().join(".session-x-segment-0001");
+        let frames_dir = segment_dir.join("frames");
+        fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let frame_path = frames_dir.join("frame-1.png");
+        fs::write(&frame_path, b"fake").expect("frame file should be written");
+
+        let frames = vec![Frame {
+            id: 1,
+            session_id: "s".to_string(),
+            file_path: frame_path.to_string_lossy().to_string(),
+            captured_at: "2026-04-12T10:01:00Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        let errors = cleanup_frame_artifacts(&frames);
+        assert!(errors.is_empty(), "cleanup should succeed without errors");
+        assert!(!frame_path.exists(), "frame file should be deleted");
+        assert!(!frames_dir.exists(), "empty frames/ dir should be removed");
+        assert!(!segment_dir.exists(), "empty segment dir should be removed");
+    }
+
+    #[test]
+    fn cleanup_prunes_empty_dirs_when_frame_already_missing() {
+        let dir = TestDir::new("already-missing-frame");
+        let segment_dir = dir.path().join(".session-z-segment-0001");
+        let frames_dir = segment_dir.join("frames");
+        fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+
+        // Frame file does NOT exist — simulates retry/race/partial prior cleanup.
+        let frame_path = frames_dir.join("frame-1.png");
+        assert!(!frame_path.exists());
+
+        let frames = vec![Frame {
+            id: 1,
+            session_id: "s".to_string(),
+            file_path: frame_path.to_string_lossy().to_string(),
+            captured_at: "2026-04-12T10:01:00Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        let errors = cleanup_frame_artifacts(&frames);
+        assert!(errors.is_empty(), "cleanup should succeed without errors");
+        assert!(
+            !frames_dir.exists(),
+            "empty frames/ dir should be removed even when frame was already missing"
+        );
+        assert!(
+            !segment_dir.exists(),
+            "empty segment dir should be removed even when frame was already missing"
+        );
+    }
+
+    #[test]
+    fn cleanup_preserves_non_empty_segment_dir() {
+        let dir = TestDir::new("nonempty-segment");
+        let segment_dir = dir.path().join(".session-y-segment-0001");
+        let frames_dir = segment_dir.join("frames");
+        fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let frame_path = frames_dir.join("frame-1.png");
+        fs::write(&frame_path, b"fake").expect("frame file should be written");
+
+        // Place another file in the segment dir so it won't be empty after frames/ is removed.
+        let other_file = segment_dir.join("metadata.json");
+        fs::write(&other_file, b"{}").expect("other file should be written");
+
+        let frames = vec![Frame {
+            id: 1,
+            session_id: "s".to_string(),
+            file_path: frame_path.to_string_lossy().to_string(),
+            captured_at: "2026-04-12T10:01:00Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        let errors = cleanup_frame_artifacts(&frames);
+        assert!(errors.is_empty(), "cleanup should succeed without errors");
+        assert!(!frame_path.exists(), "frame file should be deleted");
+        assert!(!frames_dir.exists(), "empty frames/ dir should be removed");
+        assert!(
+            segment_dir.exists(),
+            "non-empty segment dir should be preserved"
+        );
     }
 }

@@ -7,6 +7,18 @@ use tauri::Manager;
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
 
 const APP_INFRA_BASE_DIR_NAME: &str = ".z";
+const RECORDINGS_DIR_NAME: &str = "recordings";
+
+/// Returns the recordings root directory: `<saveDirectory>/.z/recordings`.
+///
+/// All capture output (segments, audio, etc.) is placed under this root so
+/// that recordings live inside the managed `.z` tree alongside the database
+/// and other app-infra state.
+pub fn recordings_root_dir(save_directory: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(save_directory)
+        .join(APP_INFRA_BASE_DIR_NAME)
+        .join(RECORDINGS_DIR_NAME)
+}
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -782,6 +794,25 @@ mod tests {
             base_dir.file_name().and_then(|value| value.to_str()),
             Some(".z")
         );
+    }
+
+    #[test]
+    fn recordings_root_dir_nests_under_dot_z() {
+        let save_directory = "/tmp/z-recordings";
+
+        assert_eq!(
+            super::recordings_root_dir(save_directory),
+            PathBuf::from(save_directory).join(".z").join("recordings")
+        );
+    }
+
+    #[test]
+    fn recordings_root_dir_is_child_of_base_dir() {
+        let save_directory = "/tmp/z-recordings";
+        let base_dir = resolve_base_dir_from_save_directory(save_directory);
+        let recordings_root = super::recordings_root_dir(save_directory);
+
+        assert_eq!(recordings_root.parent(), Some(base_dir.as_path()));
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub struct NativeCaptureRuntime {
     pub session_id: Option<String>,
     pub started_at_unix_ms: Option<u64>,
     pub requested_sources: Option<CaptureSources>,
+    pub current_segment_sources: Option<CaptureSources>,
     pub output_files: Option<CaptureOutputFiles>,
     #[cfg(target_os = "macos")]
     pub current_segment_output_files: Option<CaptureOutputFiles>,
@@ -171,6 +172,7 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.segment_planner = None;
     runtime.frame_artifact_tx = None;
     runtime.effective_screen_bitrate_bps = None;
+    runtime.current_segment_sources = None;
     #[cfg(target_os = "macos")]
     {
         runtime.current_segment_output_files = None;
@@ -194,6 +196,7 @@ pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
     runtime.segment_planner = None;
     runtime.frame_artifact_tx = None;
     runtime.effective_screen_bitrate_bps = None;
+    runtime.current_segment_sources = None;
     #[cfg(target_os = "macos")]
     {
         runtime.current_segment_output_files = None;
@@ -256,6 +259,53 @@ pub(super) fn should_recover_from_segment_finalize_error(error: &CaptureErrorRes
 
     capture_screen::should_recover_from_segment_finalize_error(error)
         || (error.code == "capture_output_processing_failed" && is_missing_requested_screen_output)
+}
+
+pub(super) fn has_any_capture_sources(sources: &CaptureSources) -> bool {
+    sources.screen || sources.microphone || sources.system_audio
+}
+
+pub(super) fn active_sources_for_inactivity_paused_state(
+    requested_sources: &CaptureSources,
+    screen_paused: bool,
+    microphone_paused: bool,
+    system_audio_paused: bool,
+) -> Option<CaptureSources> {
+    // system_audio is captured through the screen session backend, so it
+    // requires both the screen session to be live (!screen_paused) AND the
+    // system audio family to be active (!system_audio_paused).
+    let active_sources = CaptureSources {
+        screen: requested_sources.screen && !screen_paused,
+        microphone: requested_sources.microphone && !microphone_paused,
+        system_audio: requested_sources.system_audio && !system_audio_paused && !screen_paused,
+    };
+
+    has_any_capture_sources(&active_sources).then_some(active_sources)
+}
+
+pub(super) fn current_segment_sources_for_runtime(
+    runtime: &NativeCaptureRuntime,
+) -> Option<CaptureSources> {
+    if let Some(sources) = runtime.current_segment_sources.clone() {
+        return has_any_capture_sources(&sources).then_some(sources);
+    }
+
+    #[cfg(target_os = "macos")]
+    if runtime.current_segment_output_files.is_some()
+        || runtime.active_screen_session.is_some()
+        || runtime.active_microphone_session.is_some()
+    {
+        return runtime.requested_sources.as_ref().and_then(|sources| {
+            active_sources_for_inactivity_paused_state(
+                sources,
+                runtime.inactivity.screen_paused,
+                runtime.inactivity.microphone_paused,
+                runtime.inactivity.system_audio_paused,
+            )
+        });
+    }
+
+    None
 }
 
 pub(super) fn should_rotate_segment(

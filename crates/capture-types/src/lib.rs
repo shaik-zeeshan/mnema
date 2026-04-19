@@ -146,7 +146,11 @@ pub fn default_idle_timeout_seconds() -> u64 {
     10
 }
 
-pub fn default_audio_activity_sensitivity() -> u8 {
+pub fn default_microphone_activity_sensitivity() -> u8 {
+    50
+}
+
+pub fn default_system_audio_activity_sensitivity() -> u8 {
     50
 }
 
@@ -198,8 +202,10 @@ pub struct RecordingSettings {
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
     pub idle_timeout_seconds: u64,
-    #[serde(default = "default_audio_activity_sensitivity")]
-    pub audio_activity_sensitivity: u8,
+    #[serde(default = "default_microphone_activity_sensitivity")]
+    pub microphone_activity_sensitivity: u8,
+    #[serde(default = "default_system_audio_activity_sensitivity")]
+    pub system_audio_activity_sensitivity: u8,
     #[serde(
         default = "default_inactivity_activity_mode",
         rename = "activityMode",
@@ -228,8 +234,10 @@ pub struct UpdateRecordingSettingsRequest {
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
     pub idle_timeout_seconds: u64,
-    #[serde(default = "default_audio_activity_sensitivity")]
-    pub audio_activity_sensitivity: u8,
+    #[serde(default = "default_microphone_activity_sensitivity")]
+    pub microphone_activity_sensitivity: u8,
+    #[serde(default = "default_system_audio_activity_sensitivity")]
+    pub system_audio_activity_sensitivity: u8,
     #[serde(
         default = "default_inactivity_activity_mode",
         rename = "activityMode",
@@ -336,8 +344,12 @@ mod tests {
         .expect("settings should deserialize");
 
         assert_eq!(
-            settings.audio_activity_sensitivity,
-            default_audio_activity_sensitivity()
+            settings.microphone_activity_sensitivity,
+            default_microphone_activity_sensitivity()
+        );
+        assert_eq!(
+            settings.system_audio_activity_sensitivity,
+            default_system_audio_activity_sensitivity()
         );
         assert_eq!(
             settings.native_capture_debug_logging_enabled,
@@ -364,7 +376,8 @@ mod tests {
                 "autoStart": false,
                 "pauseCaptureOnInactivity": true,
                 "idleTimeoutSeconds": 10,
-                "audioActivitySensitivity": 50,
+                "microphoneActivitySensitivity": 50,
+                "systemAudioActivitySensitivity": 50,
                 "activityMode": "system_input_or_screen"
             }"#,
         )

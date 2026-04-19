@@ -314,9 +314,11 @@ fn maybe_mark_system_audio_activity_for_sample(sample_buf: &cidre::cm::SampleBuf
         return;
     }
 
-    // Treat any ready system-audio sample as recent activity and avoid probing
-    // raw sample bytes on ScreenCaptureKit's callback queue.
-    store_system_audio_activity(1.0, now_monotonic_marker_ms(), now_unix_ms());
+    let level = match capture_writers::derive_audio_activity_level_from_sample_buf(sample_buf) {
+        Some(l) => l,
+        None => return,
+    };
+    store_system_audio_activity(level, now_monotonic_marker_ms(), now_unix_ms());
 }
 
 #[cfg(target_os = "macos")]
@@ -1505,6 +1507,41 @@ impl ScreenCaptureKitCaptureSession {
         }
     }
 
+    fn pause_system_audio_writer(&mut self) -> Result<(), CaptureErrorResponse> {
+        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+        let ctx = self.stream_output_delegate.inner_mut();
+        if let Some(mut writer) = ctx.system_audio_writer.take() {
+            if let Err(error) = capture_writers::finish_audio_asset_writer(&mut writer) {
+                log_capture_error(
+                    "failed to finalize system audio writer during soft-pause",
+                    &error,
+                );
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn resume_system_audio_writer(
+        &mut self,
+        output_path: &str,
+    ) -> Result<(), CaptureErrorResponse> {
+        use cidre::ns;
+
+        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+        let ctx = self.stream_output_delegate.inner_mut();
+        if ctx.system_audio_writer.is_some() {
+            return Err(CaptureErrorResponse {
+                code: "invalid_runtime_state".to_string(),
+                message: "System audio writer is already active; pause before resuming".to_string(),
+            });
+        }
+        let output_url = ns::Url::with_fs_path_str(output_path, false);
+        let writer = create_audio_asset_writer(&output_url, "system audio")?;
+        ctx.system_audio_writer = Some(writer);
+        Ok(())
+    }
+
     fn rotate_output_files(
         &mut self,
         segment_dir: &Path,
@@ -2331,6 +2368,52 @@ pub fn rotate_screen_capture_session(
     }
 }
 
+/// Finalize and disable the system-audio writer for an active ScreenCaptureKit
+/// session without stopping the screen capture stream.  Returns `Ok(())` if
+/// there was no writer to pause (idempotent).
+#[cfg(target_os = "macos")]
+pub fn pause_system_audio_writer(
+    active_session: &mut Option<ActiveCaptureSession>,
+) -> Result<(), CaptureErrorResponse> {
+    let Some(session) = active_session.as_mut() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "No active screen capture session for system audio pause".to_string(),
+        });
+    };
+    match &mut session.backend {
+        CaptureBackendSession::ScreenCaptureKit(sck) => sck.pause_system_audio_writer(),
+        CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
+            code: "system_audio_pause_unsupported".to_string(),
+            message: "System audio soft-pause is only supported on the ScreenCaptureKit backend"
+                .to_string(),
+        }),
+    }
+}
+
+/// Create and attach a new system-audio writer to an active ScreenCaptureKit
+/// session that was previously paused.  The caller supplies the new output path.
+#[cfg(target_os = "macos")]
+pub fn resume_system_audio_writer(
+    active_session: &mut Option<ActiveCaptureSession>,
+    output_path: &str,
+) -> Result<(), CaptureErrorResponse> {
+    let Some(session) = active_session.as_mut() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "No active screen capture session for system audio resume".to_string(),
+        });
+    };
+    match &mut session.backend {
+        CaptureBackendSession::ScreenCaptureKit(sck) => sck.resume_system_audio_writer(output_path),
+        CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
+            code: "system_audio_resume_unsupported".to_string(),
+            message: "System audio soft-resume is only supported on the ScreenCaptureKit backend"
+                .to_string(),
+        }),
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub struct StopScreenCaptureSessionArgs<'a> {
     pub active_session: &'a mut Option<ActiveCaptureSession>,
@@ -2489,6 +2572,27 @@ pub fn start_capture_session_with_options(
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
         message: "Native capture is currently supported only on macOS".to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn pause_system_audio_writer(
+    _active_session: &mut Option<ActiveCaptureSession>,
+) -> Result<(), CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "System audio soft-pause is currently supported only on macOS".to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn resume_system_audio_writer(
+    _active_session: &mut Option<ActiveCaptureSession>,
+    _output_path: &str,
+) -> Result<(), CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "System audio soft-resume is currently supported only on macOS".to_string(),
     })
 }
 

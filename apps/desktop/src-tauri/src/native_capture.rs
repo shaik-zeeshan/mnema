@@ -158,7 +158,7 @@ fn inactivity_activity_mode_label(mode: &InactivityActivityMode) -> &'static str
 
 fn recording_settings_overview(settings: &RecordingSettings) -> String {
     format!(
-        "sources={}, auto_start={}, save_directory='{}', debug_logging={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, audio_activity_sensitivity={}, activity_mode={}",
+        "sources={}, auto_start={}, save_directory='{}', debug_logging={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, microphone_activity_sensitivity={}, system_audio_activity_sensitivity={}, activity_mode={}",
         format_capture_source_flags(&capture_sources_from_settings(settings)),
         settings.auto_start,
         settings.save_directory,
@@ -169,7 +169,8 @@ fn recording_settings_overview(settings: &RecordingSettings) -> String {
         format_video_bitrate(&settings.video_bitrate),
         settings.pause_capture_on_inactivity,
         settings.idle_timeout_seconds,
-        settings.audio_activity_sensitivity,
+        settings.microphone_activity_sensitivity,
+        settings.system_audio_activity_sensitivity,
         inactivity_activity_mode_label(&settings.inactivity_activity_mode)
     )
 }
@@ -257,10 +258,17 @@ fn describe_recording_settings_changes(
         ));
     }
 
-    if previous.audio_activity_sensitivity != next.audio_activity_sensitivity {
+    if previous.microphone_activity_sensitivity != next.microphone_activity_sensitivity {
         changes.push(format!(
-            "audio_activity_sensitivity {} -> {}",
-            previous.audio_activity_sensitivity, next.audio_activity_sensitivity
+            "microphone_activity_sensitivity {} -> {}",
+            previous.microphone_activity_sensitivity, next.microphone_activity_sensitivity
+        ));
+    }
+
+    if previous.system_audio_activity_sensitivity != next.system_audio_activity_sensitivity {
+        changes.push(format!(
+            "system_audio_activity_sensitivity {} -> {}",
+            previous.system_audio_activity_sensitivity, next.system_audio_activity_sensitivity
         ));
     }
 

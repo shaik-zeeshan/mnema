@@ -753,6 +753,9 @@ pub fn finish_video_asset_writer(
 }
 
 pub const OUTPUT_PROCESSING_FAILURE_PREFIX: &str = "Failed to finalize capture outputs: ";
+const NO_AUDIO_SAMPLES_ERROR_PREFIX: &str = "No ";
+const NO_AUDIO_SAMPLES_ERROR_SUFFIX: &str =
+    " audio samples were received; no output file was produced";
 const NO_VIDEO_SAMPLES_ERROR_PREFIX: &str = "No ";
 const NO_VIDEO_SAMPLES_ERROR_SUFFIX: &str =
     " video samples were received; no output file was produced";
@@ -771,6 +774,13 @@ pub fn single_output_processing_failure_detail<'a>(
             .iter()
             .any(|prefix| detail.contains(&format!("; {prefix}"))))
     .then_some(detail)
+}
+
+pub fn is_no_audio_samples_error_message(label: &str, message: &str) -> bool {
+    message
+        .strip_prefix(NO_AUDIO_SAMPLES_ERROR_PREFIX)
+        .and_then(|detail| detail.strip_suffix(NO_AUDIO_SAMPLES_ERROR_SUFFIX))
+        .is_some_and(|actual_label| actual_label == label)
 }
 
 pub fn is_no_video_samples_error_message(label: &str, message: &str) -> bool {
@@ -931,6 +941,18 @@ mod tests {
             single_output_processing_failure_detail(&error.message, &["system audio failed"]),
             Some("No screen video samples were received; no output file was produced")
         );
+    }
+
+    #[test]
+    fn is_no_audio_samples_error_message_matches_label_shape() {
+        assert!(is_no_audio_samples_error_message(
+            "microphone",
+            "No microphone audio samples were received; no output file was produced"
+        ));
+        assert!(!is_no_audio_samples_error_message(
+            "microphone",
+            "No system audio audio samples were received; no output file was produced"
+        ));
     }
 
     #[test]

@@ -15,6 +15,11 @@ macro_rules! debug_log {
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use chrono::Local;
+
+const MICROPHONE_FILE_NAME: &str = "microphone.m4a";
+const SYSTEM_AUDIO_FILE_NAME: &str = "system-audio.m4a";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeState {
     Idle,
@@ -106,13 +111,30 @@ impl RuntimeController {
 pub struct SegmentPlanner {
     save_root_dir: String,
     session_id: String,
+    /// Start-date folder component: "YYYY/MM/DD"
+    date_prefix: String,
 }
 
 impl SegmentPlanner {
     pub fn new(save_root_dir: impl Into<String>, session_id: impl Into<String>) -> Self {
+        let now = Local::now();
+        Self::with_date_prefix(
+            save_root_dir,
+            session_id,
+            now.format("%Y/%m/%d").to_string(),
+        )
+    }
+
+    /// Build a planner with an explicit date prefix (useful for testing).
+    pub fn with_date_prefix(
+        save_root_dir: impl Into<String>,
+        session_id: impl Into<String>,
+        date_prefix: impl Into<String>,
+    ) -> Self {
         Self {
             save_root_dir: save_root_dir.into(),
             session_id: session_id.into(),
+            date_prefix: date_prefix.into(),
         }
     }
 
@@ -124,13 +146,102 @@ impl SegmentPlanner {
         &self.session_id
     }
 
+    pub fn date_prefix(&self) -> &str {
+        &self.date_prefix
+    }
+
+    /// Base directory for this session's date: `<save_root>/YYYY/MM/DD`
+    fn date_dir(&self) -> PathBuf {
+        Path::new(&self.save_root_dir).join(&self.date_prefix)
+    }
+
+    /// Per-segment workspace directory for screen artifacts (frames, etc.).
+    /// Hidden (dot-prefixed) to avoid collision with the final .mov file.
+    /// `<save_root>/YYYY/MM/DD/.<session_id>-segment-####`
+    pub fn segment_workspace_dir(&self, segment_index: u64) -> PathBuf {
+        self.date_dir()
+            .join(format!(".{}-segment-{segment_index:04}", self.session_id))
+    }
+
+    /// Final visible screen output path.
+    /// `<save_root>/YYYY/MM/DD/<session_id>-segment-####.mov`
+    pub fn segment_screen_output(&self, segment_index: u64) -> PathBuf {
+        self.date_dir().join(format!(
+            "{}-segment-{segment_index:04}.mov",
+            self.session_id
+        ))
+    }
+
+    /// Legacy alias – returns the workspace dir so existing callers that
+    /// create child directories (e.g. `frames/`) keep working.
     pub fn segment_dir(&self, segment_index: u64) -> PathBuf {
-        Path::new(&self.save_root_dir)
-            .join(format!("{}-segment-{segment_index:04}", self.session_id))
+        self.segment_workspace_dir(segment_index)
+    }
+
+    /// `<save_root>/YYYY/MM/DD/audio/<session_id>`
+    pub fn audio_dir(&self) -> PathBuf {
+        self.date_dir().join("audio").join(&self.session_id)
+    }
+
+    pub fn audio_segment_dir(&self, segment_index: u64) -> PathBuf {
+        self.audio_dir().join(format!("segment-{segment_index:04}"))
+    }
+
+    pub fn microphone_file_for_audio_segment_dir(audio_segment_dir: &Path) -> PathBuf {
+        audio_segment_dir.join(MICROPHONE_FILE_NAME)
+    }
+
+    pub fn microphone_reconnect_file_for_audio_segment_dir(
+        audio_segment_dir: &Path,
+        reconnect_started_at_unix_ms: u64,
+    ) -> PathBuf {
+        audio_segment_dir.join(format!("microphone-{reconnect_started_at_unix_ms}.m4a"))
+    }
+
+    pub fn system_audio_file_for_audio_segment_dir(audio_segment_dir: &Path) -> PathBuf {
+        audio_segment_dir.join(SYSTEM_AUDIO_FILE_NAME)
+    }
+
+    /// Returns a unique system-audio output path for a resume within the same
+    /// segment, using a timestamp to avoid colliding with prior chunks.
+    /// If the base timestamp path already exists (e.g. two resumes in the same
+    /// millisecond), an incrementing suffix is appended to guarantee uniqueness.
+    pub fn system_audio_resume_file_for_audio_segment_dir(
+        audio_segment_dir: &Path,
+        resumed_at_unix_ms: u64,
+    ) -> PathBuf {
+        let base = audio_segment_dir.join(format!("system-audio-{resumed_at_unix_ms}.m4a"));
+        if !base.exists() {
+            return base;
+        }
+        let mut counter = 1u32;
+        loop {
+            let candidate =
+                audio_segment_dir.join(format!("system-audio-{resumed_at_unix_ms}-{counter}.m4a"));
+            if !candidate.exists() {
+                return candidate;
+            }
+            counter += 1;
+        }
     }
 
     pub fn microphone_file(&self, segment_index: u64) -> PathBuf {
-        self.segment_dir(segment_index).join("microphone.m4a")
+        Self::microphone_file_for_audio_segment_dir(&self.audio_segment_dir(segment_index))
+    }
+
+    pub fn microphone_reconnect_file(
+        &self,
+        segment_index: u64,
+        reconnect_started_at_unix_ms: u64,
+    ) -> PathBuf {
+        Self::microphone_reconnect_file_for_audio_segment_dir(
+            &self.audio_segment_dir(segment_index),
+            reconnect_started_at_unix_ms,
+        )
+    }
+
+    pub fn system_audio_file(&self, segment_index: u64) -> PathBuf {
+        Self::system_audio_file_for_audio_segment_dir(&self.audio_segment_dir(segment_index))
     }
 }
 
@@ -204,17 +315,108 @@ mod tests {
     use super::*;
 
     #[test]
-    fn planner_uses_stable_segment_directory_shape_without_parent_session_dir() {
-        let planner = SegmentPlanner::new("/tmp/records", "native-session-123");
+    fn planner_uses_date_based_layout() {
+        let planner =
+            SegmentPlanner::with_date_prefix("/tmp/records", "native-session-123", "2026/04/16");
 
+        // Workspace dir (dot-prefixed, for frames etc.)
         assert_eq!(
-            planner.segment_dir(7),
-            PathBuf::from("/tmp/records/native-session-123-segment-0007")
+            planner.segment_workspace_dir(7),
+            PathBuf::from("/tmp/records/2026/04/16/.native-session-123-segment-0007")
+        );
+
+        // segment_dir is an alias for workspace
+        assert_eq!(planner.segment_dir(7), planner.segment_workspace_dir(7));
+
+        // Final visible screen output
+        assert_eq!(
+            planner.segment_screen_output(7),
+            PathBuf::from("/tmp/records/2026/04/16/native-session-123-segment-0007.mov")
+        );
+
+        // Audio layout
+        assert_eq!(
+            planner.audio_dir(),
+            PathBuf::from("/tmp/records/2026/04/16/audio/native-session-123")
+        );
+        assert_eq!(
+            planner.audio_segment_dir(7),
+            PathBuf::from("/tmp/records/2026/04/16/audio/native-session-123/segment-0007")
         );
         assert_eq!(
             planner.microphone_file(7),
-            PathBuf::from("/tmp/records/native-session-123-segment-0007/microphone.m4a")
+            PathBuf::from(
+                "/tmp/records/2026/04/16/audio/native-session-123/segment-0007/microphone.m4a"
+            )
         );
+        assert_eq!(
+            planner.microphone_reconnect_file(7, 12345),
+            PathBuf::from(
+                "/tmp/records/2026/04/16/audio/native-session-123/segment-0007/microphone-12345.m4a"
+            )
+        );
+        assert_eq!(
+            planner.system_audio_file(7),
+            PathBuf::from(
+                "/tmp/records/2026/04/16/audio/native-session-123/segment-0007/system-audio.m4a"
+            )
+        );
+    }
+
+    #[test]
+    fn planner_workspace_supports_frames_child() {
+        let planner = SegmentPlanner::with_date_prefix("/tmp/records", "sess-1", "2026/01/01");
+        let frames = planner.segment_workspace_dir(1).join("frames");
+        assert_eq!(
+            frames,
+            PathBuf::from("/tmp/records/2026/01/01/.sess-1-segment-0001/frames")
+        );
+    }
+
+    #[test]
+    fn planner_new_captures_today() {
+        let planner = SegmentPlanner::new("/tmp/records", "sess-1");
+        let today = chrono::Local::now().format("%Y/%m/%d").to_string();
+        assert_eq!(planner.date_prefix(), today);
+    }
+
+    #[test]
+    fn planner_static_audio_helpers_work_with_date_layout() {
+        let audio_seg =
+            PathBuf::from("/tmp/records/2026/04/16/audio/native-session-123/segment-0007");
+        assert_eq!(
+            SegmentPlanner::microphone_file_for_audio_segment_dir(&audio_seg),
+            audio_seg.join("microphone.m4a")
+        );
+        assert_eq!(
+            SegmentPlanner::system_audio_file_for_audio_segment_dir(&audio_seg),
+            audio_seg.join("system-audio.m4a")
+        );
+    }
+
+    #[test]
+    fn system_audio_resume_file_avoids_collision() {
+        let dir = std::env::temp_dir().join("capture-runtime-test-resume-collision");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ts: u64 = 1700000000000;
+
+        // First call returns base path.
+        let first = SegmentPlanner::system_audio_resume_file_for_audio_segment_dir(&dir, ts);
+        assert_eq!(first, dir.join("system-audio-1700000000000.m4a"));
+
+        // Create that file so the next call must dodge it.
+        std::fs::write(&first, b"").unwrap();
+        let second = SegmentPlanner::system_audio_resume_file_for_audio_segment_dir(&dir, ts);
+        assert_eq!(second, dir.join("system-audio-1700000000000-1.m4a"));
+
+        // Create that too; third call increments again.
+        std::fs::write(&second, b"").unwrap();
+        let third = SegmentPlanner::system_audio_resume_file_for_audio_segment_dir(&dir, ts);
+        assert_eq!(third, dir.join("system-audio-1700000000000-2.m4a"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
