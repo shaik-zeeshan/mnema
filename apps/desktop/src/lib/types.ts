@@ -126,12 +126,19 @@ export interface RecordingSettings {
 	/** Which signals count as "activity" for the inactivity-gating feature. */
 	activityMode: ActivityMode;
 	/**
-	 * Audio activity sensitivity (0–100). Only relevant when `activityMode` is
+	 * Microphone activity sensitivity (0–100). Only relevant when `activityMode` is
 	 * `system_input_or_screen_or_audio`. Higher values mean quieter audio is
 	 * treated as activity (more sensitive). Lower values require louder audio
 	 * before it is counted as activity.
 	 */
-	audioActivitySensitivity: number;
+	microphoneActivitySensitivity: number;
+	/**
+	 * System audio activity sensitivity (0–100). Only relevant when `activityMode` is
+	 * `system_input_or_screen_or_audio`. Higher values mean quieter audio is
+	 * treated as activity (more sensitive). Lower values require louder audio
+	 * before it is counted as activity.
+	 */
+	systemAudioActivitySensitivity: number;
 }
 
 // ─── Native Capture Debug Log ──────────────────────────────────────────────
@@ -238,18 +245,42 @@ export interface IdleDebugInfo {
 	 * "internal_fallback" — neither probe returned a usable reading; using internal timer.
 	 */
 	effectiveActivitySource: ActivitySourceKind;
+	/** Screen-family effective idle time (ms) evaluated using screen-specific source selection. */
+	screenEffectiveIdleMs: number;
+	/** The activity source driving the screen-family effective idle reading. */
+	screenEffectiveActivitySource: ActivitySourceKind;
+	/** Whether the screen capture family is currently paused due to inactivity. */
+	screenPaused: boolean;
+	/** Audio-family effective idle time (ms) evaluated using audio-specific source selection. */
+	audioEffectiveIdleMs: number;
+	/** The activity source driving the audio-family effective idle reading. */
+	audioEffectiveActivitySource: ActivitySourceKind;
+	/** Whether the audio capture family is currently paused due to inactivity. */
+	audioPaused: boolean;
+	/** Whether the microphone capture is currently paused due to inactivity. */
+	microphonePaused: boolean;
+	/** Whether the system audio capture is currently paused due to inactivity. */
+	systemAudioPaused: boolean;
 	/** Per-source idle samples used for policy evaluation. */
 	activitySources: IdleDebugActivitySource[];
 	/**
-	 * Configured audio activity sensitivity (0–100). Present when the backend supports
-	 * audio activity detection. Higher = more sensitive (quieter audio triggers activity).
+	 * Configured microphone activity sensitivity (0–100). Higher = more sensitive.
 	 */
-	audioActivitySensitivity: number | null;
+	microphoneActivitySensitivity: number | null;
 	/**
-	 * Derived audio activity threshold (normalised 0–1 level below which audio is
+	 * Configured system audio activity sensitivity (0–100). Higher = more sensitive.
+	 */
+	systemAudioActivitySensitivity: number | null;
+	/**
+	 * Derived microphone activity threshold (normalised 0–1 level below which audio is
 	 * considered "silent"). Computed from sensitivity by the backend.
 	 */
-	audioActivityThreshold: number | null;
+	microphoneActivityThreshold: number | null;
+	/**
+	 * Derived system audio activity threshold (normalised 0–1 level below which audio is
+	 * considered "silent"). Computed from sensitivity by the backend.
+	 */
+	systemAudioActivityThreshold: number | null;
 	/** Unix timestamp (ms) of the last microphone activity detection, or null. */
 	microphoneActivityLastUnixMs: number | null;
 	/** Milliseconds since last microphone activity (derived from last timestamp). */

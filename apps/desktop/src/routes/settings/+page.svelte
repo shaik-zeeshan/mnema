@@ -59,7 +59,8 @@
   let draftPauseCaptureOnInactivity = $state(false);
   let draftIdleTimeoutSeconds = $state(30);
   let draftActivityMode = $state<ActivityMode>("system_input_only");
-  let draftAudioActivitySensitivity = $state(50);
+  let draftMicrophoneActivitySensitivity = $state(50);
+  let draftSystemAudioActivitySensitivity = $state(50);
 
   // Debug logging draft
   let draftNativeCaptureDebugLoggingEnabled = $state(false);
@@ -149,7 +150,8 @@
     draftPauseCaptureOnInactivity = s.pauseCaptureOnInactivity;
     draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
     draftActivityMode = s.activityMode ?? "system_input_only";
-    draftAudioActivitySensitivity = s.audioActivitySensitivity ?? 50;
+    draftMicrophoneActivitySensitivity = s.microphoneActivitySensitivity ?? 50;
+    draftSystemAudioActivitySensitivity = s.systemAudioActivitySensitivity ?? 50;
     draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
     if (s.screenResolution.mode === "custom") {
       draftResolutionMode = "custom";
@@ -317,7 +319,8 @@
           pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
           idleTimeoutSeconds: draftIdleTimeoutSeconds,
           activityMode: draftActivityMode,
-          audioActivitySensitivity: draftAudioActivitySensitivity,
+          microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
+          systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
           nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
           screenResolution: draftResolutionMode === "custom"
             ? {
@@ -952,39 +955,76 @@
 
         {#if draftActivityMode === "system_input_or_screen_or_audio"}
           <div class="settings-divider"></div>
-          <span class="group-label">Audio Activity Sensitivity</span>
+          <span class="group-label">Microphone Activity Sensitivity</span>
           <Slider
-            bind:value={draftAudioActivitySensitivity}
+            bind:value={draftMicrophoneActivitySensitivity}
             min={0}
             max={100}
             step={1}
-            label="Sensitivity"
+            label="Mic sensitivity"
             unit="%"
+            disabled={!draftCaptureMicrophone}
           />
-          <p class="group-hint">
-            {#if draftAudioActivitySensitivity >= 80}
-              <strong>Very high sensitivity</strong> — very quiet audio (whispers, background noise) will
-              keep capture active. Use this when you need to detect subtle sounds.
-            {:else if draftAudioActivitySensitivity >= 60}
-              <strong>High sensitivity</strong> — moderate ambient noise and quiet speech will
-              count as activity. Good for quiet environments.
-            {:else if draftAudioActivitySensitivity >= 40}
-              <strong>Medium sensitivity</strong> — normal conversational speech and typical
-              system sounds trigger activity. Recommended for most use cases.
-            {:else if draftAudioActivitySensitivity >= 20}
-              <strong>Low sensitivity</strong> — only louder audio (raised voices, loud media)
-              keeps capture active. Ignores most ambient background noise.
-            {:else}
-              <strong>Very low sensitivity</strong> — only very loud audio triggers activity.
-              Background noise and quiet speech are ignored.
-            {/if}
-            {' '}Both microphone and system audio are monitored simultaneously.
-          </p>
+          {#if !draftCaptureMicrophone}
+            <p class="group-hint group-hint--warn">Microphone capture is disabled — this setting has no effect until enabled.</p>
+          {:else}
+            <p class="group-hint">
+              {#if draftMicrophoneActivitySensitivity >= 80}
+                <strong>Very high</strong> — whispers and background noise keep capture active.
+              {:else if draftMicrophoneActivitySensitivity >= 60}
+                <strong>High</strong> — quiet speech counts as activity.
+              {:else if draftMicrophoneActivitySensitivity >= 40}
+                <strong>Medium</strong> — normal speech triggers activity. Recommended.
+              {:else if draftMicrophoneActivitySensitivity >= 20}
+                <strong>Low</strong> — only louder audio keeps capture active.
+              {:else}
+                <strong>Very low</strong> — only very loud audio triggers activity.
+              {/if}
+            </p>
+          {/if}
+
+          <div class="settings-divider"></div>
+          <span class="group-label">System Audio Activity Sensitivity</span>
+          <Slider
+            bind:value={draftSystemAudioActivitySensitivity}
+            min={0}
+            max={100}
+            step={1}
+            label="System audio sensitivity"
+            unit="%"
+            disabled={!draftCaptureSystemAudio}
+          />
+          {#if !draftCaptureSystemAudio}
+            <p class="group-hint group-hint--warn">System audio capture is disabled — this setting has no effect until enabled.</p>
+          {:else}
+            <p class="group-hint">
+              {#if draftSystemAudioActivitySensitivity >= 80}
+                <strong>Very high</strong> — quiet system sounds keep capture active.
+              {:else if draftSystemAudioActivitySensitivity >= 60}
+                <strong>High</strong> — moderate system audio counts as activity.
+              {:else if draftSystemAudioActivitySensitivity >= 40}
+                <strong>Medium</strong> — typical media playback triggers activity. Recommended.
+              {:else if draftSystemAudioActivitySensitivity >= 20}
+                <strong>Low</strong> — only louder system audio keeps capture active.
+              {:else}
+                <strong>Very low</strong> — only very loud system audio triggers activity.
+              {/if}
+            </p>
+          {/if}
+
           <div class="audio-activity-notice">
             <span class="audio-activity-notice__icon">♪</span>
             <span class="audio-activity-notice__text">
-              Microphone capture and/or system audio capture must be enabled for audio activity
-              detection to function. Enable the relevant sources in <strong>Capture Sources</strong> above.
+              {#if !draftCaptureMicrophone && !draftCaptureSystemAudio}
+                Neither microphone nor system audio capture is enabled — audio activity detection
+                will not function. Enable at least one source in <strong>Capture Sources</strong> above.
+              {:else if !draftCaptureMicrophone}
+                Microphone capture is disabled — only system audio is monitored for activity.
+              {:else if !draftCaptureSystemAudio}
+                System audio capture is disabled — only microphone audio is monitored for activity.
+              {:else}
+                Both microphone and system audio are monitored independently for activity.
+              {/if}
             </span>
           </div>
         {/if}
