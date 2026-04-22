@@ -150,17 +150,16 @@ pub struct ScreenCaptureSupport {
 
 fn output_files_for_session(
     session_dir: &Path,
+    system_audio_output_path: Option<&Path>,
     sources: &ScreenCaptureSources,
 ) -> CaptureOutputFiles {
     let screen_file = sources
         .screen
         .then_some(session_dir.join("screen.mov").to_string_lossy().to_string());
-    let system_audio_file = sources.system_audio.then_some(
-        session_dir
-            .join("system-audio.m4a")
-            .to_string_lossy()
-            .to_string(),
-    );
+    let system_audio_file = sources
+        .system_audio
+        .then(|| system_audio_output_path.map(|p| p.to_string_lossy().to_string()))
+        .flatten();
 
     CaptureOutputFiles {
         screen_file: screen_file.clone(),
@@ -1545,15 +1544,24 @@ impl ScreenCaptureKitCaptureSession {
     fn rotate_output_files(
         &mut self,
         segment_dir: &Path,
+        screen_output_file: Option<&Path>,
+        system_audio_output_path: Option<&Path>,
     ) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
-        let output_files = output_files_for_session(segment_dir, &self.sources);
-        let recording_file = segment_dir.join("screen.mov").to_string_lossy().to_string();
-        let system_audio_recording_file = self.sources.system_audio.then_some(
-            segment_dir
-                .join("system-audio.m4a")
-                .to_string_lossy()
-                .to_string(),
-        );
+        let recording_file = screen_output_file
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| segment_dir.join("screen.mov").to_string_lossy().to_string());
+        let system_audio_recording_file = self
+            .sources
+            .system_audio
+            .then(|| system_audio_output_path.map(|p| p.to_string_lossy().to_string()))
+            .flatten();
+
+        let mut output_files =
+            output_files_for_session(segment_dir, system_audio_output_path, &self.sources);
+        if self.sources.screen && screen_output_file.is_some() {
+            output_files.screen_file = Some(recording_file.clone());
+            output_files.screen_files = vec![recording_file.clone()];
+        }
 
         std::fs::create_dir_all(segment_dir)
             .map_err(|e| CaptureErrorResponse {
@@ -1810,6 +1818,8 @@ pub fn start_capture_session(
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     start_capture_session_with_options(
         session_dir,
+        None,
+        None,
         sources,
         screen_frame_rate,
         screen_resolution,
@@ -1821,6 +1831,8 @@ pub fn start_capture_session(
 #[cfg(target_os = "macos")]
 pub fn start_capture_session_with_options(
     session_dir: &Path,
+    screen_output_file: Option<&Path>,
+    system_audio_output_path: Option<&Path>,
     sources: &ScreenCaptureSources,
     screen_frame_rate: u32,
     screen_resolution: &ScreenResolution,
@@ -1845,6 +1857,8 @@ pub fn start_capture_session_with_options(
     if sources.screen && supports_screen_capture_kit_backend() {
         return start_screen_capture_kit_session(
             session_dir,
+            screen_output_file,
+            system_audio_output_path,
             sources,
             screen_frame_rate,
             screen_resolution,
@@ -1855,6 +1869,7 @@ pub fn start_capture_session_with_options(
 
     start_avfoundation_capture_session(
         session_dir,
+        screen_output_file,
         sources,
         screen_resolution,
         video_bitrate_bps,
@@ -1865,6 +1880,7 @@ pub fn start_capture_session_with_options(
 #[cfg(target_os = "macos")]
 fn start_avfoundation_capture_session(
     session_dir: &Path,
+    screen_output_file: Option<&Path>,
     sources: &ScreenCaptureSources,
     screen_resolution: &ScreenResolution,
     _video_bitrate_bps: Option<u32>,
@@ -1911,10 +1927,16 @@ fn start_avfoundation_capture_session(
     }
 
     let start_result = (|| {
-        let output_file = session_dir.join("screen.mov");
+        let output_file = screen_output_file
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| session_dir.join("screen.mov"));
         let output_file_str = output_file.to_string_lossy().to_string();
 
-        let output_files = output_files_for_session(&session_dir, sources);
+        let mut output_files = output_files_for_session(&session_dir, None, sources);
+        if sources.screen && screen_output_file.is_some() {
+            output_files.screen_file = Some(output_file_str.clone());
+            output_files.screen_files = vec![output_file_str.clone()];
+        }
 
         let capture_session = unsafe { AVCaptureSession::new() };
 
@@ -2019,6 +2041,8 @@ fn start_avfoundation_capture_session(
 #[cfg(target_os = "macos")]
 fn start_screen_capture_kit_session(
     session_dir: &Path,
+    screen_output_file: Option<&Path>,
+    system_audio_output_path: Option<&Path>,
     sources: &ScreenCaptureSources,
     screen_frame_rate: u32,
     screen_resolution: &ScreenResolution,
@@ -2048,12 +2072,20 @@ fn start_screen_capture_kit_session(
     })?;
 
     let start_result = (|| {
-        let output_file = session_dir.join("screen.mov");
+        let output_file = screen_output_file
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| session_dir.join("screen.mov"));
         let output_file_str = output_file.to_string_lossy().to_string();
-        let system_audio_output_file = session_dir.join("system-audio.m4a");
-        let system_audio_output_file_str = system_audio_output_file.to_string_lossy().to_string();
+        let system_audio_output_file_str = system_audio_output_path
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-        let output_files = output_files_for_session(&session_dir, sources);
+        let mut output_files =
+            output_files_for_session(&session_dir, system_audio_output_path, sources);
+        if sources.screen && screen_output_file.is_some() {
+            output_files.screen_file = Some(output_file_str.clone());
+            output_files.screen_files = vec![output_file_str.clone()];
+        }
 
         let (content_tx, content_rx) =
             mpsc::channel::<Result<cidre::arc::R<sc::ShareableContent>, CaptureErrorResponse>>();
@@ -2175,7 +2207,8 @@ fn start_screen_capture_kit_session(
             recording_file: output_file_str,
             system_audio_recording_file: sources
                 .system_audio
-                .then_some(system_audio_output_file_str),
+                .then(|| system_audio_output_path.map(|p| p.to_string_lossy().to_string()))
+                .flatten(),
             output_files,
         })
     })();
@@ -2344,6 +2377,12 @@ fn finalize_rotated_segment_context(
 pub struct RotateScreenCaptureSessionArgs<'a> {
     pub active_session: &'a mut Option<ActiveCaptureSession>,
     pub segment_dir: &'a Path,
+    /// Visible dated output path for the screen recording.
+    /// When `Some`, the video file is written here instead of `segment_dir/screen.mov`.
+    pub screen_output_file: Option<&'a Path>,
+    /// Full output path for the system-audio file in the new segment, or `None`
+    /// when system audio is not being captured.
+    pub system_audio_output_path: Option<&'a Path>,
 }
 
 #[cfg(target_os = "macos")]
@@ -2358,9 +2397,11 @@ pub fn rotate_screen_capture_session(
     };
 
     match &mut session.backend {
-        CaptureBackendSession::ScreenCaptureKit(session) => {
-            session.rotate_output_files(args.segment_dir)
-        }
+        CaptureBackendSession::ScreenCaptureKit(session) => session.rotate_output_files(
+            args.segment_dir,
+            args.screen_output_file,
+            args.system_audio_output_path,
+        ),
         CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
             code: "capture_rotation_requires_restart".to_string(),
             message: "This capture backend requires full restart for segment rotation".to_string(),
@@ -2536,6 +2577,8 @@ pub struct StopScreenCaptureSessionArgs<'a> {
 pub struct RotateScreenCaptureSessionArgs<'a> {
     pub active_session: &'a mut Option<ActiveCaptureSession>,
     pub segment_dir: &'a Path,
+    pub screen_output_file: Option<&'a Path>,
+    pub system_audio_output_path: Option<&'a Path>,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2563,6 +2606,8 @@ pub fn start_capture_session(
 #[cfg(not(target_os = "macos"))]
 pub fn start_capture_session_with_options(
     _session_dir: &Path,
+    _screen_output_file: Option<&Path>,
+    _system_audio_output_path: Option<&Path>,
     _sources: &ScreenCaptureSources,
     _screen_frame_rate: u32,
     _screen_resolution: &ScreenResolution,
@@ -2788,6 +2833,104 @@ mod tests {
 
         assert_eq!(resolved.width, 1002);
         assert_eq!(resolved.height, 778);
+    }
+
+    // --- output_files_for_session path-layout regression ---
+
+    #[test]
+    fn output_files_screen_only_uses_session_dir() {
+        let session_dir = Path::new("/recordings/2026/04/19/.session-abc-segment-0001");
+        let sources = ScreenCaptureSources {
+            screen: true,
+            system_audio: false,
+        };
+
+        let files = output_files_for_session(session_dir, None, &sources);
+
+        let screen_file = files.screen_file.expect("screen_file should be Some");
+        assert!(
+            screen_file.contains("session-abc-segment-0001"),
+            "screen output should be inside the hidden segment workspace: {screen_file}"
+        );
+        assert!(
+            !screen_file.contains("/audio/"),
+            "screen output must not be inside the audio directory: {screen_file}"
+        );
+        assert!(
+            files.system_audio_file.is_none(),
+            "system_audio_file should be None when system_audio is disabled"
+        );
+    }
+
+    #[test]
+    fn output_files_system_audio_uses_flat_audio_dir() {
+        let session_dir = Path::new("/recordings/2026/04/19/.session-abc-segment-0001");
+        let system_audio_path =
+            Path::new("/recordings/2026/04/19/audio/session-abc/system-audio-segment-0001.m4a");
+        let sources = ScreenCaptureSources {
+            screen: true,
+            system_audio: true,
+        };
+
+        let files = output_files_for_session(session_dir, Some(system_audio_path), &sources);
+
+        let audio_file = files
+            .system_audio_file
+            .expect("system_audio_file should be Some when system_audio is enabled");
+        assert_eq!(
+            audio_file, "/recordings/2026/04/19/audio/session-abc/system-audio-segment-0001.m4a",
+            "system-audio output should match the provided path exactly"
+        );
+        assert!(
+            audio_file.ends_with("system-audio-segment-0001.m4a"),
+            "system-audio filename should contain segment qualifier: {audio_file}"
+        );
+
+        let screen_file = files.screen_file.expect("screen_file should be Some");
+        assert!(
+            screen_file.contains("session-abc-segment-0001"),
+            "screen output should remain in the hidden segment workspace: {screen_file}"
+        );
+        assert!(
+            !screen_file.contains("/audio/"),
+            "screen output must not bleed into the audio directory: {screen_file}"
+        );
+    }
+
+    #[test]
+    fn output_files_system_audio_path_is_separate_from_screen_workspace() {
+        // The two directory roots must share no prefix relationship - the audio
+        // file lives flat under audio/<session>/ while the segment workspace is
+        // a dot-hidden sibling of the date directory.
+        let session_dir = Path::new("/save/2026/04/19/.mysession-segment-0003");
+        let system_audio_path =
+            Path::new("/save/2026/04/19/audio/mysession/system-audio-segment-0003.m4a");
+        let sources = ScreenCaptureSources {
+            screen: true,
+            system_audio: true,
+        };
+
+        let files = output_files_for_session(session_dir, Some(system_audio_path), &sources);
+
+        let audio_file = files.system_audio_file.unwrap();
+        let screen_file = files.screen_file.unwrap();
+
+        // They must be in entirely different parent directories.
+        let audio_path = std::path::Path::new(&audio_file);
+        let screen_path = std::path::Path::new(&screen_file);
+        assert_ne!(
+            audio_path.parent(),
+            screen_path.parent(),
+            "system-audio and screen outputs must live in different directories"
+        );
+        assert!(
+            !audio_path.starts_with(session_dir),
+            "audio output must not be inside the hidden segment workspace"
+        );
+        assert!(
+            !screen_path.starts_with("/save/2026/04/19/audio/"),
+            "screen output must not be inside the audio directory"
+        );
     }
 
     #[test]

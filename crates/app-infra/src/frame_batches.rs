@@ -1597,6 +1597,74 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_removes_segment_workspace_but_preserves_separate_audio_dir() {
+        // Regression: after frame artifacts are processed the hidden segment
+        // workspace directory (`.session-segment-####/`) must be removed, but
+        // the flat audio output file
+        // (`audio/<session>/system-audio-segment-####.m4a`) that lives
+        // elsewhere must be left entirely untouched.
+        let dir = TestDir::new("audio-separate-cleanup");
+
+        // Hidden segment workspace: .session-segment-0001/frames/frame-1.png
+        let segment_dir = dir.path().join(".session-audio-sep-segment-0001");
+        let frames_dir = segment_dir.join("frames");
+        fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let frame_path = frames_dir.join("frame-1.png");
+        fs::write(&frame_path, b"fake png").expect("frame file should be written");
+
+        // Flat audio output: audio/session-audio-sep/system-audio-segment-0001.m4a
+        let audio_session_dir = dir
+            .path()
+            .join("audio")
+            .join("session-audio-sep");
+        fs::create_dir_all(&audio_session_dir).expect("audio session dir should be created");
+        let audio_file = audio_session_dir.join("system-audio-segment-0001.m4a");
+        fs::write(&audio_file, b"fake audio").expect("audio file should be written");
+
+        let frames = vec![Frame {
+            id: 1,
+            session_id: "session-audio-sep".to_string(),
+            file_path: frame_path.to_string_lossy().to_string(),
+            captured_at: "2026-04-19T10:01:00Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        let errors = cleanup_frame_artifacts(&frames);
+        assert!(
+            errors.is_empty(),
+            "cleanup should succeed without errors: {errors:?}"
+        );
+
+        // Segment workspace and its frames/ subdirectory must be gone.
+        assert!(
+            !frame_path.exists(),
+            "frame PNG artifact must be deleted after cleanup"
+        );
+        assert!(
+            !frames_dir.exists(),
+            "frames/ subdirectory inside segment workspace must be removed after cleanup"
+        );
+        assert!(
+            !segment_dir.exists(),
+            "hidden segment workspace directory must be removed after cleanup"
+        );
+
+        // The flat audio output file must be completely undisturbed.
+        assert!(
+            audio_file.exists(),
+            "system-audio-segment-0001.m4a must NOT be deleted by frame cleanup"
+        );
+        assert!(
+            audio_session_dir.exists(),
+            "audio session directory must NOT be removed by frame cleanup"
+        );
+    }
+
+    #[test]
     fn cleanup_preserves_non_empty_segment_dir() {
         let dir = TestDir::new("nonempty-segment");
         let segment_dir = dir.path().join(".session-y-segment-0001");
