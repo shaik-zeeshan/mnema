@@ -182,20 +182,16 @@ pub(super) fn next_microphone_output_file_for_runtime(
             code: "invalid_runtime_state".to_string(),
             message: "Capture segment planner missing while reconnecting microphone".to_string(),
         })?;
-    let audio_segment_dir = planner.audio_segment_dir(runtime.current_segment_index);
-    std::fs::create_dir_all(&audio_segment_dir).map_err(|error| CaptureErrorResponse {
+    let audio_dir = planner.audio_dir();
+    std::fs::create_dir_all(&audio_dir).map_err(|error| CaptureErrorResponse {
         code: "io_error".to_string(),
-        message: format!("Failed to create capture audio segment directory: {error}"),
+        message: format!("Failed to create capture audio directory: {error}"),
     })?;
 
-    Ok(
-        capture_runtime::SegmentPlanner::microphone_reconnect_file_for_audio_segment_dir(
-            &audio_segment_dir,
-            now_unix_ms(),
-        )
+    Ok(planner
+        .microphone_reconnect_file(runtime.current_segment_index, now_unix_ms())
         .to_string_lossy()
-        .to_string(),
-    )
+        .to_string())
 }
 
 #[cfg(target_os = "macos")]

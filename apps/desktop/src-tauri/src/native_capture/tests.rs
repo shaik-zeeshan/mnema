@@ -975,7 +975,7 @@ fn should_move_microphone_capture_to_waiting_state_when_selected_device_missing(
 
 #[cfg(target_os = "macos")]
 #[test]
-fn next_microphone_output_file_for_runtime_uses_audio_segment_directory() {
+fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
     let save_root_dir = std::env::temp_dir()
         .join("native-capture-microphone-path-tests")
         .to_string_lossy()
@@ -1035,16 +1035,15 @@ fn next_microphone_output_file_for_runtime_uses_audio_segment_directory() {
     let path = next_microphone_output_file_for_runtime(&runtime)
         .expect("should build next microphone segment path");
     let output_path = std::path::PathBuf::from(&path);
-    let expected_segment_dir = std::path::Path::new(&save_root_dir)
-        .join("2026/04/16/audio/session-1")
-        .join("segment-0003");
+    let expected_audio_dir = std::path::Path::new(&save_root_dir)
+        .join("2026/04/16/audio/session-1");
 
-    assert_eq!(output_path.parent(), Some(expected_segment_dir.as_path()));
+    assert_eq!(output_path.parent(), Some(expected_audio_dir.as_path()));
     assert!(output_path
         .file_name()
         .expect("microphone reconnect path should have file name")
         .to_string_lossy()
-        .starts_with("microphone-"));
+        .starts_with("microphone-segment-0003-"));
     assert!(path.ends_with(".m4a"));
     assert!(!path.starts_with("/tmp/current-screen/"));
     assert!(!path.starts_with("/tmp/finalized-screen/"));
@@ -1072,21 +1071,15 @@ fn segment_planner_uses_session_level_audio_directories_for_audio_outputs() {
         )
     );
     assert_eq!(
-        planner.audio_segment_dir(4),
-        std::path::PathBuf::from(
-            "/tmp/native-capture-output-layout/2026/04/16/audio/session-1/segment-0004"
-        )
-    );
-    assert_eq!(
         planner.microphone_file(4),
         std::path::PathBuf::from(
-            "/tmp/native-capture-output-layout/2026/04/16/audio/session-1/segment-0004/microphone.m4a"
+            "/tmp/native-capture-output-layout/2026/04/16/audio/session-1/microphone-segment-0004.m4a"
         )
     );
     assert_eq!(
         planner.system_audio_file(4),
         std::path::PathBuf::from(
-            "/tmp/native-capture-output-layout/2026/04/16/audio/session-1/segment-0004/system-audio.m4a"
+            "/tmp/native-capture-output-layout/2026/04/16/audio/session-1/system-audio-segment-0004.m4a"
         )
     );
 }
@@ -1442,7 +1435,7 @@ fn inactivity_resume_transient_failure_keeps_runtime_paused_for_retry() {
 
     let error = resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |_, _, _, _, _, _, _, _, _| {
+        |_, _, _, _, _, _, _, _, _, _| {
             Err(CaptureErrorResponse {
                 code: "capture_stream_start_failed".to_string(),
                 message: "temporary startup failure".to_string(),
@@ -1467,10 +1460,16 @@ fn inactivity_resume_transient_failure_keeps_runtime_paused_for_retry() {
 #[test]
 fn inactivity_resume_retry_success_clears_paused_state_and_restores_segment_outputs() {
     let mut runtime = paused_runtime_fixture();
+    // Replace planner with a known date prefix so expected paths are deterministic.
+    runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-resume",
+        "2026/04/19",
+    ));
 
     let error = resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |_, _, _, _, _, _, _, _, _| {
+        |_, _, _, _, _, _, _, _, _, _| {
             Err(CaptureErrorResponse {
                 code: "capture_stream_start_failed".to_string(),
                 message: "temporary startup failure".to_string(),
@@ -1481,19 +1480,20 @@ fn inactivity_resume_retry_success_clears_paused_state_and_restores_segment_outp
     assert!(!handle_inactivity_resume_error(&mut runtime, error));
 
     let expected_screen_file =
-        "/tmp/native-capture-tests/native-session-resume-segment-0002/screen.mov".to_string();
+        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov".to_string();
 
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
         |segment_dir,
-         _screen_output,
-         audio_segment_dir,
+         screen_output,
+         system_audio_output_path,
          sources,
          frame_rate,
          resolution,
          bitrate,
          microphone_device_id,
-         frame_tx| {
+         frame_tx,
+         microphone_output_path| {
             assert_eq!(
                 sources,
                 &CaptureSources {
@@ -1507,20 +1507,19 @@ fn inactivity_resume_retry_success_clears_paused_state_and_restores_segment_outp
             assert_eq!(bitrate, None);
             assert_eq!(microphone_device_id, None);
             assert!(frame_tx.is_none());
+            assert!(microphone_output_path.is_none());
+            assert!(system_audio_output_path.is_none());
+            // segment_dir must be the hidden workspace directory
             assert_eq!(
                 segment_dir.file_name().and_then(|name| name.to_str()),
                 Some(".native-session-resume-segment-0002")
             );
+            // screen_output must be the visible dated path, not inside the workspace dir
             assert_eq!(
-                audio_segment_dir.file_name().and_then(|name| name.to_str()),
-                Some("segment-0002")
-            );
-            assert_eq!(
-                audio_segment_dir
-                    .parent()
-                    .and_then(|path| path.file_name())
-                    .and_then(|name| name.to_str()),
-                Some("native-session-resume")
+                screen_output,
+                Some(std::path::Path::new(
+                    "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov"
+                ))
             );
 
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
@@ -1550,7 +1549,7 @@ fn inactivity_resume_invalid_runtime_state_marks_runtime_failed() {
 
     let error = resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |_, _, _, _, _, _, _, _, _| unreachable!("invalid runtime state should fail before restart"),
+        |_, _, _, _, _, _, _, _, _, _| unreachable!("invalid runtime state should fail before restart"),
     )
     .expect_err("missing planner should fail loudly");
 
@@ -1564,12 +1563,17 @@ fn inactivity_resume_invalid_runtime_state_marks_runtime_failed() {
 #[test]
 fn inactivity_resume_sets_current_segment_sources_from_requested() {
     let mut runtime = paused_runtime_fixture();
+    runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-resume",
+        "2026/04/19",
+    ));
     assert!(runtime.current_segment_sources.is_none());
 
     let expected_screen_file =
-        "/tmp/native-capture-tests/native-session-resume-segment-0002/screen.mov".to_string();
+        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov".to_string();
 
-    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _| {
+    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
         Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
     })
     .expect("resume should succeed");
@@ -2653,7 +2657,7 @@ fn resume_screen_suppresses_system_audio_when_audio_paused() {
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
-        |_segment_dir, _screen_output, _audio_segment_dir, sources, _fr, _res, _br, _mic, _tx| {
+        |_segment_dir, _screen_output, _system_audio_output_path, sources, _fr, _res, _br, _mic, _tx, _mic_path| {
             // system_audio must be suppressed because audio family is paused
             assert!(
                 !sources.system_audio,
@@ -2683,7 +2687,7 @@ fn resume_screen_includes_system_audio_when_audio_not_paused() {
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
-        |_segment_dir, _screen_output, _audio_segment_dir, sources, _fr, _res, _br, _mic, _tx| {
+        |_segment_dir, _screen_output, _system_audio_output_path, sources, _fr, _res, _br, _mic, _tx, _mic_path| {
             // system_audio should flow through because audio is not paused
             assert!(
                 sources.system_audio,
@@ -2719,7 +2723,7 @@ fn resume_screen_while_audio_paused_preserves_audio_paused_state() {
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
-        |_, _, _, _, _, _, _, _, _| Ok(resumed_segment_state_fixture(expected_screen_file.clone())),
+        |_, _, _, _, _, _, _, _, _, _| Ok(resumed_segment_state_fixture(expected_screen_file.clone())),
     )
     .expect("resume screen should succeed");
 
@@ -2860,7 +2864,7 @@ fn resume_screen_from_inactivity_sets_current_segment_sources_reflecting_audio_p
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
-        |_, _, _, _, _, _, _, _, _| Ok(resumed_segment_state_fixture(expected_screen_file.clone())),
+        |_, _, _, _, _, _, _, _, _, _| Ok(resumed_segment_state_fixture(expected_screen_file.clone())),
     )
     .expect("resume screen should succeed");
 
@@ -2891,7 +2895,7 @@ fn resume_screen_from_inactivity_sets_current_segment_sources_with_all_when_audi
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
-        |_, _, _, _, _, _, _, _, _| {
+        |_, _, _, _, _, _, _, _, _, _| {
             let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
             state.3 = Some("/tmp/system-audio.m4a".to_string());
             Ok(state)
@@ -3000,7 +3004,7 @@ fn inactivity_resume_sets_current_segment_sources_via_active_sources_helper() {
     let expected_screen_file =
         "/tmp/native-capture-tests/native-session-resume-segment-0002/screen.mov".to_string();
 
-    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _| {
+    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
         Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
     })
     .expect("resume should succeed");
@@ -4753,7 +4757,7 @@ fn resume_runtime_from_inactivity_passes_dated_paths_to_start_segment_closure() 
 
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |segment_dir, screen_output, audio_segment_dir, _sources, _fr, _res, _br, _mic, _tx| {
+        |segment_dir, screen_output, system_audio_output_path, _sources, _fr, _res, _br, _mic, _tx, _mic_path| {
             assert_eq!(
                 segment_dir,
                 std::path::Path::new(
@@ -4768,12 +4772,10 @@ fn resume_runtime_from_inactivity_passes_dated_paths_to_start_segment_closure() 
                 )),
                 "screen_output should be the visible dated file path"
             );
-            assert_eq!(
-                audio_segment_dir,
-                std::path::Path::new(
-                    "/tmp/dated-resume-tests/2026/04/16/audio/dated-session/segment-0002"
-                ),
-                "audio_segment_dir should be under dated audio/<session>/segment-####"
+            // system_audio is disabled for this fixture, so no output path is passed
+            assert!(
+                system_audio_output_path.is_none(),
+                "system_audio_output_path should be None when system_audio source is disabled"
             );
 
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
@@ -4833,7 +4835,7 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
-        |segment_dir, screen_output, audio_segment_dir, _sources, _fr, _res, _br, _mic, _tx| {
+        |segment_dir, screen_output, system_audio_output_path, _sources, _fr, _res, _br, _mic, _tx, _mic_path| {
             assert_eq!(
                 segment_dir,
                 std::path::Path::new(
@@ -4849,11 +4851,11 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
                 "screen_output should be the visible dated file path"
             );
             assert_eq!(
-                audio_segment_dir,
-                std::path::Path::new(
-                    "/tmp/dated-screen-resume-tests/2026/04/16/audio/dated-screen-session/segment-0002"
-                ),
-                "audio_segment_dir should be under dated audio/<session>/segment-####"
+                system_audio_output_path,
+                Some(std::path::Path::new(
+                    "/tmp/dated-screen-resume-tests/2026/04/16/audio/dated-screen-session/system-audio-segment-0002.m4a"
+                )),
+                "system_audio_output_path should be flat under dated audio/<session>/"
             );
 
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
