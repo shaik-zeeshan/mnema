@@ -132,6 +132,36 @@
     return new Date(ms).toLocaleTimeString();
   }
 
+  function formatSourceStartedAt(ms: number | null | undefined): string {
+    return ms != null ? formatTimestamp(ms) : "—";
+  }
+
+  type CaptureSource = "screen" | "microphone" | "systemAudio";
+  type SourceSessionLookup = Partial<Record<CaptureSource, { sessionId: string; startedAtUnixMs: number } | null>>;
+
+  function getSourceSession(
+    captureSessionValue: CaptureSession | null | undefined,
+    source: CaptureSource
+  ) {
+    const sourceSessions = (captureSessionValue as { sourceSessions?: SourceSessionLookup | null } | null)
+      ?.sourceSessions;
+    return sourceSessions?.[source] ?? null;
+  }
+
+  function getSourceSessionId(
+    captureSessionValue: CaptureSession | null | undefined,
+    source: CaptureSource
+  ): string {
+    return getSourceSession(captureSessionValue, source)?.sessionId ?? "—";
+  }
+
+  function getSourceSessionStartedAt(
+    captureSessionValue: CaptureSession | null | undefined,
+    source: CaptureSource
+  ): number | null {
+    return getSourceSession(captureSessionValue, source)?.startedAtUnixMs ?? null;
+  }
+
   // ─── Actions ──────────────────────────────────────────────────────────────
 
   async function loadSupport() {
@@ -515,9 +545,6 @@
   <div class="session-status" class:session-status--recording={isCapturing}>
     <span class="rec-dot" class:rec-dot--active={isCapturing}></span>
     <span class="session-label">{isCapturing ? "Recording" : session?.isRunning === false ? "Stopped" : "Idle"}</span>
-    {#if session?.sessionId}
-      <span class="session-id">{session.sessionId}</span>
-    {/if}
   </div>
 
   {#if isInactivityPaused}
@@ -529,24 +556,62 @@
     </div>
   {/if}
 
-  {#if session && session.startedAtUnixMs != null}
-    <ul class="kv-list kv-list--row">
-      <li>
-        <span class="kv-key">started</span>
-        <span class="kv-val">{formatTimestamp(session.startedAtUnixMs)}</span>
-      </li>
-      {#if session.requestedSources}
-        {#if session.requestedSources.screen}
-          <li><span class="badge badge--ok badge--sm">screen</span></li>
-        {/if}
-        {#if session.requestedSources.microphone}
-          <li><span class="badge badge--ok badge--sm">mic</span></li>
-        {/if}
-        {#if session.requestedSources.systemAudio}
-          <li><span class="badge badge--ok badge--sm">sys-audio</span></li>
-        {/if}
+  {#if session?.requestedSources}
+    <div class="source-session-grid">
+      {#if session.requestedSources.screen}
+        <div class="source-session-card">
+          <div class="source-session-card__header">
+            <span class="badge badge--ok badge--sm">screen</span>
+          </div>
+          <ul class="kv-list">
+            <li>
+              <span class="kv-key">session</span>
+              <span class="kv-val kv-val--mono">{getSourceSessionId(session, "screen")}</span>
+            </li>
+            <li>
+              <span class="kv-key">started</span>
+              <span class="kv-val">{formatSourceStartedAt(getSourceSessionStartedAt(session, "screen"))}</span>
+            </li>
+          </ul>
+        </div>
       {/if}
-    </ul>
+
+      {#if session.requestedSources.microphone}
+        <div class="source-session-card">
+          <div class="source-session-card__header">
+            <span class="badge badge--ok badge--sm">mic</span>
+          </div>
+          <ul class="kv-list">
+            <li>
+              <span class="kv-key">session</span>
+              <span class="kv-val kv-val--mono">{getSourceSessionId(session, "microphone")}</span>
+            </li>
+            <li>
+              <span class="kv-key">started</span>
+              <span class="kv-val">{formatSourceStartedAt(getSourceSessionStartedAt(session, "microphone"))}</span>
+            </li>
+          </ul>
+        </div>
+      {/if}
+
+      {#if session.requestedSources.systemAudio}
+        <div class="source-session-card">
+          <div class="source-session-card__header">
+            <span class="badge badge--ok badge--sm">sys-audio</span>
+          </div>
+          <ul class="kv-list">
+            <li>
+              <span class="kv-key">session</span>
+              <span class="kv-val kv-val--mono">{getSourceSessionId(session, "systemAudio")}</span>
+            </li>
+            <li>
+              <span class="kv-key">started</span>
+              <span class="kv-val">{formatSourceStartedAt(getSourceSessionStartedAt(session, "systemAudio"))}</span>
+            </li>
+          </ul>
+        </div>
+      {/if}
+    </div>
   {/if}
 
   {#if recordingSettings && !isCapturing}
@@ -1269,14 +1334,25 @@
     color: #ff6070;
   }
 
-  .session-id {
-    font-size: 10px;
-    color: #33334a;
-    margin-left: auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 200px;
+  .source-session-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+  }
+
+  .source-session-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #0d0d14;
+    border: 1px solid #1a1a28;
+    border-radius: 4px;
+  }
+
+  .source-session-card__header {
+    display: flex;
+    align-items: center;
   }
 
   /* ── Settings preview ───────────────────────────────────────── */

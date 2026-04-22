@@ -62,12 +62,22 @@ export interface CaptureOutputFiles {
 	systemAudioFiles: string[];
 }
 
+export interface SourceSessionMeta {
+	sessionId: string;
+	startedAtUnixMs: number;
+}
+
+export interface SourceSessions {
+	screen: SourceSessionMeta | null;
+	microphone: SourceSessionMeta | null;
+	systemAudio: SourceSessionMeta | null;
+}
+
 export interface CaptureSession {
 	isRunning: boolean;
-	sessionId: string | null;
-	startedAtUnixMs: number | null;
 	requestedSources: RequestedSources | null;
 	outputFiles: CaptureOutputFiles | null;
+	sourceSessions: SourceSessions | null;
 	/** Set by the backend when inactivity gating has paused capture. */
 	isInactivityPaused: boolean;
 }
