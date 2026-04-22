@@ -285,7 +285,7 @@ pub(crate) fn finalize_capture_outputs(
     if has_screen_output && requested_sources.is_some_and(|sources| sources.system_audio) {
         if let Some(recording_file) = recording_file {
             if let Err(error) = capture_screen::strip_audio_from_recording_file(recording_file) {
-                failures.push(format!(
+                audio_failures.push(format!(
                     "screen output video-only conversion failed: {}",
                     error.message
                 ));
@@ -618,6 +618,46 @@ mod tests {
         assert!(output_files.microphone_files.is_empty());
         assert_eq!(output_files.system_audio_file, None);
         assert!(output_files.system_audio_files.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_capture_outputs_preserves_screen_output_when_strip_audio_fails() {
+        // When system_audio is requested, finalize_capture_outputs calls
+        // strip_audio_from_recording_file on the screen .mov.  If that call fails
+        // (e.g. the file is not a valid QuickTime movie) the failure must be
+        // treated as a non-fatal audio failure so that the screen output is still
+        // committed rather than causing the whole segment to be discarded.
+        let dir = TestDir::new("preserve-screen-strip-audio-failure");
+        let screen_file = dir.path.join("screen.mov");
+        // Write invalid bytes so strip_audio_from_recording_file will error.
+        fs::write(&screen_file, b"not a real mov").expect("screen artifact should exist");
+        let screen_file = screen_file.to_string_lossy().to_string();
+        let requested_sources = CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: true,
+        };
+        let mut output_files = CaptureOutputFiles {
+            screen_file: Some(screen_file.clone()),
+            screen_files: vec![screen_file.clone()],
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        };
+
+        finalize_capture_outputs(
+            Some(&mut output_files),
+            Some(&screen_file),
+            None,
+            None,
+            Some(&requested_sources),
+        )
+        .expect("strip_audio failure should not block valid screen output");
+
+        assert_eq!(output_files.screen_file, Some(screen_file.clone()));
+        assert_eq!(output_files.screen_files, vec![screen_file]);
     }
 
     #[cfg(target_os = "macos")]

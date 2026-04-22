@@ -1601,7 +1601,7 @@ mod tests {
         // Regression: after frame artifacts are processed the hidden segment
         // workspace directory (`.session-segment-####/`) must be removed, but
         // the flat audio output file
-        // (`audio/<session>/system-audio-segment-####.m4a`) that lives
+        // (`audio/system-audio-<session>-segment-####.m4a`) that lives
         // elsewhere must be left entirely untouched.
         let dir = TestDir::new("audio-separate-cleanup");
 
@@ -1612,13 +1612,10 @@ mod tests {
         let frame_path = frames_dir.join("frame-1.png");
         fs::write(&frame_path, b"fake png").expect("frame file should be written");
 
-        // Flat audio output: audio/session-audio-sep/system-audio-segment-0001.m4a
-        let audio_session_dir = dir
-            .path()
-            .join("audio")
-            .join("session-audio-sep");
-        fs::create_dir_all(&audio_session_dir).expect("audio session dir should be created");
-        let audio_file = audio_session_dir.join("system-audio-segment-0001.m4a");
+        // Flat audio output: audio/system-audio-session-audio-sep-segment-0001.m4a
+        let audio_dir = dir.path().join("audio");
+        fs::create_dir_all(&audio_dir).expect("audio dir should be created");
+        let audio_file = audio_dir.join("system-audio-session-audio-sep-segment-0001.m4a");
         fs::write(&audio_file, b"fake audio").expect("audio file should be written");
 
         let frames = vec![Frame {
@@ -1656,11 +1653,11 @@ mod tests {
         // The flat audio output file must be completely undisturbed.
         assert!(
             audio_file.exists(),
-            "system-audio-segment-0001.m4a must NOT be deleted by frame cleanup"
+            "system-audio-session-audio-sep-segment-0001.m4a must NOT be deleted by frame cleanup"
         );
         assert!(
-            audio_session_dir.exists(),
-            "audio session directory must NOT be removed by frame cleanup"
+            audio_dir.exists(),
+            "dated audio directory must NOT be removed by frame cleanup"
         );
     }
 

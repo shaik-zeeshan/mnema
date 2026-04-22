@@ -107,6 +107,24 @@ fn format_optional_capture_source_flags(sources: Option<&CaptureSources>) -> Str
         .unwrap_or_else(|| "screen=unknown, microphone=unknown, system_audio=unknown".to_string())
 }
 
+fn runtime_log_session_id(runtime: &runtime::NativeCaptureRuntime) -> &str {
+    runtime
+        .source_sessions
+        .as_ref()
+        .and_then(|sessions| sessions.screen.as_ref())
+        .map(|session| session.session_id.as_str())
+        .unwrap_or("unknown")
+}
+
+fn session_log_session_id(session: &capture_types::NativeCaptureSession) -> &str {
+    session
+        .source_sessions
+        .as_ref()
+        .and_then(|sessions| sessions.screen.as_ref())
+        .map(|source| source.session_id.as_str())
+        .unwrap_or("unknown")
+}
+
 fn permission_state_label(state: &CapturePermissionState) -> &'static str {
     match state {
         CapturePermissionState::Granted => "granted",
@@ -438,7 +456,7 @@ fn start_native_capture_inner(
     if runtime.is_running {
         let existing_sources =
             format_optional_capture_source_flags(runtime.requested_sources.as_ref());
-        let session_id = runtime.session_id.as_deref().unwrap_or("unknown");
+        let session_id = runtime_log_session_id(&runtime);
 
         if runtime.requested_sources.as_ref() != Some(&sources) {
             let error = CaptureErrorResponse {
@@ -486,7 +504,7 @@ fn start_native_capture_inner(
 
     crate::native_capture_debug_log::log(format!(
         "started native capture successfully ({origin}, session_id='{}', requested_sources={}, segment_index={}, save_directory='{}')",
-        runtime.session_id.as_deref().unwrap_or("unknown"),
+        runtime_log_session_id(&runtime),
         format_optional_capture_source_flags(runtime.requested_sources.as_ref()),
         runtime.current_segment_index,
         settings.save_directory
@@ -755,14 +773,14 @@ pub fn stop_native_capture(
     state: tauri::State<'_, NativeCaptureState>,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let mut runtime = state.lock().expect("native capture state poisoned");
-    let session_id = runtime.session_id.clone();
+    let session_id = runtime_log_session_id(&runtime).to_string();
     let requested_sources = runtime.requested_sources.clone();
     let output_files_before_stop = runtime.output_files.clone();
 
     crate::native_capture_debug_log::log(format!(
         "received native capture stop request (is_running={}, session_id='{}', requested_sources={}, output_files_before_stop={})",
         runtime.is_running,
-        session_id.as_deref().unwrap_or("unknown"),
+        session_id,
         format_optional_capture_source_flags(requested_sources.as_ref()),
         format_output_file_counts(output_files_before_stop.as_ref())
     ));
@@ -771,7 +789,7 @@ pub fn stop_native_capture(
         if capture_screen::should_preserve_runtime_on_stop_error(&error) {
             crate::native_capture_debug_log::log(format!(
                 "failed to stop native capture but preserved runtime for recovery (session_id='{}'): [{}] {}",
-                session_id.as_deref().unwrap_or("unknown"),
+                session_id,
                 error.code,
                 error.message
             ));
@@ -782,9 +800,7 @@ pub fn stop_native_capture(
         mark_runtime_session_stopped(&mut runtime);
         crate::native_capture_debug_log::log(format!(
             "failed to stop native capture; runtime marked stopped (session_id='{}'): [{}] {}",
-            session_id.as_deref().unwrap_or("unknown"),
-            error.code,
-            error.message
+            session_id, error.code, error.message
         ));
         return Err(error);
     }
@@ -795,7 +811,7 @@ pub fn stop_native_capture(
 
     crate::native_capture_debug_log::log(format!(
         "stopped native capture successfully (session_id='{}', requested_sources={}, finalized_outputs={})",
-        session.session_id.as_deref().unwrap_or("unknown"),
+        session_log_session_id(&session),
         format_optional_capture_source_flags(session.requested_sources.as_ref()),
         format_output_file_counts(session.output_files.as_ref())
     ));

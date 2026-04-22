@@ -8,7 +8,9 @@ use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
-use super::runtime::{now_unix_ms, NativeCaptureRuntime, NativeCaptureState};
+use super::runtime::{
+    ensure_microphone_planner_for_runtime, now_unix_ms, NativeCaptureRuntime, NativeCaptureState,
+};
 
 #[derive(Debug, Clone)]
 pub struct MicrophoneControllerPreferencesRuntime {
@@ -176,11 +178,11 @@ pub(super) fn next_microphone_output_file_for_runtime(
     runtime: &NativeCaptureRuntime,
 ) -> Result<String, CaptureErrorResponse> {
     let planner = runtime
-        .segment_planner
+        .microphone_planner
         .as_ref()
         .ok_or_else(|| CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),
-            message: "Capture segment planner missing while reconnecting microphone".to_string(),
+            message: "Capture microphone planner missing while reconnecting microphone".to_string(),
         })?;
     let audio_dir = planner.audio_dir();
     std::fs::create_dir_all(&audio_dir).map_err(|error| CaptureErrorResponse {
@@ -247,6 +249,10 @@ fn maybe_reconnect_waiting_microphone_session(
     }
 
     if stop_failed_while_waiting || !should_reconnect_waiting_microphone_session(&runtime, state) {
+        return;
+    }
+
+    if ensure_microphone_planner_for_runtime(&mut runtime, "reconnecting microphone").is_err() {
         return;
     }
 

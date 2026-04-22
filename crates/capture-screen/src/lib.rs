@@ -2866,7 +2866,7 @@ mod tests {
     fn output_files_system_audio_uses_flat_audio_dir() {
         let session_dir = Path::new("/recordings/2026/04/19/.session-abc-segment-0001");
         let system_audio_path =
-            Path::new("/recordings/2026/04/19/audio/session-abc/system-audio-segment-0001.m4a");
+            Path::new("/recordings/2026/04/19/audio/system-audio-session-abc-segment-0001.m4a");
         let sources = ScreenCaptureSources {
             screen: true,
             system_audio: true,
@@ -2878,11 +2878,11 @@ mod tests {
             .system_audio_file
             .expect("system_audio_file should be Some when system_audio is enabled");
         assert_eq!(
-            audio_file, "/recordings/2026/04/19/audio/session-abc/system-audio-segment-0001.m4a",
+            audio_file, "/recordings/2026/04/19/audio/system-audio-session-abc-segment-0001.m4a",
             "system-audio output should match the provided path exactly"
         );
         assert!(
-            audio_file.ends_with("system-audio-segment-0001.m4a"),
+            audio_file.ends_with("system-audio-session-abc-segment-0001.m4a"),
             "system-audio filename should contain segment qualifier: {audio_file}"
         );
 
@@ -2900,11 +2900,11 @@ mod tests {
     #[test]
     fn output_files_system_audio_path_is_separate_from_screen_workspace() {
         // The two directory roots must share no prefix relationship - the audio
-        // file lives flat under audio/<session>/ while the segment workspace is
+        // file lives flat under dated audio/ while the segment workspace is
         // a dot-hidden sibling of the date directory.
         let session_dir = Path::new("/save/2026/04/19/.mysession-segment-0003");
         let system_audio_path =
-            Path::new("/save/2026/04/19/audio/mysession/system-audio-segment-0003.m4a");
+            Path::new("/save/2026/04/19/audio/system-audio-mysession-segment-0003.m4a");
         let sources = ScreenCaptureSources {
             screen: true,
             system_audio: true,
