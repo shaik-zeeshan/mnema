@@ -1,9 +1,10 @@
 use capture_types::{
-    default_audio_activity_sensitivity, default_idle_timeout_seconds,
-    default_inactivity_activity_mode, default_native_capture_debug_logging_enabled,
-    default_pause_capture_on_inactivity, default_video_bitrate, CaptureErrorResponse,
-    RecordingSettings, ScreenResolution, ScreenResolutionPreset, UpdateRecordingSettingsRequest,
-    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    default_idle_timeout_seconds, default_inactivity_activity_mode,
+    default_microphone_activity_sensitivity, default_native_capture_debug_logging_enabled,
+    default_pause_capture_on_inactivity, default_system_audio_activity_sensitivity,
+    default_video_bitrate, CaptureErrorResponse, RecordingSettings, ScreenResolution,
+    ScreenResolutionPreset, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
+    VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -43,7 +44,8 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         native_capture_debug_logging_enabled: default_native_capture_debug_logging_enabled(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
-        audio_activity_sensitivity: default_audio_activity_sensitivity(),
+        microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
+        system_audio_activity_sensitivity: default_system_audio_activity_sensitivity(),
         inactivity_activity_mode: default_inactivity_activity_mode(),
     }
 }
@@ -109,12 +111,15 @@ fn validate_video_bitrate(
     }
 }
 
-fn validate_audio_activity_sensitivity(value: u8) -> Result<u8, CaptureErrorResponse> {
+fn validate_audio_activity_sensitivity(
+    field_name: &str,
+    value: u8,
+) -> Result<u8, CaptureErrorResponse> {
     if !(MIN_AUDIO_ACTIVITY_SENSITIVITY..=MAX_AUDIO_ACTIVITY_SENSITIVITY).contains(&value) {
         return Err(CaptureErrorResponse {
             code: "invalid_recording_settings".to_string(),
             message: format!(
-                "audioActivitySensitivity must be between {MIN_AUDIO_ACTIVITY_SENSITIVITY} and {MAX_AUDIO_ACTIVITY_SENSITIVITY}"
+                "{field_name} must be between {MIN_AUDIO_ACTIVITY_SENSITIVITY} and {MAX_AUDIO_ACTIVITY_SENSITIVITY}"
             ),
         });
     }
@@ -255,8 +260,14 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
 
     let screen_resolution = validate_screen_resolution(request.screen_resolution)?;
     let video_bitrate = validate_video_bitrate(request.video_bitrate)?;
-    let audio_activity_sensitivity =
-        validate_audio_activity_sensitivity(request.audio_activity_sensitivity)?;
+    let microphone_activity_sensitivity = validate_audio_activity_sensitivity(
+        "microphoneActivitySensitivity",
+        request.microphone_activity_sensitivity,
+    )?;
+    let system_audio_activity_sensitivity = validate_audio_activity_sensitivity(
+        "systemAudioActivitySensitivity",
+        request.system_audio_activity_sensitivity,
+    )?;
 
     if request.capture_screen
         && !non_original_resolution_supported
@@ -281,7 +292,8 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         native_capture_debug_logging_enabled: request.native_capture_debug_logging_enabled,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
-        audio_activity_sensitivity,
+        microphone_activity_sensitivity,
+        system_audio_activity_sensitivity,
         inactivity_activity_mode: request.inactivity_activity_mode,
     })
 }
@@ -296,6 +308,11 @@ fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
 
 fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
     let raw = std::fs::read_to_string(path).ok()?;
+
+    // Backward compatibility: if the old single `audioActivitySensitivity` field is present
+    // but the new per-source fields are absent, copy its value into both new fields.
+    let raw = migrate_legacy_audio_sensitivity(&raw);
+
     let parsed = serde_json::from_str::<RecordingSettings>(&raw).ok()?;
     validate_recording_settings(UpdateRecordingSettingsRequest {
         capture_screen: parsed.capture_screen,
@@ -310,10 +327,34 @@ fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
         native_capture_debug_logging_enabled: parsed.native_capture_debug_logging_enabled,
         pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
         idle_timeout_seconds: parsed.idle_timeout_seconds,
-        audio_activity_sensitivity: parsed.audio_activity_sensitivity,
+        microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
+        system_audio_activity_sensitivity: parsed.system_audio_activity_sensitivity,
         inactivity_activity_mode: parsed.inactivity_activity_mode,
     })
     .ok()
+}
+
+/// Migrate legacy JSON that has a single `audioActivitySensitivity` field into the
+/// two new per-source fields. If the new fields already exist, the legacy field is
+/// simply removed.
+fn migrate_legacy_audio_sensitivity(raw: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return raw.to_string();
+    };
+    let Some(obj) = value.as_object_mut() else {
+        return raw.to_string();
+    };
+
+    if let Some(legacy) = obj.remove("audioActivitySensitivity") {
+        if !obj.contains_key("microphoneActivitySensitivity") {
+            obj.insert("microphoneActivitySensitivity".to_string(), legacy.clone());
+        }
+        if !obj.contains_key("systemAudioActivitySensitivity") {
+            obj.insert("systemAudioActivitySensitivity".to_string(), legacy);
+        }
+    }
+
+    serde_json::to_string(&value).unwrap_or_else(|_| raw.to_string())
 }
 
 #[cfg(test)]

@@ -64,17 +64,6 @@
   }
 
   /**
-   * Computes screen-activity idle ms from a unix-ms timestamp by comparing
-   * against the current wall clock.  Returns null when the timestamp is absent.
-   * Computed inline in the template on each render cycle so it tracks the
-   * polling interval automatically.
-   */
-  function screenIdleMsFromTimestamp(lastUnixMs: number | null): number | null {
-    if (lastUnixMs == null) return null;
-    return Math.max(0, Date.now() - lastUnixMs);
-  }
-
-  /**
    * Human-readable label for the activity mode, clarifying hybrid behaviour.
    */
   function formatActivityMode(mode: string): string {
@@ -104,6 +93,9 @@
     if (src === "internal_fallback") return "internal fallback";
     return src;
   }
+
+  const micActivitySource = $derived(idleDebug?.activitySources?.find((s) => s.kind === "microphone_capture"));
+  const sysAudioActivitySource = $derived(idleDebug?.activitySources?.find((s) => s.kind === "system_audio_capture"));
 
   function sourceDecisionSummary(available: boolean, selected: boolean, enabled?: boolean): string {
     if (selected) return "selected";
@@ -138,6 +130,36 @@
 
   function formatTimestamp(ms: number): string {
     return new Date(ms).toLocaleTimeString();
+  }
+
+  function formatSourceStartedAt(ms: number | null | undefined): string {
+    return ms != null ? formatTimestamp(ms) : "—";
+  }
+
+  type CaptureSource = "screen" | "microphone" | "systemAudio";
+  type SourceSessionLookup = Partial<Record<CaptureSource, { sessionId: string; startedAtUnixMs: number } | null>>;
+
+  function getSourceSession(
+    captureSessionValue: CaptureSession | null | undefined,
+    source: CaptureSource
+  ) {
+    const sourceSessions = (captureSessionValue as { sourceSessions?: SourceSessionLookup | null } | null)
+      ?.sourceSessions;
+    return sourceSessions?.[source] ?? null;
+  }
+
+  function getSourceSessionId(
+    captureSessionValue: CaptureSession | null | undefined,
+    source: CaptureSource
+  ): string {
+    return getSourceSession(captureSessionValue, source)?.sessionId ?? "—";
+  }
+
+  function getSourceSessionStartedAt(
+    captureSessionValue: CaptureSession | null | undefined,
+    source: CaptureSource
+  ): number | null {
+    return getSourceSession(captureSessionValue, source)?.startedAtUnixMs ?? null;
   }
 
   // ─── Actions ──────────────────────────────────────────────────────────────
@@ -523,9 +545,6 @@
   <div class="session-status" class:session-status--recording={isCapturing}>
     <span class="rec-dot" class:rec-dot--active={isCapturing}></span>
     <span class="session-label">{isCapturing ? "Recording" : session?.isRunning === false ? "Stopped" : "Idle"}</span>
-    {#if session?.sessionId}
-      <span class="session-id">{session.sessionId}</span>
-    {/if}
   </div>
 
   {#if isInactivityPaused}
@@ -537,24 +556,62 @@
     </div>
   {/if}
 
-  {#if session && session.startedAtUnixMs != null}
-    <ul class="kv-list kv-list--row">
-      <li>
-        <span class="kv-key">started</span>
-        <span class="kv-val">{formatTimestamp(session.startedAtUnixMs)}</span>
-      </li>
-      {#if session.requestedSources}
-        {#if session.requestedSources.screen}
-          <li><span class="badge badge--ok badge--sm">screen</span></li>
-        {/if}
-        {#if session.requestedSources.microphone}
-          <li><span class="badge badge--ok badge--sm">mic</span></li>
-        {/if}
-        {#if session.requestedSources.systemAudio}
-          <li><span class="badge badge--ok badge--sm">sys-audio</span></li>
-        {/if}
+  {#if session?.requestedSources}
+    <div class="source-session-grid">
+      {#if session.requestedSources.screen}
+        <div class="source-session-card">
+          <div class="source-session-card__header">
+            <span class="badge badge--ok badge--sm">screen</span>
+          </div>
+          <ul class="kv-list">
+            <li>
+              <span class="kv-key">session</span>
+              <span class="kv-val kv-val--mono">{getSourceSessionId(session, "screen")}</span>
+            </li>
+            <li>
+              <span class="kv-key">started</span>
+              <span class="kv-val">{formatSourceStartedAt(getSourceSessionStartedAt(session, "screen"))}</span>
+            </li>
+          </ul>
+        </div>
       {/if}
-    </ul>
+
+      {#if session.requestedSources.microphone}
+        <div class="source-session-card">
+          <div class="source-session-card__header">
+            <span class="badge badge--ok badge--sm">mic</span>
+          </div>
+          <ul class="kv-list">
+            <li>
+              <span class="kv-key">session</span>
+              <span class="kv-val kv-val--mono">{getSourceSessionId(session, "microphone")}</span>
+            </li>
+            <li>
+              <span class="kv-key">started</span>
+              <span class="kv-val">{formatSourceStartedAt(getSourceSessionStartedAt(session, "microphone"))}</span>
+            </li>
+          </ul>
+        </div>
+      {/if}
+
+      {#if session.requestedSources.systemAudio}
+        <div class="source-session-card">
+          <div class="source-session-card__header">
+            <span class="badge badge--ok badge--sm">sys-audio</span>
+          </div>
+          <ul class="kv-list">
+            <li>
+              <span class="kv-key">session</span>
+              <span class="kv-val kv-val--mono">{getSourceSessionId(session, "systemAudio")}</span>
+            </li>
+            <li>
+              <span class="kv-key">started</span>
+              <span class="kv-val">{formatSourceStartedAt(getSourceSessionStartedAt(session, "systemAudio"))}</span>
+            </li>
+          </ul>
+        </div>
+      {/if}
+    </div>
   {/if}
 
   {#if recordingSettings && !isCapturing}
@@ -748,7 +805,7 @@
         </span>
       </li>
       <li>
-        <span class="kv-key">paused</span>
+        <span class="kv-key">any paused</span>
         <span class={idleDebug.isInactivityPaused ? "badge badge--warn badge--sm" : "badge badge--neutral badge--sm"}>
           {idleDebug.isInactivityPaused ? "yes" : "no"}
         </span>
@@ -766,7 +823,7 @@
     </ul>
 
     <!-- ── Signal readings ────────────────────────────── -->
-    <div class="idle-section-label">Input signals</div>
+    <div class="idle-section-label">Input signals <span class="idle-note">raw / threshold-qualified readings</span></div>
     <ul class="kv-list">
       <li>
         <span class="kv-key kv-key--wide">system input idle</span>
@@ -778,13 +835,13 @@
       {#if idleDebug.activityMode === "system_input_or_screen" || idleDebug.activityMode === "system_input_or_screen_or_audio"}
         <li>
           <span class="kv-key kv-key--wide">screen activity idle</span>
-          <span class="kv-val kv-val--mono">{formatIdleMs(screenIdleMsFromTimestamp(idleDebug.screenActivityLastUnixMs))}</span>
+          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.screenActivityIdleMs)}</span>
           <span class="idle-note">time since last screen change</span>
         </li>
       {/if}
       {#if idleDebug.activityMode === "system_input_or_screen_or_audio"}
         <li>
-          <span class="kv-key kv-key--wide">mic audio idle</span>
+           <span class="kv-key kv-key--wide">mic activity idle</span>
           <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.microphoneActivityIdleMs)}</span>
           {#if idleDebug.microphoneActivityLevel != null}
             <span class="idle-note">level {(idleDebug.microphoneActivityLevel * 100).toFixed(0)}%</span>
@@ -794,7 +851,7 @@
           {/if}
         </li>
         <li>
-          <span class="kv-key kv-key--wide">sys audio idle</span>
+           <span class="kv-key kv-key--wide">sys audio activity idle</span>
           <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.systemAudioActivityIdleMs)}</span>
           {#if idleDebug.systemAudioActivityLevel != null}
             <span class="idle-note">level {(idleDebug.systemAudioActivityLevel * 100).toFixed(0)}%</span>
@@ -806,37 +863,128 @@
       {/if}
     </ul>
 
-    <!-- ── Effective idle (the actual pause signal) ───── -->
-    <div class="idle-section-label">Pause decision</div>
-    <div class="effective-idle-block">
-      <div class="effective-idle-block__row">
-        <span class="effective-idle-block__label">effective idle</span>
-        <span class="effective-idle-block__value">{formatIdleMs(idleDebug.effectiveIdleMs)}</span>
+    <!-- ── Per-detector pause status ─────────────────── -->
+    <div class="idle-section-label">Detector pause status</div>
+    <div class="detector-grid">
+      <!-- Screen detector -->
+      <div class="detector-card detector-card--screen" class:detector-card--paused={idleDebug.screenPaused}>
+        <div class="detector-card__header">
+          <span class="detector-card__icon">◉</span>
+          <span class="detector-card__name">Screen</span>
+          {#if idleDebug.screenPaused}
+            <span class="badge badge--warn badge--sm">paused</span>
+          {:else}
+            <span class="badge badge--ok badge--sm">active</span>
+          {/if}
+        </div>
+        <div class="detector-card__body">
+          <div class="detector-card__metric">
+            <span class="detector-card__metric-label">effective idle</span>
+            <span class="detector-card__metric-value">{formatIdleMs(idleDebug.screenEffectiveIdleMs)}</span>
+          </div>
+          <div class="detector-card__metric">
+            <span class="detector-card__metric-label">source</span>
+            <span class="detector-card__metric-source">{formatEffectiveSource(idleDebug.screenEffectiveActivitySource)}</span>
+          </div>
+        </div>
       </div>
-      <div class="effective-idle-block__row">
-        <span class="effective-idle-block__label">decided by</span>
-        <span class="effective-idle-block__source">{formatEffectiveSource(idleDebug.effectiveActivitySource)}</span>
+
+      <!-- Microphone detector -->
+      <div class="detector-card detector-card--mic" class:detector-card--paused={idleDebug.microphonePaused && idleDebug.microphoneActivityEnabled} class:detector-card--off={!idleDebug.microphoneActivityEnabled}>
+        <div class="detector-card__header">
+          <span class="detector-card__icon">🎙</span>
+          <span class="detector-card__name">Microphone</span>
+          {#if !idleDebug.microphoneActivityEnabled}
+            <span class="badge badge--neutral badge--sm">off</span>
+          {:else if idleDebug.microphonePaused}
+            <span class="badge badge--warn badge--sm">paused</span>
+          {:else}
+            <span class="badge badge--ok badge--sm">active</span>
+          {/if}
+        </div>
+        <div class="detector-card__body">
+          <div class="detector-card__metric">
+            <span class="detector-card__metric-label">effective idle</span>
+            <span class="detector-card__metric-value">{formatIdleMs(idleDebug.microphoneEffectiveIdleMs)}</span>
+          </div>
+          <div class="detector-card__metric">
+            <span class="detector-card__metric-label">source</span>
+            <span class="detector-card__metric-source">{formatEffectiveSource(idleDebug.microphoneEffectiveActivitySource)}</span>
+          </div>
+          {#if idleDebug.microphoneActivityLevel != null}
+            <div class="detector-card__metric">
+              <span class="detector-card__metric-label">level</span>
+              <span class="detector-card__metric-value">{(idleDebug.microphoneActivityLevel * 100).toFixed(0)}%</span>
+            </div>
+          {/if}
+          {#if idleDebug.microphoneActivitySensitivity != null}
+            <div class="detector-card__metric">
+              <span class="detector-card__metric-label">sensitivity</span>
+              <span class="detector-card__metric-source">{idleDebug.microphoneActivitySensitivity}%{#if idleDebug.microphoneActivityThreshold != null} (thr {(idleDebug.microphoneActivityThreshold * 100).toFixed(1)}%){/if}</span>
+            </div>
+          {/if}
+        </div>
       </div>
-      {#if idleDebug.activityMode === "system_input_or_screen_or_audio"}
-        <p class="effective-idle-block__note">
-          Audio mode: system input, on-screen changes, <em>and</em> audio levels from microphone
-          and system audio are all monitored. Any source below idle threshold pauses capture only when
-          <em>all</em> sources exceed the timeout. Sensitivity: {idleDebug.audioActivitySensitivity ?? "—"}{idleDebug.audioActivitySensitivity != null ? "%" : ""}.
-        </p>
-      {:else if idleDebug.activityMode === "system_input_or_screen"}
-        <p class="effective-idle-block__note">
-          Hybrid mode: system input idle alone will not trigger pause while screen activity is detected.
-          Pause requires <em>both</em> input and screen to be idle for ≥ {idleDebug.idleTimeoutSeconds}s.
-        </p>
-      {:else}
-        <p class="effective-idle-block__note">
-          Input-only mode: pause triggers when system input idle ≥ {idleDebug.idleTimeoutSeconds}s,
-          regardless of on-screen activity.
-        </p>
-      {/if}
+
+      <!-- System audio detector -->
+      <div class="detector-card detector-card--sysaudio" class:detector-card--paused={idleDebug.systemAudioPaused && idleDebug.systemAudioActivityEnabled} class:detector-card--off={!idleDebug.systemAudioActivityEnabled}>
+        <div class="detector-card__header">
+          <span class="detector-card__icon">🔊</span>
+          <span class="detector-card__name">System Audio</span>
+          {#if !idleDebug.systemAudioActivityEnabled}
+            <span class="badge badge--neutral badge--sm">off</span>
+          {:else if idleDebug.systemAudioPaused}
+            <span class="badge badge--warn badge--sm">paused</span>
+          {:else}
+            <span class="badge badge--ok badge--sm">active</span>
+          {/if}
+        </div>
+        <div class="detector-card__body">
+          <div class="detector-card__metric">
+            <span class="detector-card__metric-label">effective idle</span>
+            <span class="detector-card__metric-value">{formatIdleMs(idleDebug.systemAudioEffectiveIdleMs)}</span>
+          </div>
+          <div class="detector-card__metric">
+            <span class="detector-card__metric-label">source</span>
+            <span class="detector-card__metric-source">{formatEffectiveSource(idleDebug.systemAudioEffectiveActivitySource)}</span>
+          </div>
+          {#if idleDebug.systemAudioActivityLevel != null}
+            <div class="detector-card__metric">
+              <span class="detector-card__metric-label">level</span>
+              <span class="detector-card__metric-value">{(idleDebug.systemAudioActivityLevel * 100).toFixed(0)}%</span>
+            </div>
+          {/if}
+          {#if idleDebug.systemAudioActivitySensitivity != null}
+            <div class="detector-card__metric">
+              <span class="detector-card__metric-label">sensitivity</span>
+              <span class="detector-card__metric-source">{idleDebug.systemAudioActivitySensitivity}%{#if idleDebug.systemAudioActivityThreshold != null} (thr {(idleDebug.systemAudioActivityThreshold * 100).toFixed(1)}%){/if}</span>
+            </div>
+          {/if}
+        </div>
+      </div>
     </div>
 
-    <div class="idle-section-label">Activity sources</div>
+    <!-- ── Combined effective (subordinate) ────────────── -->
+    <div class="effective-idle-summary">
+      <span class="effective-idle-summary__label">combined effective idle</span>
+      <span class="effective-idle-summary__value">{formatIdleMs(idleDebug.effectiveIdleMs)}</span>
+      <span class="effective-idle-summary__source">via {formatEffectiveSource(idleDebug.effectiveActivitySource)}</span>
+    </div>
+    {#if idleDebug.activityMode === "system_input_or_screen_or_audio"}
+      <p class="effective-idle-block__note">
+        Audio mode: combined value is min-over-sources; detector pause states are still tracked per family.
+      </p>
+    {:else if idleDebug.activityMode === "system_input_or_screen"}
+      <p class="effective-idle-block__note">
+        Hybrid mode: pause requires <em>both</em> input and screen idle ≥ {idleDebug.idleTimeoutSeconds}s.
+      </p>
+    {:else}
+      <p class="effective-idle-block__note">
+        Input-only mode: pause when system input idle ≥ {idleDebug.idleTimeoutSeconds}s.
+      </p>
+    {/if}
+
+    <div class="idle-section-label">Activity sources <span class="idle-note">combined-policy samples</span></div>
     <ul class="kv-list">
       {#each idleDebug.activitySources as source (source.kind)}
         <li>
@@ -861,33 +1009,41 @@
       </li>
       {#if idleDebug.screenActivityLastUnixMs != null}
         <li>
-          <span class="kv-key kv-key--wide">last screen sample</span>
+          <span class="kv-key kv-key--wide">screen raw sample</span>
           <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.screenActivityLastUnixMs)}</span>
         </li>
       {/if}
-      {#if idleDebug.audioActivitySensitivity != null}
+      {#if idleDebug.microphoneActivitySensitivity != null}
         <li>
-          <span class="kv-key kv-key--wide">audio sensitivity</span>
-          <span class="kv-val kv-val--mono">{idleDebug.audioActivitySensitivity}%</span>
+          <span class="kv-key kv-key--wide">mic sensitivity</span>
+          <span class="kv-val kv-val--mono">{idleDebug.microphoneActivitySensitivity}%</span>
         </li>
       {/if}
-      {#if idleDebug.audioActivityThreshold != null}
+      {#if idleDebug.systemAudioActivitySensitivity != null}
         <li>
-          <span class="kv-key kv-key--wide">audio threshold</span>
-          <span class="kv-val kv-val--mono">{(idleDebug.audioActivityThreshold * 100).toFixed(1)}%</span>
+          <span class="kv-key kv-key--wide">sys audio sensitivity</span>
+          <span class="kv-val kv-val--mono">{idleDebug.systemAudioActivitySensitivity}%</span>
+        </li>
+      {/if}
+      {#if idleDebug.microphoneActivityThreshold != null}
+        <li>
+          <span class="kv-key kv-key--wide">mic threshold</span>
+          <span class="kv-val kv-val--mono">{(idleDebug.microphoneActivityThreshold * 100).toFixed(1)}%</span>
           <span class="idle-note">normalised level; audio above this counts as activity</span>
         </li>
       {/if}
       {#if idleDebug.microphoneActivityLastUnixMs != null}
         <li>
-          <span class="kv-key kv-key--wide">last mic activity</span>
+          <span class="kv-key kv-key--wide">mic raw sample</span>
           <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.microphoneActivityLastUnixMs)}</span>
+          <span class="idle-note">timestamp, not detector decision</span>
         </li>
       {/if}
       {#if idleDebug.systemAudioActivityLastUnixMs != null}
         <li>
-          <span class="kv-key kv-key--wide">last sys-audio activity</span>
+          <span class="kv-key kv-key--wide">sys-audio raw sample</span>
           <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.systemAudioActivityLastUnixMs)}</span>
+          <span class="idle-note">timestamp, not detector decision</span>
         </li>
       {/if}
     </ul>
@@ -1178,14 +1334,25 @@
     color: #ff6070;
   }
 
-  .session-id {
-    font-size: 10px;
-    color: #33334a;
-    margin-left: auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 200px;
+  .source-session-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+  }
+
+  .source-session-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #0d0d14;
+    border: 1px solid #1a1a28;
+    border-radius: 4px;
+  }
+
+  .source-session-card__header {
+    display: flex;
+    align-items: center;
   }
 
   /* ── Settings preview ───────────────────────────────────────── */
@@ -1482,45 +1649,116 @@
     margin-left: 4px;
   }
 
-  /* ── Effective idle block ─────────────────────────────── */
-  .effective-idle-block {
-    background: #0b0b12;
-    border: 1px solid #2a2240;
-    border-left: 2px solid #5a4aaa;
-    border-radius: 4px;
-    padding: 10px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .effective-idle-block__row {
-    display: flex;
-    align-items: center;
+  /* ── Detector grid ────────────────────────────────────── */
+  .detector-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
     gap: 8px;
   }
 
-  .effective-idle-block__label {
-    font-size: 10px;
-    color: #5a4aaa;
-    min-width: 84px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+  .detector-card {
+    background: #0b0b12;
+    border: 1px solid #1e1e2e;
+    border-radius: 5px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: border-color 0.15s, background 0.15s;
   }
 
-  .effective-idle-block__value {
+  .detector-card--screen { border-left: 2px solid #5a4aaa; }
+  .detector-card--mic { border-left: 2px solid #4a8a6a; }
+  .detector-card--sysaudio { border-left: 2px solid #6a7a4a; }
+
+  .detector-card--paused { background: #12100a; }
+  .detector-card--off { opacity: 0.55; }
+
+  .detector-card__header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .detector-card__icon {
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .detector-card__name {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #6a6a88;
+    flex: 1;
+  }
+
+  .detector-card__body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .detector-card__metric {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .detector-card__metric-label {
+    font-size: 9px;
+    color: #3a3a54;
+    min-width: 56px;
+  }
+
+  .detector-card__metric-value {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 700;
     color: #c0b0ff;
     letter-spacing: 0.04em;
   }
 
-  .effective-idle-block__source {
+  .detector-card--mic .detector-card__metric-value { color: #80d0a8; }
+  .detector-card--sysaudio .detector-card__metric-value { color: #b0c080; }
+
+  .detector-card__metric-source {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
-    font-size: 10px;
-    color: #8070cc;
+    font-size: 9px;
+    color: #606080;
+  }
+
+  /* ── Effective idle summary (subordinate) ────────────── */
+  .effective-idle-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #0a0a10;
+    border: 1px solid #1a1a28;
+    border-radius: 3px;
+  }
+
+  .effective-idle-summary__label {
+    font-size: 9px;
+    color: #3a3a54;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .effective-idle-summary__value {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 11px;
+    font-weight: 700;
+    color: #8080a8;
+  }
+
+  .effective-idle-summary__source {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 9px;
+    color: #505068;
   }
 
   .effective-idle-block__note {

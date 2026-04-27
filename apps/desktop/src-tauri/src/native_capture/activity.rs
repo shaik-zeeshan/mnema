@@ -1,5 +1,5 @@
 use crate::native_capture_inactivity::{
-    ActivityPolicyEvaluation, ActivitySnapshot, AudioActivitySourceState,
+    ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySnapshot, AudioActivitySourceState,
 };
 use capture_microphone as microphone_capture;
 use serde::Serialize;
@@ -17,8 +17,10 @@ pub struct IdleDebugInfo {
     pub is_inactivity_paused: bool,
     pub detector_source: String,
     pub activity_mode: String,
-    pub audio_activity_sensitivity: u8,
-    pub audio_activity_threshold: f32,
+    pub microphone_activity_sensitivity: u8,
+    pub system_audio_activity_sensitivity: u8,
+    pub microphone_activity_threshold: f32,
+    pub system_audio_activity_threshold: f32,
     pub screen_activity_last_unix_ms: Option<u64>,
     pub screen_activity_idle_ms: Option<u64>,
     pub microphone_activity_last_unix_ms: Option<u64>,
@@ -32,6 +34,18 @@ pub struct IdleDebugInfo {
     pub effective_idle_ms: u64,
     #[serde(rename = "effectiveActivitySource")]
     pub effective_idle_source: String,
+    pub screen_effective_idle_ms: u64,
+    #[serde(rename = "screenEffectiveActivitySource")]
+    pub screen_effective_idle_source: String,
+    pub screen_paused: bool,
+    pub microphone_effective_idle_ms: u64,
+    #[serde(rename = "microphoneEffectiveActivitySource")]
+    pub microphone_effective_idle_source: String,
+    pub microphone_paused: bool,
+    pub system_audio_effective_idle_ms: u64,
+    #[serde(rename = "systemAudioEffectiveActivitySource")]
+    pub system_audio_effective_idle_source: String,
+    pub system_audio_paused: bool,
     pub activity_sources: Vec<IdleDebugActivitySource>,
 }
 
@@ -65,8 +79,17 @@ fn capture_source_requested(
 }
 
 pub(super) fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> ActivitySnapshot {
+    // Only poll screen activity via CGDisplayCreateImage when the capture
+    // stream is not running.  While the stream is active, the stream output
+    // callback already updates screen activity from frame samples — polling on
+    // top of that introduces redundant CGDisplayCreateImage snapshots whose
+    // fingerprints can drift from the stream fingerprints and cause false
+    // activity changes.  During inactivity pauses (stream stopped) we still
+    // need polling to detect resumed screen changes.
     #[cfg(target_os = "macos")]
-    capture_screen::poll_screen_activity();
+    if !runtime.is_running {
+        capture_screen::poll_screen_activity();
+    }
 
     ActivitySnapshot {
         system_input_idle_ms: current_system_idle_ms(),
@@ -111,12 +134,18 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
     let system_audio_activity_idle_ms = capture_screen::system_audio_activity_idle_ms();
     let system_audio_activity_level = capture_screen::system_audio_activity_level();
     let activity_snapshot = current_activity_snapshot(&runtime);
-    let policy = runtime
+    let combined_policy = runtime
         .inactivity
         .evaluate_policy_for_snapshot(now, activity_snapshot);
-    let effective_idle = policy.effective_idle;
+    let policies = runtime
+        .inactivity
+        .evaluate_policies_for_snapshot(now, activity_snapshot);
+    let effective_idle = combined_policy.effective_idle;
     let microphone_activity_enabled = activity_snapshot.microphone_activity.enabled;
     let system_audio_activity_enabled = activity_snapshot.system_audio_activity.enabled;
+    let screen_paused = runtime.inactivity.is_screen_paused();
+    let microphone_paused = runtime.inactivity.is_microphone_paused();
+    let system_audio_paused = runtime.inactivity.is_system_audio_paused();
     let system_idle_available = system_idle_ms.is_some();
     let detector_source = if cfg!(target_os = "macos") {
         if system_idle_available {
@@ -146,8 +175,10 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
                 "system_input_or_screen_or_audio".to_string()
             }
         },
-        audio_activity_sensitivity: runtime.inactivity.audio_activity_sensitivity,
-        audio_activity_threshold: runtime.inactivity.audio_activity_threshold(),
+        microphone_activity_sensitivity: runtime.inactivity.microphone_activity_sensitivity,
+        system_audio_activity_sensitivity: runtime.inactivity.system_audio_activity_sensitivity,
+        microphone_activity_threshold: runtime.inactivity.microphone_activity_threshold(),
+        system_audio_activity_threshold: runtime.inactivity.system_audio_activity_threshold(),
         screen_activity_last_unix_ms,
         screen_activity_idle_ms,
         microphone_activity_last_unix_ms,
@@ -160,7 +191,26 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
         system_audio_activity_enabled,
         effective_idle_ms: effective_idle.idle_ms,
         effective_idle_source: effective_idle.source.as_str().to_string(),
-        activity_sources: idle_debug_activity_sources(&policy),
+        screen_effective_idle_ms: policies.screen.effective_idle.idle_ms,
+        screen_effective_idle_source: policies.screen.effective_idle.source.as_str().to_string(),
+        screen_paused,
+        microphone_effective_idle_ms: policies.microphone.effective_idle.idle_ms,
+        microphone_effective_idle_source: policies
+            .microphone
+            .effective_idle
+            .source
+            .as_str()
+            .to_string(),
+        microphone_paused,
+        system_audio_effective_idle_ms: policies.system_audio.effective_idle.idle_ms,
+        system_audio_effective_idle_source: policies
+            .system_audio
+            .effective_idle
+            .source
+            .as_str()
+            .to_string(),
+        system_audio_paused,
+        activity_sources: idle_debug_activity_sources(&combined_policy),
     }
 }
 
@@ -180,4 +230,47 @@ pub(super) fn idle_debug_activity_sources(
             selected: source.kind == policy.effective_idle.source,
         })
         .collect()
+}
+
+/// Build the separate screen/microphone/system-audio debug fields from split
+/// policy evaluations. This is a pure function testable without Tauri state.
+pub(super) fn idle_debug_family_fields(
+    policies: &ActivityPolicyEvaluations,
+    inactivity: &crate::native_capture_inactivity::InactivityState,
+) -> IdleDebugFamilyFields {
+    IdleDebugFamilyFields {
+        screen_effective_idle_ms: policies.screen.effective_idle.idle_ms,
+        screen_effective_idle_source: policies.screen.effective_idle.source.as_str().to_string(),
+        screen_paused: inactivity.is_screen_paused(),
+        microphone_effective_idle_ms: policies.microphone.effective_idle.idle_ms,
+        microphone_effective_idle_source: policies
+            .microphone
+            .effective_idle
+            .source
+            .as_str()
+            .to_string(),
+        microphone_paused: inactivity.is_microphone_paused(),
+        system_audio_effective_idle_ms: policies.system_audio.effective_idle.idle_ms,
+        system_audio_effective_idle_source: policies
+            .system_audio
+            .effective_idle
+            .source
+            .as_str()
+            .to_string(),
+        system_audio_paused: inactivity.is_system_audio_paused(),
+    }
+}
+
+/// Separated screen/microphone/system-audio fields extracted for debug surfaces.
+#[derive(Debug, Clone)]
+pub(super) struct IdleDebugFamilyFields {
+    pub screen_effective_idle_ms: u64,
+    pub screen_effective_idle_source: String,
+    pub screen_paused: bool,
+    pub microphone_effective_idle_ms: u64,
+    pub microphone_effective_idle_source: String,
+    pub microphone_paused: bool,
+    pub system_audio_effective_idle_ms: u64,
+    pub system_audio_effective_idle_source: String,
+    pub system_audio_paused: bool,
 }

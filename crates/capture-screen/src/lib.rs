@@ -150,17 +150,16 @@ pub struct ScreenCaptureSupport {
 
 fn output_files_for_session(
     session_dir: &Path,
+    system_audio_output_path: Option<&Path>,
     sources: &ScreenCaptureSources,
 ) -> CaptureOutputFiles {
     let screen_file = sources
         .screen
         .then_some(session_dir.join("screen.mov").to_string_lossy().to_string());
-    let system_audio_file = sources.system_audio.then_some(
-        session_dir
-            .join("system-audio.m4a")
-            .to_string_lossy()
-            .to_string(),
-    );
+    let system_audio_file = sources
+        .system_audio
+        .then(|| system_audio_output_path.map(|p| p.to_string_lossy().to_string()))
+        .flatten();
 
     CaptureOutputFiles {
         screen_file: screen_file.clone(),
@@ -314,9 +313,11 @@ fn maybe_mark_system_audio_activity_for_sample(sample_buf: &cidre::cm::SampleBuf
         return;
     }
 
-    // Treat any ready system-audio sample as recent activity and avoid probing
-    // raw sample bytes on ScreenCaptureKit's callback queue.
-    store_system_audio_activity(1.0, now_monotonic_marker_ms(), now_unix_ms());
+    let level = match capture_writers::derive_audio_activity_level_from_sample_buf(sample_buf) {
+        Some(l) => l,
+        None => return,
+    };
+    store_system_audio_activity(level, now_monotonic_marker_ms(), now_unix_ms());
 }
 
 #[cfg(target_os = "macos")]
@@ -849,6 +850,31 @@ fn stream_output_callback_panic_error(
 }
 
 #[cfg(target_os = "macos")]
+fn stream_output_callback_objc_exception_error(
+    exception: &cidre::ns::Exception,
+) -> CaptureErrorResponse {
+    let name_ref = exception.name();
+    // ExceptionName is a newtype over ns::String; deref twice to reach &ns::String.
+    let name = fmt_ns(&**name_ref);
+    let reason = exception
+        .reason()
+        .map(|r| fmt_ns(r.as_ref()))
+        .unwrap_or_else(|| "unknown reason".to_string());
+
+    let error = CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message: format!("ScreenCaptureKit output callback ObjC exception: {name} - {reason}"),
+    };
+
+    log_capture_error(
+        "ObjC exception boundary captured in ScreenCaptureKit output callback",
+        &error,
+    );
+
+    error
+}
+
+#[cfg(target_os = "macos")]
 struct PreparedScreenFrameExport {
     file_path: PathBuf,
     captured_at_unix_ms: u64,
@@ -1011,7 +1037,8 @@ mod stream_output_delegate {
     use super::{
         append_audio_sample_to_writer, append_video_sample_to_writer,
         create_video_asset_writer_for_sample_buf, export_screen_frame_artifact, objc,
-        store_first_stream_output_error, stream_output_callback_panic_error, StreamOutputContext,
+        store_first_stream_output_error, stream_output_callback_objc_exception_error,
+        stream_output_callback_panic_error, StreamOutputContext,
     };
     use cidre::ns;
     use cidre::sc::StreamOutput;
@@ -1095,16 +1122,25 @@ mod stream_output_delegate {
             sample_buf: &mut cidre::cm::SampleBuf,
             kind: cidre::sc::OutputType,
         ) {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let ctx = self.inner_mut();
+            let objc_result = ns::try_catch(|| {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let ctx = self.inner_mut();
 
-                handle_stream_did_output_sample_buf(ctx, sample_buf, kind);
-            }));
+                    handle_stream_did_output_sample_buf(ctx, sample_buf, kind);
+                }));
 
-            if let Err(payload) = result {
+                if let Err(payload) = result {
+                    store_first_stream_output_error(
+                        &mut self.inner_mut().first_error,
+                        stream_output_callback_panic_error(payload),
+                    );
+                }
+            });
+
+            if let Err(exception) = objc_result {
                 store_first_stream_output_error(
                     &mut self.inner_mut().first_error,
-                    stream_output_callback_panic_error(payload),
+                    stream_output_callback_objc_exception_error(exception),
                 );
             }
         }
@@ -1366,7 +1402,7 @@ impl AvFoundationCaptureSession {
                 Err(_) => {
                     let mut callbacks = delegate_finish_callbacks()
                         .lock()
-                        .expect("delegate callback map poisoned");
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     callbacks.remove(&self.delegate_key);
                     let error = CaptureErrorResponse {
                         code: "capture_stop_incomplete".to_string(),
@@ -1470,18 +1506,62 @@ impl ScreenCaptureKitCaptureSession {
         }
     }
 
+    fn pause_system_audio_writer(&mut self) -> Result<(), CaptureErrorResponse> {
+        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+        let ctx = self.stream_output_delegate.inner_mut();
+        if let Some(mut writer) = ctx.system_audio_writer.take() {
+            if let Err(error) = capture_writers::finish_audio_asset_writer(&mut writer) {
+                log_capture_error(
+                    "failed to finalize system audio writer during soft-pause",
+                    &error,
+                );
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn resume_system_audio_writer(
+        &mut self,
+        output_path: &str,
+    ) -> Result<(), CaptureErrorResponse> {
+        use cidre::ns;
+
+        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+        let ctx = self.stream_output_delegate.inner_mut();
+        if ctx.system_audio_writer.is_some() {
+            return Err(CaptureErrorResponse {
+                code: "invalid_runtime_state".to_string(),
+                message: "System audio writer is already active; pause before resuming".to_string(),
+            });
+        }
+        let output_url = ns::Url::with_fs_path_str(output_path, false);
+        let writer = create_audio_asset_writer(&output_url, "system audio")?;
+        ctx.system_audio_writer = Some(writer);
+        Ok(())
+    }
+
     fn rotate_output_files(
         &mut self,
         segment_dir: &Path,
+        screen_output_file: Option<&Path>,
+        system_audio_output_path: Option<&Path>,
     ) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
-        let output_files = output_files_for_session(segment_dir, &self.sources);
-        let recording_file = segment_dir.join("screen.mov").to_string_lossy().to_string();
-        let system_audio_recording_file = self.sources.system_audio.then_some(
-            segment_dir
-                .join("system-audio.m4a")
-                .to_string_lossy()
-                .to_string(),
-        );
+        let recording_file = screen_output_file
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| segment_dir.join("screen.mov").to_string_lossy().to_string());
+        let system_audio_recording_file = self
+            .sources
+            .system_audio
+            .then(|| system_audio_output_path.map(|p| p.to_string_lossy().to_string()))
+            .flatten();
+
+        let mut output_files =
+            output_files_for_session(segment_dir, system_audio_output_path, &self.sources);
+        if self.sources.screen && screen_output_file.is_some() {
+            output_files.screen_file = Some(recording_file.clone());
+            output_files.screen_files = vec![recording_file.clone()];
+        }
 
         std::fs::create_dir_all(segment_dir)
             .map_err(|e| CaptureErrorResponse {
@@ -1640,7 +1720,7 @@ fn recording_delegate_class() -> &'static objc2::runtime::AnyClass {
             let key = this as usize;
             if let Some(tx) = delegate_start_callbacks()
                 .lock()
-                .expect("delegate callback map poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&key)
             {
                 let _ = tx.send(());
@@ -1658,7 +1738,7 @@ fn recording_delegate_class() -> &'static objc2::runtime::AnyClass {
             let key = this as usize;
             if let Some(tx) = delegate_finish_callbacks()
                 .lock()
-                .expect("delegate callback map poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&key)
             {
                 let result = if error.is_null() {
@@ -1738,6 +1818,8 @@ pub fn start_capture_session(
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     start_capture_session_with_options(
         session_dir,
+        None,
+        None,
         sources,
         screen_frame_rate,
         screen_resolution,
@@ -1749,6 +1831,8 @@ pub fn start_capture_session(
 #[cfg(target_os = "macos")]
 pub fn start_capture_session_with_options(
     session_dir: &Path,
+    screen_output_file: Option<&Path>,
+    system_audio_output_path: Option<&Path>,
     sources: &ScreenCaptureSources,
     screen_frame_rate: u32,
     screen_resolution: &ScreenResolution,
@@ -1773,6 +1857,8 @@ pub fn start_capture_session_with_options(
     if sources.screen && supports_screen_capture_kit_backend() {
         return start_screen_capture_kit_session(
             session_dir,
+            screen_output_file,
+            system_audio_output_path,
             sources,
             screen_frame_rate,
             screen_resolution,
@@ -1783,6 +1869,7 @@ pub fn start_capture_session_with_options(
 
     start_avfoundation_capture_session(
         session_dir,
+        screen_output_file,
         sources,
         screen_resolution,
         video_bitrate_bps,
@@ -1793,6 +1880,7 @@ pub fn start_capture_session_with_options(
 #[cfg(target_os = "macos")]
 fn start_avfoundation_capture_session(
     session_dir: &Path,
+    screen_output_file: Option<&Path>,
     sources: &ScreenCaptureSources,
     screen_resolution: &ScreenResolution,
     _video_bitrate_bps: Option<u32>,
@@ -1839,10 +1927,16 @@ fn start_avfoundation_capture_session(
     }
 
     let start_result = (|| {
-        let output_file = session_dir.join("screen.mov");
+        let output_file = screen_output_file
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| session_dir.join("screen.mov"));
         let output_file_str = output_file.to_string_lossy().to_string();
 
-        let output_files = output_files_for_session(&session_dir, sources);
+        let mut output_files = output_files_for_session(&session_dir, None, sources);
+        if sources.screen && screen_output_file.is_some() {
+            output_files.screen_file = Some(output_file_str.clone());
+            output_files.screen_files = vec![output_file_str.clone()];
+        }
 
         let capture_session = unsafe { AVCaptureSession::new() };
 
@@ -1891,11 +1985,11 @@ fn start_avfoundation_capture_session(
         let (finish_tx, finish_rx) = mpsc::channel::<Result<(), CaptureErrorResponse>>();
         delegate_start_callbacks()
             .lock()
-            .expect("delegate callback map poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(delegate_key, start_tx);
         delegate_finish_callbacks()
             .lock()
-            .expect("delegate callback map poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(delegate_key, finish_tx);
 
         unsafe { capture_session.startRunning() };
@@ -1912,11 +2006,11 @@ fn start_avfoundation_capture_session(
             unsafe { capture_session.stopRunning() };
             delegate_start_callbacks()
                 .lock()
-                .expect("delegate callback map poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&delegate_key);
             delegate_finish_callbacks()
                 .lock()
-                .expect("delegate callback map poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&delegate_key);
             return Err(CaptureErrorResponse {
                 code: "capture_start_timeout".to_string(),
@@ -1947,6 +2041,8 @@ fn start_avfoundation_capture_session(
 #[cfg(target_os = "macos")]
 fn start_screen_capture_kit_session(
     session_dir: &Path,
+    screen_output_file: Option<&Path>,
+    system_audio_output_path: Option<&Path>,
     sources: &ScreenCaptureSources,
     screen_frame_rate: u32,
     screen_resolution: &ScreenResolution,
@@ -1976,12 +2072,20 @@ fn start_screen_capture_kit_session(
     })?;
 
     let start_result = (|| {
-        let output_file = session_dir.join("screen.mov");
+        let output_file = screen_output_file
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| session_dir.join("screen.mov"));
         let output_file_str = output_file.to_string_lossy().to_string();
-        let system_audio_output_file = session_dir.join("system-audio.m4a");
-        let system_audio_output_file_str = system_audio_output_file.to_string_lossy().to_string();
+        let system_audio_output_file_str = system_audio_output_path
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-        let output_files = output_files_for_session(&session_dir, sources);
+        let mut output_files =
+            output_files_for_session(&session_dir, system_audio_output_path, sources);
+        if sources.screen && screen_output_file.is_some() {
+            output_files.screen_file = Some(output_file_str.clone());
+            output_files.screen_files = vec![output_file_str.clone()];
+        }
 
         let (content_tx, content_rx) =
             mpsc::channel::<Result<cidre::arc::R<sc::ShareableContent>, CaptureErrorResponse>>();
@@ -2103,7 +2207,8 @@ fn start_screen_capture_kit_session(
             recording_file: output_file_str,
             system_audio_recording_file: sources
                 .system_audio
-                .then_some(system_audio_output_file_str),
+                .then(|| system_audio_output_path.map(|p| p.to_string_lossy().to_string()))
+                .flatten(),
             output_files,
         })
     })();
@@ -2272,6 +2377,12 @@ fn finalize_rotated_segment_context(
 pub struct RotateScreenCaptureSessionArgs<'a> {
     pub active_session: &'a mut Option<ActiveCaptureSession>,
     pub segment_dir: &'a Path,
+    /// Visible dated output path for the screen recording.
+    /// When `Some`, the video file is written here instead of `segment_dir/screen.mov`.
+    pub screen_output_file: Option<&'a Path>,
+    /// Full output path for the system-audio file in the new segment, or `None`
+    /// when system audio is not being captured.
+    pub system_audio_output_path: Option<&'a Path>,
 }
 
 #[cfg(target_os = "macos")]
@@ -2286,12 +2397,60 @@ pub fn rotate_screen_capture_session(
     };
 
     match &mut session.backend {
-        CaptureBackendSession::ScreenCaptureKit(session) => {
-            session.rotate_output_files(args.segment_dir)
-        }
+        CaptureBackendSession::ScreenCaptureKit(session) => session.rotate_output_files(
+            args.segment_dir,
+            args.screen_output_file,
+            args.system_audio_output_path,
+        ),
         CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
             code: "capture_rotation_requires_restart".to_string(),
             message: "This capture backend requires full restart for segment rotation".to_string(),
+        }),
+    }
+}
+
+/// Finalize and disable the system-audio writer for an active ScreenCaptureKit
+/// session without stopping the screen capture stream.  Returns `Ok(())` if
+/// there was no writer to pause (idempotent).
+#[cfg(target_os = "macos")]
+pub fn pause_system_audio_writer(
+    active_session: &mut Option<ActiveCaptureSession>,
+) -> Result<(), CaptureErrorResponse> {
+    let Some(session) = active_session.as_mut() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "No active screen capture session for system audio pause".to_string(),
+        });
+    };
+    match &mut session.backend {
+        CaptureBackendSession::ScreenCaptureKit(sck) => sck.pause_system_audio_writer(),
+        CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
+            code: "system_audio_pause_unsupported".to_string(),
+            message: "System audio soft-pause is only supported on the ScreenCaptureKit backend"
+                .to_string(),
+        }),
+    }
+}
+
+/// Create and attach a new system-audio writer to an active ScreenCaptureKit
+/// session that was previously paused.  The caller supplies the new output path.
+#[cfg(target_os = "macos")]
+pub fn resume_system_audio_writer(
+    active_session: &mut Option<ActiveCaptureSession>,
+    output_path: &str,
+) -> Result<(), CaptureErrorResponse> {
+    let Some(session) = active_session.as_mut() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "No active screen capture session for system audio resume".to_string(),
+        });
+    };
+    match &mut session.backend {
+        CaptureBackendSession::ScreenCaptureKit(sck) => sck.resume_system_audio_writer(output_path),
+        CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
+            code: "system_audio_resume_unsupported".to_string(),
+            message: "System audio soft-resume is only supported on the ScreenCaptureKit backend"
+                .to_string(),
         }),
     }
 }
@@ -2418,6 +2577,8 @@ pub struct StopScreenCaptureSessionArgs<'a> {
 pub struct RotateScreenCaptureSessionArgs<'a> {
     pub active_session: &'a mut Option<ActiveCaptureSession>,
     pub segment_dir: &'a Path,
+    pub screen_output_file: Option<&'a Path>,
+    pub system_audio_output_path: Option<&'a Path>,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2445,6 +2606,8 @@ pub fn start_capture_session(
 #[cfg(not(target_os = "macos"))]
 pub fn start_capture_session_with_options(
     _session_dir: &Path,
+    _screen_output_file: Option<&Path>,
+    _system_audio_output_path: Option<&Path>,
     _sources: &ScreenCaptureSources,
     _screen_frame_rate: u32,
     _screen_resolution: &ScreenResolution,
@@ -2454,6 +2617,27 @@ pub fn start_capture_session_with_options(
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
         message: "Native capture is currently supported only on macOS".to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn pause_system_audio_writer(
+    _active_session: &mut Option<ActiveCaptureSession>,
+) -> Result<(), CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "System audio soft-pause is currently supported only on macOS".to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn resume_system_audio_writer(
+    _active_session: &mut Option<ActiveCaptureSession>,
+    _output_path: &str,
+) -> Result<(), CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "System audio soft-resume is currently supported only on macOS".to_string(),
     })
 }
 
@@ -2651,6 +2835,104 @@ mod tests {
         assert_eq!(resolved.height, 778);
     }
 
+    // --- output_files_for_session path-layout regression ---
+
+    #[test]
+    fn output_files_screen_only_uses_session_dir() {
+        let session_dir = Path::new("/recordings/2026/04/19/.session-abc-segment-0001");
+        let sources = ScreenCaptureSources {
+            screen: true,
+            system_audio: false,
+        };
+
+        let files = output_files_for_session(session_dir, None, &sources);
+
+        let screen_file = files.screen_file.expect("screen_file should be Some");
+        assert!(
+            screen_file.contains("session-abc-segment-0001"),
+            "screen output should be inside the hidden segment workspace: {screen_file}"
+        );
+        assert!(
+            !screen_file.contains("/audio/"),
+            "screen output must not be inside the audio directory: {screen_file}"
+        );
+        assert!(
+            files.system_audio_file.is_none(),
+            "system_audio_file should be None when system_audio is disabled"
+        );
+    }
+
+    #[test]
+    fn output_files_system_audio_uses_flat_audio_dir() {
+        let session_dir = Path::new("/recordings/2026/04/19/.session-abc-segment-0001");
+        let system_audio_path =
+            Path::new("/recordings/2026/04/19/audio/system-audio-session-abc-segment-0001.m4a");
+        let sources = ScreenCaptureSources {
+            screen: true,
+            system_audio: true,
+        };
+
+        let files = output_files_for_session(session_dir, Some(system_audio_path), &sources);
+
+        let audio_file = files
+            .system_audio_file
+            .expect("system_audio_file should be Some when system_audio is enabled");
+        assert_eq!(
+            audio_file, "/recordings/2026/04/19/audio/system-audio-session-abc-segment-0001.m4a",
+            "system-audio output should match the provided path exactly"
+        );
+        assert!(
+            audio_file.ends_with("system-audio-session-abc-segment-0001.m4a"),
+            "system-audio filename should contain segment qualifier: {audio_file}"
+        );
+
+        let screen_file = files.screen_file.expect("screen_file should be Some");
+        assert!(
+            screen_file.contains("session-abc-segment-0001"),
+            "screen output should remain in the hidden segment workspace: {screen_file}"
+        );
+        assert!(
+            !screen_file.contains("/audio/"),
+            "screen output must not bleed into the audio directory: {screen_file}"
+        );
+    }
+
+    #[test]
+    fn output_files_system_audio_path_is_separate_from_screen_workspace() {
+        // The two directory roots must share no prefix relationship - the audio
+        // file lives flat under dated audio/ while the segment workspace is
+        // a dot-hidden sibling of the date directory.
+        let session_dir = Path::new("/save/2026/04/19/.mysession-segment-0003");
+        let system_audio_path =
+            Path::new("/save/2026/04/19/audio/system-audio-mysession-segment-0003.m4a");
+        let sources = ScreenCaptureSources {
+            screen: true,
+            system_audio: true,
+        };
+
+        let files = output_files_for_session(session_dir, Some(system_audio_path), &sources);
+
+        let audio_file = files.system_audio_file.unwrap();
+        let screen_file = files.screen_file.unwrap();
+
+        // They must be in entirely different parent directories.
+        let audio_path = std::path::Path::new(&audio_file);
+        let screen_path = std::path::Path::new(&screen_file);
+        assert_ne!(
+            audio_path.parent(),
+            screen_path.parent(),
+            "system-audio and screen outputs must live in different directories"
+        );
+        assert!(
+            !audio_path.starts_with(session_dir),
+            "audio output must not be inside the hidden segment workspace"
+        );
+        assert!(
+            !screen_path.starts_with("/save/2026/04/19/audio/"),
+            "screen output must not be inside the audio directory"
+        );
+    }
+
     #[test]
     fn screen_frame_artifact_path_uses_timestamp_and_sequence() {
         let path =
@@ -2699,6 +2981,45 @@ mod tests {
         assert_eq!(
             error.message,
             "ScreenCaptureKit output callback panicked with a non-string payload"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stream_output_callback_objc_exception_error_contains_expected_wording() {
+        let reason = cidre::ns::str!(c"test reason");
+        let exception =
+            cidre::ns::try_catch(|| cidre::ns::Exception::raise(reason)).expect_err("should catch");
+        let error = stream_output_callback_objc_exception_error(exception);
+
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert!(
+            error
+                .message
+                .contains("ScreenCaptureKit output callback ObjC exception"),
+            "message should contain ObjC exception wording: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("test reason"),
+            "message should contain exception reason: {}",
+            error.message
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stream_output_callback_objc_exception_error_includes_exception_name() {
+        let reason = cidre::ns::str!(c"some reason");
+        let exception =
+            cidre::ns::try_catch(|| cidre::ns::Exception::raise(reason)).expect_err("should catch");
+        let error = stream_output_callback_objc_exception_error(exception);
+
+        // Exception::raise uses NSGenericException by default
+        assert!(
+            error.message.contains("NSGenericException"),
+            "message should contain exception name: {}",
+            error.message
         );
     }
 

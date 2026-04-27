@@ -5,11 +5,12 @@ use capture_types::{
     MicrophonePreference, MicrophonePreferenceMode, UpdateMicrophoneControllerRequest,
 };
 use serde::Serialize;
-use std::path::Path;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
-use super::runtime::{now_unix_ms, NativeCaptureRuntime, NativeCaptureState};
+use super::runtime::{
+    ensure_microphone_planner_for_runtime, now_unix_ms, NativeCaptureRuntime, NativeCaptureState,
+};
 
 #[derive(Debug, Clone)]
 pub struct MicrophoneControllerPreferencesRuntime {
@@ -176,41 +177,23 @@ pub(super) fn should_move_microphone_capture_to_waiting_state(
 pub(super) fn next_microphone_output_file_for_runtime(
     runtime: &NativeCaptureRuntime,
 ) -> Result<String, CaptureErrorResponse> {
-    let file_name = format!("microphone-{}.m4a", now_unix_ms());
-
-    if let Some(existing_screen_file) = runtime
-        .current_segment_output_files
-        .as_ref()
-        .and_then(|output_files| output_files.screen_file.as_deref())
-        .or_else(|| {
-            runtime
-                .output_files
-                .as_ref()
-                .and_then(|output_files| output_files.screen_file.as_deref())
-        })
-    {
-        return Ok(Path::new(existing_screen_file)
-            .parent()
-            .expect("screen output path should have parent")
-            .join(file_name)
-            .to_string_lossy()
-            .to_string());
-    }
-
     let planner = runtime
-        .segment_planner
+        .microphone_planner
         .as_ref()
         .ok_or_else(|| CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),
-            message: "Capture segment planner missing while reconnecting microphone".to_string(),
+            message: "Capture microphone planner missing while reconnecting microphone".to_string(),
         })?;
-    let session_dir = planner.segment_dir(runtime.current_segment_index);
-    std::fs::create_dir_all(&session_dir).map_err(|error| CaptureErrorResponse {
+    let audio_dir = planner.audio_dir();
+    std::fs::create_dir_all(&audio_dir).map_err(|error| CaptureErrorResponse {
         code: "io_error".to_string(),
-        message: format!("Failed to create capture session directory: {error}"),
+        message: format!("Failed to create capture audio directory: {error}"),
     })?;
 
-    Ok(session_dir.join(file_name).to_string_lossy().to_string())
+    Ok(planner
+        .microphone_reconnect_file(runtime.current_segment_index, now_unix_ms())
+        .to_string_lossy()
+        .to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -219,7 +202,7 @@ pub(super) fn should_reconnect_waiting_microphone_session(
     state: &MicrophoneControllerState,
 ) -> bool {
     runtime.is_running
-        && !runtime.inactivity.is_paused
+        && !runtime.inactivity.is_microphone_paused()
         && runtime
             .requested_sources
             .as_ref()
@@ -266,6 +249,10 @@ fn maybe_reconnect_waiting_microphone_session(
     }
 
     if stop_failed_while_waiting || !should_reconnect_waiting_microphone_session(&runtime, state) {
+        return;
+    }
+
+    if ensure_microphone_planner_for_runtime(&mut runtime, "reconnecting microphone").is_err() {
         return;
     }
 

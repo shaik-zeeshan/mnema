@@ -6,7 +6,8 @@ use capture_runtime::{
 };
 use capture_types::{
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
-    NativeCaptureSession, RecordingSettings, ScreenResolution, StartNativeCaptureRequest,
+    NativeCaptureSession, RecordingSettings, ScreenResolution, SourceSessionMeta, SourceSessions,
+    StartNativeCaptureRequest,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -18,9 +19,8 @@ use super::segments::FrameArtifactMessage;
 #[derive(Debug, Default)]
 pub struct NativeCaptureRuntime {
     pub is_running: bool,
-    pub session_id: Option<String>,
-    pub started_at_unix_ms: Option<u64>,
     pub requested_sources: Option<CaptureSources>,
+    pub current_segment_sources: Option<CaptureSources>,
     pub output_files: Option<CaptureOutputFiles>,
     #[cfg(target_os = "macos")]
     pub current_segment_output_files: Option<CaptureOutputFiles>,
@@ -33,10 +33,20 @@ pub struct NativeCaptureRuntime {
     pub capture_clock: Option<CaptureClock>,
     pub segment_schedule: Option<SegmentSchedule>,
     pub segment_planner: Option<SegmentPlanner>,
+    /// Independent output planner for the microphone source. When microphone is a requested
+    /// source this holds a planner whose `session_id` differs from the screen session's so
+    /// that microphone files use a distinct source-session id in the dated `audio/` output.
+    pub microphone_planner: Option<SegmentPlanner>,
+    /// Independent output planner for the system-audio source. When system audio is a
+    /// requested source this holds a planner whose `session_id` differs from both the screen
+    /// and microphone sessions.
+    pub system_audio_planner: Option<SegmentPlanner>,
     pub frame_artifact_tx: Option<mpsc::Sender<FrameArtifactMessage>>,
     pub runtime_controller: RuntimeController,
     pub runtime_state: RuntimeState,
     pub inactivity: InactivityState,
+    /// Per-source session metadata. Populated when a recording starts, cleared on reset.
+    pub source_sessions: Option<SourceSessions>,
     #[cfg(target_os = "macos")]
     pub recording_file: Option<String>,
     #[cfg(target_os = "macos")]
@@ -104,10 +114,9 @@ pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCapt
     NativeCaptureSession {
         is_running: runtime.is_running,
         is_inactivity_paused: runtime.inactivity.is_paused,
-        session_id: runtime.session_id.clone(),
-        started_at_unix_ms: runtime.started_at_unix_ms,
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
+        source_sessions: runtime.source_sessions.clone(),
     }
 }
 
@@ -115,10 +124,9 @@ pub(super) fn stopped_session_from_runtime(runtime: &NativeCaptureRuntime) -> Na
     NativeCaptureSession {
         is_running: false,
         is_inactivity_paused: false,
-        session_id: runtime.session_id.clone(),
-        started_at_unix_ms: runtime.started_at_unix_ms,
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
+        source_sessions: runtime.source_sessions.clone(),
     }
 }
 
@@ -169,8 +177,11 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.capture_clock = None;
     runtime.segment_schedule = None;
     runtime.segment_planner = None;
+    runtime.microphone_planner = None;
+    runtime.system_audio_planner = None;
     runtime.frame_artifact_tx = None;
     runtime.effective_screen_bitrate_bps = None;
+    runtime.current_segment_sources = None;
     #[cfg(target_os = "macos")]
     {
         runtime.current_segment_output_files = None;
@@ -192,8 +203,11 @@ pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
     runtime.capture_clock = None;
     runtime.segment_schedule = None;
     runtime.segment_planner = None;
+    runtime.microphone_planner = None;
+    runtime.system_audio_planner = None;
     runtime.frame_artifact_tx = None;
     runtime.effective_screen_bitrate_bps = None;
+    runtime.current_segment_sources = None;
     #[cfg(target_os = "macos")]
     {
         runtime.current_segment_output_files = None;
@@ -235,6 +249,34 @@ pub(super) fn apply_runtime_signal(
 }
 
 pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime) {
+    runtime.is_running = false;
+    runtime.requested_sources = None;
+    runtime.current_segment_sources = None;
+    runtime.output_files = None;
+    #[cfg(target_os = "macos")]
+    {
+        runtime.current_segment_output_files = None;
+    }
+    runtime.current_segment_index = 0;
+    runtime.effective_screen_bitrate_bps = None;
+    runtime.microphone_device_id_for_capture = None;
+    runtime.segment_loop_control = None;
+    runtime.capture_clock = None;
+    runtime.segment_schedule = None;
+    runtime.segment_planner = None;
+    runtime.microphone_planner = None;
+    runtime.system_audio_planner = None;
+    runtime.frame_artifact_tx = None;
+    runtime.inactivity = InactivityState::default();
+    runtime.source_sessions = None;
+    #[cfg(target_os = "macos")]
+    {
+        runtime.recording_file = None;
+        runtime.microphone_recording_file = None;
+        runtime.system_audio_recording_file = None;
+        runtime.active_screen_session = None;
+        runtime.active_microphone_session = None;
+    }
     runtime.runtime_controller = RuntimeController::default();
     runtime.runtime_state = RuntimeState::Idle;
 }
@@ -256,6 +298,231 @@ pub(super) fn should_recover_from_segment_finalize_error(error: &CaptureErrorRes
 
     capture_screen::should_recover_from_segment_finalize_error(error)
         || (error.code == "capture_output_processing_failed" && is_missing_requested_screen_output)
+}
+
+pub(super) fn has_any_capture_sources(sources: &CaptureSources) -> bool {
+    sources.screen || sources.microphone || sources.system_audio
+}
+
+pub(super) fn active_sources_for_inactivity_paused_state(
+    requested_sources: &CaptureSources,
+    screen_paused: bool,
+    microphone_paused: bool,
+    system_audio_paused: bool,
+) -> Option<CaptureSources> {
+    // system_audio is captured through the screen session backend, so it
+    // requires both the screen session to be live (!screen_paused) AND the
+    // system audio family to be active (!system_audio_paused).
+    let active_sources = CaptureSources {
+        screen: requested_sources.screen && !screen_paused,
+        microphone: requested_sources.microphone && !microphone_paused,
+        system_audio: requested_sources.system_audio && !system_audio_paused && !screen_paused,
+    };
+
+    has_any_capture_sources(&active_sources).then_some(active_sources)
+}
+
+pub(super) fn screen_planner_for_runtime(
+    runtime: &NativeCaptureRuntime,
+) -> Option<&SegmentPlanner> {
+    runtime.segment_planner.as_ref()
+}
+
+pub(super) fn microphone_planner_for_runtime(
+    runtime: &NativeCaptureRuntime,
+) -> Option<&SegmentPlanner> {
+    runtime.microphone_planner.as_ref()
+}
+
+pub(super) fn system_audio_planner_for_runtime(
+    runtime: &NativeCaptureRuntime,
+) -> Option<&SegmentPlanner> {
+    runtime.system_audio_planner.as_ref()
+}
+
+fn seed_source_planner_from_runtime(
+    screen_planner: &SegmentPlanner,
+    source_session_id: &str,
+) -> SegmentPlanner {
+    SegmentPlanner::with_date_prefix(
+        screen_planner.save_root_dir(),
+        source_session_id,
+        screen_planner.date_prefix(),
+    )
+}
+
+fn empty_source_sessions() -> SourceSessions {
+    SourceSessions {
+        screen: None,
+        microphone: None,
+        system_audio: None,
+    }
+}
+
+fn source_session_started_at_seed(runtime: &NativeCaptureRuntime) -> u64 {
+    runtime
+        .source_sessions
+        .as_ref()
+        .and_then(|sessions| {
+            sessions
+                .screen
+                .as_ref()
+                .or(sessions.microphone.as_ref())
+                .or(sessions.system_audio.as_ref())
+                .map(|session| session.started_at_unix_ms)
+        })
+        .unwrap_or_else(now_unix_ms)
+}
+
+fn persist_microphone_source_session(
+    runtime: &mut NativeCaptureRuntime,
+    session_id: String,
+) -> SourceSessionMeta {
+    let started_at_unix_ms = runtime
+        .source_sessions
+        .as_ref()
+        .and_then(|sessions| sessions.microphone.as_ref())
+        .map(|session| session.started_at_unix_ms)
+        .unwrap_or_else(|| source_session_started_at_seed(runtime));
+    let source_session = SourceSessionMeta {
+        session_id,
+        started_at_unix_ms,
+    };
+
+    runtime
+        .source_sessions
+        .get_or_insert_with(empty_source_sessions)
+        .microphone = Some(source_session.clone());
+
+    source_session
+}
+
+fn persist_system_audio_source_session(
+    runtime: &mut NativeCaptureRuntime,
+    session_id: String,
+) -> SourceSessionMeta {
+    let started_at_unix_ms = runtime
+        .source_sessions
+        .as_ref()
+        .and_then(|sessions| sessions.system_audio.as_ref())
+        .map(|session| session.started_at_unix_ms)
+        .unwrap_or_else(|| source_session_started_at_seed(runtime));
+    let source_session = SourceSessionMeta {
+        session_id,
+        started_at_unix_ms,
+    };
+
+    runtime
+        .source_sessions
+        .get_or_insert_with(empty_source_sessions)
+        .system_audio = Some(source_session.clone());
+
+    source_session
+}
+
+pub(super) fn ensure_microphone_planner_for_runtime(
+    runtime: &mut NativeCaptureRuntime,
+    _context: &str,
+) -> Result<Option<SegmentPlanner>, CaptureErrorResponse> {
+    if let Some(planner) = runtime.microphone_planner.clone() {
+        persist_microphone_source_session(runtime, planner.session_id().to_string());
+        return Ok(Some(planner));
+    }
+
+    if !runtime
+        .requested_sources
+        .as_ref()
+        .is_some_and(|sources| sources.microphone)
+    {
+        return Ok(None);
+    }
+
+    let Some(screen_planner) = runtime.segment_planner.clone() else {
+        // Screen planner not yet available — cannot seed microphone planner yet.
+        return Ok(None);
+    };
+    let source_session = runtime
+        .source_sessions
+        .as_ref()
+        .and_then(|sessions| sessions.microphone.as_ref())
+        .cloned()
+        .unwrap_or_else(|| {
+            persist_microphone_source_session(
+                runtime,
+                capture_screen::new_session_id()
+                    .unwrap_or_else(|_| format!("microphone-{}", now_unix_ms())),
+            )
+        });
+
+    let planner = seed_source_planner_from_runtime(&screen_planner, &source_session.session_id);
+    runtime.microphone_planner = Some(planner.clone());
+
+    Ok(Some(planner))
+}
+
+pub(super) fn ensure_system_audio_planner_for_runtime(
+    runtime: &mut NativeCaptureRuntime,
+    _context: &str,
+) -> Result<Option<SegmentPlanner>, CaptureErrorResponse> {
+    if let Some(planner) = runtime.system_audio_planner.clone() {
+        persist_system_audio_source_session(runtime, planner.session_id().to_string());
+        return Ok(Some(planner));
+    }
+
+    if !runtime
+        .requested_sources
+        .as_ref()
+        .is_some_and(|sources| sources.system_audio)
+    {
+        return Ok(None);
+    }
+
+    let Some(screen_planner) = runtime.segment_planner.clone() else {
+        // Screen planner not yet available — cannot seed system-audio planner yet.
+        return Ok(None);
+    };
+    let source_session = runtime
+        .source_sessions
+        .as_ref()
+        .and_then(|sessions| sessions.system_audio.as_ref())
+        .cloned()
+        .unwrap_or_else(|| {
+            persist_system_audio_source_session(
+                runtime,
+                capture_screen::new_session_id()
+                    .unwrap_or_else(|_| format!("system-audio-{}", now_unix_ms())),
+            )
+        });
+
+    let planner = seed_source_planner_from_runtime(&screen_planner, &source_session.session_id);
+    runtime.system_audio_planner = Some(planner.clone());
+
+    Ok(Some(planner))
+}
+
+pub(super) fn current_segment_sources_for_runtime(
+    runtime: &NativeCaptureRuntime,
+) -> Option<CaptureSources> {
+    if let Some(sources) = runtime.current_segment_sources.clone() {
+        return has_any_capture_sources(&sources).then_some(sources);
+    }
+
+    #[cfg(target_os = "macos")]
+    if runtime.current_segment_output_files.is_some()
+        || runtime.active_screen_session.is_some()
+        || runtime.active_microphone_session.is_some()
+    {
+        return runtime.requested_sources.as_ref().and_then(|sources| {
+            active_sources_for_inactivity_paused_state(
+                sources,
+                runtime.inactivity.screen_paused,
+                runtime.inactivity.microphone_paused,
+                runtime.inactivity.system_audio_paused,
+            )
+        });
+    }
+
+    None
 }
 
 pub(super) fn should_rotate_segment(

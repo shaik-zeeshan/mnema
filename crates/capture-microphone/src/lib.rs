@@ -12,9 +12,9 @@ use capture_writers::{
 };
 
 #[cfg(target_os = "macos")]
-use cidre::objc;
-#[cfg(target_os = "macos")]
 use cidre::{av, core_audio as ca, dispatch, os};
+#[cfg(target_os = "macos")]
+use cidre::{ns, objc};
 #[cfg(target_os = "macos")]
 use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
@@ -128,6 +128,7 @@ pub fn microphone_activity_level() -> Option<f32> {
 struct MicrophoneOutputContext {
     writer: Option<AudioAssetWriterState>,
     output_url: cidre::arc::R<cidre::ns::Url>,
+    output_file: Option<String>,
     first_error: Option<CaptureErrorResponse>,
     format_state: MicFormatStabilityState,
     logged_format_samples: u32,
@@ -208,6 +209,7 @@ fn fallback_microphone_format(context: &MicrophoneOutputContext) -> Option<Audio
 mod tests {
     use super::{
         last_microphone_activity_unix_ms, microphone_activity_idle_ms, microphone_activity_level,
+        microphone_output_callback_objc_exception_error, microphone_output_callback_panic_error,
         observe_microphone_format, reset_last_microphone_activity_unix_ms,
         resolve_microphone_finalize_format, resolve_microphone_live_format,
         store_microphone_activity, AudioSampleFormat, MicFormatStabilityState, OnceLock,
@@ -293,6 +295,70 @@ mod tests {
         assert_eq!(microphone_activity_level(), None);
         assert_eq!(microphone_activity_idle_ms(), None);
     }
+
+    fn microphone_callback_error_from_panic<F>(panic_fn: F) -> capture_types::CaptureErrorResponse
+    where
+        F: FnOnce(),
+    {
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(panic_fn))
+            .expect_err("panic should be caught");
+        microphone_output_callback_panic_error(payload)
+    }
+
+    #[test]
+    fn microphone_callback_panic_error_formats_static_str_payload() {
+        let error = microphone_callback_error_from_panic(|| panic!("mic boom"));
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert_eq!(
+            error.message,
+            "Microphone output callback panicked: mic boom"
+        );
+    }
+
+    #[test]
+    fn microphone_callback_panic_error_formats_string_payload() {
+        let error = microphone_callback_error_from_panic(|| {
+            std::panic::panic_any(String::from("owned mic boom"));
+        });
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert_eq!(
+            error.message,
+            "Microphone output callback panicked: owned mic boom"
+        );
+    }
+
+    #[test]
+    fn microphone_callback_panic_error_handles_non_string_payloads() {
+        let error = microphone_callback_error_from_panic(|| {
+            std::panic::panic_any(42_u8);
+        });
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert_eq!(
+            error.message,
+            "Microphone output callback panicked with a non-string payload"
+        );
+    }
+
+    #[test]
+    fn microphone_callback_objc_exception_error_contains_expected_wording() {
+        let reason = cidre::ns::str!(c"test mic reason");
+        let exception =
+            cidre::ns::try_catch(|| cidre::ns::Exception::raise(reason)).expect_err("should catch");
+        let error = microphone_output_callback_objc_exception_error(exception);
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert!(
+            error
+                .message
+                .contains("Microphone output callback ObjC exception"),
+            "unexpected message: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("test mic reason"),
+            "unexpected message: {}",
+            error.message
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -353,13 +419,59 @@ fn flush_pending_microphone_samples(
 }
 
 #[cfg(target_os = "macos")]
+fn microphone_output_callback_panic_error(
+    payload: Box<dyn std::any::Any + Send>,
+) -> CaptureErrorResponse {
+    let message = if let Some(message) = payload.downcast_ref::<&'static str>() {
+        format!("Microphone output callback panicked: {message}")
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        format!("Microphone output callback panicked: {message}")
+    } else {
+        "Microphone output callback panicked with a non-string payload".to_string()
+    };
+
+    capture_runtime::debug_log!(
+        "[capture-microphone] panic boundary captured in microphone output callback: {message}"
+    );
+
+    CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_output_callback_objc_exception_error(
+    exception: &ns::Exception,
+) -> CaptureErrorResponse {
+    let name_ref = exception.name();
+    let name = format!("{}", &**name_ref);
+    let reason = exception
+        .reason()
+        .map(|r| format!("{}", r.as_ref()))
+        .unwrap_or_else(|| "unknown reason".to_string());
+
+    let message = format!("Microphone output callback ObjC exception: {name} - {reason}");
+
+    capture_runtime::debug_log!(
+        "[capture-microphone] ObjC exception boundary captured in microphone output callback: {message}"
+    );
+
+    CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message,
+    }
+}
+
+#[cfg(target_os = "macos")]
 mod microphone_delegate {
     #![allow(clippy::useless_transmute)]
 
     use super::{
         append_audio_sample_to_writer, create_audio_asset_writer_for_sample_format,
         derive_audio_sample_format_from_sample_buf, flush_pending_microphone_samples,
-        maybe_track_microphone_activity, objc, record_observed_audio_format,
+        maybe_track_microphone_activity, microphone_output_callback_objc_exception_error,
+        microphone_output_callback_panic_error, ns, objc, record_observed_audio_format,
         resolve_microphone_live_format, BufferedMicSample, MicrophoneOutputContext,
         MAX_PENDING_MIC_SAMPLES,
     };
@@ -383,54 +495,71 @@ mod microphone_delegate {
             sample_buf: &cidre::cm::SampleBuf,
             _connection: &cidre::av::CaptureConnection,
         ) {
-            let ctx = self.inner_mut();
-            if ctx.first_error.is_some() {
-                return;
-            }
-
-            maybe_track_microphone_activity(sample_buf);
-
-            if let Some(writer) = ctx.writer.as_mut() {
-                if let Err(error) = append_audio_sample_to_writer(writer, sample_buf) {
-                    ctx.first_error = Some(error);
-                }
-                return;
-            }
-
-            let Some(sample_format) = derive_audio_sample_format_from_sample_buf(sample_buf) else {
-                return;
-            };
-
-            record_observed_audio_format(ctx, sample_format);
-
-            ctx.pending_samples.push_back(BufferedMicSample {
-                sample_buf: sample_buf.retained(),
-                format: sample_format,
-            });
-            while ctx.pending_samples.len() > MAX_PENDING_MIC_SAMPLES {
-                let _ = ctx.pending_samples.pop_front();
-            }
-
-            if ctx.writer.is_none() {
-                let Some(stable_format) = resolve_microphone_live_format(&ctx.format_state) else {
-                    return;
-                };
-
-                match create_audio_asset_writer_for_sample_format(
-                    ctx.output_url.as_ref(),
-                    "microphone",
-                    stable_format,
-                ) {
-                    Ok(writer) => ctx.writer = Some(writer),
-                    Err(error) => {
-                        ctx.first_error = Some(error);
+            let objc_result = ns::try_catch(|| {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let ctx = self.inner_mut();
+                    if ctx.first_error.is_some() {
                         return;
                     }
-                }
-            }
 
-            if let Err(error) = flush_pending_microphone_samples(ctx) {
-                ctx.first_error = Some(error);
+                    maybe_track_microphone_activity(sample_buf);
+
+                    if let Some(writer) = ctx.writer.as_mut() {
+                        if let Err(error) = append_audio_sample_to_writer(writer, sample_buf) {
+                            ctx.first_error = Some(error);
+                        }
+                        return;
+                    }
+
+                    let Some(sample_format) =
+                        derive_audio_sample_format_from_sample_buf(sample_buf)
+                    else {
+                        return;
+                    };
+
+                    record_observed_audio_format(ctx, sample_format);
+
+                    ctx.pending_samples.push_back(BufferedMicSample {
+                        sample_buf: sample_buf.retained(),
+                        format: sample_format,
+                    });
+                    while ctx.pending_samples.len() > MAX_PENDING_MIC_SAMPLES {
+                        let _ = ctx.pending_samples.pop_front();
+                    }
+
+                    if ctx.writer.is_none() {
+                        let Some(stable_format) = resolve_microphone_live_format(&ctx.format_state)
+                        else {
+                            return;
+                        };
+
+                        match create_audio_asset_writer_for_sample_format(
+                            ctx.output_url.as_ref(),
+                            "microphone",
+                            stable_format,
+                        ) {
+                            Ok(writer) => ctx.writer = Some(writer),
+                            Err(error) => {
+                                ctx.first_error = Some(error);
+                                return;
+                            }
+                        }
+                    }
+
+                    if let Err(error) = flush_pending_microphone_samples(ctx) {
+                        ctx.first_error = Some(error);
+                    }
+                }));
+
+                if let Err(payload) = result {
+                    self.inner_mut().first_error =
+                        Some(microphone_output_callback_panic_error(payload));
+                }
+            });
+
+            if let Err(exception) = objc_result {
+                self.inner_mut().first_error =
+                    Some(microphone_output_callback_objc_exception_error(exception));
             }
         }
     }
@@ -458,7 +587,8 @@ impl AvFoundationMicrophoneCaptureSession {
 
     pub fn rotate_output_file(&mut self, output_file: &str) -> Result<(), CaptureErrorResponse> {
         let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
-        let next_context = microphone_output_context_for_output_url(&output_url);
+        let next_context =
+            microphone_output_context_for_output_url(&output_url, Some(output_file.to_string()));
 
         synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
         let mut previous_context =
@@ -490,29 +620,80 @@ fn finalize_microphone_output_context(
                 Ok(writer) => {
                     context.writer = Some(writer);
                     if let Err(error) = flush_pending_microphone_samples(context) {
-                        context.first_error = Some(error);
+                        context.first_error.get_or_insert(error);
                     }
                 }
-                Err(error) => context.first_error = Some(error),
+                Err(error) => {
+                    context.first_error.get_or_insert(error);
+                }
             }
         }
     }
 
-    writers_finalize_microphone_output_context(context.writer.as_mut(), context.first_error.take())
+    match writers_finalize_microphone_output_context(
+        context.writer.as_mut(),
+        context.first_error.take(),
+    ) {
+        Err(error) if is_nonfatal_microphone_finalize_error(&error) => {
+            if let Some(path) = context.output_file.as_deref() {
+                maybe_remove_microphone_output_file(path);
+            }
+            Ok(())
+        }
+        result => result,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn microphone_output_context_for_output_url(
     output_url: &cidre::ns::Url,
+    output_file: Option<String>,
 ) -> MicrophoneOutputContext {
     MicrophoneOutputContext {
         writer: None,
         output_url: output_url.retained(),
+        output_file,
         first_error: None,
         format_state: MicFormatStabilityState::default(),
         logged_format_samples: 0,
         pending_samples: VecDeque::new(),
     }
+}
+
+#[cfg(target_os = "macos")]
+const MICROPHONE_STREAM_OUTPUT_FAILURE_PREFIX: &str = "microphone stream output failed: ";
+#[cfg(target_os = "macos")]
+const MICROPHONE_WRITER_FAILURE_PREFIX: &str = "microphone writer failed: ";
+
+#[cfg(target_os = "macos")]
+fn maybe_remove_microphone_output_file(path: &str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => capture_runtime::debug_log!(
+            "[capture-microphone] failed to remove invalid microphone artifact {path}: {error}"
+        ),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn is_nonfatal_microphone_finalize_error(error: &CaptureErrorResponse) -> bool {
+    error.code == "capture_output_processing_failed"
+        && capture_writers::single_output_processing_failure_detail(
+            &error.message,
+            &[
+                MICROPHONE_STREAM_OUTPUT_FAILURE_PREFIX,
+                MICROPHONE_WRITER_FAILURE_PREFIX,
+            ],
+        )
+        .is_some_and(|detail| {
+            capture_writers::is_no_audio_samples_error_message("microphone", detail)
+                || detail
+                    .strip_prefix(MICROPHONE_WRITER_FAILURE_PREFIX)
+                    .is_some_and(|detail| {
+                        capture_writers::is_no_audio_samples_error_message("microphone", detail)
+                    })
+        })
 }
 
 pub fn resolve_effective_microphone_device(
@@ -616,7 +797,11 @@ extern "C-unwind" fn default_input_device_changed_listener(
         return os::Status::NO_ERR;
     };
 
-    callback();
+    let _ = ns::try_catch(|| {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            callback();
+        }));
+    });
     os::Status::NO_ERR
 }
 
@@ -747,12 +932,21 @@ fn resolve_capture_device_for_id(
 pub fn start_avfoundation_microphone_capture_session(
     output_url: &cidre::ns::Url,
 ) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
-    start_avfoundation_microphone_capture_session_with_device_id(output_url, None)
+    start_avfoundation_microphone_capture_session_with_output_file(output_url, None, None)
 }
 
 #[cfg(target_os = "macos")]
 pub fn start_avfoundation_microphone_capture_session_with_device_id(
     output_url: &cidre::ns::Url,
+    device_id: Option<&str>,
+) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
+    start_avfoundation_microphone_capture_session_with_output_file(output_url, None, device_id)
+}
+
+#[cfg(target_os = "macos")]
+fn start_avfoundation_microphone_capture_session_with_output_file(
+    output_url: &cidre::ns::Url,
+    output_file: Option<String>,
     device_id: Option<&str>,
 ) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
     reset_last_microphone_activity_unix_ms();
@@ -769,8 +963,9 @@ pub fn start_avfoundation_microphone_capture_session_with_device_id(
     })?;
 
     let mut audio_output = av::capture::AudioDataOutput::new();
-    let output_delegate =
-        MicAudioDataOutputDelegate::with(microphone_output_context_for_output_url(output_url));
+    let output_delegate = MicAudioDataOutputDelegate::with(
+        microphone_output_context_for_output_url(output_url, output_file),
+    );
     let output_queue = dispatch::Queue::serial_with_ar_pool();
     audio_output.set_sample_buf_delegate(Some(output_delegate.as_ref()), Some(&output_queue));
 
@@ -819,7 +1014,11 @@ pub fn start_avfoundation_microphone_capture_session_for_file_with_device_id(
     device_id: Option<&str>,
 ) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
     let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
-    start_avfoundation_microphone_capture_session_with_device_id(&output_url, device_id)
+    start_avfoundation_microphone_capture_session_with_output_file(
+        &output_url,
+        Some(output_file.to_string()),
+        device_id,
+    )
 }
 
 #[cfg(target_os = "macos")]

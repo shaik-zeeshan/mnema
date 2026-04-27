@@ -45,15 +45,36 @@ pub struct CaptureOutputFiles {
     pub system_audio_files: Vec<String>,
 }
 
+/// Logical session metadata for a single capture source (screen, microphone, or system audio).
+/// Each source can start and stop independently, so they each carry their own session identity.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSessionMeta {
+    /// Unique identifier for this source's current logical session.
+    pub session_id: String,
+    /// Wall-clock milliseconds since UNIX epoch when this source session began.
+    pub started_at_unix_ms: u64,
+}
+
+/// Per-source session metadata for an active or recently-stopped recording.
+/// A field is `None` when that source was not requested or has not yet started.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSessions {
+    pub screen: Option<SourceSessionMeta>,
+    pub microphone: Option<SourceSessionMeta>,
+    pub system_audio: Option<SourceSessionMeta>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeCaptureSession {
     pub is_running: bool,
     pub is_inactivity_paused: bool,
-    pub session_id: Option<String>,
-    pub started_at_unix_ms: Option<u64>,
     pub requested_sources: Option<CaptureSources>,
     pub output_files: Option<CaptureOutputFiles>,
+    /// Per-source session metadata. `None` when no recording has been started.
+    pub source_sessions: Option<SourceSessions>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,7 +167,11 @@ pub fn default_idle_timeout_seconds() -> u64 {
     10
 }
 
-pub fn default_audio_activity_sensitivity() -> u8 {
+pub fn default_microphone_activity_sensitivity() -> u8 {
+    50
+}
+
+pub fn default_system_audio_activity_sensitivity() -> u8 {
     50
 }
 
@@ -198,8 +223,10 @@ pub struct RecordingSettings {
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
     pub idle_timeout_seconds: u64,
-    #[serde(default = "default_audio_activity_sensitivity")]
-    pub audio_activity_sensitivity: u8,
+    #[serde(default = "default_microphone_activity_sensitivity")]
+    pub microphone_activity_sensitivity: u8,
+    #[serde(default = "default_system_audio_activity_sensitivity")]
+    pub system_audio_activity_sensitivity: u8,
     #[serde(
         default = "default_inactivity_activity_mode",
         rename = "activityMode",
@@ -228,8 +255,10 @@ pub struct UpdateRecordingSettingsRequest {
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
     pub idle_timeout_seconds: u64,
-    #[serde(default = "default_audio_activity_sensitivity")]
-    pub audio_activity_sensitivity: u8,
+    #[serde(default = "default_microphone_activity_sensitivity")]
+    pub microphone_activity_sensitivity: u8,
+    #[serde(default = "default_system_audio_activity_sensitivity")]
+    pub system_audio_activity_sensitivity: u8,
     #[serde(
         default = "default_inactivity_activity_mode",
         rename = "activityMode",
@@ -316,6 +345,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_session_meta_serializes_camel_case() {
+        let meta = SourceSessionMeta {
+            session_id: "sess-abc".to_string(),
+            started_at_unix_ms: 1_700_000_000_000,
+        };
+        let json = serde_json::to_value(&meta).expect("serialize");
+        assert_eq!(json["sessionId"], "sess-abc");
+        assert_eq!(json["startedAtUnixMs"], 1_700_000_000_000u64);
+    }
+
+    #[test]
+    fn source_sessions_partial_population_serializes_nulls() {
+        let sessions = SourceSessions {
+            screen: Some(SourceSessionMeta {
+                session_id: "scr-1".to_string(),
+                started_at_unix_ms: 1000,
+            }),
+            microphone: None,
+            system_audio: None,
+        };
+        let json = serde_json::to_value(&sessions).expect("serialize");
+        assert!(json["screen"].is_object());
+        assert!(json["microphone"].is_null());
+        assert!(json["systemAudio"].is_null());
+    }
+
+    #[test]
+    fn native_capture_session_includes_source_sessions_field() {
+        let session = NativeCaptureSession {
+            is_running: true,
+            is_inactivity_paused: false,
+            requested_sources: None,
+            output_files: None,
+            source_sessions: Some(SourceSessions {
+                screen: Some(SourceSessionMeta {
+                    session_id: "scr-1".to_string(),
+                    started_at_unix_ms: 1000,
+                }),
+                microphone: Some(SourceSessionMeta {
+                    session_id: "mic-1".to_string(),
+                    started_at_unix_ms: 1001,
+                }),
+                system_audio: None,
+            }),
+        };
+        let json = serde_json::to_value(&session).expect("serialize");
+        assert_eq!(json["sourceSessions"]["screen"]["sessionId"], "scr-1");
+        assert_eq!(json["sourceSessions"]["microphone"]["sessionId"], "mic-1");
+        assert!(json["sourceSessions"]["systemAudio"].is_null());
+        assert!(json.get("sessionId").is_none());
+        assert!(json.get("startedAtUnixMs").is_none());
+    }
+
+    #[test]
     fn recording_settings_deserialize_defaults_audio_sensitivity_and_supports_alias_mode_field() {
         let settings: RecordingSettings = serde_json::from_str(
             r#"{
@@ -336,8 +419,12 @@ mod tests {
         .expect("settings should deserialize");
 
         assert_eq!(
-            settings.audio_activity_sensitivity,
-            default_audio_activity_sensitivity()
+            settings.microphone_activity_sensitivity,
+            default_microphone_activity_sensitivity()
+        );
+        assert_eq!(
+            settings.system_audio_activity_sensitivity,
+            default_system_audio_activity_sensitivity()
         );
         assert_eq!(
             settings.native_capture_debug_logging_enabled,
@@ -364,7 +451,8 @@ mod tests {
                 "autoStart": false,
                 "pauseCaptureOnInactivity": true,
                 "idleTimeoutSeconds": 10,
-                "audioActivitySensitivity": 50,
+                "microphoneActivitySensitivity": 50,
+                "systemAudioActivitySensitivity": 50,
                 "activityMode": "system_input_or_screen"
             }"#,
         )
