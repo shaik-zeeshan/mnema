@@ -21,13 +21,14 @@ use super::runtime::{
 use super::segments::{
     cleanup_failed_segment_dirs, handle_inactivity_resume_error, pause_microphone_for_inactivity,
     pause_runtime_for_inactivity, pause_screen_for_inactivity, pause_system_audio_for_inactivity,
-    resume_microphone_from_inactivity, resume_runtime_from_inactivity_with_start_segment,
-    resume_screen_from_inactivity, resume_screen_from_inactivity_with_start_segment,
-    resume_system_audio_from_inactivity, StartedSegmentState,
+    plan_live_rotation_segment, resume_microphone_from_inactivity,
+    resume_runtime_from_inactivity_with_start_segment, resume_screen_from_inactivity,
+    resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
+    segment_loop_sleep_duration, StartedSegmentState,
 };
 use super::segments::{
-    flush_frame_artifacts, try_forward_frame_artifact, FrameArtifactForwardingResult,
-    FrameArtifactMessage,
+    flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
+    FrameArtifactForwardingResult, FrameArtifactMessage,
 };
 use crate::native_capture_inactivity::{ActivityPolicyEvaluation, InactivityState};
 use crate::native_capture_output::set_current_microphone_output_file;
@@ -1563,6 +1564,121 @@ fn should_rotate_segment_only_after_boundary_crossing() {
     assert!(!should_rotate_segment(1, 1));
     assert!(should_rotate_segment(1, 2));
     assert!(should_rotate_segment(3, 5));
+}
+
+#[test]
+fn rotation_keeps_emitted_segment_numbering_contiguous_when_schedule_jumps_ahead() {
+    let scheduled_index = 10;
+
+    assert!(should_rotate_segment(4, scheduled_index));
+    assert_eq!(next_emitted_segment_index(4), 5);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn plan_live_rotation_segment_keeps_emitted_numbering_contiguous_when_schedule_jumps_ahead() {
+    let runtime = NativeCaptureRuntime {
+        current_segment_index: 4,
+        ..Default::default()
+    };
+    let sources = CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: true,
+    };
+    let screen_planner = SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-screen-live",
+        "2026/04/28",
+    );
+    let microphone_planner = SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-microphone-live",
+        "2026/04/28",
+    );
+    let system_audio_planner = SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-system-audio-live",
+        "2026/04/28",
+    );
+    let clock = CaptureClock::start_now();
+    let schedule = SegmentSchedule::new(std::time::Duration::from_millis(1));
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    let planned = plan_live_rotation_segment(
+        &runtime,
+        &sources,
+        &screen_planner,
+        Some(&microphone_planner),
+        Some(&system_audio_planner),
+        &schedule,
+        &clock,
+    )
+    .expect("rotation should still be planned after schedule advances");
+
+    assert_eq!(planned.next_index, 5);
+    assert!(planned
+        .screen_output_file
+        .to_string_lossy()
+        .ends_with("segment-0005.mov"));
+    assert!(planned
+        .microphone_output_path
+        .as_ref()
+        .expect("microphone path should be planned")
+        .to_string_lossy()
+        .ends_with("segment-0005.m4a"));
+    assert!(planned
+        .system_audio_output_path
+        .as_ref()
+        .expect("system audio path should be planned")
+        .to_string_lossy()
+        .ends_with("segment-0005.m4a"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn plan_live_rotation_segment_does_not_rotate_for_zero_duration_schedule() {
+    let runtime = NativeCaptureRuntime {
+        current_segment_index: 1,
+        ..Default::default()
+    };
+    let sources = CaptureSources {
+        screen: true,
+        microphone: false,
+        system_audio: false,
+    };
+    let screen_planner = SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-screen-live",
+        "2026/04/28",
+    );
+    let clock = CaptureClock::start_now();
+    let schedule = SegmentSchedule::new(std::time::Duration::ZERO);
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    assert!(
+        plan_live_rotation_segment(
+            &runtime,
+            &sources,
+            &screen_planner,
+            None,
+            None,
+            &schedule,
+            &clock,
+        )
+        .is_none(),
+        "zero-duration schedules should keep rollover disabled"
+    );
+}
+
+#[test]
+fn segment_loop_sleep_duration_uses_idle_poll_interval_for_zero_duration_schedule() {
+    let schedule = SegmentSchedule::new(std::time::Duration::ZERO);
+    let clock = CaptureClock::start_now();
+
+    assert_eq!(segment_loop_sleep_duration(&schedule, &clock), std::time::Duration::from_secs(1));
 }
 
 #[test]
@@ -3588,6 +3704,125 @@ fn resume_screen_while_audio_paused_preserves_audio_paused_state() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn resume_screen_uses_contiguous_segment_index_when_schedule_has_advanced() {
+    let mut runtime = screen_paused_runtime_fixture();
+    runtime.current_segment_index = 4;
+    runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-screen-pause",
+        "2026/04/22",
+    ));
+    runtime.capture_clock = Some(CaptureClock::start_now());
+    runtime.segment_schedule = Some(SegmentSchedule::new(std::time::Duration::from_millis(1)));
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    let expected_screen_file =
+        "/tmp/native-capture-tests/2026/04/22/native-session-screen-pause-segment-0005.mov"
+            .to_string();
+
+    resume_screen_from_inactivity_with_start_segment(
+        &mut runtime,
+        |segment_dir, screen_output, _, _, _, _, _, _, _, _| {
+            assert_eq!(
+                segment_dir,
+                std::path::Path::new(
+                    "/tmp/native-capture-tests/2026/04/22/.native-session-screen-pause-segment-0005"
+                )
+            );
+            assert_eq!(
+                screen_output,
+                Some(std::path::Path::new(
+                    "/tmp/native-capture-tests/2026/04/22/native-session-screen-pause-segment-0005.mov"
+                ))
+            );
+
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        },
+    )
+    .expect("screen resume should keep numbering contiguous");
+
+    assert_eq!(runtime.current_segment_index, 5);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn resume_screen_reanchors_segment_boundary_timing() {
+    let mut runtime = screen_paused_runtime_fixture();
+    runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-screen-pause",
+        "2026/04/22",
+    ));
+    runtime.segment_schedule = Some(SegmentSchedule::new(std::time::Duration::from_millis(40)));
+    runtime.capture_clock = Some(CaptureClock::start_now());
+
+    std::thread::sleep(std::time::Duration::from_millis(70));
+
+    let expected_screen_file =
+        "/tmp/native-capture-tests/2026/04/22/native-session-screen-pause-segment-0002.mov"
+            .to_string();
+
+    resume_screen_from_inactivity_with_start_segment(
+        &mut runtime,
+        |_, _, _, _, _, _, _, _, _, _| {
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        },
+    )
+    .expect("screen resume should succeed");
+
+    let sources = runtime
+        .requested_sources
+        .clone()
+        .expect("requested sources should be preserved");
+    let screen_planner = runtime
+        .segment_planner
+        .clone()
+        .expect("screen planner should be preserved");
+    let schedule = runtime
+        .segment_schedule
+        .clone()
+        .expect("schedule should be preserved");
+    let clock = runtime
+        .capture_clock
+        .clone()
+        .expect("clock should be re-anchored");
+
+    assert!(
+        plan_live_rotation_segment(
+            &runtime,
+            &sources,
+            &screen_planner,
+            None,
+            None,
+            &schedule,
+            &clock,
+        )
+        .is_none(),
+        "screen resume should reset segment timing instead of catching up immediately"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(70));
+
+    let delayed_rotation = plan_live_rotation_segment(
+        &runtime,
+        &sources,
+        &screen_planner,
+        None,
+        None,
+        &schedule,
+        runtime
+            .capture_clock
+            .as_ref()
+            .expect("clock should still exist after screen resume"),
+    )
+    .expect("rotation should trigger after the resumed screen segment reaches duration");
+
+    assert_eq!(delayed_rotation.next_index, 3);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn pause_audio_for_inactivity_updates_current_segment_sources() {
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
@@ -3873,6 +4108,123 @@ fn inactivity_resume_sets_current_segment_sources_via_active_sources_helper() {
     // For legacy resume both family flags are false, so the helper returns
     // the full requested set — same as the old behavior.
     assert_eq!(runtime.current_segment_sources, runtime.requested_sources,);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn inactivity_resume_uses_contiguous_segment_index_when_schedule_has_advanced() {
+    let mut runtime = paused_runtime_fixture();
+    runtime.current_segment_index = 4;
+    runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-resume",
+        "2026/04/19",
+    ));
+    runtime.capture_clock = Some(CaptureClock::start_now());
+    runtime.segment_schedule = Some(SegmentSchedule::new(std::time::Duration::from_millis(1)));
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    let expected_screen_file =
+        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0005.mov".to_string();
+
+    resume_runtime_from_inactivity_with_start_segment(
+        &mut runtime,
+        |segment_dir, screen_output, _, _, _, _, _, _, _, _| {
+            assert_eq!(
+                segment_dir,
+                std::path::Path::new(
+                    "/tmp/native-capture-tests/2026/04/19/.native-session-resume-segment-0005"
+                )
+            );
+            assert_eq!(
+                screen_output,
+                Some(std::path::Path::new(
+                    "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0005.mov"
+                ))
+            );
+
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        },
+    )
+    .expect("resume should keep numbering contiguous");
+
+    assert_eq!(runtime.current_segment_index, 5);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn inactivity_resume_reanchors_segment_boundary_timing() {
+    let mut runtime = paused_runtime_fixture();
+    runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-resume",
+        "2026/04/19",
+    ));
+    runtime.segment_schedule = Some(SegmentSchedule::new(std::time::Duration::from_millis(40)));
+    runtime.capture_clock = Some(CaptureClock::start_now());
+
+    std::thread::sleep(std::time::Duration::from_millis(70));
+
+    let expected_screen_file =
+        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov".to_string();
+
+    resume_runtime_from_inactivity_with_start_segment(
+        &mut runtime,
+        |_, _, _, _, _, _, _, _, _, _| {
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        },
+    )
+    .expect("resume should succeed");
+
+    let sources = runtime
+        .requested_sources
+        .clone()
+        .expect("requested sources should be preserved");
+    let screen_planner = runtime
+        .segment_planner
+        .clone()
+        .expect("screen planner should be preserved");
+    let schedule = runtime
+        .segment_schedule
+        .clone()
+        .expect("schedule should be preserved");
+    let clock = runtime
+        .capture_clock
+        .clone()
+        .expect("clock should be re-anchored");
+
+    assert!(
+        plan_live_rotation_segment(
+            &runtime,
+            &sources,
+            &screen_planner,
+            None,
+            None,
+            &schedule,
+            &clock,
+        )
+        .is_none(),
+        "resume should reset segment timing instead of immediately rotating again"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(70));
+
+    let delayed_rotation = plan_live_rotation_segment(
+        &runtime,
+        &sources,
+        &screen_planner,
+        None,
+        None,
+        &schedule,
+        runtime
+            .capture_clock
+            .as_ref()
+            .expect("clock should still exist after resume"),
+    )
+    .expect("rotation should trigger after the new segment reaches its duration");
+
+    assert_eq!(delayed_rotation.next_index, 3);
 }
 
 // --- Issue 3: pause_audio ordering – mic stops after screen restart ---
