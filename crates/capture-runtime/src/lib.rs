@@ -289,6 +289,10 @@ impl SegmentSchedule {
         self.segment_duration
     }
 
+    pub fn segment_duration_reached(&self, elapsed: Duration) -> bool {
+        !self.segment_duration.is_zero() && elapsed >= self.segment_duration
+    }
+
     pub fn current_segment_index(&self, elapsed: Duration) -> u64 {
         if self.segment_duration.is_zero() {
             return 1;
@@ -534,6 +538,23 @@ mod tests {
             schedule.next_boundary_after(Duration::from_secs(10)),
             Duration::from_secs(20)
         );
+    }
+
+    #[test]
+    fn schedule_detects_when_segment_duration_is_reached() {
+        let schedule = SegmentSchedule::new(Duration::from_secs(10));
+
+        assert!(!schedule.segment_duration_reached(Duration::from_secs(9)));
+        assert!(schedule.segment_duration_reached(Duration::from_secs(10)));
+        assert!(schedule.segment_duration_reached(Duration::from_secs(12)));
+    }
+
+    #[test]
+    fn schedule_zero_duration_never_reaches_rotation_boundary() {
+        let schedule = SegmentSchedule::new(Duration::ZERO);
+
+        assert!(!schedule.segment_duration_reached(Duration::ZERO));
+        assert!(!schedule.segment_duration_reached(Duration::from_secs(1)));
     }
 
     #[test]
