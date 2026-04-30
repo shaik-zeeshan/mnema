@@ -1,13 +1,23 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
+pub type FramePreviewCacheState = Mutex<FramePreviewCache>;
 
 const APP_INFRA_BASE_DIR_NAME: &str = ".z";
 const RECORDINGS_DIR_NAME: &str = "recordings";
+const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
 
 /// Returns the recordings root directory: `<saveDirectory>/.z/recordings`.
 ///
@@ -21,6 +31,65 @@ pub fn recordings_root_dir(save_directory: &str) -> std::path::PathBuf {
 }
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedFramePreview {
+    preview: FramePreviewDto,
+    cached_at: Instant,
+}
+
+#[derive(Debug, Default)]
+pub struct FramePreviewCache {
+    entries: HashMap<i64, CachedFramePreview>,
+}
+
+impl FramePreviewCache {
+    fn get(&mut self, frame_id: i64, ttl: Duration, now: Instant) -> Option<FramePreviewDto> {
+        self.evict_expired(ttl, now);
+        self.entries.get(&frame_id).map(|entry| entry.preview.clone())
+    }
+
+    fn insert(&mut self, frame_id: i64, preview: FramePreviewDto, ttl: Duration, now: Instant) {
+        self.evict_expired(ttl, now);
+        self.entries.insert(
+            frame_id,
+            CachedFramePreview {
+                preview,
+                cached_at: now,
+            },
+        );
+        self.evict_oldest_excess_entries();
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn evict_expired(&mut self, ttl: Duration, now: Instant) {
+        self.entries
+            .retain(|_, entry| now.duration_since(entry.cached_at) < ttl);
+    }
+
+    fn evict_oldest_excess_entries(&mut self) {
+        while self.entries.len() > FRAME_PREVIEW_CACHE_MAX_ENTRIES {
+            let Some(oldest_frame_id) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.cached_at)
+                .map(|(frame_id, _)| *frame_id)
+            else {
+                break;
+            };
+
+            self.entries.remove(&oldest_frame_id);
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct ResolvedAppInfraBaseDir {
@@ -74,8 +143,24 @@ pub struct GetFrameRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetFramePreviewRequest {
+    pub frame_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListFramesRequest {
     pub session_id: Option<String>,
+    pub before_id: Option<i64>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameCapturedAtRangeRequest {
+    pub captured_at_start: String,
+    pub captured_at_end: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -132,6 +217,35 @@ pub struct FrameDto {
     pub content_fingerprint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameSummaryDto {
+    pub id: i64,
+    pub captured_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FramePreviewSourceKindDto {
+    OriginalFrame,
+    SegmentFrameFallback,
+    VideoFallback,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FramePreviewDto {
+    pub mime_type: String,
+    pub data_base64: String,
+    pub source_kind: FramePreviewSourceKindDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedSegmentPreviewPaths {
+    workspace_dir: PathBuf,
+    video_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -202,6 +316,15 @@ impl From<::app_infra::Frame> for FrameDto {
             content_fingerprint: frame.content_fingerprint,
             created_at: frame.created_at,
             updated_at: frame.updated_at,
+        }
+    }
+}
+
+impl From<::app_infra::FrameSummary> for FrameSummaryDto {
+    fn from(frame: ::app_infra::FrameSummary) -> Self {
+        Self {
+            id: frame.id,
+            captured_at: frame.captured_at,
         }
     }
 }
@@ -318,6 +441,289 @@ fn fingerprint_string(content_fingerprint: Option<u64>) -> Option<String> {
     content_fingerprint.map(|value| format!("{value:016x}"))
 }
 
+fn frame_preview_payload(
+    bytes: Vec<u8>,
+    source_kind: FramePreviewSourceKindDto,
+) -> FramePreviewDto {
+    FramePreviewDto {
+        mime_type: "image/png".to_string(),
+        data_base64: BASE64_STANDARD.encode(bytes),
+        source_kind,
+    }
+}
+
+fn resolve_segment_preview_paths(frame_file_path: &Path) -> Option<ResolvedSegmentPreviewPaths> {
+    let frames_dir = frame_file_path.parent()?;
+    if frames_dir.file_name()?.to_str()? != "frames" {
+        return None;
+    }
+
+    let workspace_dir = frames_dir.parent()?;
+    let workspace_name = workspace_dir.file_name()?.to_str()?;
+    let visible_segment_name = workspace_name.strip_prefix('.')?;
+    let video_path = workspace_dir
+        .parent()?
+        .join(format!("{visible_segment_name}.mov"));
+
+    Some(ResolvedSegmentPreviewPaths {
+        workspace_dir: workspace_dir.to_path_buf(),
+        video_path,
+    })
+}
+
+fn parse_frame_unix_ms_from_path(frame_file_path: &Path) -> Option<i128> {
+    let stem = frame_file_path.file_stem()?.to_str()?;
+    let raw = stem.strip_prefix("frame-")?;
+    let (unix_ms, _) = raw.rsplit_once('-')?;
+    unix_ms.parse().ok()
+}
+
+fn parse_captured_at_unix_ms(captured_at: &str) -> Option<i128> {
+    OffsetDateTime::parse(captured_at, &Rfc3339)
+        .ok()
+        .map(|timestamp| timestamp.unix_timestamp_nanos() / 1_000_000)
+}
+
+fn estimate_frame_preview_offset_seconds(
+    frame: &::app_infra::Frame,
+    related_frames: &[::app_infra::Frame],
+) -> f64 {
+    let target_unix_ms = frame_preview_unix_ms(frame);
+
+    let first_unix_ms = related_frames.first().and_then(frame_preview_unix_ms);
+
+    match (target_unix_ms, first_unix_ms) {
+        (Some(target), Some(first)) if target >= first => (target - first) as f64 / 1000.0,
+        _ => 0.0,
+    }
+}
+
+fn frame_preview_unix_ms(frame: &::app_infra::Frame) -> Option<i128> {
+    parse_frame_unix_ms_from_path(Path::new(&frame.file_path))
+        .or_else(|| parse_captured_at_unix_ms(&frame.captured_at))
+}
+
+fn read_nearest_segment_frame_preview(
+    frame: &::app_infra::Frame,
+    related_frames: &[::app_infra::Frame],
+) -> std::io::Result<Option<Vec<u8>>> {
+    let target_unix_ms = frame_preview_unix_ms(frame);
+    let mut best_match: Option<(bool, i128, usize, &str)> = None;
+
+    for (index, related_frame) in related_frames.iter().enumerate() {
+        let candidate_path = Path::new(&related_frame.file_path);
+        if !candidate_path.is_file() {
+            continue;
+        }
+
+        let candidate_unix_ms = frame_preview_unix_ms(related_frame);
+        let (has_distance, distance) = match (target_unix_ms, candidate_unix_ms) {
+            (Some(target), Some(candidate)) => (true, (target - candidate).abs()),
+            _ => (false, 0),
+        };
+
+        let should_replace = match best_match {
+            Some((best_has_distance, best_distance, best_index, _)) => {
+                (!has_distance, distance, index)
+                    < (!best_has_distance, best_distance, best_index)
+            }
+            None => true,
+        };
+
+        if should_replace {
+            best_match = Some((has_distance, distance, index, &related_frame.file_path));
+        }
+    }
+
+    best_match
+        .map(|(_, _, _, file_path)| fs::read(file_path))
+        .transpose()
+}
+
+#[cfg(target_os = "macos")]
+fn png_bytes_from_cg_image(image: &cidre::cg::Image) -> Result<Vec<u8>, String> {
+    use cidre::{cf, cg, ut};
+    use tempfile::NamedTempFile;
+
+    let png_type_identifier = ut::Type::png().id();
+    let output_file = NamedTempFile::new()
+        .map_err(|error| format!("failed to create temporary PNG output file: {error}"))?;
+    let output_path = output_file.path();
+    let output_url = cf::Url::with_file_path(&output_path).ok_or_else(|| {
+        format!(
+            "failed to create temporary PNG output URL at {}",
+            output_path.display()
+        )
+    })?;
+    let mut image_destination = cg::ImageDst::with_url(output_url.as_ref(), png_type_identifier.as_cf(), 1)
+        .ok_or_else(|| {
+            format!(
+                "failed to create temporary PNG image destination at {}",
+                output_path.display()
+            )
+        })?;
+    image_destination.add_image(image, None);
+
+    if !image_destination.finalize() {
+        return Err(format!(
+            "failed to finalize temporary PNG image destination at {}",
+            output_path.display()
+        ));
+    }
+
+    fs::read(output_path).map_err(|error| {
+        format!(
+            "failed to read temporary PNG output at {}: {error}",
+            output_path.display()
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn extract_preview_png_from_video_blocking(
+    video_path: PathBuf,
+    offset_seconds: f64,
+) -> Result<Vec<u8>, String> {
+    use cidre::{av, blocks, cm, ns};
+    use std::sync::mpsc;
+
+    let video_url = ns::Url::with_fs_path_str(&video_path.to_string_lossy(), false);
+    let asset = av::UrlAsset::with_url(&video_url, None)
+        .ok_or_else(|| format!("failed to open video asset at {}", video_path.display()))?;
+
+    let mut image_generator = av::AssetImageGenerator::with_asset(&asset);
+    image_generator.set_applies_preferred_track_transform(true);
+
+    let duration_seconds = asset.duration().as_secs();
+    let clamped_offset_seconds = if duration_seconds.is_finite() && duration_seconds > 0.0 {
+        offset_seconds.clamp(0.0, (duration_seconds - 0.001).max(0.0))
+    } else {
+        0.0
+    };
+
+    let request_time = cm::Time::with_secs(clamped_offset_seconds, 600);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let video_path_for_error = video_path.clone();
+    let mut callback = blocks::EscBlock::new3(
+        move |image: Option<&cidre::cg::Image>,
+              _actual_time: cm::Time,
+              error: Option<&ns::Error>| {
+            let result = if let Some(error) = error {
+                Err(format!(
+                    "failed to extract preview from video {}: {error}",
+                    video_path_for_error.display()
+                ))
+            } else if let Some(image) = image {
+                png_bytes_from_cg_image(image)
+            } else {
+                Err(format!(
+                    "failed to extract preview from video {}: empty image result",
+                    video_path_for_error.display()
+                ))
+            };
+
+            let _ = sender.send(result);
+        },
+    );
+
+    image_generator.cg_image_for_time_ch(request_time, &mut callback);
+    receiver
+        .recv()
+        .map_err(|error| format!("failed to receive extracted preview bytes: {error}"))?
+}
+
+#[cfg(target_os = "macos")]
+async fn extract_preview_png_from_video(
+    video_path: &Path,
+    offset_seconds: f64,
+) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking({
+        let video_path = video_path.to_path_buf();
+        move || extract_preview_png_from_video_blocking(video_path, offset_seconds)
+    })
+    .await
+    .map_err(|error| format!("failed to join video preview extraction task: {error}"))?
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn extract_preview_png_from_video(
+    _video_path: &Path,
+    _offset_seconds: f64,
+) -> Result<Vec<u8>, String> {
+    Err("video frame preview fallback is only supported on macOS".to_string())
+}
+
+async fn get_frame_preview_inner(
+    infra: &::app_infra::AppInfra,
+    frame_id: i64,
+) -> ::app_infra::Result<Option<FramePreviewDto>> {
+    let Some(frame) = infra.get_frame(frame_id).await? else {
+        return Ok(None);
+    };
+
+    let frame_file_path = PathBuf::from(&frame.file_path);
+    if frame_file_path.is_file() {
+        let bytes = fs::read(&frame_file_path)?;
+        return Ok(Some(frame_preview_payload(
+            bytes,
+            FramePreviewSourceKindDto::OriginalFrame,
+        )));
+    }
+
+    let segment_paths = resolve_segment_preview_paths(&frame_file_path).ok_or_else(|| {
+        ::app_infra::AppInfraError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "unable to infer segment video path from frame artifact path {}",
+                frame.file_path
+            ),
+        ))
+    })?;
+
+    let workspace_prefix = format!("{}/", segment_paths.workspace_dir.to_string_lossy());
+    let related_frames = infra
+        .list_frames_for_segment_workspace(&frame.session_id, &workspace_prefix)
+        .await?;
+
+    if !segment_paths.video_path.is_file() {
+        if let Some(bytes) = read_nearest_segment_frame_preview(&frame, &related_frames)? {
+            return Ok(Some(frame_preview_payload(
+                bytes,
+                FramePreviewSourceKindDto::SegmentFrameFallback,
+            )));
+        }
+
+        return Err(::app_infra::AppInfraError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "segment video does not exist for frame {} at {}",
+                frame.id,
+                segment_paths.video_path.display()
+            ),
+        )));
+    }
+
+    let offset_seconds = estimate_frame_preview_offset_seconds(&frame, &related_frames);
+    let bytes = extract_preview_png_from_video(&segment_paths.video_path, offset_seconds)
+        .await
+        .map_err(|error| ::app_infra::AppInfraError::Io(std::io::Error::other(error)))?;
+
+    Ok(Some(frame_preview_payload(
+        bytes,
+        FramePreviewSourceKindDto::VideoFallback,
+    )))
+}
+
+fn preview_cache_ttl(settings: &crate::native_capture::RecordingSettingsState) -> Duration {
+    let ttl_seconds = settings
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .preview_cache_ttl_seconds;
+
+    Duration::from_secs(ttl_seconds)
+}
+
 pub async fn persist_screen_frame_artifact(
     infra: &::app_infra::AppInfra,
     session_id: &str,
@@ -366,12 +772,20 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
         )
     })?;
     let infra = Arc::new(infra);
+    let frame_preview_cache = FramePreviewCacheState::default();
 
     if !app.manage(Arc::clone(&infra)) {
         crate::native_capture_debug_log::log(
             "app infrastructure state was already initialized; refusing duplicate setup",
         );
         return Err("app infrastructure state was already initialized".to_string());
+    }
+
+    if !app.manage(frame_preview_cache) {
+        crate::native_capture_debug_log::log(
+            "frame preview cache state was already initialized; refusing duplicate setup",
+        );
+        return Err("frame preview cache state was already initialized".to_string());
     }
 
     crate::native_capture_debug_log::log(format!(
@@ -573,13 +987,47 @@ pub async fn list_frames(
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Vec<FrameDto>, String> {
     let infra = Arc::clone(&*state);
-    let session_id = request.and_then(|request| request.session_id);
+    let (session_id, before_id, limit, offset) = match request {
+        Some(request) => (
+            request.session_id,
+            request.before_id,
+            request.limit,
+            request.offset,
+        ),
+        None => (None, None, None, None),
+    };
 
     infra
-        .list_frames(session_id.as_deref())
+        .list_frames(session_id.as_deref(), before_id, limit, offset)
         .await
         .map(|frames| frames.into_iter().map(FrameDto::from).collect())
         .map_err(|error| format!("failed to list frames: {error}"))
+}
+
+#[tauri::command]
+pub async fn list_frame_summaries_in_range(
+    request: FrameCapturedAtRangeRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<FrameSummaryDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .list_frame_summaries_in_range(&request.captured_at_start, &request.captured_at_end)
+        .await
+        .map(|frames| frames.into_iter().map(FrameSummaryDto::from).collect())
+        .map_err(|error| format!("failed to list frame summaries in range: {error}"))
+}
+
+#[tauri::command]
+pub async fn get_latest_frame_in_range(
+    request: FrameCapturedAtRangeRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Option<FrameDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .get_latest_frame_in_range(&request.captured_at_start, &request.captured_at_end)
+        .await
+        .map(|frame| frame.map(FrameDto::from))
+        .map_err(|error| format!("failed to get latest frame in range: {error}"))
 }
 
 #[tauri::command]
@@ -593,6 +1041,46 @@ pub async fn get_frame(
         .await
         .map(|frame| frame.map(FrameDto::from))
         .map_err(|error| format!("failed to get frame {}: {error}", request.frame_id))
+}
+
+#[tauri::command]
+pub async fn get_frame_preview(
+    request: GetFramePreviewRequest,
+    state: tauri::State<'_, AppInfraState>,
+    cache: tauri::State<'_, FramePreviewCacheState>,
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+) -> Result<Option<FramePreviewDto>, String> {
+    let infra = Arc::clone(&*state);
+    let ttl = preview_cache_ttl(&settings);
+
+    if ttl.is_zero() {
+        cache.lock().expect("frame preview cache poisoned").clear();
+        return get_frame_preview_inner(&infra, request.frame_id)
+            .await
+            .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
+    }
+
+    let now = Instant::now();
+    if let Some(preview) = cache
+        .lock()
+        .expect("frame preview cache poisoned")
+        .get(request.frame_id, ttl, now)
+    {
+        return Ok(Some(preview));
+    }
+
+    let preview = get_frame_preview_inner(&infra, request.frame_id)
+        .await
+        .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id))?;
+
+    if let Some(preview) = preview.as_ref() {
+        cache
+            .lock()
+            .expect("frame preview cache poisoned")
+            .insert(request.frame_id, preview.clone(), ttl, now);
+    }
+
+    Ok(preview)
 }
 
 #[tauri::command]
@@ -813,6 +1301,282 @@ mod tests {
         let recordings_root = super::recordings_root_dir(save_directory);
 
         assert_eq!(recordings_root.parent(), Some(base_dir.as_path()));
+    }
+
+    #[test]
+    fn resolve_segment_preview_paths_maps_hidden_workspace_to_visible_video() {
+        let frame_path =
+            Path::new("/tmp/2026/04/12/.session-abc-segment-0004/frames/frame-1744459200123-7.png");
+
+        let resolved =
+            resolve_segment_preview_paths(frame_path).expect("segment paths should resolve");
+
+        assert_eq!(
+            resolved.workspace_dir,
+            PathBuf::from("/tmp/2026/04/12/.session-abc-segment-0004")
+        );
+        assert_eq!(
+            resolved.video_path,
+            PathBuf::from("/tmp/2026/04/12/session-abc-segment-0004.mov")
+        );
+    }
+
+    #[test]
+    fn estimate_frame_preview_offset_seconds_uses_segment_frame_times() {
+        let frame = ::app_infra::Frame {
+            id: 2,
+            session_id: "session-estimate".to_string(),
+            file_path: "/tmp/.session-estimate-segment-0004/frames/frame-1744459201500-1.png"
+                .to_string(),
+            captured_at: "2025-04-12T10:00:01.500Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let related_frames = vec![::app_infra::Frame {
+            id: 1,
+            session_id: "session-estimate".to_string(),
+            file_path: "/tmp/.session-estimate-segment-0004/frames/frame-1744459200000-0.png"
+                .to_string(),
+            captured_at: "2025-04-12T10:00:00Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        let offset_seconds = estimate_frame_preview_offset_seconds(&frame, &related_frames);
+
+        assert!((offset_seconds - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn get_frame_preview_inner_returns_original_frame_bytes_when_png_exists() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-preview-original");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let frame_path = dir.path().join("frame-preview.png");
+            let frame_bytes = b"not-a-real-png-but-preview-bytes";
+            fs::write(&frame_path, frame_bytes).expect("frame preview file should be written");
+
+            let stored_frame = infra
+                .insert_frame(&::app_infra::NewFrame::new(
+                    "session-preview",
+                    frame_path.to_string_lossy().to_string(),
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should be inserted");
+
+            let preview = get_frame_preview_inner(&infra, stored_frame.id)
+                .await
+                .expect("preview should load")
+                .expect("preview should exist");
+
+            assert_eq!(preview.mime_type, "image/png");
+            assert_eq!(
+                preview.source_kind,
+                FramePreviewSourceKindDto::OriginalFrame
+            );
+            assert_eq!(preview.data_base64, BASE64_STANDARD.encode(frame_bytes));
+        });
+    }
+
+    #[test]
+    fn get_frame_preview_inner_returns_segment_frame_bytes_when_exact_png_and_video_are_missing() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-preview-segment-fallback");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let workspace_dir = dir
+                .path()
+                .join("2026/04/12/.session-preview-segment-0001");
+            let frames_dir = workspace_dir.join("frames");
+            fs::create_dir_all(&frames_dir).expect("frames directory should be created");
+
+            let target_frame_path = frames_dir.join("frame-1744459201500-1.png");
+            let sibling_frame_path = frames_dir.join("frame-1744459201000-0.png");
+            let sibling_bytes = b"segment-frame-preview-bytes";
+            fs::write(&sibling_frame_path, sibling_bytes)
+                .expect("sibling frame preview file should be written");
+
+            let target_frame = infra
+                .insert_frame(&::app_infra::NewFrame::new(
+                    "session-preview",
+                    target_frame_path.to_string_lossy().to_string(),
+                    "2025-04-12T10:00:01.500Z",
+                ))
+                .await
+                .expect("target frame should be inserted");
+
+            infra
+                .insert_frame(&::app_infra::NewFrame::new(
+                    "session-preview",
+                    sibling_frame_path.to_string_lossy().to_string(),
+                    "2025-04-12T10:00:01.000Z",
+                ))
+                .await
+                .expect("sibling frame should be inserted");
+
+            let preview = get_frame_preview_inner(&infra, target_frame.id)
+                .await
+                .expect("preview should load")
+                .expect("preview should exist");
+
+            assert_eq!(preview.mime_type, "image/png");
+            assert_eq!(
+                preview.source_kind,
+                FramePreviewSourceKindDto::SegmentFrameFallback
+            );
+            assert_eq!(preview.data_base64, BASE64_STANDARD.encode(sibling_bytes));
+        });
+    }
+
+    #[test]
+    fn get_frame_preview_inner_does_not_use_segment_frame_fallback_when_visible_video_exists() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-preview-video-preferred");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment_dir = dir.path().join("2026/04/12");
+            let workspace_dir = segment_dir.join(".session-preview-segment-0001");
+            let frames_dir = workspace_dir.join("frames");
+            fs::create_dir_all(&frames_dir).expect("frames directory should be created");
+
+            let target_frame_path = frames_dir.join("frame-1744459201500-1.png");
+            let sibling_frame_path = frames_dir.join("frame-1744459201000-0.png");
+            let video_path = segment_dir.join("session-preview-segment-0001.mov");
+            let sibling_bytes = b"segment-frame-preview-bytes";
+            fs::write(&sibling_frame_path, sibling_bytes)
+                .expect("sibling frame preview file should be written");
+            fs::write(&video_path, b"not-a-real-video")
+                .expect("visible segment video should be written");
+
+            let target_frame = infra
+                .insert_frame(&::app_infra::NewFrame::new(
+                    "session-preview",
+                    target_frame_path.to_string_lossy().to_string(),
+                    "2025-04-12T10:00:01.500Z",
+                ))
+                .await
+                .expect("target frame should be inserted");
+
+            infra
+                .insert_frame(&::app_infra::NewFrame::new(
+                    "session-preview",
+                    sibling_frame_path.to_string_lossy().to_string(),
+                    "2025-04-12T10:00:01.000Z",
+                ))
+                .await
+                .expect("sibling frame should be inserted");
+
+            let error = get_frame_preview_inner(&infra, target_frame.id)
+                .await
+                .expect_err("visible video should be attempted before sibling PNG fallback");
+
+            let error_message = error.to_string();
+            assert!(
+                error_message.contains(&video_path.display().to_string())
+                    || error_message.contains("video frame preview fallback is only supported on macOS"),
+                "unexpected error: {error_message}"
+            );
+            assert!(!error_message.contains("segment video does not exist"));
+            assert_ne!(BASE64_STANDARD.encode(sibling_bytes), error_message);
+        });
+    }
+
+    #[test]
+    fn frame_preview_cache_returns_entries_within_ttl() {
+        let mut cache = FramePreviewCache::default();
+        let now = Instant::now();
+        let preview = FramePreviewDto {
+            mime_type: "image/png".to_string(),
+            data_base64: "abc".to_string(),
+            source_kind: FramePreviewSourceKindDto::OriginalFrame,
+        };
+
+        cache.insert(42, preview.clone(), Duration::from_secs(60), now);
+
+        assert_eq!(cache.get(42, Duration::from_secs(60), now), Some(preview));
+    }
+
+    #[test]
+    fn frame_preview_cache_evicts_expired_entries() {
+        let mut cache = FramePreviewCache::default();
+        let now = Instant::now();
+
+        cache.insert(
+            42,
+            FramePreviewDto {
+                mime_type: "image/png".to_string(),
+                data_base64: "abc".to_string(),
+                source_kind: FramePreviewSourceKindDto::OriginalFrame,
+            },
+            Duration::from_secs(1),
+            now,
+        );
+
+        assert_eq!(
+            cache.get(42, Duration::from_secs(1), now + Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn frame_preview_cache_clear_removes_existing_entries() {
+        let mut cache = FramePreviewCache::default();
+        cache.insert(
+            42,
+            FramePreviewDto {
+                mime_type: "image/png".to_string(),
+                data_base64: "abc".to_string(),
+                source_kind: FramePreviewSourceKindDto::OriginalFrame,
+            },
+            Duration::from_secs(60),
+            Instant::now(),
+        );
+
+        cache.clear();
+
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn frame_preview_cache_evicts_oldest_entries_when_max_size_is_reached() {
+        let mut cache = FramePreviewCache::default();
+        let now = Instant::now();
+        let ttl = Duration::from_secs(60);
+
+        for frame_id in 0..=FRAME_PREVIEW_CACHE_MAX_ENTRIES as i64 {
+            cache.insert(
+                frame_id,
+                FramePreviewDto {
+                    mime_type: "image/png".to_string(),
+                    data_base64: frame_id.to_string(),
+                    source_kind: FramePreviewSourceKindDto::OriginalFrame,
+                },
+                ttl,
+                now + Duration::from_millis(frame_id as u64),
+            );
+        }
+
+        assert_eq!(cache.len(), FRAME_PREVIEW_CACHE_MAX_ENTRIES);
+        assert_eq!(cache.get(0, ttl, now + Duration::from_secs(1)), None);
+        assert!(cache
+            .get(
+                FRAME_PREVIEW_CACHE_MAX_ENTRIES as i64,
+                ttl,
+                now + Duration::from_secs(1)
+            )
+            .is_some());
     }
 
     #[test]

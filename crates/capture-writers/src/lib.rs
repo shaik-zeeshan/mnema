@@ -12,6 +12,25 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
+trait AvailabilityValue<T> {
+    fn into_option(self) -> Option<&'static T>;
+}
+
+#[cfg(target_os = "macos")]
+impl<T: 'static> AvailabilityValue<T> for &'static T {
+    fn into_option(self) -> Option<&'static T> {
+        Some(self)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl<T: 'static> AvailabilityValue<T> for Option<&'static T> {
+    fn into_option(self) -> Option<&'static T> {
+        self
+    }
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Debug)]
 pub struct AudioAssetWriterState {
     writer: cidre::arc::R<cidre::av::AssetWriter>,
@@ -485,6 +504,24 @@ fn create_video_asset_writer_with_source_hint(
                 return None;
             }
 
+            let codec_key = av::video_settings_keys::codec();
+            let width_key = {
+                #[allow(unused_unsafe)]
+                let key = unsafe { av::video_settings_keys::width() };
+                key.into_option()?
+            };
+            let height_key = {
+                #[allow(unused_unsafe)]
+                let key = unsafe { av::video_settings_keys::height() };
+                key.into_option()?
+            };
+            let compression_props_key = av::video_settings_keys::compression_props();
+            let codec = {
+                #[allow(unused_unsafe)]
+                let value = unsafe { av::VideoCodec::h264() };
+                value.into_option()?
+            };
+
             let width = ns::Number::with_i32(dims.width);
             let height = ns::Number::with_i32(dims.height);
 
@@ -502,14 +539,9 @@ fn create_video_asset_writer_with_source_hint(
 
             if let Some(compression_properties) = compression_properties {
                 Some(ns::Dictionary::with_keys_values(
+                    &[codec_key, width_key, height_key, compression_props_key],
                     &[
-                        av::video_settings_keys::codec(),
-                        av::video_settings_keys::width(),
-                        av::video_settings_keys::height(),
-                        av::video_settings_keys::compression_props(),
-                    ],
-                    &[
-                        av::VideoCodec::h264().as_id_ref(),
+                        codec.as_id_ref(),
                         width.as_id_ref(),
                         height.as_id_ref(),
                         compression_properties.as_id_ref(),
@@ -517,16 +549,8 @@ fn create_video_asset_writer_with_source_hint(
                 ))
             } else {
                 Some(ns::Dictionary::with_keys_values(
-                    &[
-                        av::video_settings_keys::codec(),
-                        av::video_settings_keys::width(),
-                        av::video_settings_keys::height(),
-                    ],
-                    &[
-                        av::VideoCodec::h264().as_id_ref(),
-                        width.as_id_ref(),
-                        height.as_id_ref(),
-                    ],
+                    &[codec_key, width_key, height_key],
+                    &[codec.as_id_ref(), width.as_id_ref(), height.as_id_ref()],
                 ))
             }
         })
@@ -804,19 +828,43 @@ pub fn aggregate_output_processing_failures(
 }
 
 #[cfg(target_os = "macos")]
-pub fn finalize_stream_output_context(
-    screen_video_writer: Option<&mut VideoAssetWriterState>,
-    system_audio_writer: Option<&mut AudioAssetWriterState>,
+fn push_stream_output_first_error(
+    failures: &mut Vec<String>,
     first_error: Option<CaptureErrorResponse>,
-) -> Result<(), CaptureErrorResponse> {
-    let mut failures: Vec<String> = Vec::new();
-
+) {
     if let Some(error) = first_error {
         failures.push(format!(
             "stream output failed: [{}] {}",
             error.code, error.message
         ));
     }
+}
+
+#[cfg(target_os = "macos")]
+pub fn finalize_screen_video_output_context(
+    screen_video_writer: Option<&mut VideoAssetWriterState>,
+    first_error: Option<CaptureErrorResponse>,
+) -> Result<(), CaptureErrorResponse> {
+    let mut failures: Vec<String> = Vec::new();
+    push_stream_output_first_error(&mut failures, first_error);
+
+    if let Some(writer) = screen_video_writer {
+        if let Err(error) = finish_video_asset_writer(writer) {
+            failures.push(format!("screen video writer failed: {}", error.message));
+        }
+    }
+
+    aggregate_output_processing_failures(failures)
+}
+
+#[cfg(target_os = "macos")]
+pub fn finalize_stream_output_context(
+    screen_video_writer: Option<&mut VideoAssetWriterState>,
+    system_audio_writer: Option<&mut AudioAssetWriterState>,
+    first_error: Option<CaptureErrorResponse>,
+) -> Result<(), CaptureErrorResponse> {
+    let mut failures: Vec<String> = Vec::new();
+    push_stream_output_first_error(&mut failures, first_error);
 
     if let Some(writer) = screen_video_writer {
         if let Err(error) = finish_video_asset_writer(writer) {
@@ -1031,5 +1079,27 @@ mod tests {
         let level = peak_audio_activity_level_from_pcm_bytes(&[1, 2, 3, 4], format, 256);
 
         assert_eq!(level, None);
+    }
+
+    #[test]
+    fn finalize_screen_video_output_context_returns_ok_without_failures() {
+        assert!(finalize_screen_video_output_context(None, None).is_ok());
+    }
+
+    #[test]
+    fn finalize_screen_video_output_context_preserves_stream_output_errors() {
+        let error = finalize_screen_video_output_context(
+            None,
+            Some(CaptureErrorResponse {
+                code: "stream_failed".to_string(),
+                message: "buffer callback failed".to_string(),
+            }),
+        )
+        .expect_err("first error should be aggregated");
+
+        assert_eq!(
+            error.message,
+            "Failed to finalize capture outputs: stream output failed: [stream_failed] buffer callback failed"
+        );
     }
 }

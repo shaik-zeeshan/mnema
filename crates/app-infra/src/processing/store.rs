@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteRow, Executor, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
 use crate::{AppInfraError, Result};
 
 use super::{
-    Frame, NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingResult,
-    ProcessingResultDraft, ProcessingSubject, OCR_PROCESSOR,
+    Frame, FrameSummary, NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus,
+    ProcessingResult, ProcessingResultDraft, ProcessingSubject, OCR_PROCESSOR,
 };
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
@@ -172,31 +172,136 @@ impl ProcessingStore {
         get_frame_optional(&self.pool, frame_id).await
     }
 
-    pub async fn list_frames(&self, session_id: Option<&str>) -> Result<Vec<Frame>> {
-        let rows = match session_id {
-            Some(session_id) => {
-                sqlx::query(
-                    "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
-                     FROM frames \
-                     WHERE session_id = ?1 \
-                     ORDER BY id DESC",
-                )
-                .bind(session_id)
-                .fetch_all(&self.pool)
-                .await?
-            }
-            None => {
-                sqlx::query(
-                    "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
-                     FROM frames \
-                     ORDER BY id DESC",
-                )
-                .fetch_all(&self.pool)
-                .await?
-            }
-        };
+    pub async fn list_frames_for_segment_workspace(
+        &self,
+        session_id: &str,
+        workspace_prefix: &str,
+    ) -> Result<Vec<Frame>> {
+        let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+        let rows = sqlx::query(
+            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+             FROM frames \
+             WHERE session_id = ?1 AND file_path LIKE ?2 ESCAPE '\\' \
+             ORDER BY captured_at ASC, id ASC",
+        )
+        .bind(session_id)
+        .bind(like_pattern)
+        .fetch_all(&self.pool)
+        .await?;
 
         rows.into_iter().map(map_frame).collect()
+    }
+
+    fn escape_sql_like_pattern(value: &str) -> String {
+        let mut escaped = String::with_capacity(value.len());
+
+        for ch in value.chars() {
+            match ch {
+                '%' | '_' | '\\' => {
+                    escaped.push('\\');
+                    escaped.push(ch);
+                }
+                _ => escaped.push(ch),
+            }
+        }
+
+        escaped
+    }
+
+    pub async fn list_frames(
+        &self,
+        session_id: Option<&str>,
+        before_id: Option<i64>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<Vec<Frame>> {
+        if matches!(limit, Some(0)) {
+            return Ok(Vec::new());
+        }
+
+        let mut query_builder = QueryBuilder::<Sqlite>::new(
+            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at FROM frames",
+        );
+
+        let mut has_where_clause = false;
+
+        if let Some(session_id) = session_id {
+            query_builder.push(" WHERE session_id = ");
+            query_builder.push_bind(session_id);
+            has_where_clause = true;
+        }
+
+        if let Some(before_id) = before_id {
+            query_builder.push(if has_where_clause {
+                " AND id < "
+            } else {
+                " WHERE id < "
+            });
+            query_builder.push_bind(before_id);
+        }
+
+        query_builder.push(" ORDER BY id DESC");
+
+        match (limit, offset) {
+            (Some(limit), Some(offset)) => {
+                query_builder.push(" LIMIT ");
+                query_builder.push_bind(limit as i64);
+                query_builder.push(" OFFSET ");
+                query_builder.push_bind(offset as i64);
+            }
+            (Some(limit), None) => {
+                query_builder.push(" LIMIT ");
+                query_builder.push_bind(limit as i64);
+            }
+            (None, Some(offset)) => {
+                query_builder.push(" LIMIT -1 OFFSET ");
+                query_builder.push_bind(offset as i64);
+            }
+            (None, None) => {}
+        };
+
+        let rows = query_builder.build().fetch_all(&self.pool).await?;
+
+        rows.into_iter().map(map_frame).collect()
+    }
+
+    pub async fn list_frame_summaries_in_range(
+        &self,
+        captured_at_start: &str,
+        captured_at_end: &str,
+    ) -> Result<Vec<FrameSummary>> {
+        let rows = sqlx::query(
+            "SELECT id, captured_at \
+             FROM frames \
+             WHERE captured_at >= ?1 AND captured_at <= ?2 \
+             ORDER BY captured_at DESC, id DESC",
+        )
+        .bind(captured_at_start)
+        .bind(captured_at_end)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(map_frame_summary).collect()
+    }
+
+    pub async fn get_latest_frame_in_range(
+        &self,
+        captured_at_start: &str,
+        captured_at_end: &str,
+    ) -> Result<Option<Frame>> {
+        let row = sqlx::query(
+            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+             FROM frames \
+             WHERE captured_at >= ?1 AND captured_at <= ?2 \
+             ORDER BY captured_at DESC, id DESC \
+             LIMIT 1",
+        )
+        .bind(captured_at_start)
+        .bind(captured_at_end)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(map_frame).transpose()
     }
 
     pub async fn get_job(&self, job_id: i64) -> Result<Option<ProcessingJob>> {
@@ -663,6 +768,13 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
         content_fingerprint: row.get("content_fingerprint"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    })
+}
+
+fn map_frame_summary(row: SqliteRow) -> Result<FrameSummary> {
+    Ok(FrameSummary {
+        id: row.get("id"),
+        captured_at: row.get("captured_at"),
     })
 }
 

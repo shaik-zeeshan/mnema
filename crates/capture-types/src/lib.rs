@@ -179,6 +179,14 @@ pub fn default_native_capture_debug_logging_enabled() -> bool {
     false
 }
 
+pub fn default_developer_options_enabled() -> bool {
+    false
+}
+
+pub fn default_preview_cache_ttl_seconds() -> u64 {
+    3600
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InactivityActivityMode {
@@ -219,6 +227,10 @@ pub struct RecordingSettings {
     pub auto_start: bool,
     #[serde(default = "default_native_capture_debug_logging_enabled")]
     pub native_capture_debug_logging_enabled: bool,
+    #[serde(default = "default_developer_options_enabled")]
+    pub developer_options_enabled: bool,
+    #[serde(default = "default_preview_cache_ttl_seconds")]
+    pub preview_cache_ttl_seconds: u64,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -251,6 +263,10 @@ pub struct UpdateRecordingSettingsRequest {
     pub auto_start: bool,
     #[serde(default = "default_native_capture_debug_logging_enabled")]
     pub native_capture_debug_logging_enabled: bool,
+    #[serde(default = "default_developer_options_enabled")]
+    pub developer_options_enabled: bool,
+    #[serde(default = "default_preview_cache_ttl_seconds")]
+    pub preview_cache_ttl_seconds: u64,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -431,6 +447,14 @@ mod tests {
             default_native_capture_debug_logging_enabled()
         );
         assert_eq!(
+            settings.developer_options_enabled,
+            default_developer_options_enabled()
+        );
+        assert_eq!(
+            settings.preview_cache_ttl_seconds,
+            default_preview_cache_ttl_seconds()
+        );
+        assert_eq!(
             settings.inactivity_activity_mode,
             InactivityActivityMode::SystemInputOrScreenOrAudio
         );
@@ -461,6 +485,14 @@ mod tests {
         assert_eq!(
             request.native_capture_debug_logging_enabled,
             default_native_capture_debug_logging_enabled()
+        );
+        assert_eq!(
+            request.developer_options_enabled,
+            default_developer_options_enabled()
+        );
+        assert_eq!(
+            request.preview_cache_ttl_seconds,
+            default_preview_cache_ttl_seconds()
         );
     }
 }

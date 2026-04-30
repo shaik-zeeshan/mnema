@@ -40,7 +40,8 @@ use crate::native_capture_settings::{
 use capture_runtime::{CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule};
 use capture_runtime::{RuntimeController, RuntimeState};
 use capture_types::{
-    default_inactivity_activity_mode, default_video_bitrate, CaptureErrorResponse,
+    default_inactivity_activity_mode, default_preview_cache_ttl_seconds,
+    default_video_bitrate, CaptureErrorResponse,
     CaptureOutputFiles, CaptureSources, CaptureSupportResponse, InactivityActivityMode,
     MicrophoneControllerState, MicrophoneDisconnectPolicy, MicrophonePreference,
     MicrophonePreferenceMode, RecordingSettings, ScreenResolution, ScreenResolutionPreset,
@@ -63,6 +64,8 @@ fn recording_settings_fixture() -> RecordingSettings {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -190,6 +193,7 @@ fn describe_recording_settings_changes_lists_high_signal_differences() {
         save_directory: "/tmp/updated".to_string(),
         auto_start: true,
         native_capture_debug_logging_enabled: true,
+        preview_cache_ttl_seconds: 0,
         segment_duration_seconds: 120,
         screen_frame_rate: 24,
         screen_resolution: ScreenResolution::Preset {
@@ -216,6 +220,10 @@ fn describe_recording_settings_changes_lists_high_signal_differences() {
         .any(|change| change.contains("save_directory")));
     assert!(changes.contains(&"auto_start false -> true".to_string()));
     assert!(changes.contains(&"debug_logging false -> true".to_string()));
+    assert!(changes.contains(&format!(
+        "preview_cache_ttl_seconds {} -> 0",
+        default_preview_cache_ttl_seconds()
+    )));
     assert!(changes.contains(&"segment_duration_seconds 60 -> 120".to_string()));
     assert!(changes.contains(&"screen_frame_rate 30 -> 24".to_string()));
     assert!(changes.contains(&"screen_resolution original -> 720p".to_string()));
@@ -244,6 +252,8 @@ fn validate_recording_settings_rejects_all_sources_disabled() {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -271,6 +281,8 @@ fn validate_recording_settings_rejects_system_audio_without_screen() {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -303,6 +315,8 @@ fn validate_recording_settings_allows_storing_resolution_when_screen_disabled() 
             save_directory: "/tmp".to_string(),
             auto_start: false,
             native_capture_debug_logging_enabled: false,
+            developer_options_enabled: false,
+            preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -339,6 +353,8 @@ fn validate_recording_settings_allows_non_original_resolution_when_screen_disabl
             save_directory: "/tmp".to_string(),
             auto_start: false,
             native_capture_debug_logging_enabled: false,
+            developer_options_enabled: false,
+            preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -374,6 +390,8 @@ fn validate_recording_settings_rejects_non_original_resolution_when_screen_enabl
             save_directory: "/tmp".to_string(),
             auto_start: false,
             native_capture_debug_logging_enabled: false,
+            developer_options_enabled: false,
+            preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -403,6 +421,8 @@ fn validate_recording_settings_rejects_too_small_custom_resolution() {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -433,6 +453,8 @@ fn validate_recording_settings_defaults_preset_bitrate_when_preset_value_missing
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -468,6 +490,8 @@ fn validate_recording_settings_rejects_custom_bitrate_out_of_range() {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -498,6 +522,8 @@ fn validate_recording_settings_accepts_audio_activity_mode_and_sensitivity() {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 75,
@@ -529,6 +555,8 @@ fn validate_recording_settings_preserves_native_capture_debug_logging_flag() {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: true,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -538,6 +566,34 @@ fn validate_recording_settings_preserves_native_capture_debug_logging_flag() {
     .expect("debug logging flag should round-trip through validation");
 
     assert!(settings.native_capture_debug_logging_enabled);
+}
+
+#[test]
+fn validate_recording_settings_preserves_developer_options_flag() {
+    let settings = validate_recording_settings(UpdateRecordingSettingsRequest {
+        capture_screen: true,
+        capture_microphone: false,
+        capture_system_audio: false,
+        segment_duration_seconds: 60,
+        screen_frame_rate: 30,
+        screen_resolution: ScreenResolution::Preset {
+            preset: ScreenResolutionPreset::Original,
+        },
+        video_bitrate: default_video_bitrate(),
+        save_directory: "/tmp".to_string(),
+        auto_start: false,
+        native_capture_debug_logging_enabled: false,
+        developer_options_enabled: true,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+        pause_capture_on_inactivity: true,
+        idle_timeout_seconds: 10,
+        microphone_activity_sensitivity: 50,
+        system_audio_activity_sensitivity: 50,
+        inactivity_activity_mode: default_inactivity_activity_mode(),
+    })
+    .expect("developer options flag should round-trip through validation");
+
+    assert!(settings.developer_options_enabled);
 }
 
 #[test]
@@ -555,6 +611,8 @@ fn validate_recording_settings_rejects_audio_activity_sensitivity_above_max() {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 101,
@@ -589,6 +647,8 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -621,6 +681,8 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -649,6 +711,8 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         save_directory: "/tmp".to_string(),
         auto_start: false,
         native_capture_debug_logging_enabled: false,
+        developer_options_enabled: false,
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1678,7 +1742,10 @@ fn segment_loop_sleep_duration_uses_idle_poll_interval_for_zero_duration_schedul
     let schedule = SegmentSchedule::new(std::time::Duration::ZERO);
     let clock = CaptureClock::start_now();
 
-    assert_eq!(segment_loop_sleep_duration(&schedule, &clock), std::time::Duration::from_secs(1));
+    assert_eq!(
+        segment_loop_sleep_duration(&schedule, &clock),
+        std::time::Duration::from_secs(1)
+    );
 }
 
 #[test]

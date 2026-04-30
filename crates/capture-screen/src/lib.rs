@@ -7,8 +7,8 @@ use capture_types::{
 use capture_writers::{
     append_audio_sample_to_writer, append_video_sample_to_writer, create_audio_asset_writer,
     create_video_asset_writer_for_sample_buf,
-    finalize_stream_output_context as writers_finalize_stream_output_context,
-    AudioAssetWriterState, VideoAssetWriterState,
+    finalize_screen_video_output_context as writers_finalize_screen_video_output_context,
+    finish_audio_asset_writer, AudioAssetWriterState, VideoAssetWriterState,
 };
 
 #[cfg(target_os = "macos")]
@@ -227,6 +227,7 @@ const SCREEN_SEGMENT_FINALIZE_FAILURE_PREFIXES: [&str; 3] = [
     SCREEN_VIDEO_WRITER_FAILURE_PREFIX,
     "system audio writer failed: ",
 ];
+#[cfg(target_os = "macos")]
 #[cfg(target_os = "macos")]
 const FINALIZED_SCREEN_RECORDING_INSPECTION_ERROR_PREFIX: &str =
     "Failed to inspect finalized screen recording: ";
@@ -2302,7 +2303,81 @@ fn finalize_screen_frame_export(
     synchronize_stream_output_queue(Some(frame_export.callback_queue.as_ref()));
 
     if let Some(error) = take_frame_export_error(&frame_export.first_error) {
+        log_capture_error("ScreenCaptureKit frame export finalization failed", &error);
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn finalize_secondary_stream_outputs(
+    system_audio_writer: Option<&mut AudioAssetWriterState>,
+    frame_export: Option<&mut ScreenFrameExportRuntime>,
+) -> Result<(), CaptureErrorResponse> {
+    let mut failures = Vec::new();
+
+    if let Some(writer) = system_audio_writer {
+        if let Err(error) = finish_audio_asset_writer(writer) {
+            failures.push(format!("system audio writer failed: {}", error.message));
+        }
+    }
+
+    finalize_screen_frame_export(frame_export)?;
+
+    capture_writers::aggregate_output_processing_failures(failures)
+}
+
+#[cfg(target_os = "macos")]
+fn finalize_stream_output_context_impl<
+    FinalizeScreen,
+    ValidateScreen,
+    FinalizeSecondary,
+    RemoveScreen,
+    LogSecondary,
+>(
+    screen_video_output_file: Option<&str>,
+    screen_video_writer_present: bool,
+    first_error: Option<CaptureErrorResponse>,
+    finalize_screen_video: FinalizeScreen,
+    validate_screen_video: ValidateScreen,
+    finalize_secondary_outputs: FinalizeSecondary,
+    mut remove_screen_video: RemoveScreen,
+    log_secondary_failure: LogSecondary,
+) -> Result<(), CaptureErrorResponse>
+where
+    FinalizeScreen: FnOnce(Option<CaptureErrorResponse>) -> Result<(), CaptureErrorResponse>,
+    ValidateScreen: FnOnce(&str) -> Result<(), CaptureErrorResponse>,
+    FinalizeSecondary: FnOnce() -> Result<(), CaptureErrorResponse>,
+    RemoveScreen: FnMut(&str),
+    LogSecondary: FnOnce(&CaptureErrorResponse),
+{
+    if screen_video_output_file.is_some() && !screen_video_writer_present {
+        if let Some(path) = screen_video_output_file {
+            remove_screen_video(path);
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        return Err(capture_writers::no_video_samples_error("screen"));
+    }
+
+    if let Err(error) = finalize_screen_video(first_error) {
+        if let Some(path) = screen_video_output_file {
+            remove_screen_video(path);
+        }
         return Err(error);
+    }
+
+    if let Some(path) = screen_video_output_file {
+        if let Err(error) = validate_screen_video(path) {
+            remove_screen_video(path);
+            return Err(error);
+        }
+    }
+
+    if let Err(error) = finalize_secondary_outputs() {
+        log_secondary_failure(&error);
     }
 
     Ok(())
@@ -2312,42 +2387,31 @@ fn finalize_screen_frame_export(
 fn finalize_stream_output_context(
     context: &mut StreamOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
-    let screen_video_output_file = context.screen_video_output_file.as_deref();
-
-    if context.screen_video_output_file.is_some() && context.screen_video_writer.is_none() {
-        if let Some(path) = screen_video_output_file {
-            maybe_remove_screen_video_file(path);
-        }
-
-        if let Some(error) = context.first_error.take() {
-            return Err(error);
-        }
-        return Err(capture_writers::no_video_samples_error("screen"));
-    }
-
-    if let Err(error) = writers_finalize_stream_output_context(
-        context.screen_video_writer.as_mut(),
-        context.system_audio_writer.as_mut(),
+    finalize_stream_output_context_impl(
+        context.screen_video_output_file.as_deref(),
+        context.screen_video_writer.is_some(),
         context.first_error.take(),
-    ) {
-        if let Some(path) = screen_video_output_file {
-            maybe_remove_screen_video_file(path);
-        }
-        return Err(error);
-    }
-
-    if let Err(error) = finalize_screen_frame_export(context.frame_export.as_mut()) {
-        return Err(error);
-    }
-
-    if let Some(path) = screen_video_output_file {
-        if let Err(error) = validate_screen_video_file(path) {
-            maybe_remove_screen_video_file(path);
-            return Err(error);
-        }
-    }
-
-    Ok(())
+        |first_error| {
+            writers_finalize_screen_video_output_context(
+                context.screen_video_writer.as_mut(),
+                first_error,
+            )
+        },
+        validate_screen_video_file,
+        || {
+            finalize_secondary_stream_outputs(
+                context.system_audio_writer.as_mut(),
+                context.frame_export.as_mut(),
+            )
+        },
+        maybe_remove_screen_video_file,
+        |error| {
+            log_capture_error(
+                "ScreenCaptureKit secondary output finalization failed after preserving screen recording",
+                error,
+            )
+        },
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -3239,6 +3303,115 @@ mod tests {
             .expect_err("unexpected finalization failures must remain fatal");
         assert_eq!(error.code, "capture_output_processing_failed");
         assert_eq!(error.message, "boom");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_stream_output_context_keeps_valid_screen_video_when_system_audio_has_zero_samples()
+    {
+        let mut removed_paths = Vec::new();
+        let mut logged_errors = Vec::new();
+
+        let result = finalize_stream_output_context_impl(
+            Some("/tmp/valid-screen.mov"),
+            true,
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+            || {
+                capture_writers::aggregate_output_processing_failures(vec![format!(
+                    "system audio writer failed: {}",
+                    capture_writers::no_audio_samples_error("system audio").message
+                )])
+            },
+            |path| removed_paths.push(path.to_string()),
+            |error| logged_errors.push(error.message.clone()),
+        );
+
+        assert!(result.is_ok());
+        assert!(removed_paths.is_empty());
+        assert_eq!(logged_errors.len(), 1);
+        assert!(logged_errors[0].contains("system audio writer failed:"));
+        assert!(logged_errors[0].contains("No system audio audio samples were received"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_screen_frame_export_returns_ok_when_error_exists() {
+        let mut runtime = ScreenFrameExportRuntime {
+            artifact_dir: PathBuf::from("/tmp/frames"),
+            callback_queue: dispatch::Queue::serial_with_ar_pool(),
+            on_frame_exported: std::sync::Arc::new(|_| {}),
+            first_error: Arc::new(Mutex::new(Some(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to finalize PNG screen frame artifact: boom".to_string(),
+            }))),
+            next_frame_index: 0,
+        };
+
+        let result = finalize_screen_frame_export(Some(&mut runtime));
+
+        assert!(result.is_ok());
+        assert!(take_frame_export_error(&runtime.first_error).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_screen_frame_export_synchronizes_callback_queue_before_returning() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let mut runtime = ScreenFrameExportRuntime {
+            artifact_dir: PathBuf::from("/tmp/frames"),
+            callback_queue: dispatch::Queue::serial_with_ar_pool(),
+            on_frame_exported: std::sync::Arc::new(|_| {}),
+            first_error: Arc::new(Mutex::new(Some(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to finalize PNG screen frame artifact: boom".to_string(),
+            }))),
+            next_frame_index: 0,
+        };
+
+        let completed_for_queue = completed.clone();
+        runtime.callback_queue.async_once(move || {
+            completed_for_queue.store(true, Ordering::SeqCst);
+        });
+
+        let result = finalize_screen_frame_export(Some(&mut runtime));
+
+        assert!(result.is_ok());
+        assert!(completed.load(Ordering::SeqCst));
+        assert!(take_frame_export_error(&runtime.first_error).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_stream_output_context_keeps_true_screen_video_failures_fatal() {
+        let mut removed_paths = Vec::new();
+        let mut logged_secondary_failure = false;
+
+        let error = finalize_stream_output_context_impl(
+            Some("/tmp/invalid-screen.mov"),
+            true,
+            None,
+            |_| Ok(()),
+            |_| {
+                Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: FINALIZED_SCREEN_RECORDING_NO_VIDEO_TRACK_ERROR_MESSAGE.to_string(),
+                })
+            },
+            || Ok(()),
+            |path| removed_paths.push(path.to_string()),
+            |_| logged_secondary_failure = true,
+        )
+        .expect_err("screen validation failures must remain fatal");
+
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert_eq!(
+            error.message,
+            FINALIZED_SCREEN_RECORDING_NO_VIDEO_TRACK_ERROR_MESSAGE
+        );
+        assert_eq!(removed_paths, vec!["/tmp/invalid-screen.mov".to_string()]);
+        assert!(!logged_secondary_failure);
     }
 
     #[cfg(target_os = "macos")]

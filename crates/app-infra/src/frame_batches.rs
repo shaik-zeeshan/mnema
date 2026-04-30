@@ -761,6 +761,26 @@ fn is_safe_frame_artifact_path(path: &Path) -> bool {
     file_name.starts_with("frame-") && file_name.ends_with(".png")
 }
 
+fn should_preserve_hidden_workspace_frame(path: &Path) -> bool {
+    let Some(frames_dir) = path.parent() else {
+        return false;
+    };
+    let Some(segment_dir) = frames_dir.parent() else {
+        return false;
+    };
+    let Some(segment_dir_name) = segment_dir.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !segment_dir_name.starts_with('.') || !segment_dir_name.contains("-segment-") {
+        return false;
+    }
+    let Some(parent_dir) = segment_dir.parent() else {
+        return false;
+    };
+    let visible_segment_path = parent_dir.join(format!("{}.mov", &segment_dir_name[1..]));
+    !visible_segment_path.exists()
+}
+
 fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io::Error)> {
     let mut errors = Vec::new();
     for frame in frames {
@@ -770,6 +790,9 @@ fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io::Error)> {
                 "[app-infra][frame-batches] skipping cleanup of frame artifact with unsafe path: {}",
                 frame.file_path
             );
+            continue;
+        }
+        if should_preserve_hidden_workspace_frame(path) {
             continue;
         }
         if path.exists() {
@@ -1539,6 +1562,8 @@ mod tests {
         let segment_dir = dir.path().join(".session-x-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = dir.path().join("session-x-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
         let frame_path = frames_dir.join("frame-1.png");
         fs::write(&frame_path, b"fake").expect("frame file should be written");
 
@@ -1567,6 +1592,8 @@ mod tests {
         let segment_dir = dir.path().join(".session-z-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = dir.path().join("session-z-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
 
         // Frame file does NOT exist — simulates retry/race/partial prior cleanup.
         let frame_path = frames_dir.join("frame-1.png");
@@ -1609,6 +1636,8 @@ mod tests {
         let segment_dir = dir.path().join(".session-audio-sep-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = dir.path().join("session-audio-sep-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
         let frame_path = frames_dir.join("frame-1.png");
         fs::write(&frame_path, b"fake png").expect("frame file should be written");
 
@@ -1667,6 +1696,8 @@ mod tests {
         let segment_dir = dir.path().join(".session-y-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = dir.path().join("session-y-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
         let frame_path = frames_dir.join("frame-1.png");
         fs::write(&frame_path, b"fake").expect("frame file should be written");
 
@@ -1694,5 +1725,72 @@ mod tests {
             segment_dir.exists(),
             "non-empty segment dir should be preserved"
         );
+    }
+
+    #[test]
+    fn cleanup_preserves_hidden_workspace_frame_when_visible_segment_is_missing() {
+        let dir = TestDir::new("missing-visible-segment");
+        let segment_dir = dir.path().join(".session-preview-segment-0001");
+        let frames_dir = segment_dir.join("frames");
+        fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let frame_path = frames_dir.join("frame-1.png");
+        fs::write(&frame_path, b"fake").expect("frame file should be written");
+
+        let frames = vec![Frame {
+            id: 1,
+            session_id: "s".to_string(),
+            file_path: frame_path.to_string_lossy().to_string(),
+            captured_at: "2026-04-12T10:01:00Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        let errors = cleanup_frame_artifacts(&frames);
+        assert!(errors.is_empty(), "cleanup should succeed without errors");
+        assert!(
+            frame_path.exists(),
+            "frame file should be preserved when sibling visible segment is missing"
+        );
+        assert!(
+            frames_dir.exists(),
+            "frames dir should be preserved when sibling visible segment is missing"
+        );
+        assert!(
+            segment_dir.exists(),
+            "hidden segment dir should be preserved when sibling visible segment is missing"
+        );
+    }
+
+    #[test]
+    fn cleanup_removes_hidden_workspace_frame_when_visible_segment_exists() {
+        let dir = TestDir::new("visible-segment-present");
+        let segment_dir = dir.path().join(".session-preview-segment-0001");
+        let frames_dir = segment_dir.join("frames");
+        fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = dir.path().join("session-preview-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
+        let frame_path = frames_dir.join("frame-1.png");
+        fs::write(&frame_path, b"fake").expect("frame file should be written");
+
+        let frames = vec![Frame {
+            id: 1,
+            session_id: "s".to_string(),
+            file_path: frame_path.to_string_lossy().to_string(),
+            captured_at: "2026-04-12T10:01:00Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        let errors = cleanup_frame_artifacts(&frames);
+        assert!(errors.is_empty(), "cleanup should succeed without errors");
+        assert!(!frame_path.exists(), "frame file should be deleted");
+        assert!(!frames_dir.exists(), "empty frames/ dir should be removed");
+        assert!(!segment_dir.exists(), "empty segment dir should be removed");
     }
 }

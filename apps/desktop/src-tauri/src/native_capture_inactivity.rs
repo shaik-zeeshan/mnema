@@ -682,6 +682,8 @@ mod tests {
             save_directory: "/tmp".to_string(),
             auto_start: false,
             native_capture_debug_logging_enabled: false,
+            developer_options_enabled: false,
+            preview_cache_ttl_seconds: capture_types::default_preview_cache_ttl_seconds(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
