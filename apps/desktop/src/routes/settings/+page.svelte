@@ -5,6 +5,7 @@
   import Slider from "$lib/components/Slider.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
+  import { setDeveloperOptionsEnabled } from "$lib/developer-options.svelte";
   import type {
     ActivityMode,
     CaptureSupport,
@@ -64,6 +65,12 @@
 
   // Debug logging draft
   let draftNativeCaptureDebugLoggingEnabled = $state(false);
+
+  // Developer-options draft (gates the Debug page and its nav entry).
+  let draftDeveloperOptionsEnabled = $state(false);
+
+  // Preview cache TTL draft (seconds; 0 disables)
+  let draftPreviewCacheTtlSeconds = $state(3600);
 
   // Debug log status
   let debugLogStatus = $state<NativeCaptureDebugLogStatus | null>(null);
@@ -153,6 +160,8 @@
     draftMicrophoneActivitySensitivity = s.microphoneActivitySensitivity ?? 50;
     draftSystemAudioActivitySensitivity = s.systemAudioActivitySensitivity ?? 50;
     draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
+    draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
+    draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
     if (s.screenResolution.mode === "custom") {
       draftResolutionMode = "custom";
       draftCustomWidth = s.screenResolution.width;
@@ -322,6 +331,8 @@
           microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
           systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
           nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
+          previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
+          developerOptionsEnabled: draftDeveloperOptionsEnabled,
           screenResolution: draftResolutionMode === "custom"
             ? {
                 mode: "custom",
@@ -339,6 +350,7 @@
       });
       recordingSettings = updated;
       syncRecDrafts(updated);
+      setDeveloperOptionsEnabled(updated.developerOptionsEnabled ?? false);
       recSaved = true;
       setTimeout(() => { recSaved = false; }, 2200);
       // Refresh debug log status since the enabled flag may have changed.
@@ -1029,6 +1041,49 @@
           </div>
         {/if}
       {/if}
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- ── Preview Cache ─────────────────────────────────────── -->
+    <div class="settings-group">
+      <span class="group-label">Preview Cache</span>
+      <SelectMenu
+        value={String(draftPreviewCacheTtlSeconds)}
+        onValueChange={(v) => { draftPreviewCacheTtlSeconds = parseInt(v, 10); }}
+        label="Cache duration"
+        options={[
+          { value: "0",     label: "Disabled" },
+          { value: "300",   label: "5 minutes" },
+          { value: "900",   label: "15 minutes" },
+          { value: "3600",  label: "1 hour (default)" },
+          { value: "21600", label: "6 hours" },
+          { value: "86400", label: "24 hours" },
+        ]}
+      />
+      <p class="group-hint">
+        In-memory cache for frame and image previews. Cached entries expire
+        automatically after the selected duration.
+        {#if draftPreviewCacheTtlSeconds === 0}
+          <strong>Disabled</strong> — previews are fetched fresh every time.
+        {/if}
+      </p>
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <!-- ── Developer Options ─────────────────────────────────── -->
+    <div class="settings-group">
+      <span class="group-label">Developer Options</span>
+      <Switch
+        bind:checked={draftDeveloperOptionsEnabled}
+        label="Enable developer options"
+        description="Reveal the Debug surface in the navigation bar (raw session, system probe, idle policy, app-infra and background-job tools)"
+      />
+      <p class="group-hint">
+        When disabled, the Debug page is hidden and visiting it redirects to the Timeline.
+        Save settings to apply the change.
+      </p>
     </div>
 
     <div class="settings-divider"></div>

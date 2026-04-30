@@ -530,11 +530,12 @@
       stopPostSubmitPolling();
     };
   });
+
 </script>
 
 <!-- ── Page header ──────────────────────────────────────────────────────── -->
 <div class="page-header">
-  <h1 class="page-title">Dashboard</h1>
+  <h1 class="page-title">Debug</h1>
   <p class="page-subtitle">recording status &amp; controls</p>
 </div>
 
@@ -650,58 +651,6 @@
     </button>
   </div>
 </section>
-
-<!-- ── Output files ─────────────────────────────────────────────────────── -->
-{#if session?.outputFiles}
-  {@const files = session.outputFiles}
-  {@const hasFiles = files.screenFile || files.screenFiles.length || files.microphoneFiles.length || files.microphoneFile || files.systemAudioFile || files.systemAudioFiles.length}
-  {#if hasFiles}
-    <section class="card">
-      <h2 class="card__title">Output Files</h2>
-      <ul class="output-files">
-        {#if files.screenFiles.length}
-          {#each files.screenFiles as f, i}
-            <li class="output-file">
-              <span class="output-file__type">screen[{i}]</span>
-              <span class="output-file__path">{f}</span>
-            </li>
-          {/each}
-        {:else if files.screenFile}
-          <li class="output-file">
-            <span class="output-file__type">screen</span>
-            <span class="output-file__path">{files.screenFile}</span>
-          </li>
-        {/if}
-        {#if files.microphoneFiles.length}
-          {#each files.microphoneFiles as f, i}
-            <li class="output-file">
-              <span class="output-file__type">mic[{i}]</span>
-              <span class="output-file__path">{f}</span>
-            </li>
-          {/each}
-        {:else if files.microphoneFile}
-          <li class="output-file">
-            <span class="output-file__type">mic[0]</span>
-            <span class="output-file__path">{files.microphoneFile}</span>
-          </li>
-        {/if}
-        {#if files.systemAudioFiles.length}
-          {#each files.systemAudioFiles as f, i}
-            <li class="output-file">
-              <span class="output-file__type">sys-audio[{i}]</span>
-              <span class="output-file__path">{f}</span>
-            </li>
-          {/each}
-        {:else if files.systemAudioFile}
-          <li class="output-file">
-            <span class="output-file__type">sys-audio</span>
-            <span class="output-file__path">{files.systemAudioFile}</span>
-          </li>
-        {/if}
-      </ul>
-    </section>
-  {/if}
-{/if}
 
 <!-- ── System probe ──────────────────────────────────────────────────────── -->
 <section class="card">
@@ -1449,36 +1398,6 @@
     font-size: 9px;
   }
 
-  /* ── Output files ───────────────────────────────────────────── */
-  .output-files {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .output-file {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-  }
-
-  .output-file__type {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: #44445a;
-    flex-shrink: 0;
-    min-width: 64px;
-  }
-
-  .output-file__path {
-    font-size: 11px;
-    color: #7a7a9a;
-    word-break: break-all;
-  }
-
   /* ── Probe grid ─────────────────────────────────────────────── */
   .probe-grid {
     display: grid;
@@ -1959,4 +1878,5 @@
   .job-detail-text--err {
     color: #a05050;
   }
+
 </style>

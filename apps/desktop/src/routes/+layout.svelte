@@ -1,6 +1,8 @@
 <script lang="ts">
   import { page } from "$app/stores";
+  import { goto } from "$app/navigation";
   import type { Snippet } from "svelte";
+  import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
 
   interface Props {
     children: Snippet;
@@ -9,7 +11,32 @@
   let { children }: Props = $props();
 
   const isSettings = $derived($page.url.pathname.startsWith("/settings"));
-  const isDashboard = $derived(!isSettings);
+  const isDebug = $derived($page.url.pathname.startsWith("/debug"));
+  // The root route (`/`) is now the Timeline surface — the default landing
+  // route. Debug lives at `/debug` and stays gated behind developer-options.
+  const isTimeline = $derived($page.url.pathname === "/");
+
+  const devEnabled = $derived(developerOptions.value);
+  const devLoaded = $derived(developerOptions.loaded);
+
+  $effect(() => {
+    loadDeveloperOptions();
+  });
+
+  // Gate direct visits to `/debug` behind developer-options. We wait until
+  // the flag has actually loaded to avoid a flash-redirect when the persisted
+  // value is `true` but the IPC hasn't returned yet.
+  $effect(() => {
+    if (!devLoaded) return;
+    if (isDebug && !devEnabled) {
+      goto("/", { replaceState: true });
+    }
+  });
+
+  // Hide the gated Debug surface until we know whether developer options
+  // are enabled, and while we're redirecting a disabled user away from it.
+  // Non-gated routes always render immediately.
+  const showChildren = $derived(!isDebug || (devLoaded && devEnabled));
 </script>
 
 <div class="app-shell">
@@ -19,9 +46,15 @@
       <span class="nav-brand__name">capture · z</span>
     </div>
     <div class="nav-links">
-      <a href="/" class="nav-link" class:nav-link--active={isDashboard}>
-        <span class="nav-link__icon">◉</span>
-        <span class="nav-link__label">Dashboard</span>
+      {#if devEnabled}
+        <a href="/debug" class="nav-link" class:nav-link--active={isDebug}>
+          <span class="nav-link__icon">◉</span>
+          <span class="nav-link__label">Debug</span>
+        </a>
+      {/if}
+      <a href="/" class="nav-link" class:nav-link--active={isTimeline}>
+        <span class="nav-link__icon">▦</span>
+        <span class="nav-link__label">Timeline</span>
       </a>
       <a href="/settings" class="nav-link" class:nav-link--active={isSettings}>
         <span class="nav-link__icon">⊙</span>
@@ -30,8 +63,10 @@
     </div>
   </nav>
 
-  <main class="app-content">
-    {@render children()}
+  <main class="app-content" class:app-content--narrow={isSettings || isDebug}>
+    {#if showChildren}
+      {@render children()}
+    {/if}
   </main>
 </div>
 
@@ -169,12 +204,20 @@
   /* ── Content ──────────────────────────────────────────────── */
   .app-content {
     flex: 1;
-    max-width: 640px;
     width: 100%;
-    margin: 0 auto;
-    padding: 28px 20px 64px;
     display: flex;
     flex-direction: column;
+    min-height: 0;
+  }
+
+  /* The narrow column is opt-in — only routes that explicitly want a
+     centered, padded reading column (currently `/settings`) request it.
+     Surfaces like the timeline and debug consume the full viewport width
+     by default so previews and dense controls aren't artificially capped. */
+  .app-content--narrow {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 28px 20px 64px;
     gap: 14px;
   }
 </style>
