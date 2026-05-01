@@ -235,22 +235,22 @@
   });
 
   // ─── Audio overlay alignment ─────────────────────────────────────────────
-  // Audio segment bars need to be **time-proportional** so a 60s system-audio
-  // bar reads as ~6.7× wider than a 9s mic bar. The frame rail itself is
-  // *frame-indexed*, not time-indexed: each frame occupies a fixed-width slot
-  // regardless of capture cadence, and frame cadence is non-uniform (frames
-  // are sampled by the OCR/processing pipeline based on activity, so dense
-  // active periods get many frames while idle periods get few). Mapping
-  // audio segments through fractional frame indices therefore makes bar
-  // *width* track frame count, not real time — a 9s active-period segment
-  // can render wider than a 60s idle-period segment.
+  // The frame rail is *frame-indexed*: each frame occupies a fixed 8px slot
+  // regardless of capture cadence (the OCR/processing pipeline samples by
+  // activity, so dense active periods get many frames and idle periods get
+  // few). Audio bars are rendered alongside this rail and need to **cover
+  // the frames captured during their segment**, not represent wall-clock
+  // duration — otherwise a bar's width drifts away from the slots it sits
+  // over and clicking the bar feels disconnected from the frames it owns.
   //
-  // We instead derive a single global `pixelsPerMs` from the loaded frame
-  // window (total inter-tick pixel distance divided by total wall-clock span)
-  // and lay every segment out in real time off the newest frame's tick. Bars
-  // perfectly align with frame ticks only when frame cadence is uniform; when
-  // cadence varies the bar still represents real duration (which is what the
-  // lane is for) and only the per-tick alignment drifts within the segment.
+  // For each segment we therefore find the contiguous range of frame
+  // indices whose `capturedAt` falls within `[startUnixMs, endUnixMs]` and
+  // size the bar to span exactly those slots. Out-of-window endpoints are
+  // clamped to the loaded edge so a segment that started before the oldest
+  // loaded frame still extends to the leftmost slot. A consequence
+  // accepted by design (see the dashboard convo around audio-bar/frame
+  // alignment): a 60s segment covering an idle period with two frames
+  // renders narrower than a 9s segment over a dense burst of frames.
   //
   // `timelineFrames` is newest-first; capturedAt is an ISO-ish string. We
   // pre-compute a parallel array of millisecond timestamps so the alignment
@@ -262,27 +262,6 @@
       out[i] = f ? parseCapturedAt(f.capturedAt).getTime() : NaN;
     }
     return out;
-  });
-
-  /**
-   * Pixels-per-millisecond used to size and position audio-segment bars in
-   * real time. Returns `null` when the loaded window can't define a stable
-   * ratio (zero/one frame, or all timestamps collapsed to the same instant);
-   * callers fall back to the first/last frame spacing or to an empty lane.
-   *
-   * The denominator is the total time span between the newest and oldest
-   * loaded frame (`times[0] - times[n-1]`); the numerator is the total
-   * pixel distance between their tick centers (`(n - 1) * SLOT_WIDTH`).
-   */
-  const audioLanePixelsPerMs = $derived.by<number | null>(() => {
-    const times = timelineFrameTimes;
-    const n = times.length;
-    if (n < 2) return null;
-    const newest = times[0]!;
-    const oldest = times[n - 1]!;
-    const spanMs = newest - oldest;
-    if (!Number.isFinite(spanMs) || spanMs <= 0) return null;
-    return ((n - 1) * TIMELINE_SLOT_WIDTH) / spanMs;
   });
 
   type PositionedAudioSegment = AudioSegmentRecord & {
@@ -300,50 +279,52 @@
     if (n === 0 || audioSegments.length === 0) return [];
     const newestMs = times[0]!;
     const oldestMs = times[n - 1]!;
-    const pxPerMs = audioLanePixelsPerMs;
-    if (pxPerMs == null) {
-      // Single-frame (or zero-span) window: we can't pick a meaningful
-      // pixels-per-ms. Render every overlapping segment as a hairline at
-      // the newest tick so the lane still surfaces *that* a segment exists
-      // without faking a duration.
-      const halfSlot = TIMELINE_SLOT_WIDTH / 2;
-      const out: PositionedAudioSegment[] = [];
-      for (const seg of audioSegments) {
-        out.push({ ...seg, rightPx: halfSlot, widthPx: 2, visible: true });
-      }
-      return out;
-    }
-    const halfSlot = TIMELINE_SLOT_WIDTH / 2;
-    // Bars rendered to the left of newer frames: track right edge ↔ newest
-    // frame's tick center sits at `right = halfSlot`. A segment's newer end
-    // (segEndUnixMs) is offset (newestMs - segEndMs) ms older than newest,
-    // i.e. `(newestMs - segEndMs) * pxPerMs` to the left of the newest tick
-    // center. Width is the segment's full duration in pixels.
-    //
-    // Out-of-window segments are kept (no clamping) so a segment ending
-    // after the newest loaded frame still gets a width matching its real
-    // duration; the lane viewport's `overflow: hidden` clips any portion
-    // that lies outside the visible track. Visibility filters segments
-    // whose entire pixel extent is outside the visible track range so they
-    // don't get rendered at all.
-    const trackPxSpan = (n - 1) * TIMELINE_SLOT_WIDTH;
     const out: PositionedAudioSegment[] = [];
     for (const seg of audioSegments) {
-      const widthMs = Math.max(0, seg.endUnixMs - seg.startUnixMs);
-      const widthPx = Math.max(2, widthMs * pxPerMs);
-      const rightPx = halfSlot + (newestMs - seg.endUnixMs) * pxPerMs;
-      // Visible when the bar's [rightPx, rightPx + widthPx] interval
-      // overlaps [halfSlot, halfSlot + trackPxSpan] (the tick-to-tick
-      // span). Equivalent to checking the segment's time interval overlaps
-      // the loaded window.
-      const leftEdge = rightPx;
-      const rightEdge = rightPx + widthPx;
-      const trackLeft = halfSlot;
-      const trackRight = halfSlot + trackPxSpan;
-      const visible = !(rightEdge < trackLeft || leftEdge > trackRight) ||
-        // Always show segments that fully envelop the loaded window.
-        (seg.startUnixMs <= oldestMs && seg.endUnixMs >= newestMs);
-      out.push({ ...seg, rightPx, widthPx, visible });
+      // Segment entirely outside the loaded window — nothing to cover.
+      if (seg.endUnixMs < oldestMs || seg.startUnixMs > newestMs) {
+        out.push({ ...seg, rightPx: 0, widthPx: 0, visible: false });
+        continue;
+      }
+      // `times` is sorted descending (newest first). Find the newest
+      // frame whose timestamp is `<= seg.endUnixMs` (smallest matching
+      // index) and the oldest whose timestamp is `>= seg.startUnixMs`
+      // (largest matching index). Linear scans are fine: `n` is bounded
+      // by the loaded window (a few hundred to a few thousand frames)
+      // and the segment count per render is similarly small.
+      let iNewest = -1;
+      for (let i = 0; i < n; i++) {
+        const t = times[i]!;
+        if (Number.isFinite(t) && t <= seg.endUnixMs) {
+          iNewest = i;
+          break;
+        }
+      }
+      let iOldest = -1;
+      for (let i = n - 1; i >= 0; i--) {
+        const t = times[i]!;
+        if (Number.isFinite(t) && t >= seg.startUnixMs) {
+          iOldest = i;
+          break;
+        }
+      }
+      // Segment overlaps the window in time but no loaded frame falls
+      // inside its range (e.g. a quiet gap between two frames straddles
+      // the segment). Clamp to the nearest in-range neighbour so the bar
+      // still anchors to a real slot rather than disappearing.
+      if (iNewest === -1) iNewest = 0;
+      if (iOldest === -1) iOldest = n - 1;
+      if (iOldest < iNewest) iOldest = iNewest;
+      // Slot at index `i` is positioned with `right: i * SLOT_WIDTH` and
+      // is `SLOT_WIDTH` wide. To cover slots `[iNewest..iOldest]` we
+      // anchor the bar at the newest slot's right edge and extend left
+      // by one slot per covered frame.
+      const rightPx = iNewest * TIMELINE_SLOT_WIDTH;
+      const widthPx = Math.max(
+        2,
+        (iOldest - iNewest + 1) * TIMELINE_SLOT_WIDTH,
+      );
+      out.push({ ...seg, rightPx, widthPx, visible: true });
     }
     return out;
   });
