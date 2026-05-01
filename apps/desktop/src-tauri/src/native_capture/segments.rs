@@ -7,7 +7,8 @@ use crate::native_capture_output::{
 use crate::native_capture_settings::compute_effective_screen_bitrate_bps;
 use capture_microphone as microphone_capture;
 use capture_runtime::{
-    CaptureClock, RuntimeController, RuntimeSignal, RuntimeState, SegmentPlanner, SegmentSchedule,
+    parse_audio_restart_started_at_unix_ms, CaptureClock, RuntimeController, RuntimeSignal,
+    RuntimeState, SegmentPlanner, SegmentSchedule,
 };
 #[cfg(target_os = "macos")]
 use capture_screen::RotateScreenCaptureSessionArgs;
@@ -379,17 +380,81 @@ fn rfc3339_from_unix_ms(unix_ms: u64) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn audio_segment_window_for_source(
+fn audio_file_duration_ms(file_path: &str) -> Option<u64> {
+    use cidre::{av, ns};
+
+    let url = ns::Url::with_fs_path_str(file_path, false);
+    let asset = av::UrlAsset::with_url(&url, None)?;
+    audio_duration_time_to_ms(asset.duration())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn audio_duration_time_to_ms(duration: cidre::cm::Time) -> Option<u64> {
+    if !duration.is_numeric() || duration.value <= 0 || duration.scale <= 0 {
+        return None;
+    }
+
+    let value_ms = i128::from(duration.value)
+        .checked_mul(1_000)?
+        .checked_add(i128::from(duration.scale / 2))?
+        / i128::from(duration.scale);
+
+    u64::try_from(value_ms).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn scheduled_audio_segment_started_at_unix_ms(
     source_session: &SourceSessionMeta,
     segment_index: u64,
     schedule: &SegmentSchedule,
-) -> (String, String) {
+) -> u64 {
     let duration_ms = schedule
         .segment_duration()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64;
     let offset_ms = segment_index.saturating_sub(1).saturating_mul(duration_ms);
-    let started_at_unix_ms = source_session.started_at_unix_ms.saturating_add(offset_ms);
+    source_session.started_at_unix_ms.saturating_add(offset_ms)
+}
+
+#[cfg(target_os = "macos")]
+fn audio_segment_window_for_file(
+    source_session: &SourceSessionMeta,
+    segment_index: u64,
+    schedule: &SegmentSchedule,
+    file_path: &str,
+) -> (String, String) {
+    let started_at_unix_ms = audio_segment_started_at_unix_ms_for_file(
+        source_session,
+        segment_index,
+        schedule,
+        file_path,
+    );
+    let scheduled_duration_ms = schedule
+        .segment_duration()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let duration_ms = audio_file_duration_ms(file_path).unwrap_or(scheduled_duration_ms);
+
+    audio_segment_window_from_duration_ms(started_at_unix_ms, duration_ms)
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn audio_segment_started_at_unix_ms_for_file(
+    source_session: &SourceSessionMeta,
+    segment_index: u64,
+    schedule: &SegmentSchedule,
+    file_path: &str,
+) -> u64 {
+    parse_audio_restart_started_at_unix_ms(file_path).unwrap_or_else(|| {
+        scheduled_audio_segment_started_at_unix_ms(source_session, segment_index, schedule)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn audio_segment_window_from_duration_ms(
+    started_at_unix_ms: u64,
+    duration_ms: u64,
+) -> (String, String) {
     let ended_at_unix_ms = started_at_unix_ms.saturating_add(duration_ms);
 
     (
@@ -417,9 +482,9 @@ fn persist_committed_audio_segments(
 
     let mut segments = Vec::new();
     if let Some(source_session) = source_sessions.microphone.as_ref() {
-        let (started_at, ended_at) =
-            audio_segment_window_for_source(source_session, segment_index, schedule);
         segments.extend(output_files.microphone_files.iter().map(|file_path| {
+            let (started_at, ended_at) =
+                audio_segment_window_for_file(source_session, segment_index, schedule, file_path);
             ::app_infra::NewAudioSegment::new(
                 ::app_infra::AudioSegmentSourceKind::Microphone,
                 source_session.session_id.clone(),
@@ -431,9 +496,9 @@ fn persist_committed_audio_segments(
         }));
     }
     if let Some(source_session) = source_sessions.system_audio.as_ref() {
-        let (started_at, ended_at) =
-            audio_segment_window_for_source(source_session, segment_index, schedule);
         segments.extend(output_files.system_audio_files.iter().map(|file_path| {
+            let (started_at, ended_at) =
+                audio_segment_window_for_file(source_session, segment_index, schedule, file_path);
             ::app_infra::NewAudioSegment::new(
                 ::app_infra::AudioSegmentSourceKind::SystemAudio,
                 source_session.session_id.clone(),
@@ -484,8 +549,62 @@ fn persist_committed_audio_segments(
 }
 
 #[cfg(target_os = "macos")]
+fn persist_committed_microphone_segments(
+    app_handle: Option<&tauri::AppHandle>,
+    source_sessions: Option<&SourceSessions>,
+    schedule: Option<&SegmentSchedule>,
+    segment_index: u64,
+    output_files: Option<&CaptureOutputFiles>,
+) {
+    let Some(output_files) = output_files else {
+        return;
+    };
+    let mut microphone_only = empty_output_files();
+    microphone_only.microphone_file = output_files.microphone_file.clone();
+    microphone_only.microphone_files = output_files.microphone_files.clone();
+    persist_committed_audio_segments(
+        app_handle,
+        source_sessions,
+        schedule,
+        segment_index,
+        Some(&microphone_only),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn persist_committed_system_audio_segments(
+    app_handle: Option<&tauri::AppHandle>,
+    source_sessions: Option<&SourceSessions>,
+    schedule: Option<&SegmentSchedule>,
+    segment_index: u64,
+    output_files: Option<&CaptureOutputFiles>,
+) {
+    let Some(output_files) = output_files else {
+        return;
+    };
+    let mut system_audio_only = empty_output_files();
+    system_audio_only.system_audio_file = output_files.system_audio_file.clone();
+    system_audio_only.system_audio_files = output_files.system_audio_files.clone();
+    persist_committed_audio_segments(
+        app_handle,
+        source_sessions,
+        schedule,
+        segment_index,
+        Some(&system_audio_only),
+    );
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn pause_microphone_for_inactivity(
     runtime: &mut NativeCaptureRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    pause_microphone_for_inactivity_with_app_handle(runtime, None)
+}
+
+#[cfg(target_os = "macos")]
+fn pause_microphone_for_inactivity_with_app_handle(
+    runtime: &mut NativeCaptureRuntime,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
     if runtime.inactivity.is_microphone_paused() {
         return Ok(());
@@ -500,12 +619,48 @@ pub(super) fn pause_microphone_for_inactivity(
         return Ok(());
     }
 
+    let microphone_recording_file = runtime.microphone_recording_file.clone();
+    let mut finalized_microphone_outputs = None;
     if let Some(session) = runtime.active_microphone_session.as_mut() {
-        if let Err(mic_err) = session.stop() {
-            return Err(mic_err);
+        session.pause_output_file()?;
+
+        if let Some(output_files) = runtime.current_segment_output_files.as_ref() {
+            let mut microphone_outputs = empty_output_files();
+            microphone_outputs.microphone_file = output_files.microphone_file.clone();
+            microphone_outputs.microphone_files = output_files.microphone_files.clone();
+            finalize_capture_outputs(
+                Some(&mut microphone_outputs),
+                None,
+                microphone_recording_file.as_deref(),
+                None,
+                Some(&CaptureSources {
+                    screen: false,
+                    microphone: true,
+                    system_audio: false,
+                }),
+            )?;
+            finalized_microphone_outputs = Some(microphone_outputs);
         }
     }
-    runtime.active_microphone_session = None;
+
+    if let Some(finalized) = finalized_microphone_outputs.as_ref() {
+        if let Some(committed) = runtime.output_files.as_mut() {
+            append_committed_segment_output_files(committed, finalized);
+        }
+        persist_committed_microphone_segments(
+            app_handle,
+            runtime.source_sessions.as_ref(),
+            runtime.segment_schedule.as_ref(),
+            runtime.current_segment_index,
+            Some(finalized),
+        );
+    }
+
+    if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
+        output_files.microphone_file = None;
+        output_files.microphone_files.clear();
+    }
+    runtime.microphone_recording_file = None;
 
     runtime.inactivity.set_family_paused_states(
         runtime.inactivity.screen_paused,
@@ -523,9 +678,54 @@ pub(super) fn pause_microphone_for_inactivity(
     Ok(())
 }
 
+#[cfg(all(test, target_os = "macos"))]
+pub(super) fn process_inactivity_audio_transitions_for_snapshot(
+    runtime: &mut NativeCaptureRuntime,
+    now: u64,
+    activity_snapshot: crate::native_capture_inactivity::ActivitySnapshot,
+) -> Result<(), CaptureErrorResponse> {
+    if runtime
+        .inactivity
+        .should_resume_microphone_from_inactivity(now, activity_snapshot)
+    {
+        resume_microphone_from_inactivity(runtime)?;
+    }
+
+    if runtime
+        .inactivity
+        .should_pause_microphone_for_inactivity(now, activity_snapshot)
+    {
+        pause_microphone_for_inactivity_with_app_handle(runtime, None)?;
+    }
+
+    if runtime
+        .inactivity
+        .should_resume_system_audio_from_inactivity(now, activity_snapshot)
+    {
+        resume_system_audio_from_inactivity(runtime)?;
+    }
+
+    if runtime
+        .inactivity
+        .should_pause_system_audio_for_inactivity(now, activity_snapshot)
+    {
+        pause_system_audio_for_inactivity(runtime)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn pause_system_audio_for_inactivity(
     runtime: &mut NativeCaptureRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    pause_system_audio_for_inactivity_with_app_handle(runtime, None)
+}
+
+#[cfg(target_os = "macos")]
+fn pause_system_audio_for_inactivity_with_app_handle(
+    runtime: &mut NativeCaptureRuntime,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
     if runtime.inactivity.is_system_audio_paused() {
         return Ok(());
@@ -542,9 +742,42 @@ pub(super) fn pause_system_audio_for_inactivity(
 
     if !runtime.inactivity.is_screen_paused() {
         if runtime.active_screen_session.is_some() {
+            let system_audio_recording_file = runtime.system_audio_recording_file.clone();
             // Soft-pause: tell the screen backend to finalize and detach its
             // system-audio writer without stopping/restarting the screen session.
             capture_screen::pause_system_audio_writer(&mut runtime.active_screen_session)?;
+
+            let mut finalized_system_audio_outputs = None;
+            if let Some(output_files) = runtime.current_segment_output_files.as_ref() {
+                let mut system_audio_outputs = empty_output_files();
+                system_audio_outputs.system_audio_file = output_files.system_audio_file.clone();
+                system_audio_outputs.system_audio_files = output_files.system_audio_files.clone();
+                finalize_capture_outputs(
+                    Some(&mut system_audio_outputs),
+                    None,
+                    None,
+                    system_audio_recording_file.as_deref(),
+                    Some(&CaptureSources {
+                        screen: false,
+                        microphone: false,
+                        system_audio: true,
+                    }),
+                )?;
+                finalized_system_audio_outputs = Some(system_audio_outputs);
+            }
+
+            if let Some(finalized) = finalized_system_audio_outputs.as_ref() {
+                if let Some(committed) = runtime.output_files.as_mut() {
+                    append_committed_segment_output_files(committed, finalized);
+                }
+                persist_committed_system_audio_segments(
+                    app_handle,
+                    runtime.source_sessions.as_ref(),
+                    runtime.segment_schedule.as_ref(),
+                    runtime.current_segment_index,
+                    Some(finalized),
+                );
+            }
 
             // The finished system-audio file is already tracked in
             // system_audio_files via set_current_system_audio_output_file.
@@ -607,25 +840,37 @@ pub(super) fn resume_microphone_from_inactivity(
     if sources.microphone && runtime.microphone_planner.is_some() {
         let microphone_recording_file =
             super::microphone::next_microphone_output_file_for_runtime(runtime)?;
-        let mic_start =
-            microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id(
-                &microphone_recording_file,
-                runtime.microphone_device_id_for_capture.as_deref(),
-            );
 
-        match mic_start {
-            Ok(session) => {
-                runtime.active_microphone_session = Some(session);
-                runtime.microphone_recording_file = Some(microphone_recording_file.clone());
-                if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
-                    crate::native_capture_output::set_current_microphone_output_file(
-                        output_files,
-                        microphone_recording_file,
-                    );
-                }
+        if let Some(session) = runtime.active_microphone_session.as_mut() {
+            session.resume_output_file(&microphone_recording_file)?;
+            runtime.microphone_recording_file = Some(microphone_recording_file.clone());
+            if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
+                crate::native_capture_output::set_current_microphone_output_file(
+                    output_files,
+                    microphone_recording_file,
+                );
             }
-            Err(error) => {
-                return Err(error);
+        } else {
+            let mic_start =
+                microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id(
+                    &microphone_recording_file,
+                    runtime.microphone_device_id_for_capture.as_deref(),
+                );
+
+            match mic_start {
+                Ok(session) => {
+                    runtime.active_microphone_session = Some(session);
+                    runtime.microphone_recording_file = Some(microphone_recording_file.clone());
+                    if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
+                        crate::native_capture_output::set_current_microphone_output_file(
+                            output_files,
+                            microphone_recording_file,
+                        );
+                    }
+                }
+                Err(error) => {
+                    return Err(error);
+                }
             }
         }
     }
@@ -1590,7 +1835,9 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             .inactivity
             .should_pause_microphone_for_inactivity(now, activity_snapshot)
         {
-            if let Err(error) = pause_microphone_for_inactivity(&mut runtime) {
+            if let Err(error) =
+                pause_microphone_for_inactivity_with_app_handle(&mut runtime, Some(&app_handle))
+            {
                 crate::native_capture_debug_log::log(format!(
                     "failed to pause microphone capture for inactivity: [{}] {}",
                     error.code, error.message
@@ -1635,7 +1882,9 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             .inactivity
             .should_pause_system_audio_for_inactivity(now, activity_snapshot)
         {
-            if let Err(error) = pause_system_audio_for_inactivity(&mut runtime) {
+            if let Err(error) =
+                pause_system_audio_for_inactivity_with_app_handle(&mut runtime, Some(&app_handle))
+            {
                 crate::native_capture_debug_log::log(format!(
                     "failed to pause system audio capture for inactivity: [{}] {}",
                     error.code, error.message
@@ -1740,7 +1989,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             continue;
         }
 
-        if runtime.inactivity.is_paused {
+        if runtime.inactivity.is_paused && runtime.current_segment_output_files.is_none() {
             continue;
         }
 
@@ -1768,10 +2017,21 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             mark_runtime_session_failed(&mut runtime);
             break;
         };
+        let active_sources = active_sources_for_inactivity_paused_state(
+            &sources,
+            runtime.inactivity.screen_paused,
+            runtime.inactivity.microphone_paused,
+            runtime.inactivity.system_audio_paused,
+        )
+        .unwrap_or(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: false,
+        });
 
         let Some(planned_rotation) = plan_live_rotation_segment(
             &runtime,
-            &sources,
+            &active_sources,
             &screen_planner,
             microphone_planner.as_ref(),
             system_audio_planner.as_ref(),
@@ -1797,7 +2057,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             &segment_dir,
             microphone_audio_dir,
             system_audio_dir,
-            &sources,
+            &active_sources,
         ) {
             crate::native_capture_debug_log::log(format!(
                 "failed to prepare capture segment output directories while rotating segments: [{}] {}",
@@ -1813,7 +2073,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
         let mut next_system_audio_recording_file = runtime.system_audio_recording_file.clone();
         let mut legacy_rotated = false;
 
-        if sources.screen || sources.system_audio {
+        if active_sources.screen || active_sources.system_audio {
             let rotate_result =
                 capture_screen::rotate_screen_capture_session(RotateScreenCaptureSessionArgs {
                     active_session: &mut runtime.active_screen_session,
@@ -1862,9 +2122,9 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             }
 
             let screen_only_sources = CaptureSources {
-                screen: sources.screen,
+                screen: active_sources.screen,
                 microphone: false,
-                system_audio: sources.system_audio && !runtime.inactivity.is_system_audio_paused(),
+                system_audio: active_sources.system_audio,
             };
             let legacy_system_audio_path = screen_only_sources
                 .system_audio
@@ -1911,7 +2171,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             next_system_audio_recording_file = started_system_audio_recording_file;
             runtime.active_screen_session = active_screen_session;
 
-            if sources.microphone {
+            if active_sources.microphone {
                 if let Some(session) = runtime.active_microphone_session.as_mut() {
                     let microphone_output_file = microphone_planner
                         .as_ref()
@@ -1942,7 +2202,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                     next_microphone_recording_file = Some(microphone_output_file);
                 }
             }
-        } else if sources.microphone {
+        } else if active_sources.microphone {
             if let Some(session) = runtime.active_microphone_session.as_mut() {
                 let microphone_output_file = microphone_planner
                     .as_ref()
@@ -2041,7 +2301,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
         runtime.current_segment_index = next_index;
         runtime.current_segment_output_files = Some(next_segment_outputs);
         runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
-            &sources,
+            &active_sources,
             runtime.inactivity.screen_paused,
             runtime.inactivity.microphone_paused,
             runtime.inactivity.system_audio_paused,

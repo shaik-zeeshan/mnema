@@ -127,7 +127,7 @@ pub fn microphone_activity_level() -> Option<f32> {
 #[derive(Debug)]
 struct MicrophoneOutputContext {
     writer: Option<AudioAssetWriterState>,
-    output_url: cidre::arc::R<cidre::ns::Url>,
+    output_url: Option<cidre::arc::R<cidre::ns::Url>>,
     output_file: Option<String>,
     first_error: Option<CaptureErrorResponse>,
     format_state: MicFormatStabilityState,
@@ -504,6 +504,10 @@ mod microphone_delegate {
 
                     maybe_track_microphone_activity(sample_buf);
 
+                    if ctx.output_url.is_none() {
+                        return;
+                    }
+
                     if let Some(writer) = ctx.writer.as_mut() {
                         if let Err(error) = append_audio_sample_to_writer(writer, sample_buf) {
                             ctx.first_error = Some(error);
@@ -534,7 +538,10 @@ mod microphone_delegate {
                         };
 
                         match create_audio_asset_writer_for_sample_format(
-                            ctx.output_url.as_ref(),
+                            ctx.output_url
+                                .as_ref()
+                                .expect("microphone output URL should exist when writer is active")
+                                .as_ref(),
                             "microphone",
                             stable_format,
                         ) {
@@ -597,6 +604,26 @@ impl AvFoundationMicrophoneCaptureSession {
 
         Ok(())
     }
+
+    pub fn pause_output_file(&mut self) -> Result<(), CaptureErrorResponse> {
+        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
+        let mut previous_context =
+            std::mem::replace(self.output_delegate.inner_mut(), microphone_probe_only_context());
+        finalize_microphone_output_context(&mut previous_context)
+    }
+
+    pub fn resume_output_file(&mut self, output_file: &str) -> Result<(), CaptureErrorResponse> {
+        let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
+        let next_context =
+            microphone_output_context_for_output_url(&output_url, Some(output_file.to_string()));
+
+        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
+        let mut previous_context = std::mem::replace(self.output_delegate.inner_mut(), next_context);
+        finalize_microphone_output_context(&mut previous_context)?;
+
+        Ok(())
+    }
+
 }
 
 #[cfg(target_os = "macos")]
@@ -611,9 +638,12 @@ fn finalize_microphone_output_context(
     context: &mut MicrophoneOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
     if context.writer.is_none() && !context.pending_samples.is_empty() {
-        if let Some(format) = resolve_microphone_finalize_format(&context.format_state) {
+        if let (Some(output_url), Some(format)) = (
+            context.output_url.as_ref(),
+            resolve_microphone_finalize_format(&context.format_state),
+        ) {
             match create_audio_asset_writer_for_sample_format(
-                context.output_url.as_ref(),
+                output_url.as_ref(),
                 "microphone",
                 format,
             ) {
@@ -651,8 +681,21 @@ fn microphone_output_context_for_output_url(
 ) -> MicrophoneOutputContext {
     MicrophoneOutputContext {
         writer: None,
-        output_url: output_url.retained(),
+        output_url: Some(output_url.retained()),
         output_file,
+        first_error: None,
+        format_state: MicFormatStabilityState::default(),
+        logged_format_samples: 0,
+        pending_samples: VecDeque::new(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_probe_only_context() -> MicrophoneOutputContext {
+    MicrophoneOutputContext {
+        writer: None,
+        output_url: None,
+        output_file: None,
         first_error: None,
         format_state: MicFormatStabilityState::default(),
         logged_format_samples: 0,

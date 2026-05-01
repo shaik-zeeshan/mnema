@@ -425,6 +425,43 @@ impl From<::app_infra::AudioSegment> for AudioSegmentDto {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn audio_file_duration_ms(file_path: &str) -> Option<u64> {
+    use cidre::{av, ns};
+
+    let url = ns::Url::with_fs_path_str(file_path, false);
+    let asset = av::UrlAsset::with_url(&url, None)?;
+    let duration_seconds = asset.duration().as_secs();
+    if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return None;
+    }
+
+    Some((duration_seconds * 1_000.0).round() as u64)
+}
+
+#[cfg(target_os = "macos")]
+fn rfc3339_plus_duration_ms(started_at: &str, duration_ms: u64) -> Option<String> {
+    let start = OffsetDateTime::parse(started_at, &Rfc3339).ok()?;
+    let end = start.checked_add(time::Duration::milliseconds(duration_ms.try_into().ok()?))?;
+    end.format(&Rfc3339).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn audio_segment_dto_with_media_duration(segment: ::app_infra::AudioSegment) -> AudioSegmentDto {
+    let mut dto = AudioSegmentDto::from(segment);
+    if let Some(duration_ms) = audio_file_duration_ms(&dto.file_path) {
+        if let Some(ended_at) = rfc3339_plus_duration_ms(&dto.started_at, duration_ms) {
+            dto.ended_at = ended_at;
+        }
+    }
+    dto
+}
+
+#[cfg(not(target_os = "macos"))]
+fn audio_segment_dto_with_media_duration(segment: ::app_infra::AudioSegment) -> AudioSegmentDto {
+    AudioSegmentDto::from(segment)
+}
+
 impl From<SubmitDebugCpuJobRequest> for ::app_infra::DebugCpuJobRequest {
     fn from(request: SubmitDebugCpuJobRequest) -> Self {
         Self {
@@ -1138,7 +1175,12 @@ pub async fn list_audio_segments(
             None,
         )
         .await
-        .map(|segments| segments.into_iter().map(AudioSegmentDto::from).collect())
+        .map(|segments| {
+            segments
+                .into_iter()
+                .map(audio_segment_dto_with_media_duration)
+                .collect()
+        })
         .map_err(|error| format!("failed to list audio segments: {error}"))
 }
 
