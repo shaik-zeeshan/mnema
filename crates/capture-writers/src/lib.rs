@@ -7,6 +7,8 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "macos")]
+use std::collections::VecDeque;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
@@ -38,7 +40,164 @@ pub struct AudioAssetWriterState {
     started: bool,
     appended_samples: u64,
     expected_sample_format: Option<AudioSampleFormat>,
+    tail_trim_seconds: u64,
+    activity_threshold: f32,
+    tail_buffer: AudioTailSampleBuffer<cidre::arc::R<cidre::cm::SampleBuf>>,
     label: &'static str,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct AudioTailSampleBuffer<T> {
+    samples: VecDeque<TimedAudioTailSample<T>>,
+    latest_sample_end_secs: Option<f64>,
+    observed_active_sample: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl<T> Default for AudioTailSampleBuffer<T> {
+    fn default() -> Self {
+        Self {
+            samples: VecDeque::new(),
+            latest_sample_end_secs: None,
+            observed_active_sample: false,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct TimedAudioTailSample<T> {
+    sample: T,
+    end_secs: f64,
+    active: bool,
+}
+
+#[cfg(target_os = "macos")]
+pub fn set_audio_writer_inactivity_tail_trim_seconds(
+    writer_state: &mut AudioAssetWriterState,
+    trim_seconds: u64,
+) {
+    writer_state.tail_trim_seconds = trim_seconds;
+}
+
+#[cfg(target_os = "macos")]
+pub fn set_audio_writer_activity_threshold(
+    writer_state: &mut AudioAssetWriterState,
+    threshold: f32,
+) {
+    writer_state.activity_threshold = if threshold.is_finite() {
+        threshold.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+}
+
+#[cfg(target_os = "macos")]
+fn flush_audio_tail_buffer(
+    writer_state: &mut AudioAssetWriterState,
+) -> Result<(), CaptureErrorResponse> {
+    while let Some(sample) = writer_state.tail_buffer.samples.pop_front() {
+        append_audio_sample_to_writer_untrimmed(writer_state, sample.sample.as_ref())?;
+    }
+    writer_state.tail_buffer.latest_sample_end_secs = None;
+    writer_state.tail_buffer.observed_active_sample = false;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn sample_buf_start_secs(sample_buf: &cidre::cm::SampleBuf) -> Option<f64> {
+    let pts = sample_buf.pts();
+    pts.is_numeric()
+        .then(|| pts.as_secs())
+        .filter(|v| v.is_finite())
+}
+
+#[cfg(target_os = "macos")]
+fn sample_buf_end_secs(sample_buf: &cidre::cm::SampleBuf) -> Option<f64> {
+    let start = sample_buf_start_secs(sample_buf)?;
+    let duration = sample_buf.duration();
+    let duration_secs = if duration.is_numeric() {
+        duration.as_secs().max(0.0)
+    } else {
+        0.0
+    };
+    Some(start + duration_secs)
+}
+
+#[cfg(target_os = "macos")]
+impl<T> AudioTailSampleBuffer<T> {
+    fn append_timed(
+        &mut self,
+        sample: T,
+        sample_end_secs: Option<f64>,
+        _retain_seconds: u64,
+        active: bool,
+    ) -> bool {
+        let Some(sample_end_secs) = sample_end_secs.filter(|value| value.is_finite()) else {
+            return false;
+        };
+
+        self.latest_sample_end_secs = Some(
+            self.latest_sample_end_secs
+                .map(|latest| latest.max(sample_end_secs))
+                .unwrap_or(sample_end_secs),
+        );
+        self.observed_active_sample |= active;
+        self.samples.push_back(TimedAudioTailSample {
+            sample,
+            end_secs: sample_end_secs,
+            active,
+        });
+
+        true
+    }
+
+    fn pop_sample_before_tail(&mut self, retain_seconds: u64) -> Option<T> {
+        let latest_end_secs = self.latest_sample_end_secs?;
+        let cutoff_secs = latest_end_secs - retain_seconds as f64;
+        let buffered_active_sample = self.samples.iter().any(|sample| sample.active);
+        if self.samples.front().is_some_and(|sample| {
+            buffered_active_sample
+                || (self.observed_active_sample && sample.end_secs <= cutoff_secs)
+        }) {
+            self.samples.pop_front().map(|sample| sample.sample)
+        } else {
+            None
+        }
+    }
+
+    fn discard_tail(&mut self) {
+        self.samples.clear();
+        self.latest_sample_end_secs = None;
+        self.observed_active_sample = false;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn audio_activity_level_is_meaningful(level: Option<f32>, threshold: f32) -> bool {
+    level
+        .map(|level| {
+            let threshold = if threshold.is_finite() {
+                threshold.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            if threshold > 0.0 {
+                level >= threshold
+            } else {
+                level > 0.0
+            }
+        })
+        .unwrap_or(true)
+}
+
+#[cfg(target_os = "macos")]
+fn sample_buf_has_audio_activity(sample_buf: &cidre::cm::SampleBuf, threshold: f32) -> bool {
+    audio_activity_level_is_meaningful(
+        derive_audio_activity_level_from_sample_buf(sample_buf),
+        threshold,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -390,12 +549,41 @@ fn create_audio_asset_writer_with_format_internal(
         started: false,
         appended_samples: 0,
         expected_sample_format,
+        tail_trim_seconds: 0,
+        activity_threshold: 0.0,
+        tail_buffer: AudioTailSampleBuffer::default(),
         label,
     })
 }
 
 #[cfg(target_os = "macos")]
 pub fn append_audio_sample_to_writer(
+    writer_state: &mut AudioAssetWriterState,
+    sample_buf: &cidre::cm::SampleBuf,
+) -> Result<(), CaptureErrorResponse> {
+    if writer_state.tail_trim_seconds > 0 {
+        if !writer_state.tail_buffer.append_timed(
+            sample_buf.retained(),
+            sample_buf_end_secs(sample_buf),
+            writer_state.tail_trim_seconds,
+            sample_buf_has_audio_activity(sample_buf, writer_state.activity_threshold),
+        ) {
+            return Ok(());
+        }
+        while let Some(sample) = writer_state
+            .tail_buffer
+            .pop_sample_before_tail(writer_state.tail_trim_seconds)
+        {
+            append_audio_sample_to_writer_untrimmed(writer_state, sample.as_ref())?;
+        }
+        return Ok(());
+    }
+
+    append_audio_sample_to_writer_untrimmed(writer_state, sample_buf)
+}
+
+#[cfg(target_os = "macos")]
+fn append_audio_sample_to_writer_untrimmed(
     writer_state: &mut AudioAssetWriterState,
     sample_buf: &cidre::cm::SampleBuf,
 ) -> Result<(), CaptureErrorResponse> {
@@ -702,6 +890,27 @@ pub fn writer_error_response(
 pub fn finish_audio_asset_writer(
     writer_state: &mut AudioAssetWriterState,
 ) -> Result<(), CaptureErrorResponse> {
+    finish_audio_asset_writer_with_tail_policy(writer_state, true)
+}
+
+#[cfg(target_os = "macos")]
+pub fn finish_audio_asset_writer_discarding_inactivity_tail(
+    writer_state: &mut AudioAssetWriterState,
+) -> Result<(), CaptureErrorResponse> {
+    finish_audio_asset_writer_with_tail_policy(writer_state, false)
+}
+
+#[cfg(target_os = "macos")]
+fn finish_audio_asset_writer_with_tail_policy(
+    writer_state: &mut AudioAssetWriterState,
+    flush_tail: bool,
+) -> Result<(), CaptureErrorResponse> {
+    if flush_tail {
+        flush_audio_tail_buffer(writer_state)?;
+    } else {
+        writer_state.tail_buffer.discard_tail();
+    }
+
     if !writer_state.started || writer_state.appended_samples == 0 {
         return Err(no_audio_samples_error(writer_state.label));
     }
@@ -952,6 +1161,196 @@ fn error_with_ns_error(code: &str, prefix: &str, error: &cidre::ns::Error) -> Ca
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    fn append_tail_sample<T>(
+        buffer: &mut AudioTailSampleBuffer<T>,
+        sample: T,
+        sample_end_secs: f64,
+    ) {
+        assert!(buffer.append_timed(sample, Some(sample_end_secs), 2, true));
+    }
+
+    #[test]
+    fn audio_tail_buffer_flushes_samples_that_age_out_of_active_tail() {
+        let mut buffer = AudioTailSampleBuffer::default();
+
+        append_tail_sample(&mut buffer, "speech", 1.0);
+        append_tail_sample(&mut buffer, "idle-1", 2.0);
+        append_tail_sample(&mut buffer, "idle-2", 3.0);
+
+        assert_eq!(buffer.pop_sample_before_tail(2), Some("speech"));
+        assert_eq!(
+            buffer
+                .samples
+                .iter()
+                .map(|sample| sample.sample)
+                .collect::<Vec<_>>(),
+            vec!["idle-1", "idle-2"]
+        );
+    }
+
+    #[test]
+    fn audio_tail_buffer_normal_finish_flushes_tail_after_active_buffering() {
+        let mut buffer = AudioTailSampleBuffer::default();
+        let mut flushed = Vec::new();
+
+        for (sample, end_secs) in [("speech", 1.0), ("idle-1", 2.0), ("idle-2", 3.0)] {
+            append_tail_sample(&mut buffer, sample, end_secs);
+            while let Some(sample) = buffer.pop_sample_before_tail(2) {
+                flushed.push(sample);
+            }
+        }
+
+        flushed.extend(buffer.samples.into_iter().map(|sample| sample.sample));
+
+        assert_eq!(flushed, vec!["speech", "idle-1", "idle-2"]);
+    }
+
+    #[test]
+    fn audio_tail_buffer_inactivity_finish_discards_buffered_tail_only() {
+        let mut buffer = AudioTailSampleBuffer::default();
+        let mut flushed = Vec::new();
+
+        for (sample, end_secs, active) in [
+            ("speech", 1.0, true),
+            ("idle-1", 2.0, false),
+            ("idle-2", 3.0, false),
+        ] {
+            assert!(buffer.append_timed(sample, Some(end_secs), 2, active));
+            while let Some(sample) = buffer.pop_sample_before_tail(2) {
+                flushed.push(sample);
+            }
+        }
+
+        buffer.discard_tail();
+
+        assert_eq!(flushed, vec!["speech"]);
+        assert!(buffer.samples.is_empty());
+        assert_eq!(buffer.latest_sample_end_secs, None);
+    }
+
+    #[test]
+    fn audio_tail_buffer_flush_policy_preserves_full_audio_on_normal_finish() {
+        let mut buffer = AudioTailSampleBuffer::default();
+
+        append_tail_sample(&mut buffer, "speech", 1.0);
+        append_tail_sample(&mut buffer, "idle", 2.0);
+
+        let flushed = buffer
+            .samples
+            .into_iter()
+            .map(|sample| sample.sample)
+            .collect::<Vec<_>>();
+        assert_eq!(flushed, vec!["speech", "idle"]);
+    }
+
+    #[test]
+    fn audio_tail_buffer_discard_can_leave_no_usable_samples() {
+        let mut buffer = AudioTailSampleBuffer::default();
+
+        assert!(buffer.append_timed("idle-only", Some(1.0), 10, false));
+        buffer.discard_tail();
+
+        assert!(buffer.samples.is_empty());
+        assert_eq!(buffer.latest_sample_end_secs, None);
+    }
+
+    #[test]
+    fn audio_tail_buffer_valid_short_active_sample_survives_inactivity_trim() {
+        let mut buffer = AudioTailSampleBuffer::default();
+        assert!(buffer.append_timed("active-short", Some(0.25), 10, true));
+
+        assert_eq!(buffer.pop_sample_before_tail(10), Some("active-short"));
+        buffer.discard_tail();
+
+        assert!(buffer.samples.is_empty());
+    }
+
+    #[test]
+    fn audio_tail_buffer_tail_only_silent_output_is_ignored() {
+        let mut buffer = AudioTailSampleBuffer::default();
+        assert!(buffer.append_timed("silent-tail", Some(0.25), 10, false));
+
+        assert_eq!(buffer.pop_sample_before_tail(10), None);
+        buffer.discard_tail();
+
+        assert!(buffer.samples.is_empty());
+    }
+
+    #[test]
+    fn audio_activity_threshold_rejects_positive_low_level_noise() {
+        assert!(!audio_activity_level_is_meaningful(Some(0.01), 0.08));
+        assert!(audio_activity_level_is_meaningful(Some(0.08), 0.08));
+        assert!(audio_activity_level_is_meaningful(Some(0.01), 0.0));
+    }
+
+    #[test]
+    fn all_silent_inactivity_output_has_no_usable_samples_after_tail_discard() {
+        let mut buffer = AudioTailSampleBuffer::default();
+        let mut flushed = Vec::new();
+
+        for second in 1..=9 {
+            assert!(buffer.append_timed(
+                format!("startup-noise-{second}"),
+                Some(second as f64),
+                10,
+                audio_activity_level_is_meaningful(Some(0.01), 0.08),
+            ));
+            while let Some(sample) = buffer.pop_sample_before_tail(10) {
+                flushed.push(sample);
+            }
+        }
+
+        buffer.discard_tail();
+
+        assert!(flushed.is_empty());
+        assert!(buffer.samples.is_empty());
+    }
+
+    #[test]
+    fn short_threshold_active_inactivity_output_survives_tail_trim() {
+        let mut buffer = AudioTailSampleBuffer::default();
+        assert!(buffer.append_timed(
+            "short-active",
+            Some(0.25),
+            10,
+            audio_activity_level_is_meaningful(Some(0.25), 0.08),
+        ));
+
+        assert_eq!(buffer.pop_sample_before_tail(10), Some("short-active"));
+        buffer.discard_tail();
+
+        assert!(buffer.samples.is_empty());
+    }
+
+    #[test]
+    fn normal_finalize_policy_keeps_positive_duration_silent_tail() {
+        let mut buffer = AudioTailSampleBuffer::default();
+        assert!(buffer.append_timed(
+            "startup-noise",
+            Some(9.0),
+            10,
+            audio_activity_level_is_meaningful(Some(0.01), 0.08),
+        ));
+
+        let flushed = buffer
+            .samples
+            .into_iter()
+            .map(|sample| sample.sample)
+            .collect::<Vec<_>>();
+
+        assert_eq!(flushed, vec!["startup-noise"]);
+    }
+
+    #[test]
+    fn audio_tail_buffer_nonnumeric_timing_does_not_clear_prior_valid_samples() {
+        let mut buffer = AudioTailSampleBuffer::default();
+        assert!(buffer.append_timed("active-short", Some(0.25), 10, true));
+        assert!(!buffer.append_timed("nonnumeric", None, 10, false));
+
+        assert_eq!(buffer.pop_sample_before_tail(10), Some("active-short"));
+        assert!(buffer.samples.is_empty());
+    }
 
     #[test]
     fn single_output_processing_failure_detail_extracts_single_failure() {

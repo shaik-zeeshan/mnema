@@ -22,8 +22,9 @@ use super::runtime::{
 use super::segments::{
     audio_duration_time_to_ms, audio_segment_started_at_unix_ms_for_file,
     audio_segment_window_from_duration_ms, cleanup_failed_segment_dirs,
-    handle_inactivity_resume_error, pause_microphone_for_inactivity, pause_runtime_for_inactivity,
-    pause_screen_for_inactivity, pause_system_audio_for_inactivity, plan_live_rotation_segment,
+    committed_audio_segments_for_output_files, handle_inactivity_resume_error,
+    pause_microphone_for_inactivity, pause_runtime_for_inactivity, pause_screen_for_inactivity,
+    pause_system_audio_for_inactivity, plan_live_rotation_segment,
     process_inactivity_audio_transitions_for_snapshot, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity_with_start_segment, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
@@ -150,6 +151,60 @@ fn audio_segment_start_falls_back_to_scheduled_boundary_for_base_file() {
         ),
         1_700_000_060_000
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn fresh_start_inactivity_empty_audio_outputs_leave_no_output_or_db_payloads() {
+    let output_files = CaptureOutputFiles {
+        screen_file: None,
+        screen_files: Vec::new(),
+        microphone_file: None,
+        microphone_files: Vec::new(),
+        system_audio_file: None,
+        system_audio_files: Vec::new(),
+    };
+
+    let segments = committed_audio_segments_for_output_files(
+        Some(&independent_source_sessions_fixture()),
+        Some(&SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        1,
+        Some(&output_files),
+    );
+
+    assert!(output_files.microphone_file.is_none());
+    assert!(output_files.microphone_files.is_empty());
+    assert!(output_files.system_audio_file.is_none());
+    assert!(output_files.system_audio_files.is_empty());
+    assert!(segments.is_empty());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn fresh_start_inactivity_valid_active_audio_outputs_survive_db_payload_planning() {
+    let output_files = CaptureOutputFiles {
+        screen_file: None,
+        screen_files: Vec::new(),
+        microphone_file: Some("/tmp/startup-active-microphone.m4a".to_string()),
+        microphone_files: vec!["/tmp/startup-active-microphone.m4a".to_string()],
+        system_audio_file: Some("/tmp/startup-active-system-audio.m4a".to_string()),
+        system_audio_files: vec!["/tmp/startup-active-system-audio.m4a".to_string()],
+    };
+
+    let segments = committed_audio_segments_for_output_files(
+        Some(&independent_source_sessions_fixture()),
+        Some(&SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        1,
+        Some(&output_files),
+    );
+
+    assert_eq!(segments.len(), 2);
+    assert!(segments
+        .iter()
+        .any(|segment| segment.file_path == "/tmp/startup-active-microphone.m4a"));
+    assert!(segments
+        .iter()
+        .any(|segment| segment.file_path == "/tmp/startup-active-system-audio.m4a"));
 }
 
 #[cfg(target_os = "macos")]

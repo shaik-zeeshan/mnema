@@ -8,7 +8,8 @@ use capture_writers::{
     append_audio_sample_to_writer, append_video_sample_to_writer, create_audio_asset_writer,
     create_video_asset_writer_for_sample_buf,
     finalize_screen_video_output_context as writers_finalize_screen_video_output_context,
-    finish_audio_asset_writer, AudioAssetWriterState, VideoAssetWriterState,
+    finish_audio_asset_writer, finish_audio_asset_writer_discarding_inactivity_tail,
+    set_audio_writer_inactivity_tail_trim_seconds, AudioAssetWriterState, VideoAssetWriterState,
 };
 
 #[cfg(target_os = "macos")]
@@ -76,6 +77,7 @@ impl std::fmt::Debug for ScreenFrameExportConfig {
 #[derive(Debug, Clone, Default)]
 pub struct ScreenCaptureSessionOptions {
     pub frame_export: Option<ScreenFrameExportConfig>,
+    pub system_audio_inactivity_tail_trim_seconds: u64,
 }
 
 fn even_dimension(value: u32) -> u32 {
@@ -771,7 +773,10 @@ struct StreamOutputContext {
     screen_video_output_file: Option<String>,
     screen_video_writer: Option<VideoAssetWriterState>,
     video_bitrate_bps: Option<u32>,
+    system_audio_output_file: Option<String>,
     system_audio_writer: Option<AudioAssetWriterState>,
+    system_audio_tail_trim_seconds: u64,
+    system_audio_inactivity_tail_buffer_seconds: u64,
     frame_export: Option<ScreenFrameExportRuntime>,
     first_error: Option<CaptureErrorResponse>,
 }
@@ -1188,6 +1193,17 @@ fn maybe_remove_screen_video_file(path: &str) {
 }
 
 #[cfg(target_os = "macos")]
+fn maybe_remove_system_audio_file(path: &str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => capture_runtime::debug_log!(
+            "[capture-screen] failed to remove zero-sample system audio artifact {path}: {error}"
+        ),
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn validate_screen_video_file(path: &str) -> Result<(), CaptureErrorResponse> {
     use cidre::{av, ns};
 
@@ -1354,6 +1370,7 @@ struct ScreenCaptureKitCaptureSession {
     sources: ScreenCaptureSources,
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportConfig>,
+    system_audio_inactivity_tail_buffer_seconds: u64,
 }
 
 #[cfg(target_os = "macos")]
@@ -1378,6 +1395,15 @@ impl ActiveCaptureSession {
         match &mut self.backend {
             CaptureBackendSession::AvFoundation(session) => session.stop(),
             CaptureBackendSession::ScreenCaptureKit(session) => session.stop(),
+        }
+    }
+
+    fn stop_for_inactivity(&mut self, tail_trim_seconds: u64) -> Result<(), CaptureErrorResponse> {
+        match &mut self.backend {
+            CaptureBackendSession::AvFoundation(session) => session.stop(),
+            CaptureBackendSession::ScreenCaptureKit(session) => {
+                session.stop_for_inactivity(tail_trim_seconds)
+            }
         }
     }
 }
@@ -1466,6 +1492,17 @@ impl ScreenCaptureKitCaptureSession {
     }
 
     fn stop(&mut self) -> Result<(), CaptureErrorResponse> {
+        self.stop_with_inactivity_tail_trim_seconds(0)
+    }
+
+    fn stop_for_inactivity(&mut self, tail_trim_seconds: u64) -> Result<(), CaptureErrorResponse> {
+        self.stop_with_inactivity_tail_trim_seconds(tail_trim_seconds)
+    }
+
+    fn stop_with_inactivity_tail_trim_seconds(
+        &mut self,
+        tail_trim_seconds: u64,
+    ) -> Result<(), CaptureErrorResponse> {
         let mut stop_error: Option<CaptureErrorResponse> = None;
 
         let stream_stopped = match Self::stop_stream(&self.stream, "capture_stop_incomplete") {
@@ -1487,6 +1524,9 @@ impl ScreenCaptureKitCaptureSession {
 
         if stream_stopped {
             synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+            self.stream_output_delegate
+                .inner_mut()
+                .system_audio_tail_trim_seconds = tail_trim_seconds;
             if let Err(error) =
                 finalize_stream_output_context(self.stream_output_delegate.inner_mut())
             {
@@ -1507,11 +1547,15 @@ impl ScreenCaptureKitCaptureSession {
         }
     }
 
-    fn pause_system_audio_writer(&mut self) -> Result<(), CaptureErrorResponse> {
+    fn pause_system_audio_writer_for_inactivity(
+        &mut self,
+        tail_trim_seconds: u64,
+    ) -> Result<(), CaptureErrorResponse> {
         synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
         let ctx = self.stream_output_delegate.inner_mut();
         if let Some(mut writer) = ctx.system_audio_writer.take() {
-            if let Err(error) = capture_writers::finish_audio_asset_writer(&mut writer) {
+            set_audio_writer_inactivity_tail_trim_seconds(&mut writer, tail_trim_seconds);
+            if let Err(error) = finish_audio_asset_writer_discarding_inactivity_tail(&mut writer) {
                 log_capture_error(
                     "failed to finalize system audio writer during soft-pause",
                     &error,
@@ -1537,8 +1581,13 @@ impl ScreenCaptureKitCaptureSession {
             });
         }
         let output_url = ns::Url::with_fs_path_str(output_path, false);
-        let writer = create_audio_asset_writer(&output_url, "system audio")?;
+        let mut writer = create_audio_asset_writer(&output_url, "system audio")?;
+        set_audio_writer_inactivity_tail_trim_seconds(
+            &mut writer,
+            ctx.system_audio_inactivity_tail_buffer_seconds,
+        );
         ctx.system_audio_writer = Some(writer);
+        ctx.system_audio_tail_trim_seconds = 0;
         Ok(())
     }
 
@@ -1584,6 +1633,7 @@ impl ScreenCaptureKitCaptureSession {
             &self.sources,
             self.video_bitrate_bps,
             self.frame_export.clone(),
+            self.system_audio_inactivity_tail_buffer_seconds,
         )
         .map_err(|error| {
             log_capture_error(
@@ -2158,6 +2208,7 @@ fn start_screen_capture_kit_session(
                 sources,
                 video_bitrate_bps,
                 options.frame_export.clone(),
+                options.system_audio_inactivity_tail_trim_seconds,
             )?);
 
         if sources.screen {
@@ -2203,6 +2254,8 @@ fn start_screen_capture_kit_session(
                     sources: *sources,
                     video_bitrate_bps,
                     frame_export: options.frame_export,
+                    system_audio_inactivity_tail_buffer_seconds: options
+                        .system_audio_inactivity_tail_trim_seconds,
                 }),
             },
             recording_file: output_file_str,
@@ -2225,6 +2278,7 @@ fn stream_output_context_for_segment(
     sources: &ScreenCaptureSources,
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportConfig>,
+    system_audio_inactivity_tail_buffer_seconds: u64,
 ) -> Result<StreamOutputContext, CaptureErrorResponse> {
     use cidre::ns;
 
@@ -2241,7 +2295,12 @@ fn stream_output_context_for_segment(
             message: "Missing system audio output file while creating segment writer".to_string(),
         })?;
         let output_url = ns::Url::with_fs_path_str(output_file, false);
-        Some(create_audio_asset_writer(&output_url, "system audio")?)
+        let mut writer = create_audio_asset_writer(&output_url, "system audio")?;
+        set_audio_writer_inactivity_tail_trim_seconds(
+            &mut writer,
+            system_audio_inactivity_tail_buffer_seconds,
+        );
+        Some(writer)
     } else {
         None
     };
@@ -2250,7 +2309,10 @@ fn stream_output_context_for_segment(
         screen_video_output_file,
         screen_video_writer,
         video_bitrate_bps,
+        system_audio_output_file: system_audio_recording_file.map(str::to_owned),
         system_audio_writer,
+        system_audio_tail_trim_seconds: 0,
+        system_audio_inactivity_tail_buffer_seconds,
         frame_export: if sources.screen {
             screen_frame_export_runtime(session_dir, frame_export)?
         } else {
@@ -2311,13 +2373,27 @@ fn finalize_screen_frame_export(
 
 #[cfg(target_os = "macos")]
 fn finalize_secondary_stream_outputs(
+    system_audio_output_file: Option<&str>,
     system_audio_writer: Option<&mut AudioAssetWriterState>,
+    system_audio_tail_trim_seconds: u64,
     frame_export: Option<&mut ScreenFrameExportRuntime>,
 ) -> Result<(), CaptureErrorResponse> {
     let mut failures = Vec::new();
 
     if let Some(writer) = system_audio_writer {
-        if let Err(error) = finish_audio_asset_writer(writer) {
+        set_audio_writer_inactivity_tail_trim_seconds(writer, system_audio_tail_trim_seconds);
+        let result = if system_audio_tail_trim_seconds > 0 {
+            finish_audio_asset_writer_discarding_inactivity_tail(writer)
+        } else {
+            finish_audio_asset_writer(writer)
+        };
+        if let Err(error) = result {
+            if capture_writers::is_no_audio_samples_error_message("system audio", &error.message)
+            {
+                if let Some(path) = system_audio_output_file {
+                    maybe_remove_system_audio_file(path);
+                }
+            }
             failures.push(format!("system audio writer failed: {}", error.message));
         }
     }
@@ -2400,7 +2476,9 @@ fn finalize_stream_output_context(
         validate_screen_video_file,
         || {
             finalize_secondary_stream_outputs(
+                context.system_audio_output_file.as_deref(),
                 context.system_audio_writer.as_mut(),
+                context.system_audio_tail_trim_seconds,
                 context.frame_export.as_mut(),
             )
         },
@@ -2480,6 +2558,14 @@ pub fn rotate_screen_capture_session(
 pub fn pause_system_audio_writer(
     active_session: &mut Option<ActiveCaptureSession>,
 ) -> Result<(), CaptureErrorResponse> {
+    pause_system_audio_writer_for_inactivity(active_session, 0)
+}
+
+#[cfg(target_os = "macos")]
+pub fn pause_system_audio_writer_for_inactivity(
+    active_session: &mut Option<ActiveCaptureSession>,
+    tail_trim_seconds: u64,
+) -> Result<(), CaptureErrorResponse> {
     let Some(session) = active_session.as_mut() else {
         return Err(CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),
@@ -2487,7 +2573,9 @@ pub fn pause_system_audio_writer(
         });
     };
     match &mut session.backend {
-        CaptureBackendSession::ScreenCaptureKit(sck) => sck.pause_system_audio_writer(),
+        CaptureBackendSession::ScreenCaptureKit(sck) => {
+            sck.pause_system_audio_writer_for_inactivity(tail_trim_seconds)
+        }
         CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
             code: "system_audio_pause_unsupported".to_string(),
             message: "System audio soft-pause is only supported on the ScreenCaptureKit backend"
@@ -2522,6 +2610,7 @@ pub fn resume_system_audio_writer(
 #[cfg(target_os = "macos")]
 pub struct StopScreenCaptureSessionArgs<'a> {
     pub active_session: &'a mut Option<ActiveCaptureSession>,
+    pub inactivity_tail_trim_seconds: u64,
 }
 
 #[cfg(target_os = "macos")]
@@ -2531,7 +2620,11 @@ pub fn stop_screen_capture_session(
     let mut stop_error: Option<CaptureErrorResponse> = None;
 
     if let Some(session) = args.active_session.as_mut() {
-        match session.stop() {
+        match if args.inactivity_tail_trim_seconds > 0 {
+            session.stop_for_inactivity(args.inactivity_tail_trim_seconds)
+        } else {
+            session.stop()
+        } {
             Ok(()) => {
                 *args.active_session = None;
             }
@@ -2635,6 +2728,7 @@ pub struct RotatedCaptureOutputs {
 #[cfg(not(target_os = "macos"))]
 pub struct StopScreenCaptureSessionArgs<'a> {
     pub active_session: &'a mut Option<ActiveCaptureSession>,
+    pub inactivity_tail_trim_seconds: u64,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -3232,7 +3326,10 @@ mod tests {
             screen_video_output_file: Some("/tmp/missing-screen-writer.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
+            system_audio_output_file: None,
             system_audio_writer: None,
+            system_audio_tail_trim_seconds: 0,
+            system_audio_inactivity_tail_buffer_seconds: 0,
             frame_export: None,
             first_error: Some(
                 capture_writers::aggregate_output_processing_failures(vec![format!(
@@ -3253,7 +3350,10 @@ mod tests {
             screen_video_output_file: Some("/tmp/missing-screen-writer.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
+            system_audio_output_file: None,
             system_audio_writer: None,
+            system_audio_tail_trim_seconds: 0,
+            system_audio_inactivity_tail_buffer_seconds: 0,
             frame_export: None,
             first_error: Some(
                 capture_writers::aggregate_output_processing_failures(vec![
@@ -3276,7 +3376,10 @@ mod tests {
             screen_video_output_file: Some("/tmp/missing-screen.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
+            system_audio_output_file: None,
             system_audio_writer: None,
+            system_audio_tail_trim_seconds: 0,
+            system_audio_inactivity_tail_buffer_seconds: 0,
             frame_export: None,
             first_error: None,
         };
@@ -3291,7 +3394,10 @@ mod tests {
             screen_video_output_file: Some("/tmp/missing-screen.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
+            system_audio_output_file: None,
             system_audio_writer: None,
+            system_audio_tail_trim_seconds: 0,
+            system_audio_inactivity_tail_buffer_seconds: 0,
             frame_export: None,
             first_error: Some(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
@@ -3333,6 +3439,28 @@ mod tests {
         assert_eq!(logged_errors.len(), 1);
         assert!(logged_errors[0].contains("system audio writer failed:"));
         assert!(logged_errors[0].contains("No system audio audio samples were received"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn zero_sample_system_audio_finalize_removes_output_artifact() {
+        let temp_path = std::env::temp_dir().join(format!(
+            "zero-sample-system-audio-{}.m4a",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&temp_path, b"placeholder")
+            .expect("placeholder audio artifact should exist");
+        let temp_path = temp_path.to_string_lossy().to_string();
+
+        let error = capture_writers::no_audio_samples_error("system audio");
+        if capture_writers::is_no_audio_samples_error_message("system audio", &error.message) {
+            maybe_remove_system_audio_file(&temp_path);
+        }
+
+        assert!(!Path::new(&temp_path).exists());
     }
 
     #[cfg(target_os = "macos")]
