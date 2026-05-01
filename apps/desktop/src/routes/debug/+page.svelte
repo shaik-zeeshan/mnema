@@ -97,6 +97,66 @@
   const micActivitySource = $derived(idleDebug?.activitySources?.find((s) => s.kind === "microphone_capture"));
   const sysAudioActivitySource = $derived(idleDebug?.activitySources?.find((s) => s.kind === "system_audio_capture"));
 
+  type RuntimeSourceLane = {
+    key: "screen" | "microphone" | "systemAudio";
+    label: string;
+    glyph: string;
+    sample: { lastUnixMs: number | null; idleMs: number | null; level: number | null } | null;
+    qualifiedIdleMs: number | null;
+    qualifiedThreshold: number | null;
+  };
+
+  const runtimeLanes = $derived<RuntimeSourceLane[]>(
+    idleDebug
+      ? [
+          {
+            key: "screen",
+            label: "Screen",
+            glyph: "◉",
+            sample: idleDebug.screenActivityLastUnixMs != null
+              ? { lastUnixMs: idleDebug.screenActivityLastUnixMs, idleMs: idleDebug.screenActivityIdleMs, level: null }
+              : null,
+            qualifiedIdleMs: idleDebug.screenActivityIdleMs,
+            qualifiedThreshold: null,
+          },
+          {
+            key: "microphone",
+            label: "Microphone",
+            glyph: "🎙",
+            sample: { lastUnixMs: idleDebug.microphoneActivityLastUnixMs, idleMs: null, level: idleDebug.microphoneActivityLevel },
+            qualifiedIdleMs: idleDebug.microphoneActivityIdleMs,
+            qualifiedThreshold: idleDebug.microphoneActivityThreshold,
+          },
+          {
+            key: "systemAudio",
+            label: "System Audio",
+            glyph: "🔊",
+            sample: { lastUnixMs: idleDebug.systemAudioActivityLastUnixMs, idleMs: null, level: idleDebug.systemAudioActivityLevel },
+            qualifiedIdleMs: idleDebug.systemAudioActivityIdleMs,
+            qualifiedThreshold: idleDebug.systemAudioActivityThreshold,
+          },
+        ]
+      : []
+  );
+
+  /** Compact runtime status word for a source family. */
+  function runtimeStateWord(src: { requested: boolean; paused: boolean; sessionActive: boolean | null; writerActive: boolean | null; reason: string | null }): { word: string; cls: string } {
+    if (!src.requested) return { word: "off", cls: "rs-state rs-state--off" };
+    if (src.sessionActive === null) return { word: src.reason ?? "unknown", cls: "rs-state rs-state--unknown" };
+    if (src.paused) return { word: "paused", cls: "rs-state rs-state--paused" };
+    if (src.sessionActive && src.writerActive) return { word: "running", cls: "rs-state rs-state--running" };
+    if (src.sessionActive && !src.writerActive) return { word: "session only", cls: "rs-state rs-state--partial" };
+    return { word: "idle", cls: "rs-state rs-state--idle" };
+  }
+
+  function shortenPath(p: string | null | undefined, max = 48): string {
+    if (!p) return "—";
+    if (p.length <= max) return p;
+    const head = p.slice(0, 12);
+    const tail = p.slice(-(max - 12 - 1));
+    return `${head}…${tail}`;
+  }
+
   function sourceDecisionSummary(available: boolean, selected: boolean, enabled?: boolean): string {
     if (selected) return "selected";
     if (!available) return "unavailable";
@@ -650,6 +710,128 @@
       {loadingStop ? "Stopping…" : "Stop Recording"}
     </button>
   </div>
+</section>
+
+<!-- ── Runtime sources ──────────────────────────────────────────────────── -->
+<section class="card card--debug">
+  <h2 class="card__title">
+    <span class="debug-tag">dbg</span>
+    Runtime Sources
+    <span class="idle-note">capture session · writer · activity</span>
+    <button class="btn btn--ghost btn--sm" onclick={fetchIdleDebug}>↻</button>
+  </h2>
+
+  {#if idleDebug && idleDebug.runtimeSources}
+    <div class="rs-grid">
+      {#each runtimeLanes as lane (lane.key)}
+        {@const src = idleDebug.runtimeSources[lane.key]}
+        {@const state = runtimeStateWord(src)}
+        <article
+          class="rs-lane rs-lane--{lane.key}"
+          class:rs-lane--off={!src.requested}
+          class:rs-lane--paused={src.paused && src.requested}
+          class:rs-lane--running={src.requested && !src.paused && src.writerActive === true}
+        >
+          <header class="rs-lane__head">
+            <span class="rs-lane__glyph">{lane.glyph}</span>
+            <span class="rs-lane__name">{lane.label}</span>
+            <span class={state.cls}>{state.word}</span>
+          </header>
+
+          <!-- Truth rows: source · session · writer -->
+          <ul class="rs-rows">
+            <li class="rs-row">
+              <span class="rs-row__label">source</span>
+              <span class="rs-row__bar" data-state={src.requested ? "on" : "off"}>
+                <span class="rs-row__bar-fill"></span>
+              </span>
+              <span class="rs-row__val">{src.requested ? "requested" : "not requested"}</span>
+            </li>
+            <li class="rs-row">
+              <span class="rs-row__label">session</span>
+              <span class="rs-row__bar" data-state={src.sessionActive === null ? "unknown" : src.sessionActive ? (src.paused ? "paused" : "on") : "off"}>
+                <span class="rs-row__bar-fill"></span>
+              </span>
+              <span class="rs-row__val">
+                {#if src.sessionActive === null}
+                  {src.reason ?? "—"}
+                {:else if src.sessionActive}
+                  {src.paused ? "running (paused)" : "running"}
+                {:else}
+                  {src.requested ? "detached" : "—"}
+                {/if}
+              </span>
+            </li>
+            <li class="rs-row">
+              <span class="rs-row__label">writer</span>
+              <span class="rs-row__bar" data-state={src.writerActive === null ? "unknown" : src.writerActive ? "on" : src.requested ? "off" : "idle"}>
+                <span class="rs-row__bar-fill"></span>
+              </span>
+              <span class="rs-row__val">
+                {#if src.writerActive === null}
+                  {src.reason ?? "—"}
+                {:else if src.writerActive}
+                  attached
+                {:else if src.requested && src.paused}
+                  finalized (paused)
+                {:else if src.requested}
+                  detached
+                {:else}
+                  —
+                {/if}
+              </span>
+            </li>
+          </ul>
+
+          <!-- Output path -->
+          <div class="rs-path">
+            <span class="rs-path__label">out</span>
+            <span class="rs-path__val" title={src.outputPath ?? ""}>{shortenPath(src.outputPath)}</span>
+          </div>
+
+          <!-- Activity readouts: distinguish raw sample vs threshold-qualified -->
+          <ul class="rs-rows rs-rows--activity">
+            <li class="rs-row">
+              <span class="rs-row__label">sample</span>
+              <span class="rs-row__val rs-row__val--mono">
+                {#if lane.sample == null || lane.sample.lastUnixMs == null}
+                  —
+                {:else}
+                  {formatTimestamp(lane.sample.lastUnixMs)}
+                  {#if lane.sample.level != null}
+                    <span class="idle-note">lvl {(lane.sample.level * 100).toFixed(0)}%</span>
+                  {/if}
+                {/if}
+              </span>
+            </li>
+            <li class="rs-row">
+              <span class="rs-row__label">activity</span>
+              <span class="rs-row__val rs-row__val--mono">
+                {#if lane.qualifiedIdleMs == null}
+                  none
+                {:else}
+                  idle {formatIdleMs(lane.qualifiedIdleMs)}
+                  {#if lane.qualifiedThreshold != null}
+                    <span class="idle-note">thr {(lane.qualifiedThreshold * 100).toFixed(0)}%</span>
+                  {/if}
+                {/if}
+              </span>
+            </li>
+          </ul>
+        </article>
+      {/each}
+    </div>
+    <p class="rs-legend">
+      <span><b class="rs-legend__dot rs-legend__dot--on"></b> attached / running</span>
+      <span><b class="rs-legend__dot rs-legend__dot--paused"></b> requested but paused</span>
+      <span><b class="rs-legend__dot rs-legend__dot--off"></b> detached / not requested</span>
+      <span class="idle-note">sample = raw probe timestamp · activity = threshold-qualified idle</span>
+    </p>
+  {:else if idleDebugError}
+    <p class="debug-err">{idleDebugError}</p>
+  {:else}
+    <p class="empty">runtime status only available while a session is active</p>
+  {/if}
 </section>
 
 <!-- ── System probe ──────────────────────────────────────────────────────── -->
@@ -1878,5 +2060,204 @@
   .job-detail-text--err {
     color: #a05050;
   }
+
+  /* ── Runtime sources ────────────────────────────────────────── */
+  .rs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+  }
+
+  .rs-lane {
+    position: relative;
+    background: #0a0a11;
+    border: 1px solid #1c1c2c;
+    border-radius: 5px;
+    padding: 12px 12px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: hidden;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  /* Subtle vertical accent identifying the source family. */
+  .rs-lane::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 2px;
+    opacity: 0.85;
+  }
+  .rs-lane--screen::before { background: linear-gradient(180deg, #5a4aaa 0%, #2a2050 100%); }
+  .rs-lane--microphone::before { background: linear-gradient(180deg, #4a8a6a 0%, #1a3a2a 100%); }
+  .rs-lane--systemAudio::before { background: linear-gradient(180deg, #b09040 0%, #4a3a18 100%); }
+
+  .rs-lane--off { opacity: 0.5; }
+  .rs-lane--paused { background: #100c08; border-color: #2a2418; }
+  .rs-lane--running { border-color: #1f3d2a; }
+
+  .rs-lane__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .rs-lane__glyph {
+    font-size: 12px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  .rs-lane__name {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #7a7a98;
+    flex: 1;
+  }
+
+  .rs-state {
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 2px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .rs-state--running { background: #0c2218; color: #4dffa8; border-color: #1a4a30; }
+  .rs-state--paused { background: #2a2010; color: #ffb060; border-color: #4a3a18; }
+  .rs-state--partial { background: #1a1a3a; color: #a0a0ff; border-color: #2a2a5a; }
+  .rs-state--idle { background: #161622; color: #6a6a8a; border-color: #26263a; }
+  .rs-state--off { background: #16161e; color: #44445a; border-color: #20202c; }
+  .rs-state--unknown { background: #1c0e0e; color: #c08080; border-color: #3a1a1a; }
+
+  /* Truth rows: tiny indicator + label + value. */
+  .rs-rows {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+  }
+
+  .rs-rows--activity {
+    border-top: 1px dashed #1a1a26;
+    padding-top: 8px;
+  }
+
+  .rs-row {
+    display: grid;
+    grid-template-columns: 56px 28px 1fr;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .rs-row__label {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #383852;
+  }
+
+  /* Indicator bar — colour by state, mimicking a tiny status LED. */
+  .rs-row__bar {
+    position: relative;
+    display: inline-block;
+    width: 100%;
+    height: 4px;
+    border-radius: 2px;
+    background: #14141e;
+    overflow: hidden;
+  }
+  .rs-row__bar-fill {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  .rs-row__bar[data-state="on"] .rs-row__bar-fill {
+    background: linear-gradient(90deg, #1a4a30 0%, #3dffa0 100%);
+    box-shadow: 0 0 6px rgba(61, 255, 160, 0.35);
+  }
+  .rs-row__bar[data-state="paused"] .rs-row__bar-fill {
+    background: linear-gradient(90deg, #4a3618 0%, #ffb060 100%);
+    opacity: 0.85;
+  }
+  .rs-row__bar[data-state="off"] .rs-row__bar-fill { background: #2a2030; opacity: 0.6; }
+  .rs-row__bar[data-state="idle"] .rs-row__bar-fill { background: #20202e; }
+  .rs-row__bar[data-state="unknown"] .rs-row__bar-fill { background: repeating-linear-gradient(45deg, #3a1a1a 0 3px, #1a0a0a 3px 6px); }
+
+  .rs-row__val {
+    font-size: 10px;
+    color: #a0a0c0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rs-row__val--mono {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 10px;
+    color: #8a8ab0;
+    /* Sample/activity readouts: show full text, allow wrapping. */
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  /* Output path block. */
+  .rs-path {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: #07070d;
+    border: 1px solid #16161e;
+    border-radius: 3px;
+  }
+  .rs-path__label {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #383852;
+  }
+  .rs-path__val {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 10px;
+    color: #7a7aa8;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+
+  .rs-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+    font-size: 9px;
+    color: #4a4a66;
+    letter-spacing: 0.04em;
+    padding-top: 4px;
+    border-top: 1px dashed #1a1a26;
+  }
+  .rs-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .rs-legend__dot {
+    display: inline-block;
+    width: 8px;
+    height: 4px;
+    border-radius: 1px;
+  }
+  .rs-legend__dot--on { background: linear-gradient(90deg, #1a4a30 0%, #3dffa0 100%); }
+  .rs-legend__dot--paused { background: linear-gradient(90deg, #4a3618 0%, #ffb060 100%); }
+  .rs-legend__dot--off { background: #2a2030; }
 
 </style>

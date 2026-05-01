@@ -327,6 +327,46 @@ export interface IdleDebugInfo {
 	systemAudioActivityLevel: number | null;
 	/** Whether system audio activity detection is currently enabled. */
 	systemAudioActivityEnabled: boolean;
+	/**
+	 * Operational truth for each capture source family — what is requested,
+	 * whether the underlying capture session/writer is currently attached, and
+	 * the on-disk output path when known. Distinguishes "requested but paused"
+	 * from "session running" from "writer attached/active".
+	 */
+	runtimeSources: RuntimeSourcesStatus;
+}
+
+/** Mirrors the Rust `RuntimeSourcesStatus` struct. */
+export interface RuntimeSourcesStatus {
+	screen: RuntimeSourceStatus;
+	microphone: RuntimeSourceStatus;
+	systemAudio: RuntimeSourceStatus;
+}
+
+/** Mirrors the Rust `RuntimeSourceStatus` struct. */
+export interface RuntimeSourceStatus {
+	/** Source was requested by the active recording. */
+	requested: boolean;
+	/** Source family is currently inactivity-paused. */
+	paused: boolean;
+	/**
+	 * Native capture session for this source is currently attached/running.
+	 * `null` when the platform cannot report this (e.g. non-macOS).
+	 */
+	sessionActive: boolean | null;
+	/**
+	 * Output writer for this source is currently attached and accepting samples
+	 * (session running AND not paused AND output file resolved). `null` when
+	 * the platform cannot report this.
+	 */
+	writerActive: boolean | null;
+	/** Last known on-disk output path for the active segment, when available. */
+	outputPath: string | null;
+	/**
+	 * Short machine-readable reason when truth is unavailable
+	 * (e.g. `"non_macos"`, `"not_requested"`). `null` when normal.
+	 */
+	reason: string | null;
 }
 
 export interface IdleDebugActivitySource {

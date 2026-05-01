@@ -235,14 +235,26 @@
   });
 
   // ─── Audio overlay alignment ─────────────────────────────────────────────
-  // To align audio segments to the frame rail we need to map a unix-ms
-  // timestamp to a fractional slot index. The rail uses `right: i * SLOT`
-  // (newest at the right edge, older to the left), so a segment whose start
-  // time matches frame index i should sit at the same `right` offset.
+  // Audio segment bars need to be **time-proportional** so a 60s system-audio
+  // bar reads as ~6.7× wider than a 9s mic bar. The frame rail itself is
+  // *frame-indexed*, not time-indexed: each frame occupies a fixed-width slot
+  // regardless of capture cadence, and frame cadence is non-uniform (frames
+  // are sampled by the OCR/processing pipeline based on activity, so dense
+  // active periods get many frames while idle periods get few). Mapping
+  // audio segments through fractional frame indices therefore makes bar
+  // *width* track frame count, not real time — a 9s active-period segment
+  // can render wider than a 60s idle-period segment.
+  //
+  // We instead derive a single global `pixelsPerMs` from the loaded frame
+  // window (total inter-tick pixel distance divided by total wall-clock span)
+  // and lay every segment out in real time off the newest frame's tick. Bars
+  // perfectly align with frame ticks only when frame cadence is uniform; when
+  // cadence varies the bar still represents real duration (which is what the
+  // lane is for) and only the per-tick alignment drifts within the segment.
   //
   // `timelineFrames` is newest-first; capturedAt is an ISO-ish string. We
   // pre-compute a parallel array of millisecond timestamps so the alignment
-  // helpers can binary-search without re-parsing on every segment.
+  // helpers don't re-parse on every segment.
   const timelineFrameTimes = $derived.by<number[]>(() => {
     const out = new Array<number>(timelineFrames.length);
     for (let i = 0; i < timelineFrames.length; i++) {
@@ -253,41 +265,25 @@
   });
 
   /**
-   * Map a unix-ms timestamp to a fractional newest-first frame index, where
-   * 0 == newest frame and `timelineFrames.length - 1` == oldest loaded
-   * frame. Linear interpolation between the two bracketing frames; clamped
-   * to the loaded window. Returns `null` only when no frames are loaded.
+   * Pixels-per-millisecond used to size and position audio-segment bars in
+   * real time. Returns `null` when the loaded window can't define a stable
+   * ratio (zero/one frame, or all timestamps collapsed to the same instant);
+   * callers fall back to the first/last frame spacing or to an empty lane.
    *
-   * `timelineFrameTimes` is monotonically non-increasing (newest first), so
-   * we walk-search from the head — segments are sorted ascending by start
-   * time and the rail typically has thousands of frames; a linear scan from
-   * the head would be O(N*M). We binary-search instead.
+   * The denominator is the total time span between the newest and oldest
+   * loaded frame (`times[0] - times[n-1]`); the numerator is the total
+   * pixel distance between their tick centers (`(n - 1) * SLOT_WIDTH`).
    */
-  function unixMsToFractionalIndex(ms: number, times: number[]): number | null {
+  const audioLanePixelsPerMs = $derived.by<number | null>(() => {
+    const times = timelineFrameTimes;
     const n = times.length;
-    if (n === 0) return null;
+    if (n < 2) return null;
     const newest = times[0]!;
     const oldest = times[n - 1]!;
-    if (ms >= newest) return 0;
-    if (ms <= oldest) return n - 1;
-    // Binary search for the index `lo` such that
-    //   times[lo] >= ms > times[lo + 1]
-    // i.e. the newest frame at-or-after `ms` (since newer == larger ms).
-    let lo = 0;
-    let hi = n - 1;
-    while (lo + 1 < hi) {
-      const mid = (lo + hi) >> 1;
-      const t = times[mid]!;
-      if (t >= ms) lo = mid;
-      else hi = mid;
-    }
-    const tLo = times[lo]!;
-    const tHi = times[lo + 1] ?? tLo;
-    const span = tLo - tHi;
-    if (span <= 0) return lo;
-    const frac = (tLo - ms) / span;
-    return lo + frac;
-  }
+    const spanMs = newest - oldest;
+    if (!Number.isFinite(spanMs) || spanMs <= 0) return null;
+    return ((n - 1) * TIMELINE_SLOT_WIDTH) / spanMs;
+  });
 
   type PositionedAudioSegment = AudioSegmentRecord & {
     /** Right offset in px (matches `.timeline-rail__slot`'s right offset). */
@@ -300,34 +296,53 @@
 
   const positionedAudioSegments = $derived.by<PositionedAudioSegment[]>(() => {
     const times = timelineFrameTimes;
-    if (times.length === 0 || audioSegments.length === 0) return [];
+    const n = times.length;
+    if (n === 0 || audioSegments.length === 0) return [];
+    const newestMs = times[0]!;
+    const oldestMs = times[n - 1]!;
+    const pxPerMs = audioLanePixelsPerMs;
+    if (pxPerMs == null) {
+      // Single-frame (or zero-span) window: we can't pick a meaningful
+      // pixels-per-ms. Render every overlapping segment as a hairline at
+      // the newest tick so the lane still surfaces *that* a segment exists
+      // without faking a duration.
+      const halfSlot = TIMELINE_SLOT_WIDTH / 2;
+      const out: PositionedAudioSegment[] = [];
+      for (const seg of audioSegments) {
+        out.push({ ...seg, rightPx: halfSlot, widthPx: 2, visible: true });
+      }
+      return out;
+    }
+    const halfSlot = TIMELINE_SLOT_WIDTH / 2;
+    // Bars rendered to the left of newer frames: track right edge ↔ newest
+    // frame's tick center sits at `right = halfSlot`. A segment's newer end
+    // (segEndUnixMs) is offset (newestMs - segEndMs) ms older than newest,
+    // i.e. `(newestMs - segEndMs) * pxPerMs` to the left of the newest tick
+    // center. Width is the segment's full duration in pixels.
+    //
+    // Out-of-window segments are kept (no clamping) so a segment ending
+    // after the newest loaded frame still gets a width matching its real
+    // duration; the lane viewport's `overflow: hidden` clips any portion
+    // that lies outside the visible track. Visibility filters segments
+    // whose entire pixel extent is outside the visible track range so they
+    // don't get rendered at all.
+    const trackPxSpan = (n - 1) * TIMELINE_SLOT_WIDTH;
     const out: PositionedAudioSegment[] = [];
     for (const seg of audioSegments) {
-      const startIdx = unixMsToFractionalIndex(seg.startUnixMs, times);
-      const endIdx = unixMsToFractionalIndex(seg.endUnixMs, times);
-      if (startIdx == null || endIdx == null) continue;
-      // Newer time → smaller index. End of the segment is later in time, so
-      // its index is smaller. The right-anchored layout means a smaller
-      // index sits further right on the track.
-      const minIdx = Math.min(startIdx, endIdx);
-      const maxIdx = Math.max(startIdx, endIdx);
-      // Frame ticks are 1px wide, centered inside their 8px slot. Each slot
-      // is positioned via `right: i * SLOT_WIDTH` (its left edge), so the
-      // tick's visual center sits at `right = i * SLOT_WIDTH + SLOT_WIDTH/2`
-      // from the track's right edge. Anchoring the bar's right edge at the
-      // newer-tick center (and width spanning to the older-tick center)
-      // lines bars up with the actual ticks instead of being half a slot
-      // off to the right.
-      const halfSlot = TIMELINE_SLOT_WIDTH / 2;
-      const rightPx = minIdx * TIMELINE_SLOT_WIDTH + halfSlot;
-      const widthPx = Math.max(2, (maxIdx - minIdx) * TIMELINE_SLOT_WIDTH);
-      // Visibility: at least one fractional index must fall strictly within
-      // the loaded range. If both clamp to the same edge the segment is
-      // entirely outside the loaded window.
-      const visible = !(
-        (startIdx <= 0 && endIdx <= 0) ||
-        (startIdx >= times.length - 1 && endIdx >= times.length - 1)
-      );
+      const widthMs = Math.max(0, seg.endUnixMs - seg.startUnixMs);
+      const widthPx = Math.max(2, widthMs * pxPerMs);
+      const rightPx = halfSlot + (newestMs - seg.endUnixMs) * pxPerMs;
+      // Visible when the bar's [rightPx, rightPx + widthPx] interval
+      // overlaps [halfSlot, halfSlot + trackPxSpan] (the tick-to-tick
+      // span). Equivalent to checking the segment's time interval overlaps
+      // the loaded window.
+      const leftEdge = rightPx;
+      const rightEdge = rightPx + widthPx;
+      const trackLeft = halfSlot;
+      const trackRight = halfSlot + trackPxSpan;
+      const visible = !(rightEdge < trackLeft || leftEdge > trackRight) ||
+        // Always show segments that fully envelop the loaded window.
+        (seg.startUnixMs <= oldestMs && seg.endUnixMs >= newestMs);
       out.push({ ...seg, rightPx, widthPx, visible });
     }
     return out;
