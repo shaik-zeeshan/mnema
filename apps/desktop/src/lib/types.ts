@@ -453,6 +453,62 @@ export interface ListFramesRequest {
 	beforeId?: number | null;
 }
 
+// ─── Audio Segments ────────────────────────────────────────────────────────
+
+/**
+ * Discriminator for which capture source produced an audio segment.
+ *
+ * Mirrors the Rust `AudioSegmentSourceKind` enum (snake_case wire values).
+ * Each kind corresponds to its own independent source session, distinct
+ * from the screen/frame session.
+ */
+export type AudioSegmentSourceKind = "microphone" | "system_audio";
+
+/**
+ * Mirrors the Rust `AudioSegmentDto` struct returned by `list_audio_segments`.
+ *
+ * `filePath` is an absolute path on disk to the segment's `.m4a` file.
+ * `startedAt` / `endedAt` are ISO 8601 timestamps marking the segment's
+ * captured time range. `sourceSessionId` identifies the per-source capture
+ * session (independent from any screen/frame session id).
+ */
+export interface AudioSegmentDto {
+	id: number;
+	sourceKind: AudioSegmentSourceKind;
+	sourceSessionId: string;
+	segmentIndex: number;
+	filePath: string;
+	startedAt: string;
+	endedAt: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/**
+ * Request body for `invoke('list_audio_segments', { request })`. Both bounds
+ * are ISO 8601 timestamps; the backend treats them as a fully-closed
+ * `[start, end]` window matching `FrameRangeRequest`.
+ */
+export interface ListAudioSegmentsRequest {
+	capturedAtStart: string;
+	capturedAtEnd: string;
+}
+
+/** Request body for `invoke('get_audio_segment_media', { request })`. */
+export interface GetAudioSegmentMediaRequest {
+	audioSegmentId: number;
+}
+
+/**
+ * Audio segment bytes returned by `get_audio_segment_media`.
+ * The frontend builds an `<audio src>` via
+ * `data:${mimeType};base64,${dataBase64}`.
+ */
+export interface AudioSegmentMediaDto {
+	mimeType: string;
+	dataBase64: string;
+}
+
 /** Mirrors the Rust `AppJobDto` struct returned by job-related commands. */
 export interface AppJobDto {
 	id: number;
