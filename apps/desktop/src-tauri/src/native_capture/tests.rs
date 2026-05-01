@@ -40,13 +40,12 @@ use crate::native_capture_settings::{
 use capture_runtime::{CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule};
 use capture_runtime::{RuntimeController, RuntimeState};
 use capture_types::{
-    default_inactivity_activity_mode, default_preview_cache_ttl_seconds,
-    default_video_bitrate, CaptureErrorResponse,
-    CaptureOutputFiles, CaptureSources, CaptureSupportResponse, InactivityActivityMode,
-    MicrophoneControllerState, MicrophoneDisconnectPolicy, MicrophonePreference,
-    MicrophonePreferenceMode, RecordingSettings, ScreenResolution, ScreenResolutionPreset,
-    SourceSessionMeta, SourceSessions, StartNativeCaptureRequest, UpdateRecordingSettingsRequest,
-    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    default_inactivity_activity_mode, default_preview_cache_ttl_seconds, default_video_bitrate,
+    CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
+    InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
+    MicrophonePreference, MicrophonePreferenceMode, RecordingSettings, ScreenResolution,
+    ScreenResolutionPreset, SourceSessionMeta, SourceSessions, StartNativeCaptureRequest,
+    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use tokio::sync::mpsc;
 

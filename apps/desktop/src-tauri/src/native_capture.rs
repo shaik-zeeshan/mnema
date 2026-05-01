@@ -779,6 +779,7 @@ pub fn start_native_capture(
 #[tauri::command]
 pub fn stop_native_capture(
     state: tauri::State<'_, NativeCaptureState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let mut runtime = state.lock().expect("native capture state poisoned");
     let session_id = runtime_log_session_id(&runtime).to_string();
@@ -793,7 +794,7 @@ pub fn stop_native_capture(
         format_output_file_counts(output_files_before_stop.as_ref())
     ));
 
-    if let Err(error) = stop_capture_runtime(&mut runtime) {
+    if let Err(error) = stop_capture_runtime(&mut runtime, Some(&app_handle)) {
         if capture_screen::should_preserve_runtime_on_stop_error(&error) {
             crate::native_capture_debug_log::log(format!(
                 "failed to stop native capture but preserved runtime for recovery (session_id='{}'): [{}] {}",

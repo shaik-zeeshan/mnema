@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tauri::Manager;
+use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc;
 
 use super::activity::current_activity_snapshot;
@@ -370,6 +371,119 @@ fn spawn_frame_artifact_worker(
 }
 
 #[cfg(target_os = "macos")]
+fn rfc3339_from_unix_ms(unix_ms: u64) -> String {
+    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix_ms) * 1_000_000)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn audio_segment_window_for_source(
+    source_session: &SourceSessionMeta,
+    segment_index: u64,
+    schedule: &SegmentSchedule,
+) -> (String, String) {
+    let duration_ms = schedule
+        .segment_duration()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let offset_ms = segment_index.saturating_sub(1).saturating_mul(duration_ms);
+    let started_at_unix_ms = source_session.started_at_unix_ms.saturating_add(offset_ms);
+    let ended_at_unix_ms = started_at_unix_ms.saturating_add(duration_ms);
+
+    (
+        rfc3339_from_unix_ms(started_at_unix_ms),
+        rfc3339_from_unix_ms(ended_at_unix_ms),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn persist_committed_audio_segments(
+    app_handle: Option<&tauri::AppHandle>,
+    source_sessions: Option<&SourceSessions>,
+    schedule: Option<&SegmentSchedule>,
+    segment_index: u64,
+    output_files: Option<&CaptureOutputFiles>,
+) {
+    let (Some(app_handle), Some(source_sessions), Some(schedule), Some(output_files)) =
+        (app_handle, source_sessions, schedule, output_files)
+    else {
+        return;
+    };
+    let Ok(segment_index_i64) = i64::try_from(segment_index) else {
+        return;
+    };
+
+    let mut segments = Vec::new();
+    if let Some(source_session) = source_sessions.microphone.as_ref() {
+        let (started_at, ended_at) =
+            audio_segment_window_for_source(source_session, segment_index, schedule);
+        segments.extend(output_files.microphone_files.iter().map(|file_path| {
+            ::app_infra::NewAudioSegment::new(
+                ::app_infra::AudioSegmentSourceKind::Microphone,
+                source_session.session_id.clone(),
+                segment_index_i64,
+                file_path.clone(),
+                started_at.clone(),
+                ended_at.clone(),
+            )
+        }));
+    }
+    if let Some(source_session) = source_sessions.system_audio.as_ref() {
+        let (started_at, ended_at) =
+            audio_segment_window_for_source(source_session, segment_index, schedule);
+        segments.extend(output_files.system_audio_files.iter().map(|file_path| {
+            ::app_infra::NewAudioSegment::new(
+                ::app_infra::AudioSegmentSourceKind::SystemAudio,
+                source_session.session_id.clone(),
+                segment_index_i64,
+                file_path.clone(),
+                started_at.clone(),
+                ended_at.clone(),
+            )
+        }));
+    }
+
+    if segments.is_empty() {
+        return;
+    }
+
+    let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
+    let persistence = thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                crate::native_capture_debug_log::log(format!(
+                    "failed to initialize native audio segment persistence runtime: {error}"
+                ));
+                return;
+            }
+        };
+
+        runtime.block_on(async move {
+            for segment in segments {
+                if let Err(error) = infra.upsert_audio_segment(&segment).await {
+                    crate::native_capture_debug_log::log(format!(
+                        "failed to persist native audio segment {}: {}",
+                        segment.file_path, error
+                    ));
+                }
+            }
+        });
+    });
+
+    if persistence.join().is_err() {
+        crate::native_capture_debug_log::log(
+            "native audio segment persistence worker panicked".to_string(),
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn pause_microphone_for_inactivity(
     runtime: &mut NativeCaptureRuntime,
 ) -> Result<(), CaptureErrorResponse> {
@@ -612,8 +726,17 @@ pub(super) fn resume_system_audio_from_inactivity(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 pub(super) fn pause_screen_for_inactivity(
     runtime: &mut NativeCaptureRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    pause_screen_for_inactivity_with_app_handle(runtime, None)
+}
+
+#[cfg(target_os = "macos")]
+fn pause_screen_for_inactivity_with_app_handle(
+    runtime: &mut NativeCaptureRuntime,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
     if runtime.inactivity.is_screen_paused() {
         return Ok(());
@@ -736,6 +859,13 @@ pub(super) fn pause_screen_for_inactivity(
         ) {
             append_committed_segment_output_files(committed, segment);
         }
+        persist_committed_audio_segments(
+            app_handle,
+            runtime.source_sessions.as_ref(),
+            runtime.segment_schedule.as_ref(),
+            runtime.current_segment_index,
+            current_segment_output_files.as_ref(),
+        );
     }
 
     runtime.recording_file = None;
@@ -916,8 +1046,17 @@ where
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 pub(super) fn pause_runtime_for_inactivity(
     runtime: &mut NativeCaptureRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    pause_runtime_for_inactivity_with_app_handle(runtime, None)
+}
+
+#[cfg(target_os = "macos")]
+fn pause_runtime_for_inactivity_with_app_handle(
+    runtime: &mut NativeCaptureRuntime,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
     if runtime.inactivity.is_paused {
         return Ok(());
@@ -1022,6 +1161,13 @@ pub(super) fn pause_runtime_for_inactivity(
         ) {
             append_committed_segment_output_files(committed, segment);
         }
+        persist_committed_audio_segments(
+            app_handle,
+            runtime.source_sessions.as_ref(),
+            runtime.segment_schedule.as_ref(),
+            runtime.current_segment_index,
+            current_segment_output_files.as_ref(),
+        );
     }
 
     runtime.current_segment_output_files = None;
@@ -1533,7 +1679,9 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             .inactivity
             .should_pause_screen_for_inactivity(now, activity_snapshot)
         {
-            if let Err(error) = pause_screen_for_inactivity(&mut runtime) {
+            if let Err(error) =
+                pause_screen_for_inactivity_with_app_handle(&mut runtime, Some(&app_handle))
+            {
                 if !capture_screen::should_preserve_runtime_on_stop_error(&error) {
                     mark_runtime_session_failed(&mut runtime);
                     break;
@@ -1574,7 +1722,9 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             .inactivity
             .should_pause_for_inactivity(now, activity_snapshot)
         {
-            if let Err(error) = pause_runtime_for_inactivity(&mut runtime) {
+            if let Err(error) =
+                pause_runtime_for_inactivity_with_app_handle(&mut runtime, Some(&app_handle))
+            {
                 if !capture_screen::should_preserve_runtime_on_stop_error(&error) {
                     mark_runtime_session_failed(&mut runtime);
                     break;
@@ -1879,6 +2029,13 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             ) {
                 append_committed_segment_output_files(committed, segment);
             }
+            persist_committed_audio_segments(
+                Some(&app_handle),
+                runtime.source_sessions.as_ref(),
+                runtime.segment_schedule.as_ref(),
+                runtime.current_segment_index,
+                previous_segment_output_files.as_ref(),
+            );
         }
 
         runtime.current_segment_index = next_index;
@@ -2095,6 +2252,7 @@ pub(super) fn start_capture_runtime(
 
 pub(super) fn stop_capture_runtime(
     runtime: &mut NativeCaptureRuntime,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
     #[cfg(target_os = "macos")]
     {
@@ -2168,6 +2326,13 @@ pub(super) fn stop_capture_runtime(
             ) {
                 append_committed_segment_output_files(committed, segment);
             }
+            persist_committed_audio_segments(
+                app_handle,
+                runtime.source_sessions.as_ref(),
+                runtime.segment_schedule.as_ref(),
+                runtime.current_segment_index,
+                current_segment_output_files.as_ref(),
+            );
         }
 
         if let Some(error) = first_error {
@@ -2183,6 +2348,7 @@ pub(super) fn stop_capture_runtime(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = runtime;
+        let _ = app_handle;
         Ok(())
     }
 }

@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
+use sqlx::{Sqlite, Transaction};
 
 use crate::Result;
 
-use super::{FrameProcessingJob, NewFrame, ProcessingStore, OCR_PROCESSOR};
+use super::{
+    Frame, FrameOcrEnqueueResult, FrameProcessingJob, NewFrame, ProcessingStore, OCR_PROCESSOR,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -61,5 +64,82 @@ impl FramePipeline {
                 request.payload_json(),
             )
             .await
+    }
+
+    pub async fn insert_frame_and_maybe_enqueue_ocr_job(
+        &self,
+        frame: &NewFrame,
+        payload_json: Option<&str>,
+    ) -> Result<FrameOcrEnqueueResult> {
+        let mut transaction = self.processing.begin_transaction().await?;
+
+        let result = self
+            .insert_frame_and_maybe_enqueue_ocr_job_in_transaction(
+                &mut transaction,
+                frame,
+                payload_json,
+            )
+            .await?;
+
+        transaction.commit().await?;
+
+        Ok(result)
+    }
+
+    pub(crate) async fn insert_frame_and_maybe_enqueue_ocr_job_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame: &NewFrame,
+        payload_json: Option<&str>,
+    ) -> Result<FrameOcrEnqueueResult> {
+        let stored_frame = self
+            .processing
+            .insert_frame_in_transaction(transaction, frame)
+            .await?;
+
+        let stored_job = if self
+            .should_enqueue_ocr_for_frame(transaction, &stored_frame)
+            .await?
+        {
+            Some(
+                self.processing
+                    .enqueue_processor_job_for_frame_in_transaction(
+                        transaction,
+                        stored_frame.id,
+                        OCR_PROCESSOR,
+                        payload_json,
+                    )
+                    .await?,
+            )
+        } else {
+            None
+        };
+
+        Ok(FrameOcrEnqueueResult {
+            frame: stored_frame,
+            job: stored_job,
+        })
+    }
+
+    async fn should_enqueue_ocr_for_frame(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame: &Frame,
+    ) -> Result<bool> {
+        let Some(content_fingerprint) = frame.content_fingerprint.as_deref() else {
+            return Ok(true);
+        };
+
+        let has_previous = self
+            .processing
+            .has_previous_frame_with_content_fingerprint_in_transaction(
+                transaction,
+                &frame.session_id,
+                frame.id,
+                content_fingerprint,
+            )
+            .await?;
+
+        Ok(!has_previous)
     }
 }

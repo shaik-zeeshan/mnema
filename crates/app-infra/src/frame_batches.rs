@@ -323,6 +323,24 @@ impl FrameBatchStore {
         active_batch_id: Option<i64>,
     ) -> Result<Vec<FrameBatch>> {
         let mut transaction = self.pool.begin().await?;
+        let closed = self
+            .close_completed_batches_for_session_in_transaction(
+                &mut transaction,
+                session_id,
+                active_batch_id,
+            )
+            .await?;
+
+        transaction.commit().await?;
+        Ok(closed)
+    }
+
+    pub(crate) async fn close_completed_batches_for_session_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        session_id: &str,
+        active_batch_id: Option<i64>,
+    ) -> Result<Vec<FrameBatch>> {
         let rows = sqlx::query(
             "SELECT id FROM frame_batches \
              WHERE session_id = ?1 AND status = 'open' AND (?2 IS NULL OR id != ?2) \
@@ -330,7 +348,7 @@ impl FrameBatchStore {
         )
         .bind(session_id)
         .bind(active_batch_id)
-        .fetch_all(&mut *transaction)
+        .fetch_all(&mut **transaction)
         .await?;
 
         let mut closed = Vec::new();
@@ -339,18 +357,17 @@ impl FrameBatchStore {
             sqlx::query(
                 "UPDATE frame_batches \
                  SET status = 'closed', closed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
-                 WHERE id = ?1 AND status = 'open'",
+                  WHERE id = ?1 AND status = 'open'",
             )
             .bind(batch_id)
-            .execute(&mut *transaction)
+            .execute(&mut **transaction)
             .await?;
 
-            if let Some(batch) = get_frame_batch_optional(&mut *transaction, batch_id).await? {
+            if let Some(batch) = get_frame_batch_optional(&mut **transaction, batch_id).await? {
                 closed.push(batch);
             }
         }
 
-        transaction.commit().await?;
         Ok(closed)
     }
 
@@ -359,12 +376,24 @@ impl FrameBatchStore {
         batch_id: i64,
     ) -> Result<Option<BackgroundJob>> {
         let mut transaction = self.pool.begin().await?;
-        let batch = get_frame_batch_optional(&mut *transaction, batch_id)
+        let job = self
+            .enqueue_finalize_job_if_needed_in_transaction(&mut transaction, batch_id)
+            .await?;
+
+        transaction.commit().await?;
+        Ok(job)
+    }
+
+    pub(crate) async fn enqueue_finalize_job_if_needed_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        batch_id: i64,
+    ) -> Result<Option<BackgroundJob>> {
+        let batch = get_frame_batch_optional(&mut **transaction, batch_id)
             .await?
             .ok_or(AppInfraError::FrameBatchNotFound(batch_id))?;
 
         if batch.status != FrameBatchStatus::Closed || batch.finalize_job_id.is_some() {
-            transaction.commit().await?;
             return Ok(None);
         }
 
@@ -375,7 +404,7 @@ impl FrameBatchStore {
         .bind(JobDescriptor::new(FRAME_BATCH_FINALIZE_JOB_KIND).kind())
         .bind(BackgroundJobStatus::Queued.as_str())
         .bind(&payload)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
         let job_id = job_result.last_insert_rowid();
 
@@ -386,19 +415,21 @@ impl FrameBatchStore {
         )
         .bind(batch_id)
         .bind(job_id)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
 
         if updated.rows_affected() == 0 {
-            transaction.rollback().await?;
+            sqlx::query("DELETE FROM background_jobs WHERE id = ?1")
+                .bind(job_id)
+                .execute(&mut **transaction)
+                .await?;
             return Ok(None);
         }
 
-        let job = get_background_job_optional(&mut *transaction, job_id)
+        let job = get_background_job_optional(&mut **transaction, job_id)
             .await?
             .ok_or(AppInfraError::JobNotFound(job_id))?;
 
-        transaction.commit().await?;
         Ok(Some(job))
     }
 
@@ -595,13 +626,39 @@ impl FrameBatchStore {
         session_id: &str,
         active_batch_id: i64,
     ) -> Result<Vec<FrameBatch>> {
+        let mut transaction = self.pool.begin().await?;
         let closed = self
-            .close_completed_batches_for_session(session_id, Some(active_batch_id))
+            .close_and_schedule_completed_batches_for_frame_in_transaction(
+                &mut transaction,
+                session_id,
+                active_batch_id,
+            )
+            .await?;
+
+        transaction.commit().await?;
+        Ok(closed)
+    }
+
+    pub(crate) async fn close_and_schedule_completed_batches_for_frame_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        session_id: &str,
+        active_batch_id: i64,
+    ) -> Result<Vec<FrameBatch>> {
+        let closed = self
+            .close_completed_batches_for_session_in_transaction(
+                transaction,
+                session_id,
+                Some(active_batch_id),
+            )
             .await?;
 
         let mut first_error: Option<AppInfraError> = None;
         for batch in &closed {
-            if let Err(error) = self.enqueue_finalize_job_if_needed(batch.id).await {
+            if let Err(error) = self
+                .enqueue_finalize_job_if_needed_in_transaction(transaction, batch.id)
+                .await
+            {
                 capture_runtime::debug_log!(
                     "[app-infra][frame-batches] failed to schedule finalize job for batch {}: {}",
                     batch.id,

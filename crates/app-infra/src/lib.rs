@@ -1,4 +1,5 @@
 mod db;
+mod audio_segments;
 pub mod error;
 mod frame_batches;
 pub mod jobs;
@@ -9,6 +10,9 @@ use std::path::Path;
 
 use sqlx::SqlitePool;
 
+pub use audio_segments::{
+    AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
+};
 pub use error::{AppInfraError, Result};
 pub use frame_batches::{
     FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchRuntime,
@@ -33,6 +37,7 @@ pub use status::AppInfraStatus;
 pub struct AppInfra {
     database: db::Database,
     jobs: JobStore,
+    audio_segments: AudioSegmentStore,
     frame_batches: FrameBatchStore,
     processing: ProcessingStore,
     frame_pipeline: FramePipeline,
@@ -52,6 +57,7 @@ impl AppInfra {
     ) -> Result<Self> {
         let database = db::Database::initialize(base_dir.as_ref()).await?;
         let jobs = JobStore::new(database.pool().clone());
+        let audio_segments = AudioSegmentStore::new(database.pool().clone());
         let frame_batches = FrameBatchStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
         let frame_pipeline = FramePipeline::new(processing.clone());
@@ -67,6 +73,7 @@ impl AppInfra {
         Ok(Self {
             database,
             jobs,
+            audio_segments,
             frame_batches,
             processing,
             frame_pipeline,
@@ -86,6 +93,10 @@ impl AppInfra {
 
     pub fn jobs(&self) -> &JobStore {
         &self.jobs
+    }
+
+    pub fn audio_segments(&self) -> &AudioSegmentStore {
+        &self.audio_segments
     }
 
     pub fn processing(&self) -> &ProcessingStore {
@@ -166,7 +177,7 @@ impl AppInfra {
         frame: &NewFrame,
         payload_json: Option<&str>,
     ) -> Result<FrameOcrEnqueueResult> {
-        self.processing
+        self.frame_pipeline
             .insert_frame_and_maybe_enqueue_ocr_job(frame, payload_json)
             .await
     }
@@ -187,7 +198,7 @@ impl AppInfra {
             )
             .await?;
         let persisted = self
-            .processing
+            .frame_pipeline
             .insert_frame_and_maybe_enqueue_ocr_job_in_transaction(
                 &mut transaction,
                 frame,
@@ -202,12 +213,14 @@ impl AppInfra {
                 &persisted.frame.captured_at,
             )
             .await?;
-        transaction.commit().await?;
-
-        let _ = self
-            .frame_batches
-            .close_and_schedule_completed_batches_for_frame(&frame.session_id, batch.id)
+        self.frame_batches
+            .close_and_schedule_completed_batches_for_frame_in_transaction(
+                &mut transaction,
+                &frame.session_id,
+                batch.id,
+            )
             .await?;
+        transaction.commit().await?;
 
         Ok(persisted)
     }
@@ -267,6 +280,26 @@ impl AppInfra {
     ) -> Result<Vec<Frame>> {
         self.processing
             .list_frames_for_segment_workspace(session_id, workspace_prefix)
+            .await
+    }
+
+    pub async fn upsert_audio_segment(&self, segment: &NewAudioSegment) -> Result<AudioSegment> {
+        self.audio_segments.upsert(segment).await
+    }
+
+    pub async fn get_audio_segment(&self, audio_segment_id: i64) -> Result<Option<AudioSegment>> {
+        self.audio_segments.get(audio_segment_id).await
+    }
+
+    pub async fn list_audio_segments_overlapping_range(
+        &self,
+        range_start: &str,
+        range_end: &str,
+        source_kind: Option<AudioSegmentSourceKind>,
+        source_session_id: Option<&str>,
+    ) -> Result<Vec<AudioSegment>> {
+        self.audio_segments
+            .list_overlapping_range(range_start, range_end, source_kind, source_session_id)
             .await
     }
 
@@ -1039,6 +1072,95 @@ mod tests {
     }
 
     #[test]
+    fn audio_segments_upsert_is_idempotent_and_lists_overlapping_ranges() {
+        run_async_test(async {
+            let dir = TestDir::new("audio-segments");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "mic-session",
+                1,
+                "/tmp/mic-1.m4a",
+                "2026-04-12T10:00:00Z",
+                "2026-04-12T10:01:00Z",
+            );
+
+            let inserted = infra
+                .upsert_audio_segment(&segment)
+                .await
+                .expect("audio segment should insert");
+            let updated = infra
+                .upsert_audio_segment(&segment)
+                .await
+                .expect("duplicate audio segment should upsert");
+
+            assert_eq!(inserted.id, updated.id);
+
+            let fetched = infra
+                .get_audio_segment(inserted.id)
+                .await
+                .expect("audio segment should be readable")
+                .expect("audio segment should exist");
+            assert_eq!(fetched, updated);
+
+            let missing = infra
+                .get_audio_segment(inserted.id + 10_000)
+                .await
+                .expect("missing audio segment lookup should succeed");
+            assert!(missing.is_none());
+
+            infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::SystemAudio,
+                    "system-session",
+                    1,
+                    "/tmp/system-1.m4a",
+                    "2026-04-12T10:01:00Z",
+                    "2026-04-12T10:02:00Z",
+                ))
+                .await
+                .expect("system audio segment should insert");
+
+            let overlapping = infra
+                .list_audio_segments_overlapping_range(
+                    "2026-04-12T10:00:30Z",
+                    "2026-04-12T10:01:30Z",
+                    None,
+                    None,
+                )
+                .await
+                .expect("overlapping audio segments should list");
+            assert_eq!(overlapping.len(), 2);
+            assert_eq!(overlapping[0].source_kind, AudioSegmentSourceKind::Microphone);
+            assert_eq!(overlapping[1].source_kind, AudioSegmentSourceKind::SystemAudio);
+
+            let microphone_only = infra
+                .list_audio_segments_overlapping_range(
+                    "2026-04-12T10:00:30Z",
+                    "2026-04-12T10:01:30Z",
+                    Some(AudioSegmentSourceKind::Microphone),
+                    Some("mic-session"),
+                )
+                .await
+                .expect("filtered audio segments should list");
+            assert_eq!(microphone_only, vec![updated]);
+
+            let outside = infra
+                .list_audio_segments_overlapping_range(
+                    "2026-04-12T10:02:00Z",
+                    "2026-04-12T10:03:00Z",
+                    None,
+                    None,
+                )
+                .await
+                .expect("outside range should list");
+            assert!(outside.is_empty());
+        });
+    }
+
+    #[test]
     fn frames_can_be_listed_with_limit_and_offset() {
         run_async_test(async {
             let dir = TestDir::new("processing-frames-pagination");
@@ -1513,7 +1635,7 @@ mod tests {
                 .await
                 .expect("batch should persist");
             let persisted = initial
-                .processing()
+                .frame_pipeline()
                 .insert_frame_and_maybe_enqueue_ocr_job(
                     &NewFrame::new(
                         "session-batch-reconcile",
@@ -1588,7 +1710,7 @@ mod tests {
                 .await
                 .expect("batch should persist in transaction");
             let persisted = infra
-                .processing()
+                .frame_pipeline()
                 .insert_frame_and_maybe_enqueue_ocr_job_in_transaction(
                     &mut transaction,
                     &test_frame_with_fingerprint(
@@ -1701,6 +1823,83 @@ mod tests {
                 .expect("second batch frames should list");
             assert_eq!(second_batch_frames.len(), 1);
             assert_eq!(second_batch_frames[0].id, second.frame.id);
+        });
+    }
+
+    #[test]
+    fn batch_insert_rolls_back_frame_and_batch_when_finalize_scheduling_fails() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-batch-finalize-atomic");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let first = infra
+                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                    &NewFrame::new(
+                        "session-finalize-atomic",
+                        "/tmp/session-finalize-atomic-segment-0001/frames/frame-1.png",
+                        "2026-04-12T10:01:00Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+
+            sqlx::query(
+                "CREATE TRIGGER fail_frame_batch_finalize_job \
+                 BEFORE INSERT ON background_jobs \
+                 WHEN NEW.kind = 'frame_batch_combine' \
+                 BEGIN \
+                     SELECT RAISE(FAIL, 'forced finalize scheduling failure'); \
+                 END",
+            )
+            .execute(infra.pool())
+            .await
+            .expect("failure trigger should install");
+
+            let error = infra
+                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                    &NewFrame::new(
+                        "session-finalize-atomic",
+                        "/tmp/session-finalize-atomic-segment-0002/frames/frame-2.png",
+                        "2026-04-12T10:11:00Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect_err("finalize scheduling failure should abort batch insert");
+            assert!(matches!(error, AppInfraError::Sqlx(_)));
+
+            sqlx::query("DROP TRIGGER fail_frame_batch_finalize_job")
+                .execute(infra.pool())
+                .await
+                .expect("failure trigger should drop");
+
+            let batches = infra
+                .list_frame_batches(Some("session-finalize-atomic"))
+                .await
+                .expect("batches should list");
+            assert_eq!(batches.len(), 1);
+            assert_eq!(batches[0].status, FrameBatchStatus::Open);
+            assert_eq!(batches[0].frame_count, 1);
+            assert!(batches[0].finalize_job_id.is_none());
+
+            let frames = infra
+                .list_frames(Some("session-finalize-atomic"), None, None, None)
+                .await
+                .expect("frames should list");
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].id, first.frame.id);
+
+            let finalize_job_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM background_jobs WHERE kind = ?1",
+            )
+            .bind(FRAME_BATCH_FINALIZE_JOB_KIND)
+            .fetch_one(infra.pool())
+            .await
+            .expect("finalize jobs should count");
+            assert_eq!(finalize_job_count, 0);
         });
     }
 

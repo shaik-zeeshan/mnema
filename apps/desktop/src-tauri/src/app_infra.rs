@@ -46,7 +46,9 @@ pub struct FramePreviewCache {
 impl FramePreviewCache {
     fn get(&mut self, frame_id: i64, ttl: Duration, now: Instant) -> Option<FramePreviewDto> {
         self.evict_expired(ttl, now);
-        self.entries.get(&frame_id).map(|entry| entry.preview.clone())
+        self.entries
+            .get(&frame_id)
+            .map(|entry| entry.preview.clone())
     }
 
     fn insert(&mut self, frame_id: i64, preview: FramePreviewDto, ttl: Duration, now: Instant) {
@@ -149,6 +151,12 @@ pub struct GetFramePreviewRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetAudioSegmentMediaRequest {
+    pub audio_segment_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListFramesRequest {
     pub session_id: Option<String>,
     pub before_id: Option<i64>,
@@ -159,6 +167,13 @@ pub struct ListFramesRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameCapturedAtRangeRequest {
+    pub captured_at_start: String,
+    pub captured_at_end: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAudioSegmentsRequest {
     pub captured_at_start: String,
     pub captured_at_end: String,
 }
@@ -242,6 +257,13 @@ pub struct FramePreviewDto {
     pub source_kind: FramePreviewSourceKindDto,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSegmentMediaDto {
+    pub mime_type: String,
+    pub data_base64: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedSegmentPreviewPaths {
     workspace_dir: PathBuf,
@@ -284,6 +306,20 @@ pub struct ProcessingResultDto {
 pub struct FrameProcessingJobDto {
     pub frame: FrameDto,
     pub job: ProcessingJobDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSegmentDto {
+    pub id: i64,
+    pub source_kind: ::app_infra::AudioSegmentSourceKind,
+    pub source_session_id: String,
+    pub segment_index: i64,
+    pub file_path: String,
+    pub started_at: String,
+    pub ended_at: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 impl From<::app_infra::BackgroundJob> for AppJobDto {
@@ -373,6 +409,22 @@ impl From<::app_infra::FrameProcessingJob> for FrameProcessingJobDto {
     }
 }
 
+impl From<::app_infra::AudioSegment> for AudioSegmentDto {
+    fn from(segment: ::app_infra::AudioSegment) -> Self {
+        Self {
+            id: segment.id,
+            source_kind: segment.source_kind,
+            source_session_id: segment.source_session_id,
+            segment_index: segment.segment_index,
+            file_path: segment.file_path,
+            started_at: segment.started_at,
+            ended_at: segment.ended_at,
+            created_at: segment.created_at,
+            updated_at: segment.updated_at,
+        }
+    }
+}
+
 impl From<SubmitDebugCpuJobRequest> for ::app_infra::DebugCpuJobRequest {
     fn from(request: SubmitDebugCpuJobRequest) -> Self {
         Self {
@@ -452,6 +504,47 @@ fn frame_preview_payload(
     }
 }
 
+fn audio_segment_mime_type(file_path: &Path) -> &'static str {
+    match file_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("m4a") => "audio/mp4; codecs=mp4a.40.2",
+        Some("mp4") => "audio/mp4",
+        Some("aac") => "audio/aac",
+        Some("wav") => "audio/wav",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn get_audio_segment_media_inner(
+    infra: &::app_infra::AppInfra,
+    audio_segment_id: i64,
+) -> ::app_infra::Result<Option<AudioSegmentMediaDto>> {
+    let Some(segment) = infra.get_audio_segment(audio_segment_id).await? else {
+        return Ok(None);
+    };
+
+    let file_path = PathBuf::from(&segment.file_path);
+    let bytes = fs::read(&file_path).map_err(|error| {
+        ::app_infra::AppInfraError::Io(std::io::Error::new(
+            error.kind(),
+            format!(
+                "failed to read persisted audio segment {} at {}: {error}",
+                segment.id,
+                file_path.display()
+            ),
+        ))
+    })?;
+
+    Ok(Some(AudioSegmentMediaDto {
+        mime_type: audio_segment_mime_type(&file_path).to_string(),
+        data_base64: BASE64_STANDARD.encode(bytes),
+    }))
+}
+
 fn resolve_segment_preview_paths(frame_file_path: &Path) -> Option<ResolvedSegmentPreviewPaths> {
     let frames_dir = frame_file_path.parent()?;
     if frames_dir.file_name()?.to_str()? != "frames" {
@@ -524,8 +617,7 @@ fn read_nearest_segment_frame_preview(
 
         let should_replace = match best_match {
             Some((best_has_distance, best_distance, best_index, _)) => {
-                (!has_distance, distance, index)
-                    < (!best_has_distance, best_distance, best_index)
+                (!has_distance, distance, index) < (!best_has_distance, best_distance, best_index)
             }
             None => true,
         };
@@ -555,13 +647,15 @@ fn png_bytes_from_cg_image(image: &cidre::cg::Image) -> Result<Vec<u8>, String> 
             output_path.display()
         )
     })?;
-    let mut image_destination = cg::ImageDst::with_url(output_url.as_ref(), png_type_identifier.as_cf(), 1)
-        .ok_or_else(|| {
-            format!(
-                "failed to create temporary PNG image destination at {}",
-                output_path.display()
-            )
-        })?;
+    let mut image_destination =
+        cg::ImageDst::with_url(output_url.as_ref(), png_type_identifier.as_cf(), 1).ok_or_else(
+            || {
+                format!(
+                    "failed to create temporary PNG image destination at {}",
+                    output_path.display()
+                )
+            },
+        )?;
     image_destination.add_image(image, None);
 
     if !image_destination.finalize() {
@@ -1031,6 +1125,41 @@ pub async fn get_latest_frame_in_range(
 }
 
 #[tauri::command]
+pub async fn list_audio_segments(
+    request: ListAudioSegmentsRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<AudioSegmentDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .list_audio_segments_overlapping_range(
+            &request.captured_at_start,
+            &request.captured_at_end,
+            None,
+            None,
+        )
+        .await
+        .map(|segments| segments.into_iter().map(AudioSegmentDto::from).collect())
+        .map_err(|error| format!("failed to list audio segments: {error}"))
+}
+
+#[tauri::command]
+pub async fn get_audio_segment_media(
+    request: GetAudioSegmentMediaRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<AudioSegmentMediaDto, String> {
+    let infra = Arc::clone(&*state);
+    get_audio_segment_media_inner(&infra, request.audio_segment_id)
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to get audio segment media {}: {error}",
+                request.audio_segment_id
+            )
+        })?
+        .ok_or_else(|| format!("audio segment {} not found", request.audio_segment_id))
+}
+
+#[tauri::command]
 pub async fn get_frame(
     request: GetFrameRequest,
     state: tauri::State<'_, AppInfraState>,
@@ -1061,10 +1190,11 @@ pub async fn get_frame_preview(
     }
 
     let now = Instant::now();
-    if let Some(preview) = cache
-        .lock()
-        .expect("frame preview cache poisoned")
-        .get(request.frame_id, ttl, now)
+    if let Some(preview) =
+        cache
+            .lock()
+            .expect("frame preview cache poisoned")
+            .get(request.frame_id, ttl, now)
     {
         return Ok(Some(preview));
     }
@@ -1074,10 +1204,12 @@ pub async fn get_frame_preview(
         .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id))?;
 
     if let Some(preview) = preview.as_ref() {
-        cache
-            .lock()
-            .expect("frame preview cache poisoned")
-            .insert(request.frame_id, preview.clone(), ttl, now);
+        cache.lock().expect("frame preview cache poisoned").insert(
+            request.frame_id,
+            preview.clone(),
+            ttl,
+            now,
+        );
     }
 
     Ok(preview)
@@ -1394,9 +1526,7 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-            let workspace_dir = dir
-                .path()
-                .join("2026/04/12/.session-preview-segment-0001");
+            let workspace_dir = dir.path().join("2026/04/12/.session-preview-segment-0001");
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames directory should be created");
 
@@ -1484,7 +1614,8 @@ mod tests {
             let error_message = error.to_string();
             assert!(
                 error_message.contains(&video_path.display().to_string())
-                    || error_message.contains("video frame preview fallback is only supported on macOS"),
+                    || error_message
+                        .contains("video frame preview fallback is only supported on macOS"),
                 "unexpected error: {error_message}"
             );
             assert!(!error_message.contains("segment video does not exist"));

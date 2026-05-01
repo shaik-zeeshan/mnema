@@ -42,9 +42,24 @@ impl ProcessingStore {
         Self { pool }
     }
 
+    pub(crate) async fn begin_transaction(&self) -> Result<Transaction<'_, Sqlite>> {
+        Ok(self.pool.begin().await?)
+    }
+
     pub async fn insert_frame(&self, frame: &NewFrame) -> Result<Frame> {
         let frame_id = insert_frame_record(&self.pool, frame).await?;
         self.get_required_frame(frame_id).await
+    }
+
+    pub(crate) async fn insert_frame_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame: &NewFrame,
+    ) -> Result<Frame> {
+        let frame_id = insert_frame_record(&mut **transaction, frame).await?;
+        get_frame_optional(&mut **transaction, frame_id)
+            .await?
+            .ok_or(AppInfraError::FrameNotFound(frame_id))
     }
 
     pub async fn enqueue_job(&self, draft: &ProcessingJobDraft) -> Result<ProcessingJob> {
@@ -57,6 +72,45 @@ impl ProcessingStore {
         .await?;
 
         self.get_required_job(job_id).await
+    }
+
+    pub(crate) async fn enqueue_processor_job_for_frame_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame_id: i64,
+        processor: &str,
+        payload_json: Option<&str>,
+    ) -> Result<ProcessingJob> {
+        let subject = ProcessingSubject::frame(frame_id);
+        let job_id =
+            insert_processing_job_record(&mut **transaction, &subject, processor, payload_json)
+                .await?;
+
+        get_processing_job_optional(&mut **transaction, job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))
+    }
+
+    pub(crate) async fn has_previous_frame_with_content_fingerprint_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        session_id: &str,
+        before_frame_id: i64,
+        content_fingerprint: &str,
+    ) -> Result<bool> {
+        let previous_fingerprint = sqlx::query(
+            "SELECT 1 \
+             FROM frames \
+             WHERE session_id = ?1 AND id < ?2 AND content_fingerprint = ?3 \
+             LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(before_frame_id)
+        .bind(content_fingerprint)
+        .fetch_optional(&mut **transaction)
+        .await?;
+
+        Ok(previous_fingerprint.is_some())
     }
 
     pub async fn insert_frame_and_enqueue_processor_job(
@@ -108,64 +162,6 @@ impl ProcessingStore {
     ) -> Result<FrameProcessingJob> {
         self.insert_frame_and_enqueue_processor_job(frame, OCR_PROCESSOR, payload_json)
             .await
-    }
-
-    pub async fn insert_frame_and_maybe_enqueue_ocr_job(
-        &self,
-        frame: &NewFrame,
-        payload_json: Option<&str>,
-    ) -> Result<FrameOcrEnqueueResult> {
-        let mut transaction = self.pool.begin().await?;
-
-        let result = self
-            .insert_frame_and_maybe_enqueue_ocr_job_in_transaction(
-                &mut transaction,
-                frame,
-                payload_json,
-            )
-            .await?;
-
-        transaction.commit().await?;
-
-        Ok(result)
-    }
-
-    pub(crate) async fn insert_frame_and_maybe_enqueue_ocr_job_in_transaction(
-        &self,
-        transaction: &mut Transaction<'_, Sqlite>,
-        frame: &NewFrame,
-        payload_json: Option<&str>,
-    ) -> Result<FrameOcrEnqueueResult> {
-        let frame_id = insert_frame_record(&mut **transaction, frame).await?;
-        let stored_frame = get_frame_optional(&mut **transaction, frame_id)
-            .await?
-            .ok_or(AppInfraError::FrameNotFound(frame_id))?;
-
-        let should_enqueue =
-            should_enqueue_ocr_for_frame(&mut **transaction, &stored_frame).await?;
-        let stored_job = if should_enqueue {
-            let subject = ProcessingSubject::frame(frame_id);
-            let job_id = insert_processing_job_record(
-                &mut **transaction,
-                &subject,
-                OCR_PROCESSOR,
-                payload_json,
-            )
-            .await?;
-
-            Some(
-                get_processing_job_optional(&mut **transaction, job_id)
-                    .await?
-                    .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?,
-            )
-        } else {
-            None
-        };
-
-        Ok(FrameOcrEnqueueResult {
-            frame: stored_frame,
-            job: stored_job,
-        })
     }
 
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
@@ -776,29 +772,6 @@ fn map_frame_summary(row: SqliteRow) -> Result<FrameSummary> {
         id: row.get("id"),
         captured_at: row.get("captured_at"),
     })
-}
-
-async fn should_enqueue_ocr_for_frame<'e, E>(executor: E, frame: &Frame) -> Result<bool>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    let Some(content_fingerprint) = frame.content_fingerprint.as_deref() else {
-        return Ok(true);
-    };
-
-    let previous_fingerprint = sqlx::query(
-        "SELECT 1 \
-         FROM frames \
-         WHERE session_id = ?1 AND id < ?2 AND content_fingerprint = ?3 \
-         LIMIT 1",
-    )
-    .bind(&frame.session_id)
-    .bind(frame.id)
-    .bind(content_fingerprint)
-    .fetch_optional(executor)
-    .await?;
-
-    Ok(previous_fingerprint.is_none())
 }
 
 fn map_processing_job(row: SqliteRow) -> Result<ProcessingJob> {

@@ -42,6 +42,8 @@ pub fn run() {
             app_infra::list_frames,
             app_infra::list_frame_summaries_in_range,
             app_infra::get_latest_frame_in_range,
+            app_infra::list_audio_segments,
+            app_infra::get_audio_segment_media,
             app_infra::get_frame,
             app_infra::get_frame_preview,
             app_infra::list_processing_jobs,
