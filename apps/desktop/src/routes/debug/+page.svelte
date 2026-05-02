@@ -14,6 +14,10 @@
     AppInfraStatus,
     AppJobDto,
     BackgroundJobStatus,
+    SegmentWorkspaceCleanupDebugInfoDto,
+    SegmentWorkspaceCleanupDisposition,
+    FrameBatchStatus,
+    ProcessingJobStatus,
   } from "$lib/types";
   import { captureSession, setSession } from "$lib/session.svelte";
 
@@ -429,6 +433,80 @@
   let postSubmitPollCount = $state(0);
   const POST_SUBMIT_POLL_MAX = 8;  // poll up to ~8s after submit then stop
   const POST_SUBMIT_POLL_MS = 1000;
+
+  // ─── Hidden segment workspace classifier ──────────────────────────────────
+
+  let workspaceDirInput = $state("");
+  let workspaceClassification = $state<SegmentWorkspaceCleanupDebugInfoDto | null>(null);
+  // `null` here means "no path looked like a hidden segment workspace" (the
+  // backend returned `Option::None`); distinct from "have not run yet".
+  let workspaceClassificationLoaded = $state(false);
+  let workspaceClassificationError = $state<string | null>(null);
+  let loadingWorkspaceClassification = $state(false);
+
+  async function classifyWorkspace() {
+    const trimmed = workspaceDirInput.trim();
+    if (!trimmed) {
+      workspaceClassificationError = "workspace path is required";
+      return;
+    }
+    loadingWorkspaceClassification = true;
+    workspaceClassificationError = null;
+    try {
+      const result = await invoke<SegmentWorkspaceCleanupDebugInfoDto | null>(
+        "classify_hidden_segment_workspace",
+        { request: { workspaceDir: trimmed } }
+      );
+      workspaceClassification = result;
+      workspaceClassificationLoaded = true;
+    } catch (err) {
+      workspaceClassification = null;
+      workspaceClassificationLoaded = false;
+      workspaceClassificationError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      loadingWorkspaceClassification = false;
+    }
+  }
+
+  function dispositionLabel(d: SegmentWorkspaceCleanupDisposition): string {
+    switch (d) {
+      case "referenced_by_incomplete_batch": return "referenced by incomplete batch";
+      case "referenced_by_nonterminal_ocr": return "referenced by non-terminal OCR";
+      case "missing_visible_segment_sibling": return "missing visible segment sibling";
+      case "completed_only": return "completed only";
+      case "no_references": return "no references";
+      default: return d;
+    }
+  }
+
+  function dispositionBadgeClass(d: SegmentWorkspaceCleanupDisposition): string {
+    switch (d) {
+      case "completed_only":
+      case "no_references":
+        return "badge badge--ok badge--sm";
+      case "referenced_by_incomplete_batch":
+      case "referenced_by_nonterminal_ocr":
+        return "badge badge--warn badge--sm";
+      case "missing_visible_segment_sibling":
+        return "badge badge--err badge--sm";
+      default:
+        return "badge badge--neutral badge--sm";
+    }
+  }
+
+  function batchStatusBadgeClass(status: FrameBatchStatus): string {
+    if (status === "completed") return "badge badge--ok badge--sm";
+    if (status === "failed") return "badge badge--err badge--sm";
+    if (status === "processing") return "badge badge--running badge--sm";
+    return "badge badge--neutral badge--sm";
+  }
+
+  function ocrStatusBadgeClass(status: ProcessingJobStatus): string {
+    if (status === "completed") return "badge badge--ok badge--sm";
+    if (status === "failed") return "badge badge--err badge--sm";
+    if (status === "running") return "badge badge--running badge--sm";
+    return "badge badge--neutral badge--sm";
+  }
 
   async function fetchInfraStatus() {
     loadingInfraStatus = true;
@@ -1237,6 +1315,126 @@
     <p class="infra-db-path">{infraStatus.databasePath}</p>
   {:else}
     <p class="empty">—</p>
+  {/if}
+</section>
+
+<!-- ── Hidden segment workspace classifier ───────────────────────────────── -->
+<section class="card card--debug">
+  <h2 class="card__title">
+    <span class="debug-tag">dbg</span>
+    Segment Workspace Cleanup
+    <span class="idle-note">classify a hidden segment workspace dir</span>
+  </h2>
+
+  <form
+    class="job-submit-form"
+    onsubmit={(e) => {
+      e.preventDefault();
+      classifyWorkspace();
+    }}
+  >
+    <input
+      class="job-input"
+      type="text"
+      placeholder="/…/.z/recordings/YYYY/MM/DD/.session-segment-####"
+      bind:value={workspaceDirInput}
+      disabled={loadingWorkspaceClassification}
+      spellcheck="false"
+      autocomplete="off"
+    />
+    <button
+      class="btn btn--primary btn--sm"
+      type="submit"
+      disabled={loadingWorkspaceClassification || workspaceDirInput.trim() === ""}
+    >
+      {loadingWorkspaceClassification ? "…" : "classify"}
+    </button>
+  </form>
+
+  {#if workspaceClassificationError}
+    <p class="debug-err">{workspaceClassificationError}</p>
+  {:else if workspaceClassificationLoaded && workspaceClassification == null}
+    <p class="empty">
+      not a hidden segment workspace path (expected a directory named
+      <code>.&lt;session&gt;-segment-####</code>)
+    </p>
+  {:else if workspaceClassification}
+    {@const info = workspaceClassification}
+    <ul class="kv-list">
+      <li>
+        <span class="kv-key kv-key--wide">disposition</span>
+        <span class={dispositionBadgeClass(info.disposition)}>
+          {dispositionLabel(info.disposition)}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">safe to remove</span>
+        <span class={info.safeToRemove ? "badge badge--ok badge--sm" : "badge badge--warn badge--sm"}>
+          {info.safeToRemove ? "yes" : "no"}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">visible segment</span>
+        <span class={info.visibleSegmentExists ? "badge badge--ok badge--sm" : "badge badge--err badge--sm"}>
+          {info.visibleSegmentExists ? "present" : "missing"}
+        </span>
+        <span class="kv-val kv-val--mono" title={info.paths.visibleSegmentPath}>
+          {shortenPath(info.paths.visibleSegmentPath)}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">frame count</span>
+        <span class="kv-val kv-val--mono">{info.frameCount}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">workspace</span>
+        <span class="kv-val kv-val--mono" title={info.paths.workspaceDir}>
+          {shortenPath(info.paths.workspaceDir)}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">frames dir</span>
+        <span class="kv-val kv-val--mono" title={info.paths.framesDir}>
+          {shortenPath(info.paths.framesDir)}
+        </span>
+      </li>
+    </ul>
+
+    <div class="idle-section-label">
+      Batch references
+      <span class="idle-note">{info.batchReferences.length}</span>
+    </div>
+    {#if info.batchReferences.length === 0}
+      <p class="empty">none</p>
+    {:else}
+      <ul class="kv-list">
+        {#each info.batchReferences as ref (ref.batchId)}
+          <li>
+            <span class="kv-key kv-key--wide">batch #{ref.batchId}</span>
+            <span class={batchStatusBadgeClass(ref.status)}>{ref.status}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    <div class="idle-section-label">
+      Non-terminal OCR references
+      <span class="idle-note">{info.nonterminalOcrReferences.length}</span>
+    </div>
+    {#if info.nonterminalOcrReferences.length === 0}
+      <p class="empty">none</p>
+    {:else}
+      <ul class="kv-list">
+        {#each info.nonterminalOcrReferences as ref (ref.jobId)}
+          <li>
+            <span class="kv-key kv-key--wide">frame #{ref.frameId} · job #{ref.jobId}</span>
+            <span class={ocrStatusBadgeClass(ref.status)}>{ref.status}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {:else}
+    <p class="empty">enter a hidden segment workspace path to classify</p>
   {/if}
 </section>
 

@@ -549,6 +549,55 @@ export interface AudioSegmentMediaDto {
 	dataBase64: string;
 }
 
+/** Mirrors the Rust `FrameBatchStatus` enum (snake_case wire values). */
+export type FrameBatchStatus = "open" | "closed" | "processing" | "completed" | "failed";
+
+/** Mirrors the Rust `ProcessingJobStatus` enum (snake_case wire values). */
+export type ProcessingJobStatus = "queued" | "running" | "completed" | "failed";
+
+/** Mirrors the Rust `SegmentWorkspaceCleanupDisposition` enum (snake_case wire values). */
+export type SegmentWorkspaceCleanupDisposition =
+	| "referenced_by_incomplete_batch"
+	| "referenced_by_nonterminal_ocr"
+	| "missing_visible_segment_sibling"
+	| "completed_only"
+	| "no_references";
+
+/** Mirrors the Rust `HiddenSegmentWorkspacePathsDto`. */
+export interface HiddenSegmentWorkspacePathsDto {
+	workspaceDir: string;
+	framesDir: string;
+	visibleSegmentPath: string;
+}
+
+/** Mirrors the Rust `SegmentWorkspaceBatchReferenceDto`. */
+export interface SegmentWorkspaceBatchReferenceDto {
+	batchId: number;
+	status: FrameBatchStatus;
+}
+
+/** Mirrors the Rust `SegmentWorkspaceOcrReferenceDto`. */
+export interface SegmentWorkspaceOcrReferenceDto {
+	frameId: number;
+	jobId: number;
+	status: ProcessingJobStatus;
+}
+
+/**
+ * Mirrors the Rust `SegmentWorkspaceCleanupDebugInfoDto` returned by
+ * `classify_hidden_segment_workspace`. The command returns `null` when the
+ * supplied path does not look like a hidden segment workspace directory.
+ */
+export interface SegmentWorkspaceCleanupDebugInfoDto {
+	paths: HiddenSegmentWorkspacePathsDto;
+	disposition: SegmentWorkspaceCleanupDisposition;
+	safeToRemove: boolean;
+	visibleSegmentExists: boolean;
+	frameCount: number;
+	batchReferences: SegmentWorkspaceBatchReferenceDto[];
+	nonterminalOcrReferences: SegmentWorkspaceOcrReferenceDto[];
+}
+
 /** Mirrors the Rust `AppJobDto` struct returned by job-related commands. */
 export interface AppJobDto {
 	id: number;
