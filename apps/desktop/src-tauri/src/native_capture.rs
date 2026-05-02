@@ -19,7 +19,7 @@ use capture_types::{
     VideoBitratePreset, VideoBitrateSettings,
 };
 use std::sync::OnceLock;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 pub use activity::IdleDebugInfo;
 use microphone::{
@@ -35,7 +35,77 @@ use runtime::{
     stopped_session_from_runtime, validate_start_request,
 };
 pub use runtime::{NativeCaptureState, RecordingSettingsState};
-use segments::{start_capture_runtime, stop_capture_runtime};
+use segments::{recover_screen_capture_after_wake, start_capture_runtime, stop_capture_runtime};
+
+#[cfg(target_os = "macos")]
+pub type SystemWakeNotifierState =
+    std::sync::Mutex<Option<cidre::ns::NotificationGuard>>;
+
+#[cfg(not(target_os = "macos"))]
+pub type SystemWakeNotifierState = std::sync::Mutex<Option<()>>;
+
+pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
+
+fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
+    let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
+}
+
+#[cfg(target_os = "macos")]
+fn recover_screen_capture_after_system_wake(app_handle: &tauri::AppHandle) {
+    let state = app_handle.state::<NativeCaptureState>();
+    let mut runtime = match state.lock() {
+        Ok(runtime) => runtime,
+        Err(_) => return,
+    };
+
+    match recover_screen_capture_after_wake(&mut runtime, Some(app_handle)) {
+        Ok(true) => {
+            crate::native_capture_debug_log::log(format!(
+                "recovered screen capture after system wake (session_id='{}', requested_sources={})",
+                runtime_log_session_id(&runtime),
+                format_optional_capture_source_flags(runtime.requested_sources.as_ref())
+            ));
+        }
+        Ok(false) => {}
+        Err(error) => {
+            crate::native_capture_debug_log::log(format!(
+                "failed to recover screen capture after system wake (session_id='{}', requested_sources={}): [{}] {}",
+                runtime_log_session_id(&runtime),
+                format_optional_capture_source_flags(runtime.requested_sources.as_ref()),
+                error.code,
+                error.message
+            ));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
+    use cidre::ns;
+
+    let mut center = ns::Workspace::shared().notification_center();
+    let guard = center.add_observer_guard(
+        ns::workspace::notification::did_wake(),
+        None,
+        None,
+        {
+            let app_handle = app_handle.clone();
+            move |_notification| {
+                emit_system_did_wake(&app_handle);
+                recover_screen_capture_after_system_wake(&app_handle);
+            }
+        },
+    );
+
+    let notifier_state = app_handle.state::<SystemWakeNotifierState>();
+    let mut notifier_slot = notifier_state
+        .lock()
+        .expect("system wake notifier state poisoned");
+    *notifier_slot = Some(guard);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_system_wake_notifier(_app_handle: tauri::AppHandle) {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CaptureSupportSnapshot {

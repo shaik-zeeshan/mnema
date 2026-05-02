@@ -17,6 +17,7 @@ pub fn run() {
         .manage(native_capture::NativeCaptureState::default())
         .manage(native_capture::MicrophoneControllerPreferencesState::default())
         .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
+        .manage(native_capture::SystemWakeNotifierState::default())
         .manage(native_capture::RecordingSettingsState::default())
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -72,6 +73,7 @@ pub fn run() {
             native_capture_debug_log::install_panic_hook();
             app_infra::initialize(app).map_err(std::io::Error::other)?;
             native_capture::start_microphone_device_change_notifier(app.handle().clone());
+            native_capture::start_system_wake_notifier(app.handle().clone());
             native_capture::maybe_auto_start_native_capture(app.handle());
             Ok(())
         })

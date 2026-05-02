@@ -112,12 +112,34 @@ pub(super) fn now_monotonic_marker_ms() -> u64 {
 
 pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCaptureSession {
     NativeCaptureSession {
-        is_running: runtime.is_running,
+        is_running: session_reports_running(runtime),
         is_inactivity_paused: runtime.inactivity.is_paused,
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
     }
+}
+
+fn session_reports_running(runtime: &NativeCaptureRuntime) -> bool {
+    if !runtime.is_running {
+        return false;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if runtime
+            .requested_sources
+            .as_ref()
+            .is_some_and(|sources| sources.screen)
+            && !runtime.inactivity.is_screen_paused()
+            && runtime.recording_file.is_none()
+            && runtime.active_screen_session.is_none()
+        {
+            return false;
+        }
+    }
+
+    true
 }
 
 pub(super) fn stopped_session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCaptureSession {
