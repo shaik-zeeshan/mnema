@@ -408,6 +408,78 @@
     };
   });
 
+  // ─── Wake/visibility resync ───────────────────────────────────────────────
+  // After macOS sleep/wake the native capture pipeline may have been torn
+  // down and restarted while the webview was suspended, leaving the shared
+  // session store stale. The backend-emitted `system_did_wake` event is the
+  // primary reliable trigger; foreground/drift heuristics remain as backstops.
+  // Every resync snapshots the generation so a wake-triggered refresh can
+  // never overwrite a newer authoritative action.
+  //
+  // Tauri/macOS does not reliably flip `document.visibilityState` on every
+  // wake (the webview can stay "visible" while the system slept), so we
+  // listen to a small union of triggers in addition to `visibilitychange`:
+  // window `focus`, `pageshow`, `online`, and a wall-clock drift watchdog
+  // (a 1Hz tick whose late arrival flags a process suspension). The 5s
+  // threshold is generous enough that normal jank/GC pauses don't trigger a
+  // resync; a real sleep is typically tens of seconds or more. Mirrors the
+  // dashboard's wake resync.
+  const WAKE_DRIFT_THRESHOLD_MS = 5_000;
+  const WAKE_DRIFT_TICK_MS = 1_000;
+  $effect(() => {
+    if (typeof document === "undefined") return;
+    async function resyncCaptureSession() {
+      const gen = sessionGeneration;
+      try {
+        const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
+        if (sessionGeneration !== gen) return; // superseded by start/stop
+        if (r.session) setSession(r.session);
+      } catch {
+        // Best-effort — the periodic reconcile still covers steady-state drift.
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      void resyncCaptureSession();
+    };
+    const onFocus = () => { void resyncCaptureSession(); };
+    let unlistenSystemDidWake: (() => void) | undefined;
+    let destroyed = false;
+
+    listen("system_did_wake", () => {
+      void resyncCaptureSession();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSystemDidWake = fn;
+    });
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("pageshow", onFocus);
+    window.addEventListener("online", onFocus);
+
+    let lastTick = Date.now();
+    const driftTimer = setInterval(() => {
+      const now = Date.now();
+      const drift = now - lastTick - WAKE_DRIFT_TICK_MS;
+      lastTick = now;
+      if (drift >= WAKE_DRIFT_THRESHOLD_MS) {
+        // Wall-clock jumped — process was suspended. Treat as a wake.
+        void resyncCaptureSession();
+      }
+    }, WAKE_DRIFT_TICK_MS);
+
+    return () => {
+      destroyed = true;
+      unlistenSystemDidWake?.();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pageshow", onFocus);
+      window.removeEventListener("online", onFocus);
+      clearInterval(driftTimer);
+    };
+  });
+
   // ─── App Infra ────────────────────────────────────────────────────────────
 
   let infraStatus = $state<AppInfraStatus | null>(null);
