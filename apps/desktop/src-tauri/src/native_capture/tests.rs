@@ -108,9 +108,18 @@ fn audio_duration_time_to_ms_preserves_fractional_seconds() {
 #[cfg(target_os = "macos")]
 #[test]
 fn audio_duration_time_to_ms_rejects_non_positive_and_non_numeric_duration() {
-    assert_eq!(audio_duration_time_to_ms(cidre::cm::Time::new(0, 1_000)), None);
-    assert_eq!(audio_duration_time_to_ms(cidre::cm::Time::new(-1, 1_000)), None);
-    assert_eq!(audio_duration_time_to_ms(cidre::cm::Time::indefinit()), None);
+    assert_eq!(
+        audio_duration_time_to_ms(cidre::cm::Time::new(0, 1_000)),
+        None
+    );
+    assert_eq!(
+        audio_duration_time_to_ms(cidre::cm::Time::new(-1, 1_000)),
+        None
+    );
+    assert_eq!(
+        audio_duration_time_to_ms(cidre::cm::Time::indefinit()),
+        None
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -1872,11 +1881,9 @@ fn rotation_seeds_missing_system_audio_planner_before_planning_output_path() {
 
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    let system_audio_planner = ensure_system_audio_planner_for_runtime(
-        &mut runtime,
-        "rotating segments",
-    )
-    .expect("system-audio planner seeding should succeed");
+    let system_audio_planner =
+        ensure_system_audio_planner_for_runtime(&mut runtime, "rotating segments")
+            .expect("system-audio planner seeding should succeed");
 
     let planned = plan_live_rotation_segment(
         &runtime,

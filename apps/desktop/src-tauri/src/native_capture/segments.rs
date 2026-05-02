@@ -546,7 +546,7 @@ fn persist_committed_audio_segments(
     }
 
     let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
-    let persistence = thread::spawn(move || {
+    let persistence = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -570,13 +570,40 @@ fn persist_committed_audio_segments(
                 }
             }
         });
-    });
+    }));
 
-    if persistence.join().is_err() {
+    if persistence.is_err() {
         crate::native_capture_debug_log::log(
             "native audio segment persistence worker panicked".to_string(),
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+fn close_frame_batches_for_stopped_screen_session(
+    app_handle: Option<&tauri::AppHandle>,
+    source_sessions: Option<&SourceSessions>,
+) {
+    let (Some(app_handle), Some(screen_session)) = (
+        app_handle,
+        source_sessions.and_then(|sessions| sessions.screen.as_ref()),
+    ) else {
+        return;
+    };
+
+    let session_id = screen_session.session_id.clone();
+    let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = infra
+            .close_and_schedule_all_frame_batches_for_session(&session_id)
+            .await
+        {
+            crate::native_capture_debug_log::log(format!(
+                "failed to close frame batches for stopped screen session {session_id}: {error}"
+            ));
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]
@@ -2769,6 +2796,10 @@ pub(super) fn stop_capture_runtime(
                 runtime.segment_schedule.as_ref(),
                 runtime.current_segment_index,
                 current_segment_output_files.as_ref(),
+            );
+            close_frame_batches_for_stopped_screen_session(
+                app_handle,
+                runtime.source_sessions.as_ref(),
             );
         }
 

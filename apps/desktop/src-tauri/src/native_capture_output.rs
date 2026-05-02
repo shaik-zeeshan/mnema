@@ -744,7 +744,10 @@ mod tests {
             |_| true,
         );
 
-        assert_eq!(output_files.system_audio_file, Some(system_audio_file.clone()));
+        assert_eq!(
+            output_files.system_audio_file,
+            Some(system_audio_file.clone())
+        );
         assert_eq!(output_files.system_audio_files, vec![system_audio_file]);
         assert!(failures.is_empty());
     }

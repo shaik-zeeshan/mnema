@@ -1377,10 +1377,7 @@ mod tests {
         assert_eq!(request.0.height, Some(720));
         assert_eq!(request.0.content_fingerprint.as_deref(), Some("abcd"));
         assert_eq!(request.1, "custom-processor");
-        assert_eq!(
-            request.2.as_deref(),
-            Some("{\"language\":\"eng\"}")
-        );
+        assert_eq!(request.2.as_deref(), Some("{\"language\":\"eng\"}"));
     }
 
     #[test]
@@ -1423,10 +1420,7 @@ mod tests {
         assert_eq!(request.0.height, Some(1080));
         assert_eq!(request.0.content_fingerprint.as_deref(), Some("ef01"));
         assert_eq!(request.1, ::app_infra::OCR_PROCESSOR);
-        assert_eq!(
-            request.2.as_deref(),
-            Some("{\"language\":\"eng\"}")
-        );
+        assert_eq!(request.2.as_deref(), Some("{\"language\":\"eng\"}"));
     }
 
     #[test]
