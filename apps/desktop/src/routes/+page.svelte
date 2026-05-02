@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { Calendar } from "bits-ui";
   import {
     CalendarDate,
@@ -1514,6 +1515,89 @@
   $effect(() => {
     if (captureBootstrapped) return;
     void bootstrapCaptureControls();
+  });
+
+  // ─── Wake/visibility resync ──────────────────────────────────────────────
+  // After macOS sleep/wake (or any prolonged background interval) the native
+  // capture pipeline may have been torn down and restarted by the backend
+  // while the webview slept. The shared `captureSession` store would then
+  // reflect a stale "running" state. The backend-emitted `system_did_wake`
+  // event is the primary reliable trigger; foreground/drift heuristics remain
+  // as backstops. Every resync snapshots the generation so a wake-triggered
+  // refresh can never overwrite a newer authoritative start/stop write.
+  //
+  // Tauri/macOS does not reliably flip `document.visibilityState` on every
+  // wake (the webview can stay "visible" while the system slept), so we
+  // listen to a small union of triggers in addition to `visibilitychange`:
+  //   - window `focus` and `pageshow` — fire when the webview/window becomes
+  //     active again, even if visibility never changed.
+  //   - `online` — heuristic for resumed activity after a network stall.
+  //   - a 1Hz wall-clock drift watchdog — if `setInterval`'s tick lands far
+  //     later than expected, the process was suspended (sleep/throttle) and
+  //     we must re-fetch even though no DOM event fired. This is the
+  //     backstop for wakes that produce no other signal.
+  //
+  // The drift threshold is intentionally generous (5s) so normal jank or GC
+  // pauses don't trigger a resync; a real sleep is typically tens of seconds
+  // or more.
+  const WAKE_DRIFT_THRESHOLD_MS = 5_000;
+  const WAKE_DRIFT_TICK_MS = 1_000;
+  $effect(() => {
+    if (typeof document === "undefined") return;
+    async function resyncCaptureSession() {
+      const gen = captureSessionGeneration;
+      try {
+        const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
+        if (captureSessionGeneration !== gen) return; // superseded by start/stop
+        if (r.session) setSession(r.session);
+      } catch {
+        // Best-effort: a transient IPC error here shouldn't surface; the
+        // existing reconcile/bootstrap paths still cover steady-state drift.
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      void resyncCaptureSession();
+    };
+    const onFocus = () => { void resyncCaptureSession(); };
+    let unlistenSystemDidWake: (() => void) | undefined;
+    let destroyed = false;
+
+    listen("system_did_wake", () => {
+      void resyncCaptureSession();
+      void pollTimelineHead();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSystemDidWake = fn;
+    });
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("pageshow", onFocus);
+    window.addEventListener("online", onFocus);
+
+    let lastTick = Date.now();
+    const driftTimer = setInterval(() => {
+      const now = Date.now();
+      const drift = now - lastTick - WAKE_DRIFT_TICK_MS;
+      lastTick = now;
+      if (drift >= WAKE_DRIFT_THRESHOLD_MS) {
+        // Wall-clock jumped — process was suspended. Treat as a wake.
+        void resyncCaptureSession();
+        // Also nudge the timeline back into sync; visibility may not change.
+        void pollTimelineHead();
+      }
+    }, WAKE_DRIFT_TICK_MS);
+
+    return () => {
+      destroyed = true;
+      unlistenSystemDidWake?.();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pageshow", onFocus);
+      window.removeEventListener("online", onFocus);
+      clearInterval(driftTimer);
+    };
   });
 </script>
 
