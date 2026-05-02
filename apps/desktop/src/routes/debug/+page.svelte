@@ -595,6 +595,12 @@
 
 <!-- ── Page header ──────────────────────────────────────────────────────── -->
 <div class="page-header">
+  <nav class="page-header__nav" aria-label="Debug navigation">
+    <a class="back-link" href="/menu" aria-label="Back to menu">
+      <span class="back-link__chevron" aria-hidden="true">‹</span>
+      <span class="back-link__label">Back</span>
+    </a>
+  </nav>
   <h1 class="page-title">Debug</h1>
   <p class="page-subtitle">recording status &amp; controls</p>
 </div>
@@ -1186,9 +1192,10 @@
 <!-- ── App Infra / Background Jobs ───────────────────────────────────────── -->
 <section class="card card--debug">
   <h2 class="card__title">
+    <span class="card__num">05</span>
     <span class="debug-tag">dbg</span>
     App Infra
-    <button class="btn btn--ghost btn--sm" onclick={refreshAll} disabled={loadingInfraStatus || loadingJobs}>
+    <button class="btn btn--ghost btn--sm card__title-action" onclick={refreshAll} disabled={loadingInfraStatus || loadingJobs}>
       {loadingInfraStatus || loadingJobs ? "…" : "↻"}
     </button>
   </h2>
@@ -1236,9 +1243,10 @@
 <!-- ── Background Jobs ───────────────────────────────────────────────────── -->
 <section class="card card--debug">
   <h2 class="card__title">
+    <span class="card__num">06</span>
     <span class="debug-tag">dbg</span>
     Background Jobs
-    <button class="btn btn--ghost btn--sm" onclick={refreshAll} disabled={loadingJobs || loadingInfraStatus}>
+    <button class="btn btn--ghost btn--sm card__title-action" onclick={refreshAll} disabled={loadingJobs || loadingInfraStatus}>
       {loadingJobs ? "…" : "↻ list"}
     </button>
     {#if postSubmitPollInterval != null}
@@ -1247,8 +1255,9 @@
   </h2>
 
   <!-- Submit form -->
-  <div class="idle-section-label">Submit debug CPU job</div>
-  <form class="job-submit-form" onsubmit={(e) => { e.preventDefault(); submitDebugJob(); }}>
+  <details class="advanced">
+    <summary class="advanced__summary">Submit debug CPU job</summary>
+    <form class="job-submit-form" onsubmit={(e) => { e.preventDefault(); submitDebugJob(); }}>
     <input
       class="job-input"
       type="text"
@@ -1270,6 +1279,7 @@
   {#if submitError}
     <p class="debug-err">{submitError}</p>
   {/if}
+  </details>
 
   <!-- Job list -->
   <div class="idle-section-label">
@@ -1371,21 +1381,134 @@
   /* ── Page header ───────────────────────────────────────────── */
   .page-header {
     margin-bottom: 4px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid #16161e;
+  }
+
+  .page-header__nav {
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px 4px 6px;
+    border-radius: 4px;
+    border: 1px solid #1f1f2e;
+    background: transparent;
+    color: #7a7a9a;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    transition: color 0.12s, background 0.12s, border-color 0.12s;
+  }
+
+  .back-link:hover {
+    color: #c0c0d8;
+    background: #13131e;
+    border-color: #2a2a3e;
+  }
+
+  .back-link:focus-visible {
+    outline: none;
+    border-color: #3dffa0;
+    color: #c0c0d8;
+    box-shadow: 0 0 0 2px rgba(61, 255, 160, 0.18);
+  }
+
+  .back-link__chevron {
+    font-size: 14px;
+    line-height: 1;
+    color: #5a5a7a;
+  }
+
+  .back-link:hover .back-link__chevron {
+    color: #a0a0c0;
+  }
+
+  .page-header__row {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .page-header__title-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .page-header__eyebrow {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: #4a4a7a;
+  }
+
+  .page-header__meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .page-header__pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: #0d0d14;
+    border: 1px solid #1e1e2e;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #6a6a88;
+  }
+
+  .page-header__pill--rec {
+    background: #14080a;
+    border-color: #3a1a20;
+    color: #ff6070;
+  }
+
+  .page-header__pill--warn {
+    background: #14100a;
+    border-color: #3a2810;
+    color: #c09030;
+  }
+
+  .page-header__pill-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #33334a;
+  }
+
+  .page-header__pill-dot--rec {
+    background: #ff4455;
+    animation: pulse-rec 1.2s ease-in-out infinite;
   }
 
   .page-title {
-    font-size: 18px;
+    font-size: 22px;
     font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: #f0f0f5;
+    line-height: 1.05;
   }
 
   .page-subtitle {
     font-size: 10px;
     color: #44445a;
     letter-spacing: 0.06em;
-    margin-top: 2px;
+    margin-top: 8px;
   }
 
   /* ── Cards ─────────────────────────────────────────────────── */
@@ -1393,10 +1516,26 @@
     background: #13131a;
     border: 1px solid #1e1e2e;
     border-radius: 6px;
-    padding: 20px;
+    padding: 18px 20px;
     display: flex;
     flex-direction: column;
     gap: 14px;
+    position: relative;
+  }
+
+  .card::before {
+    content: "";
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    top: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent 0%, #2a2a40 30%, #2a2a40 70%, transparent 100%);
+    opacity: 0.6;
+  }
+
+  .card--debug::before {
+    background: linear-gradient(90deg, transparent 0%, #2a2235 50%, transparent 100%);
   }
 
   .card--error {
@@ -1413,6 +1552,74 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .card__num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 16px;
+    padding: 0 4px;
+    background: #0a0a12;
+    border: 1px solid #1e1e2e;
+    border-radius: 2px;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    color: #5a5a7a;
+  }
+
+  .card__title-action {
+    margin-left: auto;
+  }
+
+  /* ── Collapsible advanced blocks ─────────────────────────── */
+  .advanced {
+    border-top: 1px dashed #1a1a26;
+    padding-top: 10px;
+    margin-top: 2px;
+  }
+
+  .advanced > :global(*) {
+    margin-top: 10px;
+  }
+
+  .advanced > :global(*:first-child) {
+    margin-top: 0;
+  }
+
+  .advanced__summary {
+    list-style: none;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #5a5a7a;
+    user-select: none;
+    transition: color 0.12s;
+  }
+
+  .advanced__summary::-webkit-details-marker { display: none; }
+
+  .advanced__summary::before {
+    content: "▸";
+    display: inline-block;
+    font-size: 9px;
+    color: #3a3a54;
+    transition: transform 0.15s;
+  }
+
+  .advanced[open] > .advanced__summary::before {
+    transform: rotate(90deg);
+  }
+
+  .advanced__summary:hover {
+    color: #a0a0c0;
   }
 
   /* ── Session status ─────────────────────────────────────────── */
