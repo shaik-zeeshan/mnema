@@ -2154,7 +2154,6 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             break;
         };
         let microphone_planner = microphone_planner_for_runtime(&runtime).cloned();
-        let system_audio_planner = system_audio_planner_for_runtime(&runtime).cloned();
         let Some(sources) = runtime.requested_sources.clone() else {
             mark_runtime_session_failed(&mut runtime);
             break;
@@ -2178,6 +2177,21 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             microphone: false,
             system_audio: false,
         });
+        let system_audio_planner = if active_sources.system_audio {
+            match ensure_system_audio_planner_for_runtime(&mut runtime, "rotating segments") {
+                Ok(planner) => planner,
+                Err(error) => {
+                    crate::native_capture_debug_log::log(format!(
+                        "failed to prepare system-audio planner while rotating segments: [{}] {}",
+                        error.code, error.message
+                    ));
+                    mark_runtime_session_failed(&mut runtime);
+                    break;
+                }
+            }
+        } else {
+            system_audio_planner_for_runtime(&runtime).cloned()
+        };
 
         let Some(planned_rotation) = plan_live_rotation_segment(
             &runtime,

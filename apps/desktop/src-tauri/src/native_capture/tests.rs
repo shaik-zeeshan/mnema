@@ -1835,6 +1835,73 @@ fn plan_live_rotation_segment_keeps_emitted_numbering_contiguous_when_schedule_j
 
 #[cfg(target_os = "macos")]
 #[test]
+fn rotation_seeds_missing_system_audio_planner_before_planning_output_path() {
+    let mut runtime = NativeCaptureRuntime {
+        current_segment_index: 4,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: true,
+        }),
+        segment_planner: Some(SegmentPlanner::with_date_prefix(
+            "/tmp/native-capture-tests",
+            "screen-session",
+            "2026/04/28",
+        )),
+        source_sessions: Some(SourceSessions {
+            screen: Some(SourceSessionMeta {
+                session_id: "screen-session".to_string(),
+                started_at_unix_ms: 123,
+            }),
+            microphone: None,
+            system_audio: Some(SourceSessionMeta {
+                session_id: "system-audio-session".to_string(),
+                started_at_unix_ms: 123,
+            }),
+        }),
+        ..Default::default()
+    };
+    let sources = CaptureSources {
+        screen: true,
+        microphone: false,
+        system_audio: true,
+    };
+    let screen_planner = runtime.segment_planner.clone().unwrap();
+    let clock = CaptureClock::start_now();
+    let schedule = SegmentSchedule::new(std::time::Duration::from_millis(1));
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    let system_audio_planner = ensure_system_audio_planner_for_runtime(
+        &mut runtime,
+        "rotating segments",
+    )
+    .expect("system-audio planner seeding should succeed");
+
+    let planned = plan_live_rotation_segment(
+        &runtime,
+        &sources,
+        &screen_planner,
+        None,
+        system_audio_planner.as_ref(),
+        &schedule,
+        &clock,
+    )
+    .expect("rotation should be planned after schedule advances");
+
+    assert!(runtime.system_audio_planner.is_some());
+    assert_eq!(
+        planned
+            .system_audio_output_path
+            .as_ref()
+            .expect("system audio path should be planned")
+            .to_string_lossy(),
+        "/tmp/native-capture-tests/2026/04/28/audio/system-audio-system-audio-session-segment-0005.m4a"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn plan_live_rotation_segment_does_not_rotate_for_zero_duration_schedule() {
     let runtime = NativeCaptureRuntime {
         current_segment_index: 1,
