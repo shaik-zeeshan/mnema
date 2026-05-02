@@ -1631,6 +1631,7 @@ impl ScreenCaptureKitCaptureSession {
             &recording_file,
             system_audio_recording_file.as_deref(),
             &self.sources,
+            self.sources.system_audio && system_audio_recording_file.is_some(),
             self.video_bitrate_bps,
             self.frame_export.clone(),
             self.system_audio_inactivity_tail_buffer_seconds,
@@ -2206,6 +2207,7 @@ fn start_screen_capture_kit_session(
                     .system_audio
                     .then_some(system_audio_output_file_str.as_str()),
                 sources,
+                sources.system_audio,
                 video_bitrate_bps,
                 options.frame_export.clone(),
                 options.system_audio_inactivity_tail_trim_seconds,
@@ -2276,6 +2278,7 @@ fn stream_output_context_for_segment(
     recording_file: &str,
     system_audio_recording_file: Option<&str>,
     sources: &ScreenCaptureSources,
+    system_audio_writer_active: bool,
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportConfig>,
     system_audio_inactivity_tail_buffer_seconds: u64,
@@ -2289,7 +2292,7 @@ fn stream_output_context_for_segment(
     };
     let screen_video_writer = None;
 
-    let system_audio_writer = if sources.system_audio {
+    let system_audio_writer = if system_audio_writer_active {
         let output_file = system_audio_recording_file.ok_or_else(|| CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),
             message: "Missing system audio output file while creating segment writer".to_string(),
@@ -3461,6 +3464,62 @@ mod tests {
         }
 
         assert!(!Path::new(&temp_path).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stream_output_context_allows_paused_system_audio_without_output_file() {
+        let sources = ScreenCaptureSources {
+            screen: true,
+            system_audio: true,
+        };
+
+        let context = stream_output_context_for_segment(
+            Path::new("/tmp/paused-system-audio-segment"),
+            "/tmp/paused-system-audio-segment/screen.mov",
+            None,
+            &sources,
+            false,
+            None,
+            None,
+            3,
+        )
+        .expect("paused system audio should not require a new writer path");
+
+        assert_eq!(
+            context.screen_video_output_file.as_deref(),
+            Some("/tmp/paused-system-audio-segment/screen.mov")
+        );
+        assert!(context.system_audio_output_file.is_none());
+        assert!(context.system_audio_writer.is_none());
+        assert_eq!(context.system_audio_inactivity_tail_buffer_seconds, 3);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stream_output_context_requires_output_file_for_active_system_audio_writer() {
+        let sources = ScreenCaptureSources {
+            screen: true,
+            system_audio: true,
+        };
+
+        let error = stream_output_context_for_segment(
+            Path::new("/tmp/active-system-audio-segment"),
+            "/tmp/active-system-audio-segment/screen.mov",
+            None,
+            &sources,
+            true,
+            None,
+            None,
+            0,
+        )
+        .expect_err("active system audio must still require a writer path");
+
+        assert_eq!(error.code, "invalid_runtime_state");
+        assert_eq!(
+            error.message,
+            "Missing system audio output file while creating segment writer"
+        );
     }
 
     #[cfg(target_os = "macos")]
