@@ -70,6 +70,9 @@ impl AppInfra {
         frame_batches
             .reconcile_closed_batches_without_finalize_jobs()
             .await?;
+        frame_batches
+            .reconcile_open_batches_without_active_capture()
+            .await?;
         let runtime = JobRuntime::new(default_worker_thread_count())?;
         let frame_batch_runtime = FrameBatchRuntime::new(frame_batches.clone());
         let processing_runtime = ProcessingRuntime::new(processing.clone(), processing_registry);
@@ -242,6 +245,15 @@ impl AppInfra {
 
     pub async fn list_frames_for_batch(&self, batch_id: i64) -> Result<Vec<Frame>> {
         self.frame_batches.list_frames_for_batch(batch_id).await
+    }
+
+    pub async fn close_and_schedule_all_frame_batches_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<FrameBatch>> {
+        self.frame_batches
+            .close_and_schedule_all_batches_for_session(session_id)
+            .await
     }
 
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
@@ -1122,9 +1134,22 @@ mod tests {
                 .expect("filtered audio segments should list");
             assert_eq!(microphone_only, vec![updated]);
 
+            let touching_boundary = infra
+                .list_audio_segments_overlapping_range(
+                    "2026-04-12T10:01:00Z",
+                    "2026-04-12T10:01:00Z",
+                    None,
+                    None,
+                )
+                .await
+                .expect("boundary-touching audio segments should list");
+            assert_eq!(touching_boundary.len(), 2);
+            assert_eq!(touching_boundary[0].source_kind, AudioSegmentSourceKind::Microphone);
+            assert_eq!(touching_boundary[1].source_kind, AudioSegmentSourceKind::SystemAudio);
+
             let outside = infra
                 .list_audio_segments_overlapping_range(
-                    "2026-04-12T10:02:00Z",
+                    "2026-04-12T10:02:01Z",
                     "2026-04-12T10:03:00Z",
                     None,
                     None,
@@ -1468,6 +1493,43 @@ mod tests {
     }
 
     #[test]
+    fn stopping_session_closes_and_schedules_last_open_frame_batch() {
+        run_async_test(async {
+            let dir = TestDir::new("captured-frame-stop-close");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let persisted = infra
+                .capture_frame(
+                    &test_frame("session-stop-close", "frame-final.png"),
+                    Some("{\"language\":\"eng\"}"),
+                )
+                .await
+                .expect("captured frame pipeline should persist frame and job");
+            assert_eq!(persisted.active_batch.status, FrameBatchStatus::Open);
+            assert!(persisted.active_batch.finalize_job_id.is_none());
+
+            let closed = infra
+                .close_and_schedule_all_frame_batches_for_session("session-stop-close")
+                .await
+                .expect("stopped session should close final batch");
+            assert_eq!(closed.len(), 1);
+
+            let batch = infra
+                .get_frame_batch(persisted.active_batch.id)
+                .await
+                .expect("batch should be readable")
+                .expect("batch should exist");
+            assert_eq!(batch.status, FrameBatchStatus::Closed);
+            assert!(
+                batch.finalize_job_id.is_some(),
+                "closed final batch should schedule cleanup finalization"
+            );
+        });
+    }
+
+    #[test]
     fn insert_frame_and_enqueue_ocr_job_persists_linked_subject() {
         run_async_test(async {
             let dir = TestDir::new("processing-enqueue");
@@ -1659,6 +1721,48 @@ mod tests {
                 .expect("finalize job should exist");
             assert_eq!(finalize_job.kind, FRAME_BATCH_FINALIZE_JOB_KIND);
             assert_eq!(finalize_job.status, BackgroundJobStatus::Queued);
+        });
+    }
+
+    #[test]
+    fn startup_reconciles_open_batches_from_stopped_sessions() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-batch-startup-open-reconcile");
+            let initial = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let batch = initial
+                .frame_batches()
+                .upsert_open_batch_for_frame("session-open-reconcile", "2026-04-12T10:01:00Z")
+                .await
+                .expect("batch should persist");
+            let frame = initial
+                .processing()
+                .insert_frame(&test_frame("session-open-reconcile", "frame-open.png"))
+                .await
+                .expect("frame should persist");
+            initial
+                .frame_batches()
+                .attach_frame_to_batch(frame.id, batch.id, &frame.captured_at)
+                .await
+                .expect("frame should attach");
+
+            drop(initial);
+
+            let recovered = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should recover open batches");
+            let reconciled = recovered
+                .get_frame_batch(batch.id)
+                .await
+                .expect("batch should be readable")
+                .expect("batch should exist");
+            assert_eq!(reconciled.status, FrameBatchStatus::Closed);
+            assert!(
+                reconciled.finalize_job_id.is_some(),
+                "startup should schedule finalization for orphaned open batch"
+            );
         });
     }
 

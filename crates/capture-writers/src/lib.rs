@@ -135,6 +135,21 @@ impl<T> AudioTailSampleBuffer<T> {
         active: bool,
     ) -> bool {
         let Some(sample_end_secs) = sample_end_secs.filter(|value| value.is_finite()) else {
+            if active {
+                self.observed_active_sample = true;
+                self.latest_sample_end_secs = Some(
+                    self.latest_sample_end_secs
+                        .map(|latest| latest.max(f64::NEG_INFINITY))
+                        .unwrap_or(f64::NEG_INFINITY),
+                );
+                self.samples.push_back(TimedAudioTailSample {
+                    sample,
+                    end_secs: f64::NEG_INFINITY,
+                    active,
+                });
+                return true;
+            }
+
             return false;
         };
 
@@ -1349,6 +1364,16 @@ mod tests {
         assert!(!buffer.append_timed("nonnumeric", None, 10, false));
 
         assert_eq!(buffer.pop_sample_before_tail(10), Some("active-short"));
+        assert!(buffer.samples.is_empty());
+    }
+
+    #[test]
+    fn audio_tail_buffer_keeps_unknown_timing_samples_appendable() {
+        let mut buffer = AudioTailSampleBuffer::default();
+
+        assert!(buffer.append_timed("unknown-timing-audio", None, 10, true));
+
+        assert_eq!(buffer.pop_sample_before_tail(10), Some("unknown-timing-audio"));
         assert!(buffer.samples.is_empty());
     }
 

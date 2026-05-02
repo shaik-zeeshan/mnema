@@ -262,6 +262,24 @@ impl FrameBatchStore {
         Ok(scheduled)
     }
 
+    pub async fn reconcile_open_batches_without_active_capture(&self) -> Result<u64> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT session_id FROM frame_batches WHERE status = 'open' ORDER BY session_id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut scheduled = 0;
+        for row in rows {
+            let closed = self
+                .close_and_schedule_all_batches_for_session(row.get::<String, _>("session_id").as_str())
+                .await?;
+            scheduled += closed.len() as u64;
+        }
+
+        Ok(scheduled)
+    }
+
     pub async fn get(&self, batch_id: i64) -> Result<Option<FrameBatch>> {
         get_frame_batch_optional(&self.pool, batch_id).await
     }
@@ -332,6 +350,34 @@ impl FrameBatchStore {
             .await?;
 
         transaction.commit().await?;
+        Ok(closed)
+    }
+
+    pub async fn close_and_schedule_all_batches_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<FrameBatch>> {
+        let mut transaction = self.pool.begin().await?;
+        let closed = self
+            .close_and_schedule_all_batches_for_session_in_transaction(&mut transaction, session_id)
+            .await?;
+
+        transaction.commit().await?;
+        Ok(closed)
+    }
+
+    pub(crate) async fn close_and_schedule_all_batches_for_session_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        session_id: &str,
+    ) -> Result<Vec<FrameBatch>> {
+        let closed = self
+            .close_completed_batches_for_session_in_transaction(transaction, session_id, None)
+            .await?;
+
+        self.enqueue_finalize_jobs_for_closed_batches_in_transaction(transaction, &closed)
+            .await?;
+
         Ok(closed)
     }
 
@@ -653,8 +699,20 @@ impl FrameBatchStore {
             )
             .await?;
 
+        self.enqueue_finalize_jobs_for_closed_batches_in_transaction(transaction, &closed)
+            .await?;
+
+        Ok(closed)
+    }
+
+    async fn enqueue_finalize_jobs_for_closed_batches_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        closed: &[FrameBatch],
+    ) -> Result<()> {
+
         let mut first_error: Option<AppInfraError> = None;
-        for batch in &closed {
+        for batch in closed {
             if let Err(error) = self
                 .enqueue_finalize_job_if_needed_in_transaction(transaction, batch.id)
                 .await
@@ -674,7 +732,7 @@ impl FrameBatchStore {
             return Err(error);
         }
 
-        Ok(closed)
+        Ok(())
     }
 }
 
