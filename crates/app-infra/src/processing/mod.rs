@@ -4,7 +4,6 @@ mod engine;
 mod frame;
 mod job;
 mod ocr;
-mod pipeline;
 mod result;
 mod runtime;
 mod store;
@@ -17,7 +16,6 @@ pub use job::{
     OCR_PROCESSOR,
 };
 pub use ocr::OcrProcessorBackend;
-pub use pipeline::{FramePipeline, FramePipelineRequest};
 pub use result::{ProcessingResult, ProcessingResultDraft};
 pub use runtime::{ProcessingJobRunOutcome, ProcessingRuntime};
 pub use store::{

@@ -472,7 +472,7 @@ impl From<SubmitDebugCpuJobRequest> for ::app_infra::DebugCpuJobRequest {
 }
 
 impl InsertFrameAndEnqueueProcessingJobRequest {
-    fn into_frame_pipeline_request(self) -> ::app_infra::FramePipelineRequest {
+    fn into_parts(self) -> (::app_infra::NewFrame, String, Option<String>) {
         let Self {
             session_id,
             file_path,
@@ -494,13 +494,7 @@ impl InsertFrameAndEnqueueProcessingJobRequest {
             frame = frame.with_content_fingerprint(content_fingerprint);
         }
 
-        let mut request = ::app_infra::FramePipelineRequest::new(frame, processor);
-
-        if let Some(payload_json) = payload_json {
-            request = request.with_payload_json(payload_json);
-        }
-
-        request
+        (frame, processor, payload_json)
     }
 }
 
@@ -1030,11 +1024,10 @@ async fn insert_frame_and_enqueue_processing_job_inner(
     infra: &::app_infra::AppInfra,
     request: InsertFrameAndEnqueueProcessingJobRequest,
 ) -> ::app_infra::Result<FrameProcessingJobDto> {
-    let request = request.into_frame_pipeline_request();
+    let (frame, processor, payload_json) = request.into_parts();
 
     infra
-        .frame_pipeline()
-        .enqueue(&request)
+        .insert_frame_and_enqueue_processing_job(&frame, &processor, payload_json.as_deref())
         .await
         .map(FrameProcessingJobDto::from)
 }
@@ -1376,16 +1369,16 @@ mod tests {
             processor: "custom-processor".to_string(),
             payload_json: Some("{\"language\":\"eng\"}".to_string()),
         }
-        .into_frame_pipeline_request();
+        .into_parts();
 
-        assert_eq!(request.frame.session_id, "session-a");
-        assert_eq!(request.frame.file_path, "/tmp/frame.png");
-        assert_eq!(request.frame.width, Some(1280));
-        assert_eq!(request.frame.height, Some(720));
-        assert_eq!(request.frame.content_fingerprint.as_deref(), Some("abcd"));
-        assert_eq!(request.processor, "custom-processor");
+        assert_eq!(request.0.session_id, "session-a");
+        assert_eq!(request.0.file_path, "/tmp/frame.png");
+        assert_eq!(request.0.width, Some(1280));
+        assert_eq!(request.0.height, Some(720));
+        assert_eq!(request.0.content_fingerprint.as_deref(), Some("abcd"));
+        assert_eq!(request.1, "custom-processor");
         assert_eq!(
-            request.payload_json.as_deref(),
+            request.2.as_deref(),
             Some("{\"language\":\"eng\"}")
         );
     }
@@ -1402,12 +1395,12 @@ mod tests {
             processor: "custom-processor".to_string(),
             payload_json: None,
         }
-        .into_frame_pipeline_request();
+        .into_parts();
 
-        assert_eq!(request.frame.width, None);
-        assert_eq!(request.frame.height, None);
-        assert_eq!(request.processor, "custom-processor");
-        assert_eq!(request.payload_json, None);
+        assert_eq!(request.0.width, None);
+        assert_eq!(request.0.height, None);
+        assert_eq!(request.1, "custom-processor");
+        assert_eq!(request.2, None);
     }
 
     #[test]
@@ -1422,16 +1415,16 @@ mod tests {
                 content_fingerprint: Some("ef01".to_string()),
                 payload_json: Some("{\"language\":\"eng\"}".to_string()),
             })
-            .into_frame_pipeline_request();
+            .into_parts();
 
-        assert_eq!(request.frame.session_id, "session-ocr");
-        assert_eq!(request.frame.file_path, "/tmp/frame-ocr.png");
-        assert_eq!(request.frame.width, Some(1920));
-        assert_eq!(request.frame.height, Some(1080));
-        assert_eq!(request.frame.content_fingerprint.as_deref(), Some("ef01"));
-        assert_eq!(request.processor, ::app_infra::OCR_PROCESSOR);
+        assert_eq!(request.0.session_id, "session-ocr");
+        assert_eq!(request.0.file_path, "/tmp/frame-ocr.png");
+        assert_eq!(request.0.width, Some(1920));
+        assert_eq!(request.0.height, Some(1080));
+        assert_eq!(request.0.content_fingerprint.as_deref(), Some("ef01"));
+        assert_eq!(request.1, ::app_infra::OCR_PROCESSOR);
         assert_eq!(
-            request.payload_json.as_deref(),
+            request.2.as_deref(),
             Some("{\"language\":\"eng\"}")
         );
     }

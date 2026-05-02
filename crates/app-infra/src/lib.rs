@@ -1,5 +1,6 @@
 mod db;
 mod audio_segments;
+mod captured_frame_pipeline;
 pub mod error;
 mod frame_batches;
 pub mod jobs;
@@ -13,6 +14,9 @@ use sqlx::SqlitePool;
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };
+pub use captured_frame_pipeline::{
+    CapturedFramePipeline, CapturedFramePipelineResult, ClosedFrameBatchSummary,
+};
 pub use error::{AppInfraError, Result};
 pub use frame_batches::{
     FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchRuntime,
@@ -24,12 +28,11 @@ pub use jobs::{
     CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
 pub use processing::{
-    AppleVisionOcrEngine, Frame, FrameOcrEnqueueResult, FramePipeline, FramePipelineRequest,
-    FrameProcessingJob, FrameSummary, NewFrame, OcrEngine, OcrOutput, OcrProcessorBackend,
-    OcrProvider, OcrRequest, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
-    ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingResult, ProcessingResultDraft,
-    ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
-    FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
+    AppleVisionOcrEngine, Frame, FrameOcrEnqueueResult, FrameProcessingJob, FrameSummary, NewFrame,
+    OcrEngine, OcrOutput, OcrProcessorBackend, OcrProvider, OcrRequest, ProcessingJob,
+    ProcessingJobCompletion, ProcessingJobDraft, ProcessingJobRunOutcome, ProcessingJobStatus,
+    ProcessingResult, ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject,
+    ProcessorBackend, ProcessorRegistry, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
@@ -40,7 +43,7 @@ pub struct AppInfra {
     audio_segments: AudioSegmentStore,
     frame_batches: FrameBatchStore,
     processing: ProcessingStore,
-    frame_pipeline: FramePipeline,
+    captured_frame_pipeline: CapturedFramePipeline,
     runtime: JobRuntime,
     frame_batch_runtime: FrameBatchRuntime,
     processing_runtime: ProcessingRuntime,
@@ -60,7 +63,8 @@ impl AppInfra {
         let audio_segments = AudioSegmentStore::new(database.pool().clone());
         let frame_batches = FrameBatchStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
-        let frame_pipeline = FramePipeline::new(processing.clone());
+        let captured_frame_pipeline =
+            CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
         jobs.reconcile_orphaned_running_jobs().await?;
         processing.reconcile_orphaned_running_jobs().await?;
         frame_batches
@@ -76,7 +80,7 @@ impl AppInfra {
             audio_segments,
             frame_batches,
             processing,
-            frame_pipeline,
+            captured_frame_pipeline,
             runtime,
             frame_batch_runtime,
             processing_runtime,
@@ -107,8 +111,8 @@ impl AppInfra {
         &self.frame_batches
     }
 
-    pub fn frame_pipeline(&self) -> &FramePipeline {
-        &self.frame_pipeline
+    pub fn captured_frame_pipeline(&self) -> &CapturedFramePipeline {
+        &self.captured_frame_pipeline
     }
 
     pub fn runtime(&self) -> &JobRuntime {
@@ -149,13 +153,9 @@ impl AppInfra {
         processor: &str,
         payload_json: Option<&str>,
     ) -> Result<FrameProcessingJob> {
-        let mut request = FramePipelineRequest::new(frame.clone(), processor);
-
-        if let Some(payload_json) = payload_json {
-            request = request.with_payload_json(payload_json);
-        }
-
-        self.frame_pipeline.enqueue(&request).await
+        self.captured_frame_pipeline
+            .insert_frame_and_enqueue_processor_job(frame, processor, payload_json)
+            .await
     }
 
     pub async fn insert_frame_and_enqueue_ocr_job(
@@ -163,13 +163,8 @@ impl AppInfra {
         frame: &NewFrame,
         payload_json: Option<&str>,
     ) -> Result<FrameProcessingJob> {
-        let mut request = FramePipelineRequest::for_ocr(frame.clone());
-
-        if let Some(payload_json) = payload_json {
-            request = request.with_payload_json(payload_json);
-        }
-
-        self.frame_pipeline.enqueue(&request).await
+        self.insert_frame_and_enqueue_processing_job(frame, OCR_PROCESSOR, payload_json)
+            .await
     }
 
     pub async fn insert_frame_and_maybe_enqueue_ocr_job(
@@ -177,8 +172,22 @@ impl AppInfra {
         frame: &NewFrame,
         payload_json: Option<&str>,
     ) -> Result<FrameOcrEnqueueResult> {
-        self.frame_pipeline
-            .insert_frame_and_maybe_enqueue_ocr_job(frame, payload_json)
+        self.captured_frame_pipeline
+            .capture_frame(frame, payload_json)
+            .await
+            .map(|result| FrameOcrEnqueueResult {
+                frame: result.frame,
+                job: result.job,
+            })
+    }
+
+    pub async fn capture_frame(
+        &self,
+        frame: &NewFrame,
+        payload_json: Option<&str>,
+    ) -> Result<CapturedFramePipelineResult> {
+        self.captured_frame_pipeline
+            .capture_frame(frame, payload_json)
             .await
     }
 
@@ -187,42 +196,8 @@ impl AppInfra {
         frame: &NewFrame,
         payload_json: Option<&str>,
     ) -> Result<FrameOcrEnqueueResult> {
-        let mut transaction = self.pool().begin().await?;
-
-        let batch = self
-            .frame_batches
-            .upsert_open_batch_for_frame_in_transaction(
-                &mut transaction,
-                &frame.session_id,
-                &frame.captured_at,
-            )
-            .await?;
-        let persisted = self
-            .frame_pipeline
-            .insert_frame_and_maybe_enqueue_ocr_job_in_transaction(
-                &mut transaction,
-                frame,
-                payload_json,
-            )
-            .await?;
-        self.frame_batches
-            .attach_frame_to_batch_in_transaction(
-                &mut transaction,
-                persisted.frame.id,
-                batch.id,
-                &persisted.frame.captured_at,
-            )
-            .await?;
-        self.frame_batches
-            .close_and_schedule_completed_batches_for_frame_in_transaction(
-                &mut transaction,
-                &frame.session_id,
-                batch.id,
-            )
-            .await?;
-        transaction.commit().await?;
-
-        Ok(persisted)
+        self.insert_frame_and_maybe_enqueue_ocr_job(frame, payload_json)
+            .await
     }
 
     pub async fn list_frames(
@@ -1456,33 +1431,39 @@ mod tests {
     }
 
     #[test]
-    fn frame_pipeline_enqueues_frame_and_processing_job() {
+    fn captured_frame_pipeline_persists_frame_batch_and_ocr_job() {
         run_async_test(async {
-            let dir = TestDir::new("frame-pipeline");
+            let dir = TestDir::new("captured-frame-pipeline");
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
 
             let persisted = infra
-                .frame_pipeline()
-                .enqueue(
-                    &FramePipelineRequest::for_ocr(test_frame(
-                        "session-pipeline",
-                        "frame-pipeline.png",
-                    ))
-                    .with_payload_json("{\"language\":\"eng\"}"),
+                .capture_frame(
+                    &test_frame("session-pipeline", "frame-pipeline.png"),
+                    Some("{\"language\":\"eng\"}"),
                 )
                 .await
-                .expect("frame pipeline should persist frame and job");
+                .expect("captured frame pipeline should persist frame and job");
 
-            assert_eq!(persisted.job.subject_type, FRAME_SUBJECT_TYPE);
-            assert_eq!(persisted.job.subject_id, persisted.frame.id);
-            assert_eq!(persisted.job.processor, OCR_PROCESSOR);
-            assert_eq!(persisted.job.status, ProcessingJobStatus::Queued);
+            let job = persisted.job.expect("ocr job should be queued");
+            assert_eq!(job.subject_type, FRAME_SUBJECT_TYPE);
+            assert_eq!(job.subject_id, persisted.frame.id);
+            assert_eq!(job.processor, OCR_PROCESSOR);
+            assert_eq!(job.status, ProcessingJobStatus::Queued);
             assert_eq!(
-                persisted.job.payload_json.as_deref(),
+                job.payload_json.as_deref(),
                 Some("{\"language\":\"eng\"}")
             );
+            assert_eq!(persisted.active_batch.session_id, "session-pipeline");
+            assert_eq!(persisted.active_batch.frame_count, 1);
+            assert!(persisted.closed_batches.is_empty());
+
+            let batch_frames = infra
+                .list_frames_for_batch(persisted.active_batch.id)
+                .await
+                .expect("batch frames should list");
+            assert_eq!(batch_frames, vec![persisted.frame]);
         });
     }
 
@@ -1635,8 +1616,7 @@ mod tests {
                 .await
                 .expect("batch should persist");
             let persisted = initial
-                .frame_pipeline()
-                .insert_frame_and_maybe_enqueue_ocr_job(
+                .capture_frame(
                     &NewFrame::new(
                         "session-batch-reconcile",
                         "/tmp/session-batch-reconcile-segment-0001/frames/frame-1.png",
@@ -1646,12 +1626,7 @@ mod tests {
                 )
                 .await
                 .expect("frame and OCR state should persist");
-
-            initial
-                .frame_batches()
-                .attach_frame_to_batch(persisted.frame.id, batch.id, &persisted.frame.captured_at)
-                .await
-                .expect("frame should attach");
+            assert_eq!(persisted.active_batch.id, batch.id);
 
             let closed = initial
                 .frame_batches()
@@ -1710,8 +1685,8 @@ mod tests {
                 .await
                 .expect("batch should persist in transaction");
             let persisted = infra
-                .frame_pipeline()
-                .insert_frame_and_maybe_enqueue_ocr_job_in_transaction(
+                .captured_frame_pipeline()
+                .capture_frame_in_transaction(
                     &mut transaction,
                     &test_frame_with_fingerprint(
                         "session-batch-atomic",
@@ -1777,7 +1752,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             let first = infra
-                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                .capture_frame(
                     &NewFrame::new(
                         "session-batches",
                         "/tmp/session-batches-segment-0001/frames/frame-1.png",
@@ -1788,7 +1763,7 @@ mod tests {
                 .await
                 .expect("first frame should persist");
             let second = infra
-                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                .capture_frame(
                     &NewFrame::new(
                         "session-batches",
                         "/tmp/session-batches-segment-0002/frames/frame-2.png",
@@ -1798,6 +1773,8 @@ mod tests {
                 )
                 .await
                 .expect("second frame should persist");
+            assert_eq!(second.closed_batches.len(), 1);
+            assert_eq!(second.closed_batches[0].id, first.active_batch.id);
 
             let first_batches = infra
                 .list_frame_batches(Some("session-batches"))

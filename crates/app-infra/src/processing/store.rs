@@ -5,7 +5,7 @@ use crate::{AppInfraError, Result};
 
 use super::{
     Frame, FrameSummary, NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus,
-    ProcessingResult, ProcessingResultDraft, ProcessingSubject, OCR_PROCESSOR,
+    ProcessingResult, ProcessingResultDraft, ProcessingSubject,
 };
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
@@ -113,26 +113,25 @@ impl ProcessingStore {
         Ok(previous_fingerprint.is_some())
     }
 
-    pub async fn insert_frame_and_enqueue_processor_job(
+    #[cfg(test)]
+    pub(crate) async fn insert_frame_and_enqueue_ocr_job(
         &self,
         frame: &NewFrame,
-        processor: &str,
         payload_json: Option<&str>,
     ) -> Result<FrameProcessingJob> {
         let mut transaction = self.pool.begin().await?;
 
-        let frame_id = insert_frame_record(&mut *transaction, frame).await?;
-        let subject = ProcessingSubject::frame(frame_id);
-        let job_id =
-            insert_processing_job_record(&mut *transaction, &subject, processor, payload_json)
-                .await?;
-
-        let stored_frame = get_frame_optional(&mut *transaction, frame_id)
-            .await?
-            .ok_or(AppInfraError::FrameNotFound(frame_id))?;
-        let stored_job = get_processing_job_optional(&mut *transaction, job_id)
-            .await?
-            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+        let stored_frame = self
+            .insert_frame_in_transaction(&mut transaction, frame)
+            .await?;
+        let stored_job = self
+            .enqueue_processor_job_for_frame_in_transaction(
+                &mut transaction,
+                stored_frame.id,
+                super::OCR_PROCESSOR,
+                payload_json,
+            )
+            .await?;
 
         transaction.commit().await?;
 
@@ -140,28 +139,6 @@ impl ProcessingStore {
             frame: stored_frame,
             job: stored_job,
         })
-    }
-
-    pub async fn insert_frame_and_enqueue_job(
-        &self,
-        frame: &NewFrame,
-        job: &ProcessingJobDraft,
-    ) -> Result<FrameProcessingJob> {
-        self.insert_frame_and_enqueue_processor_job(
-            frame,
-            &job.processor,
-            job.payload_json.as_deref(),
-        )
-        .await
-    }
-
-    pub async fn insert_frame_and_enqueue_ocr_job(
-        &self,
-        frame: &NewFrame,
-        payload_json: Option<&str>,
-    ) -> Result<FrameProcessingJob> {
-        self.insert_frame_and_enqueue_processor_job(frame, OCR_PROCESSOR, payload_json)
-            .await
     }
 
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
