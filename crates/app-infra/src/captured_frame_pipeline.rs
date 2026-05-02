@@ -142,7 +142,7 @@ impl CapturedFramePipeline {
         })
     }
 
-    pub(crate) async fn insert_frame_and_enqueue_processor_job(
+    pub(crate) async fn debug_insert_frame_and_enqueue_processor_job(
         &self,
         frame: &NewFrame,
         processor: &str,

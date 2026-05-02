@@ -20,13 +20,6 @@ pub struct FrameProcessingJob {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct FrameOcrEnqueueResult {
-    pub frame: Frame,
-    pub job: Option<ProcessingJob>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct ProcessingJobCompletion {
     pub job: ProcessingJob,
     pub result: ProcessingResult,
@@ -62,6 +55,14 @@ impl ProcessingStore {
             .ok_or(AppInfraError::FrameNotFound(frame_id))
     }
 
+    pub(crate) async fn get_frame_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame_id: i64,
+    ) -> Result<Option<Frame>> {
+        get_frame_optional(&mut **transaction, frame_id).await
+    }
+
     pub async fn enqueue_job(&self, draft: &ProcessingJobDraft) -> Result<ProcessingJob> {
         let job_id = insert_processing_job_record(
             &self.pool,
@@ -85,6 +86,69 @@ impl ProcessingStore {
         let job_id =
             insert_processing_job_record(&mut **transaction, &subject, processor, payload_json)
                 .await?;
+
+        get_processing_job_optional(&mut **transaction, job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))
+    }
+
+    pub(crate) async fn get_latest_processing_job_for_subject_and_processor_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        subject: &ProcessingSubject,
+        processor: &str,
+    ) -> Result<Option<ProcessingJob>> {
+        let row = sqlx::query(
+            "SELECT \
+                id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+                created_at, updated_at, started_at, finished_at \
+             FROM processing_jobs \
+             WHERE subject_type = ?1 AND subject_id = ?2 AND processor = ?3 \
+             ORDER BY id DESC \
+             LIMIT 1",
+        )
+        .bind(subject.subject_type())
+        .bind(subject.subject_id)
+        .bind(processor)
+        .fetch_optional(&mut **transaction)
+        .await?;
+
+        row.map(map_processing_job).transpose()
+    }
+
+    pub(crate) async fn requeue_processing_job_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        job_id: i64,
+        payload_json: Option<&str>,
+    ) -> Result<ProcessingJob> {
+        let update = sqlx::query(
+            "UPDATE processing_jobs \
+             SET status = 'queued', \
+                 payload_json = COALESCE(?2, payload_json), \
+                 last_error = NULL, \
+                 started_at = NULL, \
+                 finished_at = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status IN ('completed', 'failed')",
+        )
+        .bind(job_id)
+        .bind(payload_json)
+        .execute(&mut **transaction)
+        .await?;
+
+        if update.rows_affected() == 0 {
+            let current = get_processing_job_optional(&mut **transaction, job_id)
+                .await?
+                .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+            return Err(processing_job_invalid_transition(
+                job_id,
+                &current.status,
+                ProcessingJobStatus::Queued.as_str(),
+            ));
+        }
+
+        delete_processing_result_for_job(&mut **transaction, job_id).await?;
 
         get_processing_job_optional(&mut **transaction, job_id)
             .await?

@@ -114,7 +114,7 @@ pub struct GetAppJobRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InsertFrameAndEnqueueProcessingJobRequest {
+pub struct DebugInsertFrameAndEnqueueProcessingJobRequest {
     pub session_id: String,
     pub file_path: String,
     pub captured_at: String,
@@ -127,13 +127,20 @@ pub struct InsertFrameAndEnqueueProcessingJobRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InsertFrameAndEnqueueOcrRequest {
+pub struct DebugInsertFrameAndEnqueueOcrRequest {
     pub session_id: String,
     pub file_path: String,
     pub captured_at: String,
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub content_fingerprint: Option<String>,
+    pub payload_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReprocessCapturedFrameOcrRequest {
+    pub frame_id: i64,
     pub payload_json: Option<String>,
 }
 
@@ -270,6 +277,47 @@ struct ResolvedSegmentPreviewPaths {
     video_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClassifyHiddenSegmentWorkspaceRequest {
+    pub workspace_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenSegmentWorkspacePathsDto {
+    pub workspace_dir: String,
+    pub frames_dir: String,
+    pub visible_segment_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentWorkspaceBatchReferenceDto {
+    pub batch_id: i64,
+    pub status: ::app_infra::FrameBatchStatus,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentWorkspaceOcrReferenceDto {
+    pub frame_id: i64,
+    pub job_id: i64,
+    pub status: ::app_infra::ProcessingJobStatus,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentWorkspaceCleanupDebugInfoDto {
+    pub paths: HiddenSegmentWorkspacePathsDto,
+    pub disposition: ::app_infra::SegmentWorkspaceCleanupDisposition,
+    pub safe_to_remove: bool,
+    pub visible_segment_exists: bool,
+    pub frame_count: i64,
+    pub batch_references: Vec<SegmentWorkspaceBatchReferenceDto>,
+    pub nonterminal_ocr_references: Vec<SegmentWorkspaceOcrReferenceDto>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessingJobDto {
@@ -305,6 +353,13 @@ pub struct ProcessingResultDto {
 #[serde(rename_all = "camelCase")]
 pub struct FrameProcessingJobDto {
     pub frame: FrameDto,
+    pub job: ProcessingJobDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturedFrameReprocessingResultDto {
+    pub outcome: ::app_infra::CapturedFrameReprocessingOutcome,
     pub job: ProcessingJobDto,
 }
 
@@ -409,6 +464,15 @@ impl From<::app_infra::FrameProcessingJob> for FrameProcessingJobDto {
     }
 }
 
+impl From<::app_infra::CapturedFrameReprocessingResult> for CapturedFrameReprocessingResultDto {
+    fn from(value: ::app_infra::CapturedFrameReprocessingResult) -> Self {
+        Self {
+            outcome: value.outcome,
+            job: value.job.into(),
+        }
+    }
+}
+
 impl From<::app_infra::AudioSegment> for AudioSegmentDto {
     fn from(segment: ::app_infra::AudioSegment) -> Self {
         Self {
@@ -421,6 +485,57 @@ impl From<::app_infra::AudioSegment> for AudioSegmentDto {
             ended_at: segment.ended_at,
             created_at: segment.created_at,
             updated_at: segment.updated_at,
+        }
+    }
+}
+
+impl From<::app_infra::HiddenSegmentWorkspacePaths> for HiddenSegmentWorkspacePathsDto {
+    fn from(paths: ::app_infra::HiddenSegmentWorkspacePaths) -> Self {
+        Self {
+            workspace_dir: paths.workspace_dir,
+            frames_dir: paths.frames_dir,
+            visible_segment_path: paths.visible_segment_path,
+        }
+    }
+}
+
+impl From<::app_infra::SegmentWorkspaceBatchReference> for SegmentWorkspaceBatchReferenceDto {
+    fn from(reference: ::app_infra::SegmentWorkspaceBatchReference) -> Self {
+        Self {
+            batch_id: reference.batch_id,
+            status: reference.status,
+        }
+    }
+}
+
+impl From<::app_infra::SegmentWorkspaceOcrReference> for SegmentWorkspaceOcrReferenceDto {
+    fn from(reference: ::app_infra::SegmentWorkspaceOcrReference) -> Self {
+        Self {
+            frame_id: reference.frame_id,
+            job_id: reference.job_id,
+            status: reference.status,
+        }
+    }
+}
+
+impl From<::app_infra::SegmentWorkspaceCleanupDebugInfo> for SegmentWorkspaceCleanupDebugInfoDto {
+    fn from(info: ::app_infra::SegmentWorkspaceCleanupDebugInfo) -> Self {
+        Self {
+            paths: info.paths.into(),
+            disposition: info.disposition,
+            safe_to_remove: info.safe_to_remove,
+            visible_segment_exists: info.visible_segment_exists,
+            frame_count: info.frame_count,
+            batch_references: info
+                .batch_references
+                .into_iter()
+                .map(SegmentWorkspaceBatchReferenceDto::from)
+                .collect(),
+            nonterminal_ocr_references: info
+                .nonterminal_ocr_references
+                .into_iter()
+                .map(SegmentWorkspaceOcrReferenceDto::from)
+                .collect(),
         }
     }
 }
@@ -471,7 +586,7 @@ impl From<SubmitDebugCpuJobRequest> for ::app_infra::DebugCpuJobRequest {
     }
 }
 
-impl InsertFrameAndEnqueueProcessingJobRequest {
+impl DebugInsertFrameAndEnqueueProcessingJobRequest {
     fn into_parts(self) -> (::app_infra::NewFrame, String, Option<String>) {
         let Self {
             session_id,
@@ -498,8 +613,8 @@ impl InsertFrameAndEnqueueProcessingJobRequest {
     }
 }
 
-impl From<InsertFrameAndEnqueueOcrRequest> for InsertFrameAndEnqueueProcessingJobRequest {
-    fn from(request: InsertFrameAndEnqueueOcrRequest) -> Self {
+impl From<DebugInsertFrameAndEnqueueOcrRequest> for DebugInsertFrameAndEnqueueProcessingJobRequest {
+    fn from(request: DebugInsertFrameAndEnqueueOcrRequest) -> Self {
         Self {
             session_id: request.session_id,
             file_path: request.file_path,
@@ -577,21 +692,12 @@ async fn get_audio_segment_media_inner(
 }
 
 fn resolve_segment_preview_paths(frame_file_path: &Path) -> Option<ResolvedSegmentPreviewPaths> {
-    let frames_dir = frame_file_path.parent()?;
-    if frames_dir.file_name()?.to_str()? != "frames" {
-        return None;
-    }
-
-    let workspace_dir = frames_dir.parent()?;
-    let workspace_name = workspace_dir.file_name()?.to_str()?;
-    let visible_segment_name = workspace_name.strip_prefix('.')?;
-    let video_path = workspace_dir
-        .parent()?
-        .join(format!("{visible_segment_name}.mov"));
+    let paths =
+        ::app_infra::HiddenSegmentWorkspacePaths::from_frame_artifact_path(frame_file_path)?;
 
     Some(ResolvedSegmentPreviewPaths {
-        workspace_dir: workspace_dir.to_path_buf(),
-        video_path,
+        workspace_dir: PathBuf::from(paths.workspace_dir),
+        video_path: PathBuf::from(paths.visible_segment_path),
     })
 }
 
@@ -853,7 +959,7 @@ pub async fn persist_screen_frame_artifact(
     infra: &::app_infra::AppInfra,
     session_id: &str,
     artifact: ScreenFrameArtifact,
-) -> ::app_infra::Result<::app_infra::FrameOcrEnqueueResult> {
+) -> ::app_infra::Result<::app_infra::CapturedFramePipelineResult> {
     let mut frame = ::app_infra::NewFrame::new(
         session_id,
         artifact.file_path,
@@ -868,9 +974,7 @@ pub async fn persist_screen_frame_artifact(
         frame = frame.with_content_fingerprint(content_fingerprint);
     }
 
-    infra
-        .insert_frame_into_batch_and_maybe_enqueue_ocr_job(&frame, None)
-        .await
+    infra.capture_frame(&frame, None).await
 }
 
 pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
@@ -1020,16 +1124,36 @@ fn processing_subject(subject_type: String, subject_id: i64) -> ::app_infra::Pro
     ::app_infra::ProcessingSubject::new(subject_type, subject_id)
 }
 
-async fn insert_frame_and_enqueue_processing_job_inner(
+async fn debug_insert_frame_and_enqueue_processing_job_inner(
     infra: &::app_infra::AppInfra,
-    request: InsertFrameAndEnqueueProcessingJobRequest,
+    request: DebugInsertFrameAndEnqueueProcessingJobRequest,
 ) -> ::app_infra::Result<FrameProcessingJobDto> {
     let (frame, processor, payload_json) = request.into_parts();
 
     infra
-        .insert_frame_and_enqueue_processing_job(&frame, &processor, payload_json.as_deref())
+        .debug_insert_frame_and_enqueue_processing_job(&frame, &processor, payload_json.as_deref())
         .await
         .map(FrameProcessingJobDto::from)
+}
+
+async fn reprocess_captured_frame_ocr_inner(
+    infra: &::app_infra::AppInfra,
+    request: ReprocessCapturedFrameOcrRequest,
+) -> ::app_infra::Result<CapturedFrameReprocessingResultDto> {
+    infra
+        .reprocess_captured_frame_ocr(request.frame_id, request.payload_json.as_deref())
+        .await
+        .map(CapturedFrameReprocessingResultDto::from)
+}
+
+async fn classify_hidden_segment_workspace_inner(
+    infra: &::app_infra::AppInfra,
+    request: ClassifyHiddenSegmentWorkspaceRequest,
+) -> ::app_infra::Result<Option<SegmentWorkspaceCleanupDebugInfoDto>> {
+    infra
+        .classify_hidden_segment_workspace(Path::new(&request.workspace_dir))
+        .await
+        .map(|info| info.map(SegmentWorkspaceCleanupDebugInfoDto::from))
 }
 
 #[tauri::command]
@@ -1082,27 +1206,63 @@ pub async fn get_app_job(
 }
 
 #[tauri::command]
-pub async fn insert_frame_and_enqueue_processing_job(
-    request: InsertFrameAndEnqueueProcessingJobRequest,
+pub async fn debug_insert_frame_and_enqueue_processing_job(
+    request: DebugInsertFrameAndEnqueueProcessingJobRequest,
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<FrameProcessingJobDto, String> {
     let infra = Arc::clone(&*state);
 
-    insert_frame_and_enqueue_processing_job_inner(&infra, request)
+    debug_insert_frame_and_enqueue_processing_job_inner(&infra, request)
         .await
-        .map_err(|error| format!("failed to insert frame and enqueue processing job: {error}"))
+        .map_err(|error| {
+            format!("failed to debug-insert frame and enqueue processing job: {error}")
+        })
 }
 
 #[tauri::command]
-pub async fn insert_frame_and_enqueue_ocr(
-    request: InsertFrameAndEnqueueOcrRequest,
+pub async fn debug_insert_frame_and_enqueue_ocr(
+    request: DebugInsertFrameAndEnqueueOcrRequest,
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<FrameProcessingJobDto, String> {
     let infra = Arc::clone(&*state);
 
-    insert_frame_and_enqueue_processing_job_inner(&infra, request.into())
+    debug_insert_frame_and_enqueue_processing_job_inner(&infra, request.into())
         .await
-        .map_err(|error| format!("failed to insert frame and enqueue ocr job: {error}"))
+        .map_err(|error| format!("failed to debug-insert frame and enqueue ocr job: {error}"))
+}
+
+#[tauri::command]
+pub async fn reprocess_captured_frame_ocr(
+    request: ReprocessCapturedFrameOcrRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<CapturedFrameReprocessingResultDto, String> {
+    let infra = Arc::clone(&*state);
+
+    reprocess_captured_frame_ocr_inner(&infra, request.clone())
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to reprocess captured frame OCR for frame {}: {error}",
+                request.frame_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn classify_hidden_segment_workspace(
+    request: ClassifyHiddenSegmentWorkspaceRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Option<SegmentWorkspaceCleanupDebugInfoDto>, String> {
+    let infra = Arc::clone(&*state);
+
+    classify_hidden_segment_workspace_inner(&infra, request.clone())
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to classify hidden segment workspace {}: {error}",
+                request.workspace_dir
+            )
+        })
 }
 
 #[tauri::command]
@@ -1358,8 +1518,8 @@ mod tests {
     }
 
     #[test]
-    fn insert_frame_processing_request_maps_optional_dimensions() {
-        let request = InsertFrameAndEnqueueProcessingJobRequest {
+    fn debug_insert_frame_processing_request_maps_optional_dimensions() {
+        let request = DebugInsertFrameAndEnqueueProcessingJobRequest {
             session_id: "session-a".to_string(),
             file_path: "/tmp/frame.png".to_string(),
             captured_at: "2026-04-12T10:00:00Z".to_string(),
@@ -1381,8 +1541,8 @@ mod tests {
     }
 
     #[test]
-    fn insert_frame_processing_request_ignores_partial_dimensions() {
-        let request = InsertFrameAndEnqueueProcessingJobRequest {
+    fn debug_insert_frame_processing_request_ignores_partial_dimensions() {
+        let request = DebugInsertFrameAndEnqueueProcessingJobRequest {
             session_id: "session-b".to_string(),
             file_path: "/tmp/frame.png".to_string(),
             captured_at: "2026-04-12T10:00:00Z".to_string(),
@@ -1401,9 +1561,9 @@ mod tests {
     }
 
     #[test]
-    fn insert_frame_ocr_request_wraps_generic_processing_request() {
-        let request =
-            InsertFrameAndEnqueueProcessingJobRequest::from(InsertFrameAndEnqueueOcrRequest {
+    fn debug_insert_frame_ocr_request_wraps_generic_processing_request() {
+        let request = DebugInsertFrameAndEnqueueProcessingJobRequest::from(
+            DebugInsertFrameAndEnqueueOcrRequest {
                 session_id: "session-ocr".to_string(),
                 file_path: "/tmp/frame-ocr.png".to_string(),
                 captured_at: "2026-04-12T10:00:00Z".to_string(),
@@ -1411,8 +1571,9 @@ mod tests {
                 height: Some(1080),
                 content_fingerprint: Some("ef01".to_string()),
                 payload_json: Some("{\"language\":\"eng\"}".to_string()),
-            })
-            .into_parts();
+            },
+        )
+        .into_parts();
 
         assert_eq!(request.0.session_id, "session-ocr");
         assert_eq!(request.0.file_path, "/tmp/frame-ocr.png");
@@ -1480,6 +1641,50 @@ mod tests {
             resolved.video_path,
             PathBuf::from("/tmp/2026/04/12/session-abc-segment-0004.mov")
         );
+    }
+
+    #[test]
+    fn classify_hidden_segment_workspace_info_dto_maps_nested_debug_payload() {
+        let dto = SegmentWorkspaceCleanupDebugInfoDto::from(
+            ::app_infra::SegmentWorkspaceCleanupDebugInfo {
+                paths: ::app_infra::HiddenSegmentWorkspacePaths {
+                    workspace_dir: "/tmp/.session-segment-0001".to_string(),
+                    frames_dir: "/tmp/.session-segment-0001/frames".to_string(),
+                    visible_segment_path: "/tmp/session-segment-0001.mov".to_string(),
+                },
+                disposition: ::app_infra::SegmentWorkspaceCleanupDisposition::CompletedOnly,
+                safe_to_remove: true,
+                visible_segment_exists: true,
+                frame_count: 2,
+                batch_references: vec![::app_infra::SegmentWorkspaceBatchReference {
+                    batch_id: 7,
+                    status: ::app_infra::FrameBatchStatus::Completed,
+                }],
+                nonterminal_ocr_references: vec![::app_infra::SegmentWorkspaceOcrReference {
+                    frame_id: 11,
+                    job_id: 12,
+                    status: ::app_infra::ProcessingJobStatus::Queued,
+                }],
+            },
+        );
+
+        assert_eq!(dto.paths.workspace_dir, "/tmp/.session-segment-0001");
+        assert_eq!(dto.paths.frames_dir, "/tmp/.session-segment-0001/frames");
+        assert_eq!(
+            dto.paths.visible_segment_path,
+            "/tmp/session-segment-0001.mov"
+        );
+        assert_eq!(
+            dto.disposition,
+            ::app_infra::SegmentWorkspaceCleanupDisposition::CompletedOnly
+        );
+        assert!(dto.safe_to_remove);
+        assert_eq!(dto.frame_count, 2);
+        assert_eq!(dto.batch_references.len(), 1);
+        assert_eq!(dto.batch_references[0].batch_id, 7);
+        assert_eq!(dto.nonterminal_ocr_references.len(), 1);
+        assert_eq!(dto.nonterminal_ocr_references[0].frame_id, 11);
+        assert_eq!(dto.nonterminal_ocr_references[0].job_id, 12);
     }
 
     #[test]
@@ -1793,7 +1998,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             let persisted = infra
-                .insert_frame_and_enqueue_processing_job(
+                .debug_insert_frame_and_enqueue_processing_job(
                     &::app_infra::NewFrame::new(
                         "session-worker",
                         "/tmp/frame-worker.png",
@@ -1833,7 +2038,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             infra
-                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                .capture_frame(
                     &::app_infra::NewFrame::new(
                         "session-batch-worker",
                         "/tmp/session-batch-worker-segment-0001/frames/frame-1.png",
@@ -1844,7 +2049,7 @@ mod tests {
                 .await
                 .expect("first frame should persist");
             infra
-                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                .capture_frame(
                     &::app_infra::NewFrame::new(
                         "session-batch-worker",
                         "/tmp/session-batch-worker-segment-0002/frames/frame-2.png",
