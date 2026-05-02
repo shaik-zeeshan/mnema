@@ -149,6 +149,18 @@ export interface RecordingSettings {
 	 * before it is counted as activity.
 	 */
 	systemAudioActivitySensitivity: number;
+	/**
+	 * In-memory TTL (in seconds) for cached frame/image previews. `0` disables
+	 * caching entirely; otherwise entries expire automatically after the
+	 * configured duration. Defaults to 3600 (1 hour).
+	 */
+	previewCacheTtlSeconds: number;
+	/**
+	 * When true, developer-only surfaces (the Debug page and its nav entry)
+	 * are exposed in the UI. When false, the Debug page is hidden from
+	 * navigation and direct visits to `/` are redirected to `/timeline`.
+	 */
+	developerOptionsEnabled: boolean;
 }
 
 // ─── Native Capture Debug Log ──────────────────────────────────────────────
@@ -315,6 +327,46 @@ export interface IdleDebugInfo {
 	systemAudioActivityLevel: number | null;
 	/** Whether system audio activity detection is currently enabled. */
 	systemAudioActivityEnabled: boolean;
+	/**
+	 * Operational truth for each capture source family — what is requested,
+	 * whether the underlying capture session/writer is currently attached, and
+	 * the on-disk output path when known. Distinguishes "requested but paused"
+	 * from "session running" from "writer attached/active".
+	 */
+	runtimeSources: RuntimeSourcesStatus;
+}
+
+/** Mirrors the Rust `RuntimeSourcesStatus` struct. */
+export interface RuntimeSourcesStatus {
+	screen: RuntimeSourceStatus;
+	microphone: RuntimeSourceStatus;
+	systemAudio: RuntimeSourceStatus;
+}
+
+/** Mirrors the Rust `RuntimeSourceStatus` struct. */
+export interface RuntimeSourceStatus {
+	/** Source was requested by the active recording. */
+	requested: boolean;
+	/** Source family is currently inactivity-paused. */
+	paused: boolean;
+	/**
+	 * Native capture session for this source is currently attached/running.
+	 * `null` when the platform cannot report this (e.g. non-macOS).
+	 */
+	sessionActive: boolean | null;
+	/**
+	 * Output writer for this source is currently attached and accepting samples
+	 * (session running AND not paused AND output file resolved). `null` when
+	 * the platform cannot report this.
+	 */
+	writerActive: boolean | null;
+	/** Last known on-disk output path for the active segment, when available. */
+	outputPath: string | null;
+	/**
+	 * Short machine-readable reason when truth is unavailable
+	 * (e.g. `"non_macos"`, `"not_requested"`). `null` when normal.
+	 */
+	reason: string | null;
 }
 
 export interface IdleDebugActivitySource {
@@ -350,6 +402,151 @@ export interface AppInfraStatus {
 	migrationsRan: boolean;
 	workerThreadCount: number;
 	jobCounts: JobCounts;
+}
+
+/**
+ * Mirrors the Rust `FrameDto` struct returned by `list_frames` / `get_frame`.
+ *
+ * `filePath` is an absolute path on disk; render via Tauri's
+ * `convertFileSrc` to obtain a URL safe for `<img src>`.
+ */
+export interface FrameDto {
+	id: number;
+	sessionId: string;
+	filePath: string;
+	capturedAt: string;
+	width: number | null;
+	height: number | null;
+	contentFingerprint: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/**
+ * Discriminator for where a frame preview's bytes came from.
+ *
+ * Mirrors the Rust `FramePreviewSourceKindDto` enum (snake_case wire values).
+ *
+ * - `original_frame` — bytes were read directly from the captured frame image
+ *   on disk for this exact frame.
+ * - `segment_frame_fallback` — bytes were read from another captured frame
+ *   image in the same hidden segment workspace when the exact frame image was
+ *   unavailable.
+ * - `video_fallback` — bytes were re-decoded from the segment video as a
+ *   fallback when the original frame image was unavailable.
+ */
+export type FramePreviewSourceKind =
+	| "original_frame"
+	| "segment_frame_fallback"
+	| "video_fallback";
+
+/**
+ * Mirrors the Rust `FramePreviewDto` returned by
+ * `invoke('get_frame_preview', { request: { frameId } })`.
+ *
+ * The frontend builds an `<img src>` URL via
+ * `data:${mimeType};base64,${dataBase64}`.
+ */
+export interface FramePreviewDto {
+	mimeType: string;
+	dataBase64: string;
+	sourceKind: FramePreviewSourceKind;
+}
+
+/** Request body for `invoke('get_frame_preview', { request })`. */
+export interface GetFramePreviewRequest {
+	frameId: number;
+}
+
+/**
+ * Lightweight frame summary returned by `list_frame_summaries_in_range`.
+ * Carries only the fields the timeline date-jump UI needs to populate the
+ * calendar / time picker without paying for full `FrameDto` payloads.
+ */
+export interface FrameSummaryDto {
+	id: number;
+	capturedAt: string;
+}
+
+/**
+ * Request body for `invoke('list_frame_summaries_in_range', { request })`
+ * and `invoke('get_latest_frame_in_range', { request })`. Both bounds are
+ * ISO 8601 timestamps; the backend treats them as a fully-closed
+ * `[start, end]` window (inclusive start, inclusive end) and returns either
+ * summaries or the latest matching frame.
+ */
+export interface FrameRangeRequest {
+	capturedAtStart: string;
+	capturedAtEnd: string;
+}
+
+/** Request body for `invoke('list_frames', { request })`. All fields optional. */
+export interface ListFramesRequest {
+	sessionId?: string | null;
+	limit?: number | null;
+	offset?: number | null;
+	/**
+	 * Cursor for stable pagination: only return frames with `id < beforeId`.
+	 * Prefer this over `offset` when paging through a list that may have new
+	 * rows inserted at the head between pages.
+	 */
+	beforeId?: number | null;
+}
+
+// ─── Audio Segments ────────────────────────────────────────────────────────
+
+/**
+ * Discriminator for which capture source produced an audio segment.
+ *
+ * Mirrors the Rust `AudioSegmentSourceKind` enum (snake_case wire values).
+ * Each kind corresponds to its own independent source session, distinct
+ * from the screen/frame session.
+ */
+export type AudioSegmentSourceKind = "microphone" | "system_audio";
+
+/**
+ * Mirrors the Rust `AudioSegmentDto` struct returned by `list_audio_segments`.
+ *
+ * `filePath` is an absolute path on disk to the segment's `.m4a` file.
+ * `startedAt` / `endedAt` are ISO 8601 timestamps marking the segment's
+ * captured time range. `sourceSessionId` identifies the per-source capture
+ * session (independent from any screen/frame session id).
+ */
+export interface AudioSegmentDto {
+	id: number;
+	sourceKind: AudioSegmentSourceKind;
+	sourceSessionId: string;
+	segmentIndex: number;
+	filePath: string;
+	startedAt: string;
+	endedAt: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/**
+ * Request body for `invoke('list_audio_segments', { request })`. Both bounds
+ * are ISO 8601 timestamps; the backend treats them as a fully-closed
+ * `[start, end]` window matching `FrameRangeRequest`.
+ */
+export interface ListAudioSegmentsRequest {
+	capturedAtStart: string;
+	capturedAtEnd: string;
+}
+
+/** Request body for `invoke('get_audio_segment_media', { request })`. */
+export interface GetAudioSegmentMediaRequest {
+	audioSegmentId: number;
+}
+
+/**
+ * Audio segment bytes returned by `get_audio_segment_media`.
+ * The frontend builds an `<audio src>` via
+ * `data:${mimeType};base64,${dataBase64}`.
+ */
+export interface AudioSegmentMediaDto {
+	mimeType: string;
+	dataBase64: string;
 }
 
 /** Mirrors the Rust `AppJobDto` struct returned by job-related commands. */

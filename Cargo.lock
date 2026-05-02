@@ -6478,11 +6478,13 @@ name = "z"
 version = "0.1.0"
 dependencies = [
  "app-infra",
+ "base64 0.22.1",
  "capture-microphone",
  "capture-runtime",
  "capture-screen",
  "capture-types",
  "capture-writers",
+ "cidre",
  "core-graphics",
  "serde",
  "serde_json",
@@ -6490,6 +6492,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-log",
  "tauri-plugin-opener",
+ "tempfile",
  "time",
  "tokio",
 ]

@@ -94,10 +94,41 @@ fn sync_finalized_screen_output_file(
 
 #[cfg(target_os = "macos")]
 fn is_usable_audio_output_file(path: &str, unusable_files: &BTreeSet<String>) -> bool {
-    !unusable_files.contains(path)
-        && std::fs::metadata(path)
-            .map(|metadata| metadata.is_file() && metadata.len() > 0)
-            .unwrap_or(false)
+    is_usable_audio_output_file_with_duration_validator(
+        path,
+        unusable_files,
+        audio_file_has_positive_duration,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn is_usable_audio_output_file_with_duration_validator(
+    path: &str,
+    unusable_files: &BTreeSet<String>,
+    has_positive_duration: impl Fn(&str) -> bool,
+) -> bool {
+    if unusable_files.contains(path) {
+        return false;
+    }
+
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() == 0 {
+        return false;
+    }
+
+    has_positive_duration(path)
+}
+
+#[cfg(target_os = "macos")]
+fn audio_file_has_positive_duration(path: &str) -> bool {
+    use cidre::{av, ns};
+
+    let url = ns::Url::with_fs_path_str(path, false);
+    av::UrlAsset::with_url(&url, None)
+        .map(|asset| asset.duration())
+        .is_some_and(|duration| duration.is_numeric() && duration.value > 0 && duration.scale > 0)
 }
 
 #[cfg(target_os = "macos")]
@@ -123,10 +154,33 @@ fn sync_finalized_audio_output_file(
     unusable_files: &BTreeSet<String>,
     failures: &mut Vec<String>,
 ) {
+    sync_finalized_audio_output_file_with_duration_validator(
+        current_file,
+        files,
+        label,
+        unusable_files,
+        failures,
+        audio_file_has_positive_duration,
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn sync_finalized_audio_output_file_with_duration_validator(
+    current_file: &mut Option<String>,
+    files: &mut Vec<String>,
+    label: &str,
+    unusable_files: &BTreeSet<String>,
+    failures: &mut Vec<String>,
+    has_positive_duration: impl Fn(&str) -> bool + Copy,
+) {
     let mut removed_paths = BTreeSet::new();
 
     files.retain(|path| {
-        if is_usable_audio_output_file(path, unusable_files) {
+        if is_usable_audio_output_file_with_duration_validator(
+            path,
+            unusable_files,
+            has_positive_duration,
+        ) {
             true
         } else {
             if removed_paths.insert(path.clone()) {
@@ -138,7 +192,13 @@ fn sync_finalized_audio_output_file(
 
     let current = current_file
         .as_deref()
-        .filter(|path| is_usable_audio_output_file(path, unusable_files))
+        .filter(|path| {
+            is_usable_audio_output_file_with_duration_validator(
+                path,
+                unusable_files,
+                has_positive_duration,
+            )
+        })
         .map(str::to_owned);
 
     if current.is_none() {
@@ -199,6 +259,14 @@ fn sync_finalized_system_audio_output_files(
 }
 
 #[cfg(target_os = "macos")]
+fn audio_output_files_are_empty(output_files: &CaptureOutputFiles) -> bool {
+    output_files.microphone_file.is_none()
+        && output_files.microphone_files.is_empty()
+        && output_files.system_audio_file.is_none()
+        && output_files.system_audio_files.is_empty()
+}
+
+#[cfg(target_os = "macos")]
 fn missing_requested_screen_output_failure(recording_file: Option<&str>) -> String {
     let path_detail = recording_file
         .map(|path| format!(" at {path}"))
@@ -228,6 +296,13 @@ pub(crate) fn finalize_capture_outputs(
     let mut audio_failures: Vec<String> = Vec::new();
     let mut unusable_audio_files: BTreeSet<String> = BTreeSet::new();
     let has_screen_output = sync_finalized_screen_output_file(output_files, recording_file);
+    let had_audio_artifact_before_sync = output_files
+        .microphone_file
+        .iter()
+        .chain(output_files.microphone_files.iter())
+        .chain(output_files.system_audio_file.iter())
+        .chain(output_files.system_audio_files.iter())
+        .any(|path| Path::new(path).is_file());
 
     if requested_sources.is_some_and(|sources| sources.screen) && !has_screen_output {
         failures.push(missing_requested_screen_output_failure(recording_file));
@@ -328,6 +403,15 @@ pub(crate) fn finalize_capture_outputs(
 
     if !has_screen_output || !failures.is_empty() {
         failures.extend(audio_failures);
+    }
+
+    if requested_sources.is_some_and(|sources| {
+        !sources.screen
+            && (sources.microphone || sources.system_audio)
+            && audio_output_files_are_empty(output_files)
+            && had_audio_artifact_before_sync
+    }) {
+        failures.clear();
     }
 
     capture_writers::aggregate_output_processing_failures(failures)
@@ -540,8 +624,22 @@ mod tests {
         let mut failures = Vec::new();
         let unusable_files = BTreeSet::new();
 
-        sync_finalized_microphone_output_files(&mut output_files, &unusable_files, &mut failures);
-        sync_finalized_system_audio_output_files(&mut output_files, &unusable_files, &mut failures);
+        sync_finalized_audio_output_file_with_duration_validator(
+            &mut output_files.microphone_file,
+            &mut output_files.microphone_files,
+            "microphone",
+            &unusable_files,
+            &mut failures,
+            |path| path == microphone_kept_file,
+        );
+        sync_finalized_audio_output_file_with_duration_validator(
+            &mut output_files.system_audio_file,
+            &mut output_files.system_audio_files,
+            "system audio",
+            &unusable_files,
+            &mut failures,
+            |_| false,
+        );
 
         let mut legacy_output_files = CaptureOutputFiles {
             screen_file: None,
@@ -551,10 +649,13 @@ mod tests {
             system_audio_file: None,
             system_audio_files: Vec::new(),
         };
-        sync_finalized_microphone_output_files(
-            &mut legacy_output_files,
+        sync_finalized_audio_output_file_with_duration_validator(
+            &mut legacy_output_files.microphone_file,
+            &mut legacy_output_files.microphone_files,
+            "microphone",
             &unusable_files,
             &mut failures,
+            |path| path == microphone_file,
         );
 
         assert_eq!(output_files.screen_file, Some(screen_file.clone()));
@@ -575,6 +676,197 @@ mod tests {
         assert!(failures.is_empty());
         assert!(!Path::new(&empty_microphone_file).exists());
         assert!(!Path::new(&empty_system_audio_file).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn zero_duration_non_empty_audio_output_is_unusable() {
+        let dir = TestDir::new("zero-duration-audio-output");
+        let microphone_file = dir
+            .path
+            .join("microphone-zero-duration.m4a")
+            .to_string_lossy()
+            .to_string();
+        fs::write(&microphone_file, b"non-empty").expect("audio artifact should exist");
+        let mut output_files = CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        };
+        let mut failures = Vec::new();
+        let unusable_files = BTreeSet::new();
+
+        sync_finalized_audio_output_file_with_duration_validator(
+            &mut output_files.microphone_file,
+            &mut output_files.microphone_files,
+            "microphone",
+            &unusable_files,
+            &mut failures,
+            |_| false,
+        );
+
+        assert_eq!(output_files.microphone_file, None);
+        assert!(output_files.microphone_files.is_empty());
+        assert!(failures.is_empty());
+        assert!(!Path::new(&microphone_file).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn positive_duration_short_system_audio_output_is_usable() {
+        let dir = TestDir::new("short-system-audio-output");
+        let system_audio_file = dir
+            .path
+            .join("system-audio-short.m4a")
+            .to_string_lossy()
+            .to_string();
+        fs::write(&system_audio_file, b"short-active").expect("audio artifact should exist");
+        let mut output_files = CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: Some(system_audio_file.clone()),
+            system_audio_files: vec![system_audio_file.clone()],
+        };
+        let mut failures = Vec::new();
+        let unusable_files = BTreeSet::new();
+
+        sync_finalized_audio_output_file_with_duration_validator(
+            &mut output_files.system_audio_file,
+            &mut output_files.system_audio_files,
+            "system audio",
+            &unusable_files,
+            &mut failures,
+            |_| true,
+        );
+
+        assert_eq!(output_files.system_audio_file, Some(system_audio_file.clone()));
+        assert_eq!(output_files.system_audio_files, vec![system_audio_file]);
+        assert!(failures.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn positive_duration_ignored_microphone_output_is_removed_from_payload() {
+        let dir = TestDir::new("ignored-microphone-output");
+        let microphone_file = dir
+            .path
+            .join("microphone-silent-startup.m4a")
+            .to_string_lossy()
+            .to_string();
+        fs::write(&microphone_file, b"positive-duration-silence")
+            .expect("microphone artifact should exist");
+        let mut output_files = CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        };
+        let mut failures = Vec::new();
+        let unusable_files = BTreeSet::from([microphone_file.clone()]);
+
+        sync_finalized_audio_output_file_with_duration_validator(
+            &mut output_files.microphone_file,
+            &mut output_files.microphone_files,
+            "microphone",
+            &unusable_files,
+            &mut failures,
+            |_| true,
+        );
+
+        assert_eq!(output_files.microphone_file, None);
+        assert!(output_files.microphone_files.is_empty());
+        assert!(failures.is_empty());
+        assert!(!Path::new(&microphone_file).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_capture_outputs_treats_deleted_audio_only_outputs_as_nonfatal() {
+        let dir = TestDir::new("deleted-audio-only-output");
+        let microphone_file = dir
+            .path
+            .join("microphone-empty.m4a")
+            .to_string_lossy()
+            .to_string();
+        let system_audio_file = dir
+            .path
+            .join("system-audio-empty.m4a")
+            .to_string_lossy()
+            .to_string();
+        fs::File::create(&microphone_file).expect("empty microphone placeholder should exist");
+        fs::File::create(&system_audio_file).expect("empty system-audio placeholder should exist");
+        let mut output_files = CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: Some(system_audio_file.clone()),
+            system_audio_files: vec![system_audio_file.clone()],
+        };
+
+        finalize_capture_outputs(
+            Some(&mut output_files),
+            None,
+            Some(&microphone_file),
+            Some(&system_audio_file),
+            Some(&CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: true,
+            }),
+        )
+        .expect("empty audio-only inactivity outputs should be ignored");
+
+        assert_eq!(output_files.microphone_file, None);
+        assert!(output_files.microphone_files.is_empty());
+        assert_eq!(output_files.system_audio_file, None);
+        assert!(output_files.system_audio_files.is_empty());
+        assert!(!Path::new(&microphone_file).exists());
+        assert!(!Path::new(&system_audio_file).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_capture_outputs_treats_ignored_system_audio_only_output_as_nonfatal() {
+        let dir = TestDir::new("ignored-system-audio-only-output");
+        let system_audio_file = dir
+            .path
+            .join("system-audio-empty.m4a")
+            .to_string_lossy()
+            .to_string();
+        fs::File::create(&system_audio_file).expect("empty system-audio placeholder should exist");
+        let mut output_files = CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: Some(system_audio_file.clone()),
+            system_audio_files: vec![system_audio_file.clone()],
+        };
+
+        finalize_capture_outputs(
+            Some(&mut output_files),
+            None,
+            None,
+            None,
+            Some(&CaptureSources {
+                screen: false,
+                microphone: false,
+                system_audio: true,
+            }),
+        )
+        .expect("ignored audio-only inactivity output should be nonfatal");
+
+        assert_eq!(output_files.system_audio_file, None);
+        assert!(output_files.system_audio_files.is_empty());
+        assert!(!Path::new(&system_audio_file).exists());
     }
 
     #[cfg(target_os = "macos")]

@@ -40,14 +40,8 @@ const AUDIO_ONLY_SOURCES: [ActivitySourceKind; 3] = [
     ActivitySourceKind::MicrophoneCapture,
     ActivitySourceKind::SystemAudioCapture,
 ];
-const MICROPHONE_SOURCES: [ActivitySourceKind; 2] = [
-    ActivitySourceKind::SystemInput,
-    ActivitySourceKind::MicrophoneCapture,
-];
-const SYSTEM_AUDIO_SOURCES: [ActivitySourceKind; 2] = [
-    ActivitySourceKind::SystemInput,
-    ActivitySourceKind::SystemAudioCapture,
-];
+const MICROPHONE_ONLY_SOURCES: [ActivitySourceKind; 1] = [ActivitySourceKind::MicrophoneCapture];
+const SYSTEM_AUDIO_ONLY_SOURCES: [ActivitySourceKind; 1] = [ActivitySourceKind::SystemAudioCapture];
 // Map the 0-100 sensitivity slider onto a bounded normalized audio threshold.
 // Higher sensitivity lowers the threshold so quieter audio counts as activity
 // more easily, while still avoiding a zero-threshold "everything is active"
@@ -275,17 +269,17 @@ impl InactivityState {
 
     fn microphone_source_kinds_for_mode(&self) -> &'static [ActivitySourceKind] {
         match self.activity_mode {
-            InactivityActivityMode::SystemInputOnly => &SYSTEM_INPUT_ONLY_SOURCES,
-            InactivityActivityMode::SystemInputOrScreen => &SYSTEM_INPUT_ONLY_SOURCES,
-            InactivityActivityMode::SystemInputOrScreenOrAudio => &MICROPHONE_SOURCES,
+            InactivityActivityMode::SystemInputOnly => &MICROPHONE_ONLY_SOURCES,
+            InactivityActivityMode::SystemInputOrScreen => &MICROPHONE_ONLY_SOURCES,
+            InactivityActivityMode::SystemInputOrScreenOrAudio => &MICROPHONE_ONLY_SOURCES,
         }
     }
 
     fn system_audio_source_kinds_for_mode(&self) -> &'static [ActivitySourceKind] {
         match self.activity_mode {
-            InactivityActivityMode::SystemInputOnly => &SYSTEM_INPUT_ONLY_SOURCES,
-            InactivityActivityMode::SystemInputOrScreen => &SYSTEM_INPUT_ONLY_SOURCES,
-            InactivityActivityMode::SystemInputOrScreenOrAudio => &SYSTEM_AUDIO_SOURCES,
+            InactivityActivityMode::SystemInputOnly => &SYSTEM_AUDIO_ONLY_SOURCES,
+            InactivityActivityMode::SystemInputOrScreen => &SYSTEM_AUDIO_ONLY_SOURCES,
+            InactivityActivityMode::SystemInputOrScreenOrAudio => &SYSTEM_AUDIO_ONLY_SOURCES,
         }
     }
 
@@ -558,10 +552,30 @@ impl InactivityState {
             return false;
         }
 
-        self.evaluate_policy_for_snapshot(now_monotonic_ms, snapshot)
-            .effective_idle
-            .idle_ms
-            >= self.idle_timeout_ms()
+        let idle_timeout_ms = self.idle_timeout_ms();
+        let evaluations = self.evaluate_policies_for_snapshot(now_monotonic_ms, snapshot);
+        let microphone_active = snapshot.microphone_activity.enabled
+            && evaluations.microphone.effective_idle.idle_ms < idle_timeout_ms;
+        let system_audio_active = snapshot.system_audio_activity.enabled
+            && evaluations.system_audio.effective_idle.idle_ms < idle_timeout_ms;
+
+        // In legacy hybrid mode, screen/system-input idle still owns the video
+        // pause, but threshold-qualified audio activity must not escalate that
+        // screen pause into the old all-source pause path.
+        if self.activity_mode == InactivityActivityMode::SystemInputOrScreen
+            && (microphone_active || system_audio_active)
+        {
+            return false;
+        }
+
+        Self::evaluate_policy_from_samples(
+            &evaluations.screen.sources,
+            self.fallback_idle(now_monotonic_ms),
+            self.combined_source_kinds_for_mode(),
+        )
+        .effective_idle
+        .idle_ms
+            >= idle_timeout_ms
     }
 
     pub(crate) fn should_resume_from_inactivity(
@@ -682,6 +696,8 @@ mod tests {
             save_directory: "/tmp".to_string(),
             auto_start: false,
             native_capture_debug_logging_enabled: false,
+            developer_options_enabled: false,
+            preview_cache_ttl_seconds: capture_types::default_preview_cache_ttl_seconds(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -906,13 +922,13 @@ mod tests {
             ActivitySourceKind::ScreenCapture
         );
         assert_eq!(evaluations.screen.effective_idle.idle_ms, 8_000);
-        // Microphone policy: min(system_input=12_000, microphone=400) → microphone=400
+        // Microphone policy ignores system input and uses microphone activity only.
         assert_eq!(
             evaluations.microphone.effective_idle.source,
             ActivitySourceKind::MicrophoneCapture
         );
         assert_eq!(evaluations.microphone.effective_idle.idle_ms, 400);
-        // System audio policy: min(system_input=12_000, system_audio=250) → system_audio=250
+        // System audio policy ignores system input and uses system-audio activity only.
         assert_eq!(
             evaluations.system_audio.effective_idle.source,
             ActivitySourceKind::SystemAudioCapture
@@ -1000,13 +1016,13 @@ mod tests {
             ActivitySourceKind::ScreenCapture
         );
         assert_eq!(evaluations.screen.effective_idle.idle_ms, 11_000);
-        // Microphone policy: system_input=12_000, microphone is below threshold (0.14 < 0.15)
-        // so microphone is not available → falls back to system_input
+        // Microphone policy ignores system input. The microphone is below threshold
+        // (0.14 < 0.15), so it is not available and falls back to internal idle.
         assert_eq!(
             evaluations.microphone.effective_idle.source,
-            ActivitySourceKind::SystemInput
+            ActivitySourceKind::InternalFallback
         );
-        assert_eq!(evaluations.microphone.effective_idle.idle_ms, 12_000);
+        assert_eq!(evaluations.microphone.effective_idle.idle_ms, 19_000);
         assert!(!evaluations.microphone.sources[2].available);
         assert_eq!(evaluations.microphone.sources[2].idle_ms, None);
         assert_eq!(
@@ -1019,12 +1035,13 @@ mod tests {
                 .expect("microphone threshold should be present"),
             0.15,
         );
-        // System audio policy: system_input=12_000, system_audio disabled
+        // System audio policy ignores system input, and disabled system audio falls
+        // back to internal idle.
         assert_eq!(
             evaluations.system_audio.effective_idle.source,
-            ActivitySourceKind::SystemInput
+            ActivitySourceKind::InternalFallback
         );
-        assert_eq!(evaluations.system_audio.effective_idle.idle_ms, 12_000);
+        assert_eq!(evaluations.system_audio.effective_idle.idle_ms, 19_000);
         assert!(!evaluations.system_audio.sources[3].enabled);
         assert!(!evaluations.system_audio.sources[3].available);
         assert_eq!(evaluations.system_audio.sources[3].idle_ms, None);
@@ -1188,6 +1205,169 @@ mod tests {
     }
 
     #[test]
+    fn full_mode_recent_system_input_does_not_resume_paused_microphone_without_mic_activity() {
+        let mut state =
+            inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreenOrAudio, 100);
+        state.set_family_paused_states(false, true, false);
+
+        let snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(0),
+            screen_activity_idle_ms: Some(0),
+            microphone_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(0),
+                latest_normalized_level: Some(0.0),
+            },
+            system_audio_activity: empty_audio_activity(),
+        };
+
+        assert!(state.is_microphone_paused());
+        assert!(
+            !state.should_resume_microphone_from_inactivity(20_000, snapshot),
+            "system input must not resume microphone without threshold-qualified mic activity"
+        );
+    }
+
+    #[test]
+    fn full_mode_recent_system_input_does_not_resume_paused_system_audio_without_system_audio_activity(
+    ) {
+        let mut state =
+            inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreenOrAudio, 100);
+        state.set_family_paused_states(false, false, true);
+
+        let snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(0),
+            screen_activity_idle_ms: Some(0),
+            microphone_activity: empty_audio_activity(),
+            system_audio_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(0),
+                latest_normalized_level: Some(0.0),
+            },
+        };
+
+        assert!(state.is_system_audio_paused());
+        assert!(
+            !state.should_resume_system_audio_from_inactivity(20_000, snapshot),
+            "system input must not resume system audio without threshold-qualified system-audio activity"
+        );
+    }
+
+    #[test]
+    fn full_mode_threshold_qualified_mic_activity_resumes_paused_microphone() {
+        let mut state =
+            inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreenOrAudio, 100);
+        state.set_family_paused_states(false, true, false);
+
+        let snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(state.idle_timeout_ms() + 1),
+            screen_activity_idle_ms: Some(state.idle_timeout_ms() + 1),
+            microphone_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(0),
+                latest_normalized_level: Some(0.20),
+            },
+            system_audio_activity: empty_audio_activity(),
+        };
+
+        assert!(state.should_resume_microphone_from_inactivity(20_000, snapshot));
+    }
+
+    #[test]
+    fn full_mode_threshold_qualified_system_audio_activity_resumes_paused_system_audio() {
+        let mut state =
+            inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreenOrAudio, 100);
+        state.set_family_paused_states(false, false, true);
+
+        let snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(state.idle_timeout_ms() + 1),
+            screen_activity_idle_ms: Some(state.idle_timeout_ms() + 1),
+            microphone_activity: empty_audio_activity(),
+            system_audio_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(0),
+                latest_normalized_level: Some(0.20),
+            },
+        };
+
+        assert!(state.should_resume_system_audio_from_inactivity(20_000, snapshot));
+    }
+
+    #[test]
+    fn default_mode_pauses_microphone_after_true_audio_inactivity_despite_recent_system_input() {
+        let mut state = inactivity_state_fixture(default_inactivity_activity_mode(), 100);
+
+        assert_eq!(
+            state.activity_mode,
+            InactivityActivityMode::SystemInputOrScreen
+        );
+
+        let active_snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(0),
+            screen_activity_idle_ms: Some(0),
+            microphone_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(0),
+                latest_normalized_level: Some(0.20),
+            },
+            system_audio_activity: empty_audio_activity(),
+        };
+        let idle_snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(0),
+            screen_activity_idle_ms: Some(0),
+            microphone_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(0),
+                latest_normalized_level: Some(0.0),
+            },
+            system_audio_activity: empty_audio_activity(),
+        };
+
+        assert!(!state.should_pause_microphone_for_inactivity(20_000, active_snapshot));
+        assert!(
+            state.should_pause_microphone_for_inactivity(30_001, idle_snapshot),
+            "microphone should pause after >10s without threshold-qualified audio activity even when system input remains recent"
+        );
+    }
+
+    #[test]
+    fn default_mode_pauses_system_audio_after_true_audio_inactivity_despite_recent_system_input() {
+        let mut state = inactivity_state_fixture(default_inactivity_activity_mode(), 100);
+
+        assert_eq!(
+            state.activity_mode,
+            InactivityActivityMode::SystemInputOrScreen
+        );
+
+        let active_snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(0),
+            screen_activity_idle_ms: Some(0),
+            microphone_activity: empty_audio_activity(),
+            system_audio_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(0),
+                latest_normalized_level: Some(0.20),
+            },
+        };
+        let idle_snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(0),
+            screen_activity_idle_ms: Some(0),
+            microphone_activity: empty_audio_activity(),
+            system_audio_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(0),
+                latest_normalized_level: Some(0.0),
+            },
+        };
+
+        assert!(!state.should_pause_system_audio_for_inactivity(20_000, active_snapshot));
+        assert!(
+            state.should_pause_system_audio_for_inactivity(30_001, idle_snapshot),
+            "system audio should pause after >10s without threshold-qualified audio activity even when system input remains recent"
+        );
+    }
+
+    #[test]
     fn family_pause_state_checks_are_independent() {
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(20_000),
@@ -1257,6 +1437,99 @@ mod tests {
         assert!(
             !state.should_pause_for_inactivity(now, snapshot),
             "legacy pause must not fire in SystemInputOrScreenOrAudio mode"
+        );
+    }
+
+    #[test]
+    fn screen_idle_does_not_trigger_legacy_global_pause_when_microphone_is_active() {
+        for activity_mode in [
+            InactivityActivityMode::SystemInputOrScreen,
+            InactivityActivityMode::SystemInputOrScreenOrAudio,
+        ] {
+            let mut state = inactivity_state_fixture(activity_mode, 100);
+            let now = 20_000;
+            let snapshot = ActivitySnapshot {
+                system_input_idle_ms: Some(state.idle_timeout_ms() + 1),
+                screen_activity_idle_ms: Some(state.idle_timeout_ms() + 1),
+                microphone_activity: AudioActivitySourceState {
+                    enabled: true,
+                    idle_ms: Some(0),
+                    latest_normalized_level: Some(0.20),
+                },
+                system_audio_activity: empty_audio_activity(),
+            };
+
+            assert!(
+                state.should_pause_screen_for_inactivity(now, snapshot),
+                "screen/video should pause when screen family is idle in {activity_mode:?}"
+            );
+            assert!(
+                !state.should_pause_microphone_for_inactivity(now, snapshot),
+                "threshold-active microphone should not family-pause in {activity_mode:?}"
+            );
+            assert!(
+                !state.should_pause_for_inactivity(now, snapshot),
+                "threshold-active microphone must prevent legacy all-source pause in {activity_mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn screen_idle_does_not_trigger_legacy_global_pause_when_system_audio_is_active() {
+        for activity_mode in [
+            InactivityActivityMode::SystemInputOrScreen,
+            InactivityActivityMode::SystemInputOrScreenOrAudio,
+        ] {
+            let mut state = inactivity_state_fixture(activity_mode, 100);
+            let now = 20_000;
+            let snapshot = ActivitySnapshot {
+                system_input_idle_ms: Some(state.idle_timeout_ms() + 1),
+                screen_activity_idle_ms: Some(state.idle_timeout_ms() + 1),
+                microphone_activity: empty_audio_activity(),
+                system_audio_activity: AudioActivitySourceState {
+                    enabled: true,
+                    idle_ms: Some(0),
+                    latest_normalized_level: Some(0.20),
+                },
+            };
+
+            assert!(
+                state.should_pause_screen_for_inactivity(now, snapshot),
+                "screen/video should pause when screen family is idle in {activity_mode:?}"
+            );
+            assert!(
+                !state.should_pause_system_audio_for_inactivity(now, snapshot),
+                "threshold-active system audio should not family-pause in {activity_mode:?}"
+            );
+            assert!(
+                !state.should_pause_for_inactivity(now, snapshot),
+                "threshold-active system audio must prevent legacy all-source pause in {activity_mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_global_pause_still_fires_when_hybrid_screen_idle_and_audio_inactive() {
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 100);
+        let now = 20_000;
+        let snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(state.idle_timeout_ms() + 1),
+            screen_activity_idle_ms: Some(state.idle_timeout_ms() + 1),
+            microphone_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(state.idle_timeout_ms() + 1),
+                latest_normalized_level: Some(0.0),
+            },
+            system_audio_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(state.idle_timeout_ms() + 1),
+                latest_normalized_level: Some(0.0),
+            },
+        };
+
+        assert!(
+            state.should_pause_for_inactivity(now, snapshot),
+            "legacy global pause should remain available when no configured family is active"
         );
     }
 

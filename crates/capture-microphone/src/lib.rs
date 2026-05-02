@@ -8,6 +8,8 @@ use capture_writers::{
     append_audio_sample_to_writer, create_audio_asset_writer_for_sample_format,
     derive_audio_activity_level_from_sample_buf, derive_audio_sample_format_from_sample_buf,
     finalize_microphone_output_context as writers_finalize_microphone_output_context,
+    finish_audio_asset_writer_discarding_inactivity_tail,
+    set_audio_writer_activity_threshold, set_audio_writer_inactivity_tail_trim_seconds,
     AudioAssetWriterState, AudioSampleFormat,
 };
 
@@ -127,12 +129,14 @@ pub fn microphone_activity_level() -> Option<f32> {
 #[derive(Debug)]
 struct MicrophoneOutputContext {
     writer: Option<AudioAssetWriterState>,
-    output_url: cidre::arc::R<cidre::ns::Url>,
+    output_url: Option<cidre::arc::R<cidre::ns::Url>>,
     output_file: Option<String>,
     first_error: Option<CaptureErrorResponse>,
     format_state: MicFormatStabilityState,
     logged_format_samples: u32,
     pending_samples: VecDeque<BufferedMicSample>,
+    inactivity_tail_trim_seconds: u64,
+    activity_threshold: f32,
 }
 
 #[cfg(target_os = "macos")]
@@ -399,6 +403,14 @@ fn resolve_microphone_finalize_format(
 }
 
 #[cfg(target_os = "macos")]
+fn configure_microphone_writer_tail_buffer(context: &mut MicrophoneOutputContext) {
+    if let Some(writer) = context.writer.as_mut() {
+        set_audio_writer_inactivity_tail_trim_seconds(writer, context.inactivity_tail_trim_seconds);
+        set_audio_writer_activity_threshold(writer, context.activity_threshold);
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn flush_pending_microphone_samples(
     context: &mut MicrophoneOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
@@ -504,6 +516,10 @@ mod microphone_delegate {
 
                     maybe_track_microphone_activity(sample_buf);
 
+                    if ctx.output_url.is_none() {
+                        return;
+                    }
+
                     if let Some(writer) = ctx.writer.as_mut() {
                         if let Err(error) = append_audio_sample_to_writer(writer, sample_buf) {
                             ctx.first_error = Some(error);
@@ -534,11 +550,17 @@ mod microphone_delegate {
                         };
 
                         match create_audio_asset_writer_for_sample_format(
-                            ctx.output_url.as_ref(),
+                            ctx.output_url
+                                .as_ref()
+                                .expect("microphone output URL should exist when writer is active")
+                                .as_ref(),
                             "microphone",
                             stable_format,
                         ) {
-                            Ok(writer) => ctx.writer = Some(writer),
+                            Ok(writer) => {
+                                ctx.writer = Some(writer);
+                                super::configure_microphone_writer_tail_buffer(ctx);
+                            }
                             Err(error) => {
                                 ctx.first_error = Some(error);
                                 return;
@@ -580,15 +602,84 @@ pub struct AvFoundationMicrophoneCaptureSession {
 #[cfg(target_os = "macos")]
 impl AvFoundationMicrophoneCaptureSession {
     pub fn stop(&mut self) -> Result<(), CaptureErrorResponse> {
+        self.stop_with_inactivity_tail_trim_seconds(0, 0.0)
+    }
+
+    pub fn stop_for_inactivity(
+        &mut self,
+        tail_trim_seconds: u64,
+        activity_threshold: f32,
+    ) -> Result<(), CaptureErrorResponse> {
+        self.stop_with_inactivity_tail_trim_seconds(tail_trim_seconds, activity_threshold)
+    }
+
+    fn stop_with_inactivity_tail_trim_seconds(
+        &mut self,
+        tail_trim_seconds: u64,
+        activity_threshold: f32,
+    ) -> Result<(), CaptureErrorResponse> {
         self.capture_session.stop_running();
         synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
+        let context = self.output_delegate.inner_mut();
+        context.inactivity_tail_trim_seconds = tail_trim_seconds;
+        context.activity_threshold = normalized_audio_activity_threshold(activity_threshold);
         finalize_microphone_output_context(self.output_delegate.inner_mut())
     }
 
     pub fn rotate_output_file(&mut self, output_file: &str) -> Result<(), CaptureErrorResponse> {
         let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
-        let next_context =
-            microphone_output_context_for_output_url(&output_url, Some(output_file.to_string()));
+        let next_context = microphone_output_context_for_output_url(
+            &output_url,
+            Some(output_file.to_string()),
+            0,
+            0.0,
+        );
+
+        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
+        let mut previous_context =
+            std::mem::replace(self.output_delegate.inner_mut(), next_context);
+        finalize_microphone_output_context(&mut previous_context)?;
+
+        Ok(())
+    }
+
+    pub fn pause_output_file(&mut self) -> Result<(), CaptureErrorResponse> {
+        self.pause_output_file_for_inactivity(0, 0.0)
+    }
+
+    pub fn pause_output_file_for_inactivity(
+        &mut self,
+        tail_trim_seconds: u64,
+        activity_threshold: f32,
+    ) -> Result<(), CaptureErrorResponse> {
+        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
+        let mut previous_context = std::mem::replace(
+            self.output_delegate.inner_mut(),
+            microphone_probe_only_context(),
+        );
+        previous_context.inactivity_tail_trim_seconds = tail_trim_seconds;
+        previous_context.activity_threshold =
+            normalized_audio_activity_threshold(activity_threshold);
+        finalize_microphone_output_context(&mut previous_context)
+    }
+
+    pub fn resume_output_file(&mut self, output_file: &str) -> Result<(), CaptureErrorResponse> {
+        self.resume_output_file_with_inactivity_tail_trim_seconds(output_file, 0, 0.0)
+    }
+
+    pub fn resume_output_file_with_inactivity_tail_trim_seconds(
+        &mut self,
+        output_file: &str,
+        tail_trim_seconds: u64,
+        activity_threshold: f32,
+    ) -> Result<(), CaptureErrorResponse> {
+        let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
+        let next_context = microphone_output_context_for_output_url(
+            &output_url,
+            Some(output_file.to_string()),
+            tail_trim_seconds,
+            activity_threshold,
+        );
 
         synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
         let mut previous_context =
@@ -611,14 +702,18 @@ fn finalize_microphone_output_context(
     context: &mut MicrophoneOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
     if context.writer.is_none() && !context.pending_samples.is_empty() {
-        if let Some(format) = resolve_microphone_finalize_format(&context.format_state) {
+        if let (Some(output_url), Some(format)) = (
+            context.output_url.as_ref(),
+            resolve_microphone_finalize_format(&context.format_state),
+        ) {
             match create_audio_asset_writer_for_sample_format(
-                context.output_url.as_ref(),
+                output_url.as_ref(),
                 "microphone",
                 format,
             ) {
                 Ok(writer) => {
                     context.writer = Some(writer);
+                    configure_microphone_writer_tail_buffer(context);
                     if let Err(error) = flush_pending_microphone_samples(context) {
                         context.first_error.get_or_insert(error);
                     }
@@ -630,10 +725,32 @@ fn finalize_microphone_output_context(
         }
     }
 
-    match writers_finalize_microphone_output_context(
-        context.writer.as_mut(),
-        context.first_error.take(),
-    ) {
+    configure_microphone_writer_tail_buffer(context);
+
+    let finalize_result = if context.inactivity_tail_trim_seconds > 0 {
+        let mut failures = Vec::new();
+        if let Some(error) = context.first_error.take() {
+            failures.push(format!(
+                "microphone stream output failed: [{}] {}",
+                error.code, error.message
+            ));
+        }
+        if let Some(writer) = context.writer.as_mut() {
+            if let Err(error) = finish_audio_asset_writer_discarding_inactivity_tail(writer) {
+                failures.push(format!("microphone writer failed: {}", error.message));
+            }
+        } else {
+            failures.push(capture_writers::no_audio_samples_error("microphone").message);
+        }
+        capture_writers::aggregate_output_processing_failures(failures)
+    } else {
+        writers_finalize_microphone_output_context(
+            context.writer.as_mut(),
+            context.first_error.take(),
+        )
+    };
+
+    match finalize_result {
         Err(error) if is_nonfatal_microphone_finalize_error(&error) => {
             if let Some(path) = context.output_file.as_deref() {
                 maybe_remove_microphone_output_file(path);
@@ -648,15 +765,43 @@ fn finalize_microphone_output_context(
 fn microphone_output_context_for_output_url(
     output_url: &cidre::ns::Url,
     output_file: Option<String>,
+    inactivity_tail_trim_seconds: u64,
+    activity_threshold: f32,
 ) -> MicrophoneOutputContext {
     MicrophoneOutputContext {
         writer: None,
-        output_url: output_url.retained(),
+        output_url: Some(output_url.retained()),
         output_file,
         first_error: None,
         format_state: MicFormatStabilityState::default(),
         logged_format_samples: 0,
         pending_samples: VecDeque::new(),
+        inactivity_tail_trim_seconds,
+        activity_threshold: normalized_audio_activity_threshold(activity_threshold),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn normalized_audio_activity_threshold(threshold: f32) -> f32 {
+    if threshold.is_finite() {
+        threshold.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_probe_only_context() -> MicrophoneOutputContext {
+    MicrophoneOutputContext {
+        writer: None,
+        output_url: None,
+        output_file: None,
+        first_error: None,
+        format_state: MicFormatStabilityState::default(),
+        logged_format_samples: 0,
+        pending_samples: VecDeque::new(),
+        inactivity_tail_trim_seconds: 0,
+        activity_threshold: 0.0,
     }
 }
 
@@ -932,7 +1077,7 @@ fn resolve_capture_device_for_id(
 pub fn start_avfoundation_microphone_capture_session(
     output_url: &cidre::ns::Url,
 ) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
-    start_avfoundation_microphone_capture_session_with_output_file(output_url, None, None)
+    start_avfoundation_microphone_capture_session_with_output_file(output_url, None, None, 0, 0.0)
 }
 
 #[cfg(target_os = "macos")]
@@ -940,7 +1085,26 @@ pub fn start_avfoundation_microphone_capture_session_with_device_id(
     output_url: &cidre::ns::Url,
     device_id: Option<&str>,
 ) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
-    start_avfoundation_microphone_capture_session_with_output_file(output_url, None, device_id)
+    start_avfoundation_microphone_capture_session_with_output_file(
+        output_url, None, device_id, 0, 0.0,
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_avfoundation_microphone_capture_session_for_file_with_device_id_and_inactivity_tail_trim_seconds(
+    output_file: &str,
+    device_id: Option<&str>,
+    tail_trim_seconds: u64,
+    activity_threshold: f32,
+) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
+    let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
+    start_avfoundation_microphone_capture_session_with_output_file(
+        &output_url,
+        Some(output_file.to_string()),
+        device_id,
+        tail_trim_seconds,
+        activity_threshold,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -948,6 +1112,8 @@ fn start_avfoundation_microphone_capture_session_with_output_file(
     output_url: &cidre::ns::Url,
     output_file: Option<String>,
     device_id: Option<&str>,
+    tail_trim_seconds: u64,
+    activity_threshold: f32,
 ) -> Result<AvFoundationMicrophoneCaptureSession, CaptureErrorResponse> {
     reset_last_microphone_activity_unix_ms();
 
@@ -964,7 +1130,12 @@ fn start_avfoundation_microphone_capture_session_with_output_file(
 
     let mut audio_output = av::capture::AudioDataOutput::new();
     let output_delegate = MicAudioDataOutputDelegate::with(
-        microphone_output_context_for_output_url(output_url, output_file),
+        microphone_output_context_for_output_url(
+            output_url,
+            output_file,
+            tail_trim_seconds,
+            activity_threshold,
+        ),
     );
     let output_queue = dispatch::Queue::serial_with_ar_pool();
     audio_output.set_sample_buf_delegate(Some(output_delegate.as_ref()), Some(&output_queue));
@@ -1018,6 +1189,8 @@ pub fn start_avfoundation_microphone_capture_session_for_file_with_device_id(
         &output_url,
         Some(output_file.to_string()),
         device_id,
+        0,
+        0.0,
     )
 }
 

@@ -4,20 +4,18 @@ mod engine;
 mod frame;
 mod job;
 mod ocr;
-mod pipeline;
 mod result;
 mod runtime;
 mod store;
 
 pub use backend::{ProcessorBackend, ProcessorRegistry};
 pub use engine::{AppleVisionOcrEngine, OcrEngine, OcrOutput, OcrProvider, OcrRequest};
-pub use frame::{Frame, NewFrame};
+pub use frame::{Frame, FrameSummary, NewFrame};
 pub use job::{
     ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingSubject, FRAME_SUBJECT_TYPE,
     OCR_PROCESSOR,
 };
 pub use ocr::OcrProcessorBackend;
-pub use pipeline::{FramePipeline, FramePipelineRequest};
 pub use result::{ProcessingResult, ProcessingResultDraft};
 pub use runtime::{ProcessingJobRunOutcome, ProcessingRuntime};
 pub use store::{

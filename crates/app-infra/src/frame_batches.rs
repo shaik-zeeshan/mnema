@@ -323,6 +323,24 @@ impl FrameBatchStore {
         active_batch_id: Option<i64>,
     ) -> Result<Vec<FrameBatch>> {
         let mut transaction = self.pool.begin().await?;
+        let closed = self
+            .close_completed_batches_for_session_in_transaction(
+                &mut transaction,
+                session_id,
+                active_batch_id,
+            )
+            .await?;
+
+        transaction.commit().await?;
+        Ok(closed)
+    }
+
+    pub(crate) async fn close_completed_batches_for_session_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        session_id: &str,
+        active_batch_id: Option<i64>,
+    ) -> Result<Vec<FrameBatch>> {
         let rows = sqlx::query(
             "SELECT id FROM frame_batches \
              WHERE session_id = ?1 AND status = 'open' AND (?2 IS NULL OR id != ?2) \
@@ -330,7 +348,7 @@ impl FrameBatchStore {
         )
         .bind(session_id)
         .bind(active_batch_id)
-        .fetch_all(&mut *transaction)
+        .fetch_all(&mut **transaction)
         .await?;
 
         let mut closed = Vec::new();
@@ -339,18 +357,17 @@ impl FrameBatchStore {
             sqlx::query(
                 "UPDATE frame_batches \
                  SET status = 'closed', closed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
-                 WHERE id = ?1 AND status = 'open'",
+                  WHERE id = ?1 AND status = 'open'",
             )
             .bind(batch_id)
-            .execute(&mut *transaction)
+            .execute(&mut **transaction)
             .await?;
 
-            if let Some(batch) = get_frame_batch_optional(&mut *transaction, batch_id).await? {
+            if let Some(batch) = get_frame_batch_optional(&mut **transaction, batch_id).await? {
                 closed.push(batch);
             }
         }
 
-        transaction.commit().await?;
         Ok(closed)
     }
 
@@ -359,12 +376,24 @@ impl FrameBatchStore {
         batch_id: i64,
     ) -> Result<Option<BackgroundJob>> {
         let mut transaction = self.pool.begin().await?;
-        let batch = get_frame_batch_optional(&mut *transaction, batch_id)
+        let job = self
+            .enqueue_finalize_job_if_needed_in_transaction(&mut transaction, batch_id)
+            .await?;
+
+        transaction.commit().await?;
+        Ok(job)
+    }
+
+    pub(crate) async fn enqueue_finalize_job_if_needed_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        batch_id: i64,
+    ) -> Result<Option<BackgroundJob>> {
+        let batch = get_frame_batch_optional(&mut **transaction, batch_id)
             .await?
             .ok_or(AppInfraError::FrameBatchNotFound(batch_id))?;
 
         if batch.status != FrameBatchStatus::Closed || batch.finalize_job_id.is_some() {
-            transaction.commit().await?;
             return Ok(None);
         }
 
@@ -375,7 +404,7 @@ impl FrameBatchStore {
         .bind(JobDescriptor::new(FRAME_BATCH_FINALIZE_JOB_KIND).kind())
         .bind(BackgroundJobStatus::Queued.as_str())
         .bind(&payload)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
         let job_id = job_result.last_insert_rowid();
 
@@ -386,19 +415,21 @@ impl FrameBatchStore {
         )
         .bind(batch_id)
         .bind(job_id)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
 
         if updated.rows_affected() == 0 {
-            transaction.rollback().await?;
+            sqlx::query("DELETE FROM background_jobs WHERE id = ?1")
+                .bind(job_id)
+                .execute(&mut **transaction)
+                .await?;
             return Ok(None);
         }
 
-        let job = get_background_job_optional(&mut *transaction, job_id)
+        let job = get_background_job_optional(&mut **transaction, job_id)
             .await?
             .ok_or(AppInfraError::JobNotFound(job_id))?;
 
-        transaction.commit().await?;
         Ok(Some(job))
     }
 
@@ -595,13 +626,39 @@ impl FrameBatchStore {
         session_id: &str,
         active_batch_id: i64,
     ) -> Result<Vec<FrameBatch>> {
+        let mut transaction = self.pool.begin().await?;
         let closed = self
-            .close_completed_batches_for_session(session_id, Some(active_batch_id))
+            .close_and_schedule_completed_batches_for_frame_in_transaction(
+                &mut transaction,
+                session_id,
+                active_batch_id,
+            )
+            .await?;
+
+        transaction.commit().await?;
+        Ok(closed)
+    }
+
+    pub(crate) async fn close_and_schedule_completed_batches_for_frame_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        session_id: &str,
+        active_batch_id: i64,
+    ) -> Result<Vec<FrameBatch>> {
+        let closed = self
+            .close_completed_batches_for_session_in_transaction(
+                transaction,
+                session_id,
+                Some(active_batch_id),
+            )
             .await?;
 
         let mut first_error: Option<AppInfraError> = None;
         for batch in &closed {
-            if let Err(error) = self.enqueue_finalize_job_if_needed(batch.id).await {
+            if let Err(error) = self
+                .enqueue_finalize_job_if_needed_in_transaction(transaction, batch.id)
+                .await
+            {
                 capture_runtime::debug_log!(
                     "[app-infra][frame-batches] failed to schedule finalize job for batch {}: {}",
                     batch.id,
@@ -761,6 +818,26 @@ fn is_safe_frame_artifact_path(path: &Path) -> bool {
     file_name.starts_with("frame-") && file_name.ends_with(".png")
 }
 
+fn should_preserve_hidden_workspace_frame(path: &Path) -> bool {
+    let Some(frames_dir) = path.parent() else {
+        return false;
+    };
+    let Some(segment_dir) = frames_dir.parent() else {
+        return false;
+    };
+    let Some(segment_dir_name) = segment_dir.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !segment_dir_name.starts_with('.') || !segment_dir_name.contains("-segment-") {
+        return false;
+    }
+    let Some(parent_dir) = segment_dir.parent() else {
+        return false;
+    };
+    let visible_segment_path = parent_dir.join(format!("{}.mov", &segment_dir_name[1..]));
+    !visible_segment_path.exists()
+}
+
 fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io::Error)> {
     let mut errors = Vec::new();
     for frame in frames {
@@ -770,6 +847,9 @@ fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io::Error)> {
                 "[app-infra][frame-batches] skipping cleanup of frame artifact with unsafe path: {}",
                 frame.file_path
             );
+            continue;
+        }
+        if should_preserve_hidden_workspace_frame(path) {
             continue;
         }
         if path.exists() {
@@ -1539,6 +1619,8 @@ mod tests {
         let segment_dir = dir.path().join(".session-x-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = dir.path().join("session-x-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
         let frame_path = frames_dir.join("frame-1.png");
         fs::write(&frame_path, b"fake").expect("frame file should be written");
 
@@ -1567,6 +1649,8 @@ mod tests {
         let segment_dir = dir.path().join(".session-z-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = dir.path().join("session-z-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
 
         // Frame file does NOT exist — simulates retry/race/partial prior cleanup.
         let frame_path = frames_dir.join("frame-1.png");
@@ -1609,6 +1693,8 @@ mod tests {
         let segment_dir = dir.path().join(".session-audio-sep-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = dir.path().join("session-audio-sep-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
         let frame_path = frames_dir.join("frame-1.png");
         fs::write(&frame_path, b"fake png").expect("frame file should be written");
 
@@ -1667,6 +1753,8 @@ mod tests {
         let segment_dir = dir.path().join(".session-y-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = dir.path().join("session-y-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
         let frame_path = frames_dir.join("frame-1.png");
         fs::write(&frame_path, b"fake").expect("frame file should be written");
 
@@ -1694,5 +1782,72 @@ mod tests {
             segment_dir.exists(),
             "non-empty segment dir should be preserved"
         );
+    }
+
+    #[test]
+    fn cleanup_preserves_hidden_workspace_frame_when_visible_segment_is_missing() {
+        let dir = TestDir::new("missing-visible-segment");
+        let segment_dir = dir.path().join(".session-preview-segment-0001");
+        let frames_dir = segment_dir.join("frames");
+        fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let frame_path = frames_dir.join("frame-1.png");
+        fs::write(&frame_path, b"fake").expect("frame file should be written");
+
+        let frames = vec![Frame {
+            id: 1,
+            session_id: "s".to_string(),
+            file_path: frame_path.to_string_lossy().to_string(),
+            captured_at: "2026-04-12T10:01:00Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        let errors = cleanup_frame_artifacts(&frames);
+        assert!(errors.is_empty(), "cleanup should succeed without errors");
+        assert!(
+            frame_path.exists(),
+            "frame file should be preserved when sibling visible segment is missing"
+        );
+        assert!(
+            frames_dir.exists(),
+            "frames dir should be preserved when sibling visible segment is missing"
+        );
+        assert!(
+            segment_dir.exists(),
+            "hidden segment dir should be preserved when sibling visible segment is missing"
+        );
+    }
+
+    #[test]
+    fn cleanup_removes_hidden_workspace_frame_when_visible_segment_exists() {
+        let dir = TestDir::new("visible-segment-present");
+        let segment_dir = dir.path().join(".session-preview-segment-0001");
+        let frames_dir = segment_dir.join("frames");
+        fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = dir.path().join("session-preview-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
+        let frame_path = frames_dir.join("frame-1.png");
+        fs::write(&frame_path, b"fake").expect("frame file should be written");
+
+        let frames = vec![Frame {
+            id: 1,
+            session_id: "s".to_string(),
+            file_path: frame_path.to_string_lossy().to_string(),
+            captured_at: "2026-04-12T10:01:00Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        let errors = cleanup_frame_artifacts(&frames);
+        assert!(errors.is_empty(), "cleanup should succeed without errors");
+        assert!(!frame_path.exists(), "frame file should be deleted");
+        assert!(!frames_dir.exists(), "empty frames/ dir should be removed");
+        assert!(!segment_dir.exists(), "empty segment dir should be removed");
     }
 }

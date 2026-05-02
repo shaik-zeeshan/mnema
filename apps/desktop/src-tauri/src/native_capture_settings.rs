@@ -1,7 +1,8 @@
 use capture_types::{
-    default_idle_timeout_seconds, default_inactivity_activity_mode,
-    default_microphone_activity_sensitivity, default_native_capture_debug_logging_enabled,
-    default_pause_capture_on_inactivity, default_system_audio_activity_sensitivity,
+    default_developer_options_enabled, default_idle_timeout_seconds,
+    default_inactivity_activity_mode, default_microphone_activity_sensitivity,
+    default_native_capture_debug_logging_enabled, default_pause_capture_on_inactivity,
+    default_preview_cache_ttl_seconds, default_system_audio_activity_sensitivity,
     default_video_bitrate, CaptureErrorResponse, RecordingSettings, ScreenResolution,
     ScreenResolutionPreset, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
     VideoBitrateSettings,
@@ -16,6 +17,7 @@ const MIN_IDLE_TIMEOUT_SECONDS: u64 = 1;
 const MAX_IDLE_TIMEOUT_SECONDS: u64 = 3600;
 const MIN_AUDIO_ACTIVITY_SENSITIVITY: u8 = 0;
 const MAX_AUDIO_ACTIVITY_SENSITIVITY: u8 = 100;
+const MAX_PREVIEW_CACHE_TTL_SECONDS: u64 = 24 * 60 * 60;
 const MIN_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 500_000;
 const MAX_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 120_000_000;
 const VIDEO_BITRATE_ROUND_STEP_BPS: u32 = 250_000;
@@ -42,6 +44,8 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         save_directory: default_save_directory(),
         auto_start: false,
         native_capture_debug_logging_enabled: default_native_capture_debug_logging_enabled(),
+        developer_options_enabled: default_developer_options_enabled(),
+        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -258,6 +262,15 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         });
     }
 
+    if request.preview_cache_ttl_seconds > MAX_PREVIEW_CACHE_TTL_SECONDS {
+        return Err(CaptureErrorResponse {
+            code: "invalid_recording_settings".to_string(),
+            message: format!(
+                "previewCacheTtlSeconds must be between 0 and {MAX_PREVIEW_CACHE_TTL_SECONDS}"
+            ),
+        });
+    }
+
     let screen_resolution = validate_screen_resolution(request.screen_resolution)?;
     let video_bitrate = validate_video_bitrate(request.video_bitrate)?;
     let microphone_activity_sensitivity = validate_audio_activity_sensitivity(
@@ -290,6 +303,8 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         save_directory,
         auto_start: request.auto_start,
         native_capture_debug_logging_enabled: request.native_capture_debug_logging_enabled,
+        developer_options_enabled: request.developer_options_enabled,
+        preview_cache_ttl_seconds: request.preview_cache_ttl_seconds,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -325,6 +340,8 @@ fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
         save_directory: parsed.save_directory,
         auto_start: parsed.auto_start,
         native_capture_debug_logging_enabled: parsed.native_capture_debug_logging_enabled,
+        developer_options_enabled: parsed.developer_options_enabled,
+        preview_cache_ttl_seconds: parsed.preview_cache_ttl_seconds,
         pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
         idle_timeout_seconds: parsed.idle_timeout_seconds,
         microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -480,6 +497,11 @@ mod tests {
     }
 
     #[test]
+    fn default_recording_settings_disable_developer_options() {
+        assert!(!default_recording_settings().developer_options_enabled);
+    }
+
+    #[test]
     fn load_recording_settings_from_path_preserves_native_capture_debug_logging_flag() {
         let dir = TestDir::new("debug-log-enabled");
         let path = dir.path().join("recording-settings.json");
@@ -496,5 +518,100 @@ mod tests {
             load_recording_settings_from_path(&path).expect("settings should load from disk");
 
         assert!(loaded.native_capture_debug_logging_enabled);
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_preserves_developer_options_flag() {
+        let dir = TestDir::new("developer-options-enabled");
+        let path = dir.path().join("recording-settings.json");
+        let mut settings = default_recording_settings();
+        settings.developer_options_enabled = true;
+
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&settings).expect("settings should serialize"),
+        )
+        .expect("settings file should write");
+
+        let loaded =
+            load_recording_settings_from_path(&path).expect("settings should load from disk");
+
+        assert!(loaded.developer_options_enabled);
+    }
+
+    #[test]
+    fn default_recording_settings_include_preview_cache_ttl() {
+        assert_eq!(
+            default_recording_settings().preview_cache_ttl_seconds,
+            default_preview_cache_ttl_seconds()
+        );
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_defaults_preview_cache_ttl_when_missing() {
+        let dir = TestDir::new("preview-cache-ttl-default");
+        let path = dir.path().join("recording-settings.json");
+
+        fs::write(
+            &path,
+            r#"{
+                "captureScreen": true,
+                "captureMicrophone": false,
+                "captureSystemAudio": false,
+                "segmentDurationSeconds": 60,
+                "screenFrameRate": 30,
+                "screenResolution": { "mode": "preset", "preset": "original" },
+                "videoBitrate": { "mode": "preset", "preset": "medium" },
+                "saveDirectory": "/tmp",
+                "autoStart": false,
+                "nativeCaptureDebugLoggingEnabled": false,
+                "pauseCaptureOnInactivity": true,
+                "idleTimeoutSeconds": 10,
+                "microphoneActivitySensitivity": 50,
+                "systemAudioActivitySensitivity": 50,
+                "activityMode": "system_input_or_screen"
+            }"#,
+        )
+        .expect("settings file should write");
+
+        let loaded =
+            load_recording_settings_from_path(&path).expect("settings should load from disk");
+
+        assert_eq!(
+            loaded.preview_cache_ttl_seconds,
+            default_preview_cache_ttl_seconds()
+        );
+    }
+
+    #[test]
+    fn validate_recording_settings_rejects_preview_cache_ttl_above_max() {
+        let error = validate_recording_settings(UpdateRecordingSettingsRequest {
+            capture_screen: true,
+            capture_microphone: false,
+            capture_system_audio: false,
+            segment_duration_seconds: 60,
+            screen_frame_rate: 30,
+            screen_resolution: ScreenResolution::Preset {
+                preset: ScreenResolutionPreset::Original,
+            },
+            video_bitrate: default_video_bitrate(),
+            save_directory: "/tmp".to_string(),
+            auto_start: false,
+            native_capture_debug_logging_enabled: false,
+            developer_options_enabled: false,
+            preview_cache_ttl_seconds: MAX_PREVIEW_CACHE_TTL_SECONDS + 1,
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            microphone_activity_sensitivity: 50,
+            system_audio_activity_sensitivity: 50,
+            inactivity_activity_mode: default_inactivity_activity_mode(),
+        })
+        .expect_err("preview cache ttl above max must be rejected");
+
+        assert_eq!(error.code, "invalid_recording_settings");
+        assert_eq!(
+            error.message,
+            format!("previewCacheTtlSeconds must be between 0 and {MAX_PREVIEW_CACHE_TTL_SECONDS}")
+        );
     }
 }

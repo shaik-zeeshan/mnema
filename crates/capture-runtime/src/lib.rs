@@ -258,6 +258,47 @@ impl SegmentPlanner {
     }
 }
 
+/// Parse the embedded restart timestamp from planner-generated audio filenames.
+///
+/// Returns `None` for base segment files without a restart timestamp.
+pub fn parse_audio_restart_started_at_unix_ms(file_path: impl AsRef<Path>) -> Option<u64> {
+    let file_name = file_path.as_ref().file_name()?.to_str()?;
+    let stem = file_name.strip_suffix(".m4a")?;
+    if !stem.starts_with("microphone-") && !stem.starts_with("system-audio-") {
+        return None;
+    }
+
+    let marker = "-segment-";
+    let marker_start = stem.rfind(marker)?;
+    let after_marker = &stem[marker_start + marker.len()..];
+    if after_marker.len() < 4 {
+        return None;
+    }
+
+    let (segment_index, remainder) = after_marker.split_at(4);
+    if !segment_index.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+
+    let timestamp_with_suffix = remainder.strip_prefix('-')?;
+    let (timestamp, suffix) = timestamp_with_suffix
+        .split_once('-')
+        .map_or((timestamp_with_suffix, None), |(timestamp, suffix)| {
+            (timestamp, Some(suffix))
+        });
+
+    if timestamp.is_empty() || !timestamp.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if suffix.is_some_and(|suffix| {
+        suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
+        return None;
+    }
+
+    timestamp.parse().ok()
+}
+
 #[derive(Debug, Clone)]
 pub struct CaptureClock {
     started_at: Instant,
@@ -287,6 +328,10 @@ impl SegmentSchedule {
 
     pub fn segment_duration(&self) -> Duration {
         self.segment_duration
+    }
+
+    pub fn segment_duration_reached(&self, elapsed: Duration) -> bool {
+        !self.segment_duration.is_zero() && elapsed >= self.segment_duration
     }
 
     pub fn current_segment_index(&self, elapsed: Duration) -> u64 {
@@ -468,6 +513,94 @@ mod tests {
     }
 
     #[test]
+    fn audio_restart_timestamp_parser_handles_planner_filenames() {
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/microphone-session-segment-0001-1712345678901.m4a"
+            ),
+            Some(1_712_345_678_901)
+        );
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/microphone-session-segment-0001-1712345678901-1.m4a"
+            ),
+            Some(1_712_345_678_901)
+        );
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/system-audio-session-segment-0001-1712345678901.m4a"
+            ),
+            Some(1_712_345_678_901)
+        );
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/system-audio-session-segment-0001-1712345678901-1.m4a"
+            ),
+            Some(1_712_345_678_901)
+        );
+    }
+
+    #[test]
+    fn audio_restart_timestamp_parser_ignores_base_files() {
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/microphone-session-segment-0001.m4a"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/system-audio-session-segment-0001.m4a"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn audio_restart_timestamp_parser_handles_hyphenated_session_ids() {
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/microphone-team-alpha-session-segment-0007-1712345678901.m4a"
+            ),
+            Some(1_712_345_678_901)
+        );
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/system-audio-team-alpha-session-segment-0007-1712345678901-2.m4a"
+            ),
+            Some(1_712_345_678_901)
+        );
+    }
+
+    #[test]
+    fn audio_restart_timestamp_parser_rejects_invalid_names() {
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/microphone-session-segment-0001-1712345678901.mov"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/microphone-session-segment-0001-not-a-timestamp.m4a"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/system-audio-session-segment-0001-1712345678901-copy.m4a"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_audio_restart_started_at_unix_ms(
+                "/tmp/audio/microphone-session-segment-abc1-1712345678901.m4a"
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn controller_tracks_explicit_runtime_transitions() {
         let mut controller = RuntimeController::default();
 
@@ -534,6 +667,23 @@ mod tests {
             schedule.next_boundary_after(Duration::from_secs(10)),
             Duration::from_secs(20)
         );
+    }
+
+    #[test]
+    fn schedule_detects_when_segment_duration_is_reached() {
+        let schedule = SegmentSchedule::new(Duration::from_secs(10));
+
+        assert!(!schedule.segment_duration_reached(Duration::from_secs(9)));
+        assert!(schedule.segment_duration_reached(Duration::from_secs(10)));
+        assert!(schedule.segment_duration_reached(Duration::from_secs(12)));
+    }
+
+    #[test]
+    fn schedule_zero_duration_never_reaches_rotation_boundary() {
+        let schedule = SegmentSchedule::new(Duration::ZERO);
+
+        assert!(!schedule.segment_duration_reached(Duration::ZERO));
+        assert!(!schedule.segment_duration_reached(Duration::from_secs(1)));
     }
 
     #[test]

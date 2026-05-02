@@ -176,11 +176,12 @@ fn inactivity_activity_mode_label(mode: &InactivityActivityMode) -> &'static str
 
 fn recording_settings_overview(settings: &RecordingSettings) -> String {
     format!(
-        "sources={}, auto_start={}, save_directory='{}', debug_logging={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, microphone_activity_sensitivity={}, system_audio_activity_sensitivity={}, activity_mode={}",
+        "sources={}, auto_start={}, save_directory='{}', debug_logging={}, preview_cache_ttl_seconds={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, microphone_activity_sensitivity={}, system_audio_activity_sensitivity={}, activity_mode={}",
         format_capture_source_flags(&capture_sources_from_settings(settings)),
         settings.auto_start,
         settings.save_directory,
         settings.native_capture_debug_logging_enabled,
+        settings.preview_cache_ttl_seconds,
         settings.segment_duration_seconds,
         settings.screen_frame_rate,
         format_screen_resolution(&settings.screen_resolution),
@@ -221,6 +222,13 @@ fn describe_recording_settings_changes(
             "debug_logging {} -> {}",
             previous.native_capture_debug_logging_enabled,
             next.native_capture_debug_logging_enabled
+        ));
+    }
+
+    if previous.preview_cache_ttl_seconds != next.preview_cache_ttl_seconds {
+        changes.push(format!(
+            "preview_cache_ttl_seconds {} -> {}",
+            previous.preview_cache_ttl_seconds, next.preview_cache_ttl_seconds
         ));
     }
 
@@ -771,6 +779,7 @@ pub fn start_native_capture(
 #[tauri::command]
 pub fn stop_native_capture(
     state: tauri::State<'_, NativeCaptureState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let mut runtime = state.lock().expect("native capture state poisoned");
     let session_id = runtime_log_session_id(&runtime).to_string();
@@ -785,7 +794,7 @@ pub fn stop_native_capture(
         format_output_file_counts(output_files_before_stop.as_ref())
     ));
 
-    if let Err(error) = stop_capture_runtime(&mut runtime) {
+    if let Err(error) = stop_capture_runtime(&mut runtime, Some(&app_handle)) {
         if capture_screen::should_preserve_runtime_on_stop_error(&error) {
             crate::native_capture_debug_log::log(format!(
                 "failed to stop native capture but preserved runtime for recovery (session_id='{}'): [{}] {}",

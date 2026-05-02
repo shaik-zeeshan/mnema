@@ -16,6 +16,13 @@ pub struct Frame {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct FrameSummary {
+    pub id: i64,
+    pub captured_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NewFrame {
     pub session_id: String,
     pub file_path: String,

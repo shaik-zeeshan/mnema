@@ -1,4 +1,6 @@
 mod db;
+mod audio_segments;
+mod captured_frame_pipeline;
 pub mod error;
 mod frame_batches;
 pub mod jobs;
@@ -9,6 +11,12 @@ use std::path::Path;
 
 use sqlx::SqlitePool;
 
+pub use audio_segments::{
+    AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
+};
+pub use captured_frame_pipeline::{
+    CapturedFramePipeline, CapturedFramePipelineResult, ClosedFrameBatchSummary,
+};
 pub use error::{AppInfraError, Result};
 pub use frame_batches::{
     FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchRuntime,
@@ -20,12 +28,11 @@ pub use jobs::{
     CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
 pub use processing::{
-    AppleVisionOcrEngine, Frame, FrameOcrEnqueueResult, FramePipeline, FramePipelineRequest,
-    FrameProcessingJob, NewFrame, OcrEngine, OcrOutput, OcrProcessorBackend, OcrProvider,
-    OcrRequest, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
-    ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingResult, ProcessingResultDraft,
-    ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
-    FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
+    AppleVisionOcrEngine, Frame, FrameOcrEnqueueResult, FrameProcessingJob, FrameSummary, NewFrame,
+    OcrEngine, OcrOutput, OcrProcessorBackend, OcrProvider, OcrRequest, ProcessingJob,
+    ProcessingJobCompletion, ProcessingJobDraft, ProcessingJobRunOutcome, ProcessingJobStatus,
+    ProcessingResult, ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject,
+    ProcessorBackend, ProcessorRegistry, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
@@ -33,9 +40,10 @@ pub use status::AppInfraStatus;
 pub struct AppInfra {
     database: db::Database,
     jobs: JobStore,
+    audio_segments: AudioSegmentStore,
     frame_batches: FrameBatchStore,
     processing: ProcessingStore,
-    frame_pipeline: FramePipeline,
+    captured_frame_pipeline: CapturedFramePipeline,
     runtime: JobRuntime,
     frame_batch_runtime: FrameBatchRuntime,
     processing_runtime: ProcessingRuntime,
@@ -52,9 +60,11 @@ impl AppInfra {
     ) -> Result<Self> {
         let database = db::Database::initialize(base_dir.as_ref()).await?;
         let jobs = JobStore::new(database.pool().clone());
+        let audio_segments = AudioSegmentStore::new(database.pool().clone());
         let frame_batches = FrameBatchStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
-        let frame_pipeline = FramePipeline::new(processing.clone());
+        let captured_frame_pipeline =
+            CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
         jobs.reconcile_orphaned_running_jobs().await?;
         processing.reconcile_orphaned_running_jobs().await?;
         frame_batches
@@ -67,9 +77,10 @@ impl AppInfra {
         Ok(Self {
             database,
             jobs,
+            audio_segments,
             frame_batches,
             processing,
-            frame_pipeline,
+            captured_frame_pipeline,
             runtime,
             frame_batch_runtime,
             processing_runtime,
@@ -88,6 +99,10 @@ impl AppInfra {
         &self.jobs
     }
 
+    pub fn audio_segments(&self) -> &AudioSegmentStore {
+        &self.audio_segments
+    }
+
     pub fn processing(&self) -> &ProcessingStore {
         &self.processing
     }
@@ -96,8 +111,8 @@ impl AppInfra {
         &self.frame_batches
     }
 
-    pub fn frame_pipeline(&self) -> &FramePipeline {
-        &self.frame_pipeline
+    pub fn captured_frame_pipeline(&self) -> &CapturedFramePipeline {
+        &self.captured_frame_pipeline
     }
 
     pub fn runtime(&self) -> &JobRuntime {
@@ -138,13 +153,9 @@ impl AppInfra {
         processor: &str,
         payload_json: Option<&str>,
     ) -> Result<FrameProcessingJob> {
-        let mut request = FramePipelineRequest::new(frame.clone(), processor);
-
-        if let Some(payload_json) = payload_json {
-            request = request.with_payload_json(payload_json);
-        }
-
-        self.frame_pipeline.enqueue(&request).await
+        self.captured_frame_pipeline
+            .insert_frame_and_enqueue_processor_job(frame, processor, payload_json)
+            .await
     }
 
     pub async fn insert_frame_and_enqueue_ocr_job(
@@ -152,13 +163,8 @@ impl AppInfra {
         frame: &NewFrame,
         payload_json: Option<&str>,
     ) -> Result<FrameProcessingJob> {
-        let mut request = FramePipelineRequest::for_ocr(frame.clone());
-
-        if let Some(payload_json) = payload_json {
-            request = request.with_payload_json(payload_json);
-        }
-
-        self.frame_pipeline.enqueue(&request).await
+        self.insert_frame_and_enqueue_processing_job(frame, OCR_PROCESSOR, payload_json)
+            .await
     }
 
     pub async fn insert_frame_and_maybe_enqueue_ocr_job(
@@ -166,8 +172,22 @@ impl AppInfra {
         frame: &NewFrame,
         payload_json: Option<&str>,
     ) -> Result<FrameOcrEnqueueResult> {
-        self.processing
-            .insert_frame_and_maybe_enqueue_ocr_job(frame, payload_json)
+        self.captured_frame_pipeline
+            .capture_frame(frame, payload_json)
+            .await
+            .map(|result| FrameOcrEnqueueResult {
+                frame: result.frame,
+                job: result.job,
+            })
+    }
+
+    pub async fn capture_frame(
+        &self,
+        frame: &NewFrame,
+        payload_json: Option<&str>,
+    ) -> Result<CapturedFramePipelineResult> {
+        self.captured_frame_pipeline
+            .capture_frame(frame, payload_json)
             .await
     }
 
@@ -176,44 +196,40 @@ impl AppInfra {
         frame: &NewFrame,
         payload_json: Option<&str>,
     ) -> Result<FrameOcrEnqueueResult> {
-        let mut transaction = self.pool().begin().await?;
-
-        let batch = self
-            .frame_batches
-            .upsert_open_batch_for_frame_in_transaction(
-                &mut transaction,
-                &frame.session_id,
-                &frame.captured_at,
-            )
-            .await?;
-        let persisted = self
-            .processing
-            .insert_frame_and_maybe_enqueue_ocr_job_in_transaction(
-                &mut transaction,
-                frame,
-                payload_json,
-            )
-            .await?;
-        self.frame_batches
-            .attach_frame_to_batch_in_transaction(
-                &mut transaction,
-                persisted.frame.id,
-                batch.id,
-                &persisted.frame.captured_at,
-            )
-            .await?;
-        transaction.commit().await?;
-
-        let _ = self
-            .frame_batches
-            .close_and_schedule_completed_batches_for_frame(&frame.session_id, batch.id)
-            .await?;
-
-        Ok(persisted)
+        self.insert_frame_and_maybe_enqueue_ocr_job(frame, payload_json)
+            .await
     }
 
-    pub async fn list_frames(&self, session_id: Option<&str>) -> Result<Vec<Frame>> {
-        self.processing.list_frames(session_id).await
+    pub async fn list_frames(
+        &self,
+        session_id: Option<&str>,
+        before_id: Option<i64>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<Vec<Frame>> {
+        self.processing
+            .list_frames(session_id, before_id, limit, offset)
+            .await
+    }
+
+    pub async fn list_frame_summaries_in_range(
+        &self,
+        captured_at_start: &str,
+        captured_at_end: &str,
+    ) -> Result<Vec<FrameSummary>> {
+        self.processing
+            .list_frame_summaries_in_range(captured_at_start, captured_at_end)
+            .await
+    }
+
+    pub async fn get_latest_frame_in_range(
+        &self,
+        captured_at_start: &str,
+        captured_at_end: &str,
+    ) -> Result<Option<Frame>> {
+        self.processing
+            .get_latest_frame_in_range(captured_at_start, captured_at_end)
+            .await
     }
 
     pub async fn list_frame_batches(&self, session_id: Option<&str>) -> Result<Vec<FrameBatch>> {
@@ -230,6 +246,36 @@ impl AppInfra {
 
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
         self.processing.get_frame(frame_id).await
+    }
+
+    pub async fn list_frames_for_segment_workspace(
+        &self,
+        session_id: &str,
+        workspace_prefix: &str,
+    ) -> Result<Vec<Frame>> {
+        self.processing
+            .list_frames_for_segment_workspace(session_id, workspace_prefix)
+            .await
+    }
+
+    pub async fn upsert_audio_segment(&self, segment: &NewAudioSegment) -> Result<AudioSegment> {
+        self.audio_segments.upsert(segment).await
+    }
+
+    pub async fn get_audio_segment(&self, audio_segment_id: i64) -> Result<Option<AudioSegment>> {
+        self.audio_segments.get(audio_segment_id).await
+    }
+
+    pub async fn list_audio_segments_overlapping_range(
+        &self,
+        range_start: &str,
+        range_end: &str,
+        source_kind: Option<AudioSegmentSourceKind>,
+        source_session_id: Option<&str>,
+    ) -> Result<Vec<AudioSegment>> {
+        self.audio_segments
+            .list_overlapping_range(range_start, range_end, source_kind, source_session_id)
+            .await
     }
 
     pub async fn enqueue_processing_job(
@@ -417,6 +463,11 @@ mod tests {
             "2026-04-12T10:00:00Z",
         )
         .with_dimensions(1920, 1080)
+    }
+
+    fn test_frame_at(session_id: &str, file_name: &str, captured_at: &str) -> NewFrame {
+        NewFrame::new(session_id, format!("/tmp/{file_name}"), captured_at)
+            .with_dimensions(1920, 1080)
     }
 
     fn test_frame_with_fingerprint(
@@ -980,12 +1031,15 @@ mod tests {
             assert_eq!(fetched, first);
 
             let session_a_frames = infra
-                .list_frames(Some("session-a"))
+                .list_frames(Some("session-a"), None, None, None)
                 .await
                 .expect("session frames should list");
             assert_eq!(session_a_frames, vec![first.clone()]);
 
-            let all_frames = infra.list_frames(None).await.expect("frames should list");
+            let all_frames = infra
+                .list_frames(None, None, None, None)
+                .await
+                .expect("frames should list");
             assert_eq!(all_frames.len(), 2);
             assert_eq!(all_frames[0].id, second.id);
             assert_eq!(all_frames[1].id, first.id);
@@ -993,33 +1047,423 @@ mod tests {
     }
 
     #[test]
-    fn frame_pipeline_enqueues_frame_and_processing_job() {
+    fn audio_segments_upsert_is_idempotent_and_lists_overlapping_ranges() {
         run_async_test(async {
-            let dir = TestDir::new("frame-pipeline");
+            let dir = TestDir::new("audio-segments");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "mic-session",
+                1,
+                "/tmp/mic-1.m4a",
+                "2026-04-12T10:00:00Z",
+                "2026-04-12T10:01:00Z",
+            );
+
+            let inserted = infra
+                .upsert_audio_segment(&segment)
+                .await
+                .expect("audio segment should insert");
+            let updated = infra
+                .upsert_audio_segment(&segment)
+                .await
+                .expect("duplicate audio segment should upsert");
+
+            assert_eq!(inserted.id, updated.id);
+
+            let fetched = infra
+                .get_audio_segment(inserted.id)
+                .await
+                .expect("audio segment should be readable")
+                .expect("audio segment should exist");
+            assert_eq!(fetched, updated);
+
+            let missing = infra
+                .get_audio_segment(inserted.id + 10_000)
+                .await
+                .expect("missing audio segment lookup should succeed");
+            assert!(missing.is_none());
+
+            infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::SystemAudio,
+                    "system-session",
+                    1,
+                    "/tmp/system-1.m4a",
+                    "2026-04-12T10:01:00Z",
+                    "2026-04-12T10:02:00Z",
+                ))
+                .await
+                .expect("system audio segment should insert");
+
+            let overlapping = infra
+                .list_audio_segments_overlapping_range(
+                    "2026-04-12T10:00:30Z",
+                    "2026-04-12T10:01:30Z",
+                    None,
+                    None,
+                )
+                .await
+                .expect("overlapping audio segments should list");
+            assert_eq!(overlapping.len(), 2);
+            assert_eq!(overlapping[0].source_kind, AudioSegmentSourceKind::Microphone);
+            assert_eq!(overlapping[1].source_kind, AudioSegmentSourceKind::SystemAudio);
+
+            let microphone_only = infra
+                .list_audio_segments_overlapping_range(
+                    "2026-04-12T10:00:30Z",
+                    "2026-04-12T10:01:30Z",
+                    Some(AudioSegmentSourceKind::Microphone),
+                    Some("mic-session"),
+                )
+                .await
+                .expect("filtered audio segments should list");
+            assert_eq!(microphone_only, vec![updated]);
+
+            let outside = infra
+                .list_audio_segments_overlapping_range(
+                    "2026-04-12T10:02:00Z",
+                    "2026-04-12T10:03:00Z",
+                    None,
+                    None,
+                )
+                .await
+                .expect("outside range should list");
+            assert!(outside.is_empty());
+        });
+    }
+
+    #[test]
+    fn frames_can_be_listed_with_limit_and_offset() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-frames-pagination");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let first = infra
+                .insert_frame(&test_frame("session-a", "frame-1.png"))
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .insert_frame(&test_frame("session-a", "frame-2.png"))
+                .await
+                .expect("second frame should persist");
+            let third = infra
+                .insert_frame(&test_frame("session-b", "frame-3.png"))
+                .await
+                .expect("third frame should persist");
+
+            let limited = infra
+                .list_frames(None, None, Some(2), None)
+                .await
+                .expect("limited frames should list");
+            assert_eq!(
+                limited.iter().map(|frame| frame.id).collect::<Vec<_>>(),
+                vec![third.id, second.id]
+            );
+
+            let paged = infra
+                .list_frames(None, None, Some(1), Some(1))
+                .await
+                .expect("paged frames should list");
+            assert_eq!(
+                paged.iter().map(|frame| frame.id).collect::<Vec<_>>(),
+                vec![second.id]
+            );
+
+            let session_paged = infra
+                .list_frames(Some("session-a"), None, Some(1), Some(1))
+                .await
+                .expect("session paged frames should list");
+            assert_eq!(
+                session_paged
+                    .iter()
+                    .map(|frame| frame.id)
+                    .collect::<Vec<_>>(),
+                vec![first.id]
+            );
+
+            let zero_limit = infra
+                .list_frames(None, None, Some(0), None)
+                .await
+                .expect("zero-limit frames should list");
+            assert!(zero_limit.is_empty());
+        });
+    }
+
+    #[test]
+    fn frames_can_be_listed_with_stable_before_id_cursor() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-frames-before-id-pagination");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let first = infra
+                .insert_frame(&test_frame("session-a", "frame-1.png"))
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .insert_frame(&test_frame("session-a", "frame-2.png"))
+                .await
+                .expect("second frame should persist");
+            let third = infra
+                .insert_frame(&test_frame("session-a", "frame-3.png"))
+                .await
+                .expect("third frame should persist");
+
+            let first_page = infra
+                .list_frames(Some("session-a"), None, Some(2), None)
+                .await
+                .expect("first page should list");
+            assert_eq!(
+                first_page.iter().map(|frame| frame.id).collect::<Vec<_>>(),
+                vec![third.id, second.id]
+            );
+
+            let inserted_after_first_page = infra
+                .insert_frame(&test_frame("session-a", "frame-4.png"))
+                .await
+                .expect("newest frame should persist");
+
+            let second_page = infra
+                .list_frames(Some("session-a"), Some(second.id), Some(2), None)
+                .await
+                .expect("cursor page should list");
+            assert_eq!(
+                second_page.iter().map(|frame| frame.id).collect::<Vec<_>>(),
+                vec![first.id]
+            );
+
+            let offset_page = infra
+                .list_frames(Some("session-a"), None, Some(2), Some(2))
+                .await
+                .expect("offset page should list");
+            assert_eq!(
+                offset_page.iter().map(|frame| frame.id).collect::<Vec<_>>(),
+                vec![second.id, first.id]
+            );
+
+            assert!(offset_page.iter().any(|frame| frame.id == second.id));
+            assert!(first_page
+                .iter()
+                .all(|frame| frame.id != inserted_after_first_page.id));
+        });
+    }
+
+    #[test]
+    fn frame_summaries_in_range_are_filtered_and_sorted_newest_first() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-frame-summaries-range");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            infra
+                .insert_frame(&test_frame_at(
+                    "session-a",
+                    "frame-before.png",
+                    "2026-04-11T23:59:59Z",
+                ))
+                .await
+                .expect("earlier frame should persist");
+            let start = infra
+                .insert_frame(&test_frame_at(
+                    "session-a",
+                    "frame-start.png",
+                    "2026-04-12T00:00:00Z",
+                ))
+                .await
+                .expect("start frame should persist");
+            let middle = infra
+                .insert_frame(&test_frame_at(
+                    "session-b",
+                    "frame-middle.png",
+                    "2026-04-12T12:30:00Z",
+                ))
+                .await
+                .expect("middle frame should persist");
+            let end_first = infra
+                .insert_frame(&test_frame_at(
+                    "session-c",
+                    "frame-end-first.png",
+                    "2026-04-12T23:59:59Z",
+                ))
+                .await
+                .expect("end frame should persist");
+            let end_second = infra
+                .insert_frame(&test_frame_at(
+                    "session-d",
+                    "frame-end-second.png",
+                    "2026-04-12T23:59:59Z",
+                ))
+                .await
+                .expect("second end frame should persist");
+            infra
+                .insert_frame(&test_frame_at(
+                    "session-a",
+                    "frame-after.png",
+                    "2026-04-13T00:00:00Z",
+                ))
+                .await
+                .expect("later frame should persist");
+
+            let summaries = infra
+                .list_frame_summaries_in_range("2026-04-12T00:00:00Z", "2026-04-12T23:59:59Z")
+                .await
+                .expect("frame summaries should list");
+
+            assert_eq!(
+                summaries.iter().map(|frame| frame.id).collect::<Vec<_>>(),
+                vec![end_second.id, end_first.id, middle.id, start.id]
+            );
+            assert_eq!(summaries[0].captured_at, "2026-04-12T23:59:59Z");
+            assert_eq!(summaries[1].captured_at, "2026-04-12T23:59:59Z");
+        });
+    }
+
+    #[test]
+    fn latest_frame_in_range_returns_newest_match_or_none() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-latest-frame-range");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let earliest = infra
+                .insert_frame(&test_frame_at(
+                    "session-a",
+                    "frame-early.png",
+                    "2026-04-12T08:00:00Z",
+                ))
+                .await
+                .expect("early frame should persist");
+            let tied_first = infra
+                .insert_frame(&test_frame_at(
+                    "session-b",
+                    "frame-tied-first.png",
+                    "2026-04-12T09:30:00Z",
+                ))
+                .await
+                .expect("first tied frame should persist");
+            let tied_second = infra
+                .insert_frame(&test_frame_at(
+                    "session-c",
+                    "frame-tied-second.png",
+                    "2026-04-12T09:30:00Z",
+                ))
+                .await
+                .expect("second tied frame should persist");
+
+            let latest = infra
+                .get_latest_frame_in_range("2026-04-12T08:30:00Z", "2026-04-12T09:30:00Z")
+                .await
+                .expect("latest frame should resolve")
+                .expect("latest frame should exist");
+
+            assert_eq!(latest.id, tied_second.id);
+            assert_eq!(latest.captured_at, tied_first.captured_at);
+
+            let missing = infra
+                .get_latest_frame_in_range("2026-04-12T07:00:00Z", "2026-04-12T07:59:59Z")
+                .await
+                .expect("empty latest frame lookup should succeed");
+
+            assert!(missing.is_none());
+            assert!(latest.id > earliest.id);
+        });
+    }
+
+    #[test]
+    fn list_frames_for_segment_workspace_escapes_like_wildcards() {
+        run_async_test(async {
+            let dir = TestDir::new("segment-workspace-like-escape");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let matching = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "session-a",
+                        "/tmp/workspaces/segment_%/frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                    )
+                    .with_dimensions(1920, 1080),
+                )
+                .await
+                .expect("matching frame should persist");
+
+            infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "session-a",
+                        "/tmp/workspaces/segment-xx/frame-2.png",
+                        "2026-04-12T10:00:01Z",
+                    )
+                    .with_dimensions(1920, 1080),
+                )
+                .await
+                .expect("wildcard frame should persist");
+
+            infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "session-a",
+                        "/tmp/workspaces/segment_%extra/frame-3.png",
+                        "2026-04-12T10:00:02Z",
+                    )
+                    .with_dimensions(1920, 1080),
+                )
+                .await
+                .expect("prefix frame should persist");
+
+            let frames = infra
+                .list_frames_for_segment_workspace("session-a", "/tmp/workspaces/segment_%/")
+                .await
+                .expect("segment workspace frames should list");
+
+            assert_eq!(frames, vec![matching]);
+        });
+    }
+
+    #[test]
+    fn captured_frame_pipeline_persists_frame_batch_and_ocr_job() {
+        run_async_test(async {
+            let dir = TestDir::new("captured-frame-pipeline");
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
 
             let persisted = infra
-                .frame_pipeline()
-                .enqueue(
-                    &FramePipelineRequest::for_ocr(test_frame(
-                        "session-pipeline",
-                        "frame-pipeline.png",
-                    ))
-                    .with_payload_json("{\"language\":\"eng\"}"),
+                .capture_frame(
+                    &test_frame("session-pipeline", "frame-pipeline.png"),
+                    Some("{\"language\":\"eng\"}"),
                 )
                 .await
-                .expect("frame pipeline should persist frame and job");
+                .expect("captured frame pipeline should persist frame and job");
 
-            assert_eq!(persisted.job.subject_type, FRAME_SUBJECT_TYPE);
-            assert_eq!(persisted.job.subject_id, persisted.frame.id);
-            assert_eq!(persisted.job.processor, OCR_PROCESSOR);
-            assert_eq!(persisted.job.status, ProcessingJobStatus::Queued);
+            let job = persisted.job.expect("ocr job should be queued");
+            assert_eq!(job.subject_type, FRAME_SUBJECT_TYPE);
+            assert_eq!(job.subject_id, persisted.frame.id);
+            assert_eq!(job.processor, OCR_PROCESSOR);
+            assert_eq!(job.status, ProcessingJobStatus::Queued);
             assert_eq!(
-                persisted.job.payload_json.as_deref(),
+                job.payload_json.as_deref(),
                 Some("{\"language\":\"eng\"}")
             );
+            assert_eq!(persisted.active_batch.session_id, "session-pipeline");
+            assert_eq!(persisted.active_batch.frame_count, 1);
+            assert!(persisted.closed_batches.is_empty());
+
+            let batch_frames = infra
+                .list_frames_for_batch(persisted.active_batch.id)
+                .await
+                .expect("batch frames should list");
+            assert_eq!(batch_frames, vec![persisted.frame]);
         });
     }
 
@@ -1091,7 +1535,7 @@ mod tests {
             assert!(changed.job.is_some());
 
             let frames = infra
-                .list_frames(Some("session-dedupe"))
+                .list_frames(Some("session-dedupe"), None, None, None)
                 .await
                 .expect("frames should list");
             assert_eq!(frames.len(), 3);
@@ -1142,7 +1586,7 @@ mod tests {
             assert!(repeated.job.is_none());
 
             let frames = infra
-                .list_frames(Some("session-dedupe-repeat"))
+                .list_frames(Some("session-dedupe-repeat"), None, None, None)
                 .await
                 .expect("frames should list");
             assert_eq!(frames.len(), 3);
@@ -1172,8 +1616,7 @@ mod tests {
                 .await
                 .expect("batch should persist");
             let persisted = initial
-                .processing()
-                .insert_frame_and_maybe_enqueue_ocr_job(
+                .capture_frame(
                     &NewFrame::new(
                         "session-batch-reconcile",
                         "/tmp/session-batch-reconcile-segment-0001/frames/frame-1.png",
@@ -1183,12 +1626,7 @@ mod tests {
                 )
                 .await
                 .expect("frame and OCR state should persist");
-
-            initial
-                .frame_batches()
-                .attach_frame_to_batch(persisted.frame.id, batch.id, &persisted.frame.captured_at)
-                .await
-                .expect("frame should attach");
+            assert_eq!(persisted.active_batch.id, batch.id);
 
             let closed = initial
                 .frame_batches()
@@ -1247,8 +1685,8 @@ mod tests {
                 .await
                 .expect("batch should persist in transaction");
             let persisted = infra
-                .processing()
-                .insert_frame_and_maybe_enqueue_ocr_job_in_transaction(
+                .captured_frame_pipeline()
+                .capture_frame_in_transaction(
                     &mut transaction,
                     &test_frame_with_fingerprint(
                         "session-batch-atomic",
@@ -1278,7 +1716,7 @@ mod tests {
                 .expect("failed transaction should roll back");
 
             let frames = infra
-                .list_frames(Some("session-batch-atomic"))
+                .list_frames(Some("session-batch-atomic"), None, None, None)
                 .await
                 .expect("frames should list");
             assert!(frames.is_empty());
@@ -1314,7 +1752,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             let first = infra
-                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                .capture_frame(
                     &NewFrame::new(
                         "session-batches",
                         "/tmp/session-batches-segment-0001/frames/frame-1.png",
@@ -1325,7 +1763,7 @@ mod tests {
                 .await
                 .expect("first frame should persist");
             let second = infra
-                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                .capture_frame(
                     &NewFrame::new(
                         "session-batches",
                         "/tmp/session-batches-segment-0002/frames/frame-2.png",
@@ -1335,6 +1773,8 @@ mod tests {
                 )
                 .await
                 .expect("second frame should persist");
+            assert_eq!(second.closed_batches.len(), 1);
+            assert_eq!(second.closed_batches[0].id, first.active_batch.id);
 
             let first_batches = infra
                 .list_frame_batches(Some("session-batches"))
@@ -1360,6 +1800,83 @@ mod tests {
                 .expect("second batch frames should list");
             assert_eq!(second_batch_frames.len(), 1);
             assert_eq!(second_batch_frames[0].id, second.frame.id);
+        });
+    }
+
+    #[test]
+    fn batch_insert_rolls_back_frame_and_batch_when_finalize_scheduling_fails() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-batch-finalize-atomic");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let first = infra
+                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                    &NewFrame::new(
+                        "session-finalize-atomic",
+                        "/tmp/session-finalize-atomic-segment-0001/frames/frame-1.png",
+                        "2026-04-12T10:01:00Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+
+            sqlx::query(
+                "CREATE TRIGGER fail_frame_batch_finalize_job \
+                 BEFORE INSERT ON background_jobs \
+                 WHEN NEW.kind = 'frame_batch_combine' \
+                 BEGIN \
+                     SELECT RAISE(FAIL, 'forced finalize scheduling failure'); \
+                 END",
+            )
+            .execute(infra.pool())
+            .await
+            .expect("failure trigger should install");
+
+            let error = infra
+                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                    &NewFrame::new(
+                        "session-finalize-atomic",
+                        "/tmp/session-finalize-atomic-segment-0002/frames/frame-2.png",
+                        "2026-04-12T10:11:00Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect_err("finalize scheduling failure should abort batch insert");
+            assert!(matches!(error, AppInfraError::Sqlx(_)));
+
+            sqlx::query("DROP TRIGGER fail_frame_batch_finalize_job")
+                .execute(infra.pool())
+                .await
+                .expect("failure trigger should drop");
+
+            let batches = infra
+                .list_frame_batches(Some("session-finalize-atomic"))
+                .await
+                .expect("batches should list");
+            assert_eq!(batches.len(), 1);
+            assert_eq!(batches[0].status, FrameBatchStatus::Open);
+            assert_eq!(batches[0].frame_count, 1);
+            assert!(batches[0].finalize_job_id.is_none());
+
+            let frames = infra
+                .list_frames(Some("session-finalize-atomic"), None, None, None)
+                .await
+                .expect("frames should list");
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].id, first.frame.id);
+
+            let finalize_job_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM background_jobs WHERE kind = ?1",
+            )
+            .bind(FRAME_BATCH_FINALIZE_JOB_KIND)
+            .fetch_one(infra.pool())
+            .await
+            .expect("finalize jobs should count");
+            assert_eq!(finalize_job_count, 0);
         });
     }
 

@@ -26,6 +26,7 @@
 - Recording settings persist to `recording-settings.json` under Tauri `app_config_dir()` when available. App infra state lives under `<saveDirectory>/.z`, with SQLite at `<saveDirectory>/.z/db/app.sqlite3`; changing `saveDirectory` changes that DB location on the next app start.
 - Native capture output is date-organized under `<saveDirectory>/.z/recordings/YYYY/MM/DD/`. Screen recordings are saved as `<session>-segment-####.mov`, while audio stays separate under `<saveDirectory>/.z/recordings/YYYY/MM/DD/audio/<session>/segment-####/`. Hidden per-segment workspace directories under the same date folder are used for temporary capture artifacts and frame exports.
 - App infra schema changes belong in `crates/app-infra/migrations`; migrations are embedded via `sqlx::migrate!`.
+- `FrameBatchStore` has transaction-scoped finalize helpers for batched frame insertion; keep finalize-job scheduling inside the same transaction as frame persistence, OCR job planning/enqueue, and batch attachment when changing `insert_frame_into_batch_and_maybe_enqueue_ocr_job` or related paths.
 - Native capture is macOS-oriented; many capture code paths and tests are behind `cfg(target_os = "macos")`.
 - The dashboard inactivity debug surface has two different audio notions: `idleDebug.activitySources` carries threshold-qualified microphone/system-audio idle used for inactivity decisions, while `microphoneActivityLastUnixMs` / `systemAudioActivityLastUnixMs` are raw sample timestamps and should be labeled as samples rather than activity.
 
