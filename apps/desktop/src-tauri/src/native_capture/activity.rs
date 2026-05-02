@@ -139,12 +139,15 @@ pub(super) fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> Activ
         microphone_activity: AudioActivitySourceState {
             enabled: capture_source_requested(runtime, |sources| sources.microphone),
             idle_ms: microphone_capture::microphone_activity_idle_ms(),
-            latest_normalized_level: microphone_capture::microphone_activity_level(),
+            // The inactivity loop polls at a coarse interval, so use the peak
+            // seen since the last poll rather than a single instantaneous sample.
+            latest_normalized_level: microphone_capture::take_microphone_activity_window_peak_level(
+            ),
         },
         system_audio_activity: AudioActivitySourceState {
             enabled: capture_source_requested(runtime, |sources| sources.system_audio),
             idle_ms: capture_screen::system_audio_activity_idle_ms(),
-            latest_normalized_level: capture_screen::system_audio_activity_level(),
+            latest_normalized_level: capture_screen::take_system_audio_activity_window_peak_level(),
         },
     }
 }

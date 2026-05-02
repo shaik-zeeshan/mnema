@@ -196,6 +196,10 @@ static LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "macos")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "macos")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(target_os = "macos")]
 // Coalesce noisy per-frame screen samples without approaching the minimum
@@ -305,9 +309,31 @@ fn now_monotonic_marker_ms() -> u64 {
 
 #[cfg(target_os = "macos")]
 fn store_system_audio_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u64) {
-    LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    let level = level.clamp(0.0, 1.0);
+    LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(level.to_bits(), Ordering::Relaxed);
     LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.store(now_monotonic_ms, Ordering::Relaxed);
     LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.store(now_unix_ms, Ordering::Relaxed);
+    record_system_audio_activity_window_peak(level);
+}
+
+#[cfg(target_os = "macos")]
+fn record_system_audio_activity_window_peak(level: f32) {
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let level_bits = level.to_bits();
+    let mut observed_bits =
+        LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    while f32::from_bits(observed_bits) < level {
+        match LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.compare_exchange_weak(
+            observed_bits,
+            level_bits,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(next_bits) => observed_bits = next_bits,
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -762,6 +788,8 @@ pub fn reset_last_screen_activity_unix_ms() {
     LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
     LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
     LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.store(0, Ordering::Relaxed);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2391,8 +2419,7 @@ fn finalize_secondary_stream_outputs(
             finish_audio_asset_writer(writer)
         };
         if let Err(error) = result {
-            if capture_writers::is_no_audio_samples_error_message("system audio", &error.message)
-            {
+            if capture_writers::is_no_audio_samples_error_message("system audio", &error.message) {
                 if let Some(path) = system_audio_output_file {
                     maybe_remove_system_audio_file(path);
                 }
@@ -2899,6 +2926,18 @@ pub fn system_audio_activity_idle_ms() -> Option<u64> {
 pub fn system_audio_activity_level() -> Option<f32> {
     last_system_audio_activity_unix_ms()
         .map(|_| f32::from_bits(LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.load(Ordering::Relaxed)))
+}
+
+#[cfg(target_os = "macos")]
+pub fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.swap(0, Ordering::Relaxed);
+    let level_bits = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.swap(0, Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    None
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -3762,6 +3801,23 @@ mod tests {
         assert_eq!(last_system_audio_activity_unix_ms(), None);
         assert_eq!(system_audio_activity_level(), None);
         assert_eq!(system_audio_activity_idle_ms(), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_audio_activity_window_peak_tracks_max_until_taken() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+
+        store_system_audio_activity(0.02, 10_000, 20_000);
+        store_system_audio_activity(0.60, 10_010, 20_010);
+        store_system_audio_activity(0.08, 10_020, 20_020);
+
+        assert_eq!(take_system_audio_activity_window_peak_level(), Some(0.60));
+        assert_eq!(take_system_audio_activity_window_peak_level(), None);
+        assert_eq!(system_audio_activity_level(), Some(0.08));
+
+        reset_last_screen_activity_unix_ms();
     }
 
     #[cfg(target_os = "macos")]

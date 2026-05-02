@@ -1373,7 +1373,10 @@ mod tests {
 
         assert!(buffer.append_timed("unknown-timing-audio", None, 10, true));
 
-        assert_eq!(buffer.pop_sample_before_tail(10), Some("unknown-timing-audio"));
+        assert_eq!(
+            buffer.pop_sample_before_tail(10),
+            Some("unknown-timing-audio")
+        );
         assert!(buffer.samples.is_empty());
     }
 
