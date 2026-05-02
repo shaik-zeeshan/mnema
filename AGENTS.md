@@ -29,6 +29,7 @@
 - `FrameBatchStore` has transaction-scoped finalize helpers for batched frame insertion; keep finalize-job scheduling inside the same transaction as frame persistence, OCR job planning/enqueue, and batch attachment when changing `insert_frame_into_batch_and_maybe_enqueue_ocr_job` or related paths.
 - Native capture is macOS-oriented; many capture code paths and tests are behind `cfg(target_os = "macos")`.
 - The dashboard inactivity debug surface has two different audio notions: `idleDebug.activitySources` carries threshold-qualified microphone/system-audio idle used for inactivity decisions, while `microphoneActivityLastUnixMs` / `systemAudioActivityLastUnixMs` are raw sample timestamps and should be labeled as samples rather than activity.
+- Audio inactivity decisions run on the segment loop's coarse poll interval (currently 1s), so microphone/system-audio producers must preserve a peak-since-last-poll signal for inactivity evaluation; a single latest raw sample can miss brief real audio bursts.
 
 ## Verification
 - UI-only changes: `bun run check`.
