@@ -4,8 +4,9 @@ use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, T
 use crate::{AppInfraError, Result};
 
 use super::{
-    Frame, FrameSummary, NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus,
-    ProcessingResult, ProcessingResultDraft, ProcessingSubject,
+    Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary, NewFrame, ProcessingJob,
+    ProcessingJobDraft, ProcessingJobStatus, ProcessingResult, ProcessingResultDraft,
+    ProcessingSubject,
 };
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
@@ -196,49 +197,89 @@ impl ProcessingStore {
         get_frame_optional(&self.pool, frame_id).await
     }
 
-    pub async fn get_first_matching_earlier_frame_by_fingerprint(
+    pub async fn list_earlier_frames_with_equivalence_hint(
         &self,
         session_id: &str,
         before_frame_id: i64,
-        content_fingerprint: &str,
-    ) -> Result<Option<Frame>> {
-        let row = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
-             FROM frames \
-             WHERE session_id = ?1 AND id < ?2 AND content_fingerprint = ?3 \
-             ORDER BY id ASC \
-             LIMIT 1",
-        )
-        .bind(session_id)
-        .bind(before_frame_id)
-        .bind(content_fingerprint)
-        .fetch_optional(&self.pool)
-        .await?;
+        equivalence_hint: &str,
+        workspace_prefix: Option<&str>,
+    ) -> Result<Vec<Frame>> {
+        let rows = if let Some(workspace_prefix) = workspace_prefix {
+            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+            sqlx::query(
+                "SELECT id, session_id, file_path, captured_at, width, height, \
+                        equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                        created_at, updated_at \
+                 FROM frames \
+                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
+                 ORDER BY id ASC",
+            )
+            .bind(session_id)
+            .bind(before_frame_id)
+            .bind(equivalence_hint)
+            .bind(like_pattern)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, session_id, file_path, captured_at, width, height, \
+                        equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                        created_at, updated_at \
+                 FROM frames \
+                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 \
+                 ORDER BY id ASC",
+            )
+            .bind(session_id)
+            .bind(before_frame_id)
+            .bind(equivalence_hint)
+            .fetch_all(&self.pool)
+            .await?
+        };
 
-        row.map(map_frame).transpose()
+        rows.into_iter().map(map_frame).collect()
     }
 
-    pub(crate) async fn get_first_matching_earlier_frame_by_fingerprint_in_transaction(
+    pub(crate) async fn list_earlier_frames_with_equivalence_hint_in_transaction(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,
         session_id: &str,
         before_frame_id: i64,
-        content_fingerprint: &str,
-    ) -> Result<Option<Frame>> {
-        let row = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
-             FROM frames \
-             WHERE session_id = ?1 AND id < ?2 AND content_fingerprint = ?3 \
-             ORDER BY id ASC \
-             LIMIT 1",
-        )
-        .bind(session_id)
-        .bind(before_frame_id)
-        .bind(content_fingerprint)
-        .fetch_optional(&mut **transaction)
-        .await?;
+        equivalence_hint: &str,
+        workspace_prefix: Option<&str>,
+    ) -> Result<Vec<Frame>> {
+        let rows = if let Some(workspace_prefix) = workspace_prefix {
+            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+            sqlx::query(
+                "SELECT id, session_id, file_path, captured_at, width, height, \
+                        equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                        created_at, updated_at \
+                 FROM frames \
+                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
+                 ORDER BY id ASC",
+            )
+            .bind(session_id)
+            .bind(before_frame_id)
+            .bind(equivalence_hint)
+            .bind(like_pattern)
+            .fetch_all(&mut **transaction)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, session_id, file_path, captured_at, width, height, \
+                        equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                        created_at, updated_at \
+                 FROM frames \
+                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 \
+                 ORDER BY id ASC",
+            )
+            .bind(session_id)
+            .bind(before_frame_id)
+            .bind(equivalence_hint)
+            .fetch_all(&mut **transaction)
+            .await?
+        };
 
-        row.map(map_frame).transpose()
+        rows.into_iter().map(map_frame).collect()
     }
 
     pub async fn list_frames_for_segment_workspace(
@@ -248,7 +289,9 @@ impl ProcessingStore {
     ) -> Result<Vec<Frame>> {
         let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
         let rows = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at \
              FROM frames \
              WHERE session_id = ?1 AND file_path LIKE ?2 ESCAPE '\\' \
              ORDER BY captured_at ASC, id ASC",
@@ -289,7 +332,9 @@ impl ProcessingStore {
         }
 
         let mut query_builder = QueryBuilder::<Sqlite>::new(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at FROM frames",
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at FROM frames",
         );
 
         let mut has_where_clause = false;
@@ -362,7 +407,9 @@ impl ProcessingStore {
         let target = self.get_required_frame(frame_id).await?;
 
         let newer_rows = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at \
              FROM frames \
              WHERE id > ?1 \
              ORDER BY id ASC \
@@ -374,7 +421,9 @@ impl ProcessingStore {
         .await?;
 
         let older_rows = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at \
              FROM frames \
              WHERE id < ?1 \
              ORDER BY id DESC \
@@ -434,7 +483,9 @@ impl ProcessingStore {
         captured_at_end: &str,
     ) -> Result<Option<Frame>> {
         let row = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at \
              FROM frames \
              WHERE captured_at >= ?1 AND captured_at <= ?2 \
              ORDER BY captured_at DESC, id DESC \
@@ -615,6 +666,63 @@ impl ProcessingStore {
         Ok(result.rows_affected())
     }
 
+    pub async fn backfill_frame_equivalence(&self) -> Result<u64> {
+        let rows = sqlx::query(
+            "SELECT id, file_path FROM frames WHERE equivalence_status IS NULL ORDER BY id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut updated = 0_u64;
+
+        for row in rows {
+            let frame_id: i64 = row.get("id");
+            let file_path: String = row.get("file_path");
+            let equivalence = match capture_screen::captured_frame_equivalence_from_image_path(
+                std::path::Path::new(&file_path),
+            ) {
+                capture_screen::CapturedFrameEquivalenceOutcome::Ready(equivalence) => {
+                    FrameEquivalence::ready(
+                        equivalence.hint,
+                        equivalence.proof,
+                        equivalence.version,
+                    )
+                }
+                capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
+                    capture_runtime::debug_log!(
+                        "[app-infra] quarantined frame {} during equivalence backfill: {}",
+                        frame_id,
+                        error
+                    );
+                    FrameEquivalence::quarantined(error)
+                }
+            };
+
+            sqlx::query(
+                "UPDATE frames \
+                 SET equivalence_hint = ?2, \
+                     equivalence_proof = ?3, \
+                     equivalence_version = ?4, \
+                     equivalence_status = ?5, \
+                     equivalence_error = ?6, \
+                     updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = ?1",
+            )
+            .bind(frame_id)
+            .bind(equivalence.hint.as_deref())
+            .bind(equivalence.proof.as_deref())
+            .bind(equivalence.version)
+            .bind(equivalence.status.as_ref().map(FrameEquivalenceStatus::as_str))
+            .bind(equivalence.error.as_deref())
+            .execute(&self.pool)
+            .await?;
+
+            updated = updated.saturating_add(1);
+        }
+
+        Ok(updated)
+    }
+
     pub async fn mark_job_failed(
         &self,
         job_id: i64,
@@ -793,15 +901,29 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let result = sqlx::query(
-        "INSERT INTO frames (session_id, file_path, captured_at, width, height, content_fingerprint) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO frames (
+            session_id,
+            file_path,
+            captured_at,
+            width,
+            height,
+            equivalence_hint,
+            equivalence_proof,
+            equivalence_version,
+            equivalence_status,
+            equivalence_error
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )
     .bind(&frame.session_id)
     .bind(&frame.file_path)
     .bind(&frame.captured_at)
     .bind(frame.width)
     .bind(frame.height)
-    .bind(frame.content_fingerprint.as_deref())
+    .bind(frame.equivalence.hint.as_deref())
+    .bind(frame.equivalence.proof.as_deref())
+    .bind(frame.equivalence.version)
+    .bind(frame.equivalence.status.as_ref().map(FrameEquivalenceStatus::as_str))
+    .bind(frame.equivalence.error.as_deref())
     .execute(executor)
     .await?;
 
@@ -837,7 +959,9 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let row = sqlx::query(
-        "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+        "SELECT id, session_id, file_path, captured_at, width, height, \
+                equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                created_at, updated_at \
          FROM frames \
          WHERE id = ?1",
     )
@@ -902,6 +1026,14 @@ where
 }
 
 fn map_frame(row: SqliteRow) -> Result<Frame> {
+    let equivalence_status = row
+        .get::<Option<String>, _>("equivalence_status")
+        .map(|status| {
+            FrameEquivalenceStatus::from_str(&status)
+                .ok_or(AppInfraError::InvalidFrameEquivalenceStatus(status))
+        })
+        .transpose()?;
+
     Ok(Frame {
         id: row.get("id"),
         session_id: row.get("session_id"),
@@ -909,7 +1041,13 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
         captured_at: row.get("captured_at"),
         width: row.get("width"),
         height: row.get("height"),
-        content_fingerprint: row.get("content_fingerprint"),
+        equivalence: FrameEquivalence {
+            hint: row.get("equivalence_hint"),
+            proof: row.get("equivalence_proof"),
+            version: row.get("equivalence_version"),
+            status: equivalence_status,
+            error: row.get("equivalence_error"),
+        },
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })

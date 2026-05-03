@@ -30,6 +30,8 @@ pub enum AppInfraError {
     },
     #[error("frame {0} was not found")]
     FrameNotFound(i64),
+    #[error("invalid frame equivalence status: {0}")]
+    InvalidFrameEquivalenceStatus(String),
     #[error("frame batch {0} was not found")]
     FrameBatchNotFound(i64),
     #[error("processing job {0} was not found")]
