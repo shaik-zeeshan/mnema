@@ -142,6 +142,14 @@ pub struct SegmentWorkspaceCleanupDebugInfo {
     pub nonterminal_ocr_references: Vec<SegmentWorkspaceOcrReference>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenSegmentWorkspaceRepairResult {
+    pub scanned_workspace_count: u64,
+    pub removed_workspace_count: u64,
+    pub skipped_workspace_count: u64,
+}
+
 #[derive(Clone)]
 pub struct FrameBatchStore {
     pool: SqlitePool,
@@ -182,6 +190,32 @@ impl HiddenSegmentWorkspacePaths {
         let workspace_dir = frames_dir.parent()?;
         Self::from_workspace_dir(workspace_dir)
     }
+}
+
+fn collect_hidden_segment_workspace_dirs(
+    root: &Path,
+    workspace_dirs: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        if HiddenSegmentWorkspacePaths::from_workspace_dir(&path).is_some() {
+            workspace_dirs.push(path);
+            continue;
+        }
+
+        collect_hidden_segment_workspace_dirs(&path, workspace_dirs)?;
+    }
+
+    Ok(())
 }
 
 impl FrameBatchStore {
@@ -554,6 +588,39 @@ impl FrameBatchStore {
             batch_references,
             nonterminal_ocr_references,
         }))
+    }
+
+    pub async fn repair_hidden_segment_workspaces(
+        &self,
+        recordings_root: &Path,
+    ) -> Result<HiddenSegmentWorkspaceRepairResult> {
+        let mut workspace_dirs = Vec::new();
+        collect_hidden_segment_workspace_dirs(recordings_root, &mut workspace_dirs)?;
+
+        let mut result = HiddenSegmentWorkspaceRepairResult {
+            scanned_workspace_count: workspace_dirs.len() as u64,
+            ..HiddenSegmentWorkspaceRepairResult::default()
+        };
+
+        for workspace_dir in workspace_dirs {
+            let Some(info) = self.classify_hidden_segment_workspace(&workspace_dir).await? else {
+                continue;
+            };
+
+            if info.safe_to_remove {
+                match std::fs::remove_dir_all(&workspace_dir) {
+                    Ok(()) => result.removed_workspace_count += 1,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        result.removed_workspace_count += 1;
+                    }
+                    Err(error) => return Err(AppInfraError::Io(error)),
+                }
+            } else {
+                result.skipped_workspace_count += 1;
+            }
+        }
+
+        Ok(result)
     }
 
     pub async fn close_completed_batches_for_session(
@@ -1071,13 +1138,13 @@ fn escape_sql_like_pattern(value: &str) -> String {
     escaped
 }
 
-/// Returns `true` when `path` looks like an exported frame PNG artifact
+/// Returns `true` when `path` looks like an exported frame image artifact
 /// matching the expected session export path shape:
-///   `<root>/<session_id>-segment-<NNNN>/frames/frame-*.png`
+///   `<root>/<session_id>-segment-<NNNN>/frames/frame-*.<png|jpg|jpeg>`
 ///
 /// Checks: absolute, no `..` components, parent directory named `frames`,
 /// grandparent directory matching `*-segment-*`, and filename matching
-/// `frame-*.png`.
+/// `frame-*.<png|jpg|jpeg>`.
 fn is_safe_frame_artifact_path(path: &Path) -> bool {
     if !path.is_absolute() {
         return false;
@@ -1109,7 +1176,10 @@ fn is_safe_frame_artifact_path(path: &Path) -> bool {
         Some(n) => n,
         None => return false,
     };
-    file_name.starts_with("frame-") && file_name.ends_with(".png")
+    file_name.starts_with("frame-")
+        && [".png", ".jpg", ".jpeg"]
+            .into_iter()
+            .any(|ext| file_name.ends_with(ext))
 }
 
 fn should_preserve_hidden_workspace_frame(path: &Path) -> bool {
@@ -1682,6 +1752,12 @@ mod tests {
         )));
         assert!(is_safe_frame_artifact_path(Path::new(
             "/tmp/my-session-segment-0001/frames/frame-1.png"
+        )));
+        assert!(is_safe_frame_artifact_path(Path::new(
+            "/tmp/my-session-segment-0001/frames/frame-1.jpg"
+        )));
+        assert!(is_safe_frame_artifact_path(Path::new(
+            "/tmp/my-session-segment-0001/frames/frame-1.jpeg"
         )));
     }
 
@@ -2437,6 +2513,37 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_removes_hidden_workspace_jpeg_when_visible_segment_exists() {
+        let dir = TestDir::new("visible-segment-present-jpeg");
+        let recordings_day_dir = dir.managed_recordings_day_path("2026", "04", "12");
+        let segment_dir = recordings_day_dir.join(".session-preview-segment-0001");
+        let frames_dir = segment_dir.join("frames");
+        fs::create_dir_all(&frames_dir).expect("frames dir should be created");
+        let visible_segment_path = recordings_day_dir.join("session-preview-segment-0001.mov");
+        fs::write(&visible_segment_path, b"fake mov").expect("visible segment should be written");
+        let frame_path = frames_dir.join("frame-1.jpg");
+        fs::write(&frame_path, b"fake").expect("frame file should be written");
+
+        let frames = vec![Frame {
+            id: 1,
+            session_id: "s".to_string(),
+            file_path: frame_path.to_string_lossy().to_string(),
+            captured_at: "2026-04-12T10:01:00Z".to_string(),
+            width: None,
+            height: None,
+            content_fingerprint: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }];
+
+        let errors = cleanup_frame_artifacts(&frames);
+        assert!(errors.is_empty(), "cleanup should succeed without errors");
+        assert!(!frame_path.exists(), "jpeg frame file should be deleted");
+        assert!(!frames_dir.exists(), "empty frames/ dir should be removed");
+        assert!(!segment_dir.exists(), "empty segment dir should be removed");
+    }
+
+    #[test]
     fn cleanup_leaves_out_of_tree_hidden_segment_workspace_untouched() {
         let dir = TestDir::new("out-of-tree-workspace");
         let segment_dir = dir
@@ -2742,6 +2849,135 @@ mod tests {
             assert!(info.visible_segment_exists);
             assert!(info.nonterminal_ocr_references.is_empty());
             assert_eq!(info.batch_references[0].status, FrameBatchStatus::Completed);
+        });
+    }
+
+    #[test]
+    fn repair_hidden_segment_workspaces_removes_only_safe_workspaces() {
+        run_async_test(async {
+            let dir = TestDir::new("repair-safe-workspaces");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let processing = crate::ProcessingStore::new(pool.clone());
+            let store = FrameBatchStore::new(pool);
+            let recordings_root = dir.path().join(".z/recordings");
+            let day_dir = recordings_root.join("2026/04/12");
+
+            let safe_workspace_dir = day_dir.join(".session-safe-segment-0001");
+            let safe_frames_dir = safe_workspace_dir.join("frames");
+            std::fs::create_dir_all(&safe_frames_dir).expect("safe frames dir should exist");
+            std::fs::write(day_dir.join("session-safe-segment-0001.mov"), b"mov")
+                .expect("safe visible segment should exist");
+            let safe_frame_path = safe_frames_dir.join("frame-1.jpg");
+            std::fs::write(&safe_frame_path, b"jpg").expect("safe frame should exist");
+
+            let safe_batch = store
+                .upsert_open_batch_for_frame("session-safe", "2026-04-12T10:00:00Z")
+                .await
+                .expect("safe batch should persist");
+            let safe_frame = processing
+                .insert_frame(&NewFrame::new(
+                    "session-safe",
+                    safe_frame_path.to_string_lossy().to_string(),
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("safe frame should persist");
+            store
+                .attach_frame_to_batch(safe_frame.id, safe_batch.id, &safe_frame.captured_at)
+                .await
+                .expect("safe frame should attach");
+            let safe_job = processing
+                .enqueue_job(&crate::ProcessingJobDraft::for_frame_ocr(safe_frame.id))
+                .await
+                .expect("safe ocr job should queue");
+            let claimed_safe_job = processing
+                .claim_queued_job(safe_job.id)
+                .await
+                .expect("safe job should claim")
+                .expect("safe job should exist");
+            assert_eq!(claimed_safe_job.status, ProcessingJobStatus::Running);
+            processing
+                .mark_job_failed(safe_job.id, Some("terminal for repair"))
+                .await
+                .expect("safe job should be terminal");
+            store
+                .close_completed_batches_for_session("session-safe", None)
+                .await
+                .expect("safe batch should close");
+            store
+                .mark_batch_processing(safe_batch.id)
+                .await
+                .expect("safe batch should mark processing");
+            store
+                .mark_batch_completed(safe_batch.id, None)
+                .await
+                .expect("safe batch should complete");
+
+            let skipped_workspace_dir = day_dir.join(".session-skip-segment-0001");
+            let skipped_frames_dir = skipped_workspace_dir.join("frames");
+            std::fs::create_dir_all(&skipped_frames_dir).expect("skipped frames dir should exist");
+            let skipped_frame_path = skipped_frames_dir.join("frame-1.jpg");
+            std::fs::write(&skipped_frame_path, b"jpg").expect("skipped frame should exist");
+
+            let skipped_batch = store
+                .upsert_open_batch_for_frame("session-skip", "2026-04-12T11:00:00Z")
+                .await
+                .expect("skipped batch should persist");
+            let skipped_frame = processing
+                .insert_frame(&NewFrame::new(
+                    "session-skip",
+                    skipped_frame_path.to_string_lossy().to_string(),
+                    "2026-04-12T11:00:00Z",
+                ))
+                .await
+                .expect("skipped frame should persist");
+            store
+                .attach_frame_to_batch(skipped_frame.id, skipped_batch.id, &skipped_frame.captured_at)
+                .await
+                .expect("skipped frame should attach");
+            let skipped_job = processing
+                .enqueue_job(&crate::ProcessingJobDraft::for_frame_ocr(skipped_frame.id))
+                .await
+                .expect("skipped ocr job should queue");
+            let claimed_skipped_job = processing
+                .claim_queued_job(skipped_job.id)
+                .await
+                .expect("skipped job should claim")
+                .expect("skipped job should exist");
+            assert_eq!(claimed_skipped_job.status, ProcessingJobStatus::Running);
+            processing
+                .mark_job_failed(skipped_job.id, Some("terminal for repair"))
+                .await
+                .expect("skipped job should be terminal");
+            store
+                .close_completed_batches_for_session("session-skip", None)
+                .await
+                .expect("skipped batch should close");
+            store
+                .mark_batch_processing(skipped_batch.id)
+                .await
+                .expect("skipped batch should mark processing");
+            store
+                .mark_batch_completed(skipped_batch.id, None)
+                .await
+                .expect("skipped batch should complete");
+
+            let repair = store
+                .repair_hidden_segment_workspaces(&recordings_root)
+                .await
+                .expect("repair should succeed");
+
+            assert_eq!(repair.scanned_workspace_count, 2);
+            assert_eq!(repair.removed_workspace_count, 1);
+            assert_eq!(repair.skipped_workspace_count, 1);
+            assert!(!safe_workspace_dir.exists(), "safe workspace should be removed");
+            assert!(
+                skipped_workspace_dir.exists(),
+                "workspace without visible segment should be preserved"
+            );
         });
     }
 }

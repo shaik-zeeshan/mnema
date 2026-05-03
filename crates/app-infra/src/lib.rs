@@ -25,9 +25,9 @@ pub use error::{AppInfraError, Result};
 pub use frame_batches::{
     FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchRuntime,
     FrameBatchStatus, FrameBatchStore, FrameBatchWindow, HiddenSegmentWorkspacePaths,
-    SegmentWorkspaceBatchReference, SegmentWorkspaceCleanupDebugInfo,
-    SegmentWorkspaceCleanupDisposition, SegmentWorkspaceOcrReference, FRAME_BATCH_DURATION_MINUTES,
-    FRAME_BATCH_FINALIZE_JOB_KIND,
+    HiddenSegmentWorkspaceRepairResult, SegmentWorkspaceBatchReference,
+    SegmentWorkspaceCleanupDebugInfo, SegmentWorkspaceCleanupDisposition,
+    SegmentWorkspaceOcrReference, FRAME_BATCH_DURATION_MINUTES, FRAME_BATCH_FINALIZE_JOB_KIND,
 };
 pub use jobs::{
     default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
@@ -298,6 +298,15 @@ impl AppInfra {
     ) -> Result<Option<SegmentWorkspaceCleanupDebugInfo>> {
         self.frame_batches
             .classify_hidden_segment_workspace(workspace_dir)
+            .await
+    }
+
+    pub async fn repair_hidden_segment_workspaces(
+        &self,
+        recordings_root: &Path,
+    ) -> Result<HiddenSegmentWorkspaceRepairResult> {
+        self.frame_batches
+            .repair_hidden_segment_workspaces(recordings_root)
             .await
     }
 
