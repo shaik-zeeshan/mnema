@@ -54,7 +54,7 @@
   // on any browser-specific RTL `scrollLeft` convention.
 
   const TIMELINE_SLOT_WIDTH = 8; // px, must match CSS `.timeline-rail__slot`
-  const TIMELINE_PAGE_SIZE = 100;
+  const TIMELINE_PAGE_SIZE = 200;
   // Distance (in frames) from the loaded tail at which we trigger the next
   // `beforeId` page. Sized generously relative to `TIMELINE_PAGE_SIZE` so a
   // fast scrub doesn't visibly stall at the temporary tail before the next
@@ -62,7 +62,7 @@
   // another load if the user is still inside it (see `loadTimelinePage`'s
   // tail-prefetch follow-up below). `timelineExhausted` continues to gate
   // pagination at the true end.
-  const TIMELINE_PREFETCH_AHEAD = 60;
+  const TIMELINE_PREFETCH_AHEAD = 120;
   // Realtime head poll: how often we ask the backend for the newest page so
   // freshly captured frames appear in the rail without a manual refresh, and
   // how many frames we ask for per poll. The page-size cap is intentionally
@@ -240,6 +240,148 @@
       "Failed to play audio. The media bytes were loaded, but the browser could not decode this segment.";
   }
 
+  // ─── Custom audio player state ───────────────────────────────────────────
+  // The visible drawer renders a bespoke transport instead of `<audio
+  // controls>`, but a hidden `<audio>` element under the hood still owns
+  // decoding/playback. UI state mirrors the element via `timeupdate`,
+  // `loadedmetadata`, `play`, `pause`, and `ended` events. Scrubbing writes
+  // back to `audio.currentTime`. State resets whenever the selected segment
+  // changes (see `$effect` further down) so a new segment always begins
+  // paused at 0 with a fresh duration readout.
+  let audioEl = $state<HTMLAudioElement | null>(null);
+  let audioIsPlaying = $state(false);
+  let audioCurrentTime = $state(0);
+  let audioDuration = $state(0);
+  // While the user drags the scrub thumb we hold UI updates from `timeupdate`
+  // events so the indicator doesn't fight the drag. Commit on release.
+  let audioScrubbing = $state(false);
+
+  $effect(() => {
+    // Reset transport readouts whenever the selection (and therefore the
+    // underlying media) changes, so the prior segment's progress doesn't
+    // briefly appear before the new metadata loads.
+    void selectedAudioSegmentId;
+    audioIsPlaying = false;
+    audioCurrentTime = 0;
+    audioDuration = 0;
+    audioScrubbing = false;
+  });
+
+  function togglePlayPause() {
+    const el = audioEl;
+    if (!el) return;
+    if (el.paused) {
+      void el.play().catch(() => {
+        // Surface decode/play failures through the existing error path.
+        onSelectedAudioError();
+      });
+    } else {
+      el.pause();
+    }
+  }
+
+  function onAudioTimeUpdate() {
+    if (!audioEl || audioScrubbing) return;
+    audioCurrentTime = audioEl.currentTime;
+  }
+  function onAudioLoadedMetadata() {
+    if (!audioEl) return;
+    audioDuration = Number.isFinite(audioEl.duration) ? audioEl.duration : 0;
+  }
+  function onAudioPlay() {
+    audioIsPlaying = true;
+  }
+  function onAudioPause() {
+    audioIsPlaying = false;
+  }
+  function onAudioEnded() {
+    audioIsPlaying = false;
+    audioCurrentTime = audioEl?.duration ?? audioCurrentTime;
+  }
+  function onScrubInput(e: Event) {
+    const t = Number((e.currentTarget as HTMLInputElement).value);
+    audioScrubbing = true;
+    audioCurrentTime = t;
+  }
+  function onScrubChange(e: Event) {
+    const t = Number((e.currentTarget as HTMLInputElement).value);
+    audioScrubbing = false;
+    if (audioEl && Number.isFinite(t)) {
+      audioEl.currentTime = t;
+      audioCurrentTime = t;
+    }
+  }
+
+  /** `M:SS` for the player transport. Distinct from the segment-duration
+   *  helper above because the transport ticks per second and a leading dash
+   *  while metadata is still loading reads better as `0:00`. */
+  function formatPlayerTime(seconds: number): string {
+    if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+    const total = Math.floor(seconds);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  // ─── Outside-click dismissal ─────────────────────────────────────────────
+  // While the drawer is open, a pointerdown anywhere outside the drawer
+  // dismisses it. Timeline audio bars are outside the drawer too, but when
+  // the drawer is already open a click on any bar should close only — not
+  // immediately re-open/switch the drawer on the trailing `click`. Pointerdown
+  // — not click — because `click` doesn't fire on every dismiss target (e.g.
+  // dragging a scrollbar) and we want the close to feel immediate.
+  let suppressNextAudioSegmentBarClick = false;
+  let suppressNextAudioSegmentBarClickResetTimer: ReturnType<typeof setTimeout> | null =
+    null;
+
+  function clearPendingSuppressedAudioSegmentBarClick() {
+    if (suppressNextAudioSegmentBarClickResetTimer != null) {
+      clearTimeout(suppressNextAudioSegmentBarClickResetTimer);
+      suppressNextAudioSegmentBarClickResetTimer = null;
+    }
+    suppressNextAudioSegmentBarClick = false;
+  }
+
+  function rememberSuppressedAudioSegmentBarClick() {
+    clearPendingSuppressedAudioSegmentBarClick();
+    suppressNextAudioSegmentBarClick = true;
+    suppressNextAudioSegmentBarClickResetTimer = setTimeout(() => {
+      suppressNextAudioSegmentBarClickResetTimer = null;
+      suppressNextAudioSegmentBarClick = false;
+    }, 250);
+  }
+
+  function onAudioDrawerOutsidePointerDown(event: PointerEvent) {
+    if (selectedAudioSegmentId == null) return;
+    clearPendingSuppressedAudioSegmentBarClick();
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (audioDrawerEl?.contains(target)) return;
+    if (target instanceof Element && target.closest(".timeline-rail__audio-bar")) {
+      rememberSuppressedAudioSegmentBarClick();
+    }
+    closeAudioDrawer();
+  }
+
+  $effect(() => {
+    if (selectedAudioSegmentId == null) return;
+    // Bind in capture phase so the dismissal beats any in-tree handlers
+    // that might `stopPropagation` on the same event (the rail wrap stops
+    // pointer/click propagation in some flows).
+    document.addEventListener(
+      "pointerdown",
+      onAudioDrawerOutsidePointerDown,
+      true,
+    );
+    return () => {
+      document.removeEventListener(
+        "pointerdown",
+        onAudioDrawerOutsidePointerDown,
+        true,
+      );
+    };
+  });
+
   // Drop a stale selection if the segment no longer appears in the loaded
   // window. We compare ids rather than object identity because `audioSegments`
   // is rebuilt on every refresh.
@@ -248,6 +390,89 @@
     if (!audioSegments.some((s) => s.id === selectedAudioSegmentId)) {
       selectedAudioSegmentId = null;
     }
+  });
+
+  // ─── Audio player drawer a11y ────────────────────────────────────────────
+  // The audio player is rendered as a non-modal `role="dialog"` bottom sheet
+  // that slides in only when an audio segment is selected. The timeline lane
+  // remains interactive while the drawer is open so users can swap selection
+  // by clicking another bar; the drawer reacts to selection changes by
+  // refreshing its metadata + media. We wire up Escape-to-close, a Tab focus
+  // trap while open, and focus restoration to the previously-selected audio
+  // bar (if still present) when the drawer closes.
+  let audioDrawerEl = $state<HTMLDivElement | null>(null);
+  let audioDrawerCloseEl = $state<HTMLButtonElement | null>(null);
+  // Capture the element that had focus immediately before the drawer opened
+  // so we can return focus there on close. Recomputed on each open transition.
+  let audioDrawerReturnFocusEl: HTMLElement | null = null;
+
+  function getAudioDrawerFocusable(): HTMLElement[] {
+    if (!audioDrawerEl) return [];
+    const sel =
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    return Array.from(audioDrawerEl.querySelectorAll<HTMLElement>(sel)).filter(
+      (el) => el.offsetParent !== null || el === document.activeElement,
+    );
+  }
+
+  function closeAudioDrawer() {
+    selectedAudioSegmentId = null;
+  }
+
+  function onAudioDrawerKeydown(e: KeyboardEvent) {
+    if (selectedAudioSegmentId == null) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeAudioDrawer();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const focusable = getAudioDrawerFocusable();
+    if (focusable.length === 0) {
+      e.preventDefault();
+      audioDrawerEl?.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    if (e.shiftKey) {
+      if (active === first || !audioDrawerEl?.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else if (active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  // Track the open/close transition: capture return-focus target on open,
+  // move focus into the drawer's close button after mount, and restore focus
+  // on close.
+  $effect(() => {
+    const open = selectedAudioSegmentId != null;
+    if (!open) return;
+    audioDrawerReturnFocusEl = document.activeElement as HTMLElement | null;
+    let cancelled = false;
+    void tick().then(() => {
+      if (cancelled || selectedAudioSegmentId == null) return;
+      (audioDrawerCloseEl ?? audioDrawerEl)?.focus();
+    });
+    return () => {
+      cancelled = true;
+      // Restore focus to the originating element only if focus has not moved
+      // somewhere unrelated (e.g. user clicked into another control already).
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        !active ||
+        active === document.body ||
+        audioDrawerEl?.contains(active)
+      ) {
+        audioDrawerReturnFocusEl?.focus({ preventScroll: true });
+      }
+    };
   });
 
   // ─── Audio overlay alignment ─────────────────────────────────────────────
@@ -1181,6 +1406,12 @@
   // navigation everywhere else.
   function onAudioSegmentBarClick(event: MouseEvent, id: number) {
     event.stopPropagation();
+    if (suppressNextAudioSegmentBarClick) {
+      clearPendingSuppressedAudioSegmentBarClick();
+      selectedAudioSegmentId = null;
+      return;
+    }
+    clearPendingSuppressedAudioSegmentBarClick();
     selectedAudioSegmentId = selectedAudioSegmentId === id ? null : id;
   }
   function onAudioSegmentBarKeyDown(event: KeyboardEvent) {
@@ -1582,6 +1813,7 @@
   let pickerLoading = $state(false);
   let pickerJumping = $state(false);
   let pickerError = $state<string | null>(null);
+  let pickerStyle = $state("");
 
   function todayLocal(): DateValue {
     const d = new Date();
@@ -1844,6 +2076,48 @@
   let pickerEl = $state<HTMLDivElement | null>(null);
   let pickerTriggerEl = $state<HTMLButtonElement | null>(null);
 
+  function updatePickerPosition(): void {
+    if (!pickerEl || !pickerTriggerEl) return;
+    const viewportMargin = 12;
+    const triggerGap = 6;
+    const triggerRect = pickerTriggerEl.getBoundingClientRect();
+    const pickerRect = pickerEl.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const pickerWidth = Math.min(
+      pickerRect.width,
+      Math.max(0, viewportWidth - viewportMargin * 2),
+    );
+
+    let left = triggerRect.left;
+    if (triggerRect.left + pickerWidth > viewportWidth - viewportMargin) {
+      left = triggerRect.right - pickerWidth;
+    }
+    left = Math.min(
+      Math.max(viewportMargin, left),
+      Math.max(viewportMargin, viewportWidth - viewportMargin - pickerWidth),
+    );
+
+    const availableBelow = Math.max(
+      160,
+      viewportHeight - triggerRect.bottom - triggerGap - viewportMargin,
+    );
+    const availableAbove = Math.max(160, triggerRect.top - triggerGap - viewportMargin);
+    const maxHeight = Math.min(420, Math.max(availableBelow, availableAbove));
+    const openAbove = availableBelow < 260 && availableAbove > availableBelow;
+    const top = openAbove
+      ? Math.max(
+          viewportMargin,
+          triggerRect.top - triggerGap - Math.min(pickerRect.height, maxHeight),
+        )
+      : Math.min(
+          triggerRect.bottom + triggerGap,
+          viewportHeight - viewportMargin - Math.min(pickerRect.height, maxHeight),
+        );
+
+    pickerStyle = `left: ${left}px; top: ${top}px; max-height: ${maxHeight}px;`;
+  }
+
   function getPickerFocusable(): HTMLElement[] {
     if (!pickerEl) return [];
     const sel =
@@ -1898,6 +2172,7 @@
     let cancelled = false;
     void tick().then(() => {
       if (cancelled || !pickerOpen) return;
+      updatePickerPosition();
       const focusable = getPickerFocusable();
       (focusable[0] ?? pickerEl)?.focus();
     });
@@ -1913,6 +2188,35 @@
       ) {
         pickerTriggerEl?.focus();
       }
+    };
+  });
+
+  $effect(() => {
+    if (!pickerOpen) {
+      pickerStyle = "";
+      return;
+    }
+
+    let frame = 0;
+    const scheduleUpdate = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => updatePickerPosition());
+    };
+
+    void tick().then(scheduleUpdate);
+
+    const ro = new ResizeObserver(scheduleUpdate);
+    if (pickerEl) ro.observe(pickerEl);
+    if (pickerTriggerEl) ro.observe(pickerTriggerEl);
+
+    window.addEventListener("resize", scheduleUpdate);
+    window.addEventListener("scroll", scheduleUpdate, true);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+      window.removeEventListener("resize", scheduleUpdate);
+      window.removeEventListener("scroll", scheduleUpdate, true);
     };
   });
 
@@ -2141,11 +2445,7 @@
 <svelte:window onpointerdown={onPickerPointerDownOutside} />
 <section class="timeline" onwheel={onTimelineWheel}>
   <header class="timeline__bar">
-    <div class="timeline__bar-left">
-      <h1 class="timeline__title">Timeline</h1>
-      <span class="timeline__hint">scroll anywhere to scrub · newest first · all sessions</span>
-    </div>
-    <div class="timeline__bar-right">
+    <div class="timeline__bar-group timeline__bar-group--primary">
       <div
         class="timeline__capture"
         role="group"
@@ -2201,6 +2501,7 @@
         {#if pickerOpen}
           <div
             class="timeline__picker"
+            style={pickerStyle}
             role="dialog"
             aria-modal="true"
             aria-label="Jump to date and time"
@@ -2287,13 +2588,9 @@
           </div>
         {/if}
       </div>
+    </div>
 
-      {#if timelineActive}
-        <span class="timeline__counter">
-          <span class="timeline__counter-strong">{timelineActiveIndex + 1}</span>
-          <span class="timeline__counter-dim">/ {timelineFrames.length}{timelineHasMore ? "+" : ""}</span>
-        </span>
-      {/if}
+    <div class="timeline__bar-group timeline__bar-group--secondary">
       <button
         class="btn btn--ghost btn--sm timeline__ocr-btn"
         class:timeline__ocr-btn--running={ocrStatus === "running"}
@@ -2368,80 +2665,13 @@
     </div>
   {/if}
 
-  {#if audioSegments.length > 0}
-    <!-- Inline audio segment player. Compact deck panel that sits above the
-         stage so it's adjacent to the rail where bars are selected. The
-         panel renders an empty/instruction state until a bar is clicked. -->
-    <div class="timeline__player" aria-label="Audio segment player">
-      {#if selectedAudioSegment}
-        <div class="timeline__player-meta">
-          <span
-            class="timeline__player-source timeline__player-source--{selectedAudioSegment.source}"
-            aria-label={`Source: ${audioSourceLabel(selectedAudioSegment.source)}`}
-          >
-            <span class="timeline__player-swatch" aria-hidden="true"></span>
-            {audioSourceLabel(selectedAudioSegment.source)}
-          </span>
-          <span class="timeline__player-index" aria-label="Segment index">
-            #{selectedAudioSegment.segmentIndex}
-          </span>
-          <span class="timeline__player-time" title={`${formatUnixMs(selectedAudioSegment.startUnixMs)} – ${formatUnixMs(selectedAudioSegment.endUnixMs)}`}>
-            {formatTimeOfDay(selectedAudioSegment.startUnixMs)}
-            <span class="timeline__player-time-sep" aria-hidden="true">→</span>
-            {formatTimeOfDay(selectedAudioSegment.endUnixMs)}
-            <span class="timeline__player-duration">· {formatDurationSeconds(selectedAudioSegment.durationSeconds)}</span>
-          </span>
-          <span
-            class="timeline__player-file"
-            title={selectedAudioSegment.filePath}
-          >{selectedAudioSegment.fileName}</span>
-          <button
-            type="button"
-            class="timeline__player-close"
-            onclick={() => (selectedAudioSegmentId = null)}
-            aria-label="Close audio player"
-          >×</button>
-        </div>
-        {#if selectedAudioMediaLoading}
-          <div class="timeline__player-empty">
-            <span class="timeline__player-empty-glyph" aria-hidden="true">…</span>
-            <span>loading audio segment…</span>
-          </div>
-        {:else if selectedAudioMediaError}
-          <div class="timeline__player-error" role="alert">
-            <span class="timeline__player-error-label">playback unavailable</span>
-            <span class="timeline__player-error-msg">{selectedAudioMediaError}</span>
-          </div>
-        {:else if selectedAudioSrc}
-          <!-- `src` is reactive: switching segments swaps the audio element's
-               source via Svelte's binding. Using a keyed block forces a fresh
-               <audio> element per segment so the browser doesn't keep playing
-               the previous file while the new metadata loads. -->
-          {#key selectedAudioSegment.id}
-            <audio
-              class="timeline__player-audio"
-              controls
-              preload="metadata"
-              src={selectedAudioSrc}
-              onerror={onSelectedAudioError}
-            ></audio>
-          {/key}
-        {/if}
-        {#if selectedAudioLoadError}
-          <div class="timeline__player-error" role="alert">
-            <span class="timeline__player-error-label">playback error</span>
-            <span class="timeline__player-error-msg">{selectedAudioLoadError}</span>
-          </div>
-        {/if}
-      {:else}
-        <div class="timeline__player-empty">
-          <span class="timeline__player-empty-glyph" aria-hidden="true">▶</span>
-          <span>select an audio segment to play</span>
-          <span class="timeline__player-empty-hint">click any bar on the timeline rail</span>
-        </div>
-      {/if}
-    </div>
-  {/if}
+  <!-- Audio segment player drawer. Rendered as a non-modal bottom sheet
+       that slides in only when an audio segment is selected. The timeline
+       rail stays interactive while the drawer is open so the user can pick
+       a different segment without dismissing first; selecting null (or
+       pressing Escape / clicking close) hides the drawer entirely. The
+       audio lane bars themselves remain visible above the rail so audio
+       presence/discovery is unaffected. -->
 
   <div class="timeline__stage" bind:this={stageEl}>
     {#if timelineLoading && timelineFrames.length === 0}
@@ -2682,13 +2912,32 @@
       </div>
     {:else}
       <!-- Empty placeholder reserves the rail's height so removing/adding
-           the rail does not resize the stage. The audio-lane placeholder
-           reserves matching height for the lane below. -->
+           the rail does not resize the stage. The audio lane shell stays
+           visible so users always have a clear audio surface — it just
+           shows an empty/instructional state until segments arrive. -->
       <div class="timeline-rail timeline-rail--placeholder" aria-hidden="true"></div>
       <div
-        class="timeline-rail__audio-lane-wrap timeline-rail__audio-lane-wrap--placeholder"
-        aria-hidden="true"
-      ></div>
+        class="timeline-rail__audio-lane-wrap"
+        aria-label="Audio segments"
+      >
+        <div class="timeline-rail__audio-lane-labels" aria-hidden="true">
+          <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--microphone">mic</span>
+          <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--systemAudio">sys</span>
+        </div>
+        <div class="timeline-rail__audio-lane-viewport">
+          <span class="timeline-rail__audio-lane-empty">
+            {#if audioSegmentsLoading}
+              loading audio…
+            {:else if audioSegmentsError}
+              audio unavailable
+            {:else if timelineLoading}
+              waiting for frames…
+            {:else}
+              no frames loaded
+            {/if}
+          </span>
+        </div>
+      </div>
     {/if}
     {#if timelineLoadingMore}
       <div class="timeline-rail__loading">loading…</div>
@@ -2709,11 +2958,166 @@
   </div>
 </section>
 
+<!-- Audio player drawer. Lives outside the timeline section so its fixed
+     positioning is not affected by the section's `overflow: hidden`. The
+     drawer is non-modal: the timeline rail/lane stay interactive, so the
+     user can swap segments by clicking another bar without dismissing first.
+     `selectedAudioSegmentId` is the open/closed signal — clearing it (close
+     button, Escape, or `audioSegments` losing the row) collapses the drawer
+     and the surrounding effects clear/refresh media bytes accordingly. -->
+{#if selectedAudioSegment}
+  <div
+    class="audio-drawer"
+    role="dialog"
+    aria-modal="false"
+    aria-label={`Audio segment player — ${audioSourceLabel(selectedAudioSegment.source)} #${selectedAudioSegment.segmentIndex}`}
+    tabindex="-1"
+    bind:this={audioDrawerEl}
+    onkeydown={onAudioDrawerKeydown}
+  >
+    <div class="audio-drawer__handle" aria-hidden="true"></div>
+    <div class="audio-drawer__meta">
+      <span
+        class="audio-drawer__source audio-drawer__source--{selectedAudioSegment.source}"
+        aria-label={`Source: ${audioSourceLabel(selectedAudioSegment.source)}`}
+      >
+        <span class="audio-drawer__swatch" aria-hidden="true"></span>
+        {audioSourceLabel(selectedAudioSegment.source)}
+      </span>
+      <span class="audio-drawer__index" aria-label="Segment index">
+        #{selectedAudioSegment.segmentIndex}
+      </span>
+      <span
+        class="audio-drawer__time"
+        title={`${formatUnixMs(selectedAudioSegment.startUnixMs)} – ${formatUnixMs(selectedAudioSegment.endUnixMs)}`}
+      >
+        {formatTimeOfDay(selectedAudioSegment.startUnixMs)}
+        <span class="audio-drawer__time-sep" aria-hidden="true">→</span>
+        {formatTimeOfDay(selectedAudioSegment.endUnixMs)}
+        <span class="audio-drawer__duration"
+          >· {formatDurationSeconds(selectedAudioSegment.durationSeconds)}</span
+        >
+      </span>
+      <span class="audio-drawer__file" title={selectedAudioSegment.filePath}
+        >{selectedAudioSegment.fileName}</span
+      >
+      <button
+        type="button"
+        class="audio-drawer__close"
+        onclick={closeAudioDrawer}
+        bind:this={audioDrawerCloseEl}
+        aria-label="Close audio player"
+      >×</button>
+    </div>
+    {#if selectedAudioMediaLoading}
+      <div class="audio-drawer__status">
+        <span class="audio-drawer__status-glyph" aria-hidden="true">…</span>
+        <span>loading audio segment…</span>
+      </div>
+    {:else if selectedAudioMediaError}
+      <div class="audio-drawer__error" role="alert">
+        <span class="audio-drawer__error-label">playback unavailable</span>
+        <span class="audio-drawer__error-msg">{selectedAudioMediaError}</span>
+      </div>
+    {:else if selectedAudioSrc}
+      <!-- `src` is reactive: switching segments swaps the audio element's
+           source via Svelte's binding. Using a keyed block forces a fresh
+           <audio> element per segment so the browser doesn't keep playing
+           the previous file while the new metadata loads. The native
+           `<audio>` element below stays hidden — it owns decoding/playback
+           — and the visible UI is a bespoke transport (play/pause, scrub,
+           current/duration) so the player matches the surrounding deck. -->
+      {#key selectedAudioSegment.id}
+        <audio
+          class="audio-drawer__audio-native"
+          preload="metadata"
+          src={selectedAudioSrc}
+          bind:this={audioEl}
+          onerror={onSelectedAudioError}
+          ontimeupdate={onAudioTimeUpdate}
+          onloadedmetadata={onAudioLoadedMetadata}
+          ondurationchange={onAudioLoadedMetadata}
+          onplay={onAudioPlay}
+          onpause={onAudioPause}
+          onended={onAudioEnded}
+          aria-hidden="true"
+        ></audio>
+      {/key}
+      <div class="audio-drawer__player" role="group" aria-label="Audio playback controls">
+        <button
+          type="button"
+          class="audio-drawer__play"
+          onclick={togglePlayPause}
+          aria-label={audioIsPlaying ? "Pause" : "Play"}
+          aria-pressed={audioIsPlaying}
+        >
+          {#if audioIsPlaying}
+            <svg
+              viewBox="0 0 16 16"
+              width="14"
+              height="14"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <rect x="3.5" y="2.5" width="3" height="11" rx="0.5" fill="currentColor" />
+              <rect x="9.5" y="2.5" width="3" height="11" rx="0.5" fill="currentColor" />
+            </svg>
+          {:else}
+            <svg
+              viewBox="0 0 16 16"
+              width="14"
+              height="14"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="M4.5 2.5 L13 8 L4.5 13.5 Z" fill="currentColor" />
+            </svg>
+          {/if}
+        </button>
+        <span class="audio-drawer__time-readout audio-drawer__time-readout--current"
+          >{formatPlayerTime(audioCurrentTime)}</span
+        >
+        <input
+          type="range"
+          class="audio-drawer__scrub"
+          min="0"
+          max={audioDuration > 0 ? audioDuration : 0}
+          step="0.05"
+          value={audioCurrentTime}
+          disabled={!(audioDuration > 0)}
+          oninput={onScrubInput}
+          onchange={onScrubChange}
+          aria-label="Seek"
+          aria-valuemin={0}
+          aria-valuemax={audioDuration > 0 ? audioDuration : 0}
+          aria-valuenow={audioCurrentTime}
+          aria-valuetext={`${formatPlayerTime(audioCurrentTime)} of ${formatPlayerTime(audioDuration)}`}
+          style:--audio-progress={audioDuration > 0
+            ? `${Math.min(100, (audioCurrentTime / audioDuration) * 100)}%`
+            : "0%"}
+        />
+        <span class="audio-drawer__time-readout audio-drawer__time-readout--duration"
+          >{formatPlayerTime(audioDuration)}</span
+        >
+      </div>
+    {/if}
+    {#if selectedAudioLoadError}
+      <div class="audio-drawer__error" role="alert">
+        <span class="audio-drawer__error-label">playback error</span>
+        <span class="audio-drawer__error-msg">{selectedAudioLoadError}</span>
+      </div>
+    {/if}
+  </div>
+{/if}
+
 <style>
   /* ── Page layout ──────────────────────────────────────────── */
   .timeline {
-    /* Fill the viewport below the 44px sticky nav. */
-    height: calc(100vh - 44px);
+    /* Fill the route shell instead of guessing with a viewport subtraction.
+       This keeps the rail flush to the bottom even when the app shell height
+       differs slightly from the old hard-coded 44px assumption. */
+    flex: 1 1 auto;
+    width: 100%;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -2728,29 +3132,31 @@
   .timeline__bar,
   .timeline__audio,
   .timeline__error,
-  .timeline__player,
   .timeline__rail-wrap {
     flex: 0 0 auto;
   }
 
+  /* Header bar: two clearly-separated control groups (recording + jump on
+     the left, frame actions + menu on the right) that wrap onto a second
+     row on narrow viewports instead of cramming together. */
   .timeline__bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    flex-wrap: wrap;
+    gap: 10px 16px;
   }
 
-  .timeline__bar-left {
+  .timeline__bar-group {
     display: flex;
-    align-items: baseline;
-    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
     min-width: 0;
   }
 
-  .timeline__bar-right {
-    display: flex;
-    align-items: center;
-    gap: 12px;
+  .timeline__bar-group--secondary {
+    margin-left: auto;
   }
 
   /* ── Recording control cluster ─────────────────────────────── */
@@ -2866,43 +3272,6 @@
     height: 7px;
   }
 
-  .timeline__title {
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: #f0f0f5;
-  }
-
-  .timeline__hint {
-    font-size: 9px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #44445a;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .timeline__counter {
-    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-  }
-
-  .timeline__counter-strong {
-    color: #f0f0f5;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .timeline__counter-dim {
-    color: #44445a;
-    font-variant-numeric: tabular-nums;
-    margin-left: 4px;
-  }
-
   .timeline__audio {
     display: flex;
     align-items: center;
@@ -2973,24 +3342,69 @@
     color: #a06068;
   }
 
-  /* ── Audio segment player deck ─────────────────────────────────
-     Compact panel that pairs with the rail: source pill, segment index,
-     time range, file name, and a native <audio controls> element. The
-     industrial vibe matches the rail (matte black surface, hairline
-     border, red accent on the live segment). The empty state nudges the
-     user toward the rail when audio segments exist but none is selected. */
-  .timeline__player {
+  /* ── Audio segment player drawer ──────────────────────────────
+     Bottom-anchored sheet that slides in only when an audio segment is
+     selected. Non-modal: timeline rail and audio lane bars stay
+     interactive so users can swap segments without dismissing. The
+     drawer's industrial vibe matches the rail (matte black surface,
+     hairline border, red accent on the active segment) and lifts off
+     the page with a soft shadow + blurred top edge so it's clearly
+     a transient overlay rather than part of the timeline column. */
+  .audio-drawer {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    z-index: 30;
     display: flex;
     flex-direction: column;
     gap: 6px;
-    padding: 8px 10px;
-    background: linear-gradient(180deg, #111118 0%, #0c0c12 100%);
-    border: 1px solid #1f1f30;
-    border-radius: 5px;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+    padding: 8px 12px 10px;
+    background: linear-gradient(180deg, #14141d 0%, #0c0c12 100%);
+    border: 1px solid #25253a;
+    border-radius: 8px;
+    box-shadow:
+      0 18px 40px rgba(0, 0, 0, 0.55),
+      0 2px 0 rgba(255, 255, 255, 0.02) inset;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    /* Slide-in motion: the drawer transforms from below and fades in.
+       Keeps the entrance grounded to the bottom edge so it reads as a
+       rising sheet rather than a pop-up. */
+    animation: audio-drawer-rise 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    outline: none;
   }
 
-  .timeline__player-meta {
+  .audio-drawer:focus-visible {
+    border-color: rgba(255, 68, 85, 0.5);
+    box-shadow:
+      0 18px 40px rgba(0, 0, 0, 0.55),
+      0 0 0 2px rgba(255, 68, 85, 0.35);
+  }
+
+  @keyframes audio-drawer-rise {
+    from {
+      transform: translateY(12px);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  /* Centered grab-handle pill. Purely decorative — signals the drawer
+     nature of the surface without claiming it's draggable. */
+  .audio-drawer__handle {
+    align-self: center;
+    width: 36px;
+    height: 3px;
+    border-radius: 2px;
+    background: #2a2a3a;
+    margin-bottom: 2px;
+  }
+
+  .audio-drawer__meta {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -3002,7 +3416,7 @@
     min-width: 0;
   }
 
-  .timeline__player-source {
+  .audio-drawer__source {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -3013,13 +3427,13 @@
     font-weight: 700;
   }
 
-  .timeline__player-swatch {
+  .audio-drawer__swatch {
     width: 10px;
     height: 3px;
     border-radius: 1.5px;
   }
 
-  .timeline__player-source--microphone .timeline__player-swatch {
+  .audio-drawer__source--microphone .audio-drawer__swatch {
     background: linear-gradient(
       90deg,
       rgba(120, 200, 255, 0.95),
@@ -3027,7 +3441,7 @@
     );
   }
 
-  .timeline__player-source--systemAudio .timeline__player-swatch {
+  .audio-drawer__source--systemAudio .audio-drawer__swatch {
     background: linear-gradient(
       90deg,
       rgba(255, 180, 100, 0.95),
@@ -3035,27 +3449,27 @@
     );
   }
 
-  .timeline__player-index {
+  .audio-drawer__index {
     color: #ff5566;
     font-weight: 700;
   }
 
-  .timeline__player-time {
+  .audio-drawer__time {
     color: #8e8eb0;
     display: inline-flex;
     align-items: center;
     gap: 6px;
   }
 
-  .timeline__player-time-sep {
+  .audio-drawer__time-sep {
     color: #444462;
   }
 
-  .timeline__player-duration {
+  .audio-drawer__duration {
     color: #5e5e80;
   }
 
-  .timeline__player-file {
+  .audio-drawer__file {
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -3073,48 +3487,194 @@
     text-align: right;
   }
 
-  .timeline__player-close {
+  .audio-drawer__close {
     appearance: none;
     background: transparent;
     border: 1px solid #242438;
     border-radius: 4px;
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
     color: #8a8aae;
-    font-size: 14px;
+    font-size: 16px;
     line-height: 1;
     cursor: pointer;
-    transition: color 0.12s, border-color 0.12s, background 0.12s;
+    transition:
+      color 0.12s,
+      border-color 0.12s,
+      background 0.12s;
   }
 
-  .timeline__player-close:hover,
-  .timeline__player-close:focus-visible {
+  .audio-drawer__close:hover,
+  .audio-drawer__close:focus-visible {
     color: #ff5566;
     border-color: #ff4455;
     background: rgba(255, 68, 85, 0.08);
     outline: none;
   }
 
-  .timeline__player-audio {
-    width: 100%;
-    height: 32px;
-    /* Tone the native player down so it reads as part of the deck. */
-    filter: invert(0.88) hue-rotate(180deg) saturate(0.85);
-    border-radius: 4px;
+  .audio-drawer__audio-native {
+    display: none;
   }
 
-  .timeline__player-empty {
+  /* Custom transport: a play/pause button, a thin scrub bar that fills
+     to a brand-red as it advances, and tabular-numeric time readouts on
+     either side. Built to read as part of the deck — no native chrome. */
+  .audio-drawer__player {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 6px 4px;
+    padding: 4px 2px 2px;
+  }
+
+  .audio-drawer__play {
+    appearance: none;
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 68, 85, 0.1);
+    border: 1px solid #3a1a26;
+    border-radius: 50%;
+    color: #ff5566;
+    cursor: pointer;
+    transition:
+      background 0.12s,
+      border-color 0.12s,
+      color 0.12s,
+      transform 0.08s;
+  }
+
+  .audio-drawer__play:hover {
+    background: rgba(255, 68, 85, 0.18);
+    border-color: #ff4455;
+  }
+
+  .audio-drawer__play:focus-visible {
+    outline: none;
+    border-color: #ff4455;
+    box-shadow: 0 0 0 2px rgba(255, 68, 85, 0.35);
+  }
+
+  .audio-drawer__play:active {
+    transform: scale(0.96);
+  }
+
+  .audio-drawer__time-readout {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-variant-numeric: tabular-nums;
+    color: #8a8aae;
+    min-width: 36px;
+  }
+
+  .audio-drawer__time-readout--current {
+    color: #d6d6ea;
+    text-align: right;
+  }
+
+  /* Scrub: a thin track that fills to brand-red up to the current time,
+     with a small thumb that grows on hover/focus. Track and thumb are
+     restyled across WebKit/Firefox so the bar reads identically with no
+     native chrome. The fill ratio comes from `--audio-progress` set
+     inline so the change is purely declarative. */
+  .audio-drawer__scrub {
+    flex: 1 1 auto;
+    appearance: none;
+    -webkit-appearance: none;
+    height: 18px;
+    margin: 0;
+    background: transparent;
+    cursor: pointer;
+    color: #ff5566;
+  }
+
+  .audio-drawer__scrub:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .audio-drawer__scrub::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(
+      to right,
+      #ff4455 0%,
+      #ff4455 var(--audio-progress, 0%),
+      #1f1f2e var(--audio-progress, 0%),
+      #1f1f2e 100%
+    );
+  }
+
+  .audio-drawer__scrub::-moz-range-track {
+    height: 4px;
+    border-radius: 2px;
+    background: #1f1f2e;
+  }
+
+  .audio-drawer__scrub::-moz-range-progress {
+    height: 4px;
+    border-radius: 2px;
+    background: #ff4455;
+  }
+
+  .audio-drawer__scrub::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ff5566;
+    border: 2px solid #14141d;
+    margin-top: -3px;
+    box-shadow: 0 0 0 0 rgba(255, 68, 85, 0);
+    transition:
+      transform 0.12s,
+      box-shadow 0.12s;
+  }
+
+  .audio-drawer__scrub::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ff5566;
+    border: 2px solid #14141d;
+    box-shadow: 0 0 0 0 rgba(255, 68, 85, 0);
+    transition:
+      transform 0.12s,
+      box-shadow 0.12s;
+  }
+
+  .audio-drawer__scrub:hover::-webkit-slider-thumb,
+  .audio-drawer__scrub:focus-visible::-webkit-slider-thumb {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 4px rgba(255, 68, 85, 0.18);
+  }
+
+  .audio-drawer__scrub:hover::-moz-range-thumb,
+  .audio-drawer__scrub:focus-visible::-moz-range-thumb {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 4px rgba(255, 68, 85, 0.18);
+  }
+
+  .audio-drawer__scrub:focus-visible {
+    outline: none;
+  }
+
+  .audio-drawer__status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 2px;
     font-size: 11px;
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: #6a6a88;
   }
 
-  .timeline__player-empty-glyph {
+  .audio-drawer__status-glyph {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -3124,22 +3684,13 @@
     border-radius: 50%;
     color: #ff5566;
     font-size: 9px;
-    padding-left: 1px;
   }
 
-  .timeline__player-empty-hint {
-    color: #3e3e58;
-    text-transform: none;
-    letter-spacing: 0;
-    font-size: 11px;
-  }
-
-  .timeline__player-error {
+  .audio-drawer__error {
     display: flex;
     align-items: flex-start;
     gap: 10px;
     padding: 8px 10px;
-    margin-top: 6px;
     background: #1a0e10;
     border: 1px solid #3a1a20;
     border-radius: 4px;
@@ -3147,7 +3698,7 @@
     color: #c08080;
   }
 
-  .timeline__player-error-label {
+  .audio-drawer__error-label {
     flex: 0 0 auto;
     font-size: 9px;
     font-weight: 700;
@@ -3157,7 +3708,7 @@
     padding-top: 1px;
   }
 
-  .timeline__player-error-msg {
+  .audio-drawer__error-msg {
     flex: 1 1 auto;
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     word-break: break-word;
@@ -3253,14 +3804,15 @@
   }
 
   .timeline__picker {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
+    position: fixed;
     z-index: 20;
     display: grid;
     grid-template-columns: auto 200px;
+    width: min(520px, calc(100vw - 24px));
     gap: 12px;
     padding: 12px;
+    box-sizing: border-box;
+    overflow: auto;
     background: #0e0e16;
     border: 1px solid #1e1e2e;
     border-radius: 6px;
@@ -3345,6 +3897,13 @@
     color: #ff4455;
     border-color: rgba(255, 68, 85, 0.4);
     background: rgba(255, 68, 85, 0.08);
+  }
+
+  @media (max-width: 640px) {
+    .timeline__picker {
+      grid-template-columns: minmax(0, 1fr);
+      width: min(320px, calc(100vw - 24px));
+    }
   }
 
   /* Bits UI calendar — narrow themed shell. */
@@ -4130,14 +4689,6 @@
        frames have loaded, so the stage's flex height is the same in the
        empty and populated states. */
     cursor: default;
-    pointer-events: none;
-  }
-
-  .timeline-rail__audio-lane-wrap--placeholder {
-    /* Reserve the same vertical footprint as the populated lane so the
-       stage doesn't reflow when the first frames + segments arrive. */
-    height: 34px;
-    background: none;
     pointer-events: none;
   }
 
