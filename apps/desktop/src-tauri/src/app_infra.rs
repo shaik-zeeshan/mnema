@@ -677,12 +677,25 @@ fn fingerprint_string(content_fingerprint: Option<u64>) -> Option<String> {
 
 fn frame_preview_payload(
     bytes: Vec<u8>,
+    mime_type: &str,
     source_kind: FramePreviewSourceKindDto,
 ) -> FramePreviewDto {
     FramePreviewDto {
-        mime_type: "image/png".to_string(),
+        mime_type: mime_type.to_string(),
         data_base64: BASE64_STANDARD.encode(bytes),
         source_kind,
+    }
+}
+
+fn frame_image_mime_type(file_path: &Path) -> &'static str {
+    match file_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        _ => "image/png",
     }
 }
 
@@ -933,6 +946,7 @@ async fn get_frame_preview_inner(
         let bytes = fs::read(&frame_file_path)?;
         return Ok(Some(frame_preview_payload(
             bytes,
+            frame_image_mime_type(&frame_file_path),
             FramePreviewSourceKindDto::OriginalFrame,
         )));
     }
@@ -956,6 +970,7 @@ async fn get_frame_preview_inner(
         if let Some(bytes) = read_nearest_segment_frame_preview(&frame, &related_frames)? {
             return Ok(Some(frame_preview_payload(
                 bytes,
+                frame_image_mime_type(Path::new(&frame.file_path)),
                 FramePreviewSourceKindDto::SegmentFrameFallback,
             )));
         }
@@ -977,6 +992,7 @@ async fn get_frame_preview_inner(
 
     Ok(Some(frame_preview_payload(
         bytes,
+        "image/png",
         FramePreviewSourceKindDto::VideoFallback,
     )))
 }

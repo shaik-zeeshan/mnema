@@ -1833,7 +1833,7 @@ mod tests {
     }
 
     #[test]
-    fn same_fingerprint_but_different_frame_bytes_still_enqueue_ocr() {
+    fn same_fingerprint_but_different_frame_bytes_skip_ocr() {
         run_async_test(async {
             let dir = TestDir::new("processing-ocr-dedupe-byte-confirmation");
             let infra = AppInfra::initialize(dir.path())
@@ -1874,8 +1874,56 @@ mod tests {
 
             assert!(first.job.is_some());
             assert!(
-                second.job.is_some(),
-                "different file bytes should not be treated as duplicate solely by fingerprint"
+                second.job.is_none(),
+                "same-fingerprint frames should skip OCR even when bytes differ"
+            );
+        });
+    }
+
+    #[test]
+    fn same_fingerprint_but_different_frame_bytes_stay_skipped_after_time_passes() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-ocr-dedupe-same-fingerprint-late");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let first_path = dir.path().join("frame-1.jpg");
+            let second_path = dir.path().join("frame-2.jpg");
+            fs::write(&first_path, b"frame-a").expect("first frame should be written");
+            fs::write(&second_path, b"frame-b").expect("second frame should be written");
+
+            let first = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "session-dedupe-same-fingerprint-late",
+                        first_path.to_string_lossy().as_ref(),
+                        "2026-04-12T10:00:00Z",
+                    )
+                    .with_dimensions(1920, 1080)
+                    .with_content_fingerprint("abc123"),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "session-dedupe-same-fingerprint-late",
+                        second_path.to_string_lossy().as_ref(),
+                        "2026-04-12T10:00:06Z",
+                    )
+                    .with_dimensions(1920, 1080)
+                    .with_content_fingerprint("abc123"),
+                    None,
+                )
+                .await
+                .expect("second frame should persist");
+
+            assert!(first.job.is_some());
+            assert!(
+                second.job.is_none(),
+                "same-fingerprint frames should stay skipped until the fingerprint changes"
             );
         });
     }

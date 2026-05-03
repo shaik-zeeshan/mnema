@@ -205,7 +205,7 @@ impl CapturedFramePipeline {
             return Ok(true);
         };
 
-        let Some(previous_frame) = self
+        let Some(_previous_frame) = self
             .processing
             .get_first_matching_earlier_frame_by_fingerprint_in_transaction(
                 transaction,
@@ -218,7 +218,7 @@ impl CapturedFramePipeline {
             return Ok(true);
         };
 
-        Ok(!frames_match_by_file_bytes(&previous_frame, frame))
+        Ok(false)
     }
 }
 
