@@ -465,6 +465,13 @@ export interface GetTimelineWindowAroundFrameRequest {
 	olderLimit: number;
 }
 
+/** Request body for `invoke('get_first_matching_earlier_frame_by_fingerprint', { request })`. */
+export interface GetFirstMatchingEarlierFrameByFingerprintRequest {
+	sessionId: string;
+	beforeFrameId: number;
+	contentFingerprint: string;
+}
+
 /** Focused newest-first window centered around a target frame. */
 export interface FocusedFrameWindowDto {
 	frames: FrameDto[];
@@ -611,6 +618,98 @@ export interface SegmentWorkspaceCleanupDebugInfoDto {
 	frameCount: number;
 	batchReferences: SegmentWorkspaceBatchReferenceDto[];
 	nonterminalOcrReferences: SegmentWorkspaceOcrReferenceDto[];
+}
+
+// ─── Processing jobs / results (OCR) ───────────────────────────────────────
+
+/**
+ * Mirrors the Rust `ProcessingJobDto` returned by `get_processing_job` and
+ * `list_processing_jobs`. A job represents a single processor invocation
+ * (e.g. OCR) for a particular subject (e.g. a captured frame).
+ */
+export interface ProcessingJobDto {
+	id: number;
+	subjectType: string;
+	subjectId: number;
+	processor: string;
+	status: ProcessingJobStatus;
+	attemptCount: number;
+	payloadJson: string | null;
+	lastError: string | null;
+	createdAt: string;
+	updatedAt: string;
+	startedAt: string | null;
+	finishedAt: string | null;
+}
+
+/**
+ * Mirrors the Rust `ProcessingResultDto`. `structuredPayloadJson` carries the
+ * processor's structured output as a JSON string; for OCR it deserialises to
+ * `OcrStructuredPayload` below.
+ */
+export interface ProcessingResultDto {
+	id: number;
+	jobId: number;
+	subjectType: string;
+	subjectId: number;
+	processor: string;
+	resultText: string | null;
+	structuredPayloadJson: string | null;
+	processorVersion: string | null;
+	createdAt: string;
+}
+
+/** Mirrors the Rust `CapturedFrameReprocessingOutcome` enum (snake_case). */
+export type CapturedFrameReprocessingOutcome = "created" | "ignored" | "requeued";
+
+/** Mirrors the Rust `CapturedFrameReprocessingResultDto`. */
+export interface CapturedFrameReprocessingResultDto {
+	outcome: CapturedFrameReprocessingOutcome;
+	job: ProcessingJobDto;
+}
+
+/** Request body for `invoke('reprocess_captured_frame_ocr', { request })`. */
+export interface ReprocessCapturedFrameOcrRequest {
+	frameId: number;
+	payloadJson?: string | null;
+}
+
+/** Request body for `invoke('get_processing_job', { request })`. */
+export interface GetProcessingJobRequest {
+	jobId: number;
+}
+
+/** Request body for `invoke('get_processing_result', { request })`. */
+export interface GetProcessingResultRequest {
+	jobId: number;
+}
+
+/**
+ * Apple Vision OCR structured payload, parsed from
+ * `ProcessingResultDto.structuredPayloadJson`. See
+ * `crates/app-infra/src/processing/apple_vision.rs`.
+ *
+ * Coordinates are normalised to the source image with origin at the
+ * lower-left corner — flip Y when mapping to CSS top-left percentages.
+ */
+export interface OcrBoundingBox {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+export interface OcrObservation {
+	text: string;
+	confidence: number;
+	boundingBox: OcrBoundingBox;
+}
+
+export interface OcrStructuredPayload {
+	schemaVersion: number;
+	coordinateSpace: "normalized" | string;
+	coordinateOrigin: "lower_left" | string;
+	observations: OcrObservation[];
 }
 
 /** Mirrors the Rust `AppJobDto` struct returned by job-related commands. */

@@ -152,6 +152,14 @@ pub struct GetFrameRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetFirstMatchingEarlierFrameByFingerprintRequest {
+    pub session_id: String,
+    pub before_frame_id: i64,
+    pub content_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetTimelineWindowAroundFrameRequest {
     pub frame_id: i64,
     pub newer_limit: u32,
@@ -1393,6 +1401,28 @@ pub async fn get_frame(
         .await
         .map(|frame| frame.map(FrameDto::from))
         .map_err(|error| format!("failed to get frame {}: {error}", request.frame_id))
+}
+
+#[tauri::command]
+pub async fn get_first_matching_earlier_frame_by_fingerprint(
+    request: GetFirstMatchingEarlierFrameByFingerprintRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Option<FrameDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .get_first_matching_earlier_frame_by_fingerprint(
+            &request.session_id,
+            request.before_frame_id,
+            &request.content_fingerprint,
+        )
+        .await
+        .map(|frame| frame.map(FrameDto::from))
+        .map_err(|error| {
+            format!(
+                "failed to resolve first matching earlier frame for session {} before {}: {error}",
+                request.session_id, request.before_frame_id
+            )
+        })
 }
 
 #[tauri::command]

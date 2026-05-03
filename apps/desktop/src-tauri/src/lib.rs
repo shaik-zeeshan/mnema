@@ -48,6 +48,7 @@ pub fn run() {
             app_infra::list_audio_segments,
             app_infra::get_audio_segment_media,
             app_infra::get_frame,
+            app_infra::get_first_matching_earlier_frame_by_fingerprint,
             app_infra::get_timeline_window_around_frame,
             app_infra::get_frame_preview,
             app_infra::list_processing_jobs,
