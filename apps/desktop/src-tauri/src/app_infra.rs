@@ -121,7 +121,6 @@ pub struct DebugInsertFrameAndEnqueueProcessingJobRequest {
     pub captured_at: String,
     pub width: Option<i64>,
     pub height: Option<i64>,
-    pub content_fingerprint: Option<String>,
     pub processor: String,
     pub payload_json: Option<String>,
 }
@@ -134,7 +133,6 @@ pub struct DebugInsertFrameAndEnqueueOcrRequest {
     pub captured_at: String,
     pub width: Option<i64>,
     pub height: Option<i64>,
-    pub content_fingerprint: Option<String>,
     pub payload_json: Option<String>,
 }
 
@@ -153,10 +151,10 @@ pub struct GetFrameRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetFirstMatchingEarlierFrameByFingerprintRequest {
+pub struct GetFirstMatchingEarlierEquivalentFrameRequest {
     pub session_id: String,
     pub before_frame_id: i64,
-    pub content_fingerprint: String,
+    pub frame_id: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -253,7 +251,7 @@ pub struct FrameDto {
     pub captured_at: String,
     pub width: Option<i64>,
     pub height: Option<i64>,
-    pub content_fingerprint: Option<String>,
+    pub equivalence_hint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -430,7 +428,7 @@ impl From<::app_infra::Frame> for FrameDto {
             captured_at: frame.captured_at,
             width: frame.width,
             height: frame.height,
-            content_fingerprint: frame.content_fingerprint,
+            equivalence_hint: frame.equivalence.hint,
             created_at: frame.created_at,
             updated_at: frame.updated_at,
         }
@@ -631,7 +629,6 @@ impl DebugInsertFrameAndEnqueueProcessingJobRequest {
             captured_at,
             width,
             height,
-            content_fingerprint,
             processor,
             payload_json,
         } = self;
@@ -640,10 +637,6 @@ impl DebugInsertFrameAndEnqueueProcessingJobRequest {
 
         if let (Some(width), Some(height)) = (width, height) {
             frame = frame.with_dimensions(width, height);
-        }
-
-        if let Some(content_fingerprint) = content_fingerprint {
-            frame = frame.with_content_fingerprint(content_fingerprint);
         }
 
         (frame, processor, payload_json)
@@ -658,7 +651,6 @@ impl From<DebugInsertFrameAndEnqueueOcrRequest> for DebugInsertFrameAndEnqueuePr
             captured_at: request.captured_at,
             width: request.width,
             height: request.height,
-            content_fingerprint: request.content_fingerprint,
             processor: ::app_infra::OCR_PROCESSOR.to_string(),
             payload_json: request.payload_json,
         }
@@ -670,10 +662,6 @@ fn captured_at_from_unix_ms(unix_ms: u64) -> String {
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-}
-
-fn fingerprint_string(content_fingerprint: Option<u64>) -> Option<String> {
-    content_fingerprint.map(|value| format!("{value:016x}"))
 }
 
 fn frame_preview_payload(
@@ -1013,19 +1001,38 @@ pub async fn persist_screen_frame_artifact(
     session_id: &str,
     artifact: ScreenFrameArtifact,
 ) -> ::app_infra::Result<::app_infra::CapturedFramePipelineResult> {
+    let ScreenFrameArtifact {
+        file_path,
+        captured_at_unix_ms,
+        width,
+        height,
+        captured_frame_equivalence,
+    } = artifact;
     let mut frame = ::app_infra::NewFrame::new(
         session_id,
-        artifact.file_path,
-        captured_at_from_unix_ms(artifact.captured_at_unix_ms),
+        file_path.clone(),
+        captured_at_from_unix_ms(captured_at_unix_ms),
     );
 
-    if let (Some(width), Some(height)) = (artifact.width, artifact.height) {
+    if let (Some(width), Some(height)) = (width, height) {
         frame = frame.with_dimensions(i64::from(width), i64::from(height));
     }
 
-    if let Some(content_fingerprint) = fingerprint_string(artifact.content_fingerprint) {
-        frame = frame.with_content_fingerprint(content_fingerprint);
-    }
+    frame = match captured_frame_equivalence {
+        capture_screen::CapturedFrameEquivalenceOutcome::Ready(equivalence) => frame
+            .with_equivalence(::app_infra::FrameEquivalence::ready(
+                equivalence.hint,
+                equivalence.proof,
+                equivalence.version,
+            )),
+        capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
+            crate::native_capture_debug_log::log_error(format!(
+                "quarantined captured frame equivalence for session {} artifact {}: {}",
+                session_id, file_path, error
+            ));
+            frame.with_equivalence(::app_infra::FrameEquivalence::quarantined(error))
+        }
+    };
 
     infra.capture_frame(&frame, None).await
 }
@@ -1615,22 +1622,22 @@ pub async fn get_frame(
 }
 
 #[tauri::command]
-pub async fn get_first_matching_earlier_frame_by_fingerprint(
-    request: GetFirstMatchingEarlierFrameByFingerprintRequest,
+pub async fn get_first_matching_earlier_equivalent_frame(
+    request: GetFirstMatchingEarlierEquivalentFrameRequest,
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Option<FrameDto>, String> {
     let infra = Arc::clone(&*state);
     infra
-        .get_first_matching_earlier_frame_by_fingerprint(
+        .get_first_matching_earlier_equivalent_frame(
             &request.session_id,
             request.before_frame_id,
-            &request.content_fingerprint,
+            request.frame_id,
         )
         .await
         .map(|frame| frame.map(FrameDto::from))
         .map_err(|error| {
             format!(
-                "failed to resolve first matching earlier frame for session {} before {}: {error}",
+                "failed to resolve first matching earlier equivalent frame for session {} before {}: {error}",
                 request.session_id, request.before_frame_id
             )
         })
@@ -1816,7 +1823,6 @@ mod tests {
             captured_at: "2026-04-12T10:00:00Z".to_string(),
             width: Some(1280),
             height: Some(720),
-            content_fingerprint: Some("abcd".to_string()),
             processor: "custom-processor".to_string(),
             payload_json: Some("{\"language\":\"eng\"}".to_string()),
         }
@@ -1826,7 +1832,6 @@ mod tests {
         assert_eq!(request.0.file_path, "/tmp/frame.png");
         assert_eq!(request.0.width, Some(1280));
         assert_eq!(request.0.height, Some(720));
-        assert_eq!(request.0.content_fingerprint.as_deref(), Some("abcd"));
         assert_eq!(request.1, "custom-processor");
         assert_eq!(request.2.as_deref(), Some("{\"language\":\"eng\"}"));
     }
@@ -1839,7 +1844,6 @@ mod tests {
             captured_at: "2026-04-12T10:00:00Z".to_string(),
             width: Some(1280),
             height: None,
-            content_fingerprint: None,
             processor: "custom-processor".to_string(),
             payload_json: None,
         }
@@ -1860,7 +1864,6 @@ mod tests {
                 captured_at: "2026-04-12T10:00:00Z".to_string(),
                 width: Some(1920),
                 height: Some(1080),
-                content_fingerprint: Some("ef01".to_string()),
                 payload_json: Some("{\"language\":\"eng\"}".to_string()),
             },
         )
@@ -1870,7 +1873,6 @@ mod tests {
         assert_eq!(request.0.file_path, "/tmp/frame-ocr.png");
         assert_eq!(request.0.width, Some(1920));
         assert_eq!(request.0.height, Some(1080));
-        assert_eq!(request.0.content_fingerprint.as_deref(), Some("ef01"));
         assert_eq!(request.1, ::app_infra::OCR_PROCESSOR);
         assert_eq!(request.2.as_deref(), Some("{\"language\":\"eng\"}"));
     }
@@ -1988,7 +1990,13 @@ mod tests {
             captured_at: "2025-04-12T10:00:01.500Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: ::app_infra::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         };
@@ -2000,7 +2008,13 @@ mod tests {
             captured_at: "2025-04-12T10:00:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: ::app_infra::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];
@@ -2251,7 +2265,13 @@ mod tests {
                     captured_at_unix_ms: 1_744_539_600_123,
                     width: Some(1440),
                     height: Some(900),
-                    content_fingerprint: Some(0xfeed_beef),
+                    captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::Ready(
+                        capture_screen::CapturedFrameEquivalence {
+                            hint: "feedbeefhint0001".to_string(),
+                            proof: b"feedbeef-proof".to_vec(),
+                            version: capture_screen::CAPTURED_FRAME_EQUIVALENCE_VERSION,
+                        },
+                    ),
                 },
             )
             .await
@@ -2262,8 +2282,8 @@ mod tests {
             assert_eq!(persisted.frame.width, Some(1440));
             assert_eq!(persisted.frame.height, Some(900));
             assert_eq!(
-                persisted.frame.content_fingerprint.as_deref(),
-                Some("00000000feedbeef")
+                persisted.frame.equivalence.hint.as_deref(),
+                Some("feedbeefhint0001")
             );
             assert_eq!(
                 persisted.job.as_ref().map(|job| job.processor.as_str()),
@@ -2277,6 +2297,43 @@ mod tests {
             assert_eq!(batches.len(), 1);
             assert_eq!(batches[0].status, ::app_infra::FrameBatchStatus::Open);
             assert_eq!(batches[0].frame_count, 1);
+        });
+    }
+
+    #[test]
+    fn persist_screen_frame_artifact_preserves_quarantined_equivalence() {
+        run_async_test(async {
+            let dir = TestDir::new("screen-frame-artifact-quarantined");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let persisted = persist_screen_frame_artifact(
+                &infra,
+                "session-artifact-quarantined",
+                ScreenFrameArtifact {
+                    file_path: "/tmp/frame-artifact-quarantined.png".to_string(),
+                    captured_at_unix_ms: 1_744_539_600_123,
+                    width: Some(1440),
+                    height: Some(900),
+                    captured_frame_equivalence:
+                        capture_screen::CapturedFrameEquivalenceOutcome::quarantined(
+                            "failed to derive captured frame equivalence from screen sample",
+                        ),
+                },
+            )
+            .await
+            .expect("artifact should persist even when equivalence is quarantined");
+
+            assert_eq!(
+                persisted.frame.equivalence.status,
+                Some(::app_infra::FrameEquivalenceStatus::Quarantined)
+            );
+            assert_eq!(
+                persisted.frame.equivalence.error.as_deref(),
+                Some("failed to derive captured frame equivalence from screen sample")
+            );
+            assert!(persisted.job.is_some(), "quarantined frames must still enqueue OCR");
         });
     }
 

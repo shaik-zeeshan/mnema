@@ -29,12 +29,17 @@ _Avoid_: processor task, recognition work item
 A request to re-run OCR for an existing **Captured Frame** that is already persisted.
 _Avoid_: force processing, rerun pipeline, requeue screenshot
 
+**Captured Frame Equivalence**:
+The rule for when two **Captured Frame** values should be treated as the same OCR-relevant visual content for downstream decisions such as **OCR Job** admission. **Captured Frame Equivalence** is defined over normalized visual content rather than persisted artifact bytes, and intentionally ignores cursor-sized changes plus limited localized visual noise that does not materially change OCR-relevant content.
+_Avoid_: dedupe hash, screenshot sameness, OCR skip heuristic
+
 ## Relationships
 
 - A **Screen Frame Artifact** becomes a **Captured Frame** only after app-infra persists it.
 - A **Captured Frame Pipeline** persists one **Captured Frame**.
 - A **Captured Frame Pipeline** attaches each **Captured Frame** to exactly one **Frame Batch**.
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
+- **Captured Frame Equivalence** determines whether a new **Captured Frame** needs a new **OCR Job**.
 - A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier **Captured Frame** in the same session already has the same content fingerprint.
 - A **Frame Batch** can be finalized only after its **OCR Job** entries are terminal.
 - **Captured Frame Reprocessing** operates on an existing **Captured Frame**, not on a new **Screen Frame Artifact**.

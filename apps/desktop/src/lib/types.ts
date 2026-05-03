@@ -419,7 +419,7 @@ export interface FrameDto {
 	capturedAt: string;
 	width: number | null;
 	height: number | null;
-	contentFingerprint: string | null;
+	equivalenceHint: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -467,11 +467,11 @@ export interface GetTimelineWindowAroundFrameRequest {
 	olderLimit: number;
 }
 
-/** Request body for `invoke('get_first_matching_earlier_frame_by_fingerprint', { request })`. */
-export interface GetFirstMatchingEarlierFrameByFingerprintRequest {
+/** Request body for `invoke('get_first_matching_earlier_equivalent_frame', { request })`. */
+export interface GetFirstMatchingEarlierEquivalentFrameRequest {
 	sessionId: string;
 	beforeFrameId: number;
-	contentFingerprint: string;
+	frameId: number;
 }
 
 /** Focused newest-first window centered around a target frame. */
