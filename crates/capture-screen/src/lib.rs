@@ -984,10 +984,7 @@ fn save_screen_sample_as_png(
     let mut destination = cg::ImageDst::with_url(output_url.as_ref(), png_type_id.as_cf(), 1)
         .ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
-            message: format!(
-                "Failed to create PNG destination for screen frame artifact: {}",
-                output_path.display()
-            ),
+            message: png_destination_creation_failure_message(output_path),
         })?;
     destination.add_image(cg_image.as_ref(), None);
 
@@ -1002,6 +999,23 @@ fn save_screen_sample_as_png(
             ),
         })
     }
+}
+
+#[cfg(target_os = "macos")]
+fn png_destination_creation_failure_message(output_path: &Path) -> String {
+    let parent_dir = output_path.parent();
+    let parent_exists = parent_dir.is_some_and(|parent| parent.exists());
+    let file_exists = output_path.exists();
+
+    format!(
+        "Failed to create PNG destination for screen frame artifact: {} (parent: {}; parent_exists: {}; file_exists: {})",
+        output_path.display(),
+        parent_dir
+            .map(|parent| parent.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
+        parent_exists,
+        file_exists
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -1195,8 +1209,27 @@ fn should_append_screen_sample(sample_buf: &cidre::cm::SampleBuf) -> bool {
         .and_then(cf::Type::try_as_number)
         .and_then(|status| status.to_i32());
 
+    should_append_screen_sample_with_state(
+        status_value,
+        sample_buf.data_is_ready(),
+        sample_buf.image_buf().is_some(),
+        sc::FrameStatus::Complete as i32,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn should_append_screen_sample_with_state(
+    status_value: Option<i32>,
+    data_is_ready: bool,
+    has_image_buffer: bool,
+    complete_status: i32,
+) -> bool {
+    if !data_is_ready || !has_image_buffer {
+        return false;
+    }
+
     match status_value {
-        Some(value) => value == sc::FrameStatus::Complete as i32,
+        Some(value) => value == complete_status,
         None => true,
     }
 }
@@ -3221,6 +3254,83 @@ mod tests {
             "message should contain exception name: {}",
             error.message
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_append_screen_sample_with_state_accepts_complete_ready_image_samples() {
+        assert!(should_append_screen_sample_with_state(
+            Some(1),
+            true,
+            true,
+            1
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_append_screen_sample_with_state_preserves_missing_status_for_ready_image_samples() {
+        assert!(should_append_screen_sample_with_state(None, true, true, 1));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_append_screen_sample_with_state_rejects_non_ready_samples() {
+        assert!(!should_append_screen_sample_with_state(
+            Some(1),
+            false,
+            true,
+            1
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_append_screen_sample_with_state_rejects_samples_without_image_buffers() {
+        assert!(!should_append_screen_sample_with_state(
+            Some(1),
+            true,
+            false,
+            1
+        ));
+        assert!(!should_append_screen_sample_with_state(
+            None, true, false, 1
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_append_screen_sample_with_state_rejects_non_complete_status_samples() {
+        assert!(!should_append_screen_sample_with_state(
+            Some(2),
+            true,
+            true,
+            1
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn png_destination_creation_failure_message_includes_parent_context() {
+        let unique = format!(
+            "capture-screen-png-dst-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        );
+        let base_dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&base_dir).expect("base dir should be created");
+        let output_path = base_dir.join("frame.png");
+
+        let message = png_destination_creation_failure_message(&output_path);
+
+        assert!(message.contains(&output_path.display().to_string()));
+        assert!(message.contains(&format!("parent: {}", base_dir.display())));
+        assert!(message.contains("parent_exists: true"));
+        assert!(message.contains("file_exists: false"));
+
+        std::fs::remove_dir_all(&base_dir).expect("base dir should be removed");
     }
 
     #[cfg(target_os = "macos")]
