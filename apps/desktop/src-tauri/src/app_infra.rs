@@ -152,6 +152,14 @@ pub struct GetFrameRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetTimelineWindowAroundFrameRequest {
+    pub frame_id: i64,
+    pub newer_limit: u32,
+    pub older_limit: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetFramePreviewRequest {
     pub frame_id: i64,
 }
@@ -246,6 +254,15 @@ pub struct FrameDto {
 pub struct FrameSummaryDto {
     pub id: i64,
     pub captured_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusedFrameWindowDto {
+    pub frames: Vec<FrameDto>,
+    pub target_index: usize,
+    pub has_newer: bool,
+    pub has_older: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -416,6 +433,17 @@ impl From<::app_infra::FrameSummary> for FrameSummaryDto {
         Self {
             id: frame.id,
             captured_at: frame.captured_at,
+        }
+    }
+}
+
+impl From<::app_infra::FocusedFrameWindow> for FocusedFrameWindowDto {
+    fn from(window: ::app_infra::FocusedFrameWindow) -> Self {
+        Self {
+            frames: window.frames.into_iter().map(FrameDto::from).collect(),
+            target_index: window.target_index,
+            has_newer: window.has_newer,
+            has_older: window.has_older,
         }
     }
 }
@@ -1365,6 +1393,28 @@ pub async fn get_frame(
         .await
         .map(|frame| frame.map(FrameDto::from))
         .map_err(|error| format!("failed to get frame {}: {error}", request.frame_id))
+}
+
+#[tauri::command]
+pub async fn get_timeline_window_around_frame(
+    request: GetTimelineWindowAroundFrameRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<FocusedFrameWindowDto, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .get_timeline_window_around_frame(
+            request.frame_id,
+            request.newer_limit,
+            request.older_limit,
+        )
+        .await
+        .map(FocusedFrameWindowDto::from)
+        .map_err(|error| {
+            format!(
+                "failed to get timeline window around frame {}: {error}",
+                request.frame_id
+            )
+        })
 }
 
 #[tauri::command]
