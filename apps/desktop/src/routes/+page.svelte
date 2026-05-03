@@ -21,7 +21,7 @@
     FrameRangeRequest,
     FrameSummaryDto,
     FocusedFrameWindowDto,
-    GetFirstMatchingEarlierFrameByFingerprintRequest,
+    GetFirstMatchingEarlierEquivalentFrameRequest,
     GetPermissionsResponse,
     GetProcessingResultRequest,
     GetTimelineWindowAroundFrameRequest,
@@ -176,6 +176,40 @@
 
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
   const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
+  let timelineActiveDuplicateOf = $state<FrameDto | null>(null);
+  let timelineActiveDuplicateLookupGeneration = 0;
+
+  $effect(() => {
+    const active = timelineActive;
+    const shouldLookup = !!active && developerOptions.value;
+    timelineActiveDuplicateLookupGeneration += 1;
+    const gen = timelineActiveDuplicateLookupGeneration;
+    timelineActiveDuplicateOf = null;
+
+    if (!shouldLookup || !active) {
+      return;
+    }
+
+    void (async () => {
+      try {
+        const duplicateOf = await invoke<FrameDto | null>(
+          "get_first_matching_earlier_equivalent_frame",
+          {
+            request: {
+              sessionId: active.sessionId,
+              beforeFrameId: active.id,
+              frameId: active.id,
+            } satisfies GetFirstMatchingEarlierEquivalentFrameRequest,
+          },
+        );
+        if (gen !== timelineActiveDuplicateLookupGeneration) return;
+        timelineActiveDuplicateOf = duplicateOf;
+      } catch {
+        if (gen !== timelineActiveDuplicateLookupGeneration) return;
+        timelineActiveDuplicateOf = null;
+      }
+    })();
+  });
 
   // Selected audio segment for the inline player. Resolved from the current
   // `audioSegments` list each render so the selection auto-clears when a
@@ -1801,15 +1835,15 @@
       let ocrData = await loadOcrForFrame(sourceFrame);
       if (gen !== ocrGeneration) return;
 
-      if (ocrData.status === "missing" && frame.contentFingerprint) {
+      if (ocrData.status === "missing") {
         const fallbackFrame = await invoke<FrameDto | null>(
-          "get_first_matching_earlier_frame_by_fingerprint",
+          "get_first_matching_earlier_equivalent_frame",
           {
             request: {
               sessionId: frame.sessionId,
               beforeFrameId: frame.id,
-              contentFingerprint: frame.contentFingerprint,
-            } satisfies GetFirstMatchingEarlierFrameByFingerprintRequest,
+              frameId: frame.id,
+            } satisfies GetFirstMatchingEarlierEquivalentFrameRequest,
           },
         );
         if (gen !== ocrGeneration) return;
@@ -1968,7 +2002,15 @@
   let pickerOpen = $state(false);
   let pickerPlaceholder = $state<DateValue>(todayLocal());
   let pickerSelectedDate = $state<DateValue | undefined>(undefined);
-  let pickerSelectedTime = $state<string | null>(null); // "HH:MM"
+  // Selected hour bucket label, e.g. "1:00 AM". Null when nothing has been
+  // chosen for the current selected date yet.
+  let pickerSelectedTime = $state<string | null>(null);
+  // Guard token that suppresses the date-change auto-jump effect for one
+  // tick after we programmatically seed `pickerSelectedDate` (e.g. when the
+  // picker opens, or when we sync the selection back to the resolved
+  // jump-target frame). Without this, opening the picker would immediately
+  // trigger a date-jump, and post-jump bookkeeping would re-jump in a loop.
+  let suppressPickerDateAutoJump = false;
   let summariesByDate = $state<Map<DateKey, FrameSummaryDto[]>>(new Map());
   let loadedMonths = $state<Set<MonthKey>>(new Set());
   // Months whose cached summaries are known to be out-of-date because new
@@ -2126,27 +2168,52 @@
     return !summariesByDate.has(dateKeyOf(d));
   }
 
-  // Distinct minute-buckets for the selected date, each carrying the LATEST
-  // frame summary in that minute (so picking the bucket maps cleanly to
-  // "latest at or before the end of that minute").
-  type TimeBucket = { label: string; summary: FrameSummaryDto };
+  // Hourly time buckets for the selected date. Labels use 12-hour clock
+  // (e.g. "1:00 AM", "12:00 PM", "11:00 PM"). For today we stop at the
+  // current hour; for any other date we render the full day through 11 PM.
+  // The chosen hour resolves to the latest frame at-or-before that hour's
+  // end via `get_latest_frame_in_range`, so the rail jumps near the picked
+  // time even if no frame falls exactly inside that hour.
+  type TimeBucket = { label: string; hour: number; disabled: boolean };
+  function formatHourLabel(hour: number): string {
+    const period = hour < 12 ? "AM" : "PM";
+    const display = hour % 12 === 0 ? 12 : hour % 12;
+    return `${display}:00 ${period}`;
+  }
   const availableTimes = $derived.by<TimeBucket[]>(() => {
     if (!pickerSelectedDate) return [];
-    const key = dateKeyOf(pickerSelectedDate);
-    const summaries = summariesByDate.get(key) ?? [];
-    const buckets = new Map<string, FrameSummaryDto>();
-    for (const s of summaries) {
-      const d = parseCapturedAt(s.capturedAt);
-      const label = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-      // Ascending input → last write wins → latest summary in the bucket.
-      buckets.set(label, s);
+    const now = new Date();
+    const isToday =
+      pickerSelectedDate.year === now.getFullYear() &&
+      pickerSelectedDate.month === now.getMonth() + 1 &&
+      pickerSelectedDate.day === now.getDate();
+    const lastHour = isToday ? now.getHours() : 23;
+    // Determine which hours of the selected date have at least one frame,
+    // using the already-loaded month summaries. If the month for this date
+    // has not loaded yet, leave every hour enabled — disabling everything on
+    // a not-yet-loaded month would block the user from time-picking before
+    // background data arrives. Once the month is loaded, an absent day key
+    // means the day truly has no frames, so all its hours render disabled.
+    const monthLoaded = loadedMonths.has(monthKeyOf(pickerSelectedDate));
+    const hoursWithFrames = new Set<number>();
+    if (monthLoaded) {
+      const daySummaries = summariesByDate.get(dateKeyOf(pickerSelectedDate));
+      if (daySummaries) {
+        for (const s of daySummaries) {
+          const d = parseCapturedAt(s.capturedAt);
+          if (!isNaN(d.getTime())) hoursWithFrames.add(d.getHours());
+        }
+      }
     }
-    return Array.from(buckets.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([label, summary]) => ({ label, summary }));
+    const out: TimeBucket[] = [];
+    for (let h = 0; h <= lastHour; h++) {
+      const disabled = monthLoaded && !hoursWithFrames.has(h);
+      out.push({ label: formatHourLabel(h), hour: h, disabled });
+    }
+    return out;
   });
 
-  async function jumpToFrame(target: FrameDto): Promise<void> {
+  async function jumpToFrame(target: FrameDto, closePicker = true): Promise<void> {
     pickerJumping = true;
     pickerError = null;
     timelineGeneration += 1;
@@ -2177,7 +2244,23 @@
       previewCache = new Map();
       await syncTimelineScrollToActiveFrame();
       void refreshAudioSegments();
-      pickerOpen = false;
+      // Keep picker selection state in sync with the resolved target frame
+      // so the calendar/time list reflects where we actually landed. The
+      // suppression flag prevents the date-change effect from re-jumping
+      // in response to our own assignment.
+      const resolved = parseCapturedAt(target.capturedAt);
+      if (!isNaN(resolved.getTime())) {
+        suppressPickerDateAutoJump = true;
+        const cd = new CalendarDate(
+          resolved.getFullYear(),
+          resolved.getMonth() + 1,
+          resolved.getDate(),
+        );
+        pickerPlaceholder = cd;
+        pickerSelectedDate = cd;
+        pickerSelectedTime = formatHourLabel(resolved.getHours());
+      }
+      if (closePicker) pickerOpen = false;
     } catch (err) {
       if (gen !== timelineGeneration) return;
       pickerError = typeof err === "string" ? err : JSON.stringify(err);
@@ -2190,7 +2273,11 @@
     }
   }
 
-  async function resolveAndJump(rangeStart: Date, rangeEnd: Date): Promise<void> {
+  async function resolveAndJump(
+    rangeStart: Date,
+    rangeEnd: Date,
+    closePicker = true,
+  ): Promise<void> {
     const req: FrameRangeRequest = {
       capturedAtStart: rangeStart.toISOString(),
       capturedAtEnd: rangeEnd.toISOString(),
@@ -2203,31 +2290,56 @@
         pickerError = "no frame in that range";
         return;
       }
-      await jumpToFrame(frame);
+      await jumpToFrame(frame, closePicker);
     } catch (err) {
       pickerError = typeof err === "string" ? err : JSON.stringify(err);
     }
   }
 
-  async function jumpToSelectedDateLatest(): Promise<void> {
+  async function jumpToSelectedDateLatest(closePicker = true): Promise<void> {
     const d = pickerSelectedDate;
     if (!d) return;
     const start = new Date(d.year, d.month - 1, d.day, 0, 0, 0, 0);
     const end = new Date(d.year, d.month - 1, d.day, 23, 59, 59, 999);
-    await resolveAndJump(start, end);
+    await resolveAndJump(start, end, closePicker);
   }
 
-  async function jumpToSelectedDateTime(label: string): Promise<void> {
+  async function jumpToSelectedDateTime(label: string, hour: number): Promise<void> {
     const d = pickerSelectedDate;
     if (!d) return;
-    const [hh, mm] = label.split(":").map((s) => Number(s));
     const start = new Date(d.year, d.month - 1, d.day, 0, 0, 0, 0);
-    // "Latest at or before the end of the picked minute" — backend treats
-    // the range as inclusive, so we extend to :59.999.
-    const end = new Date(d.year, d.month - 1, d.day, hh ?? 0, mm ?? 0, 59, 999);
+    // "Latest at or before the end of the picked hour" — backend treats
+    // the range as inclusive, so we extend to :59:59.999 of that hour.
+    const end = new Date(d.year, d.month - 1, d.day, hour, 59, 59, 999);
     pickerSelectedTime = label;
     await resolveAndJump(start, end);
   }
+
+  // Auto-jump when the user picks a date in the calendar. We deliberately
+  // do NOT close the picker so the user can then choose a time, dismiss it
+  // manually, or keep navigating. Programmatic seeding (open, post-jump
+  // sync) bypasses this via `suppressPickerDateAutoJump`.
+  $effect(() => {
+    const d = pickerSelectedDate;
+    if (!pickerOpen) return;
+    if (suppressPickerDateAutoJump) {
+      suppressPickerDateAutoJump = false;
+      return;
+    }
+    if (!d) return;
+    if (pickerJumping) return;
+    // Once the month for this date has been loaded, we know definitively
+    // whether the date has any frames. If it doesn't, skip the futile
+    // backend call (and the resulting "no frame in that range" error).
+    // When the month is still loading we don't over-block — the user may
+    // have navigated into a freshly visible month whose summaries haven't
+    // arrived yet, and the backend call is the cheapest way to land on a
+    // real frame once data is available.
+    if (loadedMonths.has(monthKeyOf(d)) && !summariesByDate.has(dateKeyOf(d))) {
+      return;
+    }
+    void jumpToSelectedDateLatest(false);
+  });
 
   // ─── Picker dialog a11y ───────────────────────────────────────────────────
   // The jump picker is rendered as a non-modal `role="dialog"` popover. To
@@ -2386,14 +2498,33 @@
       pickerOpen = false;
       return;
     }
-    // Sync the picker's view to whatever the rail is currently showing so
-    // the user lands on the active frame's date instead of "today".
+    // Always re-initialize from the active frame on open so the picker
+    // reflects "you are here" rather than whatever was last selected.
+    // Suppress the date-change auto-jump for this seeding so opening the
+    // picker doesn't immediately re-jump to the frame already shown.
+    suppressPickerDateAutoJump = true;
     if (timelineActive) {
       const d = parseCapturedAt(timelineActive.capturedAt);
       const cd = new CalendarDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
       pickerPlaceholder = cd;
       pickerSelectedDate = cd;
-      pickerSelectedTime = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+      // Containing hour bucket: align with the hour the active frame
+      // actually falls inside (floor), rather than rounding into the next
+      // hour. Clamp to today's current hour when the active frame is on
+      // today's date so we don't pre-select a future hour the list won't
+      // even render.
+      const candidate = d.getHours();
+      const now = new Date();
+      const isToday =
+        d.getFullYear() === now.getFullYear() &&
+        d.getMonth() === now.getMonth() &&
+        d.getDate() === now.getDate();
+      const maxHour = isToday ? now.getHours() : 23;
+      const hour = Math.max(0, Math.min(maxHour, candidate));
+      pickerSelectedTime = formatHourLabel(hour);
+    } else {
+      pickerSelectedDate = undefined;
+      pickerSelectedTime = null;
     }
     pickerError = null;
     pickerOpen = true;
@@ -2723,7 +2854,7 @@
                 </div>
                 <button
                   class="btn btn--ghost btn--sm"
-                  onclick={jumpToSelectedDateLatest}
+                  onclick={() => jumpToSelectedDateLatest()}
                   disabled={pickerJumping || availableTimes.length === 0}
                 >jump to latest of day</button>
                 <div class="timeline__picker-key">times</div>
@@ -2736,8 +2867,8 @@
                         type="button"
                         class="timeline__picker-time"
                         class:timeline__picker-time--active={pickerSelectedTime === t.label}
-                        onclick={() => jumpToSelectedDateTime(t.label)}
-                        disabled={pickerJumping}
+                        onclick={() => jumpToSelectedDateTime(t.label, t.hour)}
+                        disabled={pickerJumping || t.disabled}
                       >{t.label}</button>
                     {/each}
                   </div>
@@ -2928,10 +3059,21 @@
             <span class="timeline__overlay-val">{timelineActive.width}×{timelineActive.height}</span>
           </div>
         {/if}
-        {#if timelineActive.contentFingerprint}
+        {#if timelineActive.equivalenceHint}
           <div class="timeline__overlay-row">
             <span class="timeline__overlay-key">fp</span>
-            <span class="timeline__overlay-val timeline__overlay-truncate">{timelineActive.contentFingerprint}</span>
+            <span class="timeline__overlay-val timeline__overlay-truncate">{timelineActive.equivalenceHint}</span>
+          </div>
+        {/if}
+        {#if timelineActiveDuplicateOf}
+          {@const duplicateOf = timelineActiveDuplicateOf}
+          <div class="timeline__overlay-row">
+            <span class="timeline__overlay-key">duplicateOf</span>
+            <button
+              type="button"
+              class="timeline__overlay-link"
+              onclick={() => void jumpToFrame(duplicateOf)}
+            >{duplicateOf.id}</button>
           </div>
         {/if}
       </aside>
@@ -4226,7 +4368,6 @@
     border-radius: 4px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    pointer-events: none;
   }
 
   .timeline__overlay-row {
@@ -4247,6 +4388,23 @@
     font-size: 10px;
     color: #c0c0d8;
     min-width: 0;
+  }
+
+  .timeline__overlay-link {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 10px;
+    color: #9fb8ff;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .timeline__overlay-link:hover {
+    color: #c6d5ff;
+    text-decoration: underline;
   }
 
   .timeline__overlay-truncate {

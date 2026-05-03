@@ -2270,7 +2270,13 @@ fn try_forward_frame_artifact_enqueues_when_capacity_available() {
             captured_at_unix_ms: 1,
             width: Some(100),
             height: Some(100),
-            content_fingerprint: Some(7),
+            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::Ready(
+                capture_screen::CapturedFrameEquivalence {
+                    hint: "hint-1".to_string(),
+                    proof: b"proof-1".to_vec(),
+                    version: capture_screen::CAPTURED_FRAME_EQUIVALENCE_VERSION,
+                },
+            ),
         },
     );
 
@@ -2294,7 +2300,7 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_at_unix_ms: 1,
             width: None,
             height: None,
-            content_fingerprint: None,
+            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
     let second = try_forward_frame_artifact(
@@ -2304,7 +2310,7 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_at_unix_ms: 2,
             width: None,
             height: None,
-            content_fingerprint: None,
+            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
 
@@ -2334,7 +2340,7 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
             captured_at_unix_ms: 1,
             width: None,
             height: None,
-            content_fingerprint: None,
+            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
 
@@ -2348,7 +2354,7 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
                 captured_at_unix_ms: 2,
                 width: None,
                 height: None,
-                content_fingerprint: None,
+                captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
         )
     });
@@ -2393,7 +2399,7 @@ fn try_forward_frame_artifact_reports_closed_receiver() {
             captured_at_unix_ms: 1,
             width: None,
             height: None,
-            content_fingerprint: None,
+            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
 
@@ -2412,7 +2418,7 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
                 captured_at_unix_ms: i,
                 width: None,
                 height: None,
-                content_fingerprint: None,
+                captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
         ))
         .expect("channel should have capacity");
