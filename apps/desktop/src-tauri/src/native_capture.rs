@@ -240,12 +240,13 @@ fn inactivity_activity_mode_label(mode: &InactivityActivityMode) -> &'static str
 
 fn recording_settings_overview(settings: &RecordingSettings) -> String {
     format!(
-        "sources={}, auto_start={}, save_directory='{}', debug_logging={}, preview_cache_ttl_seconds={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, microphone_activity_sensitivity={}, system_audio_activity_sensitivity={}, activity_mode={}",
+        "sources={}, auto_start={}, save_directory='{}', debug_logging={}, preview_cache_ttl_seconds={}, follow_timeline_live={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, microphone_activity_sensitivity={}, system_audio_activity_sensitivity={}, activity_mode={}",
         format_capture_source_flags(&capture_sources_from_settings(settings)),
         settings.auto_start,
         settings.save_directory,
         settings.native_capture_debug_logging_enabled,
         settings.preview_cache_ttl_seconds,
+        settings.follow_timeline_live,
         settings.segment_duration_seconds,
         settings.screen_frame_rate,
         format_screen_resolution(&settings.screen_resolution),
@@ -293,6 +294,13 @@ fn describe_recording_settings_changes(
         changes.push(format!(
             "preview_cache_ttl_seconds {} -> {}",
             previous.preview_cache_ttl_seconds, next.preview_cache_ttl_seconds
+        ));
+    }
+
+    if previous.follow_timeline_live != next.follow_timeline_live {
+        changes.push(format!(
+            "follow_timeline_live {} -> {}",
+            previous.follow_timeline_live, next.follow_timeline_live
         ));
     }
 

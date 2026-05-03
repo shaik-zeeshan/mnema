@@ -155,6 +155,8 @@ export interface RecordingSettings {
 	 * configured duration. Defaults to 3600 (1 hour).
 	 */
 	previewCacheTtlSeconds: number;
+	/** When true, the timeline stays pinned to the newest frame as new frames arrive. */
+	followTimelineLive: boolean;
 	/**
 	 * When true, developer-only surfaces (the Debug page and its nav entry)
 	 * are exposed in the UI. When false, the Debug page is hidden from

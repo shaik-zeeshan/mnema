@@ -72,6 +72,9 @@
   // Preview cache TTL draft (seconds; 0 disables)
   let draftPreviewCacheTtlSeconds = $state(3600);
 
+  // Timeline behavior draft
+  let draftFollowTimelineLive = $state(false);
+
   // Debug log status
   let debugLogStatus = $state<NativeCaptureDebugLogStatus | null>(null);
   let loadingDebugLogStatus = $state(false);
@@ -161,6 +164,7 @@
     draftSystemAudioActivitySensitivity = s.systemAudioActivitySensitivity ?? 50;
     draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
     draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
+    draftFollowTimelineLive = s.followTimelineLive ?? false;
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
     if (s.screenResolution.mode === "custom") {
       draftResolutionMode = "custom";
@@ -332,6 +336,7 @@
           systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
           nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
           previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
+          followTimelineLive: draftFollowTimelineLive,
           developerOptionsEnabled: draftDeveloperOptionsEnabled,
           screenResolution: draftResolutionMode === "custom"
             ? {
@@ -1143,6 +1148,18 @@
         {#if draftPreviewCacheTtlSeconds === 0}
           <strong>Disabled</strong> — previews are fetched fresh every time.
         {/if}
+      </p>
+    </div>
+
+    <div class="settings-group">
+      <span class="group-label">Timeline</span>
+      <Switch
+        bind:checked={draftFollowTimelineLive}
+        label="Follow latest frame automatically"
+        description="Keep the dashboard timeline pinned to the newest frame as new frames arrive"
+      />
+      <p class="group-hint">
+        When disabled, the currently selected frame stays selected until you scrub or click a different frame.
       </p>
     </div>
 

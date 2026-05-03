@@ -84,10 +84,6 @@
   // polls. If the cap is hit before reaching the head we fall back to a full
   // reset rather than splice in a partial prefix that would leave a hole.
   const TIMELINE_POLL_PAGE_BUDGET = 20;
-  // Pixel slack from the track's right edge within which we consider the user
-  // to be "following newest" — i.e. close enough that a freshly arrived frame
-  // should pull the rail along instead of being silently prepended.
-  const TIMELINE_FOLLOW_SLACK_PX = 4;
   // Focused jump window size around a picked historical frame. Keep it aligned
   // with the normal page size so the rail density and subsequent older-history
   // pagination behave like the standard timeline flow.
@@ -811,11 +807,9 @@
   //      picker's month summary cache so the new dates show as available.
   //      Preview cache is left alone (it's empty in this branch anyway), so
   //      the active-preview effect can hydrate it normally.
-  //   2. User is following newest (active is slot 0 AND rail is at the right
-  //      edge within a small slack) → keep them on the new newest by leaving
-  //      activeIndex at 0 and snapping scrollLeft to the new max after layout.
-  //   3. User has scrubbed away → preserve the frame they're viewing. Slot 0
-  //      is anchored to the track's right edge, so prepending N frames adds
+  //   2. Rail already has data → preserve the exact frame the user is viewing,
+  //      even if that frame is the current latest. Slot 0 is anchored to the
+  //      track's right edge, so prepending N frames adds
   //      `N * SLOT_WIDTH` of track on the LEFT. The user's frame moves from
   //      index `i` to `i + N`; new advance = (i+N)*SLOT, new maxScroll grew
   //      by N*SLOT, so the desired scrollLeft is unchanged. We re-assert
@@ -941,15 +935,11 @@
         return;
       }
 
-      const followingNewest =
-        timelineActiveIndex === 0 &&
-        timelineRail !== null &&
-        timelineRail.scrollWidth - timelineRail.clientWidth - timelineRail.scrollLeft <=
-          TIMELINE_FOLLOW_SLACK_PX;
-
       // Capture the frame the user is currently parked on so we can find it
-      // again after the prepend and keep it under the cursor.
-      const anchorFrame = !followingNewest ? timelineFrames[timelineActiveIndex] : null;
+      // again after the prepend and keep it under the cursor. When the
+      // follow-live setting is enabled we intentionally reselect the newest
+      // frame instead.
+      const anchorFrame = followTimelineLive ? null : (timelineFrames[timelineActiveIndex] ?? null);
       const prevScrollLeft = timelineRail?.scrollLeft ?? 0;
 
       timelineFrames = fresh.concat(timelineFrames);
@@ -978,12 +968,11 @@
 
       await tick();
       if (!timelineRail) return;
-      const newMax = timelineRail.scrollWidth - timelineRail.clientWidth;
-      if (followingNewest) {
-        // Stay glued to the right edge as new frames arrive.
+      if (followTimelineLive) {
+        const max = timelineRail.scrollWidth - timelineRail.clientWidth;
         timelineActiveIndex = 0;
-        timelineRail.scrollLeft = newMax;
-        timelineScrollLeft = newMax;
+        timelineRail.scrollLeft = max;
+        timelineScrollLeft = max;
       } else if (anchorFrame) {
         // Re-find the anchor and shift the active index so the same frame
         // stays selected. `findIndex` is robust to either the linear shift
@@ -1972,6 +1961,7 @@
   let captureBootstrapped = $state(false);
   let captureError = $state<string | null>(null);
   let captureSessionGeneration = 0;
+  const followTimelineLive = $derived(recordingSettings?.followTimelineLive === true);
 
   const captureStatusLabel = $derived(
     isCapturing

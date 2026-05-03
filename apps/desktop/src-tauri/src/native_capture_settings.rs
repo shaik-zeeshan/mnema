@@ -1,6 +1,7 @@
 use capture_types::{
     default_developer_options_enabled, default_idle_timeout_seconds,
-    default_inactivity_activity_mode, default_microphone_activity_sensitivity,
+    default_follow_timeline_live, default_inactivity_activity_mode,
+    default_microphone_activity_sensitivity,
     default_native_capture_debug_logging_enabled, default_pause_capture_on_inactivity,
     default_preview_cache_ttl_seconds, default_system_audio_activity_sensitivity,
     default_video_bitrate, CaptureErrorResponse, RecordingSettings, ScreenResolution,
@@ -46,6 +47,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         native_capture_debug_logging_enabled: default_native_capture_debug_logging_enabled(),
         developer_options_enabled: default_developer_options_enabled(),
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+        follow_timeline_live: default_follow_timeline_live(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -305,6 +307,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         native_capture_debug_logging_enabled: request.native_capture_debug_logging_enabled,
         developer_options_enabled: request.developer_options_enabled,
         preview_cache_ttl_seconds: request.preview_cache_ttl_seconds,
+        follow_timeline_live: request.follow_timeline_live,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -342,6 +345,7 @@ fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
         native_capture_debug_logging_enabled: parsed.native_capture_debug_logging_enabled,
         developer_options_enabled: parsed.developer_options_enabled,
         preview_cache_ttl_seconds: parsed.preview_cache_ttl_seconds,
+        follow_timeline_live: parsed.follow_timeline_live,
         pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
         idle_timeout_seconds: parsed.idle_timeout_seconds,
         microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -581,6 +585,7 @@ mod tests {
             loaded.preview_cache_ttl_seconds,
             default_preview_cache_ttl_seconds()
         );
+        assert_eq!(loaded.follow_timeline_live, default_follow_timeline_live());
     }
 
     #[test]
@@ -600,6 +605,7 @@ mod tests {
             native_capture_debug_logging_enabled: false,
             developer_options_enabled: false,
             preview_cache_ttl_seconds: MAX_PREVIEW_CACHE_TTL_SECONDS + 1,
+            follow_timeline_live: false,
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

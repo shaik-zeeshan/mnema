@@ -187,6 +187,10 @@ pub fn default_preview_cache_ttl_seconds() -> u64 {
     3600
 }
 
+pub fn default_follow_timeline_live() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InactivityActivityMode {
@@ -231,6 +235,8 @@ pub struct RecordingSettings {
     pub developer_options_enabled: bool,
     #[serde(default = "default_preview_cache_ttl_seconds")]
     pub preview_cache_ttl_seconds: u64,
+    #[serde(default = "default_follow_timeline_live")]
+    pub follow_timeline_live: bool,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -267,6 +273,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub developer_options_enabled: bool,
     #[serde(default = "default_preview_cache_ttl_seconds")]
     pub preview_cache_ttl_seconds: u64,
+    #[serde(default = "default_follow_timeline_live")]
+    pub follow_timeline_live: bool,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -454,6 +462,7 @@ mod tests {
             settings.preview_cache_ttl_seconds,
             default_preview_cache_ttl_seconds()
         );
+        assert_eq!(settings.follow_timeline_live, default_follow_timeline_live());
         assert_eq!(
             settings.inactivity_activity_mode,
             InactivityActivityMode::SystemInputOrScreenOrAudio
@@ -494,5 +503,6 @@ mod tests {
             request.preview_cache_ttl_seconds,
             default_preview_cache_ttl_seconds()
         );
+        assert_eq!(request.follow_timeline_live, default_follow_timeline_live());
     }
 }
