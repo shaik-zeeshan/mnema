@@ -458,6 +458,21 @@ export interface GetFramePreviewRequest {
 	frameId: number;
 }
 
+/** Request body for `invoke('get_timeline_window_around_frame', { request })`. */
+export interface GetTimelineWindowAroundFrameRequest {
+	frameId: number;
+	newerLimit: number;
+	olderLimit: number;
+}
+
+/** Focused newest-first window centered around a target frame. */
+export interface FocusedFrameWindowDto {
+	frames: FrameDto[];
+	targetIndex: number;
+	hasNewer: boolean;
+	hasOlder: boolean;
+}
+
 /**
  * Lightweight frame summary returned by `list_frame_summaries_in_range`.
  * Carries only the fields the timeline date-jump UI needs to populate the
