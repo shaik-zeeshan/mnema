@@ -31,6 +31,7 @@ pub fn recordings_root_dir(save_directory: &str) -> std::path::PathBuf {
 }
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedFramePreview {
@@ -1030,8 +1031,9 @@ pub async fn persist_screen_frame_artifact(
 }
 
 pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
+    let app_handle = app.handle().clone();
     let resolved_base_dir = resolve_base_dir(app.handle())?;
-    crate::native_capture_debug_log::log(format!(
+    crate::native_capture_debug_log::log_info(format!(
         "initializing app infrastructure (save_directory='{}', base_dir='{}')",
         resolved_base_dir.save_directory,
         resolved_base_dir.base_dir.display()
@@ -1041,7 +1043,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
         &resolved_base_dir.base_dir,
     ))
     .map_err(|error| {
-        crate::native_capture_debug_log::log(format!(
+        crate::native_capture_debug_log::log_error(format!(
             "failed to initialize app infrastructure (save_directory='{}', base_dir='{}'): {error}",
             resolved_base_dir.save_directory,
             resolved_base_dir.base_dir.display()
@@ -1056,32 +1058,67 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
     let frame_preview_cache = FramePreviewCacheState::default();
 
     if !app.manage(Arc::clone(&infra)) {
-        crate::native_capture_debug_log::log(
+        crate::native_capture_debug_log::log_error(
             "app infrastructure state was already initialized; refusing duplicate setup",
         );
         return Err("app infrastructure state was already initialized".to_string());
     }
 
     if !app.manage(frame_preview_cache) {
-        crate::native_capture_debug_log::log(
+        crate::native_capture_debug_log::log_error(
             "frame preview cache state was already initialized; refusing duplicate setup",
         );
         return Err("frame preview cache state was already initialized".to_string());
     }
 
-    crate::native_capture_debug_log::log(format!(
+    crate::native_capture_debug_log::log_info(format!(
         "initialized app infrastructure successfully (base_dir='{}')",
         resolved_base_dir.base_dir.display()
     ));
 
-    spawn_processing_worker(infra, resolved_base_dir.base_dir);
+    run_hidden_segment_workspace_repair_startup_pass(&infra, &resolved_base_dir.base_dir);
+
+    spawn_processing_worker(infra, resolved_base_dir.base_dir, app_handle);
 
     Ok(())
 }
 
-fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf) {
+fn run_hidden_segment_workspace_repair_startup_pass(
+    infra: &::app_infra::AppInfra,
+    base_dir: &Path,
+) {
+    let recordings_root = base_dir.join(RECORDINGS_DIR_NAME);
+    let recordings_root_display = recordings_root.display().to_string();
+
+    match tauri::async_runtime::block_on(repair_hidden_segment_workspaces_once(
+        infra,
+        &recordings_root,
+        None,
+    )) {
+        Ok(result) => {
+            if result.removed_workspace_count > 0 || result.skipped_workspace_count > 0 {
+                crate::native_capture_debug_log::log_info(format!(
+                    "startup hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
+                    recordings_root_display,
+                    result.scanned_workspace_count,
+                    result.removed_workspace_count,
+                    result.skipped_workspace_count
+                ));
+            }
+        }
+        Err(error) => {
+            crate::native_capture_debug_log::log_error(format!(
+                "startup hidden segment workspace repair failed (recordings_root='{}'): {error}",
+                recordings_root_display
+            ));
+        }
+    }
+}
+
+fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: tauri::AppHandle) {
     let base_dir_display = base_dir.display().to_string();
-    crate::native_capture_debug_log::log(format!(
+    let processing_worker_infra = Arc::clone(&infra);
+    crate::native_capture_debug_log::log_info(format!(
         "starting app infrastructure processing worker (base_dir='{}', idle_poll_ms={}, error_retry_ms={})",
         base_dir_display,
         PROCESSING_WORKER_IDLE_POLL_INTERVAL.as_millis(),
@@ -1092,10 +1129,10 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf) {
         let mut consecutive_failures = 0u64;
 
         loop {
-            match process_pending_jobs_once(&infra).await {
+            match process_pending_jobs_once(&processing_worker_infra).await {
                 Ok(Some(_)) => {
                     if consecutive_failures > 0 {
-                        crate::native_capture_debug_log::log(format!(
+                        crate::native_capture_debug_log::log_info(format!(
                             "app infrastructure processing worker recovered after {} failed iteration(s) (base_dir='{}')",
                             consecutive_failures, base_dir_display
                         ));
@@ -1106,7 +1143,7 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf) {
                 }
                 Ok(None) => {
                     if consecutive_failures > 0 {
-                        crate::native_capture_debug_log::log(format!(
+                        crate::native_capture_debug_log::log_info(format!(
                             "app infrastructure processing worker recovered after {} failed iteration(s) (base_dir='{}')",
                             consecutive_failures, base_dir_display
                         ));
@@ -1117,7 +1154,7 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf) {
                 }
                 Err(error) => {
                     consecutive_failures += 1;
-                    crate::native_capture_debug_log::log(format!(
+                    crate::native_capture_debug_log::log_error(format!(
                         "app infrastructure processing worker iteration failed (base_dir='{}', consecutive_failures={}, retry_in_ms={}): {error}",
                         base_dir_display,
                         consecutive_failures,
@@ -1128,6 +1165,164 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf) {
             }
         }
     });
+
+    spawn_hidden_segment_workspace_repair_worker(infra, base_dir, app_handle);
+}
+
+fn spawn_hidden_segment_workspace_repair_worker(
+    infra: AppInfraState,
+    base_dir: PathBuf,
+    app_handle: tauri::AppHandle,
+) {
+    let recordings_root = base_dir.join(RECORDINGS_DIR_NAME);
+    let recordings_root_display = recordings_root.display().to_string();
+
+    crate::native_capture_debug_log::log_info(format!(
+        "starting hidden segment workspace repair worker (recordings_root='{}', interval_ms={})",
+        recordings_root_display,
+        HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL.as_millis()
+    ));
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL).await;
+
+            let active_screen_session_id =
+                active_screen_session_id_for_hidden_workspace_repair(&app_handle);
+
+            match repair_hidden_segment_workspaces_once(
+                &infra,
+                &recordings_root,
+                active_screen_session_id.as_deref(),
+            )
+            .await
+            {
+                Ok(result) => {
+                    if result.removed_workspace_count > 0 || result.skipped_workspace_count > 0 {
+                        crate::native_capture_debug_log::log_info(format!(
+                            "hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
+                            recordings_root_display,
+                            result.scanned_workspace_count,
+                            result.removed_workspace_count,
+                            result.skipped_workspace_count
+                        ));
+                    }
+                }
+                Err(error) => {
+                    crate::native_capture_debug_log::log_error(format!(
+                        "hidden segment workspace repair failed (recordings_root='{}'): {error}",
+                        recordings_root_display
+                    ));
+                }
+            }
+        }
+    });
+}
+
+async fn repair_hidden_segment_workspaces_once(
+    infra: &::app_infra::AppInfra,
+    recordings_root: &Path,
+    active_screen_session_id: Option<&str>,
+) -> ::app_infra::Result<::app_infra::HiddenSegmentWorkspaceRepairResult> {
+    let workspace_dirs = collect_hidden_segment_workspace_dirs(recordings_root)?;
+    let mut result = ::app_infra::HiddenSegmentWorkspaceRepairResult {
+        scanned_workspace_count: workspace_dirs.len() as u64,
+        ..::app_infra::HiddenSegmentWorkspaceRepairResult::default()
+    };
+
+    for workspace_dir in workspace_dirs {
+        let Some(paths) = ::app_infra::HiddenSegmentWorkspacePaths::from_workspace_dir(&workspace_dir)
+        else {
+            continue;
+        };
+
+        if matches_active_screen_session_workspace(&paths, active_screen_session_id) {
+            result.skipped_workspace_count += 1;
+            continue;
+        }
+
+        let Some(info) = infra.classify_hidden_segment_workspace(&workspace_dir).await? else {
+            continue;
+        };
+
+        if info.safe_to_remove {
+            match std::fs::remove_dir_all(&workspace_dir) {
+                Ok(()) => result.removed_workspace_count += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    result.removed_workspace_count += 1;
+                }
+                Err(error) => return Err(::app_infra::AppInfraError::Io(error)),
+            }
+        } else {
+            result.skipped_workspace_count += 1;
+        }
+    }
+
+    Ok(result)
+}
+
+fn matches_active_screen_session_workspace(
+    paths: &::app_infra::HiddenSegmentWorkspacePaths,
+    active_screen_session_id: Option<&str>,
+) -> bool {
+    let Some(active_screen_session_id) = active_screen_session_id else {
+        return false;
+    };
+
+    let expected_workspace_prefix = format!(".{active_screen_session_id}-segment-");
+    Path::new(&paths.workspace_dir)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(&expected_workspace_prefix))
+}
+
+fn collect_hidden_segment_workspace_dirs(root: &Path) -> ::app_infra::Result<Vec<PathBuf>> {
+    let mut workspace_dirs = Vec::new();
+    collect_hidden_segment_workspace_dirs_inner(root, &mut workspace_dirs)?;
+    Ok(workspace_dirs)
+}
+
+fn collect_hidden_segment_workspace_dirs_inner(
+    root: &Path,
+    workspace_dirs: &mut Vec<PathBuf>,
+) -> std::io::Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        if ::app_infra::HiddenSegmentWorkspacePaths::from_workspace_dir(&path).is_some() {
+            workspace_dirs.push(path);
+            continue;
+        }
+
+        collect_hidden_segment_workspace_dirs_inner(&path, workspace_dirs)?;
+    }
+
+    Ok(())
+}
+
+fn active_screen_session_id_for_hidden_workspace_repair(
+    app_handle: &tauri::AppHandle,
+) -> Option<String> {
+    let state = app_handle.state::<crate::native_capture::NativeCaptureState>();
+    let runtime = state.lock().ok()?;
+    if !runtime.is_running {
+        return None;
+    }
+
+    runtime
+        .source_sessions
+        .as_ref()?
+        .screen
+        .as_ref()
+        .map(|screen| screen.session_id.clone())
 }
 
 async fn process_pending_jobs_once(
@@ -1138,7 +1333,7 @@ async fn process_pending_jobs_once(
     let did_finalize = match infra.process_next_frame_batch_job().await {
         Ok(result) => result.is_some(),
         Err(error) => {
-            crate::native_capture_debug_log::log(format!(
+            crate::native_capture_debug_log::log_error(format!(
                 "app infrastructure frame-batch finalization failed after state update; worker will continue: {error}"
             ));
             true
@@ -1156,7 +1351,7 @@ fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBas
     let settings = crate::native_capture_settings::load_recording_settings_or_default(app_handle);
     let base_dir = resolve_base_dir_from_save_directory(&settings.save_directory);
 
-    crate::native_capture_debug_log::log(format!(
+    crate::native_capture_debug_log::log_info(format!(
         "resolved app infrastructure base directory (save_directory='{}', base_dir='{}')",
         settings.save_directory,
         base_dir.display()
@@ -2174,6 +2369,100 @@ mod tests {
             assert!(batches
                 .iter()
                 .any(|batch| batch.status == ::app_infra::FrameBatchStatus::Completed));
+        });
+    }
+
+    #[test]
+    fn repair_hidden_segment_workspaces_once_removes_safe_unreferenced_workspace() {
+        run_async_test(async {
+            let dir = TestDir::new("repair-hidden-workspace-safe");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let recordings_root = dir.path().join(RECORDINGS_DIR_NAME);
+            let day_dir = recordings_root.join("2026/04/12");
+            let workspace_dir = day_dir.join(".session-repair-safe-segment-0001");
+            fs::create_dir_all(workspace_dir.join("frames"))
+                .expect("workspace frames dir should be created");
+            fs::write(
+                day_dir.join("session-repair-safe-segment-0001.mov"),
+                b"fake mov",
+            )
+            .expect("visible segment should be written");
+
+            let result = repair_hidden_segment_workspaces_once(&infra, &recordings_root, None)
+                .await
+                .expect("repair should succeed");
+
+            assert_eq!(result.scanned_workspace_count, 1);
+            assert_eq!(result.removed_workspace_count, 1);
+            assert_eq!(result.skipped_workspace_count, 0);
+            assert!(!workspace_dir.exists(), "safe workspace should be removed");
+        });
+    }
+
+    #[test]
+    fn repair_hidden_segment_workspaces_once_preserves_missing_visible_segment_workspace() {
+        run_async_test(async {
+            let dir = TestDir::new("repair-hidden-workspace-missing-visible");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let recordings_root = dir.path().join(RECORDINGS_DIR_NAME);
+            let workspace_dir = recordings_root
+                .join("2026/04/12/.session-repair-preserve-segment-0001");
+            let frames_dir = workspace_dir.join("frames");
+            fs::create_dir_all(&frames_dir).expect("workspace frames dir should be created");
+            fs::write(frames_dir.join("frame-1.jpg"), b"fake frame")
+                .expect("workspace frame artifact should be created");
+
+            let result = repair_hidden_segment_workspaces_once(&infra, &recordings_root, None)
+                .await
+                .expect("repair should succeed");
+
+            assert_eq!(result.scanned_workspace_count, 1);
+            assert_eq!(result.removed_workspace_count, 0);
+            assert_eq!(result.skipped_workspace_count, 1);
+            assert!(
+                workspace_dir.exists(),
+                "workspace should be preserved when visible segment is missing"
+            );
+        });
+    }
+
+    #[test]
+    fn repair_hidden_segment_workspaces_once_skips_active_screen_session_workspace() {
+        run_async_test(async {
+            let dir = TestDir::new("repair-hidden-workspace-active-session");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let recordings_root = dir.path().join(RECORDINGS_DIR_NAME);
+            let day_dir = recordings_root.join("2026/04/12");
+            let workspace_dir = day_dir.join(".active-screen-session-segment-0001");
+            fs::create_dir_all(workspace_dir.join("frames"))
+                .expect("workspace frames dir should be created");
+            fs::write(
+                day_dir.join("active-screen-session-segment-0001.mov"),
+                b"fake mov",
+            )
+            .expect("visible segment should be written");
+
+            let result = repair_hidden_segment_workspaces_once(
+                &infra,
+                &recordings_root,
+                Some("active-screen-session"),
+            )
+            .await
+            .expect("repair should succeed");
+
+            assert_eq!(result.scanned_workspace_count, 1);
+            assert_eq!(result.removed_workspace_count, 0);
+            assert_eq!(result.skipped_workspace_count, 1);
+            assert!(
+                workspace_dir.exists(),
+                "active screen session workspace should be preserved"
+            );
         });
     }
 }
