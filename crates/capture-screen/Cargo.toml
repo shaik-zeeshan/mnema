@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 capture-runtime = { path = "../capture-runtime" }
 capture-types = { path = "../capture-types" }
 capture-writers = { path = "../capture-writers" }
