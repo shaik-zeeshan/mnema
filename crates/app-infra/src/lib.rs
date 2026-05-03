@@ -34,11 +34,11 @@ pub use jobs::{
     CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
 pub use processing::{
-    AppleVisionOcrEngine, Frame, FrameProcessingJob, FrameSummary, NewFrame, OcrEngine, OcrOutput,
-    OcrProcessorBackend, OcrProvider, OcrRequest, ProcessingJob, ProcessingJobCompletion,
-    ProcessingJobDraft, ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingResult,
-    ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend,
-    ProcessorRegistry, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
+    AppleVisionOcrEngine, FocusedFrameWindow, Frame, FrameProcessingJob, FrameSummary, NewFrame,
+    OcrEngine, OcrOutput, OcrProcessorBackend, OcrProvider, OcrRequest, ProcessingJob,
+    ProcessingJobCompletion, ProcessingJobDraft, ProcessingJobRunOutcome, ProcessingJobStatus,
+    ProcessingResult, ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject,
+    ProcessorBackend, ProcessorRegistry, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
@@ -218,6 +218,17 @@ impl AppInfra {
     ) -> Result<Vec<FrameSummary>> {
         self.processing
             .list_frame_summaries_in_range(captured_at_start, captured_at_end)
+            .await
+    }
+
+    pub async fn get_timeline_window_around_frame(
+        &self,
+        frame_id: i64,
+        newer_limit: u32,
+        older_limit: u32,
+    ) -> Result<FocusedFrameWindow> {
+        self.processing
+            .get_timeline_window_around_frame(frame_id, newer_limit, older_limit)
             .await
     }
 
@@ -1416,6 +1427,88 @@ mod tests {
 
             assert!(missing.is_none());
             assert!(latest.id > earliest.id);
+        });
+    }
+
+    #[test]
+    fn timeline_window_around_frame_is_newest_first_and_reports_older_history() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-timeline-window");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let first = infra
+                .insert_frame(&test_frame("session-a", "frame-1.png"))
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .insert_frame(&test_frame("session-a", "frame-2.png"))
+                .await
+                .expect("second frame should persist");
+            let third = infra
+                .insert_frame(&test_frame("session-a", "frame-3.png"))
+                .await
+                .expect("third frame should persist");
+            let fourth = infra
+                .insert_frame(&test_frame("session-a", "frame-4.png"))
+                .await
+                .expect("fourth frame should persist");
+            let fifth = infra
+                .insert_frame(&test_frame("session-a", "frame-5.png"))
+                .await
+                .expect("fifth frame should persist");
+
+            let window = infra
+                .get_timeline_window_around_frame(third.id, 1, 1)
+                .await
+                .expect("timeline window should resolve");
+
+            assert_eq!(
+                window
+                    .frames
+                    .iter()
+                    .map(|frame| frame.id)
+                    .collect::<Vec<_>>(),
+                vec![fourth.id, third.id, second.id]
+            );
+            assert_eq!(window.target_index, 1);
+            assert!(window.has_newer);
+            assert!(window.has_older);
+
+            let oldest_window = infra
+                .get_timeline_window_around_frame(first.id, 2, 2)
+                .await
+                .expect("oldest timeline window should resolve");
+
+            assert_eq!(
+                oldest_window
+                    .frames
+                    .iter()
+                    .map(|frame| frame.id)
+                    .collect::<Vec<_>>(),
+                vec![third.id, second.id, first.id]
+            );
+            assert_eq!(oldest_window.target_index, 2);
+            assert!(oldest_window.has_newer);
+            assert!(!oldest_window.has_older);
+
+            let newest_window = infra
+                .get_timeline_window_around_frame(fifth.id, 2, 1)
+                .await
+                .expect("newest timeline window should resolve");
+
+            assert_eq!(
+                newest_window
+                    .frames
+                    .iter()
+                    .map(|frame| frame.id)
+                    .collect::<Vec<_>>(),
+                vec![fifth.id, fourth.id]
+            );
+            assert_eq!(newest_window.target_index, 0);
+            assert!(!newest_window.has_newer);
+            assert!(newest_window.has_older);
         });
     }
 

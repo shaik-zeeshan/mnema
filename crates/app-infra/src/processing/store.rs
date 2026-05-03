@@ -25,6 +25,15 @@ pub struct ProcessingJobCompletion {
     pub result: ProcessingResult,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusedFrameWindow {
+    pub frames: Vec<Frame>,
+    pub target_index: usize,
+    pub has_newer: bool,
+    pub has_older: bool,
+}
+
 #[derive(Clone)]
 pub struct ProcessingStore {
     pool: SqlitePool,
@@ -319,6 +328,81 @@ impl ProcessingStore {
         .await?;
 
         rows.into_iter().map(map_frame_summary).collect()
+    }
+
+    pub async fn get_timeline_window_around_frame(
+        &self,
+        frame_id: i64,
+        newer_limit: u32,
+        older_limit: u32,
+    ) -> Result<FocusedFrameWindow> {
+        let target = self.get_required_frame(frame_id).await?;
+
+        let newer_rows = sqlx::query(
+            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+             FROM frames \
+             WHERE id > ?1 \
+             ORDER BY id ASC \
+             LIMIT ?2",
+        )
+        .bind(frame_id)
+        .bind(newer_limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let older_rows = sqlx::query(
+            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+             FROM frames \
+             WHERE id < ?1 \
+             ORDER BY id DESC \
+             LIMIT ?2",
+        )
+        .bind(frame_id)
+        .bind(older_limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut newer_frames = newer_rows
+            .into_iter()
+            .map(map_frame)
+            .collect::<Result<Vec<_>>>()?;
+        newer_frames.reverse();
+
+        let target_index = newer_frames.len();
+        let older_frames = older_rows
+            .into_iter()
+            .map(map_frame)
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut frames = newer_frames;
+        frames.push(target);
+        frames.extend(older_frames);
+
+        let tail_id = frames
+            .last()
+            .map(|frame| frame.id)
+            .ok_or(AppInfraError::FrameNotFound(frame_id))?;
+        let head_id = frames
+            .first()
+            .map(|frame| frame.id)
+            .ok_or(AppInfraError::FrameNotFound(frame_id))?;
+        let has_newer = sqlx::query("SELECT 1 FROM frames WHERE id > ?1 LIMIT 1")
+            .bind(head_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some();
+        let has_older = sqlx::query("SELECT 1 FROM frames WHERE id < ?1 LIMIT 1")
+            .bind(tail_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some();
+
+        Ok(FocusedFrameWindow {
+            frames,
+            target_index,
+            has_newer,
+            has_older,
+        })
     }
 
     pub async fn get_latest_frame_in_range(
