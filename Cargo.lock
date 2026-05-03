@@ -87,9 +87,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "capture-runtime",
+ "capture-screen",
  "cidre",
+ "image",
  "rayon",
  "serde",
+ "serde_bytes",
  "serde_json",
  "sqlx",
  "thiserror 2.0.18",
@@ -562,6 +565,7 @@ dependencies = [
  "capture-types",
  "capture-writers",
  "cidre",
+ "image",
  "objc2",
  "objc2-av-foundation",
  "objc2-foundation",
@@ -2214,6 +2218,8 @@ dependencies = [
  "num-traits",
  "png 0.18.1",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4054,6 +4060,16 @@ dependencies = [
  "serde",
  "serde_core",
  "typeid",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
