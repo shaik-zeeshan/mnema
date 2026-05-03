@@ -1,5 +1,5 @@
 use super::activity::{
-    current_activity_snapshot, idle_debug_activity_sources, idle_debug_family_fields,
+    current_activity_snapshot, current_activity_snapshot_for_debug, idle_debug_activity_sources, idle_debug_family_fields,
     lock_runtime_for_idle_debug,
 };
 use super::describe_recording_settings_changes;
@@ -22,7 +22,7 @@ use super::runtime::{
 use super::segments::{
     audio_duration_time_to_ms, audio_segment_started_at_unix_ms_for_file,
     audio_segment_window_from_duration_ms, cleanup_failed_segment_dirs,
-    committed_audio_segments_for_output_files, handle_inactivity_resume_error,
+    committed_audio_segments_for_output_files,
     pause_microphone_for_inactivity, pause_runtime_for_inactivity, pause_screen_for_inactivity,
     pause_system_audio_for_inactivity, plan_live_rotation_segment,
     process_inactivity_audio_transitions_for_snapshot,
@@ -1456,6 +1456,31 @@ fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources(
     assert!(snapshot.system_audio_activity.enabled);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn current_activity_snapshot_for_debug_does_not_drain_system_audio_peak() {
+    capture_screen::reset_last_screen_activity_unix_ms();
+    capture_screen::record_system_audio_activity_for_tests(0.20, 10_000, 20_000);
+
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: true,
+        }),
+        ..Default::default()
+    };
+
+    let debug_snapshot = current_activity_snapshot_for_debug(&runtime);
+    let loop_snapshot = current_activity_snapshot(&runtime);
+
+    assert_eq!(debug_snapshot.system_audio_activity.latest_normalized_level, Some(0.20));
+    assert_eq!(loop_snapshot.system_audio_activity.latest_normalized_level, Some(0.20));
+
+    capture_screen::reset_last_screen_activity_unix_ms();
+}
+
 #[test]
 fn idle_debug_activity_sources_include_audio_fields() {
     let policy = ActivityPolicyEvaluation {
@@ -2450,125 +2475,37 @@ fn flush_frame_artifacts_is_noop_when_channel_closed() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_transient_failure_keeps_runtime_paused_for_retry() {
+fn inactivity_resume_soft_pause_is_noop_without_family_pause_state() {
     let mut runtime = paused_runtime_fixture();
 
-    let error = resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            Err(CaptureErrorResponse {
-                code: "capture_stream_start_failed".to_string(),
-                message: "temporary startup failure".to_string(),
-            })
-        },
-    )
-    .expect_err("transient resume failure should bubble to retry handler");
-
-    assert!(!handle_inactivity_resume_error(&mut runtime, error));
-    assert!(runtime.is_running);
-    assert_eq!(runtime.runtime_state, RuntimeState::Running);
-    assert!(runtime.inactivity.is_paused);
-    assert_eq!(runtime.current_segment_index, 1);
-    assert!(runtime.current_segment_output_files.is_none());
-    assert!(runtime.recording_file.is_none());
-    assert!(runtime.segment_planner.is_some());
-    assert!(runtime.segment_schedule.is_some());
-    assert!(runtime.capture_clock.is_some());
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn inactivity_resume_retry_success_clears_paused_state_and_restores_segment_outputs() {
-    let mut runtime = paused_runtime_fixture();
-    // Replace planner with a known date prefix so expected paths are deterministic.
-    runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
-        "/tmp/native-capture-tests",
-        "native-session-resume",
-        "2026/04/19",
-    ));
-    runtime.microphone_planner = Some(SegmentPlanner::with_date_prefix(
-        "/tmp/native-capture-tests",
-        "native-session-resume-mic",
-        "2026/04/19",
-    ));
-    runtime.system_audio_planner = Some(SegmentPlanner::with_date_prefix(
-        "/tmp/native-capture-tests",
-        "native-session-resume-system",
-        "2026/04/19",
-    ));
-
-    let error = resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            Err(CaptureErrorResponse {
-                code: "capture_stream_start_failed".to_string(),
-                message: "temporary startup failure".to_string(),
-            })
-        },
-    )
-    .expect_err("first resume attempt should fail transiently");
-    assert!(!handle_inactivity_resume_error(&mut runtime, error));
-
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov".to_string();
-
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |segment_dir,
-         screen_output,
-         system_audio_output_path,
-         sources,
-         frame_rate,
-         resolution,
-         bitrate,
-         microphone_device_id,
-         frame_tx,
-         microphone_output_path| {
-            assert_eq!(
-                sources,
-                &CaptureSources {
-                    screen: true,
-                    microphone: false,
-                    system_audio: false,
-                }
-            );
-            assert_eq!(frame_rate, 30);
-            assert_eq!(resolution, &ScreenResolution::default());
-            assert_eq!(bitrate, None);
-            assert_eq!(microphone_device_id, None);
-            assert!(frame_tx.is_none());
-            assert!(microphone_output_path.is_none());
-            assert!(system_audio_output_path.is_none());
-            // segment_dir must be the hidden workspace directory
-            assert_eq!(
-                segment_dir.file_name().and_then(|name| name.to_str()),
-                Some(".native-session-resume-segment-0002")
-            );
-            // screen_output must be the visible dated path, not inside the workspace dir
-            assert_eq!(
-                screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov"
-                ))
-            );
-
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
-        },
-    )
-    .expect("later resume retry should succeed");
+    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
+        panic!("legacy soft-resume should not restart segments when no per-family pause is active")
+    })
+    .expect("soft-resume should tolerate legacy paused state without restart");
 
     assert!(runtime.is_running);
     assert_eq!(runtime.runtime_state, RuntimeState::Running);
     assert!(!runtime.inactivity.is_paused);
-    assert_eq!(runtime.current_segment_index, 2);
-    assert_eq!(runtime.recording_file, Some(expected_screen_file.clone()));
-    let segment_outputs = runtime
-        .current_segment_output_files
-        .as_ref()
-        .expect("resume should restore current segment outputs");
-    let expected_screen_files = vec![expected_screen_file.clone()];
-    assert_eq!(segment_outputs.screen_file, Some(expected_screen_file));
-    assert_eq!(&segment_outputs.screen_files, &expected_screen_files);
+    assert_eq!(runtime.current_segment_index, 1);
+    assert!(runtime.current_segment_output_files.is_none());
+    assert!(runtime.recording_file.is_none());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn inactivity_resume_soft_pause_clears_paused_state_without_restarting_outputs() {
+    let mut runtime = paused_runtime_fixture();
+    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
+        panic!("soft-resume should not restart outputs")
+    })
+    .expect("legacy soft-resume should succeed");
+
+    assert!(runtime.is_running);
+    assert_eq!(runtime.runtime_state, RuntimeState::Running);
+    assert!(!runtime.inactivity.is_paused);
+    assert_eq!(runtime.current_segment_index, 1);
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.current_segment_output_files.is_none());
 }
 
 #[cfg(target_os = "macos")]
@@ -2700,21 +2637,17 @@ fn wake_recovery_failure_clears_screen_bookkeeping_but_preserves_live_microphone
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_invalid_runtime_state_marks_runtime_failed() {
+fn inactivity_resume_no_longer_requires_planner_for_legacy_soft_resume() {
     let mut runtime = paused_runtime_fixture();
     runtime.segment_planner = None;
 
-    let error = resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            unreachable!("invalid runtime state should fail before restart")
-        },
-    )
-    .expect_err("missing planner should fail loudly");
+    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
+        panic!("legacy soft-resume should not need planner restart machinery")
+    })
+    .expect("legacy soft-resume should succeed without planner");
 
-    assert!(handle_inactivity_resume_error(&mut runtime, error));
-    assert!(!runtime.is_running);
-    assert_eq!(runtime.runtime_state, RuntimeState::Failed);
+    assert!(runtime.is_running);
+    assert_eq!(runtime.runtime_state, RuntimeState::Running);
     assert!(!runtime.inactivity.is_paused);
 }
 
@@ -2827,7 +2760,7 @@ fn inactivity_resume_with_paused_audio_refreshes_sources_without_planning_system
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_uses_resumed_sources_for_dedicated_write_planning() {
+fn inactivity_resume_does_not_restart_or_plan_dedicated_outputs_for_legacy_soft_resume() {
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -2870,62 +2803,13 @@ fn inactivity_resume_uses_resumed_sources_for_dedicated_write_planning() {
         ..Default::default()
     };
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/22/native-session-resume-screen-segment-0002.mov"
-            .to_string();
-
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |segment_dir,
-         screen_output,
-         system_audio_output_path,
-         sources,
-         _fr,
-         _res,
-         _br,
-         _mic,
-         _tx,
-         microphone_output_path| {
-            assert_eq!(
-                sources,
-                &CaptureSources {
-                    screen: true,
-                    microphone: true,
-                    system_audio: true,
-                }
-            );
-            assert_eq!(
-                segment_dir,
-                std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/.native-session-resume-screen-segment-0002"
-                )
-            );
-            assert_eq!(
-                screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/native-session-resume-screen-segment-0002.mov"
-                ))
-            );
-            assert_eq!(
-                microphone_output_path,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/audio/microphone-native-session-resume-mic-segment-0002.m4a"
-                ))
-            );
-            assert_eq!(
-                system_audio_output_path,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/audio/system-audio-native-session-resume-system-audio-segment-0002.m4a"
-                ))
-            );
-
-            let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
-            state.2 = microphone_output_path.map(|path| path.to_string_lossy().to_string());
-            state.3 = system_audio_output_path.map(|path| path.to_string_lossy().to_string());
-            Ok(state)
+        |_, _, _, _, _, _, _, _, _, _| {
+            panic!("legacy soft-resume should not plan new output files")
         },
     )
-    .expect("legacy inactivity resume should still plan dedicated source outputs");
+    .expect("legacy soft-resume should succeed without dedicated planning");
 
     assert_eq!(
         runtime.current_segment_sources,
@@ -2935,18 +2819,8 @@ fn inactivity_resume_uses_resumed_sources_for_dedicated_write_planning() {
             system_audio: true,
         })
     );
-    assert_eq!(
-        runtime.microphone_recording_file.as_deref(),
-        Some(
-            "/tmp/native-capture-tests/2026/04/22/audio/microphone-native-session-resume-mic-segment-0002.m4a"
-        )
-    );
-    assert_eq!(
-        runtime.system_audio_recording_file.as_deref(),
-        Some(
-            "/tmp/native-capture-tests/2026/04/22/audio/system-audio-native-session-resume-system-audio-segment-0002.m4a"
-        )
-    );
+    assert!(runtime.microphone_recording_file.is_none());
+    assert!(runtime.system_audio_recording_file.is_none());
 }
 
 #[cfg(target_os = "macos")]
@@ -4622,7 +4496,7 @@ fn resume_screen_reanchors_segment_boundary_timing() {
     )
     .expect("rotation should trigger after the resumed screen segment reaches duration");
 
-    assert_eq!(delayed_rotation.next_index, 3);
+    assert_eq!(delayed_rotation.next_index, 2);
 }
 
 #[cfg(target_os = "macos")]
@@ -5019,7 +4893,7 @@ fn inactivity_resume_sets_current_segment_sources_via_active_sources_helper() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_uses_contiguous_segment_index_when_schedule_has_advanced() {
+fn inactivity_resume_soft_resume_preserves_segment_index_when_schedule_has_advanced() {
     let mut runtime = paused_runtime_fixture();
     runtime.current_segment_index = 4;
     runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
@@ -5032,36 +4906,20 @@ fn inactivity_resume_uses_contiguous_segment_index_when_schedule_has_advanced() 
 
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0005.mov".to_string();
-
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |segment_dir, screen_output, _, _, _, _, _, _, _, _| {
-            assert_eq!(
-                segment_dir,
-                std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/19/.native-session-resume-segment-0005"
-                )
-            );
-            assert_eq!(
-                screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0005.mov"
-                ))
-            );
-
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        |_, _, _, _, _, _, _, _, _, _| {
+            panic!("legacy soft-resume should not create a new segment")
         },
     )
-    .expect("resume should keep numbering contiguous");
+    .expect("soft-resume should preserve current segment numbering");
 
-    assert_eq!(runtime.current_segment_index, 5);
+    assert_eq!(runtime.current_segment_index, 4);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_reanchors_segment_boundary_timing() {
+fn inactivity_resume_soft_resume_preserves_segment_boundary_timing() {
     let mut runtime = paused_runtime_fixture();
     runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
         "/tmp/native-capture-tests",
@@ -5073,13 +4931,10 @@ fn inactivity_resume_reanchors_segment_boundary_timing() {
 
     std::thread::sleep(std::time::Duration::from_millis(70));
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov".to_string();
-
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
         |_, _, _, _, _, _, _, _, _, _| {
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+            panic!("legacy soft-resume should not restart segment outputs")
         },
     )
     .expect("resume should succeed");
@@ -5111,8 +4966,8 @@ fn inactivity_resume_reanchors_segment_boundary_timing() {
             &schedule,
             &clock,
         )
-        .is_none(),
-        "resume should reset segment timing instead of immediately rotating again"
+        .is_some(),
+        "soft-resume should preserve the existing segment timing cadence"
     );
 
     std::thread::sleep(std::time::Duration::from_millis(70));
@@ -5131,7 +4986,7 @@ fn inactivity_resume_reanchors_segment_boundary_timing() {
     )
     .expect("rotation should trigger after the new segment reaches its duration");
 
-    assert_eq!(delayed_rotation.next_index, 3);
+    assert_eq!(delayed_rotation.next_index, 2);
 }
 
 // --- Issue 3: pause_audio ordering – mic stops after screen restart ---
@@ -5515,10 +5370,7 @@ fn screen_idle_with_threshold_active_microphone_pauses_only_screen_in_activity_m
 #[cfg(target_os = "macos")]
 #[test]
 fn screen_idle_with_threshold_active_system_audio_pauses_screen_without_audio_family_pause() {
-    for activity_mode in [
-        InactivityActivityMode::SystemInputOrScreen,
-        InactivityActivityMode::SystemInputOrScreenOrAudio,
-    ] {
+    for activity_mode in [InactivityActivityMode::SystemInputOrScreen] {
         let runtime_controller = running_runtime_controller();
         let runtime_state = runtime_controller.state();
         let mut runtime = NativeCaptureRuntime {
