@@ -78,6 +78,7 @@
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    min-height: 100dvh;
   }
 
   /* ── Content ──────────────────────────────────────────────── */
@@ -95,9 +96,9 @@
      viewport width by default so previews and dense controls aren't
      artificially capped. */
   .app-content--narrow {
-    max-width: 640px;
+    max-width: 860px;
     margin: 0 auto;
-    padding: 28px 20px 64px;
+    padding: 0 24px 64px;
     gap: 14px;
   }
 </style>
