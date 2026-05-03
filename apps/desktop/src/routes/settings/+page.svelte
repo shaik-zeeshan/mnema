@@ -406,6 +406,14 @@
     }
   }
 
+  async function saveSettings() {
+    if (recSaveBlocked || micApplyBlocked || !micState) {
+      return;
+    }
+
+    await Promise.all([saveRecordingSettings(), saveMicSettings()]);
+  }
+
   // ─── Recording settings validation ───────────────────────────────────────
 
   // Invariant: system audio requires screen capture.
@@ -565,25 +573,45 @@
   });
 </script>
 
-<!-- ── Page header ──────────────────────────────────────────────────────── -->
-<header class="page-header">
-  <nav class="page-header__nav" aria-label="Settings navigation">
+<!-- ── Sticky action bar (Back + Save always reachable) ──────────────── -->
+<div class="action-bar" role="toolbar" aria-label="Settings actions">
+  <div class="action-bar__left">
     <a class="back-link" href="/menu" aria-label="Back to menu">
       <span class="back-link__chevron" aria-hidden="true">‹</span>
       <span class="back-link__label">Back</span>
     </a>
-  </nav>
-  <div class="page-header__top">
-    <div class="page-header__title-block">
-      <span class="page-header__eyebrow">control center</span>
-      <h1 class="page-title">Settings</h1>
-      <p class="page-subtitle">Tune capture, microphone &amp; diagnostics for this workstation.</p>
-    </div>
-    <div class="page-header__meta" aria-hidden="true">
-      <span class="page-header__rule"></span>
-      <span class="page-header__corner">◉</span>
+    <div class="action-bar__title-block">
+      <span class="action-bar__eyebrow">control center</span>
+      <h1 class="action-bar__title">Settings</h1>
     </div>
   </div>
+
+  <div class="action-bar__right">
+    <div class="action-bar__status" aria-live="polite">
+      {#if recSaveBlocked || micApplyBlocked || !micState}
+        <span class="action-bar__status-text action-bar__status-text--blocked">unsaved · resolve issues</span>
+      {:else if savingRecSettings || savingMicSettings}
+        <span class="action-bar__status-text">writing changes…</span>
+      {:else if recSaved || micSaved}
+        <span class="action-bar__status-text action-bar__status-text--ok">✓ saved</span>
+      {:else}
+        <span class="action-bar__status-text">draft ready</span>
+      {/if}
+    </div>
+    <button
+      class="btn btn--primary"
+      onclick={saveSettings}
+      disabled={savingRecSettings || savingMicSettings || recSaveBlocked || micApplyBlocked || !micState}
+      title="Save recording and microphone settings"
+    >
+      {savingRecSettings || savingMicSettings ? "Saving…" : "Save"}
+    </button>
+  </div>
+</div>
+
+<!-- ── Page intro ──────────────────────────────────────────────────────── -->
+<header class="page-header">
+  <p class="page-subtitle">Tune capture, microphone &amp; diagnostics for this workstation.</p>
 
   {#if recordingSettings}
     <ul class="status-strip" aria-label="Current capture summary">
@@ -670,24 +698,18 @@
   {/if}
 </section>
 
-<!-- ── Recording details (video, storage, inactivity, diagnostics) ────── -->
+<!-- ── Recording details (split into focused cards) ────────────────────── -->
 {#if !loadingRecSettings}
-<section class="card" aria-labelledby="card-recording">
-  <div class="card__header">
-    <div class="card__heading">
-      <span class="card__index">02</span>
-      <div>
-        <h2 id="card-recording" class="card__title">Recording Details</h2>
-        <p class="card__subtitle">Video output, storage, inactivity rules &amp; diagnostics.</p>
-      </div>
-    </div>
-  </div>
-
-    <!-- ── Subsection: Video Output ─────────────────────── -->
-    <div class="subsection">
-      <div class="subsection__head">
-        <span class="subsection__kicker">B · Video Output</span>
-        <h3 class="subsection__title">Frame rate, resolution &amp; bitrate</h3>
+    <!-- ── Card: Video Output ─────────────────────── -->
+    <section class="card" aria-labelledby="card-video">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">02</span>
+          <div>
+            <h2 id="card-video" class="card__title">Video Output</h2>
+            <p class="card__subtitle">Frame rate, resolution &amp; bitrate.</p>
+          </div>
+        </div>
       </div>
 
     <div class="settings-group">
@@ -938,13 +960,18 @@
         </span>
       </div>
     </div>
-    </div>
+    </section>
 
-    <!-- ── Subsection: Storage & Startup ─────────────────────── -->
-    <div class="subsection">
-      <div class="subsection__head">
-        <span class="subsection__kicker">C · Storage &amp; Startup</span>
-        <h3 class="subsection__title">Where files are saved and when capture begins</h3>
+    <!-- ── Card: Storage & Startup ─────────────────────── -->
+    <section class="card" aria-labelledby="card-storage">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">03</span>
+          <div>
+            <h2 id="card-storage" class="card__title">Storage &amp; Startup</h2>
+            <p class="card__subtitle">Where files are saved and when capture begins.</p>
+          </div>
+        </div>
       </div>
 
     <div class="settings-group">
@@ -969,13 +996,18 @@
         description="Begin capturing immediately when the app opens"
       />
     </div>
-    </div>
+    </section>
 
-    <!-- ── Subsection: Inactivity ─────────────────────── -->
-    <div class="subsection">
-      <div class="subsection__head">
-        <span class="subsection__kicker">D · Inactivity</span>
-        <h3 class="subsection__title">Pause &amp; resume rules when you step away</h3>
+    <!-- ── Card: Inactivity ─────────────────────── -->
+    <section class="card" aria-labelledby="card-inactivity">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">04</span>
+          <div>
+            <h2 id="card-inactivity" class="card__title">Inactivity</h2>
+            <p class="card__subtitle">Pause &amp; resume rules when you step away.</p>
+          </div>
+        </div>
       </div>
 
     <div class="settings-group">
@@ -1117,13 +1149,18 @@
         {/if}
       {/if}
     </div>
-    </div>
+    </section>
 
-    <!-- ── Subsection: Diagnostics ─────────────────────── -->
-    <div class="subsection">
-      <div class="subsection__head">
-        <span class="subsection__kicker">E · Diagnostics &amp; Developer</span>
-        <h3 class="subsection__title">Caches, developer surfaces and log files</h3>
+    <!-- ── Card: Diagnostics & Developer ─────────────────────── -->
+    <section class="card" aria-labelledby="card-diag">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">05</span>
+          <div>
+            <h2 id="card-diag" class="card__title">Diagnostics &amp; Developer</h2>
+            <p class="card__subtitle">Caches, developer surfaces and log files.</p>
+          </div>
+        </div>
       </div>
 
     <!-- ── Preview Cache ─────────────────────────────────────── -->
@@ -1297,7 +1334,7 @@
         </div>
       {/if}
     </div>
-    </div>
+    </section>
 
     {#if recError}
       <div class="inline-error">
@@ -1317,38 +1354,13 @@
         {/each}
       </div>
     {/if}
-
-    <div class="card__footer">
-      <div class="card__footer-meta">
-        {#if recSaveBlocked}
-          <span class="card__footer-status card__footer-status--blocked">unsaved · resolve issues above</span>
-        {:else if savingRecSettings}
-          <span class="card__footer-status">writing changes…</span>
-        {:else}
-          <span class="card__footer-status">draft ready</span>
-        {/if}
-      </div>
-      <div class="action-row">
-        <button
-          class="btn btn--primary"
-          onclick={saveRecordingSettings}
-          disabled={savingRecSettings || recSaveBlocked}
-        >
-          {savingRecSettings ? "Saving…" : "Save Recording Settings"}
-        </button>
-        {#if recSaved}
-          <span class="saved-badge">✓ Saved</span>
-        {/if}
-      </div>
-    </div>
-</section>
 {/if}
 
 <!-- ── Microphone settings ───────────────────────────────────────────────── -->
 <section class="card" aria-labelledby="card-mic">
   <div class="card__header">
     <div class="card__heading">
-      <span class="card__index">02</span>
+      <span class="card__index">06</span>
       <div>
         <h2 id="card-mic" class="card__title">Microphone Controller</h2>
         <p class="card__subtitle">Choose the active device and how disconnects are handled.</p>
@@ -1450,30 +1462,6 @@
         <button class="btn btn--ghost btn--sm" onclick={() => micError = null}>×</button>
       </div>
     {/if}
-
-    <div class="card__footer">
-      <div class="card__footer-meta">
-        {#if micApplyBlocked}
-          <span class="card__footer-status card__footer-status--blocked">unsaved · select a device</span>
-        {:else if savingMicSettings}
-          <span class="card__footer-status">writing changes…</span>
-        {:else}
-          <span class="card__footer-status">draft ready</span>
-        {/if}
-      </div>
-      <div class="action-row">
-        <button
-          class="btn btn--primary"
-          onclick={saveMicSettings}
-          disabled={savingMicSettings || micApplyBlocked}
-        >
-          {savingMicSettings ? "Saving…" : "Save Microphone Settings"}
-        </button>
-        {#if micSaved}
-          <span class="saved-badge">✓ Saved</span>
-        {/if}
-      </div>
-    </div>
   {:else}
     <p class="empty-state">Failed to load microphone state.</p>
     <button class="btn btn--ghost btn--sm" onclick={loadMicState}>Retry</button>
@@ -1481,19 +1469,123 @@
 </section>
 
 <style>
+  /* ── Sticky action bar ─────────────────────────────────────── */
+  .action-bar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 18px;
+    margin: 0 -24px 8px;
+    background: rgba(12, 12, 14, 0.92);
+    backdrop-filter: saturate(140%) blur(10px);
+    -webkit-backdrop-filter: saturate(140%) blur(10px);
+    border-bottom: 1px solid #1e1e2e;
+  }
+
+  .action-bar::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #2a8a60 30%, #3dffa0 50%, #2a8a60 70%, transparent);
+    opacity: 0.35;
+    pointer-events: none;
+  }
+
+  .action-bar__left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+
+  .action-bar__title-block {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .action-bar__eyebrow {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: #2a8a60;
+  }
+
+  .action-bar__title {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #f0f0f5;
+    line-height: 1.1;
+  }
+
+  .action-bar__right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+
+  .action-bar__status {
+    display: inline-flex;
+    align-items: center;
+    margin-right: 4px;
+  }
+
+  .action-bar__status-text {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #44445a;
+    position: relative;
+    padding-left: 12px;
+  }
+
+  .action-bar__status-text::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #2a8a60;
+  }
+
+  .action-bar__status-text--blocked {
+    color: #a06820;
+  }
+  .action-bar__status-text--blocked::before {
+    background: #c07820;
+  }
+
+  .action-bar__status-text--ok {
+    color: #3dffa0;
+  }
+  .action-bar__status-text--ok::before {
+    background: #3dffa0;
+    box-shadow: 0 0 6px rgba(61, 255, 160, 0.5);
+  }
+
   /* ── Page header ───────────────────────────────────────────── */
   .page-header {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
     margin-bottom: 6px;
-    padding-bottom: 16px;
+    padding-bottom: 12px;
     border-bottom: 1px dashed #1a1a26;
-  }
-
-  .page-header__nav {
-    display: flex;
-    align-items: center;
   }
 
   .back-link {
@@ -1533,53 +1625,6 @@
 
   .back-link:hover .back-link__chevron {
     color: #a0a0c0;
-  }
-
-  .page-header__top {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-  }
-
-  .page-header__title-block {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .page-header__eyebrow {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.24em;
-    text-transform: uppercase;
-    color: #2a8a60;
-  }
-
-  .page-title {
-    font-size: 22px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: #f0f0f5;
-    line-height: 1.1;
-  }
-
-  .page-subtitle {
-    font-size: 11px;
-    color: #6a6a88;
-    letter-spacing: 0.02em;
-    line-height: 1.5;
-    max-width: 48ch;
-  }
-
-  .page-header__corner {
-    font-size: 10px;
-    color: #1e3a2a;
-    letter-spacing: 0;
-    flex-shrink: 0;
-    margin-top: 6px;
-    user-select: none;
   }
 
   /* ── Status strip ─────────────────────────────────────────── */
@@ -1707,53 +1752,6 @@
     margin-top: 3px;
   }
 
-  /* ── Subsection (control-center cluster) ───────────────────── */
-  .subsection {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    padding: 14px 14px 14px 16px;
-    background: #0d0d15;
-    border: 1px solid #181826;
-    border-radius: 6px;
-    position: relative;
-  }
-
-  .subsection::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 14px;
-    bottom: 14px;
-    width: 2px;
-    background: #1a4a30;
-    border-radius: 1px;
-    opacity: 0.5;
-  }
-
-  .subsection__head {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid #16162200;
-  }
-
-  .subsection__kicker {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: #2a8a60;
-  }
-
-  .subsection__title {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: #9090b0;
-  }
-
   /* ── Settings groups ──────────────────────────────────────── */
   .settings-group {
     display: flex;
@@ -1878,64 +1876,6 @@
   .btn--sm {
     padding: 3px 8px;
     font-size: 9px;
-  }
-
-  .action-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  /* ── Card footer (action bar) ─────────────────────────────── */
-  .card__footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 14px;
-    flex-wrap: wrap;
-    margin-top: 4px;
-    padding: 12px 14px;
-    background: #0a0a12;
-    border: 1px solid #1a1a26;
-    border-radius: 5px;
-  }
-
-  .card__footer-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .card__footer-status {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: #44445a;
-    position: relative;
-    padding-left: 12px;
-  }
-
-  .card__footer-status::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #2a8a60;
-  }
-
-  .card__footer-status--blocked {
-    color: #a06820;
-  }
-
-  .card__footer-status--blocked::before {
-    background: #c07820;
   }
 
   .saved-badge {
