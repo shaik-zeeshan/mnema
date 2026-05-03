@@ -63,6 +63,7 @@
   // tail-prefetch follow-up below). `timelineExhausted` continues to gate
   // pagination at the true end.
   const TIMELINE_PREFETCH_AHEAD = 120;
+  const TIMELINE_MAX_LOADED_FRAMES = 5_000;
   // Realtime head poll: how often we ask the backend for the newest page so
   // freshly captured frames appear in the rail without a manual refresh, and
   // how many frames we ask for per poll. The page-size cap is intentionally
@@ -106,6 +107,12 @@
   const TIMELINE_FALLBACK_VIEWPORT_WIDTH = 2560;
 
   type AudioSegmentSource = "microphone" | "systemAudio";
+  type TrimmedTimelineFrames = {
+    frames: FrameDto[];
+    activeIndex: number;
+    trimmedHead: boolean;
+    trimmedTail: boolean;
+  };
   type AudioSegmentRecord = {
     id: number;
     source: AudioSegmentSource;
@@ -646,6 +653,53 @@
     return new Date(ts.includes("T") ? ts : ts.replace(" ", "T"));
   }
 
+  function trimTimelineFramesAroundActive(
+    frames: FrameDto[],
+    activeIndex: number,
+  ): TrimmedTimelineFrames {
+    if (frames.length <= TIMELINE_MAX_LOADED_FRAMES) {
+      return { frames, activeIndex, trimmedHead: false, trimmedTail: false };
+    }
+    const safeActiveIndex = Math.max(0, Math.min(frames.length - 1, activeIndex));
+    const maxStart = frames.length - TIMELINE_MAX_LOADED_FRAMES;
+    const desiredStart = safeActiveIndex - Math.floor(TIMELINE_MAX_LOADED_FRAMES / 2);
+    const start = Math.max(0, Math.min(maxStart, desiredStart));
+    const trimmedFrames = frames.slice(start, start + TIMELINE_MAX_LOADED_FRAMES);
+    return {
+      frames: trimmedFrames,
+      activeIndex: safeActiveIndex - start,
+      trimmedHead: start > 0,
+      trimmedTail: start + TIMELINE_MAX_LOADED_FRAMES < frames.length,
+    };
+  }
+
+  function prunePreviewCache(frames: FrameDto[]): void {
+    if (previewCache.size === 0) return;
+    const keep = new Set(frames.map((frame) => frame.id));
+    const next = new Map<number, string>();
+    for (const [frameId, url] of previewCache) {
+      if (keep.has(frameId)) next.set(frameId, url);
+    }
+    if (next.size !== previewCache.size) {
+      previewCache = next;
+    }
+  }
+
+  async function syncTimelineScrollToActiveFrame(): Promise<void> {
+    await tick();
+    if (!timelineRail) {
+      timelineScrollLeft = 0;
+      return;
+    }
+    const max = timelineRail.scrollWidth - timelineRail.clientWidth;
+    const targetScrollLeft = Math.max(
+      0,
+      Math.min(max, max - timelineActiveIndex * TIMELINE_SLOT_WIDTH),
+    );
+    timelineRail.scrollLeft = targetScrollLeft;
+    timelineScrollLeft = targetScrollLeft;
+  }
+
   function formatCapturedAt(ts: string): string {
     const d = parseCapturedAt(ts);
     if (isNaN(d.getTime())) return ts;
@@ -842,14 +896,7 @@
         // all the way to the right so it's centered under the static cursor.
         // Wait for the DOM to lay out the new track before reading
         // scrollWidth, else we'd just set 0 → 0.
-        await tick();
-        if (timelineRail) {
-          const max = timelineRail.scrollWidth - timelineRail.clientWidth;
-          timelineRail.scrollLeft = max;
-          timelineScrollLeft = max;
-        } else {
-          timelineScrollLeft = 0;
-        }
+        await syncTimelineScrollToActiveFrame();
         // Drop cached previews from any prior generation — keeping them
         // would grow unboundedly across refreshes.
         previewCache = new Map();
@@ -863,30 +910,26 @@
         // month IS already visible, we trigger a reload below.
         invalidatePickerMonthsForFrames(page);
       } else {
-        // Appending older frames grows the track to the LEFT of slot 0,
-        // which increases `scrollWidth` (and therefore `maxScrollLeft`).
-        // Active index is derived as `(maxScrollLeft - scrollLeft) /
-        // SLOT_WIDTH`, so if we leave `scrollLeft` untouched the advance
-        // distance silently grows and the active frame appears to shift
-        // even though the user did not scrub. Capture the previous max,
-        // append, then after layout shift `scrollLeft` by the same delta
-        // so `(maxScrollLeft - scrollLeft)` — and thus the active index —
-        // is preserved across the page load. This keeps wheel/keyboard/
-        // click/date-jump math correct because all of them read the live
-        // `scrollWidth - clientWidth` afterward.
-        const prevMax = timelineRail
-          ? timelineRail.scrollWidth - timelineRail.clientWidth
-          : 0;
-        timelineFrames = timelineFrames.concat(page);
-        if (timelineRail) {
-          await tick();
-          const newMax = timelineRail.scrollWidth - timelineRail.clientWidth;
-          const delta = newMax - prevMax;
-          if (delta > 0) {
-            timelineRail.scrollLeft += delta;
-            timelineScrollLeft = timelineRail.scrollLeft;
-          }
+        const anchorFrame = timelineFrames[timelineActiveIndex] ?? null;
+        const mergedFrames = timelineFrames.concat(page);
+        const mergedActiveIndex = anchorFrame
+          ? mergedFrames.findIndex((frame) => frame.id === anchorFrame.id)
+          : timelineActiveIndex;
+        const trimmed = trimTimelineFramesAroundActive(
+          mergedFrames,
+          mergedActiveIndex >= 0 ? mergedActiveIndex : timelineActiveIndex,
+        );
+        timelineFrames = trimmed.frames;
+        timelineActiveIndex = trimmed.activeIndex;
+        if (trimmed.trimmedHead) {
+          timelineHasNewer = true;
+          timelineShowingHistoricalWindow = true;
         }
+        if (trimmed.trimmedTail) {
+          timelineExhausted = false;
+        }
+        prunePreviewCache(timelineFrames);
+        await syncTimelineScrollToActiveFrame();
       }
       if (page.length < TIMELINE_PAGE_SIZE) {
         timelineExhausted = true;
@@ -965,7 +1008,6 @@
       }
 
       const anchorFrame = timelineFrames[timelineActiveIndex] ?? null;
-      const prevScrollLeft = timelineRail?.scrollLeft ?? 0;
 
       // Restore the anchored active index synchronously, in the same turn as
       // the prepend, so `timelineActive` (derived from
@@ -975,12 +1017,24 @@
       // mismatch and clears OCR state even though the user is still parked
       // on the same logical frame. Because we strictly prepend `page` to the
       // head, the anchor's new index is just `oldIndex + page.length`.
-      timelineFrames = page.concat(timelineFrames);
-      if (anchorFrame) {
-        timelineActiveIndex = timelineActiveIndex + page.length;
+      const mergedFrames = page.concat(timelineFrames);
+      const mergedActiveIndex = anchorFrame
+        ? mergedFrames.findIndex((frame) => frame.id === anchorFrame.id)
+        : timelineActiveIndex + page.length;
+      const trimmed = trimTimelineFramesAroundActive(
+        mergedFrames,
+        mergedActiveIndex >= 0 ? mergedActiveIndex : timelineActiveIndex + page.length,
+      );
+      timelineFrames = trimmed.frames;
+      timelineActiveIndex = trimmed.activeIndex;
+      timelineHasNewer = window.hasNewer || trimmed.trimmedHead;
+      timelineShowingHistoricalWindow = timelineHasNewer;
+      if (trimmed.trimmedTail) {
+        timelineExhausted = false;
       }
       invalidatePickerMonthsForFrames(page);
-      await tick();
+      prunePreviewCache(timelineFrames);
+      await syncTimelineScrollToActiveFrame();
 
       if (anchorFrame) {
         // Defensive re-find in case the prepended page somehow contained the
@@ -989,10 +1043,7 @@
         const newIdx = timelineFrames.findIndex((frame) => frame.id === anchorFrame.id);
         if (newIdx >= 0) timelineActiveIndex = newIdx;
       }
-      if (timelineRail) {
-        timelineRail.scrollLeft = prevScrollLeft;
-        timelineScrollLeft = prevScrollLeft;
-      }
+      await syncTimelineScrollToActiveFrame();
 
       timelineError = null;
     } catch (err) {
@@ -1165,9 +1216,7 @@
       // follow-live setting is enabled we intentionally reselect the newest
       // frame instead.
       const anchorFrame = followTimelineLive ? null : (timelineFrames[timelineActiveIndex] ?? null);
-      const prevScrollLeft = timelineRail?.scrollLeft ?? 0;
-
-      timelineFrames = fresh.concat(timelineFrames);
+      const mergedFrames = fresh.concat(timelineFrames);
 
       // Restore the anchored active index synchronously, in the same turn as
       // the prepend, so `timelineActive` (derived from
@@ -1178,9 +1227,23 @@
       // still parked on the same logical frame. `fresh` is strictly newer
       // than the prior head, so the anchor's new index is just
       // `oldIndex + fresh.length`.
-      if (anchorFrame) {
-        timelineActiveIndex = timelineActiveIndex + fresh.length;
+      const mergedActiveIndex = anchorFrame
+        ? mergedFrames.findIndex((frame) => frame.id === anchorFrame.id)
+        : 0;
+      const trimmed = trimTimelineFramesAroundActive(
+        mergedFrames,
+        mergedActiveIndex >= 0 ? mergedActiveIndex : 0,
+      );
+      timelineFrames = trimmed.frames;
+      timelineActiveIndex = trimmed.activeIndex;
+      if (trimmed.trimmedHead) {
+        timelineHasNewer = true;
+        timelineShowingHistoricalWindow = true;
       }
+      if (trimmed.trimmedTail) {
+        timelineExhausted = false;
+      }
+      prunePreviewCache(timelineFrames);
 
       // Targeted picker invalidation for months touched by the freshly
       // merged frames only. A blanket reset of `summariesByDate` /
@@ -1191,13 +1254,10 @@
       // summaries.
       invalidatePickerMonthsForFrames(fresh);
 
-      await tick();
-      if (!timelineRail) return;
+      await syncTimelineScrollToActiveFrame();
       if (followTimelineLive) {
-        const max = timelineRail.scrollWidth - timelineRail.clientWidth;
         timelineActiveIndex = 0;
-        timelineRail.scrollLeft = max;
-        timelineScrollLeft = max;
+        await syncTimelineScrollToActiveFrame();
       } else if (anchorFrame) {
         // Re-find the anchor and shift the active index so the same frame
         // stays selected. `findIndex` is robust to either the linear shift
@@ -1206,11 +1266,7 @@
         if (newIdx >= 0) {
           timelineActiveIndex = newIdx;
         }
-        // The math above shows scrollLeft should be unchanged to keep the
-        // anchor under the cursor; re-assert in case the browser nudged it
-        // when scrollWidth grew.
-        timelineRail.scrollLeft = prevScrollLeft;
-        timelineScrollLeft = prevScrollLeft;
+        await syncTimelineScrollToActiveFrame();
       }
       // Newly merged frames extend the loaded window; refresh the audio
       // lane so segments arriving alongside the new frames appear too.
@@ -2003,18 +2059,7 @@
       timelineError = null;
       timelineShowingHistoricalWindow = window.hasNewer;
       previewCache = new Map();
-      await tick();
-      if (timelineRail) {
-        const max = timelineRail.scrollWidth - timelineRail.clientWidth;
-        const targetScrollLeft = Math.max(
-          0,
-          Math.min(max, max - window.targetIndex * TIMELINE_SLOT_WIDTH),
-        );
-        timelineRail.scrollLeft = targetScrollLeft;
-        timelineScrollLeft = targetScrollLeft;
-      } else {
-        timelineScrollLeft = 0;
-      }
+      await syncTimelineScrollToActiveFrame();
       void refreshAudioSegments();
       pickerOpen = false;
     } catch (err) {
