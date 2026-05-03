@@ -34,11 +34,12 @@ pub use jobs::{
     CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
 pub use processing::{
-    AppleVisionOcrEngine, FocusedFrameWindow, Frame, FrameProcessingJob, FrameSummary, NewFrame,
-    OcrEngine, OcrOutput, OcrProcessorBackend, OcrProvider, OcrRequest, ProcessingJob,
-    ProcessingJobCompletion, ProcessingJobDraft, ProcessingJobRunOutcome, ProcessingJobStatus,
-    ProcessingResult, ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject,
-    ProcessorBackend, ProcessorRegistry, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
+    AppleVisionOcrEngine, FocusedFrameWindow, Frame, FrameEquivalence, FrameEquivalenceStatus,
+    FrameProcessingJob, FrameSummary, NewFrame, OcrEngine, OcrOutput, OcrProcessorBackend,
+    OcrProvider, OcrRequest, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
+    ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingResult, ProcessingResultDraft,
+    ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
+    FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
@@ -73,6 +74,7 @@ impl AppInfra {
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
         let captured_frame_reprocessing = CapturedFrameReprocessing::new(processing.clone());
+        processing.backfill_frame_equivalence().await?;
         jobs.reconcile_orphaned_running_jobs().await?;
         processing.reconcile_orphaned_running_jobs().await?;
         frame_batches
@@ -267,18 +269,14 @@ impl AppInfra {
         self.processing.get_frame(frame_id).await
     }
 
-    pub async fn get_first_matching_earlier_frame_by_fingerprint(
+    pub async fn get_first_matching_earlier_equivalent_frame(
         &self,
         session_id: &str,
         before_frame_id: i64,
-        content_fingerprint: &str,
+        frame_id: i64,
     ) -> Result<Option<Frame>> {
-        self.processing
-            .get_first_matching_earlier_frame_by_fingerprint(
-                session_id,
-                before_frame_id,
-                content_fingerprint,
-            )
+        self.captured_frame_pipeline
+            .find_first_matching_earlier_equivalent_frame(session_id, before_frame_id, frame_id)
             .await
     }
 
@@ -522,18 +520,82 @@ mod tests {
             .with_dimensions(1920, 1080)
     }
 
-    fn test_frame_with_fingerprint(
-        session_id: &str,
+    fn write_test_png_rgba(
+        dir: &TestDir,
         file_name: &str,
-        content_fingerprint: &str,
-    ) -> NewFrame {
-        test_frame(session_id, file_name).with_content_fingerprint(content_fingerprint)
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> String {
+        let path = dir.path().join(file_name);
+        image::save_buffer(&path, pixels, width, height, image::ColorType::Rgba8)
+            .expect("test png should be written");
+        path.to_string_lossy().into_owned()
     }
 
-    fn write_test_frame_file(dir: &TestDir, file_name: &str, bytes: &[u8]) -> String {
-        let path = dir.path().join(file_name);
-        fs::write(&path, bytes).expect("test frame file should be written");
-        path.to_string_lossy().into_owned()
+    fn solid_rgba(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+        for _ in 0..(width as usize * height as usize) {
+            pixels.extend_from_slice(&rgba);
+        }
+        pixels
+    }
+
+    fn set_pixel_rgba(pixels: &mut [u8], width: u32, x: u32, y: u32, rgba: [u8; 4]) {
+        let offset = ((y * width + x) * 4) as usize;
+        pixels[offset..offset + 4].copy_from_slice(&rgba);
+    }
+
+    fn test_frame_with_equivalent_image(
+        dir: &TestDir,
+        session_id: &str,
+        file_name: &str,
+        captured_at: &str,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) -> NewFrame {
+        let file_path = write_test_png_rgba(dir, file_name, width, height, pixels);
+        let equivalence = match capture_screen::captured_frame_equivalence_from_image_path(
+            Path::new(&file_path),
+        ) {
+            capture_screen::CapturedFrameEquivalenceOutcome::Ready(equivalence) => {
+                FrameEquivalence::ready(equivalence.hint, equivalence.proof, equivalence.version)
+            }
+            capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
+                panic!("test image equivalence should compute: {error}");
+            }
+        };
+
+        NewFrame::new(session_id, file_path, captured_at)
+            .with_dimensions(width as i64, height as i64)
+            .with_equivalence(equivalence)
+    }
+
+    fn test_segment_frame_with_equivalent_image(
+        dir: &TestDir,
+        session_id: &str,
+        segment_index: u64,
+        file_name: &str,
+        captured_at: &str,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) -> NewFrame {
+        let frames_dir = dir.path().join(format!(
+            "2026/04/12/.{session_id}-segment-{segment_index:04}/frames"
+        ));
+        fs::create_dir_all(&frames_dir).expect("segment frames dir should exist");
+        let relative_name = format!("2026/04/12/.{session_id}-segment-{segment_index:04}/frames/{file_name}");
+        test_frame_with_equivalent_image(
+            dir,
+            session_id,
+            &relative_name,
+            captured_at,
+            pixels,
+            width,
+            height,
+        )
     }
 
     #[derive(Debug)]
@@ -1706,33 +1768,57 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-            let first_path = write_test_frame_file(&dir, "frame-1.png", b"same-frame-bytes");
-            let duplicate_path = write_test_frame_file(&dir, "frame-2.png", b"same-frame-bytes");
-            let changed_path = write_test_frame_file(&dir, "frame-3.png", b"changed-frame-bytes");
+            let width = 32;
+            let height = 32;
+            let repeated_pixels = solid_rgba(width, height, [64, 64, 64, 255]);
+            let mut changed_pixels = repeated_pixels.clone();
+            for y in 8..20 {
+                for x in 8..20 {
+                    set_pixel_rgba(&mut changed_pixels, width, x, y, [240, 240, 240, 255]);
+                }
+            }
 
             let first = infra
                 .capture_frame(
-                    &NewFrame::new("session-dedupe", first_path, "2026-04-12T10:00:00Z")
-                        .with_dimensions(1920, 1080)
-                        .with_content_fingerprint("abc123"),
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe",
+                        "frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                        &repeated_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
                 .expect("first frame should persist");
             let duplicate = infra
                 .capture_frame(
-                    &NewFrame::new("session-dedupe", duplicate_path, "2026-04-12T10:00:01Z")
-                        .with_dimensions(1920, 1080)
-                        .with_content_fingerprint("abc123"),
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe",
+                        "frame-2.png",
+                        "2026-04-12T10:00:01Z",
+                        &repeated_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
                 .expect("duplicate frame should persist");
             let changed = infra
                 .capture_frame(
-                    &NewFrame::new("session-dedupe", changed_path, "2026-04-12T10:00:02Z")
-                        .with_dimensions(1920, 1080)
-                        .with_content_fingerprint("def456"),
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe",
+                        "frame-3.png",
+                        "2026-04-12T10:00:02Z",
+                        &changed_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
@@ -1747,9 +1833,9 @@ mod tests {
                 .await
                 .expect("frames should list");
             assert_eq!(frames.len(), 3);
-            assert_eq!(frames[0].content_fingerprint.as_deref(), Some("def456"));
-            assert_eq!(frames[1].content_fingerprint.as_deref(), Some("abc123"));
-            assert_eq!(frames[2].content_fingerprint.as_deref(), Some("abc123"));
+            assert_eq!(frames[0].equivalence.hint, changed.frame.equivalence.hint);
+            assert_eq!(frames[1].equivalence.hint, duplicate.frame.equivalence.hint);
+            assert_eq!(frames[2].equivalence.hint, first.frame.equivalence.hint);
 
             let duplicate_jobs = infra
                 .list_processing_jobs_for_subject(&ProcessingSubject::frame(duplicate.frame.id))
@@ -1766,45 +1852,57 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-            let first_path = write_test_frame_file(&dir, "frame-1.png", b"same-frame-bytes");
-            let changed_path = write_test_frame_file(&dir, "frame-2.png", b"changed-frame-bytes");
-            let repeated_path = write_test_frame_file(&dir, "frame-3.png", b"same-frame-bytes");
+            let width = 32;
+            let height = 32;
+            let repeated_pixels = solid_rgba(width, height, [64, 64, 64, 255]);
+            let mut changed_pixels = repeated_pixels.clone();
+            for y in 8..20 {
+                for x in 8..20 {
+                    set_pixel_rgba(&mut changed_pixels, width, x, y, [240, 240, 240, 255]);
+                }
+            }
 
             let first = infra
                 .capture_frame(
-                    &NewFrame::new(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-dedupe-repeat",
-                        first_path,
+                        "frame-1.png",
                         "2026-04-12T10:00:00Z",
-                    )
-                    .with_dimensions(1920, 1080)
-                    .with_content_fingerprint("abc123"),
+                        &repeated_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
                 .expect("first frame should persist");
             let changed = infra
                 .capture_frame(
-                    &NewFrame::new(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-dedupe-repeat",
-                        changed_path,
+                        "frame-2.png",
                         "2026-04-12T10:00:01Z",
-                    )
-                    .with_dimensions(1920, 1080)
-                    .with_content_fingerprint("def456"),
+                        &changed_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
                 .expect("changed frame should persist");
             let repeated = infra
                 .capture_frame(
-                    &NewFrame::new(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-dedupe-repeat",
-                        repeated_path,
+                        "frame-3.png",
                         "2026-04-12T10:00:02Z",
-                    )
-                    .with_dimensions(1920, 1080)
-                    .with_content_fingerprint("abc123"),
+                        &repeated_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
@@ -1819,9 +1917,9 @@ mod tests {
                 .await
                 .expect("frames should list");
             assert_eq!(frames.len(), 3);
-            assert_eq!(frames[0].content_fingerprint.as_deref(), Some("abc123"));
-            assert_eq!(frames[1].content_fingerprint.as_deref(), Some("def456"));
-            assert_eq!(frames[2].content_fingerprint.as_deref(), Some("abc123"));
+            assert_eq!(frames[0].equivalence.hint, repeated.frame.equivalence.hint);
+            assert_eq!(frames[1].equivalence.hint, changed.frame.equivalence.hint);
+            assert_eq!(frames[2].equivalence.hint, first.frame.equivalence.hint);
 
             let repeated_jobs = infra
                 .list_processing_jobs_for_subject(&ProcessingSubject::frame(repeated.frame.id))
@@ -1830,14 +1928,125 @@ mod tests {
             assert!(repeated_jobs.is_empty());
 
             let resolved = infra
-                .get_first_matching_earlier_frame_by_fingerprint(
+                .get_first_matching_earlier_equivalent_frame(
                     "session-dedupe-repeat",
                     repeated.frame.id,
-                    "abc123",
+                    repeated.frame.id,
                 )
                 .await
-                .expect("matching earlier frame should resolve");
+                .expect("matching earlier equivalent frame should resolve");
             assert_eq!(resolved, Some(first.frame));
+        });
+    }
+
+    #[test]
+    fn equivalent_frames_in_different_segment_workspaces_do_not_skip_ocr() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-ocr-dedupe-segment-scoped");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [88, 88, 88, 255]);
+
+            let first = infra
+                .capture_frame(
+                    &test_segment_frame_with_equivalent_image(
+                        &dir,
+                        "session-segment-scope",
+                        1,
+                        "frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .capture_frame(
+                    &test_segment_frame_with_equivalent_image(
+                        &dir,
+                        "session-segment-scope",
+                        2,
+                        "frame-2.png",
+                        "2026-04-12T10:00:01Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("second frame should persist");
+
+            assert!(first.job.is_some());
+            assert!(
+                second.job.is_some(),
+                "equivalent frames in different segment workspaces must not skip OCR"
+            );
+        });
+    }
+
+    #[test]
+    fn earlier_equivalent_frame_lookup_does_not_cross_segment_workspaces() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-ocr-ui-fallback-segment-scoped");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [104, 104, 104, 255]);
+
+            let first = infra
+                .capture_frame(
+                    &test_segment_frame_with_equivalent_image(
+                        &dir,
+                        "session-segment-ui-scope",
+                        1,
+                        "frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .capture_frame(
+                    &test_segment_frame_with_equivalent_image(
+                        &dir,
+                        "session-segment-ui-scope",
+                        2,
+                        "frame-2.png",
+                        "2026-04-12T10:00:01Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("second frame should persist");
+
+            assert!(first.job.is_some());
+            assert!(second.job.is_some());
+
+            let resolved = infra
+                .get_first_matching_earlier_equivalent_frame(
+                    "session-segment-ui-scope",
+                    second.frame.id,
+                    second.frame.id,
+                )
+                .await
+                .expect("cross-segment equivalent frame lookup should succeed");
+            assert_eq!(resolved, None);
         });
     }
 
@@ -1848,34 +2057,36 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-
-            let first_path = dir.path().join("frame-1.png");
-            let second_path = dir.path().join("frame-2.png");
-            fs::write(&first_path, b"frame-a").expect("first frame should be written");
-            fs::write(&second_path, b"frame-b").expect("second frame should be written");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [96, 96, 96, 255]);
 
             let first = infra
                 .capture_frame(
-                    &NewFrame::new(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-dedupe-confirmed",
-                        first_path.to_string_lossy().as_ref(),
+                        "frame-1.png",
                         "2026-04-12T10:00:00Z",
-                    )
-                    .with_dimensions(1920, 1080)
-                    .with_content_fingerprint("abc123"),
+                        &pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
                 .expect("first frame should persist");
             let second = infra
                 .capture_frame(
-                    &NewFrame::new(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-dedupe-confirmed",
-                        second_path.to_string_lossy().as_ref(),
+                        "frame-2.png",
                         "2026-04-12T10:00:01Z",
-                    )
-                    .with_dimensions(1920, 1080)
-                    .with_content_fingerprint("abc123"),
+                        &pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
@@ -1896,34 +2107,36 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-
-            let first_path = dir.path().join("frame-1.jpg");
-            let second_path = dir.path().join("frame-2.jpg");
-            fs::write(&first_path, b"frame-a").expect("first frame should be written");
-            fs::write(&second_path, b"frame-b").expect("second frame should be written");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [112, 112, 112, 255]);
 
             let first = infra
                 .capture_frame(
-                    &NewFrame::new(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-dedupe-same-fingerprint-late",
-                        first_path.to_string_lossy().as_ref(),
+                        "frame-1.png",
                         "2026-04-12T10:00:00Z",
-                    )
-                    .with_dimensions(1920, 1080)
-                    .with_content_fingerprint("abc123"),
+                        &pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
                 .expect("first frame should persist");
             let second = infra
                 .capture_frame(
-                    &NewFrame::new(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-dedupe-same-fingerprint-late",
-                        second_path.to_string_lossy().as_ref(),
+                        "frame-2.png",
                         "2026-04-12T10:00:06Z",
-                    )
-                    .with_dimensions(1920, 1080)
-                    .with_content_fingerprint("abc123"),
+                        &pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
@@ -2153,10 +2366,14 @@ mod tests {
                 .captured_frame_pipeline()
                 .capture_frame_in_transaction(
                     &mut transaction,
-                    &test_frame_with_fingerprint(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-batch-atomic",
                         "frame-atomic.png",
-                        "atomic-fingerprint",
+                        "2026-04-12T10:01:00Z",
+                        &solid_rgba(32, 32, [72, 72, 72, 255]),
+                        32,
+                        32,
                     ),
                     None,
                 )
@@ -2373,13 +2590,20 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [80, 80, 80, 255]);
 
             infra
                 .capture_frame(
-                    &test_frame_with_fingerprint(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-reprocess-create",
                         "frame-1.png",
-                        "abc123",
+                        "2026-04-12T10:00:00Z",
+                        &pixels,
+                        width,
+                        height,
                     ),
                     None,
                 )
@@ -2387,10 +2611,14 @@ mod tests {
                 .expect("first frame should persist");
             let duplicate = infra
                 .capture_frame(
-                    &test_frame_with_fingerprint(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-reprocess-create",
                         "frame-2.png",
-                        "abc123",
+                        "2026-04-12T10:00:01Z",
+                        &pixels,
+                        width,
+                        height,
                     ),
                     None,
                 )

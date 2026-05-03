@@ -453,7 +453,9 @@ impl FrameBatchStore {
 
     pub async fn list_frames_for_batch(&self, batch_id: i64) -> Result<Vec<Frame>> {
         let rows = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at \
              FROM frames \
              WHERE frame_batch_id = ?1 \
              ORDER BY id ASC",
@@ -1345,6 +1347,14 @@ fn is_benign_dir_remove_error(e: &std::io::Error) -> bool {
 }
 
 fn map_frame(row: SqliteRow) -> Result<Frame> {
+    let equivalence_status = row
+        .get::<Option<String>, _>("equivalence_status")
+        .map(|status| {
+            crate::processing::FrameEquivalenceStatus::from_str(&status)
+                .ok_or(crate::AppInfraError::InvalidFrameEquivalenceStatus(status))
+        })
+        .transpose()?;
+
     Ok(Frame {
         id: row.get("id"),
         session_id: row.get("session_id"),
@@ -1352,7 +1362,13 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
         captured_at: row.get("captured_at"),
         width: row.get("width"),
         height: row.get("height"),
-        content_fingerprint: row.get("content_fingerprint"),
+        equivalence: crate::processing::FrameEquivalence {
+            hint: row.get("equivalence_hint"),
+            proof: row.get("equivalence_proof"),
+            version: row.get("equivalence_version"),
+            status: equivalence_status,
+            error: row.get("equivalence_error"),
+        },
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
@@ -1842,7 +1858,13 @@ mod tests {
             captured_at: "2026-04-12T10:01:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: crate::processing::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];
@@ -2245,7 +2267,13 @@ mod tests {
             captured_at: "2026-04-12T10:01:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: crate::processing::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];
@@ -2278,7 +2306,13 @@ mod tests {
             captured_at: "2026-04-12T10:01:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: crate::processing::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];
@@ -2327,7 +2361,13 @@ mod tests {
             captured_at: "2026-04-19T10:01:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: crate::processing::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];
@@ -2390,7 +2430,13 @@ mod tests {
             captured_at: "2026-04-12T10:01:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: crate::processing::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];
@@ -2435,7 +2481,13 @@ mod tests {
             captured_at: "2026-04-12T10:01:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: crate::processing::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];
@@ -2473,7 +2525,13 @@ mod tests {
             captured_at: "2026-04-12T10:01:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: crate::processing::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];
@@ -2513,7 +2571,13 @@ mod tests {
             captured_at: "2026-04-12T10:01:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: crate::processing::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];
@@ -2544,7 +2608,13 @@ mod tests {
             captured_at: "2026-04-12T10:01:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: crate::processing::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];
@@ -2581,7 +2651,13 @@ mod tests {
             captured_at: "2026-04-12T10:01:00Z".to_string(),
             width: None,
             height: None,
-            content_fingerprint: None,
+            equivalence: crate::processing::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
             created_at: String::new(),
             updated_at: String::new(),
         }];

@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
-use std::fs;
+use std::path::Path;
 
 use crate::{
-    frame_batches::{FrameBatch, FrameBatchStore},
+    frame_batches::{FrameBatch, FrameBatchStore, HiddenSegmentWorkspacePaths},
     processing::{
         Frame, FrameProcessingJob, NewFrame, ProcessingJob, ProcessingStore, OCR_PROCESSOR,
     },
@@ -201,34 +201,108 @@ impl CapturedFramePipeline {
         transaction: &mut Transaction<'_, Sqlite>,
         frame: &Frame,
     ) -> Result<bool> {
-        let Some(content_fingerprint) = frame.content_fingerprint.as_deref() else {
+        let Some((equivalence_hint, proof, version)) = frame.equivalence.ready_parts() else {
             return Ok(true);
         };
 
-        let Some(_previous_frame) = self
+        let earlier_frames = self
             .processing
-            .get_first_matching_earlier_frame_by_fingerprint_in_transaction(
+            .list_earlier_frames_with_equivalence_hint_in_transaction(
                 transaction,
                 &frame.session_id,
                 frame.id,
-                content_fingerprint,
+                equivalence_hint,
+                frame_segment_workspace_prefix(frame).as_deref(),
             )
-            .await?
-        else {
-            return Ok(true);
+            .await?;
+
+        for earlier_frame in earlier_frames {
+            if earlier_frame.equivalence.is_quarantined() {
+                capture_runtime::debug_log!(
+                    "[app-infra] skipped quarantined earlier frame {} while resolving equivalence for frame {}",
+                    earlier_frame.id,
+                    frame.id
+                );
+                continue;
+            }
+
+            let Some((_hint, earlier_proof, earlier_version)) = earlier_frame.equivalence.ready_parts()
+            else {
+                continue;
+            };
+
+            if version != earlier_version {
+                continue;
+            }
+
+            if capture_screen::captured_frame_equivalence_proofs_match(
+                version,
+                proof,
+                earlier_proof,
+            ) {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    pub async fn find_first_matching_earlier_equivalent_frame(
+        &self,
+        session_id: &str,
+        before_frame_id: i64,
+        frame_id: i64,
+    ) -> Result<Option<Frame>> {
+        let Some(frame) = self.processing.get_frame(frame_id).await? else {
+            return Ok(None);
+        };
+        let Some((equivalence_hint, proof, version)) = frame.equivalence.ready_parts() else {
+            return Ok(None);
         };
 
-        Ok(false)
+        let earlier_frames = self
+            .processing
+            .list_earlier_frames_with_equivalence_hint(
+                session_id,
+                before_frame_id,
+                equivalence_hint,
+                frame_segment_workspace_prefix(&frame).as_deref(),
+            )
+            .await?;
+
+        for earlier_frame in earlier_frames {
+            if earlier_frame.equivalence.is_quarantined() {
+                capture_runtime::debug_log!(
+                    "[app-infra] skipped quarantined earlier frame {} while resolving UI equivalence fallback for frame {}",
+                    earlier_frame.id,
+                    frame_id
+                );
+                continue;
+            }
+
+            let Some((_hint, earlier_proof, earlier_version)) = earlier_frame.equivalence.ready_parts()
+            else {
+                continue;
+            };
+
+            if version != earlier_version {
+                continue;
+            }
+
+            if capture_screen::captured_frame_equivalence_proofs_match(
+                version,
+                proof,
+                earlier_proof,
+            ) {
+                return Ok(Some(earlier_frame));
+            }
+        }
+
+        Ok(None)
     }
 }
 
-fn frames_match_by_file_bytes(previous_frame: &Frame, current_frame: &Frame) -> bool {
-    let Ok(previous_bytes) = fs::read(&previous_frame.file_path) else {
-        return false;
-    };
-    let Ok(current_bytes) = fs::read(&current_frame.file_path) else {
-        return false;
-    };
-
-    previous_bytes == current_bytes
+fn frame_segment_workspace_prefix(frame: &Frame) -> Option<String> {
+    HiddenSegmentWorkspacePaths::from_frame_artifact_path(Path::new(&frame.file_path))
+        .map(|paths| format!("{}/", paths.frames_dir))
 }
