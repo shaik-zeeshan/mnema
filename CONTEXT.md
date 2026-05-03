@@ -6,6 +6,7 @@ This context captures the domain language for the desktop capture app so archite
 
 **Screen Frame Artifact**:
 A just-produced native capture output that has not yet been persisted into app-infra.
+Screen frame artifacts are currently written as JPEG files.
 _Avoid_: captured frame, transient screenshot, raw frame record
 
 **Captured Frame Pipeline**:
@@ -34,6 +35,7 @@ _Avoid_: force processing, rerun pipeline, requeue screenshot
 - A **Captured Frame Pipeline** persists one **Captured Frame**.
 - A **Captured Frame Pipeline** attaches each **Captured Frame** to exactly one **Frame Batch**.
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
+- A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier **Captured Frame** in the same session already has the same content fingerprint.
 - A **Frame Batch** can be finalized only after its **OCR Job** entries are terminal.
 - **Captured Frame Reprocessing** operates on an existing **Captured Frame**, not on a new **Screen Frame Artifact**.
 
