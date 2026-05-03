@@ -743,17 +743,24 @@
 
 </script>
 
-<!-- ── Page header ──────────────────────────────────────────────────────── -->
-<div class="page-header">
-  <nav class="page-header__nav" aria-label="Debug navigation">
+<!-- ── Sticky action bar ───────────────────────────────────────────────── -->
+<div class="action-bar" role="toolbar" aria-label="Debug navigation">
+  <div class="action-bar__left">
     <a class="back-link" href="/menu" aria-label="Back to menu">
       <span class="back-link__chevron" aria-hidden="true">‹</span>
       <span class="back-link__label">Back</span>
     </a>
-  </nav>
-  <h1 class="page-title">Debug</h1>
-  <p class="page-subtitle">recording status &amp; controls</p>
+    <div class="action-bar__title-block">
+      <span class="action-bar__eyebrow">control center</span>
+      <h1 class="action-bar__title">Debug</h1>
+    </div>
+  </div>
 </div>
+
+<!-- ── Page header ──────────────────────────────────────────────────────── -->
+<header class="page-header">
+  <p class="page-subtitle">Recording status &amp; controls.</p>
+</header>
 
 <!-- ── Recording status ─────────────────────────────────────────────────── -->
 <section class="card">
@@ -1648,17 +1655,73 @@
 {/if}
 
 <style>
-  /* ── Page header ───────────────────────────────────────────── */
-  .page-header {
-    margin-bottom: 4px;
-    padding-bottom: 14px;
-    border-bottom: 1px solid #16161e;
-  }
-
-  .page-header__nav {
+  /* ── Sticky action bar ─────────────────────────────────────── */
+  .action-bar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
     display: flex;
     align-items: center;
-    margin-bottom: 10px;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 18px;
+    margin: 0 -24px 8px;
+    background: rgba(12, 12, 14, 0.92);
+    backdrop-filter: saturate(140%) blur(10px);
+    -webkit-backdrop-filter: saturate(140%) blur(10px);
+    border-bottom: 1px solid #1e1e2e;
+  }
+
+  .action-bar::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #2a8a60 30%, #3dffa0 50%, #2a8a60 70%, transparent);
+    opacity: 0.35;
+    pointer-events: none;
+  }
+
+  .action-bar__left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+
+  .action-bar__title-block {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .action-bar__eyebrow {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: #2a8a60;
+  }
+
+  .action-bar__title {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #f0f0f5;
+    line-height: 1.1;
+  }
+
+  /* ── Page header ───────────────────────────────────────────── */
+  .page-header {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 6px;
+    padding-bottom: 12px;
+    border-bottom: 1px dashed #1a1a26;
   }
 
   .back-link {
@@ -1766,19 +1829,10 @@
     animation: pulse-rec 1.2s ease-in-out infinite;
   }
 
-  .page-title {
-    font-size: 22px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: #f0f0f5;
-    line-height: 1.05;
-  }
-
   .page-subtitle {
     font-size: 10px;
     color: #44445a;
     letter-spacing: 0.06em;
-    margin-top: 8px;
   }
 
   /* ── Cards ─────────────────────────────────────────────────── */
