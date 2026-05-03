@@ -17,7 +17,9 @@
     FramePreviewDto,
     FrameRangeRequest,
     FrameSummaryDto,
+    FocusedFrameWindowDto,
     GetPermissionsResponse,
+    GetTimelineWindowAroundFrameRequest,
     ListAudioSegmentsRequest,
     ListFramesRequest,
     RecordingSettings,
@@ -80,9 +82,13 @@
   // to be "following newest" — i.e. close enough that a freshly arrived frame
   // should pull the rail along instead of being silently prepended.
   const TIMELINE_FOLLOW_SLACK_PX = 4;
-  // Safety cap on the pages we'll auto-load while chasing a jump target so a
-  // mis-typed range can't hang the UI on a runaway pagination loop.
-  const TIMELINE_JUMP_PAGE_BUDGET = 500;
+  // Focused jump window size around a picked historical frame. Keep it aligned
+  // with the normal page size so the rail density and subsequent older-history
+  // pagination behave like the standard timeline flow.
+  const TIMELINE_JUMP_WINDOW_NEWER_LIMIT = Math.floor((TIMELINE_PAGE_SIZE - 1) / 2);
+  const TIMELINE_JUMP_WINDOW_OLDER_LIMIT = TIMELINE_PAGE_SIZE -
+    TIMELINE_JUMP_WINDOW_NEWER_LIMIT -
+    1;
   // Render only the slots near the viewport plus a buffer on each side, so
   // large recordings don't tax the DOM. The track itself keeps its full width
   // so scroll-position-based active-index math is unaffected. The rail is
@@ -115,7 +121,9 @@
   let timelineLoading = $state(false);
   let timelineLoadingMore = $state(false);
   let timelineExhausted = $state(false);
+  let timelineHasNewer = $state(false);
   let timelineError = $state<string | null>(null);
+  let timelineShowingHistoricalWindow = $state(false);
   let timelineRail: HTMLDivElement | null = $state(null);
   // Current rail scrollLeft (LTR, always >= 0). The "advance" distance —
   // how far past slot 0 (newest) the user has scrolled toward older frames —
@@ -153,6 +161,7 @@
   const previewInFlight = new Set<number>();
 
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
+  const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
 
   const audioSegmentCounts = $derived.by(() => ({
     microphone: audioSegments.filter((s) => s.source === "microphone").length,
@@ -573,6 +582,8 @@
       timelineLoading = true;
       timelineLoadingMore = false;
       timelineExhausted = false;
+      timelineHasNewer = false;
+      timelineShowingHistoricalWindow = false;
     } else {
       timelineLoadingMore = true;
     }
@@ -615,12 +626,15 @@
         // Drop cached previews from any prior generation — keeping them
         // would grow unboundedly across refreshes.
         previewCache = new Map();
-        // Invalidate the date-jump picker's month/day summary cache so
-        // newly captured frames show up as available dates and times. The
-        // picker effect that watches `pickerPlaceholder` will re-fetch the
-        // visible month on the next render if the picker is open.
-        summariesByDate = new Map();
-        loadedMonths = new Set();
+        // Targeted picker invalidation: only invalidate months actually
+        // covered by the freshly loaded frames. Wholesale clearing of
+        // `summariesByDate`/`loadedMonths` would force the open picker to
+        // re-fetch and remount its disabled-date map, producing a visible
+        // flicker on every routine refresh — even when no new month was
+        // affected. The picker effect re-loads the visible month whenever
+        // `pickerPlaceholder` changes; for the case where the affected
+        // month IS already visible, we trigger a reload below.
+        invalidatePickerMonthsForFrames(page);
       } else {
         // Appending older frames grows the track to the LEFT of slot 0,
         // which increases `scrollWidth` (and therefore `maxScrollLeft`).
@@ -688,6 +702,80 @@
     }
   }
 
+  async function loadTimelineNewerPage() {
+    if (!timelineShowingHistoricalWindow || !timelineHasNewer) return;
+    if (timelineLoading || timelineLoadingMore) return;
+    const head = timelineFrames[0];
+    if (!head) return;
+
+    timelineLoadingMore = true;
+    const gen = timelineGeneration;
+
+    try {
+      const window = await invoke<FocusedFrameWindowDto>(
+        "get_timeline_window_around_frame",
+        {
+          request: {
+            frameId: head.id,
+            newerLimit: TIMELINE_PAGE_SIZE,
+            olderLimit: 0,
+          } satisfies GetTimelineWindowAroundFrameRequest,
+        },
+      );
+      if (gen !== timelineGeneration) return;
+      if (!window.frames[window.targetIndex] || window.frames[window.targetIndex]?.id !== head.id) {
+        timelineError = "failed to page newer timeline frames";
+        return;
+      }
+
+      const page = window.frames.slice(0, window.targetIndex);
+      timelineHasNewer = window.hasNewer;
+      timelineShowingHistoricalWindow = window.hasNewer;
+
+      if (page.length === 0) {
+        timelineError = null;
+        return;
+      }
+
+      const anchorFrame = timelineFrames[timelineActiveIndex] ?? null;
+      const prevScrollLeft = timelineRail?.scrollLeft ?? 0;
+
+      timelineFrames = page.concat(timelineFrames);
+      invalidatePickerMonthsForFrames(page);
+      await tick();
+
+      if (anchorFrame) {
+        const newIdx = timelineFrames.findIndex((frame) => frame.id === anchorFrame.id);
+        if (newIdx >= 0) timelineActiveIndex = newIdx;
+      }
+      if (timelineRail) {
+        timelineRail.scrollLeft = prevScrollLeft;
+        timelineScrollLeft = prevScrollLeft;
+      }
+
+      timelineError = null;
+    } catch (err) {
+      if (gen !== timelineGeneration) return;
+      timelineError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      if (gen === timelineGeneration) {
+        timelineLoadingMore = false;
+      }
+    }
+
+    void refreshAudioSegments();
+
+    if (
+      timelineShowingHistoricalWindow &&
+      timelineHasNewer &&
+      !timelineLoading &&
+      !timelineLoadingMore &&
+      timelineActiveIndex <= TIMELINE_PREFETCH_AHEAD
+    ) {
+      loadTimelineNewerPage();
+    }
+  }
+
   // ─── Realtime head poll ──────────────────────────────────────────────────
   // Periodically fetch the newest page and merge any frames whose ids are
   // greater than the current head into `timelineFrames`. If a single page
@@ -697,7 +785,7 @@
   // to the manual refresh / load-more paths so they remain authoritative for
   // full resets and history pagination.
   //
-  // The merge has three branches:
+  // Outside historical-window mode, the merge has three branches:
   //   1. Rail is empty → behave like the empty→populated half of a reset:
   //      seed the frames, scroll to the right edge, and invalidate the date
   //      picker's month summary cache so the new dates show as available.
@@ -739,10 +827,12 @@
         // which is already empty here).
         timelineFrames = firstPage;
         timelineActiveIndex = 0;
-        // Picker's month-availability map was computed against an empty
-        // dataset; drop it so the newly-arrived dates light up.
-        summariesByDate = new Map();
-        loadedMonths = new Set();
+        // Targeted picker invalidation for the months the new frames
+        // belong to. Avoids flickering the open picker by leaving cached
+        // months untouched when they don't overlap the freshly arrived
+        // frames; the picker's own effect re-loads the visible month if
+        // its placeholder month was invalidated below.
+        invalidatePickerMonthsForFrames(firstPage);
         await tick();
         if (timelineRail) {
           const max = timelineRail.scrollWidth - timelineRail.clientWidth;
@@ -805,6 +895,12 @@
       }
 
       if (!reachedHead) {
+        if (timelineShowingHistoricalWindow) {
+          if (fresh.length > 0) {
+            invalidatePickerMonthsForFrames(fresh);
+          }
+          return;
+        }
         // Page budget exhausted before reaching the local head: splicing in
         // `fresh` would leave a hole between it and the existing frames.
         // Fall back to a full reset so the rail stays internally consistent.
@@ -814,7 +910,16 @@
         return;
       }
 
-      if (fresh.length === 0) return;
+      if (timelineShowingHistoricalWindow) {
+        if (fresh.length > 0) {
+          invalidatePickerMonthsForFrames(fresh);
+        }
+        return;
+      }
+
+      if (fresh.length === 0) {
+        return;
+      }
 
       const followingNewest =
         timelineActiveIndex === 0 &&
@@ -829,11 +934,14 @@
 
       timelineFrames = fresh.concat(timelineFrames);
 
-      // New frames may belong to a date/minute the picker had cached as
-      // empty (or simply hadn't seen yet). Drop the cache so the next open
-      // re-fetches the visible month and the new entries light up.
-      summariesByDate = new Map();
-      loadedMonths = new Set();
+      // Targeted picker invalidation for months touched by the freshly
+      // merged frames only. A blanket reset of `summariesByDate` /
+      // `loadedMonths` on every poll would force the picker (if open) to
+      // re-fetch its visible month each tick, causing the calendar's
+      // disabled-date map to flicker and stealing focus on bits-ui
+      // rebuilds. Months unrelated to the new frames keep their cached
+      // summaries.
+      invalidatePickerMonthsForFrames(fresh);
 
       await tick();
       if (!timelineRail) return;
@@ -895,6 +1003,15 @@
     }
     // Lazy-fetch the next page once the user is within `PREFETCH_AHEAD` of
     // the tail of what's already loaded.
+    if (
+      timelineShowingHistoricalWindow &&
+      timelineHasNewer &&
+      !timelineLoadingMore &&
+      idx <= TIMELINE_PREFETCH_AHEAD
+    ) {
+      loadTimelineNewerPage();
+      return;
+    }
     if (
       !timelineExhausted &&
       !timelineLoadingMore &&
@@ -1108,10 +1225,11 @@
   //     specific minute. Either way we delegate the "latest at or before"
   //     resolution to `get_latest_frame_in_range` so the backend remains
   //     the source of truth for the jump target.
-  //   - After resolving the target we page `list_frames` (older direction,
-  //     using the existing `beforeId` cursor) until the target frame is
-  //     present locally, then scroll the rail to its index. This keeps the
-  //     preview/rail in sync with the picker without a parallel data path.
+  //   - After resolving the target we load a focused newest-first window
+  //     around that frame in one request, then scroll the rail to the
+  //     returned target index. From there the rail can page both directions:
+  //     newer frames back toward the live head from the loaded start, and
+  //     older history from the loaded tail via the normal `beforeId` path.
 
   type DateKey = string; // "YYYY-MM-DD" in local time
   type MonthKey = string; // "YYYY-MM" in local time
@@ -1122,6 +1240,17 @@
   let pickerSelectedTime = $state<string | null>(null); // "HH:MM"
   let summariesByDate = $state<Map<DateKey, FrameSummaryDto[]>>(new Map());
   let loadedMonths = $state<Set<MonthKey>>(new Set());
+  // Months whose cached summaries are known to be out-of-date because new
+  // frames have arrived in them. Kept SEPARATE from `loadedMonths` /
+  // `summariesByDate` so the open picker keeps rendering the existing
+  // disabled-date map while a background revalidation is in flight — a
+  // stale-while-revalidate strategy that avoids the visible flicker that
+  // came from deleting a month's cache before its replacement landed.
+  let staleMonths = $state<Set<MonthKey>>(new Set());
+  // In-flight month fetches. Dedupes concurrent revalidations triggered by
+  // the picker effect, manual refresh, and head poll all racing to refresh
+  // the same month.
+  const monthsInFlight = new Set<MonthKey>();
   let pickerLoading = $state(false);
   let pickerJumping = $state(false);
   let pickerError = $state<string | null>(null);
@@ -1148,10 +1277,57 @@
     return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
   }
 
+  /**
+   * Targeted invalidation of the date-jump picker's per-month summary
+   * cache. Given a set of newly-arrived frames, compute the LOCAL months
+   * they belong to and MARK those months stale. We deliberately do NOT
+   * delete `loadedMonths` entries or drop rows from `summariesByDate`:
+   * doing so during a routine refresh / head poll would unmount the open
+   * picker's disabled-date map for the visible month and produce a
+   * visible flicker every poll, even when no UI-visible change exists.
+   *
+   * Reactivity: `staleMonths` is itself reactive state, and the picker's
+   * `$effect` reads it via `loadMonthSummaries`, so marking the visible
+   * month stale here re-triggers a background revalidation. The existing
+   * cached data stays mounted until the replacement response lands, at
+   * which point `loadMonthSummaries` swaps the affected month's rows in
+   * one assignment and clears the stale flag (see below).
+   */
+  function invalidatePickerMonthsForFrames(frames: { capturedAt: string }[]): void {
+    if (frames.length === 0) return;
+    const affectedMonths = new Set<MonthKey>();
+    for (const f of frames) {
+      const d = parseCapturedAt(f.capturedAt);
+      if (isNaN(d.getTime())) continue;
+      affectedMonths.add(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
+    }
+    if (affectedMonths.size === 0) return;
+    let changed = false;
+    const next = new Set(staleMonths);
+    for (const m of affectedMonths) {
+      if (!next.has(m)) {
+        next.add(m);
+        changed = true;
+      }
+    }
+    if (changed) staleMonths = next;
+  }
+
   async function loadMonthSummaries(value: DateValue): Promise<void> {
     const key = monthKeyOf(value);
-    if (loadedMonths.has(key)) return;
-    pickerLoading = true;
+    const isStale = staleMonths.has(key);
+    // Already up-to-date and loaded — nothing to do.
+    if (loadedMonths.has(key) && !isStale) return;
+    // Another caller is already revalidating this month; let its response
+    // be the one that swaps the data in. Prevents fetch storms when the
+    // picker effect, head poll, and manual refresh all race.
+    if (monthsInFlight.has(key)) return;
+    monthsInFlight.add(key);
+    // Only show the spinner when there's nothing to render yet. Stale
+    // revalidations happen quietly so the existing disabled-date map keeps
+    // rendering until replacement data arrives.
+    const isFirstLoad = !loadedMonths.has(key);
+    if (isFirstLoad) pickerLoading = true;
     try {
       // Local month bounds, converted to UTC ISO for the backend.
       const start = new Date(value.year, value.month - 1, 1, 0, 0, 0, 0);
@@ -1164,9 +1340,11 @@
         "list_frame_summaries_in_range",
         { request: req },
       );
+      // Atomically swap this month's rows: drop any prior entries whose
+      // local date falls inside this month, then insert the fresh ones.
+      // Doing this in one assignment means the picker never observes an
+      // intermediate "month exists in loadedMonths but has no rows" state.
       const next = new Map(summariesByDate);
-      // Drop any prior entries whose local date falls inside this month so
-      // a re-load replaces rather than duplicates rows.
       for (const k of Array.from(next.keys())) {
         if (k.startsWith(`${key}-`)) next.delete(k);
       }
@@ -1182,14 +1360,22 @@
         arr.sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
       }
       summariesByDate = next;
-      const nextMonths = new Set(loadedMonths);
-      nextMonths.add(key);
-      loadedMonths = nextMonths;
+      if (!loadedMonths.has(key)) {
+        const nextMonths = new Set(loadedMonths);
+        nextMonths.add(key);
+        loadedMonths = nextMonths;
+      }
+      if (staleMonths.has(key)) {
+        const nextStale = new Set(staleMonths);
+        nextStale.delete(key);
+        staleMonths = nextStale;
+      }
       pickerError = null;
     } catch (err) {
       pickerError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
-      pickerLoading = false;
+      monthsInFlight.delete(key);
+      if (isFirstLoad) pickerLoading = false;
     }
   }
 
@@ -1231,33 +1417,54 @@
   async function jumpToFrame(target: FrameDto): Promise<void> {
     pickerJumping = true;
     pickerError = null;
+    timelineGeneration += 1;
+    const gen = timelineGeneration;
+    timelineLoading = true;
+    timelineLoadingMore = false;
     try {
-      // Page older frames until the target is present locally. The list is
-      // newest-first so older frames have smaller ids; loadTimelinePage's
-      // beforeId cursor walks backward in time.
-      let budget = TIMELINE_JUMP_PAGE_BUDGET;
-      while (
-        !timelineFrames.some((f) => f.id === target.id) &&
-        !timelineExhausted &&
-        budget-- > 0
-      ) {
-        await loadTimelinePage(false);
-      }
-      const idx = timelineFrames.findIndex((f) => f.id === target.id);
-      if (idx < 0) {
-        pickerError = "frame is outside the loaded window";
+      const request: GetTimelineWindowAroundFrameRequest = {
+        frameId: target.id,
+        newerLimit: TIMELINE_JUMP_WINDOW_NEWER_LIMIT,
+        olderLimit: TIMELINE_JUMP_WINDOW_OLDER_LIMIT,
+      };
+      const window = await invoke<FocusedFrameWindowDto>(
+        "get_timeline_window_around_frame",
+        { request },
+      );
+      if (gen !== timelineGeneration) return;
+      if (!window.frames[window.targetIndex] || window.frames[window.targetIndex]?.id !== target.id) {
+        pickerError = "failed to focus selected frame";
         return;
       }
-      timelineActiveIndex = idx;
+      timelineFrames = window.frames;
+      timelineActiveIndex = window.targetIndex;
+      timelineExhausted = !window.hasOlder;
+      timelineHasNewer = window.hasNewer;
+      timelineError = null;
+      timelineShowingHistoricalWindow = window.hasNewer;
+      previewCache = new Map();
+      await tick();
       if (timelineRail) {
         const max = timelineRail.scrollWidth - timelineRail.clientWidth;
-        timelineRail.scrollTo({
-          left: max - idx * TIMELINE_SLOT_WIDTH,
-          behavior: "smooth",
-        });
+        const targetScrollLeft = Math.max(
+          0,
+          Math.min(max, max - window.targetIndex * TIMELINE_SLOT_WIDTH),
+        );
+        timelineRail.scrollLeft = targetScrollLeft;
+        timelineScrollLeft = targetScrollLeft;
+      } else {
+        timelineScrollLeft = 0;
       }
+      void refreshAudioSegments();
       pickerOpen = false;
+    } catch (err) {
+      if (gen !== timelineGeneration) return;
+      pickerError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
+      if (gen === timelineGeneration) {
+        timelineLoading = false;
+        timelineLoadingMore = false;
+      }
       pickerJumping = false;
     }
   }
@@ -1755,7 +1962,7 @@
       {#if timelineActive}
         <span class="timeline__counter">
           <span class="timeline__counter-strong">{timelineActiveIndex + 1}</span>
-          <span class="timeline__counter-dim">/ {timelineFrames.length}{timelineExhausted ? "" : "+"}</span>
+          <span class="timeline__counter-dim">/ {timelineFrames.length}{timelineHasMore ? "+" : ""}</span>
         </span>
       {/if}
       <button
@@ -1955,7 +2162,7 @@
         aria-valuenow={timelineActiveIndex + 1}
         aria-describedby="timeline-rail-readout"
         aria-valuetext={timelineActive
-          ? `Frame ${timelineActiveIndex + 1} of ${timelineFrames.length}${timelineExhausted ? "" : "+"} — captured ${formatCapturedAt(timelineActive.capturedAt)}`
+          ? `Frame ${timelineActiveIndex + 1} of ${timelineFrames.length}${timelineHasMore ? "+" : ""} — captured ${formatCapturedAt(timelineActive.capturedAt)}`
           : undefined}
       >
         <div
