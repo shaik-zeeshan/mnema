@@ -52,7 +52,7 @@ pub(crate) fn install_panic_hook() {
                 })
                 .unwrap_or_else(|| "unknown location".to_string());
 
-            log(format!(
+            log_error(format!(
                 "panic on thread '{thread_name}' at {location}: {}",
                 panic_payload_message(info)
             ));
@@ -65,6 +65,24 @@ pub(crate) fn install_panic_hook() {
 pub(crate) fn log(message: impl AsRef<str>) {
     let message = message.as_ref();
     tauri_plugin_log::log::debug!("{message}");
+    capture_runtime::write_debug_log_to_file(message);
+}
+
+pub(crate) fn log_info(message: impl AsRef<str>) {
+    let message = message.as_ref();
+    tauri_plugin_log::log::info!("{message}");
+    capture_runtime::write_debug_log_to_file(message);
+}
+
+pub(crate) fn log_warn(message: impl AsRef<str>) {
+    let message = message.as_ref();
+    tauri_plugin_log::log::warn!("{message}");
+    capture_runtime::write_debug_log_to_file(message);
+}
+
+pub(crate) fn log_error(message: impl AsRef<str>) {
+    let message = message.as_ref();
+    tauri_plugin_log::log::error!("{message}");
     capture_runtime::write_debug_log_to_file(message);
 }
 
@@ -174,5 +192,22 @@ mod tests {
             .exists());
 
         delete_log_file_at_path(&log_path).expect("missing log file should be ignored");
+    }
+
+    #[test]
+    fn info_warn_and_error_logs_append_to_debug_log_file() {
+        let dir = TestDir::new("levels");
+        let log_path = dir.path().join("native-capture-debug.log");
+
+        configure_debug_log(true, Some(log_path.clone()));
+        log_info("info message");
+        log_warn("warn message");
+        log_error("error message");
+        configure_debug_log(false, None);
+
+        let contents = fs::read_to_string(&log_path).expect("log file should exist");
+        assert!(contents.contains("info message"));
+        assert!(contents.contains("warn message"));
+        assert!(contents.contains("error message"));
     }
 }
