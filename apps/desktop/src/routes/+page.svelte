@@ -177,17 +177,6 @@
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
   const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
 
-  const audioSegmentCounts = $derived.by(() => ({
-    microphone: audioSegments.filter((s) => s.source === "microphone").length,
-    systemAudio: audioSegments.filter((s) => s.source === "systemAudio").length,
-  }));
-  const latestAudioSegment = $derived(audioSegments[audioSegments.length - 1] ?? null);
-  const audioSummaryTitle = $derived(
-    latestAudioSegment
-      ? `Latest audio segment: ${audioSourceLabel(latestAudioSegment.source)} ${latestAudioSegment.segmentIndex} (${formatUnixMs(latestAudioSegment.startUnixMs)} – ${formatUnixMs(latestAudioSegment.endUnixMs)})`
-      : audioSegmentsError ?? "No audio segments found in the loaded timeline range",
-  );
-
   // Selected audio segment for the inline player. Resolved from the current
   // `audioSegments` list each render so the selection auto-clears when a
   // refresh drops the row (see `$effect` below). Audio media bytes are fetched
@@ -2807,29 +2796,6 @@
     </div>
   </header>
 
-  <div class="timeline__audio" title={audioSummaryTitle} aria-label="Audio segments summary">
-    <span class="timeline__audio-label">audio segments</span>
-    <span class="timeline__audio-pill timeline__audio-pill--microphone" aria-label={`${audioSegmentCounts.microphone} microphone segments`}>
-      <span class="timeline__audio-swatch" aria-hidden="true"></span>
-      mic {audioSegmentCounts.microphone}
-    </span>
-    <span class="timeline__audio-pill timeline__audio-pill--systemAudio" aria-label={`${audioSegmentCounts.systemAudio} system audio segments`}>
-      <span class="timeline__audio-swatch" aria-hidden="true"></span>
-      system {audioSegmentCounts.systemAudio}
-    </span>
-    {#if latestAudioSegment}
-      <span class="timeline__audio-latest">
-        latest {audioSourceLabel(latestAudioSegment.source)} #{latestAudioSegment.segmentIndex}
-      </span>
-    {:else if audioSegmentsLoading}
-      <span class="timeline__audio-muted">loading…</span>
-    {:else if audioSegmentsError}
-      <span class="timeline__audio-error">timeline audio unavailable</span>
-    {:else}
-      <span class="timeline__audio-muted">none in loaded range</span>
-    {/if}
-  </div>
-
   {#if timelineError}
     <div class="timeline__error">
       <span class="timeline__error-label">load error</span>
@@ -3323,7 +3289,6 @@
   }
 
   .timeline__bar,
-  .timeline__audio,
   .timeline__error,
   .timeline__rail-wrap {
     flex: 0 0 auto;
@@ -3463,76 +3428,6 @@
     border-radius: 1px;
     width: 7px;
     height: 7px;
-  }
-
-  .timeline__audio {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    padding: 3px 8px;
-    background: #0a0a10;
-    border: 1px solid #161624;
-    border-radius: 4px;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #555574;
-  }
-
-  .timeline__audio-label {
-    color: #6a6a88;
-  }
-
-  .timeline__audio-pill {
-    padding: 1px 6px;
-    border: 1px solid #242438;
-    border-radius: 999px;
-    color: #a0a0c0;
-    font-variant-numeric: tabular-nums;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .timeline__audio-swatch {
-    width: 8px;
-    height: 3px;
-    border-radius: 1.5px;
-    display: inline-block;
-  }
-
-  .timeline__audio-pill--microphone .timeline__audio-swatch {
-    background: linear-gradient(
-      90deg,
-      rgba(120, 200, 255, 0.95),
-      rgba(80, 160, 230, 0.95)
-    );
-  }
-
-  .timeline__audio-pill--systemAudio .timeline__audio-swatch {
-    background: linear-gradient(
-      90deg,
-      rgba(255, 180, 100, 0.95),
-      rgba(220, 130, 60, 0.95)
-    );
-  }
-
-  .timeline__audio-latest {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: #7a7a9a;
-  }
-
-  .timeline__audio-muted {
-    color: #3a3a52;
-  }
-
-  .timeline__audio-error {
-    color: #a06068;
   }
 
   /* ── Audio segment player drawer ──────────────────────────────
