@@ -25,8 +25,8 @@ use super::segments::{
     committed_audio_segments_for_output_files, handle_inactivity_resume_error,
     pause_microphone_for_inactivity, pause_runtime_for_inactivity, pause_screen_for_inactivity,
     pause_system_audio_for_inactivity, plan_live_rotation_segment,
-    process_inactivity_audio_transitions_for_snapshot, resume_microphone_from_inactivity,
-    recover_screen_capture_after_wake_with_start_segment,
+    process_inactivity_audio_transitions_for_snapshot,
+    recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity_with_start_segment, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
     segment_loop_sleep_duration, StartedSegmentState,
@@ -1212,16 +1212,22 @@ fn close_frame_batches_for_stopped_screen_session_id_closes_stale_open_batch() {
             .expect("first batch should exist");
         assert_eq!(open_before.status, ::app_infra::FrameBatchStatus::Open);
 
-        super::segments::close_frame_batches_for_stopped_screen_session_id_async(&infra, session_id)
-            .await
-            .expect("stop cleanup should close frame batches");
+        super::segments::close_frame_batches_for_stopped_screen_session_id_async(
+            &infra, session_id,
+        )
+        .await
+        .expect("stop cleanup should close frame batches");
 
         let batches = infra
             .list_frame_batches(Some(session_id))
             .await
             .expect("frame batches should list after stop cleanup");
-        assert!(batches.iter().all(|batch| batch.status != ::app_infra::FrameBatchStatus::Open));
-        assert!(batches.iter().any(|batch| batch.status == ::app_infra::FrameBatchStatus::Closed));
+        assert!(batches
+            .iter()
+            .all(|batch| batch.status != ::app_infra::FrameBatchStatus::Open));
+        assert!(batches
+            .iter()
+            .any(|batch| batch.status == ::app_infra::FrameBatchStatus::Closed));
         assert!(batches.iter().all(|batch| batch.finalize_job_id.is_some()));
     });
 }
