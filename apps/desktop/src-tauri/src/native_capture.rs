@@ -38,8 +38,7 @@ pub use runtime::{NativeCaptureState, RecordingSettingsState};
 use segments::{recover_screen_capture_after_wake, start_capture_runtime, stop_capture_runtime};
 
 #[cfg(target_os = "macos")]
-pub type SystemWakeNotifierState =
-    std::sync::Mutex<Option<cidre::ns::NotificationGuard>>;
+pub type SystemWakeNotifierState = std::sync::Mutex<Option<cidre::ns::NotificationGuard>>;
 
 #[cfg(not(target_os = "macos"))]
 pub type SystemWakeNotifierState = std::sync::Mutex<Option<()>>;
@@ -84,18 +83,13 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
     use cidre::ns;
 
     let mut center = ns::Workspace::shared().notification_center();
-    let guard = center.add_observer_guard(
-        ns::workspace::notification::did_wake(),
-        None,
-        None,
-        {
-            let app_handle = app_handle.clone();
-            move |_notification| {
-                emit_system_did_wake(&app_handle);
-                recover_screen_capture_after_system_wake(&app_handle);
-            }
-        },
-    );
+    let guard = center.add_observer_guard(ns::workspace::notification::did_wake(), None, None, {
+        let app_handle = app_handle.clone();
+        move |_notification| {
+            emit_system_did_wake(&app_handle);
+            recover_screen_capture_after_system_wake(&app_handle);
+        }
+    });
 
     let notifier_state = app_handle.state::<SystemWakeNotifierState>();
     let mut notifier_slot = notifier_state

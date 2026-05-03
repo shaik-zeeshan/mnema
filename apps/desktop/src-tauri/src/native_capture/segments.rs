@@ -1608,7 +1608,8 @@ fn refresh_current_segment_sources_for_pause_state(
 #[cfg(target_os = "macos")]
 fn preserve_live_microphone_continuation_outputs(runtime: &mut NativeCaptureRuntime) {
     let has_live_microphone = !runtime.inactivity.microphone_paused
-        && (runtime.active_microphone_session.is_some() || runtime.microphone_recording_file.is_some());
+        && (runtime.active_microphone_session.is_some()
+            || runtime.microphone_recording_file.is_some());
 
     if has_live_microphone {
         let mut audio_continuation = empty_output_files();
@@ -1627,7 +1628,8 @@ fn merge_live_microphone_continuation_into_segment_outputs(
     segment_outputs: &mut CaptureOutputFiles,
 ) {
     let has_live_microphone = !runtime.inactivity.microphone_paused
-        && (runtime.active_microphone_session.is_some() || runtime.microphone_recording_file.is_some());
+        && (runtime.active_microphone_session.is_some()
+            || runtime.microphone_recording_file.is_some());
 
     if has_live_microphone {
         if let Some(mic_file) = runtime.microphone_recording_file.as_ref() {
@@ -1691,7 +1693,8 @@ where
     let screen_sources = CaptureSources {
         screen: true,
         microphone: false,
-        system_audio: requested_sources.system_audio && !runtime.inactivity.is_system_audio_paused(),
+        system_audio: requested_sources.system_audio
+            && !runtime.inactivity.is_system_audio_paused(),
     };
     let system_audio_planner = if screen_sources.system_audio {
         ensure_system_audio_planner_for_runtime(runtime, "recovering after system wake")?
@@ -1699,11 +1702,15 @@ where
         None
     };
 
-    let mut previous_screen_outputs = runtime.current_segment_output_files.clone().map(|mut outputs| {
-        outputs.microphone_file = None;
-        outputs.microphone_files.clear();
-        outputs
-    });
+    let mut previous_screen_outputs =
+        runtime
+            .current_segment_output_files
+            .clone()
+            .map(|mut outputs| {
+                outputs.microphone_file = None;
+                outputs.microphone_files.clear();
+                outputs
+            });
     let recording_file = runtime.recording_file.clone();
     let system_audio_recording_file = runtime.system_audio_recording_file.clone();
 
@@ -1842,11 +1849,7 @@ pub(super) fn recover_screen_capture_after_wake(
     runtime: &mut NativeCaptureRuntime,
     app_handle: Option<&tauri::AppHandle>,
 ) -> Result<bool, CaptureErrorResponse> {
-    recover_screen_capture_after_wake_with_start_segment(
-        runtime,
-        app_handle,
-        start_segment,
-    )
+    recover_screen_capture_after_wake_with_start_segment(runtime, app_handle, start_segment)
 }
 
 #[cfg(target_os = "macos")]
