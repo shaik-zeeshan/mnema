@@ -22,6 +22,8 @@ use cidre::objc;
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
+mod equivalence;
+
 use std::ffi::c_void;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
@@ -57,8 +59,15 @@ pub struct ScreenFrameArtifact {
     pub captured_at_unix_ms: u64,
     pub width: Option<u32>,
     pub height: Option<u32>,
-    pub content_fingerprint: Option<u64>,
+    pub captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 }
+
+pub use equivalence::{
+    captured_frame_equivalence_from_image_path, captured_frame_equivalence_proofs_match,
+    captured_frame_equivalence_from_interleaved_bytes, CapturedFrameEquivalence,
+    CapturedFrameEquivalenceOutcome,
+    CAPTURED_FRAME_EQUIVALENCE_VERSION,
+};
 
 pub type ScreenFrameArtifactHandler =
     std::sync::Arc<dyn Fn(ScreenFrameArtifact) + Send + Sync + 'static>;
@@ -613,6 +622,61 @@ fn screen_activity_sample_fingerprint(sample_buf: &mut cidre::cm::SampleBuf) -> 
 }
 
 #[cfg(target_os = "macos")]
+fn screen_activity_sample_captured_frame_equivalence(
+    sample_buf: &mut cidre::cm::SampleBuf,
+) -> Option<CapturedFrameEquivalenceOutcome> {
+    let pixel_buf = sample_buf.image_buf_mut()?;
+    let plane_count = pixel_buf.plane_count();
+    if plane_count != 0 {
+        return None;
+    }
+
+    let height = pixel_buf.height();
+    let bytes_per_row = unsafe { CVPixelBufferGetBytesPerRow(pixel_buf) };
+    let sample_width = non_planar_screen_activity_sample_width(pixel_buf, bytes_per_row);
+    let base_address = unsafe { CVPixelBufferGetBaseAddress(pixel_buf) } as *const u8;
+    let total_accessible_bytes = unsafe { CVPixelBufferGetDataSize(pixel_buf) };
+    let pixel_format = pixel_buf.pixel_format();
+    let lock_flags = cidre::cv::pixel_buffer::LockFlags::READ_ONLY;
+
+    if base_address.is_null()
+        || bytes_per_row == 0
+        || sample_width == 0
+        || height == 0
+        || total_accessible_bytes == 0
+    {
+        return None;
+    }
+
+    let channel_order = match pixel_format {
+        cidre::cv::PixelFormat::_32_BGRA => [2, 1, 0, 3],
+        cidre::cv::PixelFormat::_32_RGBA => [0, 1, 2, 3],
+        cidre::cv::PixelFormat::_32_ARGB => [1, 2, 3, 0],
+        cidre::cv::PixelFormat::_32_ABGR => [3, 2, 1, 0],
+        _ => return None,
+    };
+
+    unsafe {
+        pixel_buf.lock_base_addr(lock_flags).result().ok()?;
+    }
+
+    let total_bytes = bytes_per_row.checked_mul(height)?;
+    let accessible_bytes = total_accessible_bytes.min(total_bytes);
+    let bytes = unsafe { std::slice::from_raw_parts(base_address, accessible_bytes) };
+    let equivalence = captured_frame_equivalence_from_interleaved_bytes(
+        bytes,
+        bytes_per_row,
+        sample_width,
+        height,
+        channel_order,
+    )
+    .map(CapturedFrameEquivalenceOutcome::ready);
+
+    let _ = unsafe { pixel_buf.unlock_lock_base_addr(lock_flags).result() };
+    equivalence
+}
+
+#[cfg(target_os = "macos")]
 fn should_mark_screen_activity_for_fingerprint(
     last_activity_fingerprint: u64,
     fingerprint: Option<u64>,
@@ -1008,14 +1072,14 @@ struct PreparedScreenFrameExport {
     captured_at_unix_ms: u64,
     width: Option<u32>,
     height: Option<u32>,
-    content_fingerprint: Option<u64>,
+    captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 }
 
 #[cfg(target_os = "macos")]
 fn prepare_screen_frame_export(
     runtime: &mut ScreenFrameExportRuntime,
     sample_buf: &cidre::cm::SampleBuf,
-    content_fingerprint: Option<u64>,
+    captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 ) -> PreparedScreenFrameExport {
     let captured_at_unix_ms = now_unix_ms();
     let frame_index = runtime.next_frame_index;
@@ -1039,7 +1103,7 @@ fn prepare_screen_frame_export(
         captured_at_unix_ms,
         width,
         height,
-        content_fingerprint,
+        captured_frame_equivalence,
     }
 }
 
@@ -1116,9 +1180,13 @@ fn image_destination_creation_failure_message(output_path: &Path, format_name: &
 fn export_screen_frame_artifact(
     runtime: &mut ScreenFrameExportRuntime,
     sample_buf: cidre::arc::R<cidre::cm::SampleBuf>,
-    content_fingerprint: Option<u64>,
+    captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 ) -> Result<(), CaptureErrorResponse> {
-    let prepared = prepare_screen_frame_export(runtime, sample_buf.as_ref(), content_fingerprint);
+    let prepared = prepare_screen_frame_export(
+        runtime,
+        sample_buf.as_ref(),
+        captured_frame_equivalence,
+    );
     let callback_queue = runtime.callback_queue.retained();
     let on_frame_exported = runtime.on_frame_exported.clone();
     let first_error = runtime.first_error.clone();
@@ -1136,12 +1204,35 @@ fn export_screen_frame_artifact(
             return;
         }
 
+        let captured_frame_equivalence = match prepared.captured_frame_equivalence {
+            CapturedFrameEquivalenceOutcome::Ready(equivalence) => {
+                CapturedFrameEquivalenceOutcome::Ready(equivalence)
+            }
+            CapturedFrameEquivalenceOutcome::Quarantined(error) => {
+                match captured_frame_equivalence_from_image_path(&file_path) {
+                    CapturedFrameEquivalenceOutcome::Ready(equivalence) => {
+                        capture_runtime::debug_log!(
+                            "[capture-screen] recovered captured frame equivalence from exported artifact {} after live sample failure: {}",
+                            file_path.display(),
+                            error
+                        );
+                        CapturedFrameEquivalenceOutcome::Ready(equivalence)
+                    }
+                    CapturedFrameEquivalenceOutcome::Quarantined(fallback_error) => {
+                        CapturedFrameEquivalenceOutcome::Quarantined(format!(
+                            "{error}; fallback from exported artifact failed: {fallback_error}"
+                        ))
+                    }
+                }
+            }
+        };
+
         (on_frame_exported)(ScreenFrameArtifact {
             file_path: file_path.to_string_lossy().to_string(),
             captured_at_unix_ms: prepared.captured_at_unix_ms,
             width: prepared.width,
             height: prepared.height,
-            content_fingerprint: prepared.content_fingerprint,
+            captured_frame_equivalence,
         });
     });
 
@@ -1207,12 +1298,18 @@ mod stream_output_delegate {
                     super::screen_activity_sample_fingerprint(sample_buf);
                 let _ =
                     super::maybe_mark_screen_activity_for_fingerprint(screen_activity_fingerprint);
+                let captured_frame_equivalence = super::screen_activity_sample_captured_frame_equivalence(sample_buf)
+                .unwrap_or_else(|| {
+                    super::CapturedFrameEquivalenceOutcome::quarantined(
+                        "failed to derive captured frame equivalence from screen sample",
+                    )
+                });
 
                 if let Some(frame_export) = ctx.frame_export.as_mut() {
                     if let Err(error) = export_screen_frame_artifact(
                         frame_export,
                         sample_buf.retained(),
-                        screen_activity_fingerprint,
+                        captured_frame_equivalence,
                     ) {
                         store_first_stream_output_error(&mut ctx.first_error, error);
                     }
