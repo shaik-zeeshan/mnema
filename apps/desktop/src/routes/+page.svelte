@@ -18,10 +18,16 @@
     FrameRangeRequest,
     FrameSummaryDto,
     FocusedFrameWindowDto,
+    GetFirstMatchingEarlierFrameByFingerprintRequest,
     GetPermissionsResponse,
+    GetProcessingResultRequest,
     GetTimelineWindowAroundFrameRequest,
     ListAudioSegmentsRequest,
     ListFramesRequest,
+    OcrObservation,
+    OcrStructuredPayload,
+    ProcessingJobDto,
+    ProcessingResultDto,
     RecordingSettings,
   } from "$lib/types";
 
@@ -740,11 +746,25 @@
       const anchorFrame = timelineFrames[timelineActiveIndex] ?? null;
       const prevScrollLeft = timelineRail?.scrollLeft ?? 0;
 
+      // Restore the anchored active index synchronously, in the same turn as
+      // the prepend, so `timelineActive` (derived from
+      // `timelineFrames[timelineActiveIndex]`) does not transiently point at
+      // a different frame between the array assignment and the post-tick
+      // re-find. Without this, the OCR reset effect observes a momentary id
+      // mismatch and clears OCR state even though the user is still parked
+      // on the same logical frame. Because we strictly prepend `page` to the
+      // head, the anchor's new index is just `oldIndex + page.length`.
       timelineFrames = page.concat(timelineFrames);
+      if (anchorFrame) {
+        timelineActiveIndex = timelineActiveIndex + page.length;
+      }
       invalidatePickerMonthsForFrames(page);
       await tick();
 
       if (anchorFrame) {
+        // Defensive re-find in case the prepended page somehow contained the
+        // anchor (shouldn't happen — `page` is strictly newer than head — but
+        // keep the previous correctness guarantee).
         const newIdx = timelineFrames.findIndex((frame) => frame.id === anchorFrame.id);
         if (newIdx >= 0) timelineActiveIndex = newIdx;
       }
@@ -933,6 +953,19 @@
       const prevScrollLeft = timelineRail?.scrollLeft ?? 0;
 
       timelineFrames = fresh.concat(timelineFrames);
+
+      // Restore the anchored active index synchronously, in the same turn as
+      // the prepend, so `timelineActive` (derived from
+      // `timelineFrames[timelineActiveIndex]`) does not transiently point at
+      // a different frame between the array assignment and the post-tick
+      // re-find below. Without this, the OCR reset effect observes a brief
+      // id mismatch and clears OCR state/visibility even though the user is
+      // still parked on the same logical frame. `fresh` is strictly newer
+      // than the prior head, so the anchor's new index is just
+      // `oldIndex + fresh.length`.
+      if (anchorFrame) {
+        timelineActiveIndex = timelineActiveIndex + fresh.length;
+      }
 
       // Targeted picker invalidation for months touched by the freshly
       // merged frames only. A blanket reset of `summariesByDate` /
@@ -1212,6 +1245,312 @@
     const active = timelineActive;
     if (active) ensurePreview(active.id);
   });
+
+  // ─── On-demand OCR for the active frame ──────────────────────────────────
+  // The "Run OCR" header button reprocesses the active frame and polls the
+  // resulting processing job until it reaches a terminal state. On success we
+  // parse the structured payload (Apple Vision: normalised coords with
+  // lower-left origin) and overlay each observation as a translucent box +
+  // text label on the preview. The overlay is positioned against the
+  // *rendered* image bounds inside the stage (object-fit: contain), not the
+  // full stage rect, so boxes align with what the user actually sees.
+  //
+  // State machine:
+  //   "idle"     — no fetch requested for the current frame
+  //   "running"  — an OCR job exists for this frame but has not yet
+  //                terminated on the backend (queued or running). We do NOT
+  //                poll; the user can click again to re-check.
+  //   "success"  — completed job with at least one observation.
+  //   "empty"    — completed job with zero observations.
+  //   "missing"  — no OCR job/result has ever been recorded for this frame.
+  //   "error"    — fetch failed, the existing job is in failed state, or
+  //                its result payload is missing/invalid.
+  //
+  // Switching active frame clears any prior OCR state so a stale overlay
+  // never sits on the wrong preview. A monotonic generation token prevents a
+  // late response for an old frame from writing into the new frame's state.
+  type OcrStatus = "idle" | "running" | "success" | "empty" | "missing" | "error";
+  const FRAME_SUBJECT_TYPE = "frame";
+  const OCR_PROCESSOR = "ocr";
+
+  let ocrStatus = $state<OcrStatus>("idle");
+  let ocrError = $state<string | null>(null);
+  let ocrObservations = $state<OcrObservation[]>([]);
+  let ocrFrameId = $state<number | null>(null);
+  let ocrSourceFrame = $state<FrameDto | null>(null);
+  let ocrGeneration = 0;
+  // Whether the OCR overlay/status surface is currently shown for the active
+  // frame. Tracked separately from `ocrStatus` so the button can hide a
+  // loaded result without discarding it (re-show is a no-op fetch) and so
+  // non-success statuses (running/missing/empty/error) still respect the
+  // user's intent to view or dismiss the OCR surface.
+  let ocrVisible = $state(false);
+
+  // Clear stale overlay state whenever the active frame id changes.
+  $effect(() => {
+    const id = timelineActive?.id ?? null;
+    if (id !== ocrFrameId) {
+      ocrGeneration += 1;
+      ocrStatus = "idle";
+      ocrError = null;
+      ocrObservations = [];
+      ocrFrameId = null;
+      ocrSourceFrame = null;
+      ocrVisible = false;
+    }
+  });
+
+  function parseOcrPayload(json: string | null | undefined): OcrObservation[] | null {
+    if (!json) return null;
+    try {
+      const parsed = JSON.parse(json) as Partial<OcrStructuredPayload>;
+      const obs = Array.isArray(parsed?.observations) ? parsed.observations : null;
+      if (!obs) return null;
+      // Defensive normalisation: keep only entries whose bounding box is a
+      // sane numeric rectangle so a malformed observation can't crash the
+      // overlay render.
+      const out: OcrObservation[] = [];
+      for (const o of obs) {
+        const bb = o?.boundingBox;
+        if (
+          !bb ||
+          typeof bb.x !== "number" ||
+          typeof bb.y !== "number" ||
+          typeof bb.width !== "number" ||
+          typeof bb.height !== "number"
+        )
+          continue;
+        out.push({
+          text: typeof o.text === "string" ? o.text : "",
+          confidence: typeof o.confidence === "number" ? o.confidence : 0,
+          boundingBox: {
+            x: bb.x,
+            y: bb.y,
+            width: bb.width,
+            height: bb.height,
+          },
+        });
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadOcrForFrame(sourceFrame: FrameDto): Promise<{
+    status: OcrStatus;
+    observations: OcrObservation[];
+    error: string | null;
+  }> {
+    const jobs = await invoke<ProcessingJobDto[]>("list_processing_jobs", {
+      request: { subjectType: FRAME_SUBJECT_TYPE, subjectId: sourceFrame.id },
+    });
+
+    const ocrJobs = jobs.filter((j) => j.processor === OCR_PROCESSOR);
+    if (ocrJobs.length === 0) {
+      return { status: "missing", observations: [], error: null };
+    }
+
+    const completed = ocrJobs
+      .filter((j) => j.status === "completed")
+      .sort((a, b) => b.id - a.id);
+    const job = completed[0] ?? ocrJobs.sort((a, b) => b.id - a.id)[0];
+
+    if (job.status === "queued" || job.status === "running") {
+      return { status: "running", observations: [], error: null };
+    }
+    if (job.status === "failed") {
+      return {
+        status: "error",
+        observations: [],
+        error: job.lastError ?? "OCR job failed",
+      };
+    }
+
+    const result = await invoke<ProcessingResultDto | null>("get_processing_result", {
+      request: { jobId: job.id } satisfies GetProcessingResultRequest,
+    });
+
+    const observations = parseOcrPayload(result?.structuredPayloadJson);
+    if (observations === null) {
+      return {
+        status: "error",
+        observations: [],
+        error: result ? "OCR result payload is missing or invalid" : "OCR result not available",
+      };
+    }
+
+    return {
+      status: observations.length === 0 ? "empty" : "success",
+      observations,
+      error: null,
+    };
+  }
+
+  async function loadOcrForActiveFrame(): Promise<void> {
+    const frame = timelineActive;
+    if (!frame) return;
+    // Bump the generation so any in-flight fetch for a prior call is dropped
+    // when its response checks the token.
+    ocrGeneration += 1;
+    const gen = ocrGeneration;
+    const frameId = frame.id;
+    ocrFrameId = frameId;
+    ocrStatus = "running";
+    ocrError = null;
+    ocrObservations = [];
+    ocrSourceFrame = frame;
+    ocrVisible = true;
+
+    try {
+      if (gen !== ocrGeneration) return;
+
+      let sourceFrame = frame;
+      let ocrData = await loadOcrForFrame(sourceFrame);
+      if (gen !== ocrGeneration) return;
+
+      if (ocrData.status === "missing" && frame.contentFingerprint) {
+        const fallbackFrame = await invoke<FrameDto | null>(
+          "get_first_matching_earlier_frame_by_fingerprint",
+          {
+            request: {
+              sessionId: frame.sessionId,
+              beforeFrameId: frame.id,
+              contentFingerprint: frame.contentFingerprint,
+            } satisfies GetFirstMatchingEarlierFrameByFingerprintRequest,
+          },
+        );
+        if (gen !== ocrGeneration) return;
+
+        if (fallbackFrame) {
+          sourceFrame = fallbackFrame;
+          ocrData = await loadOcrForFrame(sourceFrame);
+          if (gen !== ocrGeneration) return;
+        }
+      }
+
+      ocrSourceFrame = sourceFrame;
+      ocrStatus = ocrData.status;
+      ocrError = ocrData.error;
+      ocrObservations = ocrData.observations;
+    } catch (err) {
+      if (gen !== ocrGeneration) return;
+      ocrStatus = "error";
+      ocrError = typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err);
+      ocrSourceFrame = frame;
+    }
+  }
+
+  /**
+   * Toggle the OCR surface for the active frame.
+   *
+   * - If the overlay is currently visible for the active frame, hide it
+   *   without re-fetching. Loaded observations are kept around so a
+   *   subsequent show is instant.
+   * - Otherwise, if a prior load already produced data for this frame
+   *   (`ocrFrameId` matches and we're not in the `idle` reset state), just
+   *   re-show the existing surface — no network round-trip.
+   * - Otherwise kick off a fresh load via `loadOcrForActiveFrame`, which
+   *   handles running/missing/empty/error statuses as before.
+   */
+  function toggleOcrForActiveFrame(): void {
+    const frame = timelineActive;
+    if (!frame) return;
+    if (ocrVisible) {
+      ocrVisible = false;
+      return;
+    }
+    if (ocrFrameId === frame.id && ocrStatus !== "idle") {
+      ocrVisible = true;
+      return;
+    }
+    void loadOcrForActiveFrame();
+  }
+
+  // ─── OCR overlay geometry ────────────────────────────────────────────────
+  // The preview is painted as a `background-image` with `background-size:
+  // contain` on a stage-filling div. There's no `<img>` element to measure,
+  // so we derive the visible image rect from the stage's client size plus
+  // the active frame's intrinsic width/height (FrameDto.width/height). The
+  // contain rule scales by the smaller of (stageW/imgW, stageH/imgH) and
+  // centers the result, so we replicate that math here. The OCR overlay is
+  // a child of the stage positioned to that rect with `overflow: hidden`,
+  // so any out-of-bounds OCR box gets clipped to the visible image.
+  let stageEl = $state<HTMLDivElement | null>(null);
+  let stageWidth = $state(0);
+  let stageHeight = $state(0);
+
+  type RenderedImageRect = { left: number; top: number; width: number; height: number };
+
+  // Painted background-image rect derived from stage size + active frame's
+  // intrinsic dimensions. Falls back to a zero rect when either side is
+  // unknown (no active frame yet, missing dims, stage not measured) so the
+  // OCR overlay's render gate (`width > 0 && height > 0`) hides cleanly.
+  const renderedImageRect = $derived.by<RenderedImageRect>(() => {
+    const sw = stageWidth;
+    const sh = stageHeight;
+    const iw = timelineActive?.width ?? null;
+    const ih = timelineActive?.height ?? null;
+    if (!sw || !sh || !iw || !ih || iw <= 0 || ih <= 0) {
+      return { left: 0, top: 0, width: 0, height: 0 };
+    }
+    const scale = Math.min(sw / iw, sh / ih);
+    const width = iw * scale;
+    const height = ih * scale;
+    const left = (sw - width) / 2;
+    const top = (sh - height) / 2;
+    return { left, top, width, height };
+  });
+
+  // Track the stage's content-box size so the derived rect updates as the
+  // window/layout resizes around it.
+  $effect(() => {
+    const stage = stageEl;
+    if (!stage) {
+      stageWidth = 0;
+      stageHeight = 0;
+      return;
+    }
+    const measure = () => {
+      stageWidth = stage.clientWidth;
+      stageHeight = stage.clientHeight;
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      const onWindowResize = () => measure();
+      window.addEventListener("resize", onWindowResize);
+      return () => window.removeEventListener("resize", onWindowResize);
+    }
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(stage);
+    return () => ro.disconnect();
+  });
+
+  // OCR box styles are expressed in PERCENTAGES of the overlay wrapper.
+  // The wrapper itself is sized/positioned to match the measured image
+  // rect (see template), so percentage coordinates inside it map 1:1 onto
+  // image-space coordinates. The lower-left origin of the source space
+  // means y must be flipped to CSS top.
+  function ocrBoxStyle(obs: OcrObservation): string {
+    const bb = obs.boundingBox;
+    const leftPct = bb.x * 100;
+    const topPct = (1 - bb.y - bb.height) * 100;
+    const widthPct = bb.width * 100;
+    const heightPct = bb.height * 100;
+    return `left: ${leftPct}%; top: ${topPct}%; width: ${widthPct}%; height: ${heightPct}%;`;
+  }
+
+  const ocrButtonLabel = $derived(
+    ocrStatus === "running"
+      ? "loading OCR…"
+      : ocrVisible
+        ? "hide OCR"
+        : "show OCR",
+  );
+
+  const ocrUsingEarlierFrame = $derived(
+    !!timelineActive && !!ocrSourceFrame && ocrSourceFrame.id !== timelineActive.id,
+  );
 
   // ─── Date / time jump picker ──────────────────────────────────────────────
   // A custom Bits UI calendar + time list that lets the user jump the
@@ -1966,6 +2305,36 @@
         </span>
       {/if}
       <button
+        class="btn btn--ghost btn--sm timeline__ocr-btn"
+        class:timeline__ocr-btn--running={ocrStatus === "running"}
+        class:timeline__ocr-btn--error={ocrStatus === "error"}
+        class:timeline__ocr-btn--success={ocrStatus === "success"}
+        onclick={toggleOcrForActiveFrame}
+        disabled={!timelineActive}
+        title={ocrError ??
+          (ocrVisible
+            ? "Hide OCR data for the active frame"
+            : ocrStatus === "success"
+              ? `${ocrObservations.length} text region${ocrObservations.length === 1 ? "" : "s"} detected${ocrUsingEarlierFrame ? ` (reused from frame ${ocrSourceFrame?.id})` : ""}`
+              : ocrStatus === "empty"
+                ? ocrUsingEarlierFrame
+                  ? `no text detected (reused from frame ${ocrSourceFrame?.id})`
+                  : "no text detected"
+                : ocrStatus === "missing"
+                  ? "no OCR data for this frame"
+                  : "Show OCR data for the active frame")}
+        aria-label={ocrVisible
+          ? "Hide OCR data for active frame"
+          : "Show OCR data for active frame"}
+        aria-pressed={ocrVisible}
+      >
+        <span class="timeline__ocr-glyph" aria-hidden="true">⌖</span>
+        <span>{ocrButtonLabel}</span>
+        {#if ocrStatus === "success" && ocrObservations.length > 0}
+          <span class="timeline__ocr-count">{ocrObservations.length}</span>
+        {/if}
+      </button>
+      <button
         class="btn btn--ghost btn--sm"
         onclick={refreshTimelineAndDashboard}
         disabled={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
@@ -2084,7 +2453,7 @@
     </div>
   {/if}
 
-  <div class="timeline__stage">
+  <div class="timeline__stage" bind:this={stageEl}>
     {#if timelineLoading && timelineFrames.length === 0}
       <div class="timeline__preview-pending">loading frames…</div>
     {:else if timelineFrames.length === 0}
@@ -2095,15 +2464,66 @@
     {:else if timelineActive}
       {@const previewUrl = previewCache.get(timelineActive.id)}
       {#if previewUrl}
-        <img
+        <div
           class="timeline__preview"
-          src={previewUrl}
-          alt={`frame ${timelineActive.id}`}
-          draggable="false"
-        />
+          role="img"
+          aria-label={`frame ${timelineActive.id}`}
+          style={`background-image: url("${previewUrl}");`}
+        ></div>
+        <!-- OCR overlay: anchored to the painted background-image rect
+             (background-size: contain, centered) inside the stage. The
+             rect is derived from stage size + the active frame's intrinsic
+             width/height since there's no <img> element to measure.
+             Pointer-events stay disabled so the overlay never blocks
+             scrub/click on the stage. Boxes and labels only render once
+             an OCR run has produced observations for the currently active
+             frame. -->
+        {#if ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0 && renderedImageRect.width > 0 && renderedImageRect.height > 0}
+          <div
+            class="timeline__ocr-overlay"
+            aria-hidden="true"
+            style={`left: ${renderedImageRect.left}px; top: ${renderedImageRect.top}px; width: ${renderedImageRect.width}px; height: ${renderedImageRect.height}px;`}
+          >
+            {#each ocrObservations as obs, i (i)}
+              <div
+                class="timeline__ocr-box"
+                style={ocrBoxStyle(obs)}
+                title={`${obs.text} · ${(obs.confidence * 100).toFixed(0)}%`}
+              >
+                <span class="timeline__ocr-label">{obs.text}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
       {:else}
         <div class="timeline__preview-pending">decoding preview…</div>
       {/if}
+    {/if}
+
+    {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id && ocrStatus !== "idle" && ocrStatus !== "success"}
+      <div
+        class="timeline__ocr-status timeline__ocr-status--{ocrStatus}"
+        role="status"
+        aria-live="polite"
+      >
+        {#if ocrStatus === "running"}
+          <span class="timeline__ocr-spinner" aria-hidden="true"></span>
+          <span>loading OCR data…</span>
+        {:else if ocrStatus === "empty"}
+          <span class="timeline__ocr-status-glyph" aria-hidden="true">∅</span>
+          <span>
+            {ocrUsingEarlierFrame
+              ? `no text detected (reused from frame ${ocrSourceFrame?.id})`
+              : "no text detected on this frame"}
+          </span>
+        {:else if ocrStatus === "missing"}
+          <span class="timeline__ocr-status-glyph" aria-hidden="true">∅</span>
+          <span>no OCR data for this frame</span>
+        {:else if ocrStatus === "error"}
+          <span class="timeline__ocr-status-glyph" aria-hidden="true">!</span>
+          <span class="timeline__ocr-status-msg">{ocrError ?? "OCR failed"}</span>
+        {/if}
+      </div>
     {/if}
 
     {#if timelineActive && developerOptions.value}
@@ -2306,8 +2726,8 @@
     height: calc(100vh - 44px);
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 12px 16px 16px;
+    gap: 4px;
+    padding: 4px 8px 6px;
     background: #0c0c0e;
     /* Allow the stage child (flex: 1, min-height: 0) to actually shrink so
        the bottom rail stays in view regardless of preview intrinsic size. */
@@ -2498,7 +2918,7 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
-    padding: 6px 8px;
+    padding: 3px 8px;
     background: #0a0a10;
     border: 1px solid #161624;
     border-radius: 4px;
@@ -3100,11 +3520,11 @@
   }
 
   .timeline__preview {
-    max-width: 100%;
-    max-height: 100%;
-    width: auto;
-    height: auto;
-    object-fit: contain;
+    position: absolute;
+    inset: 0;
+    background-repeat: no-repeat;
+    background-position: center center;
+    background-size: contain;
     image-rendering: -webkit-optimize-contrast;
     user-select: none;
   }
@@ -3164,6 +3584,200 @@
     max-width: 100%;
   }
 
+  /* ── OCR header button + overlay ───────────────────────────── */
+  /* The button sits in the right-side cluster next to refresh. Its colour
+     mirrors the OCR run state: muted when idle, amber while running, green
+     on success, red on error — so the user can read OCR availability at a
+     glance without opening the tooltip. */
+  .timeline__ocr-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .timeline__ocr-glyph {
+    display: inline-block;
+    font-size: 11px;
+    line-height: 1;
+    color: #7a7a9a;
+    transform: translateY(-1px);
+  }
+
+  .timeline__ocr-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    padding: 0 4px;
+    height: 14px;
+    border-radius: 7px;
+    background: rgba(120, 220, 160, 0.12);
+    color: #7adfa0;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .timeline__ocr-btn--running {
+    color: #d6a14a;
+    border-color: #3a2a18;
+    background: rgba(214, 161, 74, 0.06);
+  }
+  .timeline__ocr-btn--running .timeline__ocr-glyph {
+    color: #d6a14a;
+    animation: timeline-ocr-pulse 1.2s ease-in-out infinite;
+  }
+
+  .timeline__ocr-btn--success {
+    color: #7adfa0;
+    border-color: #1f3a28;
+  }
+  .timeline__ocr-btn--success .timeline__ocr-glyph {
+    color: #7adfa0;
+  }
+
+  .timeline__ocr-btn--error {
+    color: #ff8a96;
+    border-color: #3a1820;
+  }
+  .timeline__ocr-btn--error .timeline__ocr-glyph {
+    color: #ff8a96;
+  }
+
+  @keyframes timeline-ocr-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+  }
+
+  /* Overlay wrapper sized & positioned to match the actual rendered image
+     rect (measured from the DOM each layout). `overflow: hidden` clips any
+     OCR box whose normalized bounds slightly extend past the image edges
+     so visuals never spill into the surrounding stage letterbox area.
+     pointer-events stays off so the stage continues to receive
+     clicks/drags. */
+  .timeline__ocr-overlay {
+    position: absolute;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .timeline__ocr-box {
+    position: absolute;
+    border: 1px solid rgba(120, 220, 160, 0.85);
+    background: rgba(120, 220, 160, 0.08);
+    border-radius: 2px;
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.45),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+    /* Allow zero-width/height edge cases to remain visible as a hairline. */
+    min-width: 1px;
+    min-height: 1px;
+  }
+
+  .timeline__ocr-label {
+    position: absolute;
+    left: 0;
+    bottom: 100%;
+    margin-bottom: 2px;
+    max-width: max(160px, 100%);
+    padding: 1px 5px;
+    background: rgba(8, 14, 10, 0.92);
+    border: 1px solid rgba(120, 220, 160, 0.6);
+    border-radius: 2px;
+    color: #d8f5e2;
+    font-family:
+      ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    font-size: 9px;
+    line-height: 1.3;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+  }
+
+  /* Compact inline status pill for non-success OCR states (running / empty /
+     error). Pinned to the bottom-left of the stage so it never competes with
+     the metadata overlay in the top-left corner. */
+  .timeline__ocr-status {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    background: rgba(10, 10, 16, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #b8b8d0;
+    max-width: calc(100% - 20px);
+  }
+
+  .timeline__ocr-status--running {
+    color: #e8c98a;
+    border-color: rgba(214, 161, 74, 0.35);
+  }
+
+  .timeline__ocr-status--empty {
+    color: #7a7a9a;
+  }
+
+  .timeline__ocr-status--missing {
+    color: #7a7a9a;
+  }
+
+  .timeline__ocr-status--error {
+    color: #ff8a96;
+    border-color: rgba(255, 90, 110, 0.4);
+  }
+
+  .timeline__ocr-status-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid currentColor;
+    font-size: 9px;
+    font-weight: 700;
+  }
+
+  .timeline__ocr-status-msg {
+    text-transform: none;
+    letter-spacing: 0;
+    font-family:
+      ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    word-break: break-word;
+    max-width: 360px;
+  }
+
+  .timeline__ocr-spinner {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(214, 161, 74, 0.3);
+    border-top-color: #d6a14a;
+    animation: timeline-ocr-spin 0.9s linear infinite;
+  }
+
+  @keyframes timeline-ocr-spin {
+    to { transform: rotate(360deg); }
+  }
+
   /* ── Rail (bottom dock) ────────────────────────────────────── */
   .timeline__rail-wrap {
     /* Reserve a fixed footprint so the stage's flex height never reflows
@@ -3181,7 +3795,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 4px;
   }
 
   .timeline-rail {
