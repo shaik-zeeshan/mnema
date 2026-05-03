@@ -267,6 +267,21 @@ impl AppInfra {
         self.processing.get_frame(frame_id).await
     }
 
+    pub async fn get_first_matching_earlier_frame_by_fingerprint(
+        &self,
+        session_id: &str,
+        before_frame_id: i64,
+        content_fingerprint: &str,
+    ) -> Result<Option<Frame>> {
+        self.processing
+            .get_first_matching_earlier_frame_by_fingerprint(
+                session_id,
+                before_frame_id,
+                content_fingerprint,
+            )
+            .await
+    }
+
     pub async fn list_frames_for_segment_workspace(
         &self,
         session_id: &str,
@@ -1768,6 +1783,16 @@ mod tests {
                 .await
                 .expect("repeated jobs should list");
             assert!(repeated_jobs.is_empty());
+
+            let resolved = infra
+                .get_first_matching_earlier_frame_by_fingerprint(
+                    "session-dedupe-repeat",
+                    repeated.frame.id,
+                    "abc123",
+                )
+                .await
+                .expect("matching earlier frame should resolve");
+            assert_eq!(resolved, Some(first.frame));
         });
     }
 

@@ -218,6 +218,28 @@ impl ProcessingStore {
         get_frame_optional(&self.pool, frame_id).await
     }
 
+    pub async fn get_first_matching_earlier_frame_by_fingerprint(
+        &self,
+        session_id: &str,
+        before_frame_id: i64,
+        content_fingerprint: &str,
+    ) -> Result<Option<Frame>> {
+        let row = sqlx::query(
+            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+             FROM frames \
+             WHERE session_id = ?1 AND id < ?2 AND content_fingerprint = ?3 \
+             ORDER BY id ASC \
+             LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(before_frame_id)
+        .bind(content_fingerprint)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(map_frame).transpose()
+    }
+
     pub async fn list_frames_for_segment_workspace(
         &self,
         session_id: &str,
