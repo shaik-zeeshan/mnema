@@ -207,7 +207,7 @@ static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::ne
 // for low-FPS or jittery sessions.
 const SCREEN_ACTIVITY_DEBOUNCE_WINDOW_MS: u64 = 250;
 #[cfg(target_os = "macos")]
-const SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT: usize = 8;
+const SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE: usize = 8;
 #[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE: usize = 4;
 #[cfg(target_os = "macos")]
@@ -464,52 +464,54 @@ fn mix_screen_activity_pixel_probe_bytes(
         return false;
     }
 
-    let last_row = height.saturating_sub(1);
-    let probe_denominator = SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT
-        .saturating_sub(1)
+    let tile_rows = height.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
+    let tile_cols = sample_width
+        .div_ceil(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE)
+        .min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE)
         .max(1);
     let max_start_col = sample_width.saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
     let mut sampled_any_probe = false;
 
-    for probe_index in 0..SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT {
-        let row = if last_row == 0 {
-            0
-        } else {
-            probe_index.saturating_mul(last_row) / probe_denominator
-        };
-        let col = if max_start_col == 0 {
-            0
-        } else {
-            probe_index.wrapping_mul(1_103_515_245) % (max_start_col + 1)
-        };
-        let sample_len = (sample_width - col).min(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
-        let Some(sample_end_in_row) = col.checked_add(sample_len) else {
-            continue;
-        };
-        if sample_end_in_row > bytes_per_row {
-            continue;
+    for tile_row in 0..tile_rows {
+        let row = (((tile_row.saturating_mul(2)).saturating_add(1)).saturating_mul(height)
+            / tile_rows.saturating_mul(2))
+        .min(height.saturating_sub(1));
+
+        for tile_col in 0..tile_cols {
+            let desired_col = (((tile_col.saturating_mul(2)).saturating_add(1))
+                .saturating_mul(sample_width)
+                / tile_cols.saturating_mul(2))
+            .saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE / 2);
+            let col = desired_col.min(max_start_col);
+            let sample_len = (sample_width - col).min(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
+            let Some(sample_end_in_row) = col.checked_add(sample_len) else {
+                continue;
+            };
+            if sample_end_in_row > bytes_per_row {
+                continue;
+            }
+
+            let Some(sample_start) = row
+                .checked_mul(bytes_per_row)
+                .and_then(|row_offset| row_offset.checked_add(col))
+            else {
+                continue;
+            };
+            let Some(sample_end) = sample_start.checked_add(sample_len) else {
+                continue;
+            };
+            if sample_end > total_accessible_bytes {
+                continue;
+            }
+
+            let sample =
+                unsafe { std::slice::from_raw_parts(base_address.add(sample_start), sample_len) };
+
+            mix_screen_activity_fingerprint(hash, row as u64);
+            mix_screen_activity_fingerprint(hash, col as u64);
+            mix_screen_activity_fingerprint_bytes(hash, sample);
+            sampled_any_probe = true;
         }
-
-        let Some(sample_start) = row
-            .checked_mul(bytes_per_row)
-            .and_then(|row_offset| row_offset.checked_add(col))
-        else {
-            continue;
-        };
-        let Some(sample_end) = sample_start.checked_add(sample_len) else {
-            continue;
-        };
-        if sample_end > total_accessible_bytes {
-            continue;
-        }
-
-        let sample =
-            unsafe { std::slice::from_raw_parts(base_address.add(sample_start), sample_len) };
-
-        mix_screen_activity_fingerprint(hash, row as u64);
-        mix_screen_activity_fingerprint(hash, col as u64);
-        mix_screen_activity_fingerprint_bytes(hash, sample);
-        sampled_any_probe = true;
     }
 
     sampled_any_probe
@@ -672,29 +674,41 @@ fn screen_activity_bitmap_fingerprint(
     }
 
     let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
-    let row_stride = (height / SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT).max(1);
-    let column_stride =
-        ((width.saturating_mul(4)) / SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT).max(1);
+    let tile_rows = height.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
+    let tile_cols = width.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
     let max_column_offset =
         bytes_per_row.saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
     let mut has_content_signal = false;
 
-    for probe_index in 0..SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT {
-        let row = (probe_index.saturating_mul(row_stride)).min(height.saturating_sub(1));
+    for tile_row in 0..tile_rows {
+        let row = (((tile_row.saturating_mul(2)).saturating_add(1)).saturating_mul(height)
+            / tile_rows.saturating_mul(2))
+        .min(height.saturating_sub(1));
         let row_offset = row.saturating_mul(bytes_per_row);
-        let column_offset = (probe_index.saturating_mul(column_stride)).min(max_column_offset);
-        let probe_offset = row_offset.saturating_add(column_offset);
-        let Some(sample) = bytes.get(
-            probe_offset..probe_offset.saturating_add(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE),
-        ) else {
-            continue;
-        };
 
-        let mut probe_bytes = [0u8; SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE];
-        probe_bytes.copy_from_slice(sample);
-        let value = u32::from_le_bytes(probe_bytes) as u64;
-        has_content_signal |= value != 0;
-        mix_screen_activity_fingerprint(&mut hash, value);
+        for tile_col in 0..tile_cols {
+            let column_offset = ((((tile_col.saturating_mul(2)).saturating_add(1))
+                .saturating_mul(width)
+                / tile_cols.saturating_mul(2))
+                .saturating_mul(4)
+                .saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE / 2))
+                .min(max_column_offset);
+            let probe_offset = row_offset.saturating_add(column_offset);
+            let Some(sample) = bytes.get(
+                probe_offset
+                    ..probe_offset.saturating_add(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE),
+            ) else {
+                continue;
+            };
+
+            let mut probe_bytes = [0u8; SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE];
+            probe_bytes.copy_from_slice(sample);
+            let value = u32::from_le_bytes(probe_bytes) as u64;
+            has_content_signal |= value != 0;
+            mix_screen_activity_fingerprint(&mut hash, row as u64);
+            mix_screen_activity_fingerprint(&mut hash, column_offset as u64);
+            mix_screen_activity_fingerprint(&mut hash, value);
+        }
     }
 
     has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
@@ -3962,6 +3976,30 @@ mod tests {
             bytes.len(),
         ));
         assert_ne!(hash, SCREEN_ACTIVITY_FINGERPRINT_SEED);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_bitmap_fingerprint_detects_localized_center_change() {
+        let width = 64;
+        let height = 64;
+        let bytes_per_row = width * 4;
+        let baseline = vec![1_u8; bytes_per_row * height];
+        let mut changed = baseline.clone();
+
+        for changed_row in 33..37 {
+            for changed_col in 33..37 {
+                let changed_offset = changed_row * bytes_per_row + changed_col * 4;
+                changed[changed_offset..changed_offset + 4].copy_from_slice(&[2, 2, 2, 2]);
+            }
+        }
+
+        let baseline_fingerprint =
+            screen_activity_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
+        let changed_fingerprint =
+            screen_activity_bitmap_fingerprint(&changed, bytes_per_row, width, height);
+
+        assert_ne!(baseline_fingerprint, changed_fingerprint);
     }
 }
 

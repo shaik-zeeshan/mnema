@@ -521,6 +521,12 @@ mod tests {
         test_frame(session_id, file_name).with_content_fingerprint(content_fingerprint)
     }
 
+    fn write_test_frame_file(dir: &TestDir, file_name: &str, bytes: &[u8]) -> String {
+        let path = dir.path().join(file_name);
+        fs::write(&path, bytes).expect("test frame file should be written");
+        path.to_string_lossy().into_owned()
+    }
+
     #[derive(Debug)]
     struct SuccessfulProcessingBackend {
         processor: &'static str,
@@ -1691,24 +1697,33 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let first_path = write_test_frame_file(&dir, "frame-1.png", b"same-frame-bytes");
+            let duplicate_path = write_test_frame_file(&dir, "frame-2.png", b"same-frame-bytes");
+            let changed_path = write_test_frame_file(&dir, "frame-3.png", b"changed-frame-bytes");
 
             let first = infra
                 .capture_frame(
-                    &test_frame_with_fingerprint("session-dedupe", "frame-1.png", "abc123"),
+                    &NewFrame::new("session-dedupe", first_path, "2026-04-12T10:00:00Z")
+                        .with_dimensions(1920, 1080)
+                        .with_content_fingerprint("abc123"),
                     None,
                 )
                 .await
                 .expect("first frame should persist");
             let duplicate = infra
                 .capture_frame(
-                    &test_frame_with_fingerprint("session-dedupe", "frame-2.png", "abc123"),
+                    &NewFrame::new("session-dedupe", duplicate_path, "2026-04-12T10:00:01Z")
+                        .with_dimensions(1920, 1080)
+                        .with_content_fingerprint("abc123"),
                     None,
                 )
                 .await
                 .expect("duplicate frame should persist");
             let changed = infra
                 .capture_frame(
-                    &test_frame_with_fingerprint("session-dedupe", "frame-3.png", "def456"),
+                    &NewFrame::new("session-dedupe", changed_path, "2026-04-12T10:00:02Z")
+                        .with_dimensions(1920, 1080)
+                        .with_content_fingerprint("def456"),
                     None,
                 )
                 .await
@@ -1742,24 +1757,45 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let first_path = write_test_frame_file(&dir, "frame-1.png", b"same-frame-bytes");
+            let changed_path = write_test_frame_file(&dir, "frame-2.png", b"changed-frame-bytes");
+            let repeated_path = write_test_frame_file(&dir, "frame-3.png", b"same-frame-bytes");
 
             let first = infra
                 .capture_frame(
-                    &test_frame_with_fingerprint("session-dedupe-repeat", "frame-1.png", "abc123"),
+                    &NewFrame::new(
+                        "session-dedupe-repeat",
+                        first_path,
+                        "2026-04-12T10:00:00Z",
+                    )
+                    .with_dimensions(1920, 1080)
+                    .with_content_fingerprint("abc123"),
                     None,
                 )
                 .await
                 .expect("first frame should persist");
             let changed = infra
                 .capture_frame(
-                    &test_frame_with_fingerprint("session-dedupe-repeat", "frame-2.png", "def456"),
+                    &NewFrame::new(
+                        "session-dedupe-repeat",
+                        changed_path,
+                        "2026-04-12T10:00:01Z",
+                    )
+                    .with_dimensions(1920, 1080)
+                    .with_content_fingerprint("def456"),
                     None,
                 )
                 .await
                 .expect("changed frame should persist");
             let repeated = infra
                 .capture_frame(
-                    &test_frame_with_fingerprint("session-dedupe-repeat", "frame-3.png", "abc123"),
+                    &NewFrame::new(
+                        "session-dedupe-repeat",
+                        repeated_path,
+                        "2026-04-12T10:00:02Z",
+                    )
+                    .with_dimensions(1920, 1080)
+                    .with_content_fingerprint("abc123"),
                     None,
                 )
                 .await
@@ -1793,6 +1829,54 @@ mod tests {
                 .await
                 .expect("matching earlier frame should resolve");
             assert_eq!(resolved, Some(first.frame));
+        });
+    }
+
+    #[test]
+    fn same_fingerprint_but_different_frame_bytes_still_enqueue_ocr() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-ocr-dedupe-byte-confirmation");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let first_path = dir.path().join("frame-1.png");
+            let second_path = dir.path().join("frame-2.png");
+            fs::write(&first_path, b"frame-a").expect("first frame should be written");
+            fs::write(&second_path, b"frame-b").expect("second frame should be written");
+
+            let first = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "session-dedupe-confirmed",
+                        first_path.to_string_lossy().as_ref(),
+                        "2026-04-12T10:00:00Z",
+                    )
+                    .with_dimensions(1920, 1080)
+                    .with_content_fingerprint("abc123"),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "session-dedupe-confirmed",
+                        second_path.to_string_lossy().as_ref(),
+                        "2026-04-12T10:00:01Z",
+                    )
+                    .with_dimensions(1920, 1080)
+                    .with_content_fingerprint("abc123"),
+                    None,
+                )
+                .await
+                .expect("second frame should persist");
+
+            assert!(first.job.is_some());
+            assert!(
+                second.job.is_some(),
+                "different file bytes should not be treated as duplicate solely by fingerprint"
+            );
         });
     }
 

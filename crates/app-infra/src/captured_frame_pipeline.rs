@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
+use std::fs;
 
 use crate::{
     frame_batches::{FrameBatch, FrameBatchStore},
@@ -204,16 +205,30 @@ impl CapturedFramePipeline {
             return Ok(true);
         };
 
-        let has_previous = self
+        let Some(previous_frame) = self
             .processing
-            .has_previous_frame_with_content_fingerprint_in_transaction(
+            .get_first_matching_earlier_frame_by_fingerprint_in_transaction(
                 transaction,
                 &frame.session_id,
                 frame.id,
                 content_fingerprint,
             )
-            .await?;
+            .await?
+        else {
+            return Ok(true);
+        };
 
-        Ok(!has_previous)
+        Ok(!frames_match_by_file_bytes(&previous_frame, frame))
     }
+}
+
+fn frames_match_by_file_bytes(previous_frame: &Frame, current_frame: &Frame) -> bool {
+    let Ok(previous_bytes) = fs::read(&previous_frame.file_path) else {
+        return false;
+    };
+    let Ok(current_bytes) = fs::read(&current_frame.file_path) else {
+        return false;
+    };
+
+    previous_bytes == current_bytes
 }

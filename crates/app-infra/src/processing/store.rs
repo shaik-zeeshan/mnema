@@ -164,28 +164,6 @@ impl ProcessingStore {
             .ok_or(AppInfraError::ProcessingJobNotFound(job_id))
     }
 
-    pub(crate) async fn has_previous_frame_with_content_fingerprint_in_transaction(
-        &self,
-        transaction: &mut Transaction<'_, Sqlite>,
-        session_id: &str,
-        before_frame_id: i64,
-        content_fingerprint: &str,
-    ) -> Result<bool> {
-        let previous_fingerprint = sqlx::query(
-            "SELECT 1 \
-             FROM frames \
-             WHERE session_id = ?1 AND id < ?2 AND content_fingerprint = ?3 \
-             LIMIT 1",
-        )
-        .bind(session_id)
-        .bind(before_frame_id)
-        .bind(content_fingerprint)
-        .fetch_optional(&mut **transaction)
-        .await?;
-
-        Ok(previous_fingerprint.is_some())
-    }
-
     #[cfg(test)]
     pub(crate) async fn insert_frame_and_enqueue_ocr_job(
         &self,
@@ -235,6 +213,29 @@ impl ProcessingStore {
         .bind(before_frame_id)
         .bind(content_fingerprint)
         .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(map_frame).transpose()
+    }
+
+    pub(crate) async fn get_first_matching_earlier_frame_by_fingerprint_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        session_id: &str,
+        before_frame_id: i64,
+        content_fingerprint: &str,
+    ) -> Result<Option<Frame>> {
+        let row = sqlx::query(
+            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+             FROM frames \
+             WHERE session_id = ?1 AND id < ?2 AND content_fingerprint = ?3 \
+             ORDER BY id ASC \
+             LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(before_frame_id)
+        .bind(content_fingerprint)
+        .fetch_optional(&mut **transaction)
         .await?;
 
         row.map(map_frame).transpose()
