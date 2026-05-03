@@ -2,6 +2,9 @@
   import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { Image } from "@tauri-apps/api/image";
+  import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
+  import { BaseDirectory, writeFile } from "@tauri-apps/plugin-fs";
   import { Calendar } from "bits-ui";
   import {
     CalendarDate,
@@ -168,6 +171,8 @@
   // Tracks the in-flight requests so concurrent scrolls don't fan out a
   // request per slot per scroll tick for the same id.
   const previewInFlight = new Set<number>();
+  let frameActionStatus = $state<string | null>(null);
+  let frameActionStatusTimer: ReturnType<typeof setTimeout> | null = null;
 
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
   const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
@@ -735,6 +740,128 @@
   function fileNameOf(path: string): string {
     return path.split(/[\\/]/).pop() ?? path;
   }
+
+  function setFrameActionStatus(message: string | null) {
+    frameActionStatus = message;
+    if (frameActionStatusTimer) {
+      clearTimeout(frameActionStatusTimer);
+      frameActionStatusTimer = null;
+    }
+    if (!message) return;
+    frameActionStatusTimer = setTimeout(() => {
+      frameActionStatus = null;
+      frameActionStatusTimer = null;
+    }, 2200);
+  }
+
+  function mimeTypeFromDataUrl(dataUrl: string): string | null {
+    const match = /^data:([^;,]+)[;,]/.exec(dataUrl);
+    return match?.[1] ?? null;
+  }
+
+  function fileExtensionForMimeType(mimeType: string | null): string {
+    switch (mimeType) {
+      case "image/jpeg":
+        return "jpg";
+      case "image/webp":
+        return "webp";
+      case "image/gif":
+        return "gif";
+      case "image/png":
+      default:
+        return "png";
+    }
+  }
+
+  function activeFrameDownloadName(frame: FrameDto, dataUrl: string): string {
+    const capturedAt = frame.capturedAt.replace(/[^0-9A-Za-z]+/g, "-").replace(/^-+|-+$/g, "");
+    const ext = fileExtensionForMimeType(mimeTypeFromDataUrl(dataUrl));
+    return `frame-${frame.id}-${capturedAt || "capture"}.${ext}`;
+  }
+
+  async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+    const response = await fetch(dataUrl);
+    return await response.blob();
+  }
+
+  function dataUrlPayloadBytes(dataUrl: string): Uint8Array {
+    const comma = dataUrl.indexOf(",");
+    if (comma < 0) throw new Error("invalid data URL");
+    const meta = dataUrl.slice(0, comma);
+    const payload = dataUrl.slice(comma + 1);
+    if (meta.endsWith(";base64")) {
+      return Uint8Array.from(atob(payload), (char) => char.charCodeAt(0));
+    }
+    return new TextEncoder().encode(decodeURIComponent(payload));
+  }
+
+  async function previewDataUrlToClipboardImage(dataUrl: string): Promise<Image> {
+    const blob = await dataUrlToBlob(dataUrl);
+    const image = await createImageBitmap(blob);
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) throw new Error("2d canvas context unavailable");
+      ctx.drawImage(image, 0, 0);
+      const { data, width, height } = ctx.getImageData(0, 0, image.width, image.height);
+      return await Image.new(new Uint8Array(data.buffer.slice(0)), width, height);
+    } finally {
+      image.close();
+    }
+  }
+
+  async function copyActiveFrameImage(): Promise<void> {
+    const frame = timelineActive;
+    const previewUrl = frame ? previewCache.get(frame.id) : null;
+    if (!frame || !previewUrl) {
+      setFrameActionStatus("Frame preview not ready yet");
+      return;
+    }
+
+    try {
+      const image = await previewDataUrlToClipboardImage(previewUrl);
+      try {
+        await writeImage(image);
+      } finally {
+        image.close();
+      }
+      setFrameActionStatus(`Copied frame ${frame.id}`);
+    } catch (err) {
+      setFrameActionStatus(
+        `Copy failed: ${typeof err === "string" ? err : "clipboard write was rejected"}`,
+      );
+    }
+  }
+
+  async function downloadActiveFrameImage(): Promise<void> {
+    const frame = timelineActive;
+    const previewUrl = frame ? previewCache.get(frame.id) : null;
+    if (!frame || !previewUrl) {
+      setFrameActionStatus("Frame preview not ready yet");
+      return;
+    }
+
+    try {
+      await writeFile(activeFrameDownloadName(frame, previewUrl), dataUrlPayloadBytes(previewUrl), {
+        baseDir: BaseDirectory.Download,
+      });
+      setFrameActionStatus(`Saved frame ${frame.id} to Downloads`);
+    } catch (err) {
+      setFrameActionStatus(
+        `Download failed: ${typeof err === "string" ? err : "file write was rejected"}`,
+      );
+    }
+  }
+
+  $effect(() => {
+    return () => {
+      if (frameActionStatusTimer) {
+        clearTimeout(frameActionStatusTimer);
+      }
+    };
+  });
 
   function mapAudioSegmentDto(dto: AudioSegmentDto): AudioSegmentRecord | null {
     const startUnixMs = parseCapturedAt(dto.startedAt).getTime();
@@ -2729,6 +2856,27 @@
     {:else if timelineActive}
       {@const previewUrl = previewCache.get(timelineActive.id)}
       {#if previewUrl}
+        <div class="timeline__stage-actions">
+          <button
+            type="button"
+            class="btn btn--ghost btn--sm timeline__stage-action"
+            onclick={copyActiveFrameImage}
+            aria-label="Copy active frame image"
+            title="Copy image"
+          >copy</button>
+          <button
+            type="button"
+            class="btn btn--ghost btn--sm timeline__stage-action"
+            onclick={downloadActiveFrameImage}
+            aria-label="Download active frame image"
+            title="Download image"
+          >download</button>
+        </div>
+        {#if frameActionStatus}
+          <div class="timeline__stage-status" role="status" aria-live="polite">
+            {frameActionStatus}
+          </div>
+        {/if}
         <div
           class="timeline__preview"
           role="img"
@@ -4121,6 +4269,41 @@
     background-size: contain;
     image-rendering: -webkit-optimize-contrast;
     user-select: none;
+  }
+
+  .timeline__stage-actions {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .timeline__stage-action {
+    min-width: 0;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    background: rgba(10, 10, 16, 0.72);
+  }
+
+  .timeline__stage-status {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    z-index: 2;
+    max-width: min(60%, 360px);
+    padding: 6px 8px;
+    background: rgba(10, 10, 16, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+    color: #c0c0d8;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
   }
 
   .timeline__preview-pending {
