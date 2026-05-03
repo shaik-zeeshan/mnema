@@ -498,7 +498,9 @@ impl FrameBatchStore {
         let visible_segment_exists = Path::new(&paths.visible_segment_path).exists();
 
         if frame_rows.is_empty() {
-            let disposition = if visible_segment_exists {
+            let disposition = if visible_segment_exists
+                || !hidden_workspace_has_frame_artifacts(Path::new(&paths.frames_dir))
+            {
                 SegmentWorkspaceCleanupDisposition::NoReferences
             } else {
                 SegmentWorkspaceCleanupDisposition::MissingVisibleSegmentSibling
@@ -1187,6 +1189,17 @@ fn should_preserve_hidden_workspace_frame(path: &Path) -> bool {
         return false;
     };
     !Path::new(&paths.visible_segment_path).exists()
+}
+
+fn hidden_workspace_has_frame_artifacts(frames_dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(frames_dir) else {
+        return false;
+    };
+
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.is_file() && is_safe_frame_artifact_path(&path)
+    })
 }
 
 fn is_numeric_path_component(path: &Path, expected_len: usize) -> bool {
@@ -2660,6 +2673,32 @@ mod tests {
     }
 
     #[test]
+    fn classify_hidden_segment_workspace_reports_empty_missing_visible_as_no_references() {
+        run_async_test(async {
+            let dir = TestDir::new("classify-empty-missing-visible");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let store = FrameBatchStore::new(pool);
+
+            let workspace_dir = dir.path().join("2026/04/12/.session-empty-segment-0001");
+            fs::create_dir_all(workspace_dir.join("frames")).expect("frames dir should exist");
+
+            let info = store
+                .classify_hidden_segment_workspace(&workspace_dir)
+                .await
+                .expect("classification should succeed")
+                .expect("classification should exist");
+
+            assert_eq!(info.disposition, SegmentWorkspaceCleanupDisposition::NoReferences);
+            assert!(info.safe_to_remove);
+            assert!(!info.visible_segment_exists);
+            assert_eq!(info.frame_count, 0);
+        });
+    }
+
+    #[test]
     fn classify_hidden_segment_workspace_reports_incomplete_batch_before_missing_video() {
         run_async_test(async {
             let dir = TestDir::new("classify-incomplete-batch");
@@ -2977,6 +3016,36 @@ mod tests {
             assert!(
                 skipped_workspace_dir.exists(),
                 "workspace without visible segment should be preserved"
+            );
+        });
+    }
+
+    #[test]
+    fn repair_hidden_segment_workspaces_removes_empty_missing_visible_workspace() {
+        run_async_test(async {
+            let dir = TestDir::new("repair-empty-missing-visible");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let store = FrameBatchStore::new(pool);
+            let recordings_root = dir.path().join(".z/recordings");
+            let workspace_dir = recordings_root.join("2026/04/12/.session-empty-segment-0001");
+
+            std::fs::create_dir_all(workspace_dir.join("frames"))
+                .expect("empty frames dir should exist");
+
+            let repair = store
+                .repair_hidden_segment_workspaces(&recordings_root)
+                .await
+                .expect("repair should succeed");
+
+            assert_eq!(repair.scanned_workspace_count, 1);
+            assert_eq!(repair.removed_workspace_count, 1);
+            assert_eq!(repair.skipped_workspace_count, 0);
+            assert!(
+                !workspace_dir.exists(),
+                "empty workspace without visible segment should be removed"
             );
         });
     }
