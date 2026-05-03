@@ -94,7 +94,7 @@ fn screen_frame_artifact_path(
     frame_index: u64,
     captured_at_unix_ms: u64,
 ) -> PathBuf {
-    artifact_dir.join(format!("frame-{captured_at_unix_ms}-{frame_index:06}.png"))
+    artifact_dir.join(format!("frame-{captured_at_unix_ms}-{frame_index:06}.jpg"))
 }
 
 #[cfg(target_os = "macos")]
@@ -210,6 +210,10 @@ const SCREEN_ACTIVITY_DEBOUNCE_WINDOW_MS: u64 = 250;
 const SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE: usize = 8;
 #[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE: usize = 4;
+#[cfg(target_os = "macos")]
+const SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE: usize = 3;
+#[cfg(target_os = "macos")]
+const SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP: u64 = 32;
 #[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 #[cfg(target_os = "macos")]
@@ -588,11 +592,12 @@ fn screen_activity_sample_fingerprint(sample_buf: &mut cidre::cm::SampleBuf) -> 
     let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
     let mut has_content_signal = false;
 
+    // `dirty_rects` and `bounding_rect` churn on cursor movement and other tiny
+    // overlays. Keep only the stable geometry attachments in the exported frame
+    // fingerprint so cursor flicker does not look like new content.
     for key in [
-        cidre::sc::FrameInfo::dirty_rects(),
         cidre::sc::FrameInfo::content_rect(),
         cidre::sc::FrameInfo::screen_rect(),
-        cidre::sc::FrameInfo::bounding_rect(),
     ] {
         has_content_signal |=
             mix_screen_activity_attachment_fingerprint(&mut hash, sample_buf, key);
@@ -676,42 +681,116 @@ fn screen_activity_bitmap_fingerprint(
     let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
     let tile_rows = height.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
     let tile_cols = width.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
-    let max_column_offset =
-        bytes_per_row.saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
     let mut has_content_signal = false;
 
     for tile_row in 0..tile_rows {
-        let row = (((tile_row.saturating_mul(2)).saturating_add(1)).saturating_mul(height)
-            / tile_rows.saturating_mul(2))
-        .min(height.saturating_sub(1));
-        let row_offset = row.saturating_mul(bytes_per_row);
+        let row_start = tile_row.saturating_mul(height) / tile_rows;
+        let row_end = ((tile_row.saturating_add(1)).saturating_mul(height) / tile_rows)
+            .max(row_start.saturating_add(1))
+            .min(height);
 
         for tile_col in 0..tile_cols {
-            let column_offset = ((((tile_col.saturating_mul(2)).saturating_add(1))
-                .saturating_mul(width)
-                / tile_cols.saturating_mul(2))
-                .saturating_mul(4)
-                .saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE / 2))
-                .min(max_column_offset);
-            let probe_offset = row_offset.saturating_add(column_offset);
-            let Some(sample) = bytes.get(
-                probe_offset
-                    ..probe_offset.saturating_add(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE),
+            let col_start = tile_col.saturating_mul(width) / tile_cols;
+            let col_end = ((tile_col.saturating_add(1)).saturating_mul(width) / tile_cols)
+                .max(col_start.saturating_add(1))
+                .min(width);
+
+            let Some(value) = screen_activity_bitmap_tile_summary(
+                bytes,
+                bytes_per_row,
+                width,
+                height,
+                row_start,
+                row_end,
+                col_start,
+                col_end,
             ) else {
                 continue;
             };
 
-            let mut probe_bytes = [0u8; SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE];
-            probe_bytes.copy_from_slice(sample);
-            let value = u32::from_le_bytes(probe_bytes) as u64;
             has_content_signal |= value != 0;
-            mix_screen_activity_fingerprint(&mut hash, row as u64);
-            mix_screen_activity_fingerprint(&mut hash, column_offset as u64);
+            mix_screen_activity_fingerprint(&mut hash, row_start as u64);
+            mix_screen_activity_fingerprint(&mut hash, col_start as u64);
             mix_screen_activity_fingerprint(&mut hash, value);
         }
     }
 
     has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
+}
+
+#[cfg(target_os = "macos")]
+fn screen_activity_bitmap_tile_summary(
+    bytes: &[u8],
+    bytes_per_row: usize,
+    width: usize,
+    height: usize,
+    row_start: usize,
+    row_end: usize,
+    col_start: usize,
+    col_end: usize,
+) -> Option<u64> {
+    if row_start >= row_end || col_start >= col_end || width == 0 || height == 0 {
+        return None;
+    }
+
+    let sample_rows = (row_end - row_start)
+        .min(SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE)
+        .max(1);
+    let sample_cols = (col_end - col_start)
+        .min(SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE)
+        .max(1);
+    let mut sum_r = 0_u64;
+    let mut sum_g = 0_u64;
+    let mut sum_b = 0_u64;
+    let mut sum_a = 0_u64;
+    let mut sample_count = 0_u64;
+
+    for sample_row in 0..sample_rows {
+        let row = row_start
+            + (((sample_row.saturating_mul(2)).saturating_add(1))
+                .saturating_mul(row_end - row_start)
+                / sample_rows.saturating_mul(2))
+                .min(row_end - row_start - 1);
+
+        for sample_col in 0..sample_cols {
+            let col = col_start
+                + (((sample_col.saturating_mul(2)).saturating_add(1))
+                    .saturating_mul(col_end - col_start)
+                    / sample_cols.saturating_mul(2))
+                    .min(col_end - col_start - 1);
+            let pixel_offset = row
+                .checked_mul(bytes_per_row)?
+                .checked_add(col.checked_mul(4)?)?;
+            let pixel = bytes.get(pixel_offset..pixel_offset + 4)?;
+
+            sum_b += pixel[0] as u64;
+            sum_g += pixel[1] as u64;
+            sum_r += pixel[2] as u64;
+            sum_a += pixel[3] as u64;
+            sample_count += 1;
+        }
+    }
+
+    if sample_count == 0 {
+        return None;
+    }
+
+    let avg_b = (sum_b / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
+    let avg_g = (sum_g / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
+    let avg_r = (sum_r / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
+    let avg_a = (sum_a / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
+
+    Some(avg_b | (avg_g << 8) | (avg_r << 16) | (avg_a << 24))
+}
+
+#[cfg(all(target_os = "macos", test))]
+fn screen_frame_content_bitmap_fingerprint(
+    bytes: &[u8],
+    bytes_per_row: usize,
+    width: usize,
+    height: usize,
+) -> Option<u64> {
+    screen_activity_bitmap_fingerprint(bytes, bytes_per_row, width, height)
 }
 
 #[cfg(target_os = "macos")]
@@ -964,7 +1043,7 @@ fn prepare_screen_frame_export(
 }
 
 #[cfg(target_os = "macos")]
-fn save_screen_sample_as_png(
+fn save_screen_sample_as_jpeg(
     sample_buf: &cidre::cm::SampleBuf,
     output_path: &Path,
 ) -> Result<(), CaptureErrorResponse> {
@@ -993,12 +1072,12 @@ fn save_screen_sample_as_png(
             ),
         })?;
 
-    let png_type_id = ut::Type::png().id();
+    let jpeg_type_id = ut::Type::jpeg().id();
 
-    let mut destination = cg::ImageDst::with_url(output_url.as_ref(), png_type_id.as_cf(), 1)
+    let mut destination = cg::ImageDst::with_url(output_url.as_ref(), jpeg_type_id.as_cf(), 1)
         .ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
-            message: png_destination_creation_failure_message(output_path),
+            message: image_destination_creation_failure_message(output_path, "JPEG"),
         })?;
     destination.add_image(cg_image.as_ref(), None);
 
@@ -1008,7 +1087,7 @@ fn save_screen_sample_as_png(
         Err(CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
             message: format!(
-                "Failed to finalize PNG screen frame artifact: {}",
+                "Failed to finalize JPEG screen frame artifact: {}",
                 output_path.display()
             ),
         })
@@ -1016,13 +1095,13 @@ fn save_screen_sample_as_png(
 }
 
 #[cfg(target_os = "macos")]
-fn png_destination_creation_failure_message(output_path: &Path) -> String {
+fn image_destination_creation_failure_message(output_path: &Path, format_name: &str) -> String {
     let parent_dir = output_path.parent();
     let parent_exists = parent_dir.is_some_and(|parent| parent.exists());
     let file_exists = output_path.exists();
 
     format!(
-        "Failed to create PNG destination for screen frame artifact: {} (parent: {}; parent_exists: {}; file_exists: {})",
+        "Failed to create {format_name} destination for screen frame artifact: {} (parent: {}; parent_exists: {}; file_exists: {})",
         output_path.display(),
         parent_dir
             .map(|parent| parent.display().to_string())
@@ -1045,7 +1124,7 @@ fn export_screen_frame_artifact(
     let file_path = prepared.file_path.clone();
 
     callback_queue.async_once(move || {
-        if let Err(error) = save_screen_sample_as_png(sample_buf.as_ref(), &file_path) {
+        if let Err(error) = save_screen_sample_as_jpeg(sample_buf.as_ref(), &file_path) {
             store_first_frame_export_error(&first_error, error.clone());
             capture_runtime::debug_log!(
                 "[capture-screen] failed to export screen frame artifact {}: [{}] {}",
@@ -3325,7 +3404,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn png_destination_creation_failure_message_includes_parent_context() {
+    fn image_destination_creation_failure_message_includes_parent_context() {
         let unique = format!(
             "capture-screen-png-dst-{}",
             std::time::SystemTime::now()
@@ -3335,9 +3414,9 @@ mod tests {
         );
         let base_dir = std::env::temp_dir().join(unique);
         std::fs::create_dir_all(&base_dir).expect("base dir should be created");
-        let output_path = base_dir.join("frame.png");
+        let output_path = base_dir.join("frame.jpg");
 
-        let message = png_destination_creation_failure_message(&output_path);
+        let message = image_destination_creation_failure_message(&output_path, "JPEG");
 
         assert!(message.contains(&output_path.display().to_string()));
         assert!(message.contains(&format!("parent: {}", base_dir.display())));
@@ -3694,7 +3773,7 @@ mod tests {
             on_frame_exported: std::sync::Arc::new(|_| {}),
             first_error: Arc::new(Mutex::new(Some(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Failed to finalize PNG screen frame artifact: boom".to_string(),
+                message: "Failed to finalize JPEG screen frame artifact: boom".to_string(),
             }))),
             next_frame_index: 0,
         };
@@ -3715,7 +3794,7 @@ mod tests {
             on_frame_exported: std::sync::Arc::new(|_| {}),
             first_error: Arc::new(Mutex::new(Some(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Failed to finalize PNG screen frame artifact: boom".to_string(),
+                message: "Failed to finalize JPEG screen frame artifact: boom".to_string(),
             }))),
             next_frame_index: 0,
         };
@@ -3984,13 +4063,13 @@ mod tests {
         let width = 64;
         let height = 64;
         let bytes_per_row = width * 4;
-        let baseline = vec![1_u8; bytes_per_row * height];
+        let baseline = vec![128_u8; bytes_per_row * height];
         let mut changed = baseline.clone();
 
-        for changed_row in 33..37 {
-            for changed_col in 33..37 {
+        for changed_row in 32..40 {
+            for changed_col in 32..40 {
                 let changed_offset = changed_row * bytes_per_row + changed_col * 4;
-                changed[changed_offset..changed_offset + 4].copy_from_slice(&[2, 2, 2, 2]);
+                changed[changed_offset..changed_offset + 4].copy_from_slice(&[32, 32, 32, 255]);
             }
         }
 
@@ -3998,6 +4077,58 @@ mod tests {
             screen_activity_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
         let changed_fingerprint =
             screen_activity_bitmap_fingerprint(&changed, bytes_per_row, width, height);
+
+        assert_ne!(baseline_fingerprint, changed_fingerprint);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_frame_content_bitmap_fingerprint_ignores_cursor_sized_change() {
+        let width = 64;
+        let height = 64;
+        let bytes_per_row = width * 4;
+        let baseline = vec![128_u8; bytes_per_row * height];
+        let mut cursor_changed = baseline.clone();
+
+        for row in 35..37 {
+            for col in 35..37 {
+                let offset = row * bytes_per_row + col * 4;
+                cursor_changed[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+
+        let baseline_fingerprint =
+            screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
+        let cursor_changed_fingerprint = screen_frame_content_bitmap_fingerprint(
+            &cursor_changed,
+            bytes_per_row,
+            width,
+            height,
+        );
+
+        assert_eq!(baseline_fingerprint, cursor_changed_fingerprint);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_frame_content_bitmap_fingerprint_detects_larger_localized_change() {
+        let width = 64;
+        let height = 64;
+        let bytes_per_row = width * 4;
+        let baseline = vec![128_u8; bytes_per_row * height];
+        let mut changed = baseline.clone();
+
+        for row in 32..40 {
+            for col in 32..40 {
+                let offset = row * bytes_per_row + col * 4;
+                changed[offset..offset + 4].copy_from_slice(&[32, 32, 32, 255]);
+            }
+        }
+
+        let baseline_fingerprint =
+            screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
+        let changed_fingerprint =
+            screen_frame_content_bitmap_fingerprint(&changed, bytes_per_row, width, height);
 
         assert_ne!(baseline_fingerprint, changed_fingerprint);
     }
