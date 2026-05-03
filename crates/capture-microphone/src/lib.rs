@@ -153,8 +153,20 @@ pub fn take_microphone_activity_window_peak_level() -> Option<f32> {
     (sample_count > 0).then_some(f32::from_bits(level_bits))
 }
 
+#[cfg(target_os = "macos")]
+pub fn peek_microphone_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.load(Ordering::Relaxed);
+    let level_bits = LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn take_microphone_activity_window_peak_level() -> Option<f32> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn peek_microphone_activity_window_peak_level() -> Option<f32> {
     None
 }
 
@@ -351,6 +363,22 @@ mod tests {
         assert_eq!(take_microphone_activity_window_peak_level(), Some(0.80));
         assert_eq!(take_microphone_activity_window_peak_level(), None);
         assert_eq!(microphone_activity_level(), Some(0.10));
+
+        reset_last_microphone_activity_unix_ms();
+    }
+
+    #[test]
+    fn microphone_activity_window_peak_peek_preserves_value_until_taken() {
+        let _guard = microphone_activity_state_test_guard();
+        reset_last_microphone_activity_unix_ms();
+
+        store_microphone_activity(0.05, 10_000, 20_000);
+        store_microphone_activity(0.80, 10_010, 20_010);
+
+        assert_eq!(peek_microphone_activity_window_peak_level(), Some(0.80));
+        assert_eq!(peek_microphone_activity_window_peak_level(), Some(0.80));
+        assert_eq!(take_microphone_activity_window_peak_level(), Some(0.80));
+        assert_eq!(peek_microphone_activity_window_peak_level(), None);
 
         reset_last_microphone_activity_unix_ms();
     }

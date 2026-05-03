@@ -9,6 +9,7 @@ use capture_writers::{
     create_video_asset_writer_for_sample_buf,
     finalize_screen_video_output_context as writers_finalize_screen_video_output_context,
     finish_audio_asset_writer, finish_audio_asset_writer_discarding_inactivity_tail,
+    finish_video_asset_writer,
     set_audio_writer_inactivity_tail_trim_seconds, AudioAssetWriterState, VideoAssetWriterState,
 };
 
@@ -1720,6 +1721,37 @@ impl ScreenCaptureKitCaptureSession {
         Ok(())
     }
 
+    fn pause_screen_outputs_for_inactivity(&mut self) -> Result<(), CaptureErrorResponse> {
+        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+        let ctx = self.stream_output_delegate.inner_mut();
+
+        if ctx.screen_video_output_file.is_none() && ctx.frame_export.is_none() {
+            return Ok(());
+        }
+
+        let mut failures = Vec::new();
+
+        if let Some(mut writer) = ctx.screen_video_writer.take() {
+            if let Err(error) = finish_video_asset_writer(&mut writer) {
+                if capture_writers::is_no_video_samples_error_message("screen", &error.message) {
+                    if let Some(path) = ctx.screen_video_output_file.as_deref() {
+                        maybe_remove_screen_video_file(path);
+                    }
+                }
+                failures.push(format!("screen video writer failed: {}", error.message));
+            }
+        }
+
+        if let Err(error) = finalize_screen_frame_export(ctx.frame_export.as_mut()) {
+            failures.push(format!("screen frame export failed: {}", error.message));
+        }
+
+        ctx.screen_video_output_file = None;
+        ctx.frame_export = None;
+
+        capture_writers::aggregate_output_processing_failures(failures)
+    }
+
     fn resume_system_audio_writer(
         &mut self,
         output_path: &str,
@@ -1742,6 +1774,32 @@ impl ScreenCaptureKitCaptureSession {
         );
         ctx.system_audio_writer = Some(writer);
         ctx.system_audio_tail_trim_seconds = 0;
+        Ok(())
+    }
+
+    fn resume_screen_outputs(
+        &mut self,
+        segment_dir: &Path,
+        recording_file: &str,
+    ) -> Result<(), CaptureErrorResponse> {
+        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+        let ctx = self.stream_output_delegate.inner_mut();
+        if ctx.screen_video_output_file.is_some() || ctx.frame_export.is_some() {
+            return Err(CaptureErrorResponse {
+                code: "invalid_runtime_state".to_string(),
+                message: "Screen outputs are already active; pause before resuming".to_string(),
+            });
+        }
+
+        ctx.screen_video_output_file = self.sources.screen.then(|| recording_file.to_string());
+        ctx.screen_video_writer = None;
+        ctx.video_bitrate_bps = self.video_bitrate_bps;
+        ctx.frame_export = if self.sources.screen {
+            screen_frame_export_runtime(segment_dir, self.frame_export.clone())?
+        } else {
+            None
+        };
+        ctx.first_error = None;
         Ok(())
     }
 
@@ -2764,6 +2822,50 @@ pub fn resume_system_audio_writer(
 }
 
 #[cfg(target_os = "macos")]
+pub fn pause_screen_outputs_for_inactivity(
+    active_session: &mut Option<ActiveCaptureSession>,
+) -> Result<(), CaptureErrorResponse> {
+    let Some(session) = active_session.as_mut() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "No active screen capture session for screen output pause".to_string(),
+        });
+    };
+    match &mut session.backend {
+        CaptureBackendSession::ScreenCaptureKit(sck) => sck.pause_screen_outputs_for_inactivity(),
+        CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
+            code: "screen_pause_unsupported".to_string(),
+            message: "Screen soft-pause is only supported on the ScreenCaptureKit backend"
+                .to_string(),
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn resume_screen_outputs(
+    active_session: &mut Option<ActiveCaptureSession>,
+    segment_dir: &Path,
+    recording_file: &str,
+) -> Result<(), CaptureErrorResponse> {
+    let Some(session) = active_session.as_mut() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "No active screen capture session for screen output resume".to_string(),
+        });
+    };
+    match &mut session.backend {
+        CaptureBackendSession::ScreenCaptureKit(sck) => {
+            sck.resume_screen_outputs(segment_dir, recording_file)
+        }
+        CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
+            code: "screen_resume_unsupported".to_string(),
+            message: "Screen soft-resume is only supported on the ScreenCaptureKit backend"
+                .to_string(),
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub struct StopScreenCaptureSessionArgs<'a> {
     pub active_session: &'a mut Option<ActiveCaptureSession>,
     pub inactivity_tail_trim_seconds: u64,
@@ -2956,6 +3058,28 @@ pub fn resume_system_audio_writer(
 }
 
 #[cfg(not(target_os = "macos"))]
+pub fn pause_screen_outputs_for_inactivity(
+    _active_session: &mut Option<ActiveCaptureSession>,
+) -> Result<(), CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "Screen soft-pause is currently supported only on macOS".to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn resume_screen_outputs(
+    _active_session: &mut Option<ActiveCaptureSession>,
+    _segment_dir: &Path,
+    _recording_file: &str,
+) -> Result<(), CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "Screen soft-resume is currently supported only on macOS".to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn stop_screen_capture_session(
     _args: StopScreenCaptureSessionArgs<'_>,
 ) -> Result<(), CaptureErrorResponse> {
@@ -3061,9 +3185,38 @@ pub fn take_system_audio_activity_window_peak_level() -> Option<f32> {
     (sample_count > 0).then_some(f32::from_bits(level_bits))
 }
 
+#[cfg(target_os = "macos")]
+pub fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.load(Ordering::Relaxed);
+    let level_bits = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
+#[cfg(target_os = "macos")]
+pub fn record_system_audio_activity_for_tests(
+    level: f32,
+    now_monotonic_ms: u64,
+    now_unix_ms: u64,
+) {
+    store_system_audio_activity(level, now_monotonic_ms, now_unix_ms);
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn take_system_audio_activity_window_peak_level() -> Option<f32> {
     None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn record_system_audio_activity_for_tests(
+    _level: f32,
+    _now_monotonic_ms: u64,
+    _now_unix_ms: u64,
+) {
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -4019,6 +4172,23 @@ mod tests {
         assert_eq!(take_system_audio_activity_window_peak_level(), Some(0.60));
         assert_eq!(take_system_audio_activity_window_peak_level(), None);
         assert_eq!(system_audio_activity_level(), Some(0.08));
+
+        reset_last_screen_activity_unix_ms();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_audio_activity_window_peak_peek_preserves_value_until_taken() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+
+        store_system_audio_activity(0.15, 10_000, 20_000);
+        store_system_audio_activity(0.70, 10_010, 20_010);
+
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.70));
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.70));
+        assert_eq!(take_system_audio_activity_window_peak_level(), Some(0.70));
+        assert_eq!(peek_system_audio_activity_window_peak_level(), None);
 
         reset_last_screen_activity_unix_ms();
     }

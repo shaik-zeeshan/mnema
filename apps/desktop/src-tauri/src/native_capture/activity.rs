@@ -12,6 +12,12 @@ use super::runtime::{
 };
 use super::runtime::{now_monotonic_marker_ms, NativeCaptureRuntime, NativeCaptureState};
 
+#[derive(Clone, Copy)]
+enum AudioPeakReadMode {
+    Take,
+    Peek,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdleDebugInfo {
@@ -118,6 +124,17 @@ fn capture_source_requested(
 }
 
 pub(super) fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> ActivitySnapshot {
+    current_activity_snapshot_with_audio_peak_mode(runtime, AudioPeakReadMode::Take)
+}
+
+pub(super) fn current_activity_snapshot_for_debug(runtime: &NativeCaptureRuntime) -> ActivitySnapshot {
+    current_activity_snapshot_with_audio_peak_mode(runtime, AudioPeakReadMode::Peek)
+}
+
+fn current_activity_snapshot_with_audio_peak_mode(
+    runtime: &NativeCaptureRuntime,
+    audio_peak_read_mode: AudioPeakReadMode,
+) -> ActivitySnapshot {
     // Only poll screen activity via CGDisplayCreateImage when the capture
     // stream is not running.  While the stream is active, the stream output
     // callback already updates screen activity from frame samples — polling on
@@ -141,13 +158,26 @@ pub(super) fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> Activ
             idle_ms: microphone_capture::microphone_activity_idle_ms(),
             // The inactivity loop polls at a coarse interval, so use the peak
             // seen since the last poll rather than a single instantaneous sample.
-            latest_normalized_level: microphone_capture::take_microphone_activity_window_peak_level(
-            ),
+            latest_normalized_level: match audio_peak_read_mode {
+                AudioPeakReadMode::Take => {
+                    microphone_capture::take_microphone_activity_window_peak_level()
+                }
+                AudioPeakReadMode::Peek => {
+                    microphone_capture::peek_microphone_activity_window_peak_level()
+                }
+            },
         },
         system_audio_activity: AudioActivitySourceState {
             enabled: capture_source_requested(runtime, |sources| sources.system_audio),
             idle_ms: capture_screen::system_audio_activity_idle_ms(),
-            latest_normalized_level: capture_screen::take_system_audio_activity_window_peak_level(),
+            latest_normalized_level: match audio_peak_read_mode {
+                AudioPeakReadMode::Take => {
+                    capture_screen::take_system_audio_activity_window_peak_level()
+                }
+                AudioPeakReadMode::Peek => {
+                    capture_screen::peek_system_audio_activity_window_peak_level()
+                }
+            },
         },
     }
 }
@@ -178,7 +208,7 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
     let system_audio_activity_last_unix_ms = capture_screen::last_system_audio_activity_unix_ms();
     let system_audio_activity_idle_ms = capture_screen::system_audio_activity_idle_ms();
     let system_audio_activity_level = capture_screen::system_audio_activity_level();
-    let activity_snapshot = current_activity_snapshot(&runtime);
+    let activity_snapshot = current_activity_snapshot_for_debug(&runtime);
     let combined_policy = runtime
         .inactivity
         .evaluate_policy_for_snapshot(now, activity_snapshot);
