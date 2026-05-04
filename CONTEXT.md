@@ -49,6 +49,18 @@ _Avoid_: temp folder, segment scratch dir, hidden segment temp
 The scan-and-cleanup flow that classifies a **Hidden Segment Workspace** using **Frame Batch** references, **OCR Job** references, visible sibling presence, and pending frame artifacts before deciding whether it is safe to remove.
 _Avoid_: temp cleanup, workspace GC, segment dir sweep
 
+**Managed Storage Layout**:
+The derived on-disk layout rooted at `<saveDirectory>/.z` that owns app-infra state such as SQLite and the recordings tree.
+_Avoid_: save dir helper, path utility, storage paths
+
+**Audio Activity Sample**:
+A raw audio probe reading such as latest normalized level or last-sample timestamp, exposed for debug visibility but not itself used as the inactivity decision.
+_Avoid_: audio activity event, microphone activity, system audio activity
+
+**Audio Activity Decision**:
+The threshold-qualified inactivity-policy view of audio activity, including enabled state, threshold, and derived idle used for pause/resume decisions.
+_Avoid_: raw audio sample, activity reading, latest level
+
 ## Relationships
 
 - A **Screen Frame Artifact** becomes a **Captured Frame** only after app-infra persists it.
@@ -57,6 +69,8 @@ _Avoid_: temp cleanup, workspace GC, segment dir sweep
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
 - A **Recording Lifecycle** coordinates screen, microphone, and system-audio capture within one recording runtime.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
+- A **Managed Storage Layout** is derived from one `saveDirectory` value.
+- A **Managed Storage Layout** contains the recordings tree under `<saveDirectory>/.z/recordings`.
 - **Captured Frame Equivalence** determines whether a new **Captured Frame** needs a new **OCR Job**.
 - **Captured Frame Equivalence Scope** determines which earlier **Captured Frame** values are eligible comparison candidates.
 - A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier **Captured Frame** in the same session already has the same content fingerprint.
@@ -64,12 +78,18 @@ _Avoid_: temp cleanup, workspace GC, segment dir sweep
 - **Captured Frame Reprocessing** operates on an existing **Captured Frame**, not on a new **Screen Frame Artifact**.
 - A **Hidden Segment Workspace** may be preserved when an incomplete **Frame Batch** or nonterminal **OCR Job** still references it.
 - **Hidden Segment Workspace Repair** removes only **Hidden Segment Workspace** values that are safe to remove.
+- An **Audio Activity Sample** can inform an **Audio Activity Decision**, but the two are not interchangeable.
+- An **Audio Activity Decision** is what the inactivity policy uses to pause or resume capture.
 
 ## Example dialogue
 
 > **Dev:** "When a **Captured Frame** has the same fingerprint as an earlier frame, does the **Captured Frame Pipeline** still create an **OCR Job**?"
 > **Domain expert:** "No — the frame is persisted and attached to its **Frame Batch**, but duplicate content does not need another **OCR Job**."
 
+> **Dev:** "Is `microphoneActivityLastUnixMs` the same thing as the audio signal the inactivity policy uses?"
+> **Domain expert:** "No — that timestamp is an **Audio Activity Sample**; the inactivity pause logic uses an **Audio Activity Decision** derived from threshold-qualified activity."
+
 ## Flagged ambiguities
 
 - "pipeline" previously meant both frame intake and OCR execution; resolved: **Captured Frame Pipeline** means frame intake through batch-finalization readiness, while **OCR Job** means the recognition work for one frame.
+- "audio activity" previously referred to both raw probe output and inactivity-policy state; resolved: raw probe output is an **Audio Activity Sample**, while policy-facing threshold-qualified state is an **Audio Activity Decision**.
