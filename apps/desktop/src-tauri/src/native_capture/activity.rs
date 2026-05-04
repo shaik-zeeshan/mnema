@@ -1,5 +1,6 @@
-use crate::native_capture_inactivity::{
-    ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySnapshot, AudioActivitySourceState,
+use super::inactivity::{
+    ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySnapshot, ActivitySourceKind,
+    AudioActivitySourceState,
 };
 use capture_microphone as microphone_capture;
 use serde::Serialize;
@@ -106,9 +107,41 @@ pub struct IdleDebugActivitySource {
     pub selected: bool,
 }
 
+/// Raw sample-facing reading exposed on the debug surface.
+///
+/// For audio, these values come directly from the capture crates' latest sample
+/// bookkeeping and intentionally remain separate from the threshold-qualified
+/// idle the inactivity policy uses internally.
+#[derive(Debug, Clone, Copy)]
+struct RawActivityReading {
+    last_unix_ms: Option<u64>,
+    idle_ms: Option<u64>,
+    level: Option<f32>,
+}
+
+/// Threshold-qualified projection for an audio source as seen by inactivity
+/// policy evaluation.
+#[derive(Debug, Clone, Copy)]
+struct QualifiedAudioReading {
+    enabled: bool,
+    activity_threshold: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AudioSignalDebugProjection {
+    raw_sample: RawActivityReading,
+    qualified: QualifiedAudioReading,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IdleDebugAudioProjection {
+    microphone: AudioSignalDebugProjection,
+    system_audio: AudioSignalDebugProjection,
+}
+
 #[cfg(target_os = "macos")]
 fn current_system_idle_ms() -> Option<u64> {
-    crate::native_capture_system_idle::current_system_idle_ms()
+    super::system_idle::current_system_idle_ms()
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -127,7 +160,9 @@ pub(super) fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> Activ
     current_activity_snapshot_with_audio_peak_mode(runtime, AudioPeakReadMode::Take)
 }
 
-pub(super) fn current_activity_snapshot_for_debug(runtime: &NativeCaptureRuntime) -> ActivitySnapshot {
+pub(super) fn current_activity_snapshot_for_debug(
+    runtime: &NativeCaptureRuntime,
+) -> ActivitySnapshot {
     current_activity_snapshot_with_audio_peak_mode(runtime, AudioPeakReadMode::Peek)
 }
 
@@ -188,7 +223,7 @@ pub(super) fn lock_runtime_for_idle_debug(
     match state.lock() {
         Ok(runtime) => runtime,
         Err(poisoned) => {
-            crate::native_capture_debug_log::log(
+            super::debug_log::log(
                 "native capture state poisoned while reading idle debug; returning best-effort snapshot",
             );
             poisoned.into_inner()
@@ -199,15 +234,19 @@ pub(super) fn lock_runtime_for_idle_debug(
 pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
     let mut runtime = lock_runtime_for_idle_debug(&state);
     let now = now_monotonic_marker_ms();
-    let system_idle_ms = crate::native_capture_system_idle::current_system_idle_ms();
+    let system_idle_ms = super::system_idle::current_system_idle_ms();
     let screen_activity_last_unix_ms = capture_screen::last_screen_activity_unix_ms();
     let screen_activity_idle_ms = capture_screen::screen_activity_idle_ms();
-    let microphone_activity_last_unix_ms = microphone_capture::last_microphone_activity_unix_ms();
-    let microphone_activity_idle_ms = microphone_capture::microphone_activity_idle_ms();
-    let microphone_activity_level = microphone_capture::microphone_activity_level();
-    let system_audio_activity_last_unix_ms = capture_screen::last_system_audio_activity_unix_ms();
-    let system_audio_activity_idle_ms = capture_screen::system_audio_activity_idle_ms();
-    let system_audio_activity_level = capture_screen::system_audio_activity_level();
+    let microphone_raw_sample = RawActivityReading {
+        last_unix_ms: microphone_capture::last_microphone_activity_unix_ms(),
+        idle_ms: microphone_capture::microphone_activity_idle_ms(),
+        level: microphone_capture::microphone_activity_level(),
+    };
+    let system_audio_raw_sample = RawActivityReading {
+        last_unix_ms: capture_screen::last_system_audio_activity_unix_ms(),
+        idle_ms: capture_screen::system_audio_activity_idle_ms(),
+        level: capture_screen::system_audio_activity_level(),
+    };
     let activity_snapshot = current_activity_snapshot_for_debug(&runtime);
     let combined_policy = runtime
         .inactivity
@@ -215,12 +254,13 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
     let policies = runtime
         .inactivity
         .evaluate_policies_for_snapshot(now, activity_snapshot);
+    let audio_projection = idle_debug_audio_projection(
+        &combined_policy,
+        microphone_raw_sample,
+        system_audio_raw_sample,
+    );
+    let family_fields = idle_debug_family_fields(&policies, &runtime.inactivity);
     let effective_idle = combined_policy.effective_idle;
-    let microphone_activity_enabled = activity_snapshot.microphone_activity.enabled;
-    let system_audio_activity_enabled = activity_snapshot.system_audio_activity.enabled;
-    let screen_paused = runtime.inactivity.is_screen_paused();
-    let microphone_paused = runtime.inactivity.is_microphone_paused();
-    let system_audio_paused = runtime.inactivity.is_system_audio_paused();
     let system_idle_available = system_idle_ms.is_some();
     let detector_source = if cfg!(target_os = "macos") {
         if system_idle_available {
@@ -252,41 +292,75 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
         },
         microphone_activity_sensitivity: runtime.inactivity.microphone_activity_sensitivity,
         system_audio_activity_sensitivity: runtime.inactivity.system_audio_activity_sensitivity,
-        microphone_activity_threshold: runtime.inactivity.microphone_activity_threshold(),
-        system_audio_activity_threshold: runtime.inactivity.system_audio_activity_threshold(),
+        microphone_activity_threshold: audio_projection
+            .microphone
+            .qualified
+            .activity_threshold
+            .unwrap_or_else(|| runtime.inactivity.microphone_activity_threshold()),
+        system_audio_activity_threshold: audio_projection
+            .system_audio
+            .qualified
+            .activity_threshold
+            .unwrap_or_else(|| runtime.inactivity.system_audio_activity_threshold()),
         screen_activity_last_unix_ms,
         screen_activity_idle_ms,
-        microphone_activity_last_unix_ms,
-        microphone_activity_idle_ms,
-        microphone_activity_level,
-        microphone_activity_enabled,
-        system_audio_activity_last_unix_ms,
-        system_audio_activity_idle_ms,
-        system_audio_activity_level,
-        system_audio_activity_enabled,
+        microphone_activity_last_unix_ms: audio_projection.microphone.raw_sample.last_unix_ms,
+        microphone_activity_idle_ms: audio_projection.microphone.raw_sample.idle_ms,
+        microphone_activity_level: audio_projection.microphone.raw_sample.level,
+        microphone_activity_enabled: audio_projection.microphone.qualified.enabled,
+        system_audio_activity_last_unix_ms: audio_projection.system_audio.raw_sample.last_unix_ms,
+        system_audio_activity_idle_ms: audio_projection.system_audio.raw_sample.idle_ms,
+        system_audio_activity_level: audio_projection.system_audio.raw_sample.level,
+        system_audio_activity_enabled: audio_projection.system_audio.qualified.enabled,
         effective_idle_ms: effective_idle.idle_ms,
         effective_idle_source: effective_idle.source.as_str().to_string(),
-        screen_effective_idle_ms: policies.screen.effective_idle.idle_ms,
-        screen_effective_idle_source: policies.screen.effective_idle.source.as_str().to_string(),
-        screen_paused,
-        microphone_effective_idle_ms: policies.microphone.effective_idle.idle_ms,
-        microphone_effective_idle_source: policies
-            .microphone
-            .effective_idle
-            .source
-            .as_str()
-            .to_string(),
-        microphone_paused,
-        system_audio_effective_idle_ms: policies.system_audio.effective_idle.idle_ms,
-        system_audio_effective_idle_source: policies
-            .system_audio
-            .effective_idle
-            .source
-            .as_str()
-            .to_string(),
-        system_audio_paused,
+        screen_effective_idle_ms: family_fields.screen_effective_idle_ms,
+        screen_effective_idle_source: family_fields.screen_effective_idle_source,
+        screen_paused: family_fields.screen_paused,
+        microphone_effective_idle_ms: family_fields.microphone_effective_idle_ms,
+        microphone_effective_idle_source: family_fields.microphone_effective_idle_source,
+        microphone_paused: family_fields.microphone_paused,
+        system_audio_effective_idle_ms: family_fields.system_audio_effective_idle_ms,
+        system_audio_effective_idle_source: family_fields.system_audio_effective_idle_source,
+        system_audio_paused: family_fields.system_audio_paused,
         activity_sources: idle_debug_activity_sources(&combined_policy),
         runtime_sources: build_runtime_sources_status(&runtime),
+    }
+}
+
+fn policy_source_sample(
+    policy: &ActivityPolicyEvaluation,
+    kind: ActivitySourceKind,
+) -> Option<&super::inactivity::ActivitySourceSample> {
+    policy.sources.iter().find(|source| source.kind == kind)
+}
+
+fn qualified_audio_reading(
+    policy: &ActivityPolicyEvaluation,
+    kind: ActivitySourceKind,
+) -> QualifiedAudioReading {
+    let source = policy_source_sample(policy, kind);
+
+    QualifiedAudioReading {
+        enabled: source.is_some_and(|source| source.enabled),
+        activity_threshold: source.and_then(|source| source.activity_threshold),
+    }
+}
+
+fn idle_debug_audio_projection(
+    policy: &ActivityPolicyEvaluation,
+    microphone_raw_sample: RawActivityReading,
+    system_audio_raw_sample: RawActivityReading,
+) -> IdleDebugAudioProjection {
+    IdleDebugAudioProjection {
+        microphone: AudioSignalDebugProjection {
+            raw_sample: microphone_raw_sample,
+            qualified: qualified_audio_reading(policy, ActivitySourceKind::MicrophoneCapture),
+        },
+        system_audio: AudioSignalDebugProjection {
+            raw_sample: system_audio_raw_sample,
+            qualified: qualified_audio_reading(policy, ActivitySourceKind::SystemAudioCapture),
+        },
     }
 }
 
@@ -396,7 +470,7 @@ pub(super) fn idle_debug_activity_sources(
 /// policy evaluations. This is a pure function testable without Tauri state.
 pub(super) fn idle_debug_family_fields(
     policies: &ActivityPolicyEvaluations,
-    inactivity: &crate::native_capture_inactivity::InactivityState,
+    inactivity: &super::inactivity::InactivityState,
 ) -> IdleDebugFamilyFields {
     IdleDebugFamilyFields {
         screen_effective_idle_ms: policies.screen.effective_idle.idle_ms,
@@ -433,4 +507,68 @@ pub(super) struct IdleDebugFamilyFields {
     pub system_audio_effective_idle_ms: u64,
     pub system_audio_effective_idle_source: String,
     pub system_audio_paused: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::inactivity::{ActivitySourceSample, EffectiveIdle};
+
+    #[test]
+    fn audio_projection_keeps_raw_samples_separate_from_qualified_policy_fields() {
+        let projection = idle_debug_audio_projection(
+            &ActivityPolicyEvaluation {
+                effective_idle: EffectiveIdle {
+                    source: ActivitySourceKind::MicrophoneCapture,
+                    idle_ms: 250,
+                },
+                sources: vec![
+                    ActivitySourceSample {
+                        kind: ActivitySourceKind::MicrophoneCapture,
+                        enabled: true,
+                        available: true,
+                        idle_ms: Some(250),
+                        latest_normalized_level: Some(0.4),
+                        activity_threshold: Some(0.3),
+                    },
+                    ActivitySourceSample {
+                        kind: ActivitySourceKind::SystemAudioCapture,
+                        enabled: false,
+                        available: false,
+                        idle_ms: None,
+                        latest_normalized_level: Some(0.1),
+                        activity_threshold: Some(0.2),
+                    },
+                ],
+            },
+            RawActivityReading {
+                last_unix_ms: Some(10),
+                idle_ms: Some(900),
+                level: Some(0.9),
+            },
+            RawActivityReading {
+                last_unix_ms: Some(20),
+                idle_ms: Some(800),
+                level: Some(0.8),
+            },
+        );
+
+        assert_eq!(projection.microphone.raw_sample.last_unix_ms, Some(10));
+        assert_eq!(projection.microphone.raw_sample.idle_ms, Some(900));
+        assert_eq!(projection.microphone.raw_sample.level, Some(0.9));
+        assert!(projection.microphone.qualified.enabled);
+        assert_eq!(
+            projection.microphone.qualified.activity_threshold,
+            Some(0.3)
+        );
+
+        assert_eq!(projection.system_audio.raw_sample.last_unix_ms, Some(20));
+        assert_eq!(projection.system_audio.raw_sample.idle_ms, Some(800));
+        assert_eq!(projection.system_audio.raw_sample.level, Some(0.8));
+        assert!(!projection.system_audio.qualified.enabled);
+        assert_eq!(
+            projection.system_audio.qualified.activity_threshold,
+            Some(0.2)
+        );
+    }
 }

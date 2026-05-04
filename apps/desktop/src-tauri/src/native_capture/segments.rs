@@ -1,10 +1,10 @@
-use crate::native_capture_output::{
+use super::output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
     finalize_capture_outputs,
     set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file,
 };
-use crate::native_capture_settings::compute_effective_screen_bitrate_bps;
+use super::settings::compute_effective_screen_bitrate_bps;
 use capture_microphone as microphone_capture;
 use capture_runtime::{
     parse_audio_restart_started_at_unix_ms, CaptureClock, RuntimeController, RuntimeSignal,
@@ -126,7 +126,7 @@ pub(super) fn cleanup_failed_segment_dirs(
 
     if let Err(error) = std::fs::remove_dir_all(segment_dir) {
         if error.kind() != std::io::ErrorKind::NotFound {
-            crate::native_capture_debug_log::log(format!(
+            super::debug_log::log(format!(
                 "failed removing unusable capture output directory {}: {}",
                 segment_dir.display(),
                 error
@@ -146,7 +146,7 @@ fn cleanup_failed_audio_outputs(
     {
         if let Err(error) = std::fs::remove_file(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "failed removing unusable capture output file {}: {}",
                     path.display(),
                     error
@@ -305,7 +305,7 @@ fn recover_from_segment_finalize_error(
         microphone_recording_file,
         system_audio_recording_file,
     );
-    crate::native_capture_debug_log::log(format!(
+    super::debug_log::log(format!(
         "recovered native capture segment finalization failure while {context}: [{}] {}",
         error.code, error.message
     ));
@@ -337,7 +337,7 @@ fn capture_session_options(
                 match try_forward_frame_artifact(&frame_artifact_tx, artifact) {
                     FrameArtifactForwardingResult::Enqueued => {}
                     FrameArtifactForwardingResult::ReceiverClosed => {
-                        crate::native_capture_debug_log::log(
+                        super::debug_log::log(
                             "failed to forward native frame artifact for persistence: worker channel closed",
                         );
                     }
@@ -368,7 +368,7 @@ fn spawn_frame_artifact_worker(
                     )
                     .await
                     {
-                        crate::native_capture_debug_log::log(format!(
+                        super::debug_log::log(format!(
                             "failed to persist native frame artifact: {error}"
                         ));
                     }
@@ -557,7 +557,7 @@ fn persist_committed_audio_segments(
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "failed to initialize native audio segment persistence runtime: {error}"
                 ));
                 return;
@@ -572,7 +572,7 @@ fn persist_committed_audio_segments(
                         persisted_any = true;
                     }
                     Err(error) => {
-                        crate::native_capture_debug_log::log(format!(
+                        super::debug_log::log(format!(
                             "failed to persist native audio segment {}: {}",
                             segment.file_path, error
                         ));
@@ -587,7 +587,7 @@ fn persist_committed_audio_segments(
     }));
 
     if persistence.is_err() {
-        crate::native_capture_debug_log::log(
+        super::debug_log::log(
             "native audio segment persistence worker panicked".to_string(),
         );
     }
@@ -606,7 +606,7 @@ pub(super) async fn close_frame_batches_for_stopped_screen_session_id_async(
         .await
         .map(|_| ())
         .map_err(|error| {
-            crate::native_capture_debug_log::log(format!(
+            super::debug_log::log(format!(
                 "failed to close frame batches for stopped screen session {session_id}: {error}"
             ));
             CaptureErrorResponse {
@@ -782,7 +782,7 @@ fn pause_microphone_for_inactivity_with_app_handle(
 pub(super) fn process_inactivity_audio_transitions_for_snapshot(
     runtime: &mut NativeCaptureRuntime,
     now: u64,
-    activity_snapshot: crate::native_capture_inactivity::ActivitySnapshot,
+    activity_snapshot: super::inactivity::ActivitySnapshot,
 ) -> Result<(), CaptureErrorResponse> {
     if runtime
         .inactivity
@@ -952,7 +952,7 @@ pub(super) fn resume_microphone_from_inactivity(
             )?;
             runtime.microphone_recording_file = Some(microphone_recording_file.clone());
             if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
-                crate::native_capture_output::set_current_microphone_output_file(
+                super::output::set_current_microphone_output_file(
                     output_files,
                     microphone_recording_file,
                 );
@@ -971,7 +971,7 @@ pub(super) fn resume_microphone_from_inactivity(
                     runtime.active_microphone_session = Some(session);
                     runtime.microphone_recording_file = Some(microphone_recording_file.clone());
                     if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
-                        crate::native_capture_output::set_current_microphone_output_file(
+                        super::output::set_current_microphone_output_file(
                             output_files,
                             microphone_recording_file,
                         );
@@ -1725,7 +1725,7 @@ where
                 None,
                 system_audio_recording_file.as_deref(),
             );
-            crate::native_capture_debug_log::log(format!(
+            super::debug_log::log(format!(
                 "failed to finalize stale screen capture outputs while recovering after system wake: [{}] {}",
                 error.code, error.message
             ));
@@ -1861,8 +1861,8 @@ where
         return Ok(());
     }
 
-    runtime.current_segment_sources = sources.clone().into();
     runtime.inactivity.is_paused = false;
+    runtime.current_segment_sources = sources.clone().into();
 
     Ok(())
 }
@@ -1915,7 +1915,7 @@ pub(super) fn handle_inactivity_resume_error(
     error: CaptureErrorResponse,
 ) -> bool {
     if should_fail_runtime_on_inactivity_resume_error(&error) {
-        crate::native_capture_debug_log::log(format!(
+        super::debug_log::log(format!(
             "fatal native capture inactivity resume failure: [{}] {}",
             error.code, error.message
         ));
@@ -1923,7 +1923,7 @@ pub(super) fn handle_inactivity_resume_error(
         return true;
     }
 
-    crate::native_capture_debug_log::log(format!(
+    super::debug_log::log(format!(
         "failed to resume native capture after activity; keeping session paused for retry: [{}] {}",
         error.code, error.message
     ));
@@ -2163,7 +2163,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             .should_resume_microphone_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_microphone_from_inactivity(&mut runtime) {
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "failed to resume microphone capture after activity: [{}] {}",
                     error.code, error.message
                 ));
@@ -2171,7 +2171,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 let mic_eval = runtime
                     .inactivity
                     .evaluate_microphone_policy_for_snapshot(now, activity_snapshot);
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "resumed microphone capture after activity (microphone_effective_idle_ms={}, microphone_effective_source={}, idle_timeout_seconds={})",
                     mic_eval.effective_idle.idle_ms,
                     mic_eval.effective_idle.source.as_str(),
@@ -2187,7 +2187,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             if let Err(error) =
                 pause_microphone_for_inactivity_with_app_handle(&mut runtime, Some(&app_handle))
             {
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "failed to pause microphone capture for inactivity: [{}] {}",
                     error.code, error.message
                 ));
@@ -2195,7 +2195,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 let mic_eval = runtime
                     .inactivity
                     .evaluate_microphone_policy_for_snapshot(now, activity_snapshot);
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "paused microphone capture for inactivity threshold crossing (microphone_effective_idle_ms={}, microphone_effective_source={}, idle_timeout_seconds={})",
                     mic_eval.effective_idle.idle_ms,
                     mic_eval.effective_idle.source.as_str(),
@@ -2210,7 +2210,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             .should_resume_system_audio_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_system_audio_from_inactivity(&mut runtime) {
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "failed to resume system audio capture after activity: [{}] {}",
                     error.code, error.message
                 ));
@@ -2218,7 +2218,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 let sa_eval = runtime
                     .inactivity
                     .evaluate_system_audio_policy_for_snapshot(now, activity_snapshot);
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "resumed system audio capture after activity (system_audio_effective_idle_ms={}, system_audio_effective_source={}, idle_timeout_seconds={})",
                     sa_eval.effective_idle.idle_ms,
                     sa_eval.effective_idle.source.as_str(),
@@ -2234,7 +2234,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             if let Err(error) =
                 pause_system_audio_for_inactivity_with_app_handle(&mut runtime, Some(&app_handle))
             {
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "failed to pause system audio capture for inactivity: [{}] {}",
                     error.code, error.message
                 ));
@@ -2242,7 +2242,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 let sa_eval = runtime
                     .inactivity
                     .evaluate_system_audio_policy_for_snapshot(now, activity_snapshot);
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "paused system audio capture for inactivity threshold crossing (system_audio_effective_idle_ms={}, system_audio_effective_source={}, idle_timeout_seconds={})",
                     sa_eval.effective_idle.idle_ms,
                     sa_eval.effective_idle.source.as_str(),
@@ -2264,7 +2264,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 let screen_eval = runtime
                     .inactivity
                     .evaluate_screen_policy_for_snapshot(now, activity_snapshot);
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "resumed screen capture after activity (screen_effective_idle_ms={}, screen_effective_source={}, idle_timeout_seconds={})",
                     screen_eval.effective_idle.idle_ms,
                     screen_eval.effective_idle.source.as_str(),
@@ -2288,7 +2288,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 let screen_eval = runtime
                     .inactivity
                     .evaluate_screen_policy_for_snapshot(now, activity_snapshot);
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "paused screen capture for inactivity threshold crossing (screen_effective_idle_ms={}, screen_effective_source={}, idle_timeout_seconds={})",
                     screen_eval.effective_idle.idle_ms,
                     screen_eval.effective_idle.source.as_str(),
@@ -2307,7 +2307,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                     break;
                 }
             } else {
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "resumed native capture after activity (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
                     effective_idle.idle_ms,
                     effective_idle.source.as_str(),
@@ -2328,7 +2328,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                     break;
                 }
             } else {
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "paused native capture for inactivity threshold crossing (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
                     effective_idle.idle_ms,
                     effective_idle.source.as_str(),
@@ -2380,7 +2380,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             match ensure_system_audio_planner_for_runtime(&mut runtime, "rotating segments") {
                 Ok(planner) => planner,
                 Err(error) => {
-                    crate::native_capture_debug_log::log(format!(
+                    super::debug_log::log(format!(
                         "failed to prepare system-audio planner while rotating segments: [{}] {}",
                         error.code, error.message
                     ));
@@ -2422,7 +2422,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             system_audio_dir,
             &active_sources,
         ) {
-            crate::native_capture_debug_log::log(format!(
+            super::debug_log::log(format!(
                 "failed to prepare capture segment output directories while rotating segments: [{}] {}",
                 error.code, error.message
             ));
@@ -2638,7 +2638,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 );
                 stop_active_sessions_after_failure(&mut runtime);
                 mark_runtime_session_failed(&mut runtime);
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "fatal native capture segment finalization failure while rotating segments: [{}] {}",
                     error.code, error.message
                 ));
@@ -2674,7 +2674,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
         runtime.microphone_recording_file = next_microphone_recording_file;
         runtime.system_audio_recording_file = next_system_audio_recording_file;
         if let Err(error) = reanchor_active_segment_timing(&mut runtime, "rotating segments") {
-            crate::native_capture_debug_log::log(format!(
+            super::debug_log::log(format!(
                 "failed to re-anchor native capture segment timing while rotating segments: [{}] {}",
                 error.code, error.message
             ));
@@ -2782,7 +2782,7 @@ pub(super) fn start_capture_runtime(
             capture_screen::reset_last_screen_activity_unix_ms();
             microphone_capture::reset_last_microphone_activity_unix_ms();
             let initial_inactivity =
-                crate::native_capture_inactivity::InactivityState::from_recording_settings(
+                super::inactivity::InactivityState::from_recording_settings(
                     settings,
                     started_monotonic,
                 );

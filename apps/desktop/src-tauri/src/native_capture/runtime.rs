@@ -1,12 +1,10 @@
-use crate::native_capture_inactivity::InactivityState;
-use crate::native_capture_settings::default_recording_settings;
 use capture_microphone as microphone_capture;
 use capture_runtime::{
     CaptureClock, RuntimeController, RuntimeSignal, RuntimeState, SegmentPlanner, SegmentSchedule,
 };
 use capture_types::{
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
-    NativeCaptureSession, RecordingSettings, ScreenResolution, SourceSessionMeta, SourceSessions,
+    NativeCaptureSession, ScreenResolution, SourceSessionMeta, SourceSessions,
     StartNativeCaptureRequest,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,6 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
+use super::inactivity::InactivityState;
 use super::segments::FrameArtifactMessage;
 
 #[derive(Debug, Default)]
@@ -65,21 +64,6 @@ pub type NativeCaptureState = Mutex<NativeCaptureRuntime>;
 pub(crate) struct SegmentLoopControl {
     pub(crate) stop: Arc<AtomicBool>,
 }
-
-#[derive(Debug, Clone)]
-pub struct RecordingSettingsRuntime {
-    pub settings: RecordingSettings,
-}
-
-impl Default for RecordingSettingsRuntime {
-    fn default() -> Self {
-        Self {
-            settings: default_recording_settings(),
-        }
-    }
-}
-
-pub type RecordingSettingsState = Mutex<RecordingSettingsRuntime>;
 
 pub(super) fn request_segment_loop_stop(runtime: &NativeCaptureRuntime) {
     if let Some(control) = runtime.segment_loop_control.as_ref() {
@@ -315,7 +299,7 @@ pub(super) fn should_recover_from_segment_finalize_error(error: &CaptureErrorRes
             ],
         )
         .is_some_and(
-            crate::native_capture_output::is_missing_requested_screen_output_failure_detail,
+            super::output::is_missing_requested_screen_output_failure_detail,
         );
 
     capture_screen::should_recover_from_segment_finalize_error(error)
