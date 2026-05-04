@@ -126,6 +126,7 @@ pub enum SegmentWorkspaceCleanupDisposition {
     ReferencedByIncompleteBatch,
     ReferencedByNonterminalOcr,
     MissingVisibleSegmentSibling,
+    PendingFrameArtifacts,
     CompletedOnly,
     NoReferences,
 }
@@ -500,12 +501,15 @@ impl FrameBatchStore {
         let visible_segment_exists = Path::new(&paths.visible_segment_path).exists();
 
         if frame_rows.is_empty() {
-            let disposition = if visible_segment_exists
-                || !hidden_workspace_has_frame_artifacts(Path::new(&paths.frames_dir))
-            {
-                SegmentWorkspaceCleanupDisposition::NoReferences
+            let has_frame_artifacts = hidden_workspace_has_frame_artifacts(Path::new(&paths.frames_dir));
+            let disposition = if has_frame_artifacts {
+                if visible_segment_exists {
+                    SegmentWorkspaceCleanupDisposition::PendingFrameArtifacts
+                } else {
+                    SegmentWorkspaceCleanupDisposition::MissingVisibleSegmentSibling
+                }
             } else {
-                SegmentWorkspaceCleanupDisposition::MissingVisibleSegmentSibling
+                SegmentWorkspaceCleanupDisposition::NoReferences
             };
             return Ok(Some(SegmentWorkspaceCleanupDebugInfo {
                 visible_segment_exists,
@@ -2770,6 +2774,41 @@ mod tests {
             assert_eq!(info.disposition, SegmentWorkspaceCleanupDisposition::NoReferences);
             assert!(info.safe_to_remove);
             assert!(!info.visible_segment_exists);
+            assert_eq!(info.frame_count, 0);
+        });
+    }
+
+    #[test]
+    fn classify_hidden_segment_workspace_reports_visible_segment_with_live_frame_artifacts_as_pending() {
+        run_async_test(async {
+            let dir = TestDir::new("classify-pending-frame-artifacts");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let store = FrameBatchStore::new(pool);
+
+            let segment_dir = dir.path().join("2026/04/12");
+            let workspace_dir = segment_dir.join(".session-live-segment-0001");
+            let frames_dir = workspace_dir.join("frames");
+            fs::create_dir_all(&frames_dir).expect("frames dir should exist");
+            fs::write(segment_dir.join("session-live-segment-0001.mov"), b"mov")
+                .expect("visible segment should exist");
+            fs::write(frames_dir.join("frame-1.jpg"), b"jpg")
+                .expect("frame artifact should exist");
+
+            let info = store
+                .classify_hidden_segment_workspace(&workspace_dir)
+                .await
+                .expect("classification should succeed")
+                .expect("classification should exist");
+
+            assert_eq!(
+                info.disposition,
+                SegmentWorkspaceCleanupDisposition::PendingFrameArtifacts
+            );
+            assert!(!info.safe_to_remove);
+            assert!(info.visible_segment_exists);
             assert_eq!(info.frame_count, 0);
         });
     }
