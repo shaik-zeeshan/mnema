@@ -1,10 +1,9 @@
-use std::{collections::BTreeSet, path::Path};
+use std::path::Path;
 
 use crate::{hidden_segment_workspace::HiddenSegmentWorkspacePaths, processing::Frame};
 
 pub(crate) fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io::Error)> {
     let mut errors = Vec::new();
-    let mut hidden_segment_workspaces_to_remove = BTreeSet::new();
 
     for frame in frames {
         let path = Path::new(&frame.file_path);
@@ -28,15 +27,17 @@ pub(crate) fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io:
         if should_preserve_hidden_workspace_frame(path) {
             continue;
         }
-        if let Some(segment_dir) = hidden_segment_workspace_dir {
-            hidden_segment_workspaces_to_remove.insert(segment_dir.to_path_buf());
-            continue;
-        }
         if path.exists() {
             if let Err(error) = std::fs::remove_file(path) {
                 errors.push((frame.file_path.clone(), error));
                 continue;
             }
+        }
+        if hidden_segment_workspace_dir.is_some() {
+            // Leave hidden segment workspace directories in place. The active
+            // segment may still export new Screen Frame Artifacts into the same
+            // frames/ directory after earlier persisted frames are finalized.
+            continue;
         }
         if let Some(frames_dir) = path.parent() {
             try_remove_empty_dir(frames_dir, &mut errors);
@@ -44,10 +45,6 @@ pub(crate) fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io:
                 try_remove_empty_dir(segment_dir, &mut errors);
             }
         }
-    }
-
-    for segment_dir in hidden_segment_workspaces_to_remove {
-        try_remove_segment_workspace_dir(&segment_dir, &mut errors);
     }
 
     errors
@@ -150,14 +147,6 @@ fn try_remove_empty_dir(dir: &Path, errors: &mut Vec<(String, std::io::Error)>) 
         Err(e) => {
             errors.push((dir.to_string_lossy().to_string(), e));
         }
-    }
-}
-
-fn try_remove_segment_workspace_dir(dir: &Path, errors: &mut Vec<(String, std::io::Error)>) {
-    match std::fs::remove_dir_all(dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => errors.push((dir.to_string_lossy().to_string(), error)),
     }
 }
 
@@ -310,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_removes_empty_frames_and_segment_dirs() {
+    fn cleanup_preserves_hidden_segment_dirs_after_frame_removal() {
         let dir = TestDir::new("empty-dir-cleanup");
         let recordings_day_dir = dir.managed_recordings_day_path("2026", "04", "12");
         let segment_dir = recordings_day_dir.join(".session-x-segment-0001");
@@ -324,12 +313,12 @@ mod tests {
         let errors = cleanup_frame_artifacts(&[test_frame(frame_path.clone())]);
         assert!(errors.is_empty(), "cleanup should succeed without errors");
         assert!(!frame_path.exists(), "frame file should be deleted");
-        assert!(!frames_dir.exists(), "empty frames/ dir should be removed");
-        assert!(!segment_dir.exists(), "empty segment dir should be removed");
+        assert!(frames_dir.exists(), "hidden workspace frames/ dir should remain");
+        assert!(segment_dir.exists(), "hidden workspace dir should remain");
     }
 
     #[test]
-    fn cleanup_prunes_empty_dirs_when_frame_already_missing() {
+    fn cleanup_preserves_hidden_segment_dirs_when_frame_already_missing() {
         let dir = TestDir::new("already-missing-frame");
         let recordings_day_dir = dir.managed_recordings_day_path("2026", "04", "12");
         let segment_dir = recordings_day_dir.join(".session-z-segment-0001");
@@ -341,12 +330,12 @@ mod tests {
 
         let errors = cleanup_frame_artifacts(&[test_frame(frame_path)]);
         assert!(errors.is_empty(), "cleanup should succeed without errors");
-        assert!(!frames_dir.exists());
-        assert!(!segment_dir.exists());
+        assert!(frames_dir.exists());
+        assert!(segment_dir.exists());
     }
 
     #[test]
-    fn cleanup_removes_segment_workspace_but_preserves_separate_audio_dir() {
+    fn cleanup_preserves_segment_workspace_and_separate_audio_dir() {
         let dir = TestDir::new("audio-separate-cleanup");
         let recordings_day_dir = dir.managed_recordings_day_path("2026", "04", "19");
         let segment_dir = recordings_day_dir.join(".session-audio-sep-segment-0001");
@@ -368,14 +357,14 @@ mod tests {
         let errors = cleanup_frame_artifacts(&[test_frame(frame_path.clone())]);
         assert!(errors.is_empty(), "cleanup should succeed without errors: {errors:?}");
         assert!(!frame_path.exists());
-        assert!(!frames_dir.exists());
-        assert!(!segment_dir.exists());
+        assert!(frames_dir.exists());
+        assert!(segment_dir.exists());
         assert!(audio_file.exists());
         assert!(audio_dir.exists());
     }
 
     #[test]
-    fn cleanup_removes_hidden_segment_workspace_recursively() {
+    fn cleanup_preserves_hidden_segment_workspace_structure() {
         let dir = TestDir::new("workspace-recursive-cleanup");
         let segment_dir = dir
             .path()
@@ -398,13 +387,13 @@ mod tests {
         let errors = cleanup_frame_artifacts(&[test_frame(frame_path.clone())]);
         assert!(errors.is_empty(), "cleanup should succeed without errors");
         assert!(!frame_path.exists());
-        assert!(!frames_dir.exists());
-        assert!(!other_file.exists());
-        assert!(!segment_dir.exists());
+        assert!(frames_dir.exists());
+        assert!(other_file.exists());
+        assert!(segment_dir.exists());
     }
 
     #[test]
-    fn cleanup_removes_shared_hidden_segment_workspace_for_mixed_batches() {
+    fn cleanup_preserves_hidden_workspace_for_follow_on_exports() {
         let dir = TestDir::new("shared-workspace-mixed-batches");
         let segment_dir = dir
             .path()
@@ -428,8 +417,9 @@ mod tests {
         let errors = cleanup_frame_artifacts(&[test_frame(first_frame_path.clone())]);
         assert!(errors.is_empty(), "cleanup should succeed without errors");
         assert!(!first_frame_path.exists());
-        assert!(!second_frame_path.exists());
-        assert!(!segment_dir.exists());
+        assert!(second_frame_path.exists());
+        assert!(frames_dir.exists());
+        assert!(segment_dir.exists());
     }
 
     #[test]
@@ -450,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_removes_hidden_workspace_frame_when_visible_segment_exists() {
+    fn cleanup_removes_hidden_workspace_frame_but_preserves_parent_dirs_when_visible_segment_exists() {
         let dir = TestDir::new("visible-segment-present");
         let recordings_day_dir = dir.managed_recordings_day_path("2026", "04", "12");
         let segment_dir = recordings_day_dir.join(".session-preview-segment-0001");
@@ -467,12 +457,12 @@ mod tests {
         let errors = cleanup_frame_artifacts(&[test_frame(frame_path.clone())]);
         assert!(errors.is_empty(), "cleanup should succeed without errors");
         assert!(!frame_path.exists());
-        assert!(!frames_dir.exists());
-        assert!(!segment_dir.exists());
+        assert!(frames_dir.exists());
+        assert!(segment_dir.exists());
     }
 
     #[test]
-    fn cleanup_removes_hidden_workspace_jpeg_when_visible_segment_exists() {
+    fn cleanup_removes_hidden_workspace_jpeg_but_preserves_parent_dirs_when_visible_segment_exists() {
         let dir = TestDir::new("visible-segment-present-jpeg");
         let recordings_day_dir = dir.managed_recordings_day_path("2026", "04", "12");
         let segment_dir = recordings_day_dir.join(".session-preview-segment-0001");
@@ -489,8 +479,8 @@ mod tests {
         let errors = cleanup_frame_artifacts(&[test_frame(frame_path.clone())]);
         assert!(errors.is_empty(), "cleanup should succeed without errors");
         assert!(!frame_path.exists());
-        assert!(!frames_dir.exists());
-        assert!(!segment_dir.exists());
+        assert!(frames_dir.exists());
+        assert!(segment_dir.exists());
     }
 
     #[test]
