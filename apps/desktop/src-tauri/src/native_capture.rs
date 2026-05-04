@@ -9,6 +9,7 @@ pub(crate) mod settings;
 #[path = "native_capture_system_idle.rs"]
 pub(crate) mod system_idle;
 mod activity;
+mod lifecycle;
 mod microphone;
 mod runtime;
 mod segments;
@@ -29,7 +30,7 @@ use capture_types::{
     UpdateMicrophoneControllerRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
     VideoBitratePreset, VideoBitrateSettings,
 };
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
 pub use activity::IdleDebugInfo;
@@ -42,13 +43,10 @@ pub use microphone::{
     start_microphone_device_change_notifier, MicrophoneControllerPreferencesState,
     MicrophoneDeviceChangeNotifierState,
 };
-use runtime::{
-    mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
-    stopped_session_from_runtime, validate_start_request,
-};
-pub use runtime::NativeCaptureState;
+use lifecycle::{RecordingLifecycle, StartRecordingLifecycleOutcome};
+use runtime::validate_start_request;
+pub type NativeCaptureState = Mutex<RecordingLifecycle>;
 pub use settings::RecordingSettingsState;
-use segments::{recover_screen_capture_after_wake, start_capture_runtime, stop_capture_runtime};
 
 #[cfg(target_os = "macos")]
 pub type SystemWakeNotifierState = std::sync::Mutex<Option<cidre::ns::NotificationGuard>>;
@@ -75,20 +73,22 @@ fn recover_screen_capture_after_system_wake(app_handle: &tauri::AppHandle) {
         Err(_) => return,
     };
 
-    match recover_screen_capture_after_wake(&mut runtime, Some(app_handle)) {
+    match runtime.recover_after_wake(Some(app_handle)) {
         Ok(true) => {
+            let runtime_state = runtime.runtime();
             debug_log::log_info(format!(
                 "recovered screen capture after system wake (session_id='{}', requested_sources={})",
-                runtime_log_session_id(&runtime),
-                format_optional_capture_source_flags(runtime.requested_sources.as_ref())
+                runtime_log_session_id(runtime_state),
+                format_optional_capture_source_flags(runtime_state.requested_sources.as_ref())
             ));
         }
         Ok(false) => {}
         Err(error) => {
+            let runtime_state = runtime.runtime();
             debug_log::log_error(format!(
                 "failed to recover screen capture after system wake (session_id='{}', requested_sources={}): [{}] {}",
-                runtime_log_session_id(&runtime),
-                format_optional_capture_source_flags(runtime.requested_sources.as_ref()),
+                runtime_log_session_id(runtime_state),
+                format_optional_capture_source_flags(runtime_state.requested_sources.as_ref()),
                 error.code,
                 error.message
             ));
@@ -549,12 +549,12 @@ fn start_native_capture_inner(
     };
 
     let mut runtime = state.lock().expect("native capture state poisoned");
-    if runtime.is_running {
+    if runtime.runtime().is_running {
         let existing_sources =
-            format_optional_capture_source_flags(runtime.requested_sources.as_ref());
-        let session_id = runtime_log_session_id(&runtime);
+            format_optional_capture_source_flags(runtime.runtime().requested_sources.as_ref());
+        let session_id = runtime_log_session_id(runtime.runtime());
 
-        if runtime.requested_sources.as_ref() != Some(&sources) {
+        if runtime.runtime().requested_sources.as_ref() != Some(&sources) {
             let error = CaptureErrorResponse {
                 code: "capture_session_already_running".to_string(),
                 message: "A native capture session is already running with different sources"
@@ -577,37 +577,48 @@ fn start_native_capture_inner(
         ));
 
         return Ok(NativeCaptureSessionResponse {
-            session: session_from_runtime(&runtime),
+            session: runtime.session(),
         });
     }
 
     let requested_sources_for_log = sources.clone();
-    if let Err(error) = start_capture_runtime(
-        &mut runtime,
+    let started_session = match runtime.start(
         app_handle,
         &settings,
         sources,
         microphone_device_id_for_capture,
     ) {
-        debug_log::log_error(format!(
-            "failed to start native capture ({origin}, requested_sources={}): [{}] {}",
-            format_capture_source_flags(&requested_sources_for_log),
-            error.code,
-            error.message
-        ));
-        return Err(error);
-    }
+        Ok(StartRecordingLifecycleOutcome::Started(session)) => session,
+        Ok(StartRecordingLifecycleOutcome::AlreadyRunning(session)) => {
+            debug_log::log_info(format!(
+                "native capture {origin} start requested while session is already running; returning existing session (session_id='{}', requested_sources={})",
+                session_log_session_id(&session),
+                format_optional_capture_source_flags(session.requested_sources.as_ref())
+            ));
+
+            return Ok(NativeCaptureSessionResponse { session });
+        }
+        Err(error) => {
+            debug_log::log_error(format!(
+                "failed to start native capture ({origin}, requested_sources={}): [{}] {}",
+                format_capture_source_flags(&requested_sources_for_log),
+                error.code,
+                error.message
+            ));
+            return Err(error);
+        }
+    };
 
     debug_log::log_info(format!(
         "started native capture successfully ({origin}, session_id='{}', requested_sources={}, segment_index={}, save_directory='{}')",
-        runtime_log_session_id(&runtime),
-        format_optional_capture_source_flags(runtime.requested_sources.as_ref()),
-        runtime.current_segment_index,
+        runtime_log_session_id(runtime.runtime()),
+        format_optional_capture_source_flags(runtime.runtime().requested_sources.as_ref()),
+        runtime.runtime().current_segment_index,
         settings.save_directory
     ));
 
     Ok(NativeCaptureSessionResponse {
-        session: session_from_runtime(&runtime),
+        session: started_session,
     })
 }
 
@@ -648,7 +659,7 @@ pub fn get_capture_permissions(
 
     CapturePermissionsResponse {
         permissions,
-        session: session_from_runtime(&runtime),
+        session: runtime.session(),
     }
 }
 
@@ -826,41 +837,38 @@ pub fn stop_native_capture(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let mut runtime = state.lock().expect("native capture state poisoned");
-    let session_id = runtime_log_session_id(&runtime).to_string();
-    let requested_sources = runtime.requested_sources.clone();
-    let output_files_before_stop = runtime.output_files.clone();
+    let session_id = runtime_log_session_id(runtime.runtime()).to_string();
+    let requested_sources = runtime.runtime().requested_sources.clone();
+    let output_files_before_stop = runtime.runtime().output_files.clone();
 
     debug_log::log_info(format!(
         "received native capture stop request (is_running={}, session_id='{}', requested_sources={}, output_files_before_stop={})",
-        runtime.is_running,
+        runtime.runtime().is_running,
         session_id,
         format_optional_capture_source_flags(requested_sources.as_ref()),
         format_output_file_counts(output_files_before_stop.as_ref())
     ));
 
-    if let Err(error) = stop_capture_runtime(&mut runtime, Some(&app_handle)) {
-        if capture_screen::should_preserve_runtime_on_stop_error(&error) {
-            debug_log::log_error(format!(
-                "failed to stop native capture but preserved runtime for recovery (session_id='{}'): [{}] {}",
-                session_id,
-                error.code,
-                error.message
-            ));
+    let session = match runtime.stop(&app_handle) {
+        Ok(session) => session,
+        Err(error) => {
+            if capture_screen::should_preserve_runtime_on_stop_error(&error) {
+                debug_log::log_error(format!(
+                    "failed to stop native capture but preserved runtime for recovery (session_id='{}'): [{}] {}",
+                    session_id,
+                    error.code,
+                    error.message
+                ));
+            } else {
+                debug_log::log_error(format!(
+                    "failed to stop native capture; runtime marked stopped (session_id='{}'): [{}] {}",
+                    session_id, error.code, error.message
+                ));
+            }
+
             return Err(error);
         }
-
-        request_segment_loop_stop(&runtime);
-        mark_runtime_session_stopped(&mut runtime);
-        debug_log::log_error(format!(
-            "failed to stop native capture; runtime marked stopped (session_id='{}'): [{}] {}",
-            session_id, error.code, error.message
-        ));
-        return Err(error);
-    }
-
-    request_segment_loop_stop(&runtime);
-    mark_runtime_session_stopped(&mut runtime);
-    let session = stopped_session_from_runtime(&runtime);
+    };
 
     debug_log::log_info(format!(
         "stopped native capture successfully (session_id='{}', requested_sources={}, finalized_outputs={})",
