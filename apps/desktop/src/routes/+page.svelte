@@ -83,6 +83,7 @@
   // frame window; padding the window keeps the lane bars visible at those
   // edges instead of being filtered out by an overly tight range query.
   const AUDIO_SEGMENT_RANGE_PADDING_MS = 60_000;
+  const AUDIO_SEGMENT_REFRESH_DEBOUNCE_MS = 100;
   // Safety cap on pages walked per poll while chasing the current head. At
   // 50 frames/page this catches up bursts of a few thousand frames between
   // polls. If the cap is hit before reaching the head we fall back to a full
@@ -967,6 +968,17 @@
         audioSegmentsLoading = false;
       }
     }
+  }
+
+  let refreshAudioSegmentsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleAudioSegmentsRefresh(): void {
+    if (refreshAudioSegmentsDebounceTimer != null) {
+      clearTimeout(refreshAudioSegmentsDebounceTimer);
+    }
+    refreshAudioSegmentsDebounceTimer = setTimeout(() => {
+      refreshAudioSegmentsDebounceTimer = null;
+      void refreshAudioSegments();
+    }, AUDIO_SEGMENT_REFRESH_DEBOUNCE_MS);
   }
 
   async function refreshTimelineAndDashboard(): Promise<void> {
@@ -2689,6 +2701,7 @@
     };
     const onFocus = () => { void resyncCaptureSession(); };
     let unlistenSystemDidWake: (() => void) | undefined;
+    let unlistenAudioSegmentsChanged: (() => void) | undefined;
     let destroyed = false;
 
     listen("system_did_wake", () => {
@@ -2697,6 +2710,13 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenSystemDidWake = fn;
+    });
+
+    listen("audio_segments_changed", () => {
+      scheduleAudioSegmentsRefresh();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenAudioSegmentsChanged = fn;
     });
 
     document.addEventListener("visibilitychange", onVisibility);
@@ -2720,6 +2740,11 @@
     return () => {
       destroyed = true;
       unlistenSystemDidWake?.();
+      unlistenAudioSegmentsChanged?.();
+      if (refreshAudioSegmentsDebounceTimer != null) {
+        clearTimeout(refreshAudioSegmentsDebounceTimer);
+        refreshAudioSegmentsDebounceTimer = null;
+      }
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("pageshow", onFocus);
