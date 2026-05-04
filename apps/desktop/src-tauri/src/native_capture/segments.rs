@@ -352,6 +352,7 @@ fn spawn_frame_artifact_worker(
     session_id: String,
 ) -> mpsc::Sender<FrameArtifactMessage> {
     let (tx, mut rx) = mpsc::channel(FRAME_ARTIFACT_BUFFER_CAPACITY);
+    let app_handle = app_handle.clone();
     let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
 
     tauri::async_runtime::spawn(async move {
@@ -360,6 +361,7 @@ fn spawn_frame_artifact_worker(
                 FrameArtifactMessage::Artifact(artifact) => {
                     if let Err(error) = crate::app_infra::persist_screen_frame_artifact(
                         infra.as_ref(),
+                        app_handle.state::<crate::native_capture::RecordingSettingsState>().inner(),
                         &session_id,
                         artifact,
                     )

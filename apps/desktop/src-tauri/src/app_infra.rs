@@ -8,6 +8,7 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
+use capture_types::{OcrRecognitionMode, OcrSettings};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -32,6 +33,17 @@ pub fn recordings_root_dir(save_directory: &str) -> std::path::PathBuf {
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct OcrJobPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recognition_mode: Option<OcrRecognitionMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language_correction: Option<bool>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedFramePreview {
@@ -152,6 +164,12 @@ pub struct GetFrameRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetNearestEarlierEquivalentFrameRequest {
+    pub frame_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetEarliestEarlierEquivalentFrameRequest {
     pub frame_id: i64,
 }
 
@@ -994,8 +1012,41 @@ fn preview_cache_ttl(settings: &crate::native_capture::RecordingSettingsState) -
     Duration::from_secs(ttl_seconds)
 }
 
+fn merged_ocr_payload_json(
+    payload_json: Option<&str>,
+    ocr_settings: &OcrSettings,
+) -> Result<Option<String>, String> {
+    let mut payload = match payload_json {
+        Some(payload_json) => serde_json::from_str::<OcrJobPayload>(payload_json)
+            .map_err(|error| format!("failed to parse OCR payload JSON: {error}"))?,
+        None => OcrJobPayload::default(),
+    };
+
+    payload.recognition_mode = Some(ocr_settings.recognition_mode.clone());
+    payload.language_correction = Some(ocr_settings.language_correction);
+
+    serde_json::to_string(&payload)
+        .map(Some)
+        .map_err(|error| format!("failed to serialize OCR payload JSON: {error}"))
+}
+
+fn ocr_payload_json_from_settings(
+    settings: &crate::native_capture::RecordingSettingsState,
+    payload_json: Option<&str>,
+) -> Result<Option<String>, String> {
+    let ocr_settings = settings
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .ocr
+        .clone();
+
+    merged_ocr_payload_json(payload_json, &ocr_settings)
+}
+
 pub async fn persist_screen_frame_artifact(
     infra: &::app_infra::AppInfra,
+    settings: &crate::native_capture::RecordingSettingsState,
     session_id: &str,
     artifact: ScreenFrameArtifact,
 ) -> ::app_infra::Result<::app_infra::CapturedFramePipelineResult> {
@@ -1032,7 +1083,10 @@ pub async fn persist_screen_frame_artifact(
         }
     };
 
-    infra.capture_frame(&frame, None).await
+    let payload_json = ocr_payload_json_from_settings(settings, None)
+        .map_err(::app_infra::AppInfraError::OcrEngine)?;
+
+    infra.capture_frame(&frame, payload_json.as_deref()).await
 }
 
 pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
@@ -1379,8 +1433,18 @@ fn processing_subject(subject_type: String, subject_id: i64) -> ::app_infra::Pro
 async fn debug_insert_frame_and_enqueue_processing_job_inner(
     infra: &::app_infra::AppInfra,
     request: DebugInsertFrameAndEnqueueProcessingJobRequest,
+    settings: Option<&crate::native_capture::RecordingSettingsState>,
 ) -> ::app_infra::Result<FrameProcessingJobDto> {
     let (frame, processor, payload_json) = request.into_parts();
+    let payload_json = if processor == ::app_infra::OCR_PROCESSOR {
+        settings
+            .map(|settings| ocr_payload_json_from_settings(settings, payload_json.as_deref()))
+            .transpose()
+            .map_err(::app_infra::AppInfraError::OcrEngine)?
+            .flatten()
+    } else {
+        payload_json
+    };
 
     infra
         .debug_insert_frame_and_enqueue_processing_job(&frame, &processor, payload_json.as_deref())
@@ -1391,9 +1455,13 @@ async fn debug_insert_frame_and_enqueue_processing_job_inner(
 async fn reprocess_captured_frame_ocr_inner(
     infra: &::app_infra::AppInfra,
     request: ReprocessCapturedFrameOcrRequest,
+    settings: &crate::native_capture::RecordingSettingsState,
 ) -> ::app_infra::Result<CapturedFrameReprocessingResultDto> {
+    let payload_json = ocr_payload_json_from_settings(settings, request.payload_json.as_deref())
+        .map_err(::app_infra::AppInfraError::OcrEngine)?;
+
     infra
-        .reprocess_captured_frame_ocr(request.frame_id, request.payload_json.as_deref())
+        .reprocess_captured_frame_ocr(request.frame_id, payload_json.as_deref())
         .await
         .map(CapturedFrameReprocessingResultDto::from)
 }
@@ -1461,10 +1529,11 @@ pub async fn get_app_job(
 pub async fn debug_insert_frame_and_enqueue_processing_job(
     request: DebugInsertFrameAndEnqueueProcessingJobRequest,
     state: tauri::State<'_, AppInfraState>,
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
 ) -> Result<FrameProcessingJobDto, String> {
     let infra = Arc::clone(&*state);
 
-    debug_insert_frame_and_enqueue_processing_job_inner(&infra, request)
+    debug_insert_frame_and_enqueue_processing_job_inner(&infra, request, Some(&settings))
         .await
         .map_err(|error| {
             format!("failed to debug-insert frame and enqueue processing job: {error}")
@@ -1475,10 +1544,11 @@ pub async fn debug_insert_frame_and_enqueue_processing_job(
 pub async fn debug_insert_frame_and_enqueue_ocr(
     request: DebugInsertFrameAndEnqueueOcrRequest,
     state: tauri::State<'_, AppInfraState>,
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
 ) -> Result<FrameProcessingJobDto, String> {
     let infra = Arc::clone(&*state);
 
-    debug_insert_frame_and_enqueue_processing_job_inner(&infra, request.into())
+    debug_insert_frame_and_enqueue_processing_job_inner(&infra, request.into(), Some(&settings))
         .await
         .map_err(|error| format!("failed to debug-insert frame and enqueue ocr job: {error}"))
 }
@@ -1487,10 +1557,11 @@ pub async fn debug_insert_frame_and_enqueue_ocr(
 pub async fn reprocess_captured_frame_ocr(
     request: ReprocessCapturedFrameOcrRequest,
     state: tauri::State<'_, AppInfraState>,
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
 ) -> Result<CapturedFrameReprocessingResultDto, String> {
     let infra = Arc::clone(&*state);
 
-    reprocess_captured_frame_ocr_inner(&infra, request.clone())
+    reprocess_captured_frame_ocr_inner(&infra, request.clone(), &settings)
         .await
         .map_err(|error| {
             format!(
@@ -1632,6 +1703,24 @@ pub async fn get_nearest_earlier_equivalent_frame(
         .map_err(|error| {
             format!(
                 "failed to resolve nearest earlier equivalent frame for frame {}: {error}",
+                request.frame_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn get_earliest_earlier_equivalent_frame(
+    request: GetEarliestEarlierEquivalentFrameRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Option<FrameDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .get_earliest_earlier_equivalent_frame(request.frame_id)
+        .await
+        .map(|frame| frame.map(FrameDto::from))
+        .map_err(|error| {
+            format!(
+                "failed to resolve earliest earlier equivalent frame for frame {}: {error}",
                 request.frame_id
             )
         })

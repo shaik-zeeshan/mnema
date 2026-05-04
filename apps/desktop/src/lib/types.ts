@@ -157,6 +157,7 @@ export interface RecordingSettings {
 	previewCacheTtlSeconds: number;
 	/** When true, the timeline stays pinned to the newest frame as new frames arrive. */
 	followTimelineLive: boolean;
+	ocr: OcrSettings;
 	/**
 	 * When true, developer-only surfaces (the Debug page and its nav entry)
 	 * are exposed in the UI. When false, the Debug page is hidden from
@@ -220,6 +221,13 @@ export type ScreenResolution =
 /** UI-only mode split that keeps "original" as a top-level option. */
 export type ResolutionMode = "original" | "preset" | "custom";
 export type ResolutionPreset = Exclude<ScreenResolutionPreset, "original">;
+
+export type OcrRecognitionMode = "fast" | "accurate";
+
+export interface OcrSettings {
+	recognitionMode: OcrRecognitionMode;
+	languageCorrection: boolean;
+}
 
 // ─── Idle Debug ─────────────────────────────────────────────────────────────
 
@@ -469,6 +477,11 @@ export interface GetTimelineWindowAroundFrameRequest {
 
 /** Request body for `invoke('get_nearest_earlier_equivalent_frame', { request })`. */
 export interface GetNearestEarlierEquivalentFrameRequest {
+	frameId: number;
+}
+
+/** Request body for `invoke('get_earliest_earlier_equivalent_frame', { request })`. */
+export interface GetEarliestEarlierEquivalentFrameRequest {
 	frameId: number;
 }
 
