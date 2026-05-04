@@ -33,7 +33,8 @@ pub use frame_batch_store::{
 };
 pub use frame_batch_runtime::FrameBatchRuntime;
 pub use hidden_segment_workspace::{
-    HiddenSegmentWorkspacePaths, HiddenSegmentWorkspaceRepairResult,
+    HiddenSegmentWorkspacePaths, HiddenSegmentWorkspaceRepairContext,
+    HiddenSegmentWorkspaceRepairResult,
     SegmentWorkspaceCleanupDebugInfo, SegmentWorkspaceCleanupDisposition,
 };
 pub use jobs::{
@@ -307,8 +308,20 @@ impl AppInfra {
         &self,
         recordings_root: &Path,
     ) -> Result<HiddenSegmentWorkspaceRepairResult> {
+        self.repair_hidden_segment_workspaces_with_context(
+            recordings_root,
+            &HiddenSegmentWorkspaceRepairContext::default(),
+        )
+        .await
+    }
+
+    pub async fn repair_hidden_segment_workspaces_with_context(
+        &self,
+        recordings_root: &Path,
+        context: &HiddenSegmentWorkspaceRepairContext,
+    ) -> Result<HiddenSegmentWorkspaceRepairResult> {
         self.frame_batches
-            .repair_hidden_segment_workspaces(recordings_root)
+            .repair_hidden_segment_workspaces_with_context(recordings_root, context)
             .await
     }
 

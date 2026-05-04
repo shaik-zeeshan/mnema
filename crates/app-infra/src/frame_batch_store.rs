@@ -431,8 +431,20 @@ impl FrameBatchStore {
         &self,
         recordings_root: &Path,
     ) -> Result<HiddenSegmentWorkspaceRepairResult> {
+        self.repair_hidden_segment_workspaces_with_context(
+            recordings_root,
+            &crate::HiddenSegmentWorkspaceRepairContext::default(),
+        )
+        .await
+    }
+
+    pub async fn repair_hidden_segment_workspaces_with_context(
+        &self,
+        recordings_root: &Path,
+        context: &crate::HiddenSegmentWorkspaceRepairContext,
+    ) -> Result<HiddenSegmentWorkspaceRepairResult> {
         HiddenSegmentWorkspaceRepair::new(self.clone(), ProcessingStore::new(self.pool.clone()))
-            .repair_hidden_segment_workspaces(recordings_root)
+            .repair_hidden_segment_workspaces_with_context(recordings_root, context)
             .await
     }
 
@@ -785,24 +797,6 @@ impl FrameBatchStore {
         Ok(pending == 0)
     }
 
-    pub async fn close_and_schedule_completed_batches_for_frame(
-        &self,
-        session_id: &str,
-        active_batch_id: i64,
-    ) -> Result<Vec<FrameBatch>> {
-        let mut transaction = self.pool.begin().await?;
-        let closed = self
-            .close_and_schedule_completed_batches_for_frame_in_transaction(
-                &mut transaction,
-                session_id,
-                active_batch_id,
-            )
-            .await?;
-
-        transaction.commit().await?;
-        Ok(closed)
-    }
-
     pub(crate) async fn close_and_schedule_completed_batches_for_frame_in_transaction(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,
@@ -1057,40 +1051,6 @@ mod tests {
         let window = frame_batch_window("2026-04-12T10:07:30Z").expect("window should build");
         assert_eq!(window.started_at, "2026-04-12T10:00:00Z");
         assert_eq!(window.ended_at, "2026-04-12T10:10:00Z");
-    }
-
-    #[test]
-    fn closed_batches_get_finalize_jobs_once() {
-        run_async_test(async {
-            let dir = TestDir::new("close-schedule");
-            let database = Database::initialize(dir.path())
-                .await
-                .expect("database should initialize");
-            let store = FrameBatchStore::new(database.pool().clone());
-
-            let active = store
-                .upsert_open_batch_for_frame("session-a", "2026-04-12T10:11:00Z")
-                .await
-                .expect("active batch should exist");
-            let closed = store
-                .upsert_open_batch_for_frame("session-a", "2026-04-12T10:01:00Z")
-                .await
-                .expect("closed batch should exist");
-
-            let closed_batches = store
-                .close_and_schedule_completed_batches_for_frame("session-a", active.id)
-                .await
-                .expect("closed batches should schedule");
-            assert_eq!(closed_batches.len(), 1);
-            assert_eq!(closed_batches[0].id, closed.id);
-
-            let stored = store
-                .get_required(closed.id)
-                .await
-                .expect("batch should load");
-            assert_eq!(stored.status, FrameBatchStatus::Closed);
-            assert!(stored.finalize_job_id.is_some());
-        });
     }
 
     #[test]
