@@ -11,6 +11,7 @@
     CaptureSupport,
     GeneralAppLogStatus,
     NativeCaptureDebugLogStatus,
+    OcrRecognitionMode,
     RecordingSettings,
     ResolutionMode,
     ResolutionPreset,
@@ -74,6 +75,10 @@
 
   // Timeline behavior draft
   let draftFollowTimelineLive = $state(false);
+
+  // OCR drafts
+  let draftOcrRecognitionMode = $state<OcrRecognitionMode>("fast");
+  let draftOcrLanguageCorrection = $state(false);
 
   // Debug log status
   let debugLogStatus = $state<NativeCaptureDebugLogStatus | null>(null);
@@ -166,6 +171,8 @@
     draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
     draftFollowTimelineLive = s.followTimelineLive ?? false;
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
+    draftOcrRecognitionMode = s.ocr?.recognitionMode ?? "fast";
+    draftOcrLanguageCorrection = s.ocr?.languageCorrection ?? false;
     if (s.screenResolution.mode === "custom") {
       draftResolutionMode = "custom";
       draftCustomWidth = s.screenResolution.width;
@@ -338,6 +345,10 @@
           previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
           followTimelineLive: draftFollowTimelineLive,
           developerOptionsEnabled: draftDeveloperOptionsEnabled,
+          ocr: {
+            recognitionMode: draftOcrRecognitionMode,
+            languageCorrection: draftOcrLanguageCorrection,
+          },
           screenResolution: draftResolutionMode === "custom"
             ? {
                 mode: "custom",
@@ -1157,11 +1168,49 @@
         <div class="card__heading">
           <span class="card__index">05</span>
           <div>
-            <h2 id="card-diag" class="card__title">Diagnostics &amp; Developer</h2>
-            <p class="card__subtitle">Caches, developer surfaces and log files.</p>
+            <h2 id="card-diag" class="card__title">OCR, Diagnostics &amp; Developer</h2>
+            <p class="card__subtitle">OCR behavior, caches, developer surfaces and log files.</p>
           </div>
         </div>
       </div>
+
+    <div class="settings-group">
+      <span class="group-label">OCR</span>
+      <RadioGroup
+        bind:value={draftOcrRecognitionMode}
+        label="Recognition Mode"
+        options={[
+          {
+            value: "fast",
+            label: "Fast",
+            description: "Lower CPU usage and smoother background OCR; recommended for continuous capture.",
+          },
+          {
+            value: "accurate",
+            label: "Accurate",
+            description: "Higher OCR accuracy at the cost of more CPU usage and heavier processing.",
+          },
+        ]}
+      />
+      <div class="settings-divider"></div>
+      <Switch
+        bind:checked={draftOcrLanguageCorrection}
+        label="Language correction"
+        description="Let Apple Vision spend extra work correcting recognized text using language models"
+      />
+      <p class="group-hint">
+        OCR settings are stored separately from capture settings so more OCR controls can be added here later.
+        {#if draftOcrRecognitionMode === "fast" && !draftOcrLanguageCorrection}
+          <strong>Current profile:</strong> lower CPU usage.
+        {:else if draftOcrRecognitionMode === "accurate" && draftOcrLanguageCorrection}
+          <strong>Current profile:</strong> highest OCR cost.
+        {:else}
+          <strong>Current profile:</strong> mixed CPU/accuracy tradeoff.
+        {/if}
+      </p>
+    </div>
+
+    <div class="settings-divider"></div>
 
     <!-- ── Preview Cache ─────────────────────────────────────── -->
     <div class="settings-group">
