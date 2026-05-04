@@ -3955,7 +3955,10 @@ fn idle_debug_family_fields_both_paused() {
 
 #[test]
 fn idle_debug_info_serialization_includes_separate_family_fields() {
-    use super::activity::{IdleDebugInfo, RuntimeSourceStatus, RuntimeSourcesStatus};
+    use capture_types::{
+        AudioActivityDecision, AudioActivitySample, IdleDebugInfo, RuntimeSourceStatus,
+        RuntimeSourcesStatus,
+    };
 
     let info = IdleDebugInfo {
         system_idle_ms: None,
@@ -3967,18 +3970,26 @@ fn idle_debug_info_serialization_includes_separate_family_fields() {
         activity_mode: "system_input_or_screen_or_audio".to_string(),
         microphone_activity_sensitivity: 50,
         system_audio_activity_sensitivity: 50,
-        microphone_activity_threshold: 0.08,
-        system_audio_activity_threshold: 0.08,
         screen_activity_last_unix_ms: None,
         screen_activity_idle_ms: None,
-        microphone_activity_last_unix_ms: None,
-        microphone_activity_idle_ms: None,
-        microphone_activity_level: None,
-        microphone_activity_enabled: true,
-        system_audio_activity_last_unix_ms: None,
-        system_audio_activity_idle_ms: None,
-        system_audio_activity_level: None,
-        system_audio_activity_enabled: false,
+        microphone_activity_sample: AudioActivitySample {
+            last_unix_ms: None,
+            level: None,
+        },
+        microphone_activity_decision: AudioActivityDecision {
+            enabled: true,
+            idle_ms: None,
+            activity_threshold: Some(0.08),
+        },
+        system_audio_activity_sample: AudioActivitySample {
+            last_unix_ms: None,
+            level: None,
+        },
+        system_audio_activity_decision: AudioActivityDecision {
+            enabled: false,
+            idle_ms: None,
+            activity_threshold: Some(0.08),
+        },
         effective_idle_ms: 250,
         effective_idle_source: "microphone_capture".to_string(),
         screen_effective_idle_ms: 8_000,

@@ -5,7 +5,10 @@ use super::inactivity::{
 use super::lifecycle::RecordingLifecycle;
 use super::NativeCaptureState;
 use capture_microphone as microphone_capture;
-use serde::Serialize;
+use capture_types::{
+    AudioActivityDecision, AudioActivitySample, IdleDebugActivitySource, IdleDebugInfo,
+    RuntimeSourceStatus, RuntimeSourcesStatus,
+};
 use std::sync::MutexGuard;
 
 #[cfg(target_os = "macos")]
@@ -19,94 +22,6 @@ use super::runtime::{now_monotonic_marker_ms, NativeCaptureRuntime};
 enum AudioPeakReadMode {
     Take,
     Peek,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IdleDebugInfo {
-    pub system_idle_ms: Option<u64>,
-    pub system_idle_available: bool,
-    pub inactivity_enabled: bool,
-    pub idle_timeout_seconds: u64,
-    pub is_inactivity_paused: bool,
-    pub detector_source: String,
-    pub activity_mode: String,
-    pub microphone_activity_sensitivity: u8,
-    pub system_audio_activity_sensitivity: u8,
-    pub microphone_activity_threshold: f32,
-    pub system_audio_activity_threshold: f32,
-    pub screen_activity_last_unix_ms: Option<u64>,
-    pub screen_activity_idle_ms: Option<u64>,
-    pub microphone_activity_last_unix_ms: Option<u64>,
-    pub microphone_activity_idle_ms: Option<u64>,
-    pub microphone_activity_level: Option<f32>,
-    pub microphone_activity_enabled: bool,
-    pub system_audio_activity_last_unix_ms: Option<u64>,
-    pub system_audio_activity_idle_ms: Option<u64>,
-    pub system_audio_activity_level: Option<f32>,
-    pub system_audio_activity_enabled: bool,
-    pub effective_idle_ms: u64,
-    #[serde(rename = "effectiveActivitySource")]
-    pub effective_idle_source: String,
-    pub screen_effective_idle_ms: u64,
-    #[serde(rename = "screenEffectiveActivitySource")]
-    pub screen_effective_idle_source: String,
-    pub screen_paused: bool,
-    pub microphone_effective_idle_ms: u64,
-    #[serde(rename = "microphoneEffectiveActivitySource")]
-    pub microphone_effective_idle_source: String,
-    pub microphone_paused: bool,
-    pub system_audio_effective_idle_ms: u64,
-    #[serde(rename = "systemAudioEffectiveActivitySource")]
-    pub system_audio_effective_idle_source: String,
-    pub system_audio_paused: bool,
-    pub activity_sources: Vec<IdleDebugActivitySource>,
-    /// Operational truth for each capture source family — what is requested,
-    /// whether the underlying capture session/writer is currently attached, and
-    /// the on-disk output path when known. Distinguishes "requested but paused"
-    /// from "session running" from "writer attached/active".
-    pub runtime_sources: RuntimeSourcesStatus,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeSourcesStatus {
-    pub screen: RuntimeSourceStatus,
-    pub microphone: RuntimeSourceStatus,
-    pub system_audio: RuntimeSourceStatus,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeSourceStatus {
-    /// Source was requested by the active recording.
-    pub requested: bool,
-    /// Source family is currently inactivity-paused.
-    pub paused: bool,
-    /// Native capture session for this source is currently attached/running.
-    /// On non-macOS or before recording starts, this is null with a reason.
-    pub session_active: Option<bool>,
-    /// Output writer for this source is currently attached and accepting samples
-    /// (i.e. session running AND not paused AND output file resolved). null when
-    /// the platform cannot report this (non-macOS).
-    pub writer_active: Option<bool>,
-    /// Last known on-disk output path for the active segment, when available.
-    pub output_path: Option<String>,
-    /// Short machine-readable reason when truth is unavailable (e.g. "non_macos",
-    /// "not_running"). null when fields are populated normally.
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IdleDebugActivitySource {
-    pub kind: String,
-    pub enabled: bool,
-    pub available: bool,
-    pub idle_ms: Option<u64>,
-    pub latest_normalized_level: Option<f32>,
-    pub activity_threshold: Option<f32>,
-    pub selected: bool,
 }
 
 /// Raw sample-facing reading exposed on the debug surface.
@@ -295,26 +210,34 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
         },
         microphone_activity_sensitivity: runtime.inactivity.microphone_activity_sensitivity,
         system_audio_activity_sensitivity: runtime.inactivity.system_audio_activity_sensitivity,
-        microphone_activity_threshold: audio_projection
-            .microphone
-            .qualified
-            .activity_threshold
-            .unwrap_or_else(|| runtime.inactivity.microphone_activity_threshold()),
-        system_audio_activity_threshold: audio_projection
-            .system_audio
-            .qualified
-            .activity_threshold
-            .unwrap_or_else(|| runtime.inactivity.system_audio_activity_threshold()),
         screen_activity_last_unix_ms,
         screen_activity_idle_ms,
-        microphone_activity_last_unix_ms: audio_projection.microphone.raw_sample.last_unix_ms,
-        microphone_activity_idle_ms: audio_projection.microphone.raw_sample.idle_ms,
-        microphone_activity_level: audio_projection.microphone.raw_sample.level,
-        microphone_activity_enabled: audio_projection.microphone.qualified.enabled,
-        system_audio_activity_last_unix_ms: audio_projection.system_audio.raw_sample.last_unix_ms,
-        system_audio_activity_idle_ms: audio_projection.system_audio.raw_sample.idle_ms,
-        system_audio_activity_level: audio_projection.system_audio.raw_sample.level,
-        system_audio_activity_enabled: audio_projection.system_audio.qualified.enabled,
+        microphone_activity_sample: AudioActivitySample {
+            last_unix_ms: audio_projection.microphone.raw_sample.last_unix_ms,
+            level: audio_projection.microphone.raw_sample.level,
+        },
+        microphone_activity_decision: AudioActivityDecision {
+            enabled: audio_projection.microphone.qualified.enabled,
+            idle_ms: audio_projection.microphone.raw_sample.idle_ms,
+            activity_threshold: audio_projection
+                .microphone
+                .qualified
+                .activity_threshold
+                .or_else(|| Some(runtime.inactivity.microphone_activity_threshold())),
+        },
+        system_audio_activity_sample: AudioActivitySample {
+            last_unix_ms: audio_projection.system_audio.raw_sample.last_unix_ms,
+            level: audio_projection.system_audio.raw_sample.level,
+        },
+        system_audio_activity_decision: AudioActivityDecision {
+            enabled: audio_projection.system_audio.qualified.enabled,
+            idle_ms: audio_projection.system_audio.raw_sample.idle_ms,
+            activity_threshold: audio_projection
+                .system_audio
+                .qualified
+                .activity_threshold
+                .or_else(|| Some(runtime.inactivity.system_audio_activity_threshold())),
+        },
         effective_idle_ms: effective_idle.idle_ms,
         effective_idle_source: effective_idle.source.as_str().to_string(),
         screen_effective_idle_ms: family_fields.screen_effective_idle_ms,

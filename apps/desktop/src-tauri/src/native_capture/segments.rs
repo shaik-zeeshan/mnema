@@ -2220,7 +2220,10 @@ pub(super) fn start_capture_runtime(
             } else {
                 None
             };
-            let recordings_root = crate::app_infra::recordings_root_dir(&settings.save_directory);
+            let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+                &settings.save_directory,
+            )
+            .recordings_root();
             let segment_planner = SegmentPlanner::new(
                 recordings_root.to_string_lossy().to_string(),
                 session_id.clone(),

@@ -33,7 +33,7 @@ use capture_types::{
 use std::sync::{Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
-pub use activity::IdleDebugInfo;
+pub use capture_types::IdleDebugInfo;
 pub(crate) use debug_log::install_panic_hook;
 use microphone::{
     resolve_capture_microphone_device_id, should_wait_for_same_microphone_device,
