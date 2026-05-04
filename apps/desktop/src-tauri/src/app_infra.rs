@@ -1294,6 +1294,7 @@ fn active_screen_session_id_for_hidden_workspace_repair(
 ) -> Option<String> {
     let state = app_handle.state::<crate::native_capture::NativeCaptureState>();
     let runtime = state.lock().ok()?;
+    let runtime = runtime.runtime();
     if !runtime.is_running {
         return None;
     }

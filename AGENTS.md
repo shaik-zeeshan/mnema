@@ -14,6 +14,7 @@
 ## Boundaries
 - Svelte UI lives in `apps/desktop/src`. The shell is `src/routes/+layout.svelte`, the dashboard is `src/routes/+page.svelte`, and settings live in `src/routes/settings/+page.svelte`.
 - Tauri startup and command registration live in `apps/desktop/src-tauri/src/lib.rs`; keep new `#[tauri::command]` functions wired there and keep frontend `invoke(...)` names in sync.
+- The owning seam for native capture is `apps/desktop/src-tauri/src/native_capture/lifecycle.rs` (**Recording Lifecycle**); Tauri command handlers and background hooks should stay thin adapters over that module rather than orchestrating `NativeCaptureRuntime` directly.
 - `crates/app-infra` owns SQLite, embedded sqlx migrations, background jobs, frame batches, and the OCR/processing pipeline.
 - `crates/capture-types` owns serde types shared across frontend, Tauri, and native layers.
 - `crates/capture-screen`, `crates/capture-microphone`, and `crates/capture-writers` own capture primitives and media output.
