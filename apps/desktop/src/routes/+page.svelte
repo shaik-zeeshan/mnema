@@ -21,6 +21,7 @@
     FrameRangeRequest,
     FrameSummaryDto,
     FocusedFrameWindowDto,
+    GetEarliestEarlierEquivalentFrameRequest,
     GetNearestEarlierEquivalentFrameRequest,
     GetPermissionsResponse,
     GetProcessingResultRequest,
@@ -193,11 +194,11 @@
     void (async () => {
       try {
         const duplicateOf = await invoke<FrameDto | null>(
-          "get_nearest_earlier_equivalent_frame",
+          "get_earliest_earlier_equivalent_frame",
           {
             request: {
               frameId: active.id,
-            } satisfies GetNearestEarlierEquivalentFrameRequest,
+            } satisfies GetEarliestEarlierEquivalentFrameRequest,
           },
         );
         if (gen !== timelineActiveDuplicateLookupGeneration) return;
