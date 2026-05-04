@@ -127,17 +127,17 @@
             key: "microphone",
             label: "Microphone",
             glyph: "🎙",
-            sample: { lastUnixMs: idleDebug.microphoneActivityLastUnixMs, idleMs: null, level: idleDebug.microphoneActivityLevel },
-            qualifiedIdleMs: idleDebug.microphoneActivityIdleMs,
-            qualifiedThreshold: idleDebug.microphoneActivityThreshold,
+            sample: { lastUnixMs: idleDebug.microphoneActivitySample.lastUnixMs, idleMs: null, level: idleDebug.microphoneActivitySample.level },
+            qualifiedIdleMs: idleDebug.microphoneActivityDecision.idleMs,
+            qualifiedThreshold: idleDebug.microphoneActivityDecision.activityThreshold,
           },
           {
             key: "systemAudio",
             label: "System Audio",
             glyph: "🔊",
-            sample: { lastUnixMs: idleDebug.systemAudioActivityLastUnixMs, idleMs: null, level: idleDebug.systemAudioActivityLevel },
-            qualifiedIdleMs: idleDebug.systemAudioActivityIdleMs,
-            qualifiedThreshold: idleDebug.systemAudioActivityThreshold,
+            sample: { lastUnixMs: idleDebug.systemAudioActivitySample.lastUnixMs, idleMs: null, level: idleDebug.systemAudioActivitySample.level },
+            qualifiedIdleMs: idleDebug.systemAudioActivityDecision.idleMs,
+            qualifiedThreshold: idleDebug.systemAudioActivityDecision.activityThreshold,
           },
         ]
       : []
@@ -1136,21 +1136,21 @@
       {#if idleDebug.activityMode === "system_input_or_screen_or_audio"}
         <li>
            <span class="kv-key kv-key--wide">mic activity idle</span>
-          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.microphoneActivityIdleMs)}</span>
-          {#if idleDebug.microphoneActivityLevel != null}
-            <span class="idle-note">level {(idleDebug.microphoneActivityLevel * 100).toFixed(0)}%</span>
+          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.microphoneActivityDecision.idleMs)}</span>
+          {#if idleDebug.microphoneActivitySample.level != null}
+            <span class="idle-note">level {(idleDebug.microphoneActivitySample.level * 100).toFixed(0)}%</span>
           {/if}
-          {#if !idleDebug.microphoneActivityEnabled}
+          {#if !idleDebug.microphoneActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
           {/if}
         </li>
         <li>
            <span class="kv-key kv-key--wide">sys audio activity idle</span>
-          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.systemAudioActivityIdleMs)}</span>
-          {#if idleDebug.systemAudioActivityLevel != null}
-            <span class="idle-note">level {(idleDebug.systemAudioActivityLevel * 100).toFixed(0)}%</span>
+          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.systemAudioActivityDecision.idleMs)}</span>
+          {#if idleDebug.systemAudioActivitySample.level != null}
+            <span class="idle-note">level {(idleDebug.systemAudioActivitySample.level * 100).toFixed(0)}%</span>
           {/if}
-          {#if !idleDebug.systemAudioActivityEnabled}
+          {#if !idleDebug.systemAudioActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
           {/if}
         </li>
@@ -1184,11 +1184,11 @@
       </div>
 
       <!-- Microphone detector -->
-      <div class="detector-card detector-card--mic" class:detector-card--paused={idleDebug.microphonePaused && idleDebug.microphoneActivityEnabled} class:detector-card--off={!idleDebug.microphoneActivityEnabled}>
+      <div class="detector-card detector-card--mic" class:detector-card--paused={idleDebug.microphonePaused && idleDebug.microphoneActivityDecision.enabled} class:detector-card--off={!idleDebug.microphoneActivityDecision.enabled}>
         <div class="detector-card__header">
           <span class="detector-card__icon">🎙</span>
           <span class="detector-card__name">Microphone</span>
-          {#if !idleDebug.microphoneActivityEnabled}
+          {#if !idleDebug.microphoneActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
           {:else if idleDebug.microphonePaused}
             <span class="badge badge--warn badge--sm">paused</span>
@@ -1205,27 +1205,27 @@
             <span class="detector-card__metric-label">source</span>
             <span class="detector-card__metric-source">{formatEffectiveSource(idleDebug.microphoneEffectiveActivitySource)}</span>
           </div>
-          {#if idleDebug.microphoneActivityLevel != null}
+          {#if idleDebug.microphoneActivitySample.level != null}
             <div class="detector-card__metric">
               <span class="detector-card__metric-label">level</span>
-              <span class="detector-card__metric-value">{(idleDebug.microphoneActivityLevel * 100).toFixed(0)}%</span>
+              <span class="detector-card__metric-value">{(idleDebug.microphoneActivitySample.level * 100).toFixed(0)}%</span>
             </div>
           {/if}
           {#if idleDebug.microphoneActivitySensitivity != null}
             <div class="detector-card__metric">
               <span class="detector-card__metric-label">sensitivity</span>
-              <span class="detector-card__metric-source">{idleDebug.microphoneActivitySensitivity}%{#if idleDebug.microphoneActivityThreshold != null} (thr {(idleDebug.microphoneActivityThreshold * 100).toFixed(1)}%){/if}</span>
+              <span class="detector-card__metric-source">{idleDebug.microphoneActivitySensitivity}%{#if idleDebug.microphoneActivityDecision.activityThreshold != null} (thr {(idleDebug.microphoneActivityDecision.activityThreshold * 100).toFixed(1)}%){/if}</span>
             </div>
           {/if}
         </div>
       </div>
 
       <!-- System audio detector -->
-      <div class="detector-card detector-card--sysaudio" class:detector-card--paused={idleDebug.systemAudioPaused && idleDebug.systemAudioActivityEnabled} class:detector-card--off={!idleDebug.systemAudioActivityEnabled}>
+      <div class="detector-card detector-card--sysaudio" class:detector-card--paused={idleDebug.systemAudioPaused && idleDebug.systemAudioActivityDecision.enabled} class:detector-card--off={!idleDebug.systemAudioActivityDecision.enabled}>
         <div class="detector-card__header">
           <span class="detector-card__icon">🔊</span>
           <span class="detector-card__name">System Audio</span>
-          {#if !idleDebug.systemAudioActivityEnabled}
+          {#if !idleDebug.systemAudioActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
           {:else if idleDebug.systemAudioPaused}
             <span class="badge badge--warn badge--sm">paused</span>
@@ -1242,16 +1242,16 @@
             <span class="detector-card__metric-label">source</span>
             <span class="detector-card__metric-source">{formatEffectiveSource(idleDebug.systemAudioEffectiveActivitySource)}</span>
           </div>
-          {#if idleDebug.systemAudioActivityLevel != null}
+          {#if idleDebug.systemAudioActivitySample.level != null}
             <div class="detector-card__metric">
               <span class="detector-card__metric-label">level</span>
-              <span class="detector-card__metric-value">{(idleDebug.systemAudioActivityLevel * 100).toFixed(0)}%</span>
+              <span class="detector-card__metric-value">{(idleDebug.systemAudioActivitySample.level * 100).toFixed(0)}%</span>
             </div>
           {/if}
           {#if idleDebug.systemAudioActivitySensitivity != null}
             <div class="detector-card__metric">
               <span class="detector-card__metric-label">sensitivity</span>
-              <span class="detector-card__metric-source">{idleDebug.systemAudioActivitySensitivity}%{#if idleDebug.systemAudioActivityThreshold != null} (thr {(idleDebug.systemAudioActivityThreshold * 100).toFixed(1)}%){/if}</span>
+              <span class="detector-card__metric-source">{idleDebug.systemAudioActivitySensitivity}%{#if idleDebug.systemAudioActivityDecision.activityThreshold != null} (thr {(idleDebug.systemAudioActivityDecision.activityThreshold * 100).toFixed(1)}%){/if}</span>
             </div>
           {/if}
         </div>
@@ -1319,24 +1319,24 @@
           <span class="kv-val kv-val--mono">{idleDebug.systemAudioActivitySensitivity}%</span>
         </li>
       {/if}
-      {#if idleDebug.microphoneActivityThreshold != null}
+      {#if idleDebug.microphoneActivityDecision.activityThreshold != null}
         <li>
           <span class="kv-key kv-key--wide">mic threshold</span>
-          <span class="kv-val kv-val--mono">{(idleDebug.microphoneActivityThreshold * 100).toFixed(1)}%</span>
+          <span class="kv-val kv-val--mono">{(idleDebug.microphoneActivityDecision.activityThreshold * 100).toFixed(1)}%</span>
           <span class="idle-note">normalised level; audio above this counts as activity</span>
         </li>
       {/if}
-      {#if idleDebug.microphoneActivityLastUnixMs != null}
+      {#if idleDebug.microphoneActivitySample.lastUnixMs != null}
         <li>
           <span class="kv-key kv-key--wide">mic raw sample</span>
-          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.microphoneActivityLastUnixMs)}</span>
+          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.microphoneActivitySample.lastUnixMs)}</span>
           <span class="idle-note">timestamp, not detector decision</span>
         </li>
       {/if}
-      {#if idleDebug.systemAudioActivityLastUnixMs != null}
+      {#if idleDebug.systemAudioActivitySample.lastUnixMs != null}
         <li>
           <span class="kv-key kv-key--wide">sys-audio raw sample</span>
-          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.systemAudioActivityLastUnixMs)}</span>
+          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.systemAudioActivitySample.lastUnixMs)}</span>
           <span class="idle-note">timestamp, not detector decision</span>
         </li>
       {/if}
