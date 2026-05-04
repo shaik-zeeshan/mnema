@@ -29,6 +29,10 @@ _Avoid_: processor task, recognition work item
 A request to re-run OCR for an existing **Captured Frame** that is already persisted.
 _Avoid_: force processing, rerun pipeline, requeue screenshot
 
+**Recording Lifecycle**:
+The in-memory control flow for one native capture session that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources.
+_Avoid_: capture runtime, recorder service, session manager
+
 **Captured Frame Equivalence**:
 The rule for when two **Captured Frame** values should be treated as the same OCR-relevant visual content for downstream decisions such as **OCR Job** admission. **Captured Frame Equivalence** is defined over normalized visual content rather than persisted artifact bytes, and intentionally ignores cursor-sized changes plus limited localized visual noise that does not materially change OCR-relevant content.
 _Avoid_: dedupe hash, screenshot sameness, OCR skip heuristic
@@ -51,6 +55,8 @@ _Avoid_: temp cleanup, workspace GC, segment dir sweep
 - A **Captured Frame Pipeline** persists one **Captured Frame**.
 - A **Captured Frame Pipeline** attaches each **Captured Frame** to exactly one **Frame Batch**.
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
+- A **Recording Lifecycle** owns one native capture session across screen, microphone, and system-audio sources.
+- A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - **Captured Frame Equivalence** determines whether a new **Captured Frame** needs a new **OCR Job**.
 - **Captured Frame Equivalence Scope** determines which earlier **Captured Frame** values are eligible comparison candidates.
 - A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier **Captured Frame** in the same session already has the same content fingerprint.
