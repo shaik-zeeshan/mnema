@@ -50,15 +50,19 @@ pub(crate) enum TickOutcome {
 
 impl RecordingLifecycle {
     #[cfg(target_os = "macos")]
-    fn clear_live_screen_state(&mut self) -> bool {
+    fn clear_screen_state_for_sleep_or_stop(&mut self) -> bool {
         let Some(requested_sources) = self.runtime.requested_sources.clone() else {
             return false;
         };
 
-        if !self.runtime.is_running
-            || !requested_sources.screen
-            || self.runtime.inactivity.is_screen_paused()
-        {
+        if !self.runtime.is_running || !requested_sources.screen {
+            return false;
+        }
+
+        let has_screen_state = self.runtime.active_screen_session.is_some()
+            || self.runtime.recording_file.is_some()
+            || self.runtime.system_audio_recording_file.is_some();
+        if !has_screen_state {
             return false;
         }
 
@@ -144,7 +148,7 @@ impl RecordingLifecycle {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn handle_system_will_sleep(&mut self) -> bool {
-        self.clear_live_screen_state()
+        self.clear_screen_state_for_sleep_or_stop()
     }
 
     #[cfg(target_os = "macos")]
@@ -155,11 +159,15 @@ impl RecordingLifecycle {
         if let Some(error) = capture_screen::take_screen_capture_session_stop_error(
             self.runtime.active_screen_session.as_mut(),
         ) {
+            if self.runtime.inactivity.is_screen_paused() {
+                let _ = self.clear_screen_state_for_sleep_or_stop();
+                return TickOutcome::SkipRotation;
+            }
             super::debug_log::log(format!(
                 "screen capture stream stopped unexpectedly; reconciling runtime state: [{}] {}",
                 error.code, error.message
             ));
-            let _ = self.clear_live_screen_state();
+            let _ = self.clear_screen_state_for_sleep_or_stop();
             return TickOutcome::SkipRotation;
         }
 

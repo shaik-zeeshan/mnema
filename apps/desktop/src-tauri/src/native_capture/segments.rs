@@ -1640,7 +1640,7 @@ where
         return Ok(false);
     };
 
-    if !requested_sources.screen || runtime.inactivity.is_screen_paused() {
+    if !requested_sources.screen {
         return Ok(false);
     }
 
@@ -1806,6 +1806,11 @@ where
     runtime.current_segment_output_files = Some(segment_outputs);
     runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
         &requested_sources,
+        false,
+        runtime.inactivity.microphone_paused,
+        runtime.inactivity.system_audio_paused,
+    );
+    runtime.inactivity.set_family_paused_states(
         false,
         runtime.inactivity.microphone_paused,
         runtime.inactivity.system_audio_paused,
