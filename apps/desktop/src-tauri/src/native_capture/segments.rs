@@ -35,6 +35,7 @@ use super::runtime::{
     screen_planner_for_runtime, should_recover_from_segment_finalize_error,
     system_audio_planner_for_runtime, NativeCaptureRuntime, NativeCaptureState, SegmentLoopControl,
 };
+use super::emit_audio_segments_changed;
 
 // Keep frame artifact persistence off the capture callback thread while bounding
 // in-memory buffering. Backpressure is applied on a dedicated worker thread so
@@ -548,6 +549,7 @@ fn persist_committed_audio_segments(
     }
 
     let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
+    let app_handle = app_handle.clone();
     let persistence = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -563,13 +565,23 @@ fn persist_committed_audio_segments(
         };
 
         runtime.block_on(async move {
+            let mut persisted_any = false;
             for segment in segments {
-                if let Err(error) = infra.upsert_audio_segment(&segment).await {
-                    crate::native_capture_debug_log::log(format!(
-                        "failed to persist native audio segment {}: {}",
-                        segment.file_path, error
-                    ));
+                match infra.upsert_audio_segment(&segment).await {
+                    Ok(_) => {
+                        persisted_any = true;
+                    }
+                    Err(error) => {
+                        crate::native_capture_debug_log::log(format!(
+                            "failed to persist native audio segment {}: {}",
+                            segment.file_path, error
+                        ));
+                    }
                 }
+            }
+
+            if persisted_any {
+                emit_audio_segments_changed(&app_handle);
             }
         });
     }));

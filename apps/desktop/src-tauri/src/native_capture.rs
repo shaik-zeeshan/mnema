@@ -44,9 +44,14 @@ pub type SystemWakeNotifierState = std::sync::Mutex<Option<cidre::ns::Notificati
 pub type SystemWakeNotifierState = std::sync::Mutex<Option<()>>;
 
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
+pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
 
 fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
+}
+
+pub(super) fn emit_audio_segments_changed(app_handle: &tauri::AppHandle) {
+    let _ = app_handle.emit(AUDIO_SEGMENTS_CHANGED_EVENT, ());
 }
 
 #[cfg(target_os = "macos")]
