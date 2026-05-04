@@ -3,7 +3,7 @@ use std::path::Path;
 use sqlx::{Sqlite, Transaction};
 
 use crate::{
-    frame_batches::HiddenSegmentWorkspacePaths,
+    hidden_segment_workspace::HiddenSegmentWorkspacePaths,
     processing::{Frame, ProcessingStore},
     Result,
 };

@@ -28,6 +28,14 @@ pub struct ProcessingJobCompletion {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct SegmentWorkspaceOcrReference {
+    pub frame_id: i64,
+    pub job_id: i64,
+    pub status: ProcessingJobStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct FocusedFrameWindow {
     pub frames: Vec<Frame>,
     pub target_index: usize,
@@ -302,6 +310,49 @@ impl ProcessingStore {
         .await?;
 
         rows.into_iter().map(map_frame).collect()
+    }
+
+    pub(crate) async fn list_nonterminal_ocr_references_for_workspace(
+        &self,
+        workspace_prefix: &str,
+    ) -> Result<Vec<SegmentWorkspaceOcrReference>> {
+        let rows = sqlx::query(
+            "SELECT \
+                frames.id AS frame_id, \
+                processing_jobs.id AS job_id, \
+                processing_jobs.status AS job_status \
+             FROM frames \
+             INNER JOIN processing_jobs ON processing_jobs.subject_id = frames.id \
+                 AND processing_jobs.subject_type = ?2 \
+                 AND processing_jobs.processor = ?3 \
+             WHERE frames.file_path LIKE ?1 ESCAPE '\\' \
+             ORDER BY frames.id ASC, processing_jobs.id ASC",
+        )
+        .bind(format!("{}%", Self::escape_sql_like_pattern(workspace_prefix)))
+        .bind(super::FRAME_SUBJECT_TYPE)
+        .bind(super::OCR_PROCESSOR)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut references = Vec::new();
+        let mut seen_job_ids = std::collections::HashSet::new();
+
+        for row in rows {
+            let job_id = row.get::<i64, _>("job_id");
+            let status = ProcessingJobStatus::from_str(&row.get::<String, _>("job_status"))?;
+            if matches!(status, ProcessingJobStatus::Completed | ProcessingJobStatus::Failed) {
+                continue;
+            }
+            if seen_job_ids.insert(job_id) {
+                references.push(SegmentWorkspaceOcrReference {
+                    frame_id: row.get("frame_id"),
+                    job_id,
+                    status,
+                });
+            }
+        }
+
+        Ok(references)
     }
 
     fn escape_sql_like_pattern(value: &str) -> String {

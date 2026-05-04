@@ -4,7 +4,10 @@ mod captured_frame_pipeline;
 mod captured_frame_reprocessing;
 mod db;
 pub mod error;
-mod frame_batches;
+mod frame_batch_artifact_cleanup;
+mod frame_batch_runtime;
+mod frame_batch_store;
+mod hidden_segment_workspace;
 pub mod jobs;
 pub mod processing;
 pub mod status;
@@ -26,12 +29,15 @@ pub use captured_frame_reprocessing::{
     CapturedFrameReprocessing, CapturedFrameReprocessingOutcome, CapturedFrameReprocessingResult,
 };
 pub use error::{AppInfraError, Result};
-pub use frame_batches::{
-    FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchRuntime,
-    FrameBatchStatus, FrameBatchStore, FrameBatchWindow, HiddenSegmentWorkspacePaths,
-    HiddenSegmentWorkspaceRepairResult, SegmentWorkspaceBatchReference,
+pub use frame_batch_store::{
+    FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchStatus,
+    FrameBatchStore, FrameBatchWindow, SegmentWorkspaceBatchReference,
+    FRAME_BATCH_DURATION_MINUTES, FRAME_BATCH_FINALIZE_JOB_KIND,
+};
+pub use frame_batch_runtime::FrameBatchRuntime;
+pub use hidden_segment_workspace::{
+    HiddenSegmentWorkspacePaths, HiddenSegmentWorkspaceRepairResult,
     SegmentWorkspaceCleanupDebugInfo, SegmentWorkspaceCleanupDisposition,
-    SegmentWorkspaceOcrReference, FRAME_BATCH_DURATION_MINUTES, FRAME_BATCH_FINALIZE_JOB_KIND,
 };
 pub use jobs::{
     default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
@@ -43,7 +49,7 @@ pub use processing::{
     OcrProvider, OcrRequest, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
     ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingResult, ProcessingResultDraft,
     ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
-    FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
+    SegmentWorkspaceOcrReference, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
