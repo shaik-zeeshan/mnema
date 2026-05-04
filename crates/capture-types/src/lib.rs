@@ -191,6 +191,37 @@ pub fn default_follow_timeline_live() -> bool {
     false
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OcrRecognitionMode {
+    Fast,
+    Accurate,
+}
+
+pub fn default_ocr_recognition_mode() -> OcrRecognitionMode {
+    OcrRecognitionMode::Fast
+}
+
+pub fn default_ocr_language_correction() -> bool {
+    false
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrSettings {
+    #[serde(default = "default_ocr_recognition_mode")]
+    pub recognition_mode: OcrRecognitionMode,
+    #[serde(default = "default_ocr_language_correction")]
+    pub language_correction: bool,
+}
+
+pub fn default_ocr_settings() -> OcrSettings {
+    OcrSettings {
+        recognition_mode: default_ocr_recognition_mode(),
+        language_correction: default_ocr_language_correction(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InactivityActivityMode {
@@ -237,6 +268,8 @@ pub struct RecordingSettings {
     pub preview_cache_ttl_seconds: u64,
     #[serde(default = "default_follow_timeline_live")]
     pub follow_timeline_live: bool,
+    #[serde(default = "default_ocr_settings")]
+    pub ocr: OcrSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -275,6 +308,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub preview_cache_ttl_seconds: u64,
     #[serde(default = "default_follow_timeline_live")]
     pub follow_timeline_live: bool,
+    #[serde(default = "default_ocr_settings")]
+    pub ocr: OcrSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -463,6 +498,7 @@ mod tests {
             default_preview_cache_ttl_seconds()
         );
         assert_eq!(settings.follow_timeline_live, default_follow_timeline_live());
+        assert_eq!(settings.ocr, default_ocr_settings());
         assert_eq!(
             settings.inactivity_activity_mode,
             InactivityActivityMode::SystemInputOrScreenOrAudio
@@ -504,5 +540,6 @@ mod tests {
             default_preview_cache_ttl_seconds()
         );
         assert_eq!(request.follow_timeline_live, default_follow_timeline_live());
+        assert_eq!(request.ocr, default_ocr_settings());
     }
 }
