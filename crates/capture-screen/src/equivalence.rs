@@ -377,4 +377,36 @@ mod tests {
             "larger OCR-relevant changes must not compare as equivalent"
         );
     }
+
+    #[test]
+    fn byte_width_passed_as_pixel_width_fails_equivalence_derivation() {
+        let width = 32;
+        let height = 32;
+        let bytes_per_row = width * 4;
+        let bytes = test_rgba(width, height, [64, 64, 64, 255]);
+
+        assert!(
+            captured_frame_equivalence_from_interleaved_bytes(
+                &bytes,
+                bytes_per_row,
+                width,
+                height,
+                [0, 1, 2, 3],
+            )
+            .is_some(),
+            "pixel width should derive equivalence"
+        );
+
+        assert!(
+            captured_frame_equivalence_from_interleaved_bytes(
+                &bytes,
+                bytes_per_row,
+                bytes_per_row,
+                height,
+                [0, 1, 2, 3],
+            )
+            .is_none(),
+            "byte width misread as pixel width should fail derivation"
+        );
+    }
 }

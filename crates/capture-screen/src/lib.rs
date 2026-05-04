@@ -627,24 +627,61 @@ fn screen_activity_sample_captured_frame_equivalence(
 ) -> Option<CapturedFrameEquivalenceOutcome> {
     let pixel_buf = sample_buf.image_buf_mut()?;
     let plane_count = pixel_buf.plane_count();
+    let pixel_width = pixel_buf.width();
     if plane_count != 0 {
         return None;
     }
 
     let height = pixel_buf.height();
     let bytes_per_row = unsafe { CVPixelBufferGetBytesPerRow(pixel_buf) };
-    let sample_width = non_planar_screen_activity_sample_width(pixel_buf, bytes_per_row);
-    let base_address = unsafe { CVPixelBufferGetBaseAddress(pixel_buf) } as *const u8;
-    let total_accessible_bytes = unsafe { CVPixelBufferGetDataSize(pixel_buf) };
     let pixel_format = pixel_buf.pixel_format();
     let lock_flags = cidre::cv::pixel_buffer::LockFlags::READ_ONLY;
 
-    if base_address.is_null()
-        || bytes_per_row == 0
-        || sample_width == 0
+    if bytes_per_row == 0
+        || pixel_width == 0
         || height == 0
-        || total_accessible_bytes == 0
     {
+        return None;
+    }
+
+    unsafe {
+        if pixel_buf.lock_base_addr(lock_flags).result().is_err() {
+            return None;
+        }
+    }
+
+    let base_address = unsafe { CVPixelBufferGetBaseAddress(pixel_buf) } as *const u8;
+    let total_accessible_bytes = unsafe { CVPixelBufferGetDataSize(pixel_buf) };
+    if base_address.is_null() || total_accessible_bytes == 0 {
+        let _ = unsafe { pixel_buf.unlock_lock_base_addr(lock_flags).result() };
+        return None;
+    }
+
+    let total_bytes = bytes_per_row.checked_mul(height)?;
+    let accessible_bytes = total_accessible_bytes.min(total_bytes);
+    let bytes = unsafe { std::slice::from_raw_parts(base_address, accessible_bytes) };
+
+    let equivalence = non_planar_screen_activity_captured_frame_equivalence(
+        bytes,
+        bytes_per_row,
+        pixel_width,
+        height,
+        pixel_format,
+    );
+
+    let _ = unsafe { pixel_buf.unlock_lock_base_addr(lock_flags).result() };
+    equivalence
+}
+
+#[cfg(target_os = "macos")]
+fn non_planar_screen_activity_captured_frame_equivalence(
+    bytes: &[u8],
+    bytes_per_row: usize,
+    pixel_width: usize,
+    height: usize,
+    pixel_format: cidre::cv::PixelFormat,
+) -> Option<CapturedFrameEquivalenceOutcome> {
+    if bytes.is_empty() || bytes_per_row == 0 || pixel_width == 0 || height == 0 {
         return None;
     }
 
@@ -656,24 +693,14 @@ fn screen_activity_sample_captured_frame_equivalence(
         _ => return None,
     };
 
-    unsafe {
-        pixel_buf.lock_base_addr(lock_flags).result().ok()?;
-    }
-
-    let total_bytes = bytes_per_row.checked_mul(height)?;
-    let accessible_bytes = total_accessible_bytes.min(total_bytes);
-    let bytes = unsafe { std::slice::from_raw_parts(base_address, accessible_bytes) };
-    let equivalence = captured_frame_equivalence_from_interleaved_bytes(
+    captured_frame_equivalence_from_interleaved_bytes(
         bytes,
         bytes_per_row,
-        sample_width,
+        pixel_width,
         height,
         channel_order,
     )
-    .map(CapturedFrameEquivalenceOutcome::ready);
-
-    let _ = unsafe { pixel_buf.unlock_lock_base_addr(lock_flags).result() };
-    equivalence
+    .map(CapturedFrameEquivalenceOutcome::ready)
 }
 
 #[cfg(target_os = "macos")]
@@ -2410,7 +2437,7 @@ fn start_screen_capture_kit_session(
     video_bitrate_bps: Option<u32>,
     options: ScreenCaptureSessionOptions,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
-    use cidre::{api, cm, ns, sc};
+    use cidre::{api, ns, sc};
 
     if !api::version!(macos = 15.0) {
         let error = CaptureErrorResponse {
@@ -2494,17 +2521,11 @@ fn start_screen_capture_kit_session(
             display.height().max(1) as u32,
         );
 
-        let mut screen_stream_cfg = sc::StreamCfg::new();
-        screen_stream_cfg.set_width(stream_resolution.width as usize);
-        screen_stream_cfg.set_height(stream_resolution.height as usize);
-        screen_stream_cfg.set_minimum_frame_interval(cm::Time::new(1, screen_frame_rate as i32));
-        screen_stream_cfg.set_shows_cursor(sources.screen);
-        screen_stream_cfg.set_captures_audio(sources.system_audio);
-        screen_stream_cfg.set_capture_mic(false);
-        if sources.system_audio {
-            screen_stream_cfg.set_sample_rate(48_000);
-            screen_stream_cfg.set_channel_count(2);
-        }
+        let screen_stream_cfg = configured_screen_capture_kit_stream_cfg(
+            &stream_resolution,
+            screen_frame_rate,
+            sources,
+        );
 
         let stream = cidre::sc::Stream::new(&filter, &screen_stream_cfg);
         let stream_output_queue = dispatch::Queue::serial_with_ar_pool();
@@ -2579,6 +2600,32 @@ fn start_screen_capture_kit_session(
     })();
 
     finalize_startup_result(start_result, &session_dir)
+}
+
+#[cfg(target_os = "macos")]
+fn configured_screen_capture_kit_stream_cfg(
+    stream_resolution: &ScreenCaptureResolution,
+    screen_frame_rate: u32,
+    sources: &ScreenCaptureSources,
+) -> cidre::arc::R<cidre::sc::StreamCfg> {
+    use cidre::{cm, sc};
+
+    let mut screen_stream_cfg = sc::StreamCfg::new();
+    screen_stream_cfg.set_width(stream_resolution.width as usize);
+    screen_stream_cfg.set_height(stream_resolution.height as usize);
+    screen_stream_cfg.set_minimum_frame_interval(cm::Time::new(1, screen_frame_rate as i32));
+    // Request a packed 32-bit buffer so live captured-frame equivalence can read
+    // interleaved pixels directly instead of falling back to the exported JPEG.
+    screen_stream_cfg.set_pixel_format(cidre::cv::PixelFormat::_32_BGRA);
+    screen_stream_cfg.set_shows_cursor(sources.screen);
+    screen_stream_cfg.set_captures_audio(sources.system_audio);
+    screen_stream_cfg.set_capture_mic(false);
+    if sources.system_audio {
+        screen_stream_cfg.set_sample_rate(48_000);
+        screen_stream_cfg.set_channel_count(2);
+    }
+
+    screen_stream_cfg
 }
 
 #[cfg(target_os = "macos")]
@@ -3409,6 +3456,26 @@ mod tests {
 
         assert_eq!(resolved.width, 1002);
         assert_eq!(resolved.height, 778);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn configured_screen_capture_kit_stream_cfg_requests_bgra_pixel_format() {
+        let cfg = configured_screen_capture_kit_stream_cfg(
+            &ScreenCaptureResolution {
+                width: 1280,
+                height: 720,
+            },
+            1,
+            &ScreenCaptureSources {
+                screen: true,
+                system_audio: false,
+            },
+        );
+
+        assert_eq!(cfg.width(), 1280);
+        assert_eq!(cfg.height(), 720);
+        assert_eq!(cfg.pixel_format(), cidre::cv::PixelFormat::_32_BGRA);
     }
 
     // --- output_files_for_session path-layout regression ---
@@ -4322,6 +4389,63 @@ mod tests {
             bytes.len(),
         ));
         assert_ne!(hash, SCREEN_ACTIVITY_FINGERPRINT_SEED);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn non_planar_screen_activity_equivalence_uses_pixel_width_not_row_byte_width() {
+        let pixel_width = 32;
+        let height = 32;
+        let bytes_per_row = pixel_width * 4;
+        let bytes = vec![128_u8; bytes_per_row * height];
+
+        let live_equivalence = non_planar_screen_activity_captured_frame_equivalence(
+            &bytes,
+            bytes_per_row,
+            pixel_width,
+            height,
+            cidre::cv::PixelFormat::_32_BGRA,
+        );
+
+        assert!(
+            matches!(live_equivalence, Some(CapturedFrameEquivalenceOutcome::Ready(_))),
+            "live non-planar screen samples should derive equivalence from pixel dimensions"
+        );
+
+        let byte_width_bug_shape = non_planar_screen_activity_captured_frame_equivalence(
+            &bytes,
+            bytes_per_row,
+            bytes_per_row,
+            height,
+            cidre::cv::PixelFormat::_32_BGRA,
+        );
+
+        assert!(
+            byte_width_bug_shape.is_none(),
+            "row byte width must not be accepted where pixel width is required"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn non_planar_screen_activity_equivalence_accepts_bgra_bytes_without_fallback_shape() {
+        let pixel_width = 8;
+        let height = 8;
+        let bytes_per_row = pixel_width * 4;
+        let bytes = vec![96_u8; bytes_per_row * height];
+
+        let equivalence = non_planar_screen_activity_captured_frame_equivalence(
+            &bytes,
+            bytes_per_row,
+            pixel_width,
+            height,
+            cidre::cv::PixelFormat::_32_BGRA,
+        );
+
+        assert!(matches!(
+            equivalence,
+            Some(CapturedFrameEquivalenceOutcome::Ready(_))
+        ));
     }
 
     #[cfg(target_os = "macos")]
