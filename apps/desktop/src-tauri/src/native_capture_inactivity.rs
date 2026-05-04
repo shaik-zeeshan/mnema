@@ -699,6 +699,7 @@ mod tests {
             developer_options_enabled: false,
             preview_cache_ttl_seconds: capture_types::default_preview_cache_ttl_seconds(),
             follow_timeline_live: false,
+            ocr: capture_types::default_ocr_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

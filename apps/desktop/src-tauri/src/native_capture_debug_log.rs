@@ -11,7 +11,7 @@ pub(crate) fn native_capture_debug_log_path(app_handle: &tauri::AppHandle) -> Pa
         return config_dir.join(NATIVE_CAPTURE_DEBUG_LOG_FILE_NAME);
     }
 
-    PathBuf::from(crate::native_capture_settings::default_save_directory())
+    PathBuf::from(super::settings::default_save_directory())
         .join(NATIVE_CAPTURE_DEBUG_LOG_FILE_NAME)
 }
 

@@ -10,6 +10,7 @@ use capture_types::{
     VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::Manager;
 
 const RECORDING_SETTINGS_FILE_NAME: &str = "recording-settings.json";
@@ -23,6 +24,34 @@ const MAX_PREVIEW_CACHE_TTL_SECONDS: u64 = 24 * 60 * 60;
 const MIN_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 500_000;
 const MAX_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 120_000_000;
 const VIDEO_BITRATE_ROUND_STEP_BPS: u32 = 250_000;
+
+#[derive(Debug, Clone)]
+pub struct RecordingSettingsRuntime {
+    pub settings: RecordingSettings,
+}
+
+impl Default for RecordingSettingsRuntime {
+    fn default() -> Self {
+        Self {
+            settings: default_recording_settings(),
+        }
+    }
+}
+
+pub type RecordingSettingsState = Mutex<RecordingSettingsRuntime>;
+
+pub(crate) struct LoadedRecordingSettings {
+    pub(crate) settings: RecordingSettings,
+    pub(crate) source: &'static str,
+}
+
+pub(crate) struct AppliedRecordingSettingsUpdate {
+    pub(crate) settings: RecordingSettings,
+    pub(crate) previous_settings: RecordingSettings,
+    pub(crate) previous_save_directory: String,
+    pub(crate) save_directory_changed: bool,
+    pub(crate) debug_logging_enabled_changed: bool,
+}
 
 pub(crate) fn default_save_directory() -> String {
     std::env::var("HOME")
@@ -397,6 +426,79 @@ pub(crate) fn load_recording_settings_or_default(
     app_handle: &tauri::AppHandle,
 ) -> RecordingSettings {
     load_recording_settings_from_disk(app_handle).unwrap_or_else(default_recording_settings)
+}
+
+pub(crate) fn initialize_recording_settings_state_from_disk(
+    app_handle: &tauri::AppHandle,
+    state: &RecordingSettingsState,
+) -> LoadedRecordingSettings {
+    let loaded = match load_recording_settings_from_disk(app_handle) {
+        Some(settings) => LoadedRecordingSettings {
+            settings,
+            source: "disk",
+        },
+        None => LoadedRecordingSettings {
+            settings: default_recording_settings(),
+            source: "defaults",
+        },
+    };
+
+    let mut runtime = state.lock().expect("recording settings state poisoned");
+    runtime.settings = loaded.settings.clone();
+
+    loaded
+}
+
+pub(crate) fn current_recording_settings(state: &RecordingSettingsState) -> RecordingSettings {
+    state
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .clone()
+}
+
+pub(crate) fn current_auto_start(state: &RecordingSettingsState) -> bool {
+    state
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .auto_start
+}
+
+pub(crate) fn current_native_capture_debug_logging_enabled(
+    state: &RecordingSettingsState,
+) -> bool {
+    state
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .native_capture_debug_logging_enabled
+}
+
+pub(crate) fn apply_recording_settings_update(
+    app_handle: &tauri::AppHandle,
+    state: &RecordingSettingsState,
+    request: UpdateRecordingSettingsRequest,
+) -> Result<AppliedRecordingSettingsUpdate, CaptureErrorResponse> {
+    let settings = validate_recording_settings(request)?;
+    persist_recording_settings(app_handle, &settings)?;
+
+    let mut runtime = state.lock().expect("recording settings state poisoned");
+    let previous_settings = runtime.settings.clone();
+    let previous_save_directory = previous_settings.save_directory.clone();
+    let save_directory_changed = previous_save_directory != settings.save_directory;
+    let debug_logging_enabled_changed = previous_settings.native_capture_debug_logging_enabled
+        != settings.native_capture_debug_logging_enabled;
+
+    runtime.settings = settings.clone();
+
+    Ok(AppliedRecordingSettingsUpdate {
+        settings,
+        previous_settings,
+        previous_save_directory,
+        save_directory_changed,
+        debug_logging_enabled_changed,
+    })
 }
 
 pub(crate) fn persist_recording_settings(
