@@ -10,19 +10,21 @@
     CalendarDate,
     type DateValue,
   } from "@internationalized/date";
+  import {
+    bootstrapCaptureControls,
+    captureControls,
+    resyncCaptureSession,
+  } from "$lib/capture-controls.svelte";
   import { developerOptions } from "$lib/developer-options.svelte";
-  import { captureSession, setSession } from "$lib/session.svelte";
   import type {
     AudioSegmentDto,
     AudioSegmentMediaDto,
-    CaptureSession,
     FrameDto,
     FramePreviewDto,
     FrameRangeRequest,
     FrameSummaryDto,
     FocusedFrameWindowDto,
     GetEarliestEarlierEquivalentFrameRequest,
-    GetPermissionsResponse,
     GetProcessingResultRequest,
     GetTimelineWindowAroundFrameRequest,
     ListAudioSegmentsRequest,
@@ -31,7 +33,6 @@
     OcrStructuredPayload,
     ProcessingJobDto,
     ProcessingResultDto,
-    RecordingSettings,
   } from "$lib/types";
 
   // ─── Timeline browser ─────────────────────────────────────────────────────
@@ -2553,107 +2554,18 @@
   // `start_native_capture` / `stop_native_capture`. A monotonic generation
   // token prevents a slow `get_capture_permissions` reconciliation response
   // from clobbering an authoritative start/stop write that landed first.
-  const captureSessionValue = $derived(captureSession.value);
-  const isCapturing = $derived(captureSessionValue?.isRunning === true);
-  const isInactivityPaused = $derived(
-    captureSessionValue?.isInactivityPaused === true,
-  );
-  let recordingSettings = $state<RecordingSettings | null>(null);
-  let captureLoadingStart = $state(false);
-  let captureLoadingStop = $state(false);
-  let captureLoadingSettings = $state(false);
-  let captureBootstrapped = $state(false);
-  let captureError = $state<string | null>(null);
-  let captureSessionGeneration = 0;
-  const followTimelineLive = $derived(recordingSettings?.followTimelineLive === true);
-
-  const captureStatusLabel = $derived(
-    isCapturing
-      ? isInactivityPaused
-        ? "Paused"
-        : "Recording"
-      : captureSessionValue?.isRunning === false
-        ? "Stopped"
-        : "Idle",
-  );
-  const captureStatusModifier = $derived(
-    isCapturing
-      ? isInactivityPaused
-        ? "paused"
-        : "running"
-      : "idle",
-  );
-
-  async function bootstrapCaptureControls(): Promise<void> {
-    captureLoadingSettings = true;
-    const gen = captureSessionGeneration;
-    try {
-      const [perm, settings] = await Promise.all([
-        invoke<GetPermissionsResponse>("get_capture_permissions"),
-        invoke<RecordingSettings>("get_recording_settings"),
-      ]);
-      // Don't overwrite a session that a start/stop produced while the
-      // bootstrap call was in-flight.
-      if (perm.session && captureSessionGeneration === gen) {
-        setSession(perm.session);
-      }
-      recordingSettings = settings;
-      captureError = null;
-    } catch (err) {
-      captureError = typeof err === "string" ? err : JSON.stringify(err);
-    } finally {
-      captureLoadingSettings = false;
-      captureBootstrapped = true;
-    }
-  }
-
-  async function startCapture(): Promise<void> {
-    if (captureLoadingStart || isCapturing) return;
-    captureLoadingStart = true;
-    captureError = null;
-    try {
-      const result = await invoke<{ session: CaptureSession }>(
-        "start_native_capture",
-        {
-          request: {
-            captureScreen: recordingSettings?.captureScreen ?? true,
-            captureMicrophone: recordingSettings?.captureMicrophone ?? false,
-            captureSystemAudio:
-              recordingSettings?.captureSystemAudio ?? false,
-          },
-        },
-      );
-      captureSessionGeneration += 1;
-      setSession(result.session);
-    } catch (err) {
-      captureError = typeof err === "string" ? err : JSON.stringify(err);
-    } finally {
-      captureLoadingStart = false;
-    }
-  }
-
-  async function stopCapture(): Promise<void> {
-    if (captureLoadingStop || !isCapturing) return;
-    captureLoadingStop = true;
-    captureError = null;
-    try {
-      const result = await invoke<{ session: CaptureSession }>(
-        "stop_native_capture",
-      );
-      captureSessionGeneration += 1;
-      setSession(result.session);
-    } catch (err) {
-      captureError = typeof err === "string" ? err : JSON.stringify(err);
-    } finally {
-      captureLoadingStop = false;
-    }
-  }
+  // The recording status indicator and start/stop button now live in the
+  // app-wide title bar (see `routes/+layout.svelte`); the dashboard only
+  // still needs `followTimelineLive` to drive the live-tail behaviour
+  // around the rail head, plus `captureControls.bootstrapped` for the
+  // idempotent bootstrap effect below.
+  const followTimelineLive = $derived(captureControls.followTimelineLive);
 
   // Fire-and-forget bootstrap so the control reflects an already-running
   // recording started from the debug page or a prior session restored by
   // the backend.
   $effect(() => {
-    if (captureBootstrapped) return;
+    if (captureControls.bootstrapped) return;
     void bootstrapCaptureControls();
   });
 
@@ -2684,17 +2596,6 @@
   const WAKE_DRIFT_TICK_MS = 1_000;
   $effect(() => {
     if (typeof document === "undefined") return;
-    async function resyncCaptureSession() {
-      const gen = captureSessionGeneration;
-      try {
-        const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
-        if (captureSessionGeneration !== gen) return; // superseded by start/stop
-        if (r.session) setSession(r.session);
-      } catch {
-        // Best-effort: a transient IPC error here shouldn't surface; the
-        // existing reconcile/bootstrap paths still cover steady-state drift.
-      }
-    }
     const onVisibility = () => {
       if (document.visibilityState !== "visible") return;
       void resyncCaptureSession();
@@ -2759,47 +2660,11 @@
 <section class="timeline" onwheel={onTimelineWheel}>
   <header class="timeline__bar">
     <div class="timeline__bar-group timeline__bar-group--primary">
-      <div
-        class="timeline__capture"
-        role="group"
-        aria-label="Recording controls"
-      >
-        <span
-          class="timeline__capture-status timeline__capture-status--{captureStatusModifier}"
-          aria-live="polite"
-        >
-          <span class="timeline__capture-dot" aria-hidden="true"></span>
-          <span class="timeline__capture-status-label">{captureStatusLabel}</span>
-        </span>
-        {#if isCapturing}
-          <button
-            type="button"
-            class="btn btn--sm timeline__capture-btn timeline__capture-btn--stop"
-            onclick={stopCapture}
-            disabled={captureLoadingStop}
-            title="Stop recording"
-            aria-label="Stop recording"
-          >
-            <span
-              class="timeline__capture-glyph timeline__capture-glyph--square"
-              aria-hidden="true"
-            ></span>
-            <span>{captureLoadingStop ? "Stopping…" : "Stop"}</span>
-          </button>
-        {:else}
-          <button
-            type="button"
-            class="btn btn--sm timeline__capture-btn timeline__capture-btn--start"
-            onclick={startCapture}
-            disabled={captureLoadingStart || captureLoadingSettings}
-            title="Start recording"
-            aria-label="Start recording"
-          >
-            <span class="timeline__capture-glyph" aria-hidden="true">●</span>
-            <span>{captureLoadingStart ? "Starting…" : "Record"}</span>
-          </button>
-        {/if}
-      </div>
+      <!-- Recording status indicator and start/stop controls now live in
+           the app-wide title bar (see `routes/+layout.svelte`) so the
+           recording affordance is visible regardless of which route is
+           active. The timeline header retains only timeline-specific
+           controls below (jump, OCR toggle, refresh). -->
       <div class="timeline__jump">
         <button
           class="btn btn--ghost btn--sm timeline__jump-trigger"
@@ -2939,12 +2804,6 @@
         onclick={refreshTimelineAndDashboard}
         disabled={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
       >refresh</button>
-      <a
-        class="btn btn--ghost btn--sm timeline__menu-link"
-        href="/menu"
-        aria-label="Open menu"
-        title="Menu"
-      ><span class="timeline__menu-icon" aria-hidden="true">⚙</span></a>
     </div>
   </header>
 
@@ -3480,118 +3339,10 @@
     margin-left: auto;
   }
 
-  /* ── Recording control cluster ─────────────────────────────── */
-  /* Reads the shared capture session and drives start/stop via the same
-     Tauri commands as the debug page. The status pill on the left of the
-     cluster mirrors `captureSession.value`; the button on the right toggles
-     between record (idle) and stop (running) and reflects loading states. */
-  .timeline__capture {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 6px 4px 8px;
-    background: #0a0a10;
-    border: 1px solid #161624;
-    border-radius: 6px;
-  }
-
-  .timeline__capture-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #555574;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .timeline__capture-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #2a2a3a;
-    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
-    flex: 0 0 auto;
-  }
-
-  .timeline__capture-status--running {
-    color: #ff5d6c;
-  }
-  .timeline__capture-status--running :global(.timeline__capture-dot) {
-    background: #ff3148;
-    box-shadow: 0 0 0 3px rgba(255, 49, 72, 0.18);
-    animation: timeline-capture-pulse 1.4s ease-in-out infinite;
-  }
-
-  .timeline__capture-status--paused {
-    color: #d6a14a;
-  }
-  .timeline__capture-status--paused :global(.timeline__capture-dot) {
-    background: #d6a14a;
-    box-shadow: 0 0 0 3px rgba(214, 161, 74, 0.16);
-  }
-
-  @keyframes timeline-capture-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.55; }
-  }
-
-  .timeline__capture-status-label {
-    line-height: 1;
-  }
-
-  .timeline__capture-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 10px;
-    font-size: 9px;
-    border-radius: 4px;
-  }
-
-  .timeline__capture-btn--start {
-    background: #1a0f12;
-    color: #ff8a96;
-    border-color: #3a1820;
-  }
-  .timeline__capture-btn--start:not(:disabled):hover {
-    background: #2a1218;
-    color: #ffb0b9;
-    border-color: #5a2030;
-  }
-
-  .timeline__capture-btn--stop {
-    background: #170d0f;
-    color: #f0f0f5;
-    border-color: #4a1c26;
-  }
-  .timeline__capture-btn--stop:not(:disabled):hover {
-    background: #2a1218;
-    border-color: #6a2434;
-  }
-
-  .timeline__capture-glyph {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    line-height: 1;
-    text-align: center;
-    color: #ff3148;
-    font-size: 12px;
-  }
-
-  .timeline__capture-btn--stop :global(.timeline__capture-glyph) {
-    color: #ff8a96;
-  }
-
-  .timeline__capture-glyph--square {
-    background: currentColor;
-    border-radius: 1px;
-    width: 7px;
-    height: 7px;
-  }
+  /* ── Recording control cluster ─────────────────────────────
+     Recording status + start/stop now live in the app-wide title bar
+     (see `routes/+layout.svelte`); the previous `.timeline__capture*`
+     styles moved alongside as `.titlebar__status*` / `.titlebar__record*`. */
 
   /* ── Audio segment player drawer ──────────────────────────────
      Bottom-anchored sheet that slides in only when an audio segment is
@@ -4007,30 +3758,9 @@
     font-size: 9px;
   }
 
-  /* Anchors styled as buttons (e.g. the timeline → menu link) need the
-     same ghost-button colour reset; without this the global `a` colour
-     would override `.btn--ghost`. */
-  a.btn--ghost {
-    color: #7a7a9a;
-  }
-  a.btn--ghost:hover {
-    color: #a0a0c0;
-  }
-  .timeline__menu-link {
-    text-decoration: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    /* Keep the icon button the same height as adjacent ghost buttons (refresh)
-       while shrinking horizontal padding to read as a square icon control. */
-    padding: 3px 6px;
-    line-height: 1;
-  }
-  .timeline__menu-icon {
-    display: inline-block;
-    font-size: 12px;
-    line-height: 1;
-  }
+  /* The previous `.timeline__menu-link` / `.timeline__menu-icon` ghost-anchor
+     to `/menu` moved into the app-wide title bar as `.titlebar__settings`,
+     so its dashboard-local rules were removed. */
 
   /* ── Date jump picker ──────────────────────────────────────── */
   .timeline__jump {
