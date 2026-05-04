@@ -1417,6 +1417,75 @@ mod stream_output_delegate {
 use stream_output_delegate::ScStreamOutputDelegate;
 
 #[cfg(target_os = "macos")]
+mod stream_delegate {
+    use super::{error_with_ns_error, log_capture_error, ScStreamDelegateState};
+    use cidre::objc;
+    use cidre::sc::StreamDelegate;
+
+    cidre::define_obj_type!(
+        pub(super) ScStreamDelegate + cidre::sc::StreamDelegateImpl,
+        ScStreamDelegateState,
+        ZScStreamDelegate
+    );
+
+    impl cidre::sc::StreamDelegate for ScStreamDelegate {}
+
+    #[cidre::objc::add_methods]
+    impl cidre::sc::StreamDelegateImpl for ScStreamDelegate {
+        extern "C" fn impl_stream_did_stop_with_err(
+            &mut self,
+            _cmd: Option<&cidre::objc::Sel>,
+            _stream: &cidre::sc::Stream,
+            error: &cidre::ns::Error,
+        ) {
+            let stop_error = error_with_ns_error(
+                "capture_stream_system_stopped",
+                "ScreenCaptureKit stream stopped unexpectedly",
+                error,
+            );
+            log_capture_error("ScreenCaptureKit delegate reported stopped stream", &stop_error);
+            let mut state = self
+                .inner_mut()
+                .lifecycle_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.stream_live = false;
+            state.stop_error = Some(stop_error);
+        }
+
+        extern "C" fn impl_stream_did_become_inactive(
+            &mut self,
+            _cmd: Option<&cidre::objc::Sel>,
+            _stream: &cidre::sc::Stream,
+        ) {
+            let mut state = self
+                .inner_mut()
+                .lifecycle_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.stream_live = false;
+        }
+
+        extern "C" fn impl_stream_did_become_active(
+            &mut self,
+            _cmd: Option<&cidre::objc::Sel>,
+            _stream: &cidre::sc::Stream,
+        ) {
+            let mut state = self
+                .inner_mut()
+                .lifecycle_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.stream_live = true;
+            state.stop_error = None;
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+use stream_delegate::ScStreamDelegate;
+
+#[cfg(target_os = "macos")]
 fn should_append_screen_sample(sample_buf: &cidre::cm::SampleBuf) -> bool {
     use cidre::{cf, cm, sc};
 
@@ -1644,12 +1713,37 @@ struct AvFoundationCaptureSession {
 #[derive(Debug)]
 struct ScreenCaptureKitCaptureSession {
     stream: cidre::arc::R<cidre::sc::Stream>,
+    _stream_delegate: cidre::arc::R<ScStreamDelegate>,
     stream_output_delegate: cidre::arc::R<ScStreamOutputDelegate>,
     stream_output_queue: cidre::arc::R<dispatch::Queue>,
     sources: ScreenCaptureSources,
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportConfig>,
     system_audio_inactivity_tail_buffer_seconds: u64,
+    lifecycle_state: Arc<Mutex<ScreenCaptureKitLifecycleState>>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+struct ScreenCaptureKitLifecycleState {
+    stream_live: bool,
+    stop_error: Option<CaptureErrorResponse>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for ScreenCaptureKitLifecycleState {
+    fn default() -> Self {
+        Self {
+            stream_live: true,
+            stop_error: None,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct ScStreamDelegateState {
+    lifecycle_state: Arc<Mutex<ScreenCaptureKitLifecycleState>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1670,6 +1764,20 @@ unsafe impl Send for ActiveCaptureSession {}
 
 #[cfg(target_os = "macos")]
 impl ActiveCaptureSession {
+    fn is_screen_stream_live(&self) -> bool {
+        match &self.backend {
+            CaptureBackendSession::AvFoundation(_) => true,
+            CaptureBackendSession::ScreenCaptureKit(session) => session.is_stream_live(),
+        }
+    }
+
+    fn take_screen_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+        match &mut self.backend {
+            CaptureBackendSession::AvFoundation(_) => None,
+            CaptureBackendSession::ScreenCaptureKit(session) => session.take_stop_error(),
+        }
+    }
+
     fn stop(&mut self) -> Result<(), CaptureErrorResponse> {
         match &mut self.backend {
             CaptureBackendSession::AvFoundation(session) => session.stop(),
@@ -1736,6 +1844,21 @@ impl AvFoundationCaptureSession {
 
 #[cfg(target_os = "macos")]
 impl ScreenCaptureKitCaptureSession {
+    fn is_stream_live(&self) -> bool {
+        self.lifecycle_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stream_live
+    }
+
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+        self.lifecycle_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stop_error
+            .take()
+    }
+
     fn is_stop_timeout_code(code: &str) -> bool {
         matches!(
             code,
@@ -2527,7 +2650,12 @@ fn start_screen_capture_kit_session(
             sources,
         );
 
-        let stream = cidre::sc::Stream::new(&filter, &screen_stream_cfg);
+        let lifecycle_state = Arc::new(Mutex::new(ScreenCaptureKitLifecycleState::default()));
+        let stream_delegate = ScStreamDelegate::with(ScStreamDelegateState {
+            lifecycle_state: lifecycle_state.clone(),
+        });
+        let stream =
+            cidre::sc::Stream::with_delegate(&filter, &screen_stream_cfg, stream_delegate.as_ref());
         let stream_output_queue = dispatch::Queue::serial_with_ar_pool();
         let stream_output_delegate =
             ScStreamOutputDelegate::with(stream_output_context_for_segment(
@@ -2581,6 +2709,7 @@ fn start_screen_capture_kit_session(
             session: ActiveCaptureSession {
                 backend: CaptureBackendSession::ScreenCaptureKit(ScreenCaptureKitCaptureSession {
                     stream,
+                    _stream_delegate: stream_delegate,
                     stream_output_delegate,
                     stream_output_queue,
                     sources: *sources,
@@ -2588,6 +2717,7 @@ fn start_screen_capture_kit_session(
                     frame_export: options.frame_export,
                     system_audio_inactivity_tail_buffer_seconds: options
                         .system_audio_inactivity_tail_trim_seconds,
+                    lifecycle_state,
                 }),
             },
             recording_file: output_file_str,
@@ -3093,6 +3223,18 @@ pub fn should_preserve_runtime_on_stop_error(error: &CaptureErrorResponse) -> bo
 }
 
 #[cfg(target_os = "macos")]
+pub fn screen_capture_session_is_live(active_session: Option<&ActiveCaptureSession>) -> bool {
+    active_session.is_some_and(ActiveCaptureSession::is_screen_stream_live)
+}
+
+#[cfg(target_os = "macos")]
+pub fn take_screen_capture_session_stop_error(
+    active_session: Option<&mut ActiveCaptureSession>,
+) -> Option<CaptureErrorResponse> {
+    active_session.and_then(ActiveCaptureSession::take_screen_stop_error)
+}
+
+#[cfg(target_os = "macos")]
 fn supports_screen_capture_kit_backend() -> bool {
     cidre::api::version!(macos = 15.0)
 }
@@ -3585,6 +3727,32 @@ mod tests {
             path,
             Path::new("/tmp/session/frames/frame-1717000123456-000042.png")
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_capture_kit_lifecycle_state_defaults_to_live() {
+        let state = ScreenCaptureKitLifecycleState::default();
+
+        assert!(state.stream_live);
+        assert!(state.stop_error.is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_capture_kit_lifecycle_state_tracks_stop_error() {
+        let mut state = ScreenCaptureKitLifecycleState::default();
+        state.stream_live = false;
+        state.stop_error = Some(CaptureErrorResponse {
+            code: "capture_stream_system_stopped".to_string(),
+            message: "ScreenCaptureKit stream stopped unexpectedly: stopped by system (code: -3821)"
+                .to_string(),
+        });
+
+        assert!(!state.stream_live);
+        let stop_error = state.stop_error.expect("stop error should be recorded");
+        assert_eq!(stop_error.code, "capture_stream_system_stopped");
+        assert!(stop_error.message.contains("-3821"));
     }
 
     #[cfg(target_os = "macos")]
