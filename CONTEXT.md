@@ -37,6 +37,14 @@ _Avoid_: dedupe hash, screenshot sameness, OCR skip heuristic
 The rule for where an earlier equivalent **Captured Frame** may be searched when applying **Captured Frame Equivalence**. **Captured Frame Equivalence Scope** is session-wide by default, but narrows to the same hidden segment workspace when the candidate **Captured Frame** originated from a hidden segment workspace artifact path.
 _Avoid_: workspace filter, lookup scope, same-segment rule
 
+**Hidden Segment Workspace**:
+A hidden per-segment directory (`.<session>-segment-####/`) that stores temporary capture artifacts and exported JPEG frames for one screen segment. A **Hidden Segment Workspace** lives beside its visible sibling segment recording file.
+_Avoid_: temp folder, segment scratch dir, hidden segment temp
+
+**Hidden Segment Workspace Repair**:
+The scan-and-cleanup flow that classifies a **Hidden Segment Workspace** using **Frame Batch** references, **OCR Job** references, visible sibling presence, and pending frame artifacts before deciding whether it is safe to remove.
+_Avoid_: temp cleanup, workspace GC, segment dir sweep
+
 ## Relationships
 
 - A **Screen Frame Artifact** becomes a **Captured Frame** only after app-infra persists it.
@@ -48,6 +56,8 @@ _Avoid_: workspace filter, lookup scope, same-segment rule
 - A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier **Captured Frame** in the same session already has the same content fingerprint.
 - A **Frame Batch** can be finalized only after its **OCR Job** entries are terminal.
 - **Captured Frame Reprocessing** operates on an existing **Captured Frame**, not on a new **Screen Frame Artifact**.
+- A **Hidden Segment Workspace** may be preserved when an incomplete **Frame Batch** or nonterminal **OCR Job** still references it.
+- **Hidden Segment Workspace Repair** removes only **Hidden Segment Workspace** values that are safe to remove.
 
 ## Example dialogue
 
