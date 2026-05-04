@@ -39,8 +39,7 @@ impl FrameBatchRuntime {
         if batch_with_frames.frames.is_empty() {
             let error = AppInfraError::EmptyFrameBatch { batch_id };
             self.store
-                .jobs()
-                .mark_failed(job_id, Some(&error.to_string()))
+                .mark_finalize_job_failed(job_id, &error.to_string())
                 .await?;
             self.store
                 .mark_batch_failed(batch_id, &error.to_string())
@@ -70,10 +69,8 @@ impl FrameBatchRuntime {
         let result = FrameBatchFinalizeResult {
             batch: batch.clone(),
         };
-        let result_json = serde_json::to_string(&result)?;
         self.store
-            .jobs()
-            .mark_completed(job_id, Some(&result_json))
+            .mark_finalize_job_completed(job_id, &result)
             .await?;
 
         Ok(result)

@@ -131,10 +131,6 @@ impl FrameBatchStore {
         }
     }
 
-    pub(crate) fn jobs(&self) -> &JobStore {
-        &self.jobs
-    }
-
     pub async fn upsert_open_batch_for_frame(
         &self,
         session_id: &str,
@@ -645,6 +641,23 @@ impl FrameBatchStore {
             .ok_or(AppInfraError::JobNotFound(job_id))?;
         serde_json::from_str(job.payload_json.as_deref().unwrap_or("{}"))
             .map_err(AppInfraError::from)
+    }
+
+    pub(crate) async fn mark_finalize_job_completed(
+        &self,
+        job_id: i64,
+        result: &FrameBatchFinalizeResult,
+    ) -> Result<BackgroundJob> {
+        let result_json = serde_json::to_string(result)?;
+        self.jobs.mark_completed(job_id, Some(&result_json)).await
+    }
+
+    pub(crate) async fn mark_finalize_job_failed(
+        &self,
+        job_id: i64,
+        error_text: &str,
+    ) -> Result<BackgroundJob> {
+        self.jobs.mark_failed(job_id, Some(error_text)).await
     }
 
     pub async fn batch_with_frames_for_job(
