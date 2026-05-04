@@ -1,6 +1,7 @@
 use capture_microphone as microphone_capture;
 use capture_runtime::{
-    CaptureClock, RuntimeController, RuntimeSignal, RuntimeState, SegmentPlanner, SegmentSchedule,
+    current_date_prefix, CaptureClock, RuntimeController, RuntimeSignal, RuntimeState,
+    SegmentPlanner, SegmentSchedule,
 };
 use capture_types::{
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
@@ -342,6 +343,22 @@ pub(super) fn system_audio_planner_for_runtime(
     runtime: &NativeCaptureRuntime,
 ) -> Option<&SegmentPlanner> {
     runtime.system_audio_planner.as_ref()
+}
+
+pub(super) fn refresh_runtime_planner_dates(runtime: &mut NativeCaptureRuntime) -> String {
+    let date_prefix = current_date_prefix();
+
+    if let Some(planner) = runtime.segment_planner.as_mut() {
+        planner.set_date_prefix(date_prefix.clone());
+    }
+    if let Some(planner) = runtime.microphone_planner.as_mut() {
+        planner.set_date_prefix(date_prefix.clone());
+    }
+    if let Some(planner) = runtime.system_audio_planner.as_mut() {
+        planner.set_date_prefix(date_prefix.clone());
+    }
+
+    date_prefix
 }
 
 fn seed_source_planner_from_runtime(

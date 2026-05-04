@@ -22,7 +22,8 @@ use super::segments::{
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     ensure_system_audio_planner_for_runtime, mark_runtime_session_failed,
-    microphone_planner_for_runtime, screen_planner_for_runtime, system_audio_planner_for_runtime,
+    microphone_planner_for_runtime, refresh_runtime_planner_dates, screen_planner_for_runtime,
+    system_audio_planner_for_runtime,
 };
 use capture_types::{
     CaptureErrorResponse, CaptureSources, NativeCaptureSession, RecordingSettings,
@@ -370,6 +371,8 @@ impl RecordingLifecycle {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn tick_rotation(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
+        refresh_runtime_planner_dates(&mut self.runtime);
+
         let mut previous_segment_output_files = self.runtime.current_segment_output_files.clone();
         let recording_file = self.runtime.recording_file.clone();
         let microphone_recording_file = self.runtime.microphone_recording_file.clone();

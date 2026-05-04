@@ -30,6 +30,7 @@ use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
     mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms,
+    refresh_runtime_planner_dates,
     reset_runtime_after_start_error, screen_planner_for_runtime,
     should_recover_from_segment_finalize_error, NativeCaptureRuntime, SegmentLoopControl,
 };
@@ -936,6 +937,7 @@ pub(super) fn resume_microphone_from_inactivity(
         return Ok(());
     }
 
+    refresh_runtime_planner_dates(runtime);
     ensure_microphone_planner_for_runtime(runtime, "resuming microphone from inactivity")?;
 
     if sources.microphone && runtime.microphone_planner.is_some() {
@@ -1029,6 +1031,7 @@ pub(super) fn resume_system_audio_from_inactivity(
             return Ok(());
         }
 
+        refresh_runtime_planner_dates(runtime);
         // Always try to seed the planner for real writer resumes so future
         // resumes/rotations preserve the dedicated system-audio session.
         let system_audio_planner = ensure_system_audio_planner_for_runtime(
@@ -1354,6 +1357,8 @@ where
     if !runtime.inactivity.is_screen_paused() {
         return Ok(());
     }
+
+    refresh_runtime_planner_dates(runtime);
 
     let Some(screen_planner) = screen_planner_for_runtime(runtime).cloned() else {
         return Err(CaptureErrorResponse {
