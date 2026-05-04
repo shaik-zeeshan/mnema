@@ -231,6 +231,94 @@ fn returns_nearest_earlier_match_in_session_scope() {
 }
 
 #[test]
+fn returns_earliest_earlier_match_in_session_scope() {
+    run_async_test(async {
+        let dir = TestDir::new("earliest-session");
+        let infra = AppInfra::initialize(dir.path())
+            .await
+            .expect("app infra should initialize");
+        let resolver = CapturedFrameEquivalenceResolver::new(infra.processing().clone());
+        let width = 32;
+        let height = 32;
+        let repeated_pixels = solid_rgba(width, height, [72, 72, 72, 255]);
+        let mut changed_pixels = repeated_pixels.clone();
+        for y in 8..20 {
+            for x in 8..20 {
+                set_pixel_rgba(&mut changed_pixels, width, x, y, [220, 220, 220, 255]);
+            }
+        }
+
+        let first = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-earliest",
+                "frame-1.png",
+                "2026-04-12T10:00:00Z",
+                &repeated_pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+        let second = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-earliest",
+                "frame-2.png",
+                "2026-04-12T10:00:01Z",
+                &repeated_pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+        let _changed = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-earliest",
+                "frame-3.png",
+                "2026-04-12T10:00:02Z",
+                &changed_pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+        let repeated = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-earliest",
+                "frame-4.png",
+                "2026-04-12T10:00:03Z",
+                &repeated_pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+
+        let nearest = resolver
+            .find_nearest_earlier_equivalent_frame(&repeated, &CapturedFrameEquivalenceScope::Session)
+            .await
+            .expect("nearest lookup should succeed")
+            .expect("nearest match should exist");
+        assert_eq!(nearest, second);
+
+        let earliest = resolver
+            .find_earliest_earlier_equivalent_frame(&repeated, &CapturedFrameEquivalenceScope::Session)
+            .await
+            .expect("earliest lookup should succeed")
+            .expect("earliest match should exist");
+
+        assert_eq!(earliest, first);
+    });
+}
+
+#[test]
 fn ignores_quarantined_earlier_candidates() {
     run_async_test(async {
         let dir = TestDir::new("quarantine");

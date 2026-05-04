@@ -37,6 +37,19 @@ impl CapturedFrameEquivalenceResolver {
         Ok(resolved)
     }
 
+    pub async fn find_earliest_earlier_equivalent_frame(
+        &self,
+        frame: &Frame,
+        scope: &CapturedFrameEquivalenceScope,
+    ) -> Result<Option<Frame>> {
+        let mut transaction = self.processing.begin_transaction().await?;
+        let resolved = self
+            .find_earliest_earlier_equivalent_frame_in_transaction(&mut transaction, frame, scope)
+            .await?;
+        transaction.commit().await?;
+        Ok(resolved)
+    }
+
     pub(crate) async fn find_nearest_earlier_equivalent_frame_in_transaction(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,
@@ -84,6 +97,53 @@ impl CapturedFrameEquivalenceResolver {
         Ok(None)
     }
 
+    pub(crate) async fn find_earliest_earlier_equivalent_frame_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame: &Frame,
+        scope: &CapturedFrameEquivalenceScope,
+    ) -> Result<Option<Frame>> {
+        let Some((equivalence_hint, proof, version)) = frame.equivalence.ready_parts() else {
+            return Ok(None);
+        };
+
+        let earlier_frames = self
+            .processing
+            .list_earlier_frames_with_equivalence_hint_in_scope_in_transaction(
+                transaction,
+                &frame.session_id,
+                frame.id,
+                equivalence_hint,
+                scope.workspace_prefix(),
+            )
+            .await?;
+
+        for earlier_frame in earlier_frames.into_iter().rev() {
+            if earlier_frame.equivalence.is_quarantined() {
+                continue;
+            }
+
+            let Some((_hint, earlier_proof, earlier_version)) = earlier_frame.equivalence.ready_parts()
+            else {
+                continue;
+            };
+
+            if version != earlier_version {
+                continue;
+            }
+
+            if capture_screen::captured_frame_equivalence_proofs_match(
+                version,
+                proof,
+                earlier_proof,
+            ) {
+                return Ok(Some(earlier_frame));
+            }
+        }
+
+        Ok(None)
+    }
+
     pub async fn get_frame_and_find_nearest_earlier_equivalent_frame(
         &self,
         frame_id: i64,
@@ -94,6 +154,19 @@ impl CapturedFrameEquivalenceResolver {
         };
 
         self.find_nearest_earlier_equivalent_frame(&frame, scope).await
+    }
+
+    pub async fn get_frame_and_find_earliest_earlier_equivalent_frame(
+        &self,
+        frame_id: i64,
+        scope: &CapturedFrameEquivalenceScope,
+    ) -> Result<Option<Frame>> {
+        let Some(frame) = self.processing.get_frame(frame_id).await? else {
+            return Ok(None);
+        };
+
+        self.find_earliest_earlier_equivalent_frame(&frame, scope)
+            .await
     }
 }
 

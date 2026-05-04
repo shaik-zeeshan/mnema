@@ -296,6 +296,19 @@ impl AppInfra {
             .await
     }
 
+    pub async fn get_earliest_earlier_equivalent_frame(
+        &self,
+        frame_id: i64,
+    ) -> Result<Option<Frame>> {
+        let Some(frame) = self.processing.get_frame(frame_id).await? else {
+            return Ok(None);
+        };
+        let scope = CapturedFrameEquivalenceScope::from_frame(&frame);
+        self.captured_frame_equivalence
+            .find_earliest_earlier_equivalent_frame(&frame, &scope)
+            .await
+    }
+
     pub async fn list_frames_for_segment_workspace(
         &self,
         session_id: &str,
