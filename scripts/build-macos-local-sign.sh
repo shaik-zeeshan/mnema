@@ -23,6 +23,17 @@ fi
 print "Using signing identity: ${identity}"
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
+dmg_dir="${repo_root}/target/release/bundle/dmg"
 
 cd "${repo_root}/apps/desktop"
-APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- build
+CI=true APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- build
+
+dmg_path="$(ls -t "${dmg_dir}"/*.dmg 2>/dev/null | head -n 1 || true)"
+
+if [[ -n "${dmg_path}" ]]; then
+  print "Opening DMG: ${dmg_path}"
+  open "${dmg_path}"
+else
+  print -u2 "Build succeeded, but no DMG was found in ${dmg_dir}."
+  exit 1
+fi
