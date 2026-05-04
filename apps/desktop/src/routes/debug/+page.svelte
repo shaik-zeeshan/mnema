@@ -1658,7 +1658,7 @@
   /* ── Sticky action bar ─────────────────────────────────────── */
   .action-bar {
     position: sticky;
-    top: 0;
+    top: var(--app-titlebar-height, 36px);
     z-index: 20;
     display: flex;
     align-items: center;
