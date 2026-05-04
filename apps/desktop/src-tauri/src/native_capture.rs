@@ -49,10 +49,11 @@ pub type NativeCaptureState = Mutex<RecordingLifecycle>;
 pub use settings::RecordingSettingsState;
 
 #[cfg(target_os = "macos")]
-pub type SystemWakeNotifierState = std::sync::Mutex<Option<cidre::ns::NotificationGuard>>;
+pub type SystemWakeNotifierState =
+    std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>;
 
 #[cfg(not(target_os = "macos"))]
-pub type SystemWakeNotifierState = std::sync::Mutex<Option<()>>;
+pub type SystemWakeNotifierState = std::sync::Mutex<Vec<()>>;
 
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
@@ -63,6 +64,24 @@ fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
 
 pub(super) fn emit_audio_segments_changed(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(AUDIO_SEGMENTS_CHANGED_EVENT, ());
+}
+
+#[cfg(target_os = "macos")]
+fn handle_system_will_sleep(app_handle: &tauri::AppHandle) {
+    let state = app_handle.state::<NativeCaptureState>();
+    let mut runtime = match state.lock() {
+        Ok(runtime) => runtime,
+        Err(_) => return,
+    };
+
+    if runtime.handle_system_will_sleep() {
+        let runtime_state = runtime.runtime();
+        debug_log::log_info(format!(
+            "marked screen capture inactive for system sleep (session_id='{}', requested_sources={})",
+            runtime_log_session_id(runtime_state),
+            format_optional_capture_source_flags(runtime_state.requested_sources.as_ref())
+        ));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -101,7 +120,14 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
     use cidre::ns;
 
     let mut center = ns::Workspace::shared().notification_center();
-    let guard = center.add_observer_guard(ns::workspace::notification::did_wake(), None, None, {
+    let will_sleep_guard =
+        center.add_observer_guard(ns::workspace::notification::will_sleep(), None, None, {
+            let app_handle = app_handle.clone();
+            move |_notification| {
+                handle_system_will_sleep(&app_handle);
+            }
+        });
+    let did_wake_guard = center.add_observer_guard(ns::workspace::notification::did_wake(), None, None, {
         let app_handle = app_handle.clone();
         move |_notification| {
             emit_system_did_wake(&app_handle);
@@ -113,7 +139,9 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
     let mut notifier_slot = notifier_state
         .lock()
         .expect("system wake notifier state poisoned");
-    *notifier_slot = Some(guard);
+    notifier_slot.clear();
+    notifier_slot.push(will_sleep_guard);
+    notifier_slot.push(did_wake_guard);
 }
 
 #[cfg(not(target_os = "macos"))]

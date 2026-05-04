@@ -48,6 +48,39 @@ pub(crate) enum TickOutcome {
 }
 
 impl RecordingLifecycle {
+    #[cfg(target_os = "macos")]
+    fn clear_live_screen_state(&mut self) -> bool {
+        let Some(requested_sources) = self.runtime.requested_sources.clone() else {
+            return false;
+        };
+
+        if !self.runtime.is_running
+            || !requested_sources.screen
+            || self.runtime.inactivity.is_screen_paused()
+        {
+            return false;
+        }
+
+        self.runtime.active_screen_session = None;
+        self.runtime.recording_file = None;
+        self.runtime.system_audio_recording_file = None;
+        self.runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+            &requested_sources,
+            true,
+            self.runtime.inactivity.microphone_paused,
+            true,
+        );
+
+        if let Some(outputs) = self.runtime.current_segment_output_files.as_mut() {
+            outputs.screen_file = None;
+            outputs.screen_files.clear();
+            outputs.system_audio_file = None;
+            outputs.system_audio_files.clear();
+        }
+
+        true
+    }
+
     pub(crate) fn session(&self) -> NativeCaptureSession {
         session_from_runtime(&self.runtime)
     }
@@ -109,10 +142,26 @@ impl RecordingLifecycle {
     }
 
     #[cfg(target_os = "macos")]
+    pub(crate) fn handle_system_will_sleep(&mut self) -> bool {
+        self.clear_live_screen_state()
+    }
+
+    #[cfg(target_os = "macos")]
     pub(crate) fn tick_inactivity(
         &mut self,
         app_handle: &tauri::AppHandle,
     ) -> TickOutcome {
+        if let Some(error) = capture_screen::take_screen_capture_session_stop_error(
+            self.runtime.active_screen_session.as_mut(),
+        ) {
+            super::debug_log::log(format!(
+                "screen capture stream stopped unexpectedly; reconciling runtime state: [{}] {}",
+                error.code, error.message
+            ));
+            let _ = self.clear_live_screen_state();
+            return TickOutcome::SkipRotation;
+        }
+
         let now = super::runtime::now_monotonic_marker_ms();
         let activity_snapshot = current_activity_snapshot(&self.runtime);
         let effective_idle = self
