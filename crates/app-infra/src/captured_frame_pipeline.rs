@@ -73,6 +73,16 @@ pub struct CapturedFramePipeline {
     equivalence: CapturedFrameEquivalenceResolver,
 }
 
+enum PipelineJobMode<'a> {
+    AdmitOcrJob {
+        ocr_payload_json: Option<&'a str>,
+    },
+    EnqueueProcessorJob {
+        processor: &'a str,
+        payload_json: Option<&'a str>,
+    },
+}
+
 impl CapturedFramePipeline {
     pub(crate) fn new(processing: ProcessingStore, frame_batches: FrameBatchStore) -> Self {
         let equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
@@ -175,6 +185,20 @@ impl CapturedFramePipeline {
         frame: &NewFrame,
         ocr_payload_json: Option<&str>,
     ) -> Result<CapturedFramePipelineResult> {
+        self.capture_frame_with_mode_in_transaction(
+            transaction,
+            frame,
+            PipelineJobMode::AdmitOcrJob { ocr_payload_json },
+        )
+        .await
+    }
+
+    async fn capture_frame_with_mode_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame: &NewFrame,
+        job_mode: PipelineJobMode<'_>,
+    ) -> Result<CapturedFramePipelineResult> {
         let batch = self
             .frame_batches
             .upsert_open_batch_for_frame_in_transaction(
@@ -196,30 +220,9 @@ impl CapturedFramePipeline {
                 &stored_frame.captured_at,
             )
             .await?;
-        let equivalence_scope = CapturedFrameEquivalenceScope::from_frame(&stored_frame);
-        let job = if self
-            .equivalence
-            .find_nearest_earlier_equivalent_frame_in_transaction(
-                transaction,
-                &stored_frame,
-                &equivalence_scope,
-            )
-            .await?
-            .is_none()
-        {
-            Some(
-                self.processing
-                    .enqueue_processor_job_for_frame_in_transaction(
-                        transaction,
-                        stored_frame.id,
-                        OCR_PROCESSOR,
-                        ocr_payload_json,
-                    )
-                    .await?,
-            )
-        } else {
-            None
-        };
+        let job = self
+            .admit_processing_job_in_transaction(transaction, &stored_frame, job_mode)
+            .await?;
         let closed_batches = self
             .frame_batches
             .close_and_schedule_completed_batches_for_frame_in_transaction(
@@ -240,6 +243,55 @@ impl CapturedFramePipeline {
         })
     }
 
+    async fn admit_processing_job_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame: &Frame,
+        job_mode: PipelineJobMode<'_>,
+    ) -> Result<Option<ProcessingJob>> {
+        match job_mode {
+            PipelineJobMode::AdmitOcrJob { ocr_payload_json } => {
+                let equivalence_scope = CapturedFrameEquivalenceScope::from_frame(frame);
+                if self
+                    .equivalence
+                    .find_nearest_earlier_equivalent_frame_in_transaction(
+                        transaction,
+                        frame,
+                        &equivalence_scope,
+                    )
+                    .await?
+                    .is_some()
+                {
+                    return Ok(None);
+                }
+
+                Ok(Some(
+                    self.processing
+                        .enqueue_processor_job_for_frame_in_transaction(
+                            transaction,
+                            frame.id,
+                            OCR_PROCESSOR,
+                            ocr_payload_json,
+                        )
+                        .await?,
+                ))
+            }
+            PipelineJobMode::EnqueueProcessorJob {
+                processor,
+                payload_json,
+            } => Ok(Some(
+                self.processing
+                    .enqueue_processor_job_for_frame_in_transaction(
+                        transaction,
+                        frame.id,
+                        processor,
+                        payload_json,
+                    )
+                    .await?,
+            )),
+        }
+    }
+
     pub(crate) async fn debug_insert_frame_and_enqueue_processor_job(
         &self,
         frame: &NewFrame,
@@ -248,48 +300,24 @@ impl CapturedFramePipeline {
     ) -> Result<FrameProcessingJob> {
         let mut transaction = self.processing.begin_transaction().await?;
 
-        let batch = self
-            .frame_batches
-            .upsert_open_batch_for_frame_in_transaction(
+        let result = self
+            .capture_frame_with_mode_in_transaction(
                 &mut transaction,
-                &frame.session_id,
-                &frame.captured_at,
-            )
-            .await?;
-        let stored_frame = self
-            .processing
-            .insert_frame_in_transaction(&mut transaction, frame)
-            .await?;
-        self.frame_batches
-            .attach_frame_to_batch_in_transaction(
-                &mut transaction,
-                stored_frame.id,
-                batch.id,
-                &stored_frame.captured_at,
-            )
-            .await?;
-        let job = self
-            .processing
-            .enqueue_processor_job_for_frame_in_transaction(
-                &mut transaction,
-                stored_frame.id,
-                processor,
-                payload_json,
-            )
-            .await?;
-        self.frame_batches
-            .close_and_schedule_completed_batches_for_frame_in_transaction(
-                &mut transaction,
-                &frame.session_id,
-                batch.id,
+                frame,
+                PipelineJobMode::EnqueueProcessorJob {
+                    processor,
+                    payload_json,
+                },
             )
             .await?;
 
         transaction.commit().await?;
 
         Ok(FrameProcessingJob {
-            frame: stored_frame,
-            job,
+            frame: result.frame,
+            job: result
+                .job
+                .expect("debug pipeline mode should always enqueue a processing job"),
         })
     }
 
