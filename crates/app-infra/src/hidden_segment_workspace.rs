@@ -8,6 +8,8 @@ use crate::{
     AppInfraError, Result,
 };
 
+use std::path::PathBuf;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HiddenSegmentWorkspacePaths {
@@ -45,6 +47,11 @@ pub struct HiddenSegmentWorkspaceRepairResult {
     pub scanned_workspace_count: u64,
     pub removed_workspace_count: u64,
     pub skipped_workspace_count: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HiddenSegmentWorkspaceRepairContext {
+    pub active_screen_session_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -157,12 +164,12 @@ impl HiddenSegmentWorkspaceRepair {
         }))
     }
 
-    pub async fn repair_hidden_segment_workspaces(
+    pub async fn repair_hidden_segment_workspaces_with_context(
         &self,
         recordings_root: &Path,
+        context: &HiddenSegmentWorkspaceRepairContext,
     ) -> Result<HiddenSegmentWorkspaceRepairResult> {
-        let mut workspace_dirs = Vec::new();
-        collect_hidden_segment_workspace_dirs(recordings_root, &mut workspace_dirs)?;
+        let workspace_dirs = collect_hidden_segment_workspace_dirs(recordings_root)?;
 
         let mut result = HiddenSegmentWorkspaceRepairResult {
             scanned_workspace_count: workspace_dirs.len() as u64,
@@ -170,19 +177,55 @@ impl HiddenSegmentWorkspaceRepair {
         };
 
         for workspace_dir in workspace_dirs {
+            let Some(paths) = HiddenSegmentWorkspacePaths::from_workspace_dir(&workspace_dir) else {
+                continue;
+            };
+
+            if matches_active_screen_session_workspace(&paths, context.active_screen_session_id.as_deref()) {
+                capture_runtime::debug_log!(
+                    "[app-infra][hidden-segment-workspaces] skipped active workspace {}",
+                    paths.workspace_dir
+                );
+                result.skipped_workspace_count += 1;
+                continue;
+            }
+
             let Some(info) = self.classify_hidden_segment_workspace(&workspace_dir).await? else {
                 continue;
             };
 
             if info.safe_to_remove {
                 match std::fs::remove_dir_all(&workspace_dir) {
-                    Ok(()) => result.removed_workspace_count += 1,
+                    Ok(()) => {
+                        capture_runtime::debug_log!(
+                            "[app-infra][hidden-segment-workspaces] removed workspace {} (disposition={:?}, frame_count={}, visible_segment_exists={})",
+                            info.paths.workspace_dir,
+                            info.disposition,
+                            info.frame_count,
+                            info.visible_segment_exists
+                        );
+                        result.removed_workspace_count += 1;
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        capture_runtime::debug_log!(
+                            "[app-infra][hidden-segment-workspaces] treated missing workspace as removed {} (disposition={:?}, frame_count={}, visible_segment_exists={})",
+                            info.paths.workspace_dir,
+                            info.disposition,
+                            info.frame_count,
+                            info.visible_segment_exists
+                        );
                         result.removed_workspace_count += 1;
                     }
                     Err(error) => return Err(AppInfraError::Io(error)),
                 }
             } else {
+                capture_runtime::debug_log!(
+                    "[app-infra][hidden-segment-workspaces] skipped workspace {} (disposition={:?}, frame_count={}, visible_segment_exists={})",
+                    info.paths.workspace_dir,
+                    info.disposition,
+                    info.frame_count,
+                    info.visible_segment_exists
+                );
                 result.skipped_workspace_count += 1;
             }
         }
@@ -191,9 +234,15 @@ impl HiddenSegmentWorkspaceRepair {
     }
 }
 
-fn collect_hidden_segment_workspace_dirs(
+fn collect_hidden_segment_workspace_dirs(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut workspace_dirs = Vec::new();
+    collect_hidden_segment_workspace_dirs_inner(root, &mut workspace_dirs)?;
+    Ok(workspace_dirs)
+}
+
+fn collect_hidden_segment_workspace_dirs_inner(
     root: &Path,
-    workspace_dirs: &mut Vec<std::path::PathBuf>,
+    workspace_dirs: &mut Vec<PathBuf>,
 ) -> std::io::Result<()> {
     if !root.exists() {
         return Ok(());
@@ -211,10 +260,25 @@ fn collect_hidden_segment_workspace_dirs(
             continue;
         }
 
-        collect_hidden_segment_workspace_dirs(&path, workspace_dirs)?;
+        collect_hidden_segment_workspace_dirs_inner(&path, workspace_dirs)?;
     }
 
     Ok(())
+}
+
+fn matches_active_screen_session_workspace(
+    paths: &HiddenSegmentWorkspacePaths,
+    active_screen_session_id: Option<&str>,
+) -> bool {
+    let Some(active_screen_session_id) = active_screen_session_id else {
+        return false;
+    };
+
+    let expected_workspace_prefix = format!(".{active_screen_session_id}-segment-");
+    Path::new(&paths.workspace_dir)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(&expected_workspace_prefix))
 }
 
 fn hidden_workspace_has_frame_artifacts(frames_dir: &Path) -> bool {
@@ -753,7 +817,10 @@ mod tests {
                 .expect("skipped batch should complete");
 
             let result = repair
-                .repair_hidden_segment_workspaces(&recordings_root)
+                .repair_hidden_segment_workspaces_with_context(
+                    &recordings_root,
+                    &HiddenSegmentWorkspaceRepairContext::default(),
+                )
                 .await
                 .expect("repair should succeed");
 
@@ -787,7 +854,10 @@ mod tests {
                 .expect("empty frames dir should exist");
 
             let result = repair
-                .repair_hidden_segment_workspaces(&recordings_root)
+                .repair_hidden_segment_workspaces_with_context(
+                    &recordings_root,
+                    &HiddenSegmentWorkspaceRepairContext::default(),
+                )
                 .await
                 .expect("repair should succeed");
 
@@ -798,6 +868,44 @@ mod tests {
                 !workspace_dir.exists(),
                 "empty workspace without visible segment should be removed"
             );
+        });
+    }
+
+    #[test]
+    fn repair_hidden_segment_workspaces_with_context_skips_active_screen_session_workspace() {
+        run_async_test(async {
+            let dir = TestDir::new("repair-active-session-skip");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let repair = HiddenSegmentWorkspaceRepair::new(
+                crate::FrameBatchStore::new(pool.clone()),
+                crate::ProcessingStore::new(pool),
+            );
+            let recordings_root = dir.path().join(".z/recordings");
+            let day_dir = recordings_root.join("2026/04/12");
+            let workspace_dir = day_dir.join(".active-screen-session-segment-0001");
+
+            std::fs::create_dir_all(workspace_dir.join("frames"))
+                .expect("active frames dir should exist");
+            std::fs::write(day_dir.join("active-screen-session-segment-0001.mov"), b"mov")
+                .expect("visible segment should exist");
+
+            let result = repair
+                .repair_hidden_segment_workspaces_with_context(
+                    &recordings_root,
+                    &HiddenSegmentWorkspaceRepairContext {
+                        active_screen_session_id: Some("active-screen-session".to_string()),
+                    },
+                )
+                .await
+                .expect("repair should succeed");
+
+            assert_eq!(result.scanned_workspace_count, 1);
+            assert_eq!(result.removed_workspace_count, 0);
+            assert_eq!(result.skipped_workspace_count, 1);
+            assert!(workspace_dir.exists(), "active workspace should be preserved");
         });
     }
 }

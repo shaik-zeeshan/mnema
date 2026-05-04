@@ -1155,15 +1155,13 @@ fn run_hidden_segment_workspace_repair_startup_pass(
         None,
     )) {
         Ok(result) => {
-            if result.removed_workspace_count > 0 || result.skipped_workspace_count > 0 {
-                crate::native_capture::debug_log::log_info(format!(
-                    "startup hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
-                    recordings_root_display,
-                    result.scanned_workspace_count,
-                    result.removed_workspace_count,
-                    result.skipped_workspace_count
-                ));
-            }
+            crate::native_capture::debug_log::log_info(format!(
+                "startup hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
+                recordings_root_display,
+                result.scanned_workspace_count,
+                result.removed_workspace_count,
+                result.skipped_workspace_count
+            ));
         }
         Err(error) => {
             crate::native_capture::debug_log::log_error(format!(
@@ -1257,15 +1255,13 @@ fn spawn_hidden_segment_workspace_repair_worker(
             .await
             {
                 Ok(result) => {
-                    if result.removed_workspace_count > 0 || result.skipped_workspace_count > 0 {
-                        crate::native_capture::debug_log::log_info(format!(
-                            "hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
-                            recordings_root_display,
-                            result.scanned_workspace_count,
-                            result.removed_workspace_count,
-                            result.skipped_workspace_count
-                        ));
-                    }
+                    crate::native_capture::debug_log::log_info(format!(
+                        "hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
+                        recordings_root_display,
+                        result.scanned_workspace_count,
+                        result.removed_workspace_count,
+                        result.skipped_workspace_count
+                    ));
                 }
                 Err(error) => {
                     crate::native_capture::debug_log::log_error(format!(
@@ -1283,88 +1279,14 @@ async fn repair_hidden_segment_workspaces_once(
     recordings_root: &Path,
     active_screen_session_id: Option<&str>,
 ) -> ::app_infra::Result<::app_infra::HiddenSegmentWorkspaceRepairResult> {
-    let workspace_dirs = collect_hidden_segment_workspace_dirs(recordings_root)?;
-    let mut result = ::app_infra::HiddenSegmentWorkspaceRepairResult {
-        scanned_workspace_count: workspace_dirs.len() as u64,
-        ..::app_infra::HiddenSegmentWorkspaceRepairResult::default()
-    };
-
-    for workspace_dir in workspace_dirs {
-        let Some(paths) = ::app_infra::HiddenSegmentWorkspacePaths::from_workspace_dir(&workspace_dir)
-        else {
-            continue;
-        };
-
-        if matches_active_screen_session_workspace(&paths, active_screen_session_id) {
-            result.skipped_workspace_count += 1;
-            continue;
-        }
-
-        let Some(info) = infra.classify_hidden_segment_workspace(&workspace_dir).await? else {
-            continue;
-        };
-
-        if info.safe_to_remove {
-            match std::fs::remove_dir_all(&workspace_dir) {
-                Ok(()) => result.removed_workspace_count += 1,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    result.removed_workspace_count += 1;
-                }
-                Err(error) => return Err(::app_infra::AppInfraError::Io(error)),
-            }
-        } else {
-            result.skipped_workspace_count += 1;
-        }
-    }
-
-    Ok(result)
-}
-
-fn matches_active_screen_session_workspace(
-    paths: &::app_infra::HiddenSegmentWorkspacePaths,
-    active_screen_session_id: Option<&str>,
-) -> bool {
-    let Some(active_screen_session_id) = active_screen_session_id else {
-        return false;
-    };
-
-    let expected_workspace_prefix = format!(".{active_screen_session_id}-segment-");
-    Path::new(&paths.workspace_dir)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with(&expected_workspace_prefix))
-}
-
-fn collect_hidden_segment_workspace_dirs(root: &Path) -> ::app_infra::Result<Vec<PathBuf>> {
-    let mut workspace_dirs = Vec::new();
-    collect_hidden_segment_workspace_dirs_inner(root, &mut workspace_dirs)?;
-    Ok(workspace_dirs)
-}
-
-fn collect_hidden_segment_workspace_dirs_inner(
-    root: &Path,
-    workspace_dirs: &mut Vec<PathBuf>,
-) -> std::io::Result<()> {
-    if !root.exists() {
-        return Ok(());
-    }
-
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        if ::app_infra::HiddenSegmentWorkspacePaths::from_workspace_dir(&path).is_some() {
-            workspace_dirs.push(path);
-            continue;
-        }
-
-        collect_hidden_segment_workspace_dirs_inner(&path, workspace_dirs)?;
-    }
-
-    Ok(())
+    infra
+        .repair_hidden_segment_workspaces_with_context(
+            recordings_root,
+            &::app_infra::HiddenSegmentWorkspaceRepairContext {
+                active_screen_session_id: active_screen_session_id.map(str::to_owned),
+            },
+        )
+        .await
 }
 
 fn active_screen_session_id_for_hidden_workspace_repair(
