@@ -30,7 +30,7 @@ A request to re-run OCR for an existing **Captured Frame** that is already persi
 _Avoid_: force processing, rerun pipeline, requeue screenshot
 
 **Recording Lifecycle**:
-The in-memory control flow for one native capture session that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources.
+The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. Screen and system audio share the screen capture backend, while microphone runs as a separate native session.
 _Avoid_: capture runtime, recorder service, session manager
 
 **Captured Frame Equivalence**:
@@ -55,7 +55,7 @@ _Avoid_: temp cleanup, workspace GC, segment dir sweep
 - A **Captured Frame Pipeline** persists one **Captured Frame**.
 - A **Captured Frame Pipeline** attaches each **Captured Frame** to exactly one **Frame Batch**.
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
-- A **Recording Lifecycle** owns one native capture session across screen, microphone, and system-audio sources.
+- A **Recording Lifecycle** coordinates screen, microphone, and system-audio capture within one recording runtime.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - **Captured Frame Equivalence** determines whether a new **Captured Frame** needs a new **OCR Job**.
 - **Captured Frame Equivalence Scope** determines which earlier **Captured Frame** values are eligible comparison candidates.
