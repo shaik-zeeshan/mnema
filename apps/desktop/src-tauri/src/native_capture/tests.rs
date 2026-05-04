@@ -45,7 +45,7 @@ use super::settings::{
     validate_recording_settings_with_resolution_support,
 };
 #[cfg(target_os = "macos")]
-use capture_runtime::{CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule};
+use capture_runtime::{current_date_prefix, CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule};
 use capture_runtime::{RuntimeController, RuntimeState};
 use capture_types::{
     default_inactivity_activity_mode, default_ocr_settings, default_preview_cache_ttl_seconds,
@@ -1847,6 +1847,36 @@ fn next_microphone_output_file_for_runtime_uses_microphone_planner_session() {
     assert!(!path.contains("system-audio-system-audio-session-segment"));
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn segment_planner_date_refresh_updates_all_runtime_planners() {
+    let mut runtime = NativeCaptureRuntime {
+        segment_planner: Some(SegmentPlanner::with_date_prefix(
+            "/tmp/native-capture-tests",
+            "screen-session",
+            "2026/04/16",
+        )),
+        microphone_planner: Some(SegmentPlanner::with_date_prefix(
+            "/tmp/native-capture-tests",
+            "microphone-session",
+            "2026/04/16",
+        )),
+        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
+            "/tmp/native-capture-tests",
+            "system-audio-session",
+            "2026/04/16",
+        )),
+        ..Default::default()
+    };
+
+    let refreshed = super::runtime::refresh_runtime_planner_dates(&mut runtime);
+
+    assert_eq!(runtime.segment_planner.as_ref().map(|planner| planner.date_prefix()), Some(refreshed.as_str()));
+    assert_eq!(runtime.microphone_planner.as_ref().map(|planner| planner.date_prefix()), Some(refreshed.as_str()));
+    assert_eq!(runtime.system_audio_planner.as_ref().map(|planner| planner.date_prefix()), Some(refreshed.as_str()));
+    assert_eq!(refreshed.split('/').count(), 3);
+}
+
 #[test]
 fn set_current_microphone_output_file_tracks_all_segments() {
     let mut output_files = CaptureOutputFiles {
@@ -3419,6 +3449,7 @@ fn resume_system_audio_from_inactivity_noop_without_planner_metadata_when_no_scr
 #[test]
 fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_flow() {
     let mut runtime = screen_paused_with_system_audio_runtime_fixture(false);
+    let expected_date_prefix = current_date_prefix();
     runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
         "/tmp/native-capture-tests",
         "native-session-screen",
@@ -3427,8 +3458,9 @@ fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_fl
     runtime.system_audio_planner = None;
     runtime.source_sessions = None;
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/22/native-session-screen-segment-0002.mov".to_string();
+    let expected_screen_file = format!(
+        "/tmp/native-capture-tests/{expected_date_prefix}/native-session-screen-segment-0002.mov"
+    );
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
@@ -3438,16 +3470,14 @@ fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_fl
             assert!(!sources.microphone);
             assert_eq!(
                 screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/native-session-screen-segment-0002.mov"
-                ))
+                Some(std::path::Path::new(expected_screen_file.as_str()))
             );
             let system_audio_output_path = system_audio_output_path
                 .expect("system audio output should be planned for resume write flow");
             assert_eq!(
                 system_audio_output_path.parent(),
                 Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/audio"
+                    format!("/tmp/native-capture-tests/{expected_date_prefix}/audio").as_str()
                 ))
             );
             assert!(
@@ -3469,7 +3499,7 @@ fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_fl
         .as_ref()
         .expect("system audio planner should be seeded for actual resume/write flow");
     assert_eq!(planner.save_root_dir(), "/tmp/native-capture-tests");
-    assert_eq!(planner.date_prefix(), "2026/04/22");
+    assert_eq!(planner.date_prefix(), expected_date_prefix);
     assert_ne!(planner.session_id(), "native-session-screen");
     assert_eq!(
         runtime
@@ -4271,6 +4301,7 @@ fn resume_screen_from_inactivity_does_not_require_system_audio_metadata_when_aud
 #[test]
 fn resume_screen_includes_system_audio_when_audio_not_paused() {
     let mut runtime = screen_paused_with_system_audio_runtime_fixture(false);
+    let expected_date_prefix = current_date_prefix();
     runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
         "/tmp/native-capture-tests",
         "screen-session",
@@ -4299,7 +4330,7 @@ fn resume_screen_includes_system_audio_when_audio_not_paused() {
             assert_eq!(
                 system_audio_output_path,
                 Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/19/audio/system-audio-system-audio-session-segment-0002.m4a"
+                    format!("/tmp/native-capture-tests/{expected_date_prefix}/audio/system-audio-system-audio-session-segment-0002.m4a").as_str()
                 ))
             );
 
@@ -5174,6 +5205,28 @@ fn resume_audio_from_inactivity_refreshes_sources_when_screen_paused_without_sou
             .system_audio_planner
             .as_ref()
             .map(|planner| planner.session_id())
+    );
+    assert_eq!(
+        runtime
+            .segment_planner
+            .as_ref()
+            .map(|planner| planner.date_prefix()),
+        runtime
+            .microphone_planner
+            .as_ref()
+            .map(|planner| planner.date_prefix())
+    );
+    assert!(
+        runtime.system_audio_planner.is_none()
+            || runtime
+                .segment_planner
+                .as_ref()
+                .map(|planner| planner.date_prefix())
+                == runtime
+                    .system_audio_planner
+                    .as_ref()
+                    .map(|planner| planner.date_prefix()),
+        "system-audio planner should either remain absent for the no-op branch or share the refreshed date"
     );
 }
 
@@ -6969,6 +7022,7 @@ fn resume_runtime_from_inactivity_soft_resume_keeps_existing_segment_without_res
 #[cfg(target_os = "macos")]
 #[test]
 fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
+    let expected_date_prefix = current_date_prefix();
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -7013,9 +7067,9 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
         ..Default::default()
     };
 
-    let expected_screen_file =
-        "/tmp/dated-screen-resume-tests/2026/04/16/dated-screen-session-segment-0002.mov"
-            .to_string();
+    let expected_screen_file = format!(
+        "/tmp/dated-screen-resume-tests/{expected_date_prefix}/dated-screen-session-segment-0002.mov"
+    );
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
@@ -7023,15 +7077,13 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
             assert_eq!(
                 segment_dir,
                 std::path::Path::new(
-                    "/tmp/dated-screen-resume-tests/2026/04/16/.dated-screen-session-segment-0002"
+                    format!("/tmp/dated-screen-resume-tests/{expected_date_prefix}/.dated-screen-session-segment-0002").as_str()
                 ),
                 "segment_dir should be the hidden workspace under YYYY/MM/DD"
             );
             assert_eq!(
                 screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/dated-screen-resume-tests/2026/04/16/dated-screen-session-segment-0002.mov"
-                )),
+                Some(std::path::Path::new(expected_screen_file.as_str())),
                 "screen_output should be the visible dated file path"
             );
             assert!(
@@ -7051,6 +7103,7 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
 #[cfg(target_os = "macos")]
 #[test]
 fn resume_screen_from_inactivity_skips_dated_system_audio_path_when_audio_paused() {
+    let expected_date_prefix = current_date_prefix();
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -7095,9 +7148,9 @@ fn resume_screen_from_inactivity_skips_dated_system_audio_path_when_audio_paused
         ..Default::default()
     };
 
-    let expected_screen_file =
-        "/tmp/dated-screen-resume-tests/2026/04/16/dated-screen-session-segment-0002.mov"
-            .to_string();
+    let expected_screen_file = format!(
+        "/tmp/dated-screen-resume-tests/{expected_date_prefix}/dated-screen-session-segment-0002.mov"
+    );
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
@@ -7105,14 +7158,12 @@ fn resume_screen_from_inactivity_skips_dated_system_audio_path_when_audio_paused
             assert_eq!(
                 segment_dir,
                 std::path::Path::new(
-                    "/tmp/dated-screen-resume-tests/2026/04/16/.dated-screen-session-segment-0002"
+                    format!("/tmp/dated-screen-resume-tests/{expected_date_prefix}/.dated-screen-session-segment-0002").as_str()
                 )
             );
             assert_eq!(
                 screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/dated-screen-resume-tests/2026/04/16/dated-screen-session-segment-0002.mov"
-                ))
+                Some(std::path::Path::new(expected_screen_file.as_str()))
             );
             assert!(sources.screen);
             assert!(!sources.microphone);
