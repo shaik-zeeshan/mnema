@@ -175,17 +175,21 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let store = ProcessingStore::new(database.pool().clone());
-            let persisted = store
-                .insert_frame_and_enqueue_ocr_job(
-                    &super::super::NewFrame::new(
-                        "session-ocr",
-                        "/tmp/frame-ocr-success.png",
-                        "2026-04-12T10:00:00Z",
-                    ),
-                    Some("{\"language\":\"eng\"}"),
+            let frame = store
+                .insert_frame(&super::super::NewFrame::new(
+                    "session-ocr",
+                    "/tmp/frame-ocr-success.png",
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+            let job = store
+                .enqueue_job(
+                    &super::super::ProcessingJobDraft::for_frame_ocr(frame.id)
+                        .with_payload_json("{\"language\":\"eng\"}"),
                 )
                 .await
-                .expect("frame and job should persist");
+                .expect("job should persist");
 
             let engine = Arc::new(MockOcrEngine::succeed(
                 OcrOutput::new("recognized text")
@@ -195,7 +199,7 @@ mod tests {
             let backend = OcrProcessorBackend::from_arc(engine.clone());
 
             let result = backend
-                .process(&store, &persisted.job)
+                .process(&store, &job)
                 .await
                 .expect("ocr backend should produce a result");
 

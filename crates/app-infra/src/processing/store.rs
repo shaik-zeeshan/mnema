@@ -173,34 +173,6 @@ impl ProcessingStore {
             .ok_or(AppInfraError::ProcessingJobNotFound(job_id))
     }
 
-    #[cfg(test)]
-    pub(crate) async fn insert_frame_and_enqueue_ocr_job(
-        &self,
-        frame: &NewFrame,
-        payload_json: Option<&str>,
-    ) -> Result<FrameProcessingJob> {
-        let mut transaction = self.pool.begin().await?;
-
-        let stored_frame = self
-            .insert_frame_in_transaction(&mut transaction, frame)
-            .await?;
-        let stored_job = self
-            .enqueue_processor_job_for_frame_in_transaction(
-                &mut transaction,
-                stored_frame.id,
-                super::OCR_PROCESSOR,
-                payload_json,
-            )
-            .await?;
-
-        transaction.commit().await?;
-
-        Ok(FrameProcessingJob {
-            frame: stored_frame,
-            job: stored_job,
-        })
-    }
-
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
         get_frame_optional(&self.pool, frame_id).await
     }

@@ -269,17 +269,21 @@ mod tests {
                 })),
             );
 
-            let persisted = store
-                .insert_frame_and_enqueue_ocr_job(
-                    &NewFrame::new(
-                        "session-runtime",
-                        "/tmp/frame-runtime-success.png",
-                        "2026-04-12T10:00:00Z",
-                    ),
-                    Some("{\"language\":\"eng\"}"),
+            let frame = store
+                .insert_frame(&NewFrame::new(
+                    "session-runtime",
+                    "/tmp/frame-runtime-success.png",
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+            let job = store
+                .enqueue_job(
+                    &ProcessingJobDraft::for_frame_ocr(frame.id)
+                        .with_payload_json("{\"language\":\"eng\"}"),
                 )
                 .await
-                .expect("frame and job should persist");
+                .expect("job should persist");
 
             let outcome = runtime
                 .process_next_queued_job()
@@ -291,7 +295,7 @@ mod tests {
                 panic!("expected completed outcome");
             };
 
-            assert_eq!(completion.job.id, persisted.job.id);
+            assert_eq!(completion.job.id, job.id);
             assert_eq!(completion.job.status, ProcessingJobStatus::Completed);
             assert_eq!(completion.job.attempt_count, 1);
             assert_eq!(
@@ -308,21 +312,21 @@ mod tests {
             );
 
             let stored_job = store
-                .get_job(persisted.job.id)
+                .get_job(job.id)
                 .await
                 .expect("completed job should be readable")
                 .expect("completed job should exist");
             assert_eq!(stored_job.status, ProcessingJobStatus::Completed);
 
             let stored_result = store
-                .get_result_for_job(persisted.job.id)
+                .get_result_for_job(job.id)
                 .await
                 .expect("result should be readable")
                 .expect("result should exist");
             assert_eq!(stored_result, completion.result);
 
             let subject_results = store
-                .list_results_for_subject(&ProcessingSubject::frame(persisted.frame.id))
+                .list_results_for_subject(&ProcessingSubject::frame(frame.id))
                 .await
                 .expect("subject results should be readable");
             assert_eq!(subject_results, vec![completion.result]);
@@ -344,17 +348,18 @@ mod tests {
                 })),
             );
 
-            let persisted = store
-                .insert_frame_and_enqueue_ocr_job(
-                    &NewFrame::new(
-                        "session-runtime",
-                        "/tmp/frame-runtime-failure.png",
-                        "2026-04-12T10:00:00Z",
-                    ),
-                    None,
-                )
+            let frame = store
+                .insert_frame(&NewFrame::new(
+                    "session-runtime",
+                    "/tmp/frame-runtime-failure.png",
+                    "2026-04-12T10:00:00Z",
+                ))
                 .await
-                .expect("frame and job should persist");
+                .expect("frame should persist");
+            let queued_job = store
+                .enqueue_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("job should persist");
 
             let outcome = runtime
                 .process_next_queued_job()
@@ -362,20 +367,20 @@ mod tests {
                 .expect("runtime should attempt queued job")
                 .expect("queued job should exist");
 
-            let ProcessingJobRunOutcome::Failed(job) = outcome else {
+            let ProcessingJobRunOutcome::Failed(failed_job) = outcome else {
                 panic!("expected failed outcome");
             };
 
-            assert_eq!(job.id, persisted.job.id);
-            assert_eq!(job.status, ProcessingJobStatus::Failed);
-            assert_eq!(job.attempt_count, 1);
+            assert_eq!(failed_job.id, queued_job.id);
+            assert_eq!(failed_job.status, ProcessingJobStatus::Failed);
+            assert_eq!(failed_job.attempt_count, 1);
             assert_eq!(
-                job.last_error.as_deref(),
+                failed_job.last_error.as_deref(),
                 Some("ocr engine error: vision bridge failed")
             );
 
             assert!(store
-                .get_result_for_job(persisted.job.id)
+                .get_result_for_job(queued_job.id)
                 .await
                 .expect("result lookup should succeed")
                 .is_none());
