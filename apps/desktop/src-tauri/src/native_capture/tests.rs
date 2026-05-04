@@ -35,11 +35,11 @@ use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
     FrameArtifactForwardingResult, FrameArtifactMessage,
 };
-use crate::native_capture_inactivity::{
+use super::inactivity::{
     ActivityPolicyEvaluation, ActivitySnapshot, AudioActivitySourceState, InactivityState,
 };
-use crate::native_capture_output::set_current_microphone_output_file;
-use crate::native_capture_settings::{
+use super::output::set_current_microphone_output_file;
+use super::settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
     validate_recording_settings_with_resolution_support,
 };
@@ -47,7 +47,8 @@ use crate::native_capture_settings::{
 use capture_runtime::{CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule};
 use capture_runtime::{RuntimeController, RuntimeState};
 use capture_types::{
-    default_inactivity_activity_mode, default_preview_cache_ttl_seconds, default_video_bitrate,
+    default_inactivity_activity_mode, default_ocr_settings, default_preview_cache_ttl_seconds,
+    default_video_bitrate,
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
     InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
     MicrophonePreference, MicrophonePreferenceMode, RecordingSettings, ScreenResolution,
@@ -115,11 +116,37 @@ fn recording_settings_fixture() -> RecordingSettings {
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: false,
+        ocr: default_ocr_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
         system_audio_activity_sensitivity: 50,
         inactivity_activity_mode: default_inactivity_activity_mode(),
+    }
+}
+
+fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest {
+    let settings = recording_settings_fixture();
+    UpdateRecordingSettingsRequest {
+        capture_screen: settings.capture_screen,
+        capture_microphone: settings.capture_microphone,
+        capture_system_audio: settings.capture_system_audio,
+        segment_duration_seconds: settings.segment_duration_seconds,
+        screen_frame_rate: settings.screen_frame_rate,
+        screen_resolution: settings.screen_resolution,
+        video_bitrate: settings.video_bitrate,
+        save_directory: settings.save_directory,
+        auto_start: settings.auto_start,
+        native_capture_debug_logging_enabled: settings.native_capture_debug_logging_enabled,
+        developer_options_enabled: settings.developer_options_enabled,
+        preview_cache_ttl_seconds: settings.preview_cache_ttl_seconds,
+        follow_timeline_live: settings.follow_timeline_live,
+        ocr: settings.ocr,
+        pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
+        idle_timeout_seconds: settings.idle_timeout_seconds,
+        microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
+        system_audio_activity_sensitivity: settings.system_audio_activity_sensitivity,
+        inactivity_activity_mode: settings.inactivity_activity_mode,
     }
 }
 
@@ -499,23 +526,7 @@ fn validate_recording_settings_rejects_all_sources_disabled() {
         capture_screen: false,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        follow_timeline_live: false,
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect_err("all sources disabled must be rejected");
 
@@ -529,23 +540,7 @@ fn validate_recording_settings_rejects_system_audio_without_screen() {
         capture_screen: false,
         capture_microphone: true,
         capture_system_audio: true,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        follow_timeline_live: false,
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect_err("system audio without screen must be rejected");
 
@@ -563,24 +558,11 @@ fn validate_recording_settings_allows_storing_resolution_when_screen_disabled() 
             capture_screen: false,
             capture_microphone: true,
             capture_system_audio: false,
-            segment_duration_seconds: 60,
-            screen_frame_rate: 30,
             screen_resolution: ScreenResolution::Custom {
                 width: 1280,
                 height: 720,
             },
-            video_bitrate: default_video_bitrate(),
-            save_directory: "/tmp".to_string(),
-            auto_start: false,
-            native_capture_debug_logging_enabled: false,
-            developer_options_enabled: false,
-            preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-            follow_timeline_live: false,
-            pause_capture_on_inactivity: true,
-            idle_timeout_seconds: 10,
-            microphone_activity_sensitivity: 50,
-            system_audio_activity_sensitivity: 50,
-            inactivity_activity_mode: default_inactivity_activity_mode(),
+            ..update_recording_settings_request_fixture()
         },
         true,
     )
@@ -603,23 +585,10 @@ fn validate_recording_settings_allows_non_original_resolution_when_screen_disabl
             capture_screen: false,
             capture_microphone: true,
             capture_system_audio: false,
-            segment_duration_seconds: 60,
-            screen_frame_rate: 30,
             screen_resolution: ScreenResolution::Preset {
                 preset: ScreenResolutionPreset::P720,
             },
-            video_bitrate: default_video_bitrate(),
-            save_directory: "/tmp".to_string(),
-            auto_start: false,
-            native_capture_debug_logging_enabled: false,
-            developer_options_enabled: false,
-            preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-            follow_timeline_live: false,
-            pause_capture_on_inactivity: true,
-            idle_timeout_seconds: 10,
-            microphone_activity_sensitivity: 50,
-            system_audio_activity_sensitivity: 50,
-            inactivity_activity_mode: default_inactivity_activity_mode(),
+            ..update_recording_settings_request_fixture()
         },
         false,
     )
@@ -641,23 +610,10 @@ fn validate_recording_settings_rejects_non_original_resolution_when_screen_enabl
             capture_screen: true,
             capture_microphone: false,
             capture_system_audio: false,
-            segment_duration_seconds: 60,
-            screen_frame_rate: 30,
             screen_resolution: ScreenResolution::Preset {
                 preset: ScreenResolutionPreset::P720,
             },
-            video_bitrate: default_video_bitrate(),
-            save_directory: "/tmp".to_string(),
-            auto_start: false,
-            native_capture_debug_logging_enabled: false,
-            developer_options_enabled: false,
-            preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-            follow_timeline_live: false,
-            pause_capture_on_inactivity: true,
-            idle_timeout_seconds: 10,
-            microphone_activity_sensitivity: 50,
-            system_audio_activity_sensitivity: 50,
-            inactivity_activity_mode: default_inactivity_activity_mode(),
+            ..update_recording_settings_request_fixture()
         },
         false,
     )
@@ -672,24 +628,11 @@ fn validate_recording_settings_rejects_too_small_custom_resolution() {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
         screen_resolution: ScreenResolution::Custom {
             width: 8,
             height: 8,
         },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        follow_timeline_live: false,
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect_err("too small resolution should be rejected");
 
@@ -702,27 +645,12 @@ fn validate_recording_settings_defaults_preset_bitrate_when_preset_value_missing
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
         video_bitrate: VideoBitrateSettings {
             mode: VideoBitrateMode::Preset,
             preset: None,
             custom_mbps: Some(12),
         },
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        follow_timeline_live: false,
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect("preset mode should normalize bitrate values");
 
@@ -740,27 +668,12 @@ fn validate_recording_settings_rejects_custom_bitrate_out_of_range() {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
         video_bitrate: VideoBitrateSettings {
             mode: VideoBitrateMode::Custom,
             preset: Some(VideoBitratePreset::High),
             custom_mbps: Some(41),
         },
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        follow_timeline_live: false,
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect_err("custom bitrate above max should be rejected");
 
@@ -777,23 +690,10 @@ fn validate_recording_settings_accepts_audio_activity_mode_and_sensitivity() {
         capture_screen: true,
         capture_microphone: true,
         capture_system_audio: true,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        follow_timeline_live: false,
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 75,
         system_audio_activity_sensitivity: 75,
         inactivity_activity_mode: InactivityActivityMode::SystemInputOrScreenOrAudio,
+        ..update_recording_settings_request_fixture()
     })
     .expect("audio-aware inactivity settings should be valid");
 
@@ -811,23 +711,8 @@ fn validate_recording_settings_preserves_native_capture_debug_logging_flag() {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
         native_capture_debug_logging_enabled: true,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        follow_timeline_live: false,
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect("debug logging flag should round-trip through validation");
 
@@ -840,23 +725,8 @@ fn validate_recording_settings_preserves_developer_options_flag() {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
         developer_options_enabled: true,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        follow_timeline_live: false,
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect("developer options flag should round-trip through validation");
 
@@ -869,23 +739,8 @@ fn validate_recording_settings_rejects_audio_activity_sensitivity_above_max() {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        follow_timeline_live: false,
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 101,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect_err("sensitivity above max must be rejected");
 
@@ -918,6 +773,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: false,
+        ocr: default_ocr_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -953,6 +809,7 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: false,
+        ocr: default_ocr_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -984,6 +841,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: false,
+        ocr: default_ocr_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1459,6 +1317,9 @@ fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources(
 #[cfg(target_os = "macos")]
 #[test]
 fn current_activity_snapshot_for_debug_does_not_drain_system_audio_peak() {
+    // Uses global capture-screen test state, so keep the assertion window as
+    // small as possible: debug should observe the peak without draining it,
+    // and the next normal take should still receive the same peak.
     capture_screen::reset_last_screen_activity_unix_ms();
     capture_screen::record_system_audio_activity_for_tests(0.20, 10_000, 20_000);
 
@@ -1473,10 +1334,12 @@ fn current_activity_snapshot_for_debug_does_not_drain_system_audio_peak() {
     };
 
     let debug_snapshot = current_activity_snapshot_for_debug(&runtime);
-    let loop_snapshot = current_activity_snapshot(&runtime);
 
     assert_eq!(debug_snapshot.system_audio_activity.latest_normalized_level, Some(0.20));
-    assert_eq!(loop_snapshot.system_audio_activity.latest_normalized_level, Some(0.20));
+    assert_eq!(
+        capture_screen::take_system_audio_activity_window_peak_level(),
+        Some(0.20)
+    );
 
     capture_screen::reset_last_screen_activity_unix_ms();
 }
@@ -1484,12 +1347,12 @@ fn current_activity_snapshot_for_debug_does_not_drain_system_audio_peak() {
 #[test]
 fn idle_debug_activity_sources_include_audio_fields() {
     let policy = ActivityPolicyEvaluation {
-        effective_idle: crate::native_capture_inactivity::EffectiveIdle {
-            source: crate::native_capture_inactivity::ActivitySourceKind::MicrophoneCapture,
+        effective_idle: super::inactivity::EffectiveIdle {
+            source: super::inactivity::ActivitySourceKind::MicrophoneCapture,
             idle_ms: 250,
         },
-        sources: vec![crate::native_capture_inactivity::ActivitySourceSample {
-            kind: crate::native_capture_inactivity::ActivitySourceKind::MicrophoneCapture,
+        sources: vec![super::inactivity::ActivitySourceSample {
+            kind: super::inactivity::ActivitySourceKind::MicrophoneCapture,
             enabled: true,
             available: true,
             idle_ms: Some(250),
@@ -3902,7 +3765,7 @@ fn resume_screen_from_inactivity_requires_capture_clock() {
 
 #[test]
 fn idle_debug_family_fields_reflect_independent_screen_and_audio_evaluations() {
-    use crate::native_capture_inactivity::{
+    use super::inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -3949,7 +3812,7 @@ fn idle_debug_family_fields_reflect_independent_screen_and_audio_evaluations() {
 
 #[test]
 fn idle_debug_family_fields_show_screen_paused_audio_active() {
-    use crate::native_capture_inactivity::{
+    use super::inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -3999,7 +3862,7 @@ fn idle_debug_family_fields_show_screen_paused_audio_active() {
 
 #[test]
 fn idle_debug_family_fields_show_audio_paused_screen_active() {
-    use crate::native_capture_inactivity::{
+    use super::inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -4046,7 +3909,7 @@ fn idle_debug_family_fields_show_audio_paused_screen_active() {
 
 #[test]
 fn idle_debug_family_fields_both_paused() {
-    use crate::native_capture_inactivity::{
+    use super::inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -4502,7 +4365,7 @@ fn resume_screen_reanchors_segment_boundary_timing() {
     )
     .expect("rotation should trigger after the resumed screen segment reaches duration");
 
-    assert_eq!(delayed_rotation.next_index, 2);
+    assert_eq!(delayed_rotation.next_index, 3);
 }
 
 #[cfg(target_os = "macos")]
@@ -6985,91 +6848,26 @@ fn pause_screen_fatal_finalize_preserves_audio_continuation() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn resume_runtime_from_inactivity_passes_dated_paths_to_start_segment_closure() {
-    let runtime_controller = running_runtime_controller();
-    let runtime_state = runtime_controller.state();
-
-    let mut runtime = NativeCaptureRuntime {
-        is_running: true,
-        requested_sources: Some(CaptureSources {
-            screen: true,
-            microphone: false,
-            system_audio: false,
-        }),
-        current_segment_index: 1,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::default(),
-        segment_loop_control: None,
-        capture_clock: Some(CaptureClock::start_now()),
-        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
-        segment_planner: Some(SegmentPlanner::with_date_prefix(
-            "/tmp/dated-resume-tests",
-            "dated-session",
-            "2026/04/16",
-        )),
-        microphone_planner: Some(SegmentPlanner::with_date_prefix(
-            "/tmp/dated-resume-tests",
-            "dated-microphone-session",
-            "2026/04/16",
-        )),
-        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
-            "/tmp/dated-resume-tests",
-            "dated-system-audio-session",
-            "2026/04/16",
-        )),
-        runtime_controller,
-        runtime_state,
-        inactivity: InactivityState {
-            enabled: true,
-            idle_timeout_seconds: 10,
-            is_paused: true,
-            ..InactivityState::default()
-        },
-        ..Default::default()
-    };
-
-    let expected_screen_file =
-        "/tmp/dated-resume-tests/2026/04/16/dated-session-segment-0002.mov".to_string();
+fn resume_runtime_from_inactivity_soft_resume_keeps_existing_segment_without_restart() {
+    let mut runtime = paused_runtime_fixture();
+    runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/dated-resume-tests",
+        "dated-session",
+        "2026/04/16",
+    ));
 
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |segment_dir,
-         screen_output,
-         system_audio_output_path,
-         _sources,
-         _fr,
-         _res,
-         _br,
-         _mic,
-         _tx,
-         _mic_path| {
-            assert_eq!(
-                segment_dir,
-                std::path::Path::new(
-                    "/tmp/dated-resume-tests/2026/04/16/.dated-session-segment-0002"
-                ),
-                "segment_dir should be the hidden workspace under YYYY/MM/DD"
-            );
-            assert_eq!(
-                screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/dated-resume-tests/2026/04/16/dated-session-segment-0002.mov"
-                )),
-                "screen_output should be the visible dated file path"
-            );
-            // system_audio is disabled for this fixture, so no output path is passed
-            assert!(
-                system_audio_output_path.is_none(),
-                "system_audio_output_path should be None when system_audio source is disabled"
-            );
-
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        |_, _, _, _, _, _, _, _, _, _| {
+            panic!("legacy soft-resume should not restart the existing segment")
         },
     )
-    .expect("resume with dated planner should succeed");
+    .expect("legacy soft-resume should succeed");
 
     assert!(!runtime.inactivity.is_paused);
-    assert_eq!(runtime.current_segment_index, 2);
+    assert_eq!(runtime.current_segment_index, 1);
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.current_segment_output_files.is_none());
 }
 
 #[cfg(target_os = "macos")]
