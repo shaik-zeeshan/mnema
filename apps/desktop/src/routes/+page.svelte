@@ -22,7 +22,6 @@
     FrameSummaryDto,
     FocusedFrameWindowDto,
     GetEarliestEarlierEquivalentFrameRequest,
-    GetNearestEarlierEquivalentFrameRequest,
     GetPermissionsResponse,
     GetProcessingResultRequest,
     GetTimelineWindowAroundFrameRequest,
@@ -1836,11 +1835,11 @@
 
       if (ocrData.status === "missing") {
         const fallbackFrame = await invoke<FrameDto | null>(
-          "get_nearest_earlier_equivalent_frame",
+          "get_earliest_earlier_equivalent_frame",
           {
             request: {
               frameId: frame.id,
-            } satisfies GetNearestEarlierEquivalentFrameRequest,
+            } satisfies GetEarliestEarlierEquivalentFrameRequest,
           },
         );
         if (gen !== ocrGeneration) return;
