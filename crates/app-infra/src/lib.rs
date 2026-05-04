@@ -1,4 +1,5 @@
 mod audio_segments;
+mod captured_frame_equivalence;
 mod captured_frame_pipeline;
 mod captured_frame_reprocessing;
 mod db;
@@ -14,6 +15,9 @@ use sqlx::SqlitePool;
 
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
+};
+pub use captured_frame_equivalence::{
+    CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,
 };
 pub use captured_frame_pipeline::{
     CapturedFramePipeline, CapturedFramePipelineResult, ClosedFrameBatchSummary,
@@ -50,6 +54,7 @@ pub struct AppInfra {
     audio_segments: AudioSegmentStore,
     frame_batches: FrameBatchStore,
     processing: ProcessingStore,
+    captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
     captured_frame_reprocessing: CapturedFrameReprocessing,
     runtime: JobRuntime,
@@ -71,6 +76,8 @@ impl AppInfra {
         let audio_segments = AudioSegmentStore::new(database.pool().clone());
         let frame_batches = FrameBatchStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
+        let captured_frame_equivalence =
+            CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
         let captured_frame_reprocessing = CapturedFrameReprocessing::new(processing.clone());
@@ -93,6 +100,7 @@ impl AppInfra {
             audio_segments,
             frame_batches,
             processing,
+            captured_frame_equivalence,
             captured_frame_pipeline,
             captured_frame_reprocessing,
             runtime,
@@ -269,14 +277,16 @@ impl AppInfra {
         self.processing.get_frame(frame_id).await
     }
 
-    pub async fn get_first_matching_earlier_equivalent_frame(
+    pub async fn get_nearest_earlier_equivalent_frame(
         &self,
-        session_id: &str,
-        before_frame_id: i64,
         frame_id: i64,
     ) -> Result<Option<Frame>> {
-        self.captured_frame_pipeline
-            .find_first_matching_earlier_equivalent_frame(session_id, before_frame_id, frame_id)
+        let Some(frame) = self.processing.get_frame(frame_id).await? else {
+            return Ok(None);
+        };
+        let scope = CapturedFrameEquivalenceScope::from_frame(&frame);
+        self.captured_frame_equivalence
+            .find_nearest_earlier_equivalent_frame(&frame, &scope)
             .await
     }
 
@@ -1928,13 +1938,9 @@ mod tests {
             assert!(repeated_jobs.is_empty());
 
             let resolved = infra
-                .get_first_matching_earlier_equivalent_frame(
-                    "session-dedupe-repeat",
-                    repeated.frame.id,
-                    repeated.frame.id,
-                )
+                .get_nearest_earlier_equivalent_frame(repeated.frame.id)
                 .await
-                .expect("matching earlier equivalent frame should resolve");
+                .expect("nearest earlier equivalent frame should resolve");
             assert_eq!(resolved, Some(first.frame));
         });
     }
@@ -2039,11 +2045,7 @@ mod tests {
             assert!(second.job.is_some());
 
             let resolved = infra
-                .get_first_matching_earlier_equivalent_frame(
-                    "session-segment-ui-scope",
-                    second.frame.id,
-                    second.frame.id,
-                )
+                .get_nearest_earlier_equivalent_frame(second.frame.id)
                 .await
                 .expect("cross-segment equivalent frame lookup should succeed");
             assert_eq!(resolved, None);

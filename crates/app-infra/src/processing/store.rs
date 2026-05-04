@@ -197,7 +197,7 @@ impl ProcessingStore {
         get_frame_optional(&self.pool, frame_id).await
     }
 
-    pub async fn list_earlier_frames_with_equivalence_hint(
+    pub async fn list_earlier_frames_with_equivalence_hint_in_scope(
         &self,
         session_id: &str,
         before_frame_id: i64,
@@ -212,7 +212,7 @@ impl ProcessingStore {
                         created_at, updated_at \
                  FROM frames \
                  WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
-                 ORDER BY id ASC",
+                 ORDER BY id DESC",
             )
             .bind(session_id)
             .bind(before_frame_id)
@@ -227,7 +227,7 @@ impl ProcessingStore {
                         created_at, updated_at \
                  FROM frames \
                  WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 \
-                 ORDER BY id ASC",
+                 ORDER BY id DESC",
             )
             .bind(session_id)
             .bind(before_frame_id)
@@ -239,7 +239,7 @@ impl ProcessingStore {
         rows.into_iter().map(map_frame).collect()
     }
 
-    pub(crate) async fn list_earlier_frames_with_equivalence_hint_in_transaction(
+    pub(crate) async fn list_earlier_frames_with_equivalence_hint_in_scope_in_transaction(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,
         session_id: &str,
@@ -255,7 +255,7 @@ impl ProcessingStore {
                         created_at, updated_at \
                  FROM frames \
                  WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
-                 ORDER BY id ASC",
+                 ORDER BY id DESC",
             )
             .bind(session_id)
             .bind(before_frame_id)
@@ -270,7 +270,7 @@ impl ProcessingStore {
                         created_at, updated_at \
                  FROM frames \
                  WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 \
-                 ORDER BY id ASC",
+                 ORDER BY id DESC",
             )
             .bind(session_id)
             .bind(before_frame_id)

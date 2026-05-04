@@ -151,9 +151,7 @@ pub struct GetFrameRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetFirstMatchingEarlierEquivalentFrameRequest {
-    pub session_id: String,
-    pub before_frame_id: i64,
+pub struct GetNearestEarlierEquivalentFrameRequest {
     pub frame_id: i64,
 }
 
@@ -1622,23 +1620,19 @@ pub async fn get_frame(
 }
 
 #[tauri::command]
-pub async fn get_first_matching_earlier_equivalent_frame(
-    request: GetFirstMatchingEarlierEquivalentFrameRequest,
+pub async fn get_nearest_earlier_equivalent_frame(
+    request: GetNearestEarlierEquivalentFrameRequest,
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Option<FrameDto>, String> {
     let infra = Arc::clone(&*state);
     infra
-        .get_first_matching_earlier_equivalent_frame(
-            &request.session_id,
-            request.before_frame_id,
-            request.frame_id,
-        )
+        .get_nearest_earlier_equivalent_frame(request.frame_id)
         .await
         .map(|frame| frame.map(FrameDto::from))
         .map_err(|error| {
             format!(
-                "failed to resolve first matching earlier equivalent frame for session {} before {}: {error}",
-                request.session_id, request.before_frame_id
+                "failed to resolve nearest earlier equivalent frame for frame {}: {error}",
+                request.frame_id
             )
         })
 }

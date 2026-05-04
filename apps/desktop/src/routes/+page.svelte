@@ -21,7 +21,7 @@
     FrameRangeRequest,
     FrameSummaryDto,
     FocusedFrameWindowDto,
-    GetFirstMatchingEarlierEquivalentFrameRequest,
+    GetNearestEarlierEquivalentFrameRequest,
     GetPermissionsResponse,
     GetProcessingResultRequest,
     GetTimelineWindowAroundFrameRequest,
@@ -193,13 +193,11 @@
     void (async () => {
       try {
         const duplicateOf = await invoke<FrameDto | null>(
-          "get_first_matching_earlier_equivalent_frame",
+          "get_nearest_earlier_equivalent_frame",
           {
             request: {
-              sessionId: active.sessionId,
-              beforeFrameId: active.id,
               frameId: active.id,
-            } satisfies GetFirstMatchingEarlierEquivalentFrameRequest,
+            } satisfies GetNearestEarlierEquivalentFrameRequest,
           },
         );
         if (gen !== timelineActiveDuplicateLookupGeneration) return;
@@ -1837,13 +1835,11 @@
 
       if (ocrData.status === "missing") {
         const fallbackFrame = await invoke<FrameDto | null>(
-          "get_first_matching_earlier_equivalent_frame",
+          "get_nearest_earlier_equivalent_frame",
           {
             request: {
-              sessionId: frame.sessionId,
-              beforeFrameId: frame.id,
               frameId: frame.id,
-            } satisfies GetFirstMatchingEarlierEquivalentFrameRequest,
+            } satisfies GetNearestEarlierEquivalentFrameRequest,
           },
         );
         if (gen !== ocrGeneration) return;

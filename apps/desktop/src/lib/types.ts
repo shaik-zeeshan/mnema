@@ -467,10 +467,8 @@ export interface GetTimelineWindowAroundFrameRequest {
 	olderLimit: number;
 }
 
-/** Request body for `invoke('get_first_matching_earlier_equivalent_frame', { request })`. */
-export interface GetFirstMatchingEarlierEquivalentFrameRequest {
-	sessionId: string;
-	beforeFrameId: number;
+/** Request body for `invoke('get_nearest_earlier_equivalent_frame', { request })`. */
+export interface GetNearestEarlierEquivalentFrameRequest {
 	frameId: number;
 }
 

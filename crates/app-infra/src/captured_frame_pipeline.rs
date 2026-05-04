@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
-use std::path::Path;
 
 use crate::{
-    frame_batches::{FrameBatch, FrameBatchStore, HiddenSegmentWorkspacePaths},
+    captured_frame_equivalence::{
+        CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,
+    },
+    frame_batches::{FrameBatch, FrameBatchStore},
     processing::{
         Frame, FrameProcessingJob, NewFrame, ProcessingJob, ProcessingStore, OCR_PROCESSOR,
     },
@@ -53,13 +55,16 @@ impl From<FrameBatch> for ClosedFrameBatchSummary {
 pub struct CapturedFramePipeline {
     processing: ProcessingStore,
     frame_batches: FrameBatchStore,
+    equivalence: CapturedFrameEquivalenceResolver,
 }
 
 impl CapturedFramePipeline {
     pub(crate) fn new(processing: ProcessingStore, frame_batches: FrameBatchStore) -> Self {
+        let equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         Self {
             processing,
             frame_batches,
+            equivalence,
         }
     }
 
@@ -106,9 +111,16 @@ impl CapturedFramePipeline {
                 &stored_frame.captured_at,
             )
             .await?;
+        let equivalence_scope = CapturedFrameEquivalenceScope::from_frame(&stored_frame);
         let job = if self
-            .should_enqueue_ocr_for_frame(transaction, &stored_frame)
+            .equivalence
+            .find_nearest_earlier_equivalent_frame_in_transaction(
+                transaction,
+                &stored_frame,
+                &equivalence_scope,
+            )
             .await?
+            .is_none()
         {
             Some(
                 self.processing
@@ -196,113 +208,13 @@ impl CapturedFramePipeline {
         })
     }
 
-    async fn should_enqueue_ocr_for_frame(
+    pub async fn find_nearest_earlier_equivalent_frame(
         &self,
-        transaction: &mut Transaction<'_, Sqlite>,
         frame: &Frame,
-    ) -> Result<bool> {
-        let Some((equivalence_hint, proof, version)) = frame.equivalence.ready_parts() else {
-            return Ok(true);
-        };
-
-        let earlier_frames = self
-            .processing
-            .list_earlier_frames_with_equivalence_hint_in_transaction(
-                transaction,
-                &frame.session_id,
-                frame.id,
-                equivalence_hint,
-                frame_segment_workspace_prefix(frame).as_deref(),
-            )
-            .await?;
-
-        for earlier_frame in earlier_frames {
-            if earlier_frame.equivalence.is_quarantined() {
-                capture_runtime::debug_log!(
-                    "[app-infra] skipped quarantined earlier frame {} while resolving equivalence for frame {}",
-                    earlier_frame.id,
-                    frame.id
-                );
-                continue;
-            }
-
-            let Some((_hint, earlier_proof, earlier_version)) = earlier_frame.equivalence.ready_parts()
-            else {
-                continue;
-            };
-
-            if version != earlier_version {
-                continue;
-            }
-
-            if capture_screen::captured_frame_equivalence_proofs_match(
-                version,
-                proof,
-                earlier_proof,
-            ) {
-                return Ok(false);
-            }
-        }
-
-        Ok(true)
-    }
-
-    pub async fn find_first_matching_earlier_equivalent_frame(
-        &self,
-        session_id: &str,
-        before_frame_id: i64,
-        frame_id: i64,
+        scope: &CapturedFrameEquivalenceScope,
     ) -> Result<Option<Frame>> {
-        let Some(frame) = self.processing.get_frame(frame_id).await? else {
-            return Ok(None);
-        };
-        let Some((equivalence_hint, proof, version)) = frame.equivalence.ready_parts() else {
-            return Ok(None);
-        };
-
-        let earlier_frames = self
-            .processing
-            .list_earlier_frames_with_equivalence_hint(
-                session_id,
-                before_frame_id,
-                equivalence_hint,
-                frame_segment_workspace_prefix(&frame).as_deref(),
-            )
-            .await?;
-
-        for earlier_frame in earlier_frames {
-            if earlier_frame.equivalence.is_quarantined() {
-                capture_runtime::debug_log!(
-                    "[app-infra] skipped quarantined earlier frame {} while resolving UI equivalence fallback for frame {}",
-                    earlier_frame.id,
-                    frame_id
-                );
-                continue;
-            }
-
-            let Some((_hint, earlier_proof, earlier_version)) = earlier_frame.equivalence.ready_parts()
-            else {
-                continue;
-            };
-
-            if version != earlier_version {
-                continue;
-            }
-
-            if capture_screen::captured_frame_equivalence_proofs_match(
-                version,
-                proof,
-                earlier_proof,
-            ) {
-                return Ok(Some(earlier_frame));
-            }
-        }
-
-        Ok(None)
+        self.equivalence
+            .find_nearest_earlier_equivalent_frame(frame, scope)
+            .await
     }
-}
-
-fn frame_segment_workspace_prefix(frame: &Frame) -> Option<String> {
-    HiddenSegmentWorkspacePaths::from_frame_artifact_path(Path::new(&frame.file_path))
-        .map(|paths| format!("{}/", paths.frames_dir))
 }
