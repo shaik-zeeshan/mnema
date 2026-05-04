@@ -1,11 +1,6 @@
 mod app_infra;
 mod general_app_log;
 mod native_capture;
-mod native_capture_debug_log;
-mod native_capture_inactivity;
-mod native_capture_output;
-mod native_capture_settings;
-mod native_capture_system_idle;
 
 use tauri_plugin_log::{Target, TargetKind};
 
@@ -75,7 +70,7 @@ pub fn run() {
         ])
         .setup(|app| {
             native_capture::initialize_recording_settings_from_disk(app.handle());
-            native_capture_debug_log::install_panic_hook();
+            native_capture::install_panic_hook();
             app_infra::initialize(app).map_err(std::io::Error::other)?;
             native_capture::start_microphone_device_change_notifier(app.handle().clone());
             native_capture::start_system_wake_notifier(app.handle().clone());

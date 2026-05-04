@@ -1075,7 +1075,7 @@ pub async fn persist_screen_frame_artifact(
                 equivalence.version,
             )),
         capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
-            crate::native_capture_debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_error(format!(
                 "quarantined captured frame equivalence for session {} artifact {}: {}",
                 session_id, file_path, error
             ));
@@ -1092,7 +1092,7 @@ pub async fn persist_screen_frame_artifact(
 pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
     let app_handle = app.handle().clone();
     let resolved_base_dir = resolve_base_dir(app.handle())?;
-    crate::native_capture_debug_log::log_info(format!(
+    crate::native_capture::debug_log::log_info(format!(
         "initializing app infrastructure (save_directory='{}', base_dir='{}')",
         resolved_base_dir.save_directory,
         resolved_base_dir.base_dir.display()
@@ -1102,7 +1102,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
         &resolved_base_dir.base_dir,
     ))
     .map_err(|error| {
-        crate::native_capture_debug_log::log_error(format!(
+        crate::native_capture::debug_log::log_error(format!(
             "failed to initialize app infrastructure (save_directory='{}', base_dir='{}'): {error}",
             resolved_base_dir.save_directory,
             resolved_base_dir.base_dir.display()
@@ -1117,20 +1117,20 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
     let frame_preview_cache = FramePreviewCacheState::default();
 
     if !app.manage(Arc::clone(&infra)) {
-        crate::native_capture_debug_log::log_error(
+        crate::native_capture::debug_log::log_error(
             "app infrastructure state was already initialized; refusing duplicate setup",
         );
         return Err("app infrastructure state was already initialized".to_string());
     }
 
     if !app.manage(frame_preview_cache) {
-        crate::native_capture_debug_log::log_error(
+        crate::native_capture::debug_log::log_error(
             "frame preview cache state was already initialized; refusing duplicate setup",
         );
         return Err("frame preview cache state was already initialized".to_string());
     }
 
-    crate::native_capture_debug_log::log_info(format!(
+    crate::native_capture::debug_log::log_info(format!(
         "initialized app infrastructure successfully (base_dir='{}')",
         resolved_base_dir.base_dir.display()
     ));
@@ -1156,7 +1156,7 @@ fn run_hidden_segment_workspace_repair_startup_pass(
     )) {
         Ok(result) => {
             if result.removed_workspace_count > 0 || result.skipped_workspace_count > 0 {
-                crate::native_capture_debug_log::log_info(format!(
+                crate::native_capture::debug_log::log_info(format!(
                     "startup hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
                     recordings_root_display,
                     result.scanned_workspace_count,
@@ -1166,7 +1166,7 @@ fn run_hidden_segment_workspace_repair_startup_pass(
             }
         }
         Err(error) => {
-            crate::native_capture_debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_error(format!(
                 "startup hidden segment workspace repair failed (recordings_root='{}'): {error}",
                 recordings_root_display
             ));
@@ -1177,7 +1177,7 @@ fn run_hidden_segment_workspace_repair_startup_pass(
 fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: tauri::AppHandle) {
     let base_dir_display = base_dir.display().to_string();
     let processing_worker_infra = Arc::clone(&infra);
-    crate::native_capture_debug_log::log_info(format!(
+    crate::native_capture::debug_log::log_info(format!(
         "starting app infrastructure processing worker (base_dir='{}', idle_poll_ms={}, error_retry_ms={})",
         base_dir_display,
         PROCESSING_WORKER_IDLE_POLL_INTERVAL.as_millis(),
@@ -1191,7 +1191,7 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: 
             match process_pending_jobs_once(&processing_worker_infra).await {
                 Ok(Some(_)) => {
                     if consecutive_failures > 0 {
-                        crate::native_capture_debug_log::log_info(format!(
+                        crate::native_capture::debug_log::log_info(format!(
                             "app infrastructure processing worker recovered after {} failed iteration(s) (base_dir='{}')",
                             consecutive_failures, base_dir_display
                         ));
@@ -1202,7 +1202,7 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: 
                 }
                 Ok(None) => {
                     if consecutive_failures > 0 {
-                        crate::native_capture_debug_log::log_info(format!(
+                        crate::native_capture::debug_log::log_info(format!(
                             "app infrastructure processing worker recovered after {} failed iteration(s) (base_dir='{}')",
                             consecutive_failures, base_dir_display
                         ));
@@ -1213,7 +1213,7 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: 
                 }
                 Err(error) => {
                     consecutive_failures += 1;
-                    crate::native_capture_debug_log::log_error(format!(
+                    crate::native_capture::debug_log::log_error(format!(
                         "app infrastructure processing worker iteration failed (base_dir='{}', consecutive_failures={}, retry_in_ms={}): {error}",
                         base_dir_display,
                         consecutive_failures,
@@ -1236,7 +1236,7 @@ fn spawn_hidden_segment_workspace_repair_worker(
     let recordings_root = base_dir.join(RECORDINGS_DIR_NAME);
     let recordings_root_display = recordings_root.display().to_string();
 
-    crate::native_capture_debug_log::log_info(format!(
+    crate::native_capture::debug_log::log_info(format!(
         "starting hidden segment workspace repair worker (recordings_root='{}', interval_ms={})",
         recordings_root_display,
         HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL.as_millis()
@@ -1258,7 +1258,7 @@ fn spawn_hidden_segment_workspace_repair_worker(
             {
                 Ok(result) => {
                     if result.removed_workspace_count > 0 || result.skipped_workspace_count > 0 {
-                        crate::native_capture_debug_log::log_info(format!(
+                        crate::native_capture::debug_log::log_info(format!(
                             "hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
                             recordings_root_display,
                             result.scanned_workspace_count,
@@ -1268,7 +1268,7 @@ fn spawn_hidden_segment_workspace_repair_worker(
                     }
                 }
                 Err(error) => {
-                    crate::native_capture_debug_log::log_error(format!(
+                    crate::native_capture::debug_log::log_error(format!(
                         "hidden segment workspace repair failed (recordings_root='{}'): {error}",
                         recordings_root_display
                     ));
@@ -1392,7 +1392,7 @@ async fn process_pending_jobs_once(
     let did_finalize = match infra.process_next_frame_batch_job().await {
         Ok(result) => result.is_some(),
         Err(error) => {
-            crate::native_capture_debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_error(format!(
                 "app infrastructure frame-batch finalization failed after state update; worker will continue: {error}"
             ));
             true
@@ -1407,10 +1407,10 @@ async fn process_pending_jobs_once(
 }
 
 fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBaseDir, String> {
-    let settings = crate::native_capture_settings::load_recording_settings_or_default(app_handle);
+    let settings = crate::native_capture::settings::load_recording_settings_or_default(app_handle);
     let base_dir = resolve_base_dir_from_save_directory(&settings.save_directory);
 
-    crate::native_capture_debug_log::log_info(format!(
+    crate::native_capture::debug_log::log_info(format!(
         "resolved app infrastructure base directory (save_directory='{}', base_dir='{}')",
         settings.save_directory,
         base_dir.display()
@@ -2339,9 +2339,11 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let settings = crate::native_capture::RecordingSettingsState::default();
 
             let persisted = persist_screen_frame_artifact(
                 &infra,
+                &settings,
                 "session-artifact",
                 ScreenFrameArtifact {
                     file_path: "/tmp/frame-artifact.png".to_string(),
@@ -2390,9 +2392,11 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let settings = crate::native_capture::RecordingSettingsState::default();
 
             let persisted = persist_screen_frame_artifact(
                 &infra,
+                &settings,
                 "session-artifact-quarantined",
                 ScreenFrameArtifact {
                     file_path: "/tmp/frame-artifact-quarantined.png".to_string(),
