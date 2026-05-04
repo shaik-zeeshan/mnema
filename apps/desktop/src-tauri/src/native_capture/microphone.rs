@@ -7,9 +7,10 @@ use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
+use super::NativeCaptureState;
 use super::output::set_current_microphone_output_file;
 use super::runtime::{
-    ensure_microphone_planner_for_runtime, now_unix_ms, NativeCaptureRuntime, NativeCaptureState,
+    ensure_microphone_planner_for_runtime, now_unix_ms, NativeCaptureRuntime,
 };
 
 #[derive(Debug, Clone)]
@@ -224,6 +225,7 @@ fn maybe_reconnect_waiting_microphone_session(
         Ok(runtime) => runtime,
         Err(_) => return,
     };
+    let runtime = runtime.runtime_mut();
 
     let mut stop_failed_while_waiting = false;
 
@@ -252,7 +254,7 @@ fn maybe_reconnect_waiting_microphone_session(
         return;
     }
 
-    if ensure_microphone_planner_for_runtime(&mut runtime, "reconnecting microphone").is_err() {
+    if ensure_microphone_planner_for_runtime(runtime, "reconnecting microphone").is_err() {
         return;
     }
 

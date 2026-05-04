@@ -3,6 +3,7 @@ use super::activity::{
     lock_runtime_for_idle_debug,
 };
 use super::describe_recording_settings_changes;
+use super::lifecycle::RecordingLifecycle;
 use super::microphone::microphone_auto_disconnect_transition_failed_event;
 #[cfg(target_os = "macos")]
 use super::microphone::{
@@ -1375,18 +1376,17 @@ fn idle_debug_activity_sources_include_audio_fields() {
 
 #[test]
 fn lock_runtime_for_idle_debug_recovers_poisoned_state() {
-    let state = std::sync::Mutex::new(NativeCaptureRuntime {
-        is_running: true,
-        source_sessions: Some(SourceSessions {
-            screen: Some(SourceSessionMeta {
-                session_id: "session-1".to_string(),
-                started_at_unix_ms: 123,
-            }),
-            microphone: None,
-            system_audio: None,
+    let mut lifecycle = RecordingLifecycle::default();
+    lifecycle.runtime_mut().is_running = true;
+    lifecycle.runtime_mut().source_sessions = Some(SourceSessions {
+        screen: Some(SourceSessionMeta {
+            session_id: "session-1".to_string(),
+            started_at_unix_ms: 123,
         }),
-        ..Default::default()
+        microphone: None,
+        system_audio: None,
     });
+    let state = std::sync::Mutex::new(lifecycle);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _runtime = state.lock().expect("state should lock before poisoning");
@@ -1396,6 +1396,7 @@ fn lock_runtime_for_idle_debug_recovers_poisoned_state() {
     assert!(state.is_poisoned());
 
     let runtime = lock_runtime_for_idle_debug(&state);
+    let runtime = runtime.runtime();
 
     assert!(runtime.is_running);
     assert_eq!(

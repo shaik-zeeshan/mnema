@@ -8,7 +8,7 @@ use capture_types::{
     StartNativeCaptureRequest,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
@@ -57,8 +57,6 @@ pub struct NativeCaptureRuntime {
     #[cfg(target_os = "macos")]
     pub active_microphone_session: Option<microphone_capture::AvFoundationMicrophoneCaptureSession>,
 }
-
-pub type NativeCaptureState = Mutex<NativeCaptureRuntime>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SegmentLoopControl {

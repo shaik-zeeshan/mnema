@@ -2,6 +2,8 @@ use super::inactivity::{
     ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySnapshot, ActivitySourceKind,
     AudioActivitySourceState,
 };
+use super::lifecycle::RecordingLifecycle;
+use super::NativeCaptureState;
 use capture_microphone as microphone_capture;
 use serde::Serialize;
 use std::sync::MutexGuard;
@@ -11,7 +13,7 @@ use super::runtime::{
     microphone_backend_active_for_runtime, microphone_probe_active_for_runtime,
     system_audio_writer_active_for_runtime,
 };
-use super::runtime::{now_monotonic_marker_ms, NativeCaptureRuntime, NativeCaptureState};
+use super::runtime::{now_monotonic_marker_ms, NativeCaptureRuntime};
 
 #[derive(Clone, Copy)]
 enum AudioPeakReadMode {
@@ -156,7 +158,7 @@ fn capture_source_requested(
     runtime.is_running && runtime.requested_sources.as_ref().is_some_and(selector)
 }
 
-pub(super) fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> ActivitySnapshot {
+pub(crate) fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> ActivitySnapshot {
     current_activity_snapshot_with_audio_peak_mode(runtime, AudioPeakReadMode::Take)
 }
 
@@ -219,7 +221,7 @@ fn current_activity_snapshot_with_audio_peak_mode(
 
 pub(super) fn lock_runtime_for_idle_debug(
     state: &NativeCaptureState,
-) -> MutexGuard<'_, NativeCaptureRuntime> {
+) -> MutexGuard<'_, RecordingLifecycle> {
     match state.lock() {
         Ok(runtime) => runtime,
         Err(poisoned) => {
@@ -233,6 +235,7 @@ pub(super) fn lock_runtime_for_idle_debug(
 
 pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
     let mut runtime = lock_runtime_for_idle_debug(&state);
+    let runtime = runtime.runtime_mut();
     let now = now_monotonic_marker_ms();
     let system_idle_ms = super::system_idle::current_system_idle_ms();
     let screen_activity_last_unix_ms = capture_screen::last_screen_activity_unix_ms();
