@@ -97,7 +97,7 @@ fn current_activity_snapshot_with_audio_peak_mode(
     #[cfg(target_os = "macos")]
     if !runtime.is_running
         || runtime.inactivity.is_screen_paused()
-        || runtime.active_screen_session.is_none()
+        || !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref())
     {
         capture_screen::poll_screen_activity();
     }
@@ -303,7 +303,8 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
 
     #[cfg(target_os = "macos")]
     {
-        let screen_session = runtime.active_screen_session.is_some();
+        let screen_session =
+            capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref());
         let mic_session = microphone_probe_active_for_runtime(runtime);
         // System audio runs over the screen session; "session active" means the
         // host screen session is up. Writer active is gated by the dedicated

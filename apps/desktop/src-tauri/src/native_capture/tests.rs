@@ -2467,6 +2467,90 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
 
 #[cfg(target_os = "macos")]
 #[test]
+fn system_sleep_clears_live_screen_state_but_preserves_microphone_continuation() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
+
+    let handled = lifecycle.handle_system_will_sleep();
+
+    assert!(handled);
+    let runtime = lifecycle.runtime();
+    assert!(runtime.is_running);
+    assert!(runtime.active_screen_session.is_none());
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.system_audio_recording_file.is_none());
+    assert_eq!(runtime.microphone_recording_file.as_deref(), Some("/tmp/mic.m4a"));
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("microphone continuation should remain trackable");
+    assert!(outputs.screen_file.is_none());
+    assert!(outputs.screen_files.is_empty());
+    assert!(outputs.system_audio_file.is_none());
+    assert!(outputs.system_audio_files.is_empty());
+    assert_eq!(outputs.microphone_file.as_deref(), Some("/tmp/mic.m4a"));
+    assert_eq!(outputs.microphone_files, vec!["/tmp/mic.m4a".to_string()]);
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        })
+    );
+
+    let session = lifecycle.session();
+    assert!(!session.is_running);
+    assert_eq!(
+        session.requested_sources,
+        Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        })
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn system_sleep_is_ignored_when_screen_capture_is_not_live() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = paused_runtime_fixture();
+
+    let handled = lifecycle.handle_system_will_sleep();
+
+    assert!(!handled);
+    let runtime = lifecycle.runtime();
+    assert!(runtime.is_running);
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.current_segment_output_files.is_none());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn system_sleep_handler_matches_broken_screen_session_shape() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
+
+    assert!(lifecycle.handle_system_will_sleep());
+
+    let session = lifecycle.session();
+    assert!(!session.is_running);
+    assert_eq!(
+        lifecycle.runtime().current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        })
+    );
+    assert!(!super::runtime::system_audio_writer_active_for_runtime(
+        lifecycle.runtime()
+    ));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn wake_recovery_failure_clears_screen_bookkeeping_but_preserves_live_microphone() {
     let mut runtime = running_screen_capture_runtime_fixture();
 

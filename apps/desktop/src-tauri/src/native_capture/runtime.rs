@@ -115,7 +115,7 @@ fn session_reports_running(runtime: &NativeCaptureRuntime) -> bool {
             .is_some_and(|sources| sources.screen)
             && !runtime.inactivity.is_screen_paused()
             && runtime.recording_file.is_none()
-            && runtime.active_screen_session.is_none()
+            && !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref())
         {
             return false;
         }
@@ -513,7 +513,7 @@ pub(super) fn current_segment_sources_for_runtime(
 
     #[cfg(target_os = "macos")]
     if runtime.current_segment_output_files.is_some()
-        || runtime.active_screen_session.is_some()
+        || capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref())
         || runtime.active_microphone_session.is_some()
     {
         return runtime.requested_sources.as_ref().and_then(|sources| {
@@ -546,7 +546,7 @@ pub(super) fn microphone_probe_active_for_runtime(runtime: &NativeCaptureRuntime
 pub(super) fn system_audio_writer_active_for_runtime(runtime: &NativeCaptureRuntime) -> bool {
     !runtime.inactivity.is_system_audio_paused()
         && !runtime.inactivity.is_screen_paused()
-        && runtime.active_screen_session.is_some()
+        && capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref())
         && runtime.system_audio_recording_file.is_some()
         && current_segment_sources_for_runtime(runtime).is_some_and(|sources| sources.system_audio)
 }

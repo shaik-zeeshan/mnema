@@ -839,7 +839,7 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
     }
 
     if !runtime.inactivity.is_screen_paused() {
-        if runtime.active_screen_session.is_some() {
+        if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
             let system_audio_recording_file = runtime.system_audio_recording_file.clone();
             // Soft-pause: tell the screen backend to finalize and detach its
             // system-audio writer without stopping/restarting the screen session.
@@ -1022,7 +1022,7 @@ pub(super) fn resume_system_audio_from_inactivity(
     // If system audio was soft-paused while the screen session is still live,
     // allocate a fresh output path and resume the writer in-place.
     if sources.system_audio && sources.screen && !runtime.inactivity.is_screen_paused() {
-        if runtime.active_screen_session.is_none() {
+        if !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
             // No active screen session — system audio cannot resume without one.
             // Keep pause/source state unchanged so the inactivity system does not
             // lose track of the paused writer.
@@ -1101,7 +1101,7 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
     let requested_sources = runtime.requested_sources.clone();
     let mut segment_committed = false;
 
-    if runtime.active_screen_session.is_some() {
+    if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
         capture_screen::pause_screen_outputs_for_inactivity(&mut runtime.active_screen_session)?;
 
         if let Some(tx) = runtime.frame_artifact_tx.as_ref() {
@@ -1383,7 +1383,7 @@ where
     let _ = schedule;
     let _ = clock;
 
-    if runtime.active_screen_session.is_some() {
+    if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
         let next_index = next_emitted_segment_index(runtime.current_segment_index);
         let segment_dir = screen_planner.segment_dir(next_index);
         let screen_output_file = screen_planner.segment_screen_output(next_index);
