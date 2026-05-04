@@ -1,7 +1,6 @@
 mod audio_segments;
 mod captured_frame_equivalence;
 mod captured_frame_pipeline;
-mod captured_frame_reprocessing;
 mod db;
 pub mod error;
 mod frame_batch_artifact_cleanup;
@@ -23,10 +22,8 @@ pub use captured_frame_equivalence::{
     CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,
 };
 pub use captured_frame_pipeline::{
-    CapturedFramePipeline, CapturedFramePipelineResult, ClosedFrameBatchSummary,
-};
-pub use captured_frame_reprocessing::{
-    CapturedFrameReprocessing, CapturedFrameReprocessingOutcome, CapturedFrameReprocessingResult,
+    CapturedFramePipeline, CapturedFramePipelineResult, CapturedFrameReprocessingOutcome,
+    CapturedFrameReprocessingResult, ClosedFrameBatchSummary,
 };
 pub use error::{AppInfraError, Result};
 pub use frame_batch_store::{
@@ -62,7 +59,6 @@ pub struct AppInfra {
     processing: ProcessingStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
-    captured_frame_reprocessing: CapturedFrameReprocessing,
     runtime: JobRuntime,
     frame_batch_runtime: FrameBatchRuntime,
     processing_runtime: ProcessingRuntime,
@@ -86,7 +82,6 @@ impl AppInfra {
             CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
-        let captured_frame_reprocessing = CapturedFrameReprocessing::new(processing.clone());
         processing.backfill_frame_equivalence().await?;
         jobs.reconcile_orphaned_running_jobs().await?;
         processing.reconcile_orphaned_running_jobs().await?;
@@ -108,7 +103,6 @@ impl AppInfra {
             processing,
             captured_frame_equivalence,
             captured_frame_pipeline,
-            captured_frame_reprocessing,
             runtime,
             frame_batch_runtime,
             processing_runtime,
@@ -119,40 +113,29 @@ impl AppInfra {
         self.database.pool()
     }
 
-    pub fn database_path(&self) -> &Path {
-        self.database.database_path()
-    }
-
-    pub fn jobs(&self) -> &JobStore {
+    #[cfg(test)]
+    pub(crate) fn jobs(&self) -> &JobStore {
         &self.jobs
     }
 
-    pub fn audio_segments(&self) -> &AudioSegmentStore {
+    #[cfg(test)]
+    pub(crate) fn audio_segments(&self) -> &AudioSegmentStore {
         &self.audio_segments
     }
 
-    pub fn processing(&self) -> &ProcessingStore {
+    #[cfg(test)]
+    pub(crate) fn processing(&self) -> &ProcessingStore {
         &self.processing
     }
 
-    pub fn frame_batches(&self) -> &FrameBatchStore {
+    #[cfg(test)]
+    pub(crate) fn frame_batches(&self) -> &FrameBatchStore {
         &self.frame_batches
     }
 
-    pub fn captured_frame_pipeline(&self) -> &CapturedFramePipeline {
+    #[cfg(test)]
+    pub(crate) fn captured_frame_pipeline(&self) -> &CapturedFramePipeline {
         &self.captured_frame_pipeline
-    }
-
-    pub fn runtime(&self) -> &JobRuntime {
-        &self.runtime
-    }
-
-    pub fn processing_runtime(&self) -> &ProcessingRuntime {
-        &self.processing_runtime
-    }
-
-    pub fn frame_batch_runtime(&self) -> &FrameBatchRuntime {
-        &self.frame_batch_runtime
     }
 
     pub async fn enqueue_job(
@@ -210,7 +193,7 @@ impl AppInfra {
         frame_id: i64,
         payload_json: Option<&str>,
     ) -> Result<CapturedFrameReprocessingResult> {
-        self.captured_frame_reprocessing
+        self.captured_frame_pipeline
             .reprocess_captured_frame_ocr(frame_id, payload_json)
             .await
     }
@@ -287,12 +270,8 @@ impl AppInfra {
         &self,
         frame_id: i64,
     ) -> Result<Option<Frame>> {
-        let Some(frame) = self.processing.get_frame(frame_id).await? else {
-            return Ok(None);
-        };
-        let scope = CapturedFrameEquivalenceScope::from_frame(&frame);
         self.captured_frame_equivalence
-            .find_nearest_earlier_equivalent_frame(&frame, &scope)
+            .get_frame_and_find_nearest_earlier_equivalent_frame_in_default_scope(frame_id)
             .await
     }
 
@@ -300,12 +279,8 @@ impl AppInfra {
         &self,
         frame_id: i64,
     ) -> Result<Option<Frame>> {
-        let Some(frame) = self.processing.get_frame(frame_id).await? else {
-            return Ok(None);
-        };
-        let scope = CapturedFrameEquivalenceScope::from_frame(&frame);
         self.captured_frame_equivalence
-            .find_earliest_earlier_equivalent_frame(&frame, &scope)
+            .get_frame_and_find_earliest_earlier_equivalent_frame_in_default_scope(frame_id)
             .await
     }
 
