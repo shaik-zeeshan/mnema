@@ -2558,6 +2558,59 @@ fn system_sleep_is_ignored_when_screen_capture_is_not_live() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn system_sleep_clears_paused_screen_state_so_wake_can_restart_capture() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = screen_paused_runtime_fixture();
+    lifecycle.runtime_mut().requested_sources = Some(CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: true,
+    });
+    lifecycle.runtime_mut().current_segment_sources = Some(CaptureSources {
+        screen: false,
+        microphone: true,
+        system_audio: false,
+    });
+    lifecycle.runtime_mut().system_audio_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-screen-pause-system-audio",
+        "2026/04/23",
+    ));
+    lifecycle.runtime_mut().recording_file = Some("/tmp/stale-paused-screen.mov".to_string());
+    lifecycle.runtime_mut().system_audio_recording_file =
+        Some("/tmp/stale-paused-system-audio.m4a".to_string());
+
+    let handled = lifecycle.handle_system_will_sleep();
+
+    assert!(handled);
+    let runtime = lifecycle.runtime();
+    assert!(runtime.active_screen_session.is_none());
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.system_audio_recording_file.is_none());
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("microphone continuation should remain trackable while screen is paused");
+    assert!(outputs.screen_file.is_none());
+    assert!(outputs.screen_files.is_empty());
+    assert_eq!(
+        outputs.microphone_file.as_deref(),
+        Some(
+            "/tmp/native-capture-tests/.z/segments/native-session-screen-pause/1/audio/microphone.m4a"
+        )
+    );
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        })
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn system_sleep_handler_matches_broken_screen_session_shape() {
     let mut lifecycle = RecordingLifecycle::default();
     *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
@@ -2617,6 +2670,113 @@ fn wake_recovery_failure_clears_screen_bookkeeping_but_preserves_live_microphone
             system_audio: false,
         })
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
+    let mut runtime = screen_paused_runtime_fixture();
+    runtime.requested_sources = Some(CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: true,
+    });
+    runtime.current_segment_sources = Some(CaptureSources {
+        screen: false,
+        microphone: true,
+        system_audio: false,
+    });
+    runtime.system_audio_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-screen-pause-system-audio",
+        "2026/04/23",
+    ));
+
+    let expected_date_prefix = current_date_prefix();
+    let expected_screen_file = format!(
+        "/tmp/native-capture-tests/{expected_date_prefix}/native-session-screen-pause-segment-0002.mov"
+    );
+    let expected_system_audio_file = "/tmp/native-capture-tests/2026/04/23/audio/system-audio-native-session-screen-pause-system-audio-segment-0002.m4a"
+        .to_string();
+    let recovered = recover_screen_capture_after_wake_with_start_segment(
+        &mut runtime,
+        None,
+        |segment_dir,
+         screen_output_file,
+         system_audio_output_path,
+         sources,
+         screen_frame_rate,
+         _screen_resolution,
+         _effective_screen_bitrate_bps,
+         _microphone_device_id,
+         _frame_artifact_tx,
+         _microphone_output_path| {
+            assert_eq!(
+                segment_dir.to_string_lossy(),
+                format!(
+                    "/tmp/native-capture-tests/{expected_date_prefix}/.native-session-screen-pause-segment-0002"
+                )
+            );
+            assert_eq!(
+                screen_output_file.expect("screen output should be planned").to_string_lossy(),
+                expected_screen_file
+            );
+            assert_eq!(
+                system_audio_output_path
+                    .expect("system audio should be planned")
+                    .to_string_lossy(),
+                expected_system_audio_file
+            );
+            assert_eq!(
+                *sources,
+                CaptureSources {
+                    screen: true,
+                    microphone: false,
+                    system_audio: true,
+                }
+            );
+            assert_eq!(screen_frame_rate, 30);
+
+            let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
+            state.0.system_audio_file = Some(expected_system_audio_file.clone());
+            state.0.system_audio_files = vec![expected_system_audio_file.clone()];
+            state.3 = Some(expected_system_audio_file.clone());
+            Ok(state)
+        },
+    )
+    .expect("wake recovery should restart paused screen capture");
+
+    assert!(recovered);
+    assert_eq!(runtime.current_segment_index, 2);
+    assert_eq!(runtime.recording_file, Some(expected_screen_file.clone()));
+    assert_eq!(
+        runtime.system_audio_recording_file.as_deref(),
+        Some(expected_system_audio_file.as_str())
+    );
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("wake recovery should refresh current segment outputs");
+    assert_eq!(outputs.screen_file, Some(expected_screen_file));
+    assert_eq!(
+        outputs.microphone_file.as_deref(),
+        Some(
+            "/tmp/native-capture-tests/.z/segments/native-session-screen-pause/1/audio/microphone.m4a"
+        )
+    );
+    assert_eq!(
+        outputs.system_audio_file.as_deref(),
+        Some(expected_system_audio_file.as_str())
+    );
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        })
+    );
+    assert!(!runtime.inactivity.is_screen_paused());
 }
 
 #[cfg(target_os = "macos")]
