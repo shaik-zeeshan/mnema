@@ -168,6 +168,32 @@ impl CapturedFrameEquivalenceResolver {
         self.find_earliest_earlier_equivalent_frame(&frame, scope)
             .await
     }
+
+    pub(crate) async fn get_frame_and_find_nearest_earlier_equivalent_frame_in_default_scope(
+        &self,
+        frame_id: i64,
+    ) -> Result<Option<Frame>> {
+        let Some(frame) = self.processing.get_frame(frame_id).await? else {
+            return Ok(None);
+        };
+
+        let scope = CapturedFrameEquivalenceScope::from_frame(&frame);
+        self.find_nearest_earlier_equivalent_frame(&frame, &scope)
+            .await
+    }
+
+    pub(crate) async fn get_frame_and_find_earliest_earlier_equivalent_frame_in_default_scope(
+        &self,
+        frame_id: i64,
+    ) -> Result<Option<Frame>> {
+        let Some(frame) = self.processing.get_frame(frame_id).await? else {
+            return Ok(None);
+        };
+
+        let scope = CapturedFrameEquivalenceScope::from_frame(&frame);
+        self.find_earliest_earlier_equivalent_frame(&frame, &scope)
+            .await
+    }
 }
 
 impl CapturedFrameEquivalenceScope {
