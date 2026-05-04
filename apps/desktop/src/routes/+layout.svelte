@@ -15,10 +15,10 @@
 
   let { children }: Props = $props();
 
-  const isTimeline = $derived($page.url.pathname === "/");
   const isSettings = $derived($page.url.pathname.startsWith("/settings"));
   const isDebug = $derived($page.url.pathname.startsWith("/debug"));
   const isMenu = $derived($page.url.pathname.startsWith("/menu"));
+  const showTimelineLink = $derived(isSettings || isDebug || isMenu);
 
   const devEnabled = $derived(developerOptions.value);
   const devLoaded = $derived(developerOptions.loaded);
@@ -115,7 +115,7 @@
     </div>
 
     <div class="titlebar__group titlebar__group--right">
-      {#if !isTimeline}
+      {#if showTimelineLink}
         <a
           class="titlebar__settings titlebar__settings--labelled"
           href="/"
