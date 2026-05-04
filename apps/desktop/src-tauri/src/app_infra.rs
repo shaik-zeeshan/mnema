@@ -16,20 +16,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
 pub type FramePreviewCacheState = Mutex<FramePreviewCache>;
 
-const APP_INFRA_BASE_DIR_NAME: &str = ".z";
-const RECORDINGS_DIR_NAME: &str = "recordings";
 const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
-
-/// Returns the recordings root directory: `<saveDirectory>/.z/recordings`.
-///
-/// All capture output (segments, audio, etc.) is placed under this root so
-/// that recordings live inside the managed `.z` tree alongside the database
-/// and other app-infra state.
-pub fn recordings_root_dir(save_directory: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(save_directory)
-        .join(APP_INFRA_BASE_DIR_NAME)
-        .join(RECORDINGS_DIR_NAME)
-}
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -1146,7 +1133,10 @@ fn run_hidden_segment_workspace_repair_startup_pass(
     infra: &::app_infra::AppInfra,
     base_dir: &Path,
 ) {
-    let recordings_root = base_dir.join(RECORDINGS_DIR_NAME);
+    let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
+        base_dir.to_path_buf(),
+    )
+    .recordings_root();
     let recordings_root_display = recordings_root.display().to_string();
 
     match tauri::async_runtime::block_on(repair_hidden_segment_workspaces_once(
@@ -1231,7 +1221,10 @@ fn spawn_hidden_segment_workspace_repair_worker(
     base_dir: PathBuf,
     app_handle: tauri::AppHandle,
 ) {
-    let recordings_root = base_dir.join(RECORDINGS_DIR_NAME);
+    let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
+        base_dir,
+    )
+    .recordings_root();
     let recordings_root_display = recordings_root.display().to_string();
 
     crate::native_capture::debug_log::log_info(format!(
@@ -1331,7 +1324,11 @@ async fn process_pending_jobs_once(
 
 fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBaseDir, String> {
     let settings = crate::native_capture::settings::load_recording_settings_or_default(app_handle);
-    let base_dir = resolve_base_dir_from_save_directory(&settings.save_directory);
+    let base_dir = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+        &settings.save_directory,
+    )
+    .base_dir()
+    .clone();
 
     crate::native_capture::debug_log::log_info(format!(
         "resolved app infrastructure base directory (save_directory='{}', base_dir='{}')",
@@ -1344,11 +1341,6 @@ fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBas
         base_dir,
     })
 }
-
-fn resolve_base_dir_from_save_directory(save_directory: &str) -> PathBuf {
-    PathBuf::from(save_directory).join(APP_INFRA_BASE_DIR_NAME)
-}
-
 fn processing_subject(subject_type: String, subject_id: i64) -> ::app_infra::ProcessingSubject {
     ::app_infra::ProcessingSubject::new(subject_type, subject_id)
 }
@@ -1885,20 +1877,21 @@ mod tests {
 
     #[test]
     fn resolve_base_dir_from_save_directory_uses_hidden_subdirectory() {
-        let save_directory = "/tmp/z-recordings";
-
-        assert_eq!(
-            resolve_base_dir_from_save_directory(save_directory),
-            PathBuf::from(save_directory).join(APP_INFRA_BASE_DIR_NAME)
+        let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+            "/tmp/z-recordings",
         );
+
+        assert_eq!(layout.base_dir(), &PathBuf::from("/tmp/z-recordings").join(".z"));
     }
 
     #[test]
     fn resolve_base_dir_from_save_directory_keeps_database_out_of_segment_root() {
-        let save_directory = "/tmp/z-recordings/session-output";
-        let base_dir = resolve_base_dir_from_save_directory(save_directory);
+        let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+            "/tmp/z-recordings/session-output",
+        );
+        let base_dir = layout.base_dir();
 
-        assert_eq!(base_dir.parent(), Some(Path::new(save_directory)));
+        assert_eq!(base_dir.parent(), Some(Path::new("/tmp/z-recordings/session-output")));
         assert_eq!(
             base_dir.file_name().and_then(|value| value.to_str()),
             Some(".z")
@@ -1907,19 +1900,23 @@ mod tests {
 
     #[test]
     fn recordings_root_dir_nests_under_dot_z() {
-        let save_directory = "/tmp/z-recordings";
+        let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+            "/tmp/z-recordings",
+        );
 
         assert_eq!(
-            super::recordings_root_dir(save_directory),
-            PathBuf::from(save_directory).join(".z").join("recordings")
+            layout.recordings_root(),
+            PathBuf::from("/tmp/z-recordings").join(".z").join("recordings")
         );
     }
 
     #[test]
     fn recordings_root_dir_is_child_of_base_dir() {
-        let save_directory = "/tmp/z-recordings";
-        let base_dir = resolve_base_dir_from_save_directory(save_directory);
-        let recordings_root = super::recordings_root_dir(save_directory);
+        let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+            "/tmp/z-recordings",
+        );
+        let base_dir = layout.base_dir().clone();
+        let recordings_root = layout.recordings_root();
 
         assert_eq!(recordings_root.parent(), Some(base_dir.as_path()));
     }
@@ -2446,7 +2443,10 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-            let recordings_root = dir.path().join(RECORDINGS_DIR_NAME);
+            let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
+                dir.path(),
+            )
+            .recordings_root();
             let day_dir = recordings_root.join("2026/04/12");
             let workspace_dir = day_dir.join(".session-repair-safe-segment-0001");
             fs::create_dir_all(workspace_dir.join("frames"))
@@ -2475,7 +2475,10 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-            let recordings_root = dir.path().join(RECORDINGS_DIR_NAME);
+            let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
+                dir.path(),
+            )
+            .recordings_root();
             let workspace_dir = recordings_root
                 .join("2026/04/12/.session-repair-preserve-segment-0001");
             let frames_dir = workspace_dir.join("frames");
@@ -2504,7 +2507,10 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-            let recordings_root = dir.path().join(RECORDINGS_DIR_NAME);
+            let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
+                dir.path(),
+            )
+            .recordings_root();
             let day_dir = recordings_root.join("2026/04/12");
             let workspace_dir = day_dir.join(".active-screen-session-segment-0001");
             fs::create_dir_all(workspace_dir.join("frames"))

@@ -1,5 +1,6 @@
 mod app_infra;
 mod general_app_log;
+mod managed_storage_layout;
 mod native_capture;
 
 use tauri_plugin_log::{Target, TargetKind};
