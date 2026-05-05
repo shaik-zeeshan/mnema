@@ -104,6 +104,7 @@ fn current_activity_snapshot_with_audio_peak_mode(
 
     ActivitySnapshot {
         system_input_idle_ms: current_system_idle_ms(),
+        screen_activity_enabled: capture_source_requested(runtime, |sources| sources.screen),
         screen_activity_idle_ms: capture_screen::screen_activity_idle_ms(),
         microphone_activity: AudioActivitySourceState {
             enabled: capture_source_requested(runtime, |sources| sources.microphone),

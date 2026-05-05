@@ -77,6 +77,7 @@ pub(crate) struct AudioActivitySourceState {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ActivitySnapshot {
     pub system_input_idle_ms: Option<u64>,
+    pub screen_activity_enabled: bool,
     pub screen_activity_idle_ms: Option<u64>,
     pub microphone_activity: AudioActivitySourceState,
     pub system_audio_activity: AudioActivitySourceState,
@@ -430,7 +431,7 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || self.is_screen_paused() {
+        if !self.enabled || self.is_screen_paused() || !snapshot.screen_activity_enabled {
             return false;
         }
 
@@ -445,7 +446,7 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || !self.is_screen_paused() {
+        if !self.enabled || !self.is_screen_paused() || !snapshot.screen_activity_enabled {
             return false;
         }
 
@@ -460,7 +461,7 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || self.is_microphone_paused() {
+        if !self.enabled || self.is_microphone_paused() || !snapshot.microphone_activity.enabled {
             return false;
         }
 
@@ -475,7 +476,7 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || !self.is_microphone_paused() {
+        if !self.enabled || !self.is_microphone_paused() || !snapshot.microphone_activity.enabled {
             return false;
         }
 
@@ -490,7 +491,7 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || self.is_system_audio_paused() {
+        if !self.enabled || self.is_system_audio_paused() || !snapshot.system_audio_activity.enabled {
             return false;
         }
 
@@ -505,7 +506,7 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || !self.is_system_audio_paused() {
+        if !self.enabled || !self.is_system_audio_paused() || !snapshot.system_audio_activity.enabled {
             return false;
         }
 
@@ -657,6 +658,7 @@ use capture_types::{
     fn empty_activity_snapshot() -> ActivitySnapshot {
         ActivitySnapshot {
             system_input_idle_ms: None,
+            screen_activity_enabled: false,
             screen_activity_idle_ms: None,
             microphone_activity: empty_audio_activity(),
             system_audio_activity: empty_audio_activity(),
@@ -714,6 +716,7 @@ use capture_types::{
             10_999,
             ActivitySnapshot {
                 system_input_idle_ms: None,
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: None,
                 microphone_activity: empty_audio_activity(),
                 system_audio_activity: empty_audio_activity(),
@@ -723,6 +726,7 @@ use capture_types::{
             11_000,
             ActivitySnapshot {
                 system_input_idle_ms: None,
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: None,
                 microphone_activity: empty_audio_activity(),
                 system_audio_activity: empty_audio_activity(),
@@ -863,6 +867,7 @@ use capture_types::{
             20_000,
             ActivitySnapshot {
                 system_input_idle_ms: Some(12_000),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: Some(8_000),
                 microphone_activity: AudioActivitySourceState {
                     enabled: true,
@@ -907,6 +912,7 @@ use capture_types::{
             20_000,
             ActivitySnapshot {
                 system_input_idle_ms: Some(12_000),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: Some(8_000),
                 microphone_activity: AudioActivitySourceState {
                     enabled: true,
@@ -963,6 +969,7 @@ use capture_types::{
             20_000,
             ActivitySnapshot {
                 system_input_idle_ms: Some(12_000),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: Some(11_000),
                 microphone_activity: AudioActivitySourceState {
                     enabled: true,
@@ -1001,6 +1008,7 @@ use capture_types::{
             20_000,
             ActivitySnapshot {
                 system_input_idle_ms: Some(12_000),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: Some(11_000),
                 microphone_activity: AudioActivitySourceState {
                     enabled: true,
@@ -1062,6 +1070,7 @@ use capture_types::{
 
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: None,
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(11_000),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,
@@ -1082,6 +1091,7 @@ use capture_types::{
 
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(15_000),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(15_000),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,
@@ -1113,6 +1123,7 @@ use capture_types::{
 
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: None,
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(11_000),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,
@@ -1138,6 +1149,7 @@ use capture_types::{
             20_000,
             ActivitySnapshot {
                 system_input_idle_ms: Some(15_000),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: Some(10_000),
                 microphone_activity: AudioActivitySourceState {
                     enabled: true,
@@ -1159,6 +1171,7 @@ use capture_types::{
             20_100,
             ActivitySnapshot {
                 system_input_idle_ms: Some(15_100),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: Some(10_100),
                 microphone_activity: AudioActivitySourceState {
                     enabled: true,
@@ -1184,6 +1197,7 @@ use capture_types::{
             20_100,
             ActivitySnapshot {
                 system_input_idle_ms: Some(15_100),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: Some(10_100),
                 microphone_activity: AudioActivitySourceState {
                     enabled: true,
@@ -1197,6 +1211,7 @@ use capture_types::{
             30_001,
             ActivitySnapshot {
                 system_input_idle_ms: Some(25_001),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: Some(20_001),
                 microphone_activity: AudioActivitySourceState {
                     enabled: true,
@@ -1216,6 +1231,7 @@ use capture_types::{
 
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(0),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(0),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,
@@ -1241,6 +1257,7 @@ use capture_types::{
 
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(0),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(0),
             microphone_activity: empty_audio_activity(),
             system_audio_activity: AudioActivitySourceState {
@@ -1265,6 +1282,7 @@ use capture_types::{
 
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(state.idle_timeout_ms() + 1),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(state.idle_timeout_ms() + 1),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,
@@ -1285,6 +1303,7 @@ use capture_types::{
 
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(state.idle_timeout_ms() + 1),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(state.idle_timeout_ms() + 1),
             microphone_activity: empty_audio_activity(),
             system_audio_activity: AudioActivitySourceState {
@@ -1308,6 +1327,7 @@ use capture_types::{
 
         let active_snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(0),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(0),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,
@@ -1318,6 +1338,7 @@ use capture_types::{
         };
         let idle_snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(0),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(0),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,
@@ -1345,6 +1366,7 @@ use capture_types::{
 
         let active_snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(0),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(0),
             microphone_activity: empty_audio_activity(),
             system_audio_activity: AudioActivitySourceState {
@@ -1355,6 +1377,7 @@ use capture_types::{
         };
         let idle_snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(0),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(0),
             microphone_activity: empty_audio_activity(),
             system_audio_activity: AudioActivitySourceState {
@@ -1375,6 +1398,7 @@ use capture_types::{
     fn family_pause_state_checks_are_independent() {
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(20_000),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(500),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,
@@ -1454,6 +1478,7 @@ use capture_types::{
             let now = 20_000;
             let snapshot = ActivitySnapshot {
                 system_input_idle_ms: Some(state.idle_timeout_ms() + 1),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: Some(state.idle_timeout_ms() + 1),
                 microphone_activity: AudioActivitySourceState {
                     enabled: true,
@@ -1488,6 +1513,7 @@ use capture_types::{
             let now = 20_000;
             let snapshot = ActivitySnapshot {
                 system_input_idle_ms: Some(state.idle_timeout_ms() + 1),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: Some(state.idle_timeout_ms() + 1),
                 microphone_activity: empty_audio_activity(),
                 system_audio_activity: AudioActivitySourceState {
@@ -1518,6 +1544,7 @@ use capture_types::{
         let now = 20_000;
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(state.idle_timeout_ms() + 1),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(state.idle_timeout_ms() + 1),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,

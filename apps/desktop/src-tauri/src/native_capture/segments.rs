@@ -1097,6 +1097,14 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
         return Ok(());
     }
 
+    if !runtime
+        .requested_sources
+        .as_ref()
+        .is_some_and(|sources| sources.screen)
+    {
+        return Ok(());
+    }
+
     let mut current_segment_output_files = runtime.current_segment_output_files.clone();
     let recording_file = runtime.recording_file.clone();
     let microphone_recording_file = runtime.microphone_recording_file.clone();

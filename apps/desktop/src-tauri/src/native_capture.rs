@@ -47,6 +47,10 @@ use lifecycle::{RecordingLifecycle, StartRecordingLifecycleOutcome};
 use runtime::validate_start_request;
 pub type NativeCaptureState = Mutex<RecordingLifecycle>;
 pub use settings::RecordingSettingsState;
+// Re-exported so adapter-level Tauri commands (e.g. `open_debug_window`) can
+// read the persisted recording settings through the same seam used by the
+// rest of `native_capture` without bypassing it to touch persistence directly.
+pub(crate) use settings::current_recording_settings as read_recording_settings;
 
 #[cfg(target_os = "macos")]
 pub type SystemWakeNotifierState =
@@ -57,6 +61,7 @@ pub type SystemWakeNotifierState = std::sync::Mutex<Vec<()>>;
 
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
+pub const RECORDING_SETTINGS_CHANGED_EVENT: &str = "recording_settings_changed";
 
 fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
@@ -64,6 +69,13 @@ fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
 
 pub(super) fn emit_audio_segments_changed(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(AUDIO_SEGMENTS_CHANGED_EVENT, ());
+}
+
+fn emit_recording_settings_changed(
+    app_handle: &tauri::AppHandle,
+    settings: &RecordingSettings,
+) {
+    let _ = app_handle.emit(RECORDING_SETTINGS_CHANGED_EVENT, settings);
 }
 
 #[cfg(target_os = "macos")]
@@ -837,6 +849,8 @@ pub fn update_recording_settings(
             previous_save_directory, settings.save_directory
         ));
     }
+
+    emit_recording_settings_changed(&app_handle, &settings);
 
     Ok(settings)
 }

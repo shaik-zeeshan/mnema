@@ -3425,6 +3425,7 @@ fn live_audio_inactivity_pause_does_not_resume_microphone_without_threshold_acti
 
     let active_snapshot = ActivitySnapshot {
         system_input_idle_ms: Some(0),
+        screen_activity_enabled: true,
         screen_activity_idle_ms: Some(0),
         microphone_activity: AudioActivitySourceState {
             enabled: true,
@@ -3439,6 +3440,7 @@ fn live_audio_inactivity_pause_does_not_resume_microphone_without_threshold_acti
 
     let silent_snapshot = ActivitySnapshot {
         system_input_idle_ms: Some(0),
+        screen_activity_enabled: true,
         screen_activity_idle_ms: Some(0),
         microphone_activity: AudioActivitySourceState {
             enabled: true,
@@ -3577,6 +3579,63 @@ fn pause_microphone_for_inactivity_noop_when_microphone_not_requested() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn inactivity_audio_transition_does_not_keep_trying_to_pause_unrequested_microphone() {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            last_activity_monotonic_ms: 0,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    let idle_snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(20_000),
+        screen_activity_enabled: true,
+        screen_activity_idle_ms: Some(20_000),
+        microphone_activity: AudioActivitySourceState::default(),
+        system_audio_activity: AudioActivitySourceState::default(),
+    };
+
+    assert!(
+        !runtime
+            .inactivity
+            .should_pause_microphone_for_inactivity(20_000, idle_snapshot),
+        "unrequested microphone should never report a pause transition"
+    );
+
+    process_inactivity_audio_transitions_for_snapshot(&mut runtime, 20_000, idle_snapshot)
+        .expect("unrequested microphone transition should be a noop");
+
+    assert!(!runtime.inactivity.is_microphone_paused());
+
+    assert!(
+        !runtime
+            .inactivity
+            .should_pause_microphone_for_inactivity(21_000, idle_snapshot),
+        "repeated idle ticks should stay as noops for unrequested microphone"
+    );
+
+    process_inactivity_audio_transitions_for_snapshot(&mut runtime, 21_000, idle_snapshot)
+        .expect("repeated unrequested microphone transition should stay a noop");
+
+    assert!(!runtime.inactivity.is_microphone_paused());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn resume_microphone_from_inactivity_noop_when_microphone_not_requested() {
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
@@ -3638,6 +3697,113 @@ fn pause_system_audio_for_inactivity_noop_when_system_audio_not_requested() {
     assert!(
         !runtime.inactivity.is_paused,
         "is_paused should not be set when source not requested"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn inactivity_audio_transition_does_not_keep_trying_to_pause_unrequested_system_audio() {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            last_activity_monotonic_ms: 0,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    let idle_snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(20_000),
+        screen_activity_enabled: true,
+        screen_activity_idle_ms: Some(20_000),
+        microphone_activity: AudioActivitySourceState::default(),
+        system_audio_activity: AudioActivitySourceState::default(),
+    };
+
+    assert!(
+        !runtime
+            .inactivity
+            .should_pause_system_audio_for_inactivity(20_000, idle_snapshot),
+        "unrequested system audio should never report a pause transition"
+    );
+
+    process_inactivity_audio_transitions_for_snapshot(&mut runtime, 20_000, idle_snapshot)
+        .expect("unrequested system audio transition should be a noop");
+
+    assert!(!runtime.inactivity.is_system_audio_paused());
+
+    assert!(
+        !runtime
+            .inactivity
+            .should_pause_system_audio_for_inactivity(21_000, idle_snapshot),
+        "repeated idle ticks should stay as noops for unrequested system audio"
+    );
+
+    process_inactivity_audio_transitions_for_snapshot(&mut runtime, 21_000, idle_snapshot)
+        .expect("repeated unrequested system audio transition should stay a noop");
+
+    assert!(!runtime.inactivity.is_system_audio_paused());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn pause_screen_for_inactivity_noop_when_screen_not_requested() {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    let idle_snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(20_000),
+        screen_activity_enabled: false,
+        screen_activity_idle_ms: Some(20_000),
+        microphone_activity: AudioActivitySourceState::default(),
+        system_audio_activity: AudioActivitySourceState::default(),
+    };
+
+    assert!(
+        !runtime
+            .inactivity
+            .should_pause_screen_for_inactivity(20_000, idle_snapshot),
+        "unrequested screen should never report a pause transition"
+    );
+
+    pause_screen_for_inactivity(&mut runtime).expect("screen pause should noop when unrequested");
+
+    assert!(
+        !runtime.inactivity.is_screen_paused(),
+        "screen_paused should not be set when screen is not requested"
+    );
+    assert!(
+        !runtime.inactivity.is_paused,
+        "is_paused should not be set when screen is not requested"
     );
 }
 
@@ -4937,6 +5103,7 @@ fn live_audio_inactivity_pause_detaches_system_audio_writer_truth_while_screen_s
 
     let active_snapshot = ActivitySnapshot {
         system_input_idle_ms: Some(0),
+        screen_activity_enabled: true,
         screen_activity_idle_ms: Some(0),
         microphone_activity: AudioActivitySourceState::default(),
         system_audio_activity: AudioActivitySourceState {
@@ -4951,6 +5118,7 @@ fn live_audio_inactivity_pause_detaches_system_audio_writer_truth_while_screen_s
 
     let silent_snapshot = ActivitySnapshot {
         system_input_idle_ms: Some(0),
+        screen_activity_enabled: true,
         screen_activity_idle_ms: Some(0),
         microphone_activity: AudioActivitySourceState::default(),
         system_audio_activity: AudioActivitySourceState {
@@ -5622,6 +5790,7 @@ fn screen_idle_with_threshold_active_microphone_pauses_only_screen_in_activity_m
         };
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(10_001),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(10_001),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,
@@ -5703,6 +5872,7 @@ fn screen_idle_with_threshold_active_system_audio_pauses_screen_without_audio_fa
         };
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(10_001),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(10_001),
             microphone_activity: AudioActivitySourceState::default(),
             system_audio_activity: AudioActivitySourceState {

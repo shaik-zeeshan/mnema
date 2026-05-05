@@ -2,7 +2,9 @@ mod app_infra;
 mod general_app_log;
 mod managed_storage_layout;
 mod native_capture;
+mod windows;
 
+use tauri::Manager;
 use tauri_plugin_log::{Target, TargetKind};
 
 pub(crate) const APP_LOG_FILE_NAME: &str = "rust";
@@ -31,6 +33,13 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        .on_window_event(|window, event| {
+            let Some(webview_window) = window.get_webview_window(window.label()) else {
+                return;
+            };
+
+            windows::handle_window_event(&webview_window, event);
+        })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
             app_infra::submit_debug_cpu_job,
@@ -68,6 +77,9 @@ pub fn run() {
             native_capture::update_microphone_controller,
             native_capture::start_native_capture,
             native_capture::stop_native_capture,
+            windows::open_settings_window,
+            windows::open_debug_window,
+            windows::close_current_window,
         ])
         .setup(|app| {
             native_capture::initialize_recording_settings_from_disk(app.handle());
