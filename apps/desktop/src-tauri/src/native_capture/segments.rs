@@ -1613,6 +1613,26 @@ fn merge_live_microphone_continuation_into_segment_outputs(
 }
 
 #[cfg(target_os = "macos")]
+fn current_screen_output_file(output_files: Option<&CaptureOutputFiles>) -> Option<&str> {
+    let output_files = output_files?;
+
+    output_files
+        .screen_file
+        .as_deref()
+        .or_else(|| output_files.screen_files.last().map(String::as_str))
+}
+
+#[cfg(target_os = "macos")]
+fn current_system_audio_output_file(output_files: Option<&CaptureOutputFiles>) -> Option<&str> {
+    let output_files = output_files?;
+
+    output_files
+        .system_audio_file
+        .as_deref()
+        .or_else(|| output_files.system_audio_files.last().map(String::as_str))
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn recover_screen_capture_after_wake_with_start_segment<F>(
     runtime: &mut NativeCaptureRuntime,
     app_handle: Option<&tauri::AppHandle>,
@@ -1685,8 +1705,13 @@ where
                 outputs.microphone_files.clear();
                 outputs
             });
-    let recording_file = runtime.recording_file.clone();
-    let system_audio_recording_file = runtime.system_audio_recording_file.clone();
+    let recording_file = runtime
+        .recording_file
+        .clone()
+        .or_else(|| current_screen_output_file(previous_screen_outputs.as_ref()).map(str::to_owned));
+    let system_audio_recording_file = runtime.system_audio_recording_file.clone().or_else(|| {
+        current_system_audio_output_file(previous_screen_outputs.as_ref()).map(str::to_owned)
+    });
 
     if let Err(error) = capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
         active_session: &mut runtime.active_screen_session,
@@ -2382,9 +2407,14 @@ pub(super) fn stop_capture_runtime(
         }
 
         let mut current_segment_output_files = runtime.current_segment_output_files.clone();
-        let recording_file = runtime.recording_file.clone();
+        let recording_file = runtime
+            .recording_file
+            .clone()
+            .or_else(|| current_screen_output_file(current_segment_output_files.as_ref()).map(str::to_owned));
         let microphone_recording_file = runtime.microphone_recording_file.clone();
-        let system_audio_recording_file = runtime.system_audio_recording_file.clone();
+        let system_audio_recording_file = runtime.system_audio_recording_file.clone().or_else(|| {
+            current_system_audio_output_file(current_segment_output_files.as_ref()).map(str::to_owned)
+        });
         let requested_sources = runtime.requested_sources.clone();
 
         let mut first_error: Option<CaptureErrorResponse> = None;

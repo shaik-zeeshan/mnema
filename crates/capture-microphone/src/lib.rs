@@ -590,8 +590,8 @@ mod microphone_delegate {
             sample_buf: &cidre::cm::SampleBuf,
             _connection: &cidre::av::CaptureConnection,
         ) {
-            let objc_result = ns::try_catch(|| {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let objc_result = ns::try_catch(|| {
                     let ctx = self.inner_mut();
                     if ctx.first_error.is_some() {
                         return;
@@ -654,17 +654,17 @@ mod microphone_delegate {
                     if let Err(error) = flush_pending_microphone_samples(ctx) {
                         ctx.first_error = Some(error);
                     }
-                }));
+                });
 
-                if let Err(payload) = result {
+                if let Err(exception) = objc_result {
                     self.inner_mut().first_error =
-                        Some(microphone_output_callback_panic_error(payload));
+                        Some(microphone_output_callback_objc_exception_error(exception));
                 }
-            });
+            }));
 
-            if let Err(exception) = objc_result {
+            if let Err(payload) = result {
                 self.inner_mut().first_error =
-                    Some(microphone_output_callback_objc_exception_error(exception));
+                    Some(microphone_output_callback_panic_error(payload));
             }
         }
     }

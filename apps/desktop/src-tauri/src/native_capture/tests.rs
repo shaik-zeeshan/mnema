@@ -2522,10 +2522,16 @@ fn system_sleep_clears_live_screen_state_but_preserves_microphone_continuation()
         .current_segment_output_files
         .as_ref()
         .expect("microphone continuation should remain trackable");
-    assert!(outputs.screen_file.is_none());
-    assert!(outputs.screen_files.is_empty());
-    assert!(outputs.system_audio_file.is_none());
-    assert!(outputs.system_audio_files.is_empty());
+    assert_eq!(outputs.screen_file.as_deref(), Some("/tmp/screen.mov"));
+    assert_eq!(outputs.screen_files, vec!["/tmp/screen.mov".to_string()]);
+    assert_eq!(
+        outputs.system_audio_file.as_deref(),
+        Some("/tmp/system-audio.m4a")
+    );
+    assert_eq!(
+        outputs.system_audio_files,
+        vec!["/tmp/system-audio.m4a".to_string()]
+    );
     assert_eq!(outputs.microphone_file.as_deref(), Some("/tmp/mic.m4a"));
     assert_eq!(outputs.microphone_files, vec!["/tmp/mic.m4a".to_string()]);
     assert_eq!(
@@ -2601,6 +2607,8 @@ fn system_sleep_clears_paused_screen_state_so_wake_can_restart_capture() {
         .expect("microphone continuation should remain trackable while screen is paused");
     assert!(outputs.screen_file.is_none());
     assert!(outputs.screen_files.is_empty());
+    assert!(outputs.system_audio_file.is_none());
+    assert!(outputs.system_audio_files.is_empty());
     assert_eq!(
         outputs.microphone_file.as_deref(),
         Some(
@@ -2785,6 +2793,102 @@ fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
         })
     );
     assert!(!runtime.inactivity.is_screen_paused());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_finalizes_stale_screen_output_after_sleep_even_when_recording_file_was_cleared() {
+    let dir = TestDir::new("wake-recovery-sleep-stale-screen");
+    let stale_screen_file = dir.path().join("stale-sleep-screen.mov");
+    fs::write(&stale_screen_file, b"stale-screen-bytes").expect("stale screen file should exist");
+
+    let mut runtime = running_screen_capture_runtime_fixture();
+    runtime.requested_sources = Some(CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: false,
+    });
+    runtime.current_segment_sources = Some(CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: false,
+    });
+    runtime.system_audio_planner = None;
+    runtime.current_segment_output_files = Some(CaptureOutputFiles {
+        screen_file: Some(stale_screen_file.to_string_lossy().to_string()),
+        screen_files: vec![stale_screen_file.to_string_lossy().to_string()],
+        microphone_file: Some("/tmp/mic.m4a".to_string()),
+        microphone_files: vec!["/tmp/mic.m4a".to_string()],
+        system_audio_file: None,
+        system_audio_files: Vec::new(),
+    });
+    runtime.recording_file = Some(stale_screen_file.to_string_lossy().to_string());
+    runtime.system_audio_recording_file = None;
+
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = runtime;
+    assert!(lifecycle.handle_system_will_sleep());
+
+    let expected_screen_file = format!(
+        "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
+    );
+
+    let recovered = recover_screen_capture_after_wake_with_start_segment(
+        lifecycle.runtime_mut(),
+        None,
+        |segment_dir,
+         screen_output_file,
+         system_audio_output_path,
+         sources,
+         screen_frame_rate,
+         _screen_resolution,
+         _effective_screen_bitrate_bps,
+         _microphone_device_id,
+         _frame_artifact_tx,
+         _microphone_output_path| {
+            assert_eq!(
+                segment_dir.to_string_lossy(),
+                "/tmp/native-capture-tests/2026/04/23/.native-session-wake-screen-segment-0002"
+            );
+            assert_eq!(
+                screen_output_file.expect("screen output should be planned").to_string_lossy(),
+                expected_screen_file
+            );
+            assert!(system_audio_output_path.is_none());
+            assert_eq!(
+                *sources,
+                CaptureSources {
+                    screen: true,
+                    microphone: false,
+                    system_audio: false,
+                }
+            );
+            assert_eq!(screen_frame_rate, 30);
+
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        },
+    )
+    .expect("wake recovery should restart screen capture");
+
+    assert!(recovered);
+    let runtime = lifecycle.runtime();
+    let committed = runtime
+        .output_files
+        .as_ref()
+        .expect("stale output files should be committed during wake recovery");
+    assert_eq!(
+        committed.screen_file.as_deref(),
+        Some(stale_screen_file.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        committed.screen_files,
+        vec![stale_screen_file.to_string_lossy().to_string()]
+    );
+    assert!(committed.system_audio_file.is_none());
+    assert!(committed.system_audio_files.is_empty());
+    assert_eq!(runtime.current_segment_index, 2);
+    assert_eq!(runtime.recording_file, Some(expected_screen_file));
+    assert!(runtime.system_audio_recording_file.is_none());
 }
 
 #[cfg(target_os = "macos")]
