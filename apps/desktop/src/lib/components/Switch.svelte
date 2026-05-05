@@ -61,13 +61,13 @@
   .switch-label {
     font-size: 12px;
     font-weight: 500;
-    color: #c0c0d0;
+    color: var(--app-text);
     letter-spacing: 0.02em;
   }
 
   .switch-description {
     font-size: 10px;
-    color: #55556a;
+    color: var(--app-text-muted);
     letter-spacing: 0.03em;
   }
 
@@ -77,8 +77,8 @@
     align-items: center;
     width: 36px;
     height: 20px;
-    background: #1a1a2a;
-    border: 1px solid #2a2a40;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
     border-radius: 10px;
     cursor: pointer;
     transition: background 0.18s ease, border-color 0.18s ease;
@@ -88,13 +88,13 @@
   }
 
   :global(.switch-track:focus-visible) {
-    outline: 1px solid #3dffa0;
+    outline: 1px solid var(--app-accent);
     outline-offset: 2px;
   }
 
   :global(.switch-track[data-state="checked"]) {
-    background: #0f2e1f;
-    border-color: #1a4a30;
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
   }
 
   :global(.switch-track[data-disabled]) {
@@ -107,13 +107,13 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: #44445a;
+    background: var(--app-text-subtle);
     transition: transform 0.18s ease, background 0.18s ease;
     pointer-events: none;
   }
 
   :global(.switch-track[data-state="checked"] .switch-thumb) {
     transform: translateX(16px);
-    background: #3dffa0;
+    background: var(--app-accent);
   }
 </style>

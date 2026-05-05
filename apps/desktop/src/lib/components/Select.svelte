@@ -85,7 +85,7 @@
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: #44445a;
+    color: var(--app-text-subtle);
   }
 
   :global(.select-trigger) {
@@ -94,8 +94,8 @@
     justify-content: space-between;
     width: 100%;
     padding: 7px 10px;
-    background: #0e0e16;
-    border: 1px solid #2a2a3a;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
     border-radius: 4px;
     cursor: pointer;
     outline: none;
@@ -107,28 +107,28 @@
   }
 
   :global(.select-trigger:hover) {
-    border-color: #3a3a5a;
+    border-color: var(--app-border-hover);
   }
 
   :global(.select-trigger:focus-visible) {
-    border-color: #3dffa0;
+    border-color: var(--app-accent);
     outline: none;
   }
 
   :global(.select-trigger[data-state="open"]) {
-    border-color: #3dffa0;
+    border-color: var(--app-accent);
   }
 
   :global(.select-trigger--warn) {
-    border-color: #7a4a18;
+    border-color: var(--app-warn-border);
   }
 
   :global(.select-trigger--warn:focus-visible) {
-    border-color: #c47a30;
+    border-color: var(--app-warn-strong);
   }
 
   .select-trigger-text {
-    color: #c0c0d0;
+    color: var(--app-text);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -136,11 +136,11 @@
   }
 
   .select-trigger-text--placeholder {
-    color: #44445a;
+    color: var(--app-text-subtle);
   }
 
   .select-chevron {
-    color: #55556a;
+    color: var(--app-text-muted);
     font-size: 10px;
     flex-shrink: 0;
     transition: transform 0.15s;
@@ -151,11 +151,11 @@
   }
 
   :global(.select-content) {
-    background: #13131a;
-    border: 1px solid #2a2a3a;
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border-strong);
     border-radius: 6px;
     padding: 4px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     z-index: 100;
     min-width: var(--bits-select-anchor-width);
     max-height: 220px;
@@ -175,7 +175,7 @@
     border-radius: 3px;
     font-family: inherit;
     font-size: 12px;
-    color: #c0c0d0;
+    color: var(--app-text);
     cursor: pointer;
     transition: background 0.1s;
     outline: none;
@@ -188,19 +188,19 @@
 
   :global(.select-item:hover),
   :global(.select-item[data-highlighted]) {
-    background: #1a1a2a;
-    color: #e0e0f0;
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
   }
 
   :global(.select-item[data-selected]) {
-    color: #3dffa0;
-    background: #0d1f15;
+    color: var(--app-accent);
+    background: var(--app-accent-bg);
   }
 
   .select-item-check {
     width: 12px;
     font-size: 10px;
-    color: #3dffa0;
+    color: var(--app-accent);
     flex-shrink: 0;
     font-family: inherit;
   }
