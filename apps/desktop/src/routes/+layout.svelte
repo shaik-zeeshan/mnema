@@ -1136,6 +1136,13 @@
     border-radius: var(--app-window-radius);
     overflow: hidden;
     padding: 0;
+    /* Pin the dedicated surface to the viewport so the page header + tab
+       strip stay in place and only the scroll region inside the panel area
+       moves. Without this the shell grows past the viewport (it inherits
+       only `min-height: 100vh` from `.app-shell`) and the entire window
+       scrolls instead of just the panel content. */
+    height: 100vh;
+    height: 100dvh;
   }
 
   /* The narrow column is opt-in — only routes that explicitly want a
