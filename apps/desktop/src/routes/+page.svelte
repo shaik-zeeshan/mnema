@@ -1987,13 +1987,23 @@
   // rect (see template), so percentage coordinates inside it map 1:1 onto
   // image-space coordinates. The lower-left origin of the source space
   // means y must be flipped to CSS top.
+  //
+  // Boxes are drawn quietly by default; the recognized text only appears
+  // when the user hovers/focuses a single box. The reveal uses an opaque
+  // chip whose font-size is derived from the box height (so it visually
+  // matches the underlying glyph row and replaces — rather than doubles —
+  // the pixels underneath).
   function ocrBoxStyle(obs: OcrObservation): string {
     const bb = obs.boundingBox;
     const leftPct = bb.x * 100;
     const topPct = (1 - bb.y - bb.height) * 100;
     const widthPct = bb.width * 100;
     const heightPct = bb.height * 100;
-    return `left: ${leftPct}%; top: ${topPct}%; width: ${widthPct}%; height: ${heightPct}%;`;
+    // 0.78 ≈ cap-height ratio of common UI fonts; keeps glyphs vertically
+    // centered inside the bbox without descenders escaping the bottom edge.
+    const heightPx = Math.max(8, bb.height * renderedImageRect.height);
+    const fontSizePx = Math.max(6, heightPx * 0.78);
+    return `left: ${leftPct}%; top: ${topPct}%; width: ${widthPct}%; height: ${heightPct}%; --ocr-font-size: ${fontSizePx.toFixed(2)}px;`;
   }
 
   const ocrButtonLabel = $derived(
@@ -2901,7 +2911,7 @@
                 style={ocrBoxStyle(obs)}
                 title={`${obs.text} · ${(obs.confidence * 100).toFixed(0)}%`}
               >
-                <span class="timeline__ocr-label">{obs.text}</span>
+                <span class="timeline__ocr-text">{obs.text}</span>
               </div>
             {/each}
           </div>
@@ -4256,8 +4266,9 @@
      rect (measured from the DOM each layout). `overflow: hidden` clips any
      OCR box whose normalized bounds slightly extend past the image edges
      so visuals never spill into the surrounding stage letterbox area.
-     pointer-events stays off so the stage continues to receive
-     clicks/drags. */
+     Keep the wrapper non-interactive, then opt labels back into pointer
+     events so OCR text can be selected/copied without turning the whole stage
+     into an overlay hit-target. */
   .timeline__ocr-overlay {
     position: absolute;
     overflow: hidden;
@@ -4266,40 +4277,73 @@
 
   .timeline__ocr-box {
     position: absolute;
-    border: 1px solid rgba(120, 220, 160, 0.85);
-    background: rgba(120, 220, 160, 0.08);
+    border: 1px solid rgba(120, 220, 160, 0.45);
+    background: transparent;
     border-radius: 2px;
-    box-shadow:
-      0 0 0 1px rgba(0, 0, 0, 0.45),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.04);
     /* Allow zero-width/height edge cases to remain visible as a hairline. */
     min-width: 1px;
     min-height: 1px;
+    pointer-events: auto;
+    cursor: text;
+    transition:
+      border-color 120ms ease,
+      background 120ms ease;
   }
 
-  .timeline__ocr-label {
+  .timeline__ocr-box:hover,
+  .timeline__ocr-box:focus-within {
+    border-color: rgba(120, 220, 160, 0.95);
+    background: rgba(120, 220, 160, 0.10);
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.45),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+    /* Lift the hovered box above its neighbours so the revealed chip can
+       extend past the bbox without being clipped by adjacent siblings. */
+    z-index: 2;
+  }
+
+  /* Text is hidden by default — boxes alone act as a quiet visual scan
+     layer over the original pixels. On hover/focus a single chip is
+     revealed; it sits flush with the bbox and is fully opaque so it
+     replaces (rather than doubles) the underlying glyphs.
+
+     `--ocr-font-size` is set inline per-observation in ocrBoxStyle so
+     the chip's text height matches the recognised glyph row. */
+  .timeline__ocr-text {
     position: absolute;
-    left: 0;
-    bottom: 100%;
-    margin-bottom: 2px;
-    max-width: max(160px, 100%);
-    padding: 1px 5px;
-    background: rgba(8, 14, 10, 0.92);
-    border: 1px solid rgba(120, 220, 160, 0.6);
-    border-radius: 2px;
-    color: #d8f5e2;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 0 4px;
+    background: rgba(8, 14, 10, 0.96);
+    color: #eaffef;
     font-family:
       ui-monospace,
       SFMono-Regular,
       Menlo,
       monospace;
-    font-size: 9px;
-    line-height: 1.3;
-    letter-spacing: 0.02em;
+    font-size: var(--ocr-font-size, 11px);
+    line-height: 1;
+    letter-spacing: -0.01em;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    /* Let long text spill out of the bbox horizontally so it stays
+       readable; the parent overlay still clips at the image edge. */
+    width: max-content;
+    min-width: 100%;
+    max-width: none;
+    border: 1px solid rgba(120, 220, 160, 0.6);
+    border-radius: 2px;
     pointer-events: none;
+    user-select: text;
+    opacity: 0;
+    transition: opacity 80ms ease;
+  }
+
+  .timeline__ocr-box:hover .timeline__ocr-text,
+  .timeline__ocr-box:focus-within .timeline__ocr-text {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   /* Compact inline status pill for non-success OCR states (running / empty /
