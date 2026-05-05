@@ -19,7 +19,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 base64 = "0.22"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
@@ -37,5 +37,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
 core-graphics = "0.25"
 cidre = { version = "0.15", default-features = false, features = ["app", "async", "av", "blocks", "cf", "cg", "cm", "iio", "ns", "ut", "macos_15_0"] }
+objc = "0.2"
