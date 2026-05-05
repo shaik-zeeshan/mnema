@@ -1093,6 +1093,16 @@ fn stream_output_callback_objc_exception_error(
     error
 }
 
+#[cfg(all(target_os = "macos", test))]
+fn run_nested_objc_exception_and_panic_boundary_for_test() {
+    let reason = cidre::ns::str!(c"nested test objc exception");
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = cidre::ns::try_catch(|| {
+            cidre::ns::Exception::raise(reason);
+        });
+    }));
+}
+
 #[cfg(target_os = "macos")]
 struct PreparedScreenFrameExport {
     file_path: PathBuf,
@@ -1388,25 +1398,25 @@ mod stream_output_delegate {
             sample_buf: &mut cidre::cm::SampleBuf,
             kind: cidre::sc::OutputType,
         ) {
-            let objc_result = ns::try_catch(|| {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let objc_result = ns::try_catch(|| {
                     let ctx = self.inner_mut();
 
                     handle_stream_did_output_sample_buf(ctx, sample_buf, kind);
-                }));
+                });
 
-                if let Err(payload) = result {
+                if let Err(exception) = objc_result {
                     store_first_stream_output_error(
                         &mut self.inner_mut().first_error,
-                        stream_output_callback_panic_error(payload),
+                        stream_output_callback_objc_exception_error(exception),
                     );
                 }
-            });
+            }));
 
-            if let Err(exception) = objc_result {
+            if let Err(payload) = result {
                 store_first_stream_output_error(
                     &mut self.inner_mut().first_error,
-                    stream_output_callback_objc_exception_error(exception),
+                    stream_output_callback_panic_error(payload),
                 );
             }
         }
@@ -2984,8 +2994,44 @@ fn finalize_stream_output_context(
 fn finalize_rotated_segment_context(
     context: &mut StreamOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
-    match finalize_stream_output_context(context) {
+    let screen_video_output_file = context.screen_video_output_file.clone();
+    finalize_rotated_segment_context_impl(
+        screen_video_output_file.as_deref(),
+        || finalize_stream_output_context(context),
+        |path| {
+            maybe_remove_screen_video_file(path);
+            !Path::new(path).exists()
+        },
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn finalize_rotated_segment_context_impl<Finalize, Remove>(
+    screen_video_output_file: Option<&str>,
+    finalize: Finalize,
+    mut remove_screen_video: Remove,
+) -> Result<(), CaptureErrorResponse>
+where
+    Finalize: FnOnce() -> Result<(), CaptureErrorResponse>,
+    Remove: FnMut(&str) -> bool,
+{
+    match finalize() {
         Err(error) if should_recover_from_segment_finalize_error(&error) => {
+            if let Some(path) = screen_video_output_file {
+                if !remove_screen_video(path) {
+                    let error = CaptureErrorResponse {
+                        code: "capture_output_processing_failed".to_string(),
+                        message: format!(
+                            "Recovered rotated segment finalization failure but failed to remove invalid screen artifact at {path}"
+                        ),
+                    };
+                    log_capture_error(
+                        "failed to remove invalid screen artifact after rotated segment recovery",
+                        &error,
+                    );
+                    return Err(error);
+                }
+            }
             log_capture_error(
                 "recovered from ScreenCaptureKit rotated segment finalization failure",
                 &error,
@@ -3533,6 +3579,8 @@ pub fn system_audio_activity_level() -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use std::process::Command;
 
     #[cfg(target_os = "macos")]
     fn screen_activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -3552,6 +3600,32 @@ mod tests {
             .expect_err("panic should be caught");
 
         stream_output_callback_panic_error(payload)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nested_objc_exception_inside_catch_unwind_does_not_abort_subprocess() {
+        const ENV_NAME: &str = "CAPTURE_SCREEN_NESTED_OBJC_EXCEPTION_CHILD";
+
+        if std::env::var_os(ENV_NAME).is_some() {
+            run_nested_objc_exception_and_panic_boundary_for_test();
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().expect("current test binary should exist"))
+            .env(ENV_NAME, "1")
+            .arg("--exact")
+            .arg("tests::nested_objc_exception_inside_catch_unwind_does_not_abort_subprocess")
+            .arg("--nocapture")
+            .output()
+            .expect("child process should run nested exception harness");
+
+        assert!(
+            output.status.success(),
+            "nested ObjC exception should be contained without aborting child process\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -4115,6 +4189,30 @@ mod tests {
         };
 
         assert!(finalize_rotated_segment_context(&mut context).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_rotated_segment_context_keeps_recoverable_failures_fatal_when_invalid_screen_artifact_survives_cleanup(
+    ) {
+        let error = finalize_rotated_segment_context_impl(
+            Some("/tmp/stale-invalid-screen.mov"),
+            || {
+                Err(capture_writers::aggregate_output_processing_failures(vec![
+                    format!(
+                        "{SCREEN_VIDEO_WRITER_FAILURE_PREFIX}{SCREEN_VIDEO_FINALIZE_ASSET_WRITER_FAILURE_PREFIX}The operation could not be completed {AVFOUNDATION_FAILURE_CODE_11800_SUFFIX}"
+                    ),
+                ])
+                .expect_err("single recoverable failure should aggregate"))
+            },
+            |_path| false,
+        )
+        .expect_err("rotated recovery must fail when invalid artifact cleanup fails");
+
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert!(error.message.contains(
+            "failed to remove invalid screen artifact at /tmp/stale-invalid-screen.mov"
+        ));
     }
 
     #[cfg(target_os = "macos")]

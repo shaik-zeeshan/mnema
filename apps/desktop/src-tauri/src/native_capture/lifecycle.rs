@@ -77,10 +77,10 @@ impl RecordingLifecycle {
         );
 
         if let Some(outputs) = self.runtime.current_segment_output_files.as_mut() {
-            outputs.screen_file = None;
-            outputs.screen_files.clear();
-            outputs.system_audio_file = None;
-            outputs.system_audio_files.clear();
+            if outputs.screen_file.is_none() && outputs.screen_files.is_empty() {
+                outputs.system_audio_file = None;
+                outputs.system_audio_files.clear();
+            }
         }
 
         true

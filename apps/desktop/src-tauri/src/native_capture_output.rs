@@ -2,6 +2,10 @@ use capture_types::{CaptureErrorResponse, CaptureOutputFiles, CaptureSources};
 #[cfg(target_os = "macos")]
 use std::collections::BTreeSet;
 #[cfg(target_os = "macos")]
+use std::fs::File;
+#[cfg(target_os = "macos")]
+use std::io::{Read, Seek, SeekFrom};
+#[cfg(target_os = "macos")]
 use std::path::Path;
 
 pub(crate) fn set_current_microphone_output_file(
@@ -78,11 +82,53 @@ fn microphone_output_files(output_files: &CaptureOutputFiles) -> Vec<&str> {
 }
 
 #[cfg(target_os = "macos")]
+fn screen_output_appears_openable(path: &str) -> bool {
+    const SEARCH_WINDOW_BYTES: u64 = 256 * 1024;
+
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    let file_len = metadata.len();
+    if file_len < 8 {
+        return false;
+    }
+
+    let prefix_len = file_len.min(SEARCH_WINDOW_BYTES) as usize;
+    let mut prefix = vec![0_u8; prefix_len];
+    if file.read_exact(&mut prefix).is_err() {
+        return false;
+    }
+    if prefix.windows(4).any(|window| window == b"moov") {
+        return true;
+    }
+
+    if file_len <= SEARCH_WINDOW_BYTES {
+        return false;
+    }
+
+    let suffix_len = file_len.min(SEARCH_WINDOW_BYTES) as usize;
+    if file.seek(SeekFrom::End(-(suffix_len as i64))).is_err() {
+        return false;
+    }
+    let mut suffix = vec![0_u8; suffix_len];
+    if file.read_exact(&mut suffix).is_err() {
+        return false;
+    }
+
+    suffix.windows(4).any(|window| window == b"moov")
+}
+
+#[cfg(target_os = "macos")]
 fn sync_finalized_screen_output_file(
     output_files: &mut CaptureOutputFiles,
     recording_file: Option<&str>,
 ) -> bool {
-    let Some(recording_file) = recording_file.filter(|path| Path::new(path).is_file()) else {
+    let Some(recording_file) = recording_file.filter(|path| {
+        Path::new(path).is_file() && screen_output_appears_openable(path)
+    }) else {
         clear_current_screen_output_file(output_files);
         return false;
     };
@@ -499,6 +545,12 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    fn write_openable_screen_file(path: &Path) {
+        fs::write(path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10moovtrak")
+            .expect("screen artifact should exist");
+    }
+
+    #[cfg(target_os = "macos")]
     impl Drop for TestDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
@@ -539,6 +591,45 @@ mod tests {
             .message
             .contains("screen output missing: expected screen recording file"));
 
+        assert_eq!(output_files.screen_file, None);
+        assert!(output_files.screen_files.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_capture_outputs_rejects_invalid_existing_screen_output() {
+        let dir = TestDir::new("invalid-screen-output");
+        let recording_file = dir.path.join("screen.mov");
+        fs::write(&recording_file, b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10mdatjunk")
+            .expect("invalid screen artifact should exist");
+        let recording_file = recording_file.to_string_lossy().to_string();
+        let requested_sources = CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        };
+        let mut output_files = CaptureOutputFiles {
+            screen_file: Some(recording_file.clone()),
+            screen_files: vec![recording_file.clone()],
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        };
+
+        let error = finalize_capture_outputs(
+            Some(&mut output_files),
+            Some(&recording_file),
+            None,
+            None,
+            Some(&requested_sources),
+        )
+        .expect_err("invalid existing screen recording must fail finalization");
+
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert!(error
+            .message
+            .contains("screen output missing: expected screen recording file"));
         assert_eq!(output_files.screen_file, None);
         assert!(output_files.screen_files.is_empty());
     }
@@ -877,7 +968,7 @@ mod tests {
     fn finalize_capture_outputs_preserves_screen_output_while_dropping_audio_conversion_failures() {
         let dir = TestDir::new("preserve-screen-drop-audio-conversion-failures");
         let screen_file = dir.path.join("screen.mov");
-        fs::write(&screen_file, b"screen").expect("screen artifact should exist");
+        write_openable_screen_file(&screen_file);
         let screen_file = screen_file.to_string_lossy().to_string();
         let microphone_file = dir
             .path
@@ -917,15 +1008,9 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn finalize_capture_outputs_preserves_screen_output_when_strip_audio_fails() {
-        // When system_audio is requested, finalize_capture_outputs calls
-        // strip_audio_from_recording_file on the screen .mov.  If that call fails
-        // (e.g. the file is not a valid QuickTime movie) the failure must be
-        // treated as a non-fatal audio failure so that the screen output is still
-        // committed rather than causing the whole segment to be discarded.
+    fn finalize_capture_outputs_rejects_invalid_screen_output_when_system_audio_is_requested() {
         let dir = TestDir::new("preserve-screen-strip-audio-failure");
         let screen_file = dir.path.join("screen.mov");
-        // Write invalid bytes so strip_audio_from_recording_file will error.
         fs::write(&screen_file, b"not a real mov").expect("screen artifact should exist");
         let screen_file = screen_file.to_string_lossy().to_string();
         let requested_sources = CaptureSources {
@@ -942,17 +1027,21 @@ mod tests {
             system_audio_files: Vec::new(),
         };
 
-        finalize_capture_outputs(
+        let error = finalize_capture_outputs(
             Some(&mut output_files),
             Some(&screen_file),
             None,
             None,
             Some(&requested_sources),
         )
-        .expect("strip_audio failure should not block valid screen output");
+        .expect_err("invalid screen output should not be committed");
 
-        assert_eq!(output_files.screen_file, Some(screen_file.clone()));
-        assert_eq!(output_files.screen_files, vec![screen_file]);
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert!(error
+            .message
+            .contains("screen output missing: expected screen recording file"));
+        assert_eq!(output_files.screen_file, None);
+        assert!(output_files.screen_files.is_empty());
     }
 
     #[cfg(target_os = "macos")]
@@ -960,7 +1049,7 @@ mod tests {
     fn finalize_capture_outputs_preserves_screen_output_while_dropping_missing_audio_outputs() {
         let dir = TestDir::new("preserve-screen-drop-audio");
         let screen_file = dir.path.join("screen.mov");
-        fs::write(&screen_file, b"screen").expect("screen artifact should exist");
+        write_openable_screen_file(&screen_file);
         let screen_file = screen_file.to_string_lossy().to_string();
         let microphone_file = dir
             .path
