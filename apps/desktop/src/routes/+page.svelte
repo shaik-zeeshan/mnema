@@ -175,6 +175,7 @@
   const previewInFlight = new Set<number>();
   let frameActionStatus = $state<string | null>(null);
   let frameActionStatusTimer: ReturnType<typeof setTimeout> | null = null;
+  let stageActionsMenuOpen = $state(false);
 
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
   const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
@@ -862,6 +863,7 @@
         image.close();
       }
       setFrameActionStatus(`Copied frame ${frame.id}`);
+      stageActionsMenuOpen = false;
     } catch (err) {
       setFrameActionStatus(
         `Copy failed: ${typeof err === "string" ? err : "clipboard write was rejected"}`,
@@ -882,11 +884,16 @@
         baseDir: BaseDirectory.Download,
       });
       setFrameActionStatus(`Saved frame ${frame.id} to Downloads`);
+      stageActionsMenuOpen = false;
     } catch (err) {
       setFrameActionStatus(
         `Download failed: ${typeof err === "string" ? err : "file write was rejected"}`,
       );
     }
+  }
+
+  function onStageActionsToggle(event: Event) {
+    stageActionsMenuOpen = (event.currentTarget as HTMLDetailsElement | null)?.open ?? false;
   }
 
   $effect(() => {
@@ -2864,22 +2871,29 @@
     {:else if timelineActive}
       {@const previewUrl = previewCache.get(timelineActive.id)}
       {#if previewUrl}
-        <div class="timeline__stage-actions">
-          <button
-            type="button"
-            class="btn btn--ghost btn--sm timeline__stage-action"
-            onclick={copyActiveFrameImage}
-            aria-label="Copy active frame image"
-            title="Copy image"
-          >copy</button>
-          <button
-            type="button"
-            class="btn btn--ghost btn--sm timeline__stage-action"
-            onclick={downloadActiveFrameImage}
-            aria-label="Download active frame image"
-            title="Download image"
-          >download</button>
-        </div>
+        <details class="timeline__stage-actions" open={stageActionsMenuOpen} ontoggle={onStageActionsToggle}>
+          <summary
+            class="btn btn--ghost btn--sm timeline__stage-action-trigger"
+            aria-label="Frame actions"
+            title="Frame actions"
+          >⋯</summary>
+          <div class="timeline__stage-action-menu">
+            <button
+              type="button"
+              class="timeline__stage-action-menu-item"
+              onclick={copyActiveFrameImage}
+              aria-label="Copy active frame image"
+              title="Copy image"
+            >copy</button>
+            <button
+              type="button"
+              class="timeline__stage-action-menu-item"
+              onclick={downloadActiveFrameImage}
+              aria-label="Download active frame image"
+              title="Download image"
+            >download</button>
+          </div>
+        </details>
         {#if frameActionStatus}
           <div class="timeline__stage-status" role="status" aria-live="polite">
             {frameActionStatus}
@@ -4095,16 +4109,119 @@
     top: 10px;
     right: 10px;
     z-index: 2;
-    display: flex;
-    align-items: center;
-    gap: 6px;
   }
 
-  .timeline__stage-action {
-    min-width: 0;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    background: var(--app-overlay-bg);
+  .timeline__stage-actions[open] {
+    z-index: 3;
+  }
+
+  .timeline__stage-action-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    background: color-mix(in srgb, var(--app-surface-raised) 82%, transparent);
+    border: 1px solid color-mix(in srgb, var(--app-border-strong) 88%, transparent);
+    border-radius: 999px;
+    box-shadow:
+      0 8px 20px rgba(0, 0, 0, 0.22),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    color: var(--app-text-muted);
+    list-style: none;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0;
+    user-select: none;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition:
+      background 0.12s,
+      border-color 0.12s,
+      color 0.12s,
+      box-shadow 0.12s,
+      transform 0.12s;
+  }
+
+  .timeline__stage-action-trigger::-webkit-details-marker {
+    display: none;
+  }
+
+  .timeline__stage-action-trigger:hover {
+    background: color-mix(in srgb, var(--app-surface-hover) 88%, transparent);
+    border-color: var(--app-border-hover);
+    color: var(--app-text);
+    box-shadow:
+      0 10px 24px rgba(0, 0, 0, 0.26),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  .timeline__stage-action-trigger:focus-visible {
+    outline: none;
+    border-color: var(--app-border-hover);
+    color: var(--app-text);
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--app-border-hover) 48%, transparent),
+      0 10px 24px rgba(0, 0, 0, 0.26);
+  }
+
+  .timeline__stage-actions[open] > .timeline__stage-action-trigger {
+    background: color-mix(in srgb, var(--app-surface-hover) 92%, transparent);
+    border-color: var(--app-border-hover);
+    color: var(--app-text);
+    transform: translateY(1px);
+  }
+
+  .timeline__stage-action-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    display: grid;
+    min-width: 112px;
+    gap: 2px;
+    padding: 6px;
+    background: color-mix(in srgb, var(--app-surface) 94%, transparent);
+    border: 1px solid var(--app-border);
+    border-radius: 10px;
+    box-shadow:
+      0 18px 40px rgba(0, 0, 0, 0.28),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
+  .timeline__stage-action-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+    padding: 8px 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+    cursor: pointer;
+  }
+
+  .timeline__stage-action-menu-item:hover {
+    background: var(--app-surface-hover);
+    border-color: color-mix(in srgb, var(--app-border-hover) 70%, transparent);
+    color: var(--app-text);
+  }
+
+  .timeline__stage-action-menu-item:focus-visible {
+    outline: none;
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-hover);
+    color: var(--app-text);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-border-hover) 32%, transparent);
   }
 
   .timeline__stage-status {
@@ -4980,6 +5097,34 @@
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
     color: var(--app-accent-strong);
+  }
+
+  :global([data-theme="light"]) .timeline__stage-action-trigger {
+    background: color-mix(in srgb, var(--app-surface) 90%, transparent);
+    border-color: color-mix(in srgb, var(--app-border-strong) 92%, transparent);
+    box-shadow:
+      0 10px 24px rgba(20, 28, 40, 0.14),
+      inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    color: var(--app-text-muted);
+  }
+
+  :global([data-theme="light"]) .timeline__stage-action-trigger:hover,
+  :global([data-theme="light"]) .timeline__stage-action-trigger:focus-visible,
+  :global([data-theme="light"]) .timeline__stage-actions[open] > .timeline__stage-action-trigger {
+    background: color-mix(in srgb, var(--app-surface-hover) 94%, transparent);
+    border-color: var(--app-border-hover);
+    color: var(--app-text-strong);
+    box-shadow:
+      0 12px 28px rgba(20, 28, 40, 0.16),
+      inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  }
+
+  :global([data-theme="light"]) .timeline__stage-action-menu {
+    background: color-mix(in srgb, var(--app-surface) 96%, white 4%);
+    border-color: var(--app-border);
+    box-shadow:
+      0 18px 36px rgba(20, 28, 40, 0.14),
+      inset 0 1px 0 rgba(255, 255, 255, 0.86);
   }
 
   :global([data-theme="light"]) .timeline__error {
