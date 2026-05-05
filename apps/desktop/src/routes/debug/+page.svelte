@@ -768,6 +768,17 @@
 
   let activeTab = $state<DebugTab>("session");
 
+  // Scroll-region element. The wrapper persists across tab switches (only
+  // the inner `{#if activeTab === ...}` panel re-mounts), so without an
+  // explicit reset the previous tab's `scrollTop` would carry over.
+  // Reset to the top whenever `activeTab` changes.
+  let scrollRegion = $state<HTMLDivElement | null>(null);
+
+  $effect(() => {
+    activeTab;
+    scrollRegion?.scrollTo({ top: 0, behavior: "auto" });
+  });
+
   // ─── Jobs pagination ─────────────────────────────────────────────────────
   // Recent-jobs can grow unbounded; render a fixed-size window. The selected
   // job detail panel is rendered outside the paginated list so the user can
@@ -812,6 +823,10 @@
   <p class="page-subtitle">Recording status &amp; controls.</p>
 </header>
 
+<!-- Wrapper carries the dashed separator below the tab chips so the
+     pinned head of the dedicated Debug window matches `.page-header`'s
+     bottom divider. The chip card itself keeps its own border. -->
+<div class="debug-tabs-wrap">
 <div class="debug-tabs" role="tablist" aria-label="Debug sections">
     {#each debugTabs as tab (tab.id)}
       <button
@@ -829,6 +844,16 @@
       </button>
     {/each}
 </div>
+</div>
+
+<!-- ── Scroll region ──────────────────────────────────────────────────────
+     Only the panel area below the tab strip scrolls. The page header and
+     tabs stay pinned at the top of the dedicated Debug window so tab
+     switches never push the controls off-screen. See the matching
+     `.settings-scroll` block in settings/+page.svelte for the same
+     pattern; both rely on `.app-shell--dedicated` being viewport-pinned
+     in +layout.svelte. -->
+<div class="debug-scroll" bind:this={scrollRegion}>
 
 <!-- ── Recording status ─────────────────────────────────────────────────── -->
 {#if activeTab === "session"}
@@ -1777,7 +1802,25 @@
   </section>
 {/if}
 
+</div><!-- /.debug-scroll -->
+
 <style>
+  /* ── Scroll region ────────────────────────────────────────────────────
+     Wraps every tab panel + the bottom error card so the page header and
+     `.debug-tabs` strip stay pinned while only this region scrolls.
+     `flex: 1 1 0` claims the leftover height inside `.app-content`, and
+     `min-height: 0` lets the child shrink below its intrinsic content
+     height in the flex column (without it the whole dedicated Debug
+     window would scroll). */
+  .debug-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
   /* ── Page header ───────────────────────────────────────────── */
   .page-header {
     display: flex;
@@ -2821,6 +2864,10 @@
   .rs-legend__dot--off { background: var(--app-neutral-border); }
 
   /* ── Section tabs ──────────────────────────────────────────── */
+  .debug-tabs-wrap {
+    padding-bottom: 12px;
+    border-bottom: 1px dashed var(--app-border);
+  }
   .debug-tabs {
     display: flex;
     flex-wrap: wrap;
