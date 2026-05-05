@@ -22,6 +22,7 @@
 
 ## Quirks
 - The desktop frontend is SPA-only: `apps/desktop/src/routes/+layout.ts` sets `ssr = false`, and `apps/desktop/svelte.config.js` uses `@sveltejs/adapter-static` with `fallback: "index.html"`.
+- In production desktop packaging, the SPA entry can arrive as `"/index.html"` instead of `"/"`; route-gating logic in the shell should normalize static-entry paths before deciding whether a surface is the main route.
 - Tauri expects Vite on port `1420` with HMR on `1421`; `apps/desktop/vite.config.js` hard-pins those ports and ignores `src-tauri/**` in the watcher.
 - `apps/desktop/src-tauri/tauri.conf.json` runs `beforeDevCommand: bun run dev` and `beforeBuildCommand: cargo clean --manifest-path src-tauri/Cargo.toml && bun run build`; `tauri build` always cleans the Rust crate first.
 - Recording settings persist to `recording-settings.json` under Tauri `app_config_dir()` when available. App infra state lives under `<saveDirectory>/.z`, with SQLite at `<saveDirectory>/.z/db/app.sqlite3`; changing `saveDirectory` changes that DB location on the next app start.

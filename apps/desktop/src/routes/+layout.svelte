@@ -2,6 +2,7 @@
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import type { Snippet } from "svelte";
+  import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
   import { closeCurrentWindow, isDedicatedSurfaceWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
   import {
@@ -20,9 +21,10 @@
 
   let { children }: Props = $props();
 
-  const isMainRoute = $derived($page.url.pathname === "/");
-  const isSettings = $derived($page.url.pathname.startsWith("/settings"));
-  const isDebug = $derived($page.url.pathname.startsWith("/debug"));
+  const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
+  const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
+  const isSettings = $derived(normalizedPathname.startsWith("/settings"));
+  const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const showMainTitlebar = $derived(isMainRoute);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   let windowPlatform = $state<"macos" | "windows" | "other">("other");
