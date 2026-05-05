@@ -127,6 +127,19 @@
 
   let activeTab = $state<SettingsTab>("capture");
 
+  // Scroll-region element. The wrapper persists across tab switches (only
+  // the inner `{#if activeTab === ...}` panel re-mounts), so without an
+  // explicit reset the previous tab's `scrollTop` would carry over and
+  // strand the user mid-page on the next tab. Reset to the top whenever
+  // `activeTab` changes — matches the typical tabbed-settings expectation.
+  let scrollRegion = $state<HTMLDivElement | null>(null);
+
+  $effect(() => {
+    // Track `activeTab` so this fires on every switch.
+    activeTab;
+    scrollRegion?.scrollTo({ top: 0, behavior: "auto" });
+  });
+
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
     { id: "capture",    label: "Capture",     description: "Sources & segments" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
@@ -806,6 +819,16 @@
     {/each}
   </div>
 </nav>
+
+<!-- ── Scroll region ──────────────────────────────────────────────────────
+     Only the panel area below the tabs scrolls. The page header and the
+     tab strip stay pinned at the top of the dedicated Settings window so
+     switching tabs never loses the user's place behind the viewport edge.
+     The wrapper participates in the flex column established by
+     `.app-content`, taking the leftover height (`flex: 1`) and isolating
+     overflow with `overflow-y: auto` + `min-height: 0` (the latter lets it
+     shrink below its content's intrinsic height inside the flex parent). -->
+<div class="settings-scroll" bind:this={scrollRegion}>
 
 <!-- ── Capture & sources ───────────────────────────────────────────────── -->
 {#if activeTab === "capture"}
@@ -1762,16 +1785,42 @@
 </div>
 {/if}
 
+</div><!-- /.settings-scroll -->
+
 <style>
+  /* ── Scroll region ────────────────────────────────────────────────────
+     Wrapping all tab panels in a single flex child lets the page header
+     and tab strip stay pinned while only this region scrolls. `flex: 1`
+     claims the leftover viewport height inside `.app-content`, and
+     `min-height: 0` is required for the child to shrink below its
+     intrinsic content height in a flex column (otherwise the whole
+     dedicated window would scroll instead). The negative-margin /
+     positive-padding pair widens the scroll viewport to the page's
+     full reading-column width so the scrollbar sits flush with the
+     window edge while panel content keeps its 24px gutter. */
+  .settings-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    /* Re-establish the vertical rhythm previously provided by
+       `.app-content`'s flex `gap: 14px` so adjacent tab panels and the
+       wrapper itself keep matching spacing on tab switches. */
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
   /* ── Tab nav ──────────────────────────────────────────────────────────
      Compact horizontal strip; each tab shows index + label + tiny hint.
      The active tab gets the accent treatment so the user always knows
-     which category is being edited. */
+     which category is being edited. The wrapper carries a dashed
+     separator on its bottom edge that matches `.page-header`'s divider
+     so the pinned head of the dedicated window reads as a single
+     stationary block above the scrolling panel area. */
   .tab-nav {
-    margin: 0 0 12px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
+    margin: 0;
+    padding-bottom: 12px;
+    border-bottom: 1px dashed var(--app-border);
   }
 
   .tab-nav__list {
@@ -1780,6 +1829,9 @@
     gap: 4px;
     padding: 6px;
     overflow-x: auto;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
   }
 
   .tab-nav__tab {
@@ -1836,6 +1888,9 @@
   }
 
   :global([data-theme="light"]) .tab-nav {
+    border-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .tab-nav__list {
     background: var(--app-surface-raised);
     border-color: var(--app-border);
   }
