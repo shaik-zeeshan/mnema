@@ -2888,6 +2888,16 @@
       ? formatCapturedAt(timelineActive.capturedAt)
       : "no active frame",
   );
+  const latestFrameOffset = $derived(
+    timelineFrames.length === 0 ? 0 : timelineActiveIndex + (timelineHasNewer ? 1 : 0),
+  );
+  const showJumpToLatestButton = $derived(latestFrameOffset > 50);
+
+  async function jumpToLatestFrame(): Promise<void> {
+    pickerOpen = false;
+    pickerError = null;
+    await loadTimelinePage(true);
+  }
 
   // ─── Recording controls ──────────────────────────────────────────────────
   // Mirrors the debug page: bootstrap the shared `captureSession` store via
@@ -3018,6 +3028,14 @@
           <span class="timeline__jump-icon">▣</span>
           <span class="timeline__jump-label">{triggerLabel}</span>
         </button>
+        {#if showJumpToLatestButton}
+          <button
+            class="btn btn--ghost btn--sm timeline__jump-latest"
+            onclick={jumpToLatestFrame}
+            disabled={timelineLoading || timelineLoadingMore || pickerJumping}
+            title="Jump to latest frame"
+          >latest</button>
+        {/if}
         {#if pickerOpen}
           <div
             class="timeline__picker"
@@ -4150,6 +4168,9 @@
 
   /* ── Date jump picker ──────────────────────────────────────── */
   .timeline__jump {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     position: relative;
   }
 
@@ -4157,6 +4178,10 @@
     gap: 6px;
     font-variant-numeric: tabular-nums;
     max-width: 220px;
+  }
+
+  .timeline__jump-latest {
+    flex: 0 0 auto;
   }
 
   .timeline__jump-icon {
