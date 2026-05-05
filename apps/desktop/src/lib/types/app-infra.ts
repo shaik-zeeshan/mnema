@@ -36,7 +36,7 @@ export type FramePreviewSourceKind =
 
 export interface FramePreviewDto {
 	mimeType: string;
-	dataBase64: string;
+	filePath: string;
 	sourceKind: FramePreviewSourceKind;
 }
 
