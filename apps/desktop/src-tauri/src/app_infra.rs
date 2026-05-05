@@ -10,6 +10,8 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
 use capture_types::{OcrRecognitionMode, OcrSettings};
+#[cfg(target_os = "macos")]
+use cidre::arc::Retain;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -19,9 +21,16 @@ pub type FramePreviewCacheState = Mutex<FramePreviewCache>;
 
 const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
 const FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
+const FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS: f64 = 5.0;
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrameIndexSidecarConversionResult {
+    converted_count: u64,
+    skipped_count: u64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +53,28 @@ struct CachedFramePreview {
 struct CachedVideoPreviewFailure {
     message: String,
     cached_at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexedFramePreviewOffset {
+    video_offset_ms: u64,
+    exact_match: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyScreenSegmentFrameIndexEntry {
+    captured_at_unix_ms: u64,
+    frame_index: u64,
+    #[allow(dead_code)]
+    #[serde(default)]
+    artifact_file_name: Option<String>,
+    video_offset_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyScreenSegmentFrameIndex {
+    version: u32,
+    entries: Vec<LegacyScreenSegmentFrameIndexEntry>,
 }
 
 #[derive(Debug, Default)]
@@ -783,6 +814,13 @@ fn parse_frame_unix_ms_from_path(frame_file_path: &Path) -> Option<i128> {
     unix_ms.parse().ok()
 }
 
+fn parse_frame_identity_from_path(frame_file_path: &Path) -> Option<(u64, u64)> {
+    let stem = frame_file_path.file_stem()?.to_str()?;
+    let raw = stem.strip_prefix("frame-")?;
+    let (captured_at_unix_ms, frame_index) = raw.rsplit_once('-')?;
+    Some((captured_at_unix_ms.parse().ok()?, frame_index.parse().ok()?))
+}
+
 fn parse_captured_at_unix_ms(captured_at: &str) -> Option<i128> {
     OffsetDateTime::parse(captured_at, &Rfc3339)
         .ok()
@@ -806,6 +844,82 @@ fn estimate_frame_preview_offset_seconds(
 fn frame_preview_unix_ms(frame: &::app_infra::Frame) -> Option<i128> {
     parse_frame_unix_ms_from_path(Path::new(&frame.file_path))
         .or_else(|| parse_captured_at_unix_ms(&frame.captured_at))
+}
+
+fn indexed_frame_preview_offset(
+    frame: &::app_infra::Frame,
+    video_path: &Path,
+) -> std::io::Result<Option<IndexedFramePreviewOffset>> {
+    let index_path = capture_screen::screen_segment_frame_index_path(video_path);
+    let index = if index_path.is_file() {
+        let bytes = fs::read(&index_path)?;
+        capture_screen::decode_screen_segment_frame_index(&bytes).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "failed to parse screen segment frame index {}: {error}",
+                    index_path.display()
+                ),
+            )
+        })?
+    } else {
+        let legacy_path = capture_screen::legacy_screen_segment_frame_index_path(video_path);
+        if !legacy_path.is_file() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&legacy_path)?;
+        let legacy: LegacyScreenSegmentFrameIndex = serde_json::from_slice(&bytes).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "failed to parse legacy screen segment frame index {}: {error}",
+                    legacy_path.display()
+                ),
+            )
+        })?;
+        capture_screen::ScreenSegmentFrameIndex {
+            version: legacy.version,
+            entries: legacy
+                .entries
+                .into_iter()
+                .map(|entry| capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: entry.captured_at_unix_ms,
+                    frame_index: entry.frame_index,
+                    video_offset_ms: entry.video_offset_ms,
+                })
+                .collect(),
+        }
+    };
+
+    if let Some((captured_at_unix_ms, frame_index)) = parse_frame_identity_from_path(Path::new(&frame.file_path)) {
+        if let Some(entry) = index
+            .entries
+            .iter()
+            .find(|entry| entry.captured_at_unix_ms == captured_at_unix_ms && entry.frame_index == frame_index)
+        {
+            return Ok(Some(IndexedFramePreviewOffset {
+                video_offset_ms: entry.video_offset_ms,
+                exact_match: true,
+            }));
+        }
+    }
+
+    let target_unix_ms = frame_preview_unix_ms(frame);
+    let nearest = target_unix_ms.and_then(|target| {
+        index
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let captured_at = i128::from(entry.captured_at_unix_ms);
+                Some(((target - captured_at).abs(), entry.video_offset_ms))
+            })
+            .min_by_key(|(distance, _)| *distance)
+    });
+
+    Ok(nearest.map(|(_, video_offset_ms)| IndexedFramePreviewOffset {
+        video_offset_ms,
+        exact_match: false,
+    }))
 }
 
 fn read_nearest_segment_frame_preview(
@@ -963,6 +1077,10 @@ fn log_video_preview_exact_miss(
     actual_time: cidre::cm::Time,
 ) {
     let delta_ms = actual_time.sub(requested_time).abs().as_secs() * 1000.0;
+    if delta_ms < FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS {
+        return;
+    }
+
     crate::native_capture::debug_log::log_warn(format!(
         "[DEBUG-frame-preview] event=video_exact_miss path={} requested_time={} actual_time={} delta_ms={:.3}",
         video_path.display(),
@@ -973,21 +1091,76 @@ fn log_video_preview_exact_miss(
 }
 
 #[cfg(target_os = "macos")]
+fn sample_time_to_ms(time: cidre::cm::Time) -> Option<u64> {
+    if !time.is_numeric() || time.scale <= 0 {
+        return None;
+    }
+
+    let value_ms = i128::from(time.value)
+        .checked_mul(1_000)?
+        .checked_add(i128::from(time.scale / 2))?
+        / i128::from(time.scale);
+
+    u64::try_from(value_ms).ok()
+}
+
+#[cfg(target_os = "macos")]
 fn extract_preview_image_from_video_blocking(
     video_path: PathBuf,
     offset_seconds: f64,
 ) -> Result<(Vec<u8>, &'static str), String> {
-    use cidre::{av, blocks, cm, ns};
-    use std::sync::mpsc;
+    use cidre::{av, cm, cv, ns, vt};
 
     let video_url = ns::Url::with_fs_path_str(&video_path.to_string_lossy(), false);
     let asset = av::UrlAsset::with_url(&video_url, None)
         .ok_or_else(|| format!("failed to open video asset at {}", video_path.display()))?;
 
-    let mut image_generator = av::AssetImageGenerator::with_asset(&asset);
-    image_generator.set_applies_preferred_track_transform(true);
-    image_generator.set_requested_time_tolerance_before(cm::Time::zero());
-    image_generator.set_requested_time_tolerance_after(cm::Time::zero());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let video_path_for_tracks = video_path.clone();
+    asset.load_tracks_with_media_type_block(&av::MediaType::video(), move |tracks, error| {
+        let result = if let Some(tracks) = tracks {
+            Ok(tracks.retained())
+        } else if let Some(error) = error {
+            Err(format!(
+                "failed to load video tracks for {}: {error}",
+                video_path_for_tracks.display()
+            ))
+        } else {
+            Err(format!(
+                "failed to load video tracks for {}",
+                video_path_for_tracks.display()
+            ))
+        };
+        let _ = tx.send(result);
+    });
+    let video_tracks = rx
+        .recv_timeout(Duration::from_secs(20))
+        .map_err(|error| format!("timed out loading video tracks for {}: {error}", video_path.display()))??;
+    let video_track = video_tracks
+        .first()
+        .ok_or_else(|| format!("video asset has no video track at {}", video_path.display()))?;
+
+    let output_settings = ns::Dictionary::with_keys_values(
+        &[cv::pixel_buffer::keys::pixel_format().as_ns()],
+        &[cv::PixelFormat::_32_BGRA.to_ns_number().as_id_ref()],
+    );
+
+    let mut reader = av::AssetReader::with_asset(asset.as_ref())
+        .map_err(|_| format!("failed to create asset reader for {}", video_path.display()))?;
+    let mut reader_output = av::AssetReaderTrackOutput::with_track(video_track, Some(&output_settings))
+        .map_err(|_| format!("failed to create track reader output for {}", video_path.display()))?;
+    reader_output.set_always_copies_sample_data(false);
+    let reader_output_ref: &av::AssetReaderOutput =
+        unsafe { &*(&*reader_output as *const _ as *const av::AssetReaderOutput) };
+    if !reader.can_add_output(reader_output_ref) {
+        return Err(format!(
+            "failed to add video reader output for {}",
+            video_path.display()
+        ));
+    }
+    reader
+        .add_output(reader_output_ref)
+        .map_err(|_| format!("failed to attach video reader output for {}", video_path.display()))?;
 
     let duration_seconds = asset.duration().as_secs();
     let clamped_offset_seconds = if duration_seconds.is_finite() && duration_seconds > 0.0 {
@@ -995,49 +1168,90 @@ fn extract_preview_image_from_video_blocking(
     } else {
         0.0
     };
+    let requested_time = cm::Time::with_secs(clamped_offset_seconds, 600);
+    let requested_time_ms = sample_time_to_ms(requested_time)
+        .ok_or_else(|| format!("invalid requested preview time for {}", video_path.display()))?;
 
-    let request_time = cm::Time::with_secs(clamped_offset_seconds, 600);
-    let (sender, receiver) = mpsc::sync_channel(1);
-    let video_path_for_error = video_path.clone();
-    let mut callback = blocks::EscBlock::new3(
-        move |image: Option<&cidre::cg::Image>,
-              actual_time: cm::Time,
-              error: Option<&ns::Error>| {
-            let result = if let Some(error) = error {
-                Err(format!(
-                    "failed to extract preview from video {}: {error}",
-                    video_path_for_error.display()
-                ))
-            } else if request_time.is_valid()
-                && actual_time.is_valid()
-                && request_time != actual_time
-            {
-                log_video_preview_exact_miss(&video_path_for_error, request_time, actual_time);
-                if let Some(image) = image {
-                    preview_image_bytes_from_cg_image(image)
-                } else {
-                    Err(format!(
-                        "failed to extract preview from video {}: empty image result",
-                        video_path_for_error.display()
-                    ))
-                }
-            } else if let Some(image) = image {
-                preview_image_bytes_from_cg_image(image)
-            } else {
-                Err(format!(
-                    "failed to extract preview from video {}: empty image result",
-                    video_path_for_error.display()
-                ))
-            };
+    let started = reader.start_reading().map_err(|_| {
+        format!(
+            "failed to start reading video samples for preview extraction at {}",
+            video_path.display()
+        )
+    })?;
+    if !started {
+        if let Some(error) = reader.error() {
+            return Err(format!(
+                "failed to start reading video samples for preview extraction at {}: {error}",
+                video_path.display()
+            ));
+        }
+        return Err(format!(
+            "failed to start reading video samples for preview extraction at {}",
+            video_path.display()
+        ));
+    }
 
-            let _ = sender.send(result);
-        },
-    );
+    let mut best_match: Option<(u64, cidre::arc::R<cidre::cm::SampleBuf>)> = None;
 
-    image_generator.cg_image_for_time_ch(request_time, &mut callback);
-    receiver
-        .recv()
-        .map_err(|error| format!("failed to receive extracted preview bytes: {error}"))?
+    loop {
+        let sample_buf = reader_output
+            .next_sample_buf()
+            .map_err(|_| format!("failed to read video sample from {}", video_path.display()))?;
+        let Some(sample_buf) = sample_buf else {
+            break;
+        };
+
+        let Some(actual_time_ms) = sample_time_to_ms(sample_buf.pts()) else {
+            continue;
+        };
+        let delta_ms = actual_time_ms.abs_diff(requested_time_ms);
+
+        let should_replace = match &best_match {
+            Some((best_delta_ms, best_sample)) => {
+                delta_ms < *best_delta_ms
+                    || (delta_ms == *best_delta_ms && sample_buf.pts() < best_sample.pts())
+            }
+            None => true,
+        };
+        if should_replace {
+            best_match = Some((delta_ms, sample_buf.retained()));
+            if delta_ms == 0 {
+                break;
+            }
+        }
+
+        if actual_time_ms > requested_time_ms && delta_ms > 2_000 {
+            break;
+        }
+    }
+
+    let Some((delta_ms, sample_buf)) = best_match else {
+        return Err(format!(
+            "failed to extract preview from video {}: no decodable video sample found",
+            video_path.display()
+        ));
+    };
+
+    let actual_time = sample_buf.pts();
+    if requested_time.is_valid() && actual_time.is_valid() && requested_time != actual_time {
+        log_video_preview_exact_miss(&video_path, requested_time, actual_time);
+    }
+    let image_buf = sample_buf.image_buf().ok_or_else(|| {
+        format!(
+            "failed to extract preview from video {}: sample did not contain an image buffer (delta_ms={delta_ms})",
+            video_path.display()
+        )
+    })?;
+    let pixel_buf: &cidre::cv::PixelBuf = image_buf;
+    let cg_image = vt::cg_image_from_cv_pixel_buf(pixel_buf, None).map_err(|status| {
+        format!(
+            "failed to convert preview sample from video {} into CGImage (status: {:?})",
+            video_path.display(),
+            status
+        )
+    })?;
+
+    preview_image_bytes_from_cg_image(cg_image.as_ref())
 }
 
 #[cfg(target_os = "macos")]
@@ -1155,7 +1369,9 @@ async fn get_frame_preview_inner(
         );
     }
 
-    let offset_seconds = estimate_frame_preview_offset_seconds(&frame, &related_frames);
+    let offset_seconds = indexed_frame_preview_offset(&frame, &segment_paths.video_path)?
+        .map(|offset| offset.video_offset_ms as f64 / 1000.0)
+        .unwrap_or_else(|| estimate_frame_preview_offset_seconds(&frame, &related_frames));
     let (bytes, mime_type) = match extract_preview_image_from_video(&segment_paths.video_path, offset_seconds).await {
         Ok(result) => result,
         Err(video_error) => {
@@ -1336,6 +1552,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
         resolved_base_dir.base_dir.display()
     ));
 
+    run_frame_index_sidecar_conversion_startup_pass(&resolved_base_dir.base_dir);
     run_hidden_segment_workspace_repair_startup_pass(&infra, &resolved_base_dir.base_dir);
 
     spawn_processing_worker(infra, resolved_base_dir.base_dir, app_handle);
@@ -1376,6 +1593,29 @@ fn run_hidden_segment_workspace_repair_startup_pass(
     }
 }
 
+fn run_frame_index_sidecar_conversion_startup_pass(base_dir: &Path) {
+    let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
+        base_dir.to_path_buf(),
+    )
+    .recordings_root();
+    let recordings_root_display = recordings_root.display().to_string();
+
+    match convert_frame_index_sidecars_once(&recordings_root) {
+        Ok(result) => {
+            crate::native_capture::debug_log::log_info(format!(
+                "startup frame index sidecar conversion completed (recordings_root='{}', converted={}, skipped={})",
+                recordings_root_display, result.converted_count, result.skipped_count
+            ));
+        }
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "startup frame index sidecar conversion failed (recordings_root='{}'): {error}",
+                recordings_root_display
+            ));
+        }
+    }
+}
+
 fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: tauri::AppHandle) {
     let base_dir_display = base_dir.display().to_string();
     let processing_worker_infra = Arc::clone(&infra);
@@ -1386,6 +1626,7 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: 
         PROCESSING_WORKER_ERROR_RETRY_INTERVAL.as_millis()
     ));
 
+    let processing_worker_base_dir_display = base_dir_display.clone();
     tauri::async_runtime::spawn(async move {
         let mut consecutive_failures = 0u64;
 
@@ -1395,7 +1636,7 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: 
                     if consecutive_failures > 0 {
                         crate::native_capture::debug_log::log_info(format!(
                             "app infrastructure processing worker recovered after {} failed iteration(s) (base_dir='{}')",
-                            consecutive_failures, base_dir_display
+                            consecutive_failures, processing_worker_base_dir_display
                         ));
                         consecutive_failures = 0;
                     }
@@ -1406,7 +1647,7 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: 
                     if consecutive_failures > 0 {
                         crate::native_capture::debug_log::log_info(format!(
                             "app infrastructure processing worker recovered after {} failed iteration(s) (base_dir='{}')",
-                            consecutive_failures, base_dir_display
+                            consecutive_failures, processing_worker_base_dir_display
                         ));
                         consecutive_failures = 0;
                     }
@@ -1417,7 +1658,7 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: 
                     consecutive_failures += 1;
                     crate::native_capture::debug_log::log_error(format!(
                         "app infrastructure processing worker iteration failed (base_dir='{}', consecutive_failures={}, retry_in_ms={}): {error}",
-                        base_dir_display,
+                        processing_worker_base_dir_display,
                         consecutive_failures,
                         PROCESSING_WORKER_ERROR_RETRY_INTERVAL.as_millis()
                     ));
@@ -1479,6 +1720,89 @@ fn spawn_hidden_segment_workspace_repair_worker(
             }
         }
     });
+}
+
+fn convert_frame_index_sidecars_once(
+    recordings_root: &Path,
+) -> Result<FrameIndexSidecarConversionResult, String> {
+    if !recordings_root.exists() {
+        return Ok(FrameIndexSidecarConversionResult {
+            converted_count: 0,
+            skipped_count: 0,
+        });
+    }
+
+    let mut converted_count = 0_u64;
+    let mut skipped_count = 0_u64;
+    let mut stack = vec![recordings_root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = fs::read_dir(&dir)
+            .map_err(|error| format!("failed to read {}: {error}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("failed to read directory entry under {}: {error}", dir.display())
+            })?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|error| {
+                format!("failed to read file type for {}: {error}", path.display())
+            })?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".frame-index.json"))
+            {
+                continue;
+            }
+
+            let binary_path = capture_screen::screen_segment_frame_index_path(
+                &path.with_file_name(
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .expect("json sidecar file name should be valid utf-8")
+                        .replace(".frame-index.json", ".mov"),
+                ),
+            );
+            if binary_path.exists() {
+                skipped_count = skipped_count.saturating_add(1);
+                continue;
+            }
+
+            let bytes = fs::read(&path)
+                .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+            let legacy: LegacyScreenSegmentFrameIndex = serde_json::from_slice(&bytes).map_err(
+                |error| format!("failed to parse legacy sidecar {}: {error}", path.display()),
+            )?;
+            let binary = capture_screen::encode_screen_segment_frame_index(
+                &capture_screen::ScreenSegmentFrameIndex {
+                    version: legacy.version,
+                    entries: legacy
+                        .entries
+                        .into_iter()
+                        .map(|entry| capture_screen::ScreenSegmentFrameIndexEntry {
+                            captured_at_unix_ms: entry.captured_at_unix_ms,
+                            frame_index: entry.frame_index,
+                            video_offset_ms: entry.video_offset_ms,
+                        })
+                        .collect(),
+                },
+            );
+            fs::write(&binary_path, binary)
+                .map_err(|error| format!("failed to write {}: {error}", binary_path.display()))?;
+            converted_count = converted_count.saturating_add(1);
+        }
+    }
+
+    Ok(FrameIndexSidecarConversionResult {
+        converted_count,
+        skipped_count,
+    })
 }
 
 async fn repair_hidden_segment_workspaces_once(
@@ -2239,6 +2563,98 @@ mod tests {
         let offset_seconds = estimate_frame_preview_offset_seconds(&frame, &related_frames);
 
         assert!((offset_seconds - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn indexed_frame_preview_offset_prefers_exact_frame_identity_match() {
+        let dir = TestDir::new("frame-preview-indexed-exact");
+        let video_path = dir.path().join("session-preview-segment-0001.mov");
+        fs::write(&video_path, b"fake mov").expect("video fixture should exist");
+        let index_path = capture_screen::screen_segment_frame_index_path(&video_path);
+        let index = capture_screen::ScreenSegmentFrameIndex {
+            version: capture_screen::SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: vec![capture_screen::ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: 1_744_459_201_500,
+                frame_index: 42,
+                video_offset_ms: 875,
+            }],
+        };
+        fs::write(
+            &index_path,
+            capture_screen::encode_screen_segment_frame_index(&index),
+        )
+            .expect("index file should be written");
+
+        let frame = ::app_infra::Frame {
+            id: 2,
+            session_id: "session-preview".to_string(),
+            file_path: dir
+                .path()
+                .join(".session-preview-segment-0001/frames/frame-1744459201500-000042.jpg")
+                .to_string_lossy()
+                .to_string(),
+            captured_at: "2025-04-12T10:00:01.500Z".to_string(),
+            width: None,
+            height: None,
+            equivalence: ::app_infra::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let offset = indexed_frame_preview_offset(&frame, &video_path)
+            .expect("index lookup should succeed")
+            .expect("index entry should exist");
+
+        assert_eq!(offset.video_offset_ms, 875);
+        assert!(offset.exact_match);
+    }
+
+    #[test]
+    fn indexed_frame_preview_offset_reads_legacy_json_sidecar() {
+        let dir = TestDir::new("frame-preview-indexed-legacy-json");
+        let video_path = dir.path().join("session-preview-segment-0001.mov");
+        fs::write(&video_path, b"fake mov").expect("video fixture should exist");
+        let legacy_path = capture_screen::legacy_screen_segment_frame_index_path(&video_path);
+        fs::write(
+            &legacy_path,
+            br#"{"version":1,"entries":[{"captured_at_unix_ms":1744459201500,"frame_index":42,"artifact_file_name":"frame-1744459201500-000042.jpg","video_offset_ms":875}]}"#,
+        )
+        .expect("legacy json sidecar should be written");
+
+        let frame = ::app_infra::Frame {
+            id: 2,
+            session_id: "session-preview".to_string(),
+            file_path: dir
+                .path()
+                .join(".session-preview-segment-0001/frames/frame-1744459201500-000042.jpg")
+                .to_string_lossy()
+                .to_string(),
+            captured_at: "2025-04-12T10:00:01.500Z".to_string(),
+            width: None,
+            height: None,
+            equivalence: ::app_infra::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let offset = indexed_frame_preview_offset(&frame, &video_path)
+            .expect("legacy lookup should succeed")
+            .expect("legacy index entry should exist");
+
+        assert_eq!(offset.video_offset_ms, 875);
+        assert!(offset.exact_match);
     }
 
     #[cfg(target_os = "macos")]

@@ -2,7 +2,6 @@ use capture_types::{
     CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, ScreenResolution,
     ScreenResolutionPreset,
 };
-
 #[cfg(target_os = "macos")]
 use capture_writers::{
     append_audio_sample_to_writer, append_video_sample_to_writer, create_audio_asset_writer,
@@ -72,6 +71,24 @@ pub use equivalence::{
 pub type ScreenFrameArtifactHandler =
     std::sync::Arc<dyn Fn(ScreenFrameArtifact) + Send + Sync + 'static>;
 
+pub const SCREEN_SEGMENT_FRAME_INDEX_VERSION: u32 = 1;
+const SCREEN_SEGMENT_FRAME_INDEX_MAGIC: &[u8; 4] = b"SFI1";
+const SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN: usize = 12;
+const SCREEN_SEGMENT_FRAME_INDEX_ENTRY_LEN: usize = 24;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenSegmentFrameIndexEntry {
+    pub captured_at_unix_ms: u64,
+    pub frame_index: u64,
+    pub video_offset_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenSegmentFrameIndex {
+    pub version: u32,
+    pub entries: Vec<ScreenSegmentFrameIndexEntry>,
+}
+
 #[derive(Clone)]
 pub struct ScreenFrameExportConfig {
     pub on_frame_exported: ScreenFrameArtifactHandler,
@@ -105,6 +122,92 @@ fn screen_frame_artifact_path(
     captured_at_unix_ms: u64,
 ) -> PathBuf {
     artifact_dir.join(format!("frame-{captured_at_unix_ms}-{frame_index:06}.jpg"))
+}
+
+pub fn screen_segment_frame_index_path(video_path: &Path) -> PathBuf {
+    let parent = video_path.parent().unwrap_or_else(|| Path::new(""));
+    let stem = video_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("segment");
+    parent.join(format!("{stem}.frame-index.bin"))
+}
+
+pub fn legacy_screen_segment_frame_index_path(video_path: &Path) -> PathBuf {
+    let parent = video_path.parent().unwrap_or_else(|| Path::new(""));
+    let stem = video_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("segment");
+    parent.join(format!("{stem}.frame-index.json"))
+}
+
+pub fn encode_screen_segment_frame_index(index: &ScreenSegmentFrameIndex) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(
+        SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN
+            + index.entries.len().saturating_mul(SCREEN_SEGMENT_FRAME_INDEX_ENTRY_LEN),
+    );
+    bytes.extend_from_slice(SCREEN_SEGMENT_FRAME_INDEX_MAGIC);
+    bytes.extend_from_slice(&index.version.to_le_bytes());
+    bytes.extend_from_slice(&(index.entries.len() as u32).to_le_bytes());
+    for entry in &index.entries {
+        bytes.extend_from_slice(&entry.captured_at_unix_ms.to_le_bytes());
+        bytes.extend_from_slice(&entry.frame_index.to_le_bytes());
+        bytes.extend_from_slice(&entry.video_offset_ms.to_le_bytes());
+    }
+    bytes
+}
+
+pub fn decode_screen_segment_frame_index(bytes: &[u8]) -> Result<ScreenSegmentFrameIndex, String> {
+    if bytes.len() < SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN {
+        return Err("frame index payload is too short".to_string());
+    }
+    if &bytes[0..4] != SCREEN_SEGMENT_FRAME_INDEX_MAGIC {
+        return Err("frame index payload has invalid magic".to_string());
+    }
+
+    let version = u32::from_le_bytes(bytes[4..8].try_into().expect("version bytes"));
+    let count = u32::from_le_bytes(bytes[8..12].try_into().expect("count bytes")) as usize;
+    let expected_len = SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN
+        .checked_add(count.saturating_mul(SCREEN_SEGMENT_FRAME_INDEX_ENTRY_LEN))
+        .ok_or_else(|| "frame index payload length overflowed".to_string())?;
+    if bytes.len() != expected_len {
+        return Err(format!(
+            "frame index payload length {} did not match expected {}",
+            bytes.len(),
+            expected_len
+        ));
+    }
+
+    let mut entries = Vec::with_capacity(count);
+    let mut offset = SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN;
+    while offset < bytes.len() {
+        let captured_at_unix_ms = u64::from_le_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .expect("captured_at bytes"),
+        );
+        let frame_index = u64::from_le_bytes(
+            bytes[offset + 8..offset + 16]
+                .try_into()
+                .expect("frame_index bytes"),
+        );
+        let video_offset_ms = u64::from_le_bytes(
+            bytes[offset + 16..offset + 24]
+                .try_into()
+                .expect("video_offset bytes"),
+        );
+        entries.push(ScreenSegmentFrameIndexEntry {
+            captured_at_unix_ms,
+            frame_index,
+            video_offset_ms,
+        });
+        offset += SCREEN_SEGMENT_FRAME_INDEX_ENTRY_LEN;
+    }
+
+    Ok(ScreenSegmentFrameIndex { version, entries })
 }
 
 #[cfg(target_os = "macos")]
@@ -1000,7 +1103,14 @@ struct ScreenFrameExportRuntime {
     callback_queue: cidre::arc::R<dispatch::Queue>,
     on_frame_exported: ScreenFrameArtifactHandler,
     first_error: Arc<Mutex<Option<CaptureErrorResponse>>>,
+    segment_frame_index: Arc<Mutex<ScreenSegmentFrameIndexState>>,
     next_frame_index: u64,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Default)]
+struct ScreenSegmentFrameIndexState {
+    entries: Vec<ScreenSegmentFrameIndexEntry>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1011,6 +1121,45 @@ impl std::fmt::Debug for ScreenFrameExportRuntime {
             .field("next_frame_index", &self.next_frame_index)
             .finish_non_exhaustive()
     }
+}
+
+#[cfg(target_os = "macos")]
+fn push_screen_segment_frame_index_entry(
+    state: &Arc<Mutex<ScreenSegmentFrameIndexState>>,
+    entry: ScreenSegmentFrameIndexEntry,
+) {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entries
+        .push(entry);
+}
+
+#[cfg(target_os = "macos")]
+fn persist_screen_segment_frame_index(
+    screen_video_output_file: &str,
+    frame_export: &ScreenFrameExportRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    let entries = frame_export
+        .segment_frame_index
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entries
+        .clone();
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let index = finalized_screen_segment_frame_index(screen_video_output_file, &entries)?;
+    let index_path = screen_segment_frame_index_path(Path::new(screen_video_output_file));
+    let bytes = encode_screen_segment_frame_index(&index);
+    std::fs::write(&index_path, bytes).map_err(|error| CaptureErrorResponse {
+        code: "io_error".to_string(),
+        message: format!(
+            "Failed to write screen segment frame index {}: {error}",
+            index_path.display()
+        ),
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1041,6 +1190,226 @@ fn store_first_stream_output_error(
     if first_error.is_none() {
         *first_error = Some(error);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn sample_time_to_ms(time: cidre::cm::Time) -> Option<u64> {
+    if !time.is_numeric() || time.scale <= 0 {
+        return None;
+    }
+
+    let value_ms = i128::from(time.value)
+        .checked_mul(1_000)?
+        .checked_add(i128::from(time.scale / 2))?
+        / i128::from(time.scale);
+
+    u64::try_from(value_ms).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn finalized_screen_segment_frame_index(
+    screen_video_output_file: &str,
+    entries: &[ScreenSegmentFrameIndexEntry],
+) -> Result<ScreenSegmentFrameIndex, CaptureErrorResponse> {
+    use cidre::{av, cv, ns};
+
+    if entries.is_empty() {
+        return Ok(ScreenSegmentFrameIndex {
+            version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: Vec::new(),
+        });
+    }
+
+    let video_url = ns::Url::with_fs_path_str(screen_video_output_file, false);
+    let asset = av::UrlAsset::with_url(&video_url, None).ok_or_else(|| CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message: format!(
+            "Failed to open finalized screen recording for frame index extraction: {screen_video_output_file}"
+        ),
+    })?;
+    let video_tracks = load_asset_tracks_with_timeout(
+        asset.as_ref(),
+        av::MediaType::video(),
+        "capture_output_processing_failed",
+        "Timed out while loading finalized screen recording video track",
+    )?;
+    let video_track = video_tracks.first().ok_or_else(|| CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message: format!(
+            "Finalized screen recording has no video track for frame index extraction: {screen_video_output_file}"
+        ),
+    })?;
+
+    let mut reader =
+        av::AssetReader::with_asset(asset.as_ref()).map_err(|_| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to create asset reader for finalized screen frame index extraction: {screen_video_output_file}"
+            ),
+        })?;
+    let output_settings = ns::Dictionary::with_keys_values(
+        &[cv::pixel_buffer::keys::pixel_format().as_ns()],
+        &[cv::PixelFormat::_32_BGRA.to_ns_number().as_id_ref()],
+    );
+    let mut reader_output = av::AssetReaderTrackOutput::with_track(video_track, Some(&output_settings))
+        .map_err(|_| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to create video track reader output for finalized frame index extraction: {screen_video_output_file}"
+            ),
+        })?;
+    reader_output.set_always_copies_sample_data(false);
+
+    let reader_output_ref: &av::AssetReaderOutput =
+        unsafe { &*(&*reader_output as *const _ as *const av::AssetReaderOutput) };
+    if !reader.can_add_output(reader_output_ref) {
+        return Err(CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to add video reader output for finalized frame index extraction: {screen_video_output_file}"
+            ),
+        });
+    }
+    reader
+        .add_output(reader_output_ref)
+        .map_err(|_| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to attach video reader output for finalized frame index extraction: {screen_video_output_file}"
+            ),
+        })?;
+
+    let started = reader.start_reading().map_err(|_| CaptureErrorResponse {
+        code: "capture_output_processing_failed".to_string(),
+        message: format!(
+            "Failed to start reading finalized screen recording for frame index extraction: {screen_video_output_file}"
+        ),
+    })?;
+    if !started {
+        if let Some(error) = reader.error() {
+            return Err(error_with_ns_error(
+                "capture_output_processing_failed",
+                "Failed to start reading finalized screen recording for frame index extraction",
+                error.as_ref(),
+            ));
+        }
+        return Err(CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to start reading finalized screen recording for frame index extraction: {screen_video_output_file}"
+            ),
+        });
+    }
+
+    let mut finalized_entries = Vec::with_capacity(entries.len());
+    let mut entry_iter = entries.iter();
+    let mut next_entry = entry_iter.next();
+    let mut first_sample_offset_ms: Option<u64> = None;
+
+    while let Some(entry) = next_entry {
+        let sample_buf = reader_output
+            .next_sample_buf()
+            .map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to read video sample while building finalized frame index: {screen_video_output_file}"
+                ),
+            })?;
+        let Some(sample_buf) = sample_buf else {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Finalized screen recording ended before frame index extraction consumed all indexed frames: {screen_video_output_file}"
+                ),
+            });
+        };
+
+        let sample_offset_ms = sample_time_to_ms(sample_buf.pts()).ok_or_else(|| {
+            CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Finalized screen recording sample had non-numeric PTS during frame index extraction: {screen_video_output_file}"
+                ),
+            }
+        })?;
+        let first_sample_offset_ms = *first_sample_offset_ms.get_or_insert(sample_offset_ms);
+        finalized_entries.push(ScreenSegmentFrameIndexEntry {
+            captured_at_unix_ms: entry.captured_at_unix_ms,
+            frame_index: entry.frame_index,
+            video_offset_ms: sample_offset_ms.saturating_sub(first_sample_offset_ms),
+        });
+        next_entry = entry_iter.next();
+    }
+
+    match reader.status() {
+        cidre::av::asset::ReaderStatus::Completed | cidre::av::asset::ReaderStatus::Reading => {}
+        cidre::av::asset::ReaderStatus::Failed => {
+            if let Some(error) = reader.error() {
+                return Err(error_with_ns_error(
+                    "capture_output_processing_failed",
+                    "Finalized screen frame index reader failed",
+                    error.as_ref(),
+                ));
+            }
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Finalized screen frame index reader failed".to_string(),
+            });
+        }
+        status => {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Finalized screen frame index reader ended unexpectedly (status: {:?})",
+                    status
+                ),
+            });
+        }
+    }
+
+    if !screen_segment_frame_index_offsets_are_monotonic(&finalized_entries) {
+        capture_runtime::debug_log!(
+            "[capture-screen] finalized screen frame index offsets regressed for {}",
+            screen_video_output_file
+        );
+    }
+
+    Ok(ScreenSegmentFrameIndex {
+        version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+        entries: finalized_entries,
+    })
+}
+
+pub fn screen_segment_frame_index_offsets_are_monotonic(entries: &[ScreenSegmentFrameIndexEntry]) -> bool {
+    entries
+        .windows(2)
+        .all(|pair| pair[0].video_offset_ms <= pair[1].video_offset_ms)
+}
+
+#[cfg(target_os = "macos")]
+pub fn rebuild_screen_segment_frame_index_from_video(
+    video_path: &Path,
+    entries: &[ScreenSegmentFrameIndexEntry],
+) -> Result<ScreenSegmentFrameIndex, String> {
+    finalized_screen_segment_frame_index(&video_path.to_string_lossy(), entries).map_err(|error| {
+        format!(
+            "failed to rebuild screen segment frame index from {}: [{}] {}",
+            video_path.display(),
+            error.code,
+            error.message
+        )
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn rebuild_screen_segment_frame_index_from_video(
+    video_path: &Path,
+    _entries: &[ScreenSegmentFrameIndexEntry],
+) -> Result<ScreenSegmentFrameIndex, String> {
+    Err(format!(
+        "rebuilding screen segment frame index from {} is only supported on macOS",
+        video_path.display()
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -1105,6 +1474,7 @@ fn run_nested_objc_exception_and_panic_boundary_for_test() {
 
 #[cfg(target_os = "macos")]
 struct PreparedScreenFrameExport {
+    frame_index: u64,
     file_path: PathBuf,
     captured_at_unix_ms: u64,
     width: Option<u32>,
@@ -1132,6 +1502,7 @@ fn prepare_screen_frame_export(
         .unwrap_or((None, None));
 
     PreparedScreenFrameExport {
+        frame_index,
         file_path: screen_frame_artifact_path(
             &runtime.artifact_dir,
             frame_index,
@@ -1227,7 +1598,13 @@ fn export_screen_frame_artifact(
     let callback_queue = runtime.callback_queue.retained();
     let on_frame_exported = runtime.on_frame_exported.clone();
     let first_error = runtime.first_error.clone();
+    let segment_frame_index = runtime.segment_frame_index.clone();
     let file_path = prepared.file_path.clone();
+    let pending_index_entry = Some(ScreenSegmentFrameIndexEntry {
+        captured_at_unix_ms: prepared.captured_at_unix_ms,
+        frame_index: prepared.frame_index,
+        video_offset_ms: 0,
+    });
 
     callback_queue.async_once(move || {
         if let Err(error) = save_screen_sample_as_jpeg(sample_buf.as_ref(), &file_path) {
@@ -1239,6 +1616,10 @@ fn export_screen_frame_artifact(
                 error.message
             );
             return;
+        }
+
+        if let Some(entry) = pending_index_entry {
+            push_screen_segment_frame_index_entry(&segment_frame_index, entry);
         }
 
         let captured_frame_equivalence = match prepared.captured_frame_equivalence {
@@ -1296,6 +1677,7 @@ fn screen_frame_export_runtime(
         callback_queue: dispatch::Queue::serial_with_ar_pool(),
         on_frame_exported: config.on_frame_exported,
         first_error: Arc::new(Mutex::new(None)),
+        segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
         next_frame_index: 0,
     }))
 }
@@ -1342,16 +1724,6 @@ mod stream_output_delegate {
                     )
                 });
 
-                if let Some(frame_export) = ctx.frame_export.as_mut() {
-                    if let Err(error) = export_screen_frame_artifact(
-                        frame_export,
-                        sample_buf.retained(),
-                        captured_frame_equivalence,
-                    ) {
-                        store_first_stream_output_error(&mut ctx.first_error, error);
-                    }
-                }
-
                 if ctx.screen_video_writer.is_none() {
                     let Some(output_file) = ctx.screen_video_output_file.as_deref() else {
                         return;
@@ -1371,9 +1743,26 @@ mod stream_output_delegate {
                     }
                 }
 
-                ctx.screen_video_writer
-                    .as_mut()
-                    .map(|writer| append_video_sample_to_writer(writer, sample_buf))
+                match ctx.screen_video_writer.as_mut() {
+                    Some(writer) => match append_video_sample_to_writer(writer, sample_buf) {
+                        Ok(appended) => {
+                            if appended {
+                                if let Some(frame_export) = ctx.frame_export.as_mut() {
+                                    if let Err(error) = export_screen_frame_artifact(
+                                        frame_export,
+                                        sample_buf.retained(),
+                                        captured_frame_equivalence,
+                                    ) {
+                                        store_first_stream_output_error(&mut ctx.first_error, error);
+                                    }
+                                }
+                            }
+                            None
+                        }
+                        Err(error) => Some(Err(error)),
+                    },
+                    None => None,
+                }
             }
             cidre::sc::OutputType::Audio => {
                 super::maybe_mark_system_audio_activity_for_sample(sample_buf);
@@ -1999,7 +2388,10 @@ impl ScreenCaptureKitCaptureSession {
             }
         }
 
-        if let Err(error) = finalize_screen_frame_export(ctx.frame_export.as_mut()) {
+        if let Err(error) = finalize_screen_frame_export(
+            ctx.screen_video_output_file.as_deref(),
+            ctx.frame_export.as_mut(),
+        ) {
             failures.push(format!("screen frame export failed: {}", error.message));
         }
 
@@ -2855,6 +3247,7 @@ fn synchronize_stream_output_queue(queue: Option<&dispatch::Queue>) {
 
 #[cfg(target_os = "macos")]
 fn finalize_screen_frame_export(
+    screen_video_output_file: Option<&str>,
     frame_export: Option<&mut ScreenFrameExportRuntime>,
 ) -> Result<(), CaptureErrorResponse> {
     let Some(frame_export) = frame_export else {
@@ -2862,6 +3255,13 @@ fn finalize_screen_frame_export(
     };
 
     synchronize_stream_output_queue(Some(frame_export.callback_queue.as_ref()));
+
+    if let Some(screen_video_output_file) = screen_video_output_file {
+        if let Err(error) = persist_screen_segment_frame_index(screen_video_output_file, frame_export)
+        {
+            log_capture_error("ScreenCaptureKit frame index finalization failed", &error);
+        }
+    }
 
     if let Some(error) = take_frame_export_error(&frame_export.first_error) {
         log_capture_error("ScreenCaptureKit frame export finalization failed", &error);
@@ -2872,6 +3272,7 @@ fn finalize_screen_frame_export(
 
 #[cfg(target_os = "macos")]
 fn finalize_secondary_stream_outputs(
+    screen_video_output_file: Option<&str>,
     system_audio_output_file: Option<&str>,
     system_audio_writer: Option<&mut AudioAssetWriterState>,
     system_audio_tail_trim_seconds: u64,
@@ -2896,7 +3297,7 @@ fn finalize_secondary_stream_outputs(
         }
     }
 
-    finalize_screen_frame_export(frame_export)?;
+    finalize_screen_frame_export(screen_video_output_file, frame_export)?;
 
     capture_writers::aggregate_output_processing_failures(failures)
 }
@@ -2974,6 +3375,7 @@ fn finalize_stream_output_context(
         validate_screen_video_file,
         || {
             finalize_secondary_stream_outputs(
+                context.screen_video_output_file.as_deref(),
                 context.system_audio_output_file.as_deref(),
                 context.system_audio_writer.as_mut(),
                 context.system_audio_tail_trim_seconds,
@@ -3581,6 +3983,66 @@ mod tests {
     use super::*;
     #[cfg(target_os = "macos")]
     use std::process::Command;
+
+    #[test]
+    fn screen_segment_frame_index_binary_round_trips() {
+        let index = ScreenSegmentFrameIndex {
+            version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: vec![
+                ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 1,
+                    frame_index: 2,
+                    video_offset_ms: 3,
+                },
+                ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 4,
+                    frame_index: 5,
+                    video_offset_ms: 6,
+                },
+            ],
+        };
+
+        let bytes = encode_screen_segment_frame_index(&index);
+        let decoded = decode_screen_segment_frame_index(&bytes).expect("binary frame index should decode");
+
+        assert_eq!(decoded, index);
+    }
+
+    #[test]
+    fn screen_segment_frame_index_offsets_monotonic_check_rejects_swapped_adjacent_offsets() {
+        let entries = vec![
+            ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: 1,
+                frame_index: 57,
+                video_offset_ms: 57_067,
+            },
+            ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: 2,
+                frame_index: 58,
+                video_offset_ms: 56_067,
+            },
+        ];
+
+        assert!(!screen_segment_frame_index_offsets_are_monotonic(&entries));
+    }
+
+    #[test]
+    fn screen_segment_frame_index_offsets_monotonic_check_accepts_increasing_offsets() {
+        let entries = vec![
+            ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: 1,
+                frame_index: 57,
+                video_offset_ms: 56_067,
+            },
+            ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: 2,
+                frame_index: 58,
+                video_offset_ms: 57_067,
+            },
+        ];
+
+        assert!(screen_segment_frame_index_offsets_are_monotonic(&entries));
+    }
 
     #[cfg(target_os = "macos")]
     fn screen_activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -4358,10 +4820,11 @@ mod tests {
                 code: "capture_output_processing_failed".to_string(),
                 message: "Failed to finalize JPEG screen frame artifact: boom".to_string(),
             }))),
+            segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
             next_frame_index: 0,
         };
 
-        let result = finalize_screen_frame_export(Some(&mut runtime));
+        let result = finalize_screen_frame_export(None, Some(&mut runtime));
 
         assert!(result.is_ok());
         assert!(take_frame_export_error(&runtime.first_error).is_none());
@@ -4379,6 +4842,7 @@ mod tests {
                 code: "capture_output_processing_failed".to_string(),
                 message: "Failed to finalize JPEG screen frame artifact: boom".to_string(),
             }))),
+            segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
             next_frame_index: 0,
         };
 
@@ -4387,11 +4851,24 @@ mod tests {
             completed_for_queue.store(true, Ordering::SeqCst);
         });
 
-        let result = finalize_screen_frame_export(Some(&mut runtime));
+        let result = finalize_screen_frame_export(None, Some(&mut runtime));
 
         assert!(result.is_ok());
         assert!(completed.load(Ordering::SeqCst));
         assert!(take_frame_export_error(&runtime.first_error).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_segment_frame_index_path_uses_video_stem() {
+        let path = screen_segment_frame_index_path(Path::new(
+            "/tmp/2026/04/12/session-preview-segment-0001.mov",
+        ));
+
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/2026/04/12/session-preview-segment-0001.frame-index.bin")
+        );
     }
 
     #[cfg(target_os = "macos")]
