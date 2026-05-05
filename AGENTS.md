@@ -42,6 +42,7 @@
 - `apps/desktop/src-tauri/src/native_capture_output.rs` screen finalization now rejects existing-but-unopenable screen `.mov` files instead of treating mere file existence as success; invalid rotated segments should fail finalization rather than being committed and later breaking frame preview extraction.
 - The dashboard inactivity debug surface has two different audio notions: `idleDebug.activitySources` carries threshold-qualified microphone/system-audio idle used for inactivity decisions, while `microphoneActivityLastUnixMs` / `systemAudioActivityLastUnixMs` are raw sample timestamps and should be labeled as samples rather than activity.
 - Audio inactivity decisions run on the segment loop's coarse poll interval (currently 1s), so microphone/system-audio producers must preserve a peak-since-last-poll signal for inactivity evaluation; a single latest raw sample can miss brief real audio bursts.
+- Per-family inactivity pause/resume decisions must treat unrequested sources as ineligible. Do not let microphone/system-audio family policies fall back to `internal_fallback` for unrequested sources, and keep screen guarded in both the family predicate and `pause_screen_for_inactivity_with_app_handle`; otherwise the `Recording Lifecycle` can emit repeated noop pause logs or latch incorrect paused state for sources that were never requested.
 
 ## Verification
 - UI-only changes: `bun run check`.
