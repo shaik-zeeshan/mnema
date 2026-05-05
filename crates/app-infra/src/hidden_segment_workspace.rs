@@ -10,6 +10,45 @@ use crate::{
 
 use std::path::PathBuf;
 
+fn visible_segment_appears_openable(path: &Path) -> bool {
+    const SEARCH_WINDOW_BYTES: u64 = 256 * 1024;
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    let file_len = metadata.len();
+    if file_len < 8 {
+        return false;
+    }
+
+    let prefix_len = file_len.min(SEARCH_WINDOW_BYTES) as usize;
+    let mut prefix = vec![0_u8; prefix_len];
+    if std::io::Read::read_exact(&mut file, &mut prefix).is_err() {
+        return false;
+    }
+    if prefix.windows(4).any(|window| window == b"moov") {
+        return true;
+    }
+
+    if file_len <= SEARCH_WINDOW_BYTES {
+        return false;
+    }
+
+    let suffix_len = file_len.min(SEARCH_WINDOW_BYTES) as usize;
+    if std::io::Seek::seek(&mut file, std::io::SeekFrom::End(-(suffix_len as i64))).is_err() {
+        return false;
+    }
+    let mut suffix = vec![0_u8; suffix_len];
+    if std::io::Read::read_exact(&mut file, &mut suffix).is_err() {
+        return false;
+    }
+
+    suffix.windows(4).any(|window| window == b"moov")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HiddenSegmentWorkspacePaths {
@@ -120,6 +159,8 @@ impl HiddenSegmentWorkspaceRepair {
             .list_nonterminal_ocr_references_for_workspace(&workspace_prefix)
             .await?;
         let visible_segment_exists = Path::new(&paths.visible_segment_path).exists();
+        let visible_segment_usable = visible_segment_exists
+            && visible_segment_appears_openable(Path::new(&paths.visible_segment_path));
 
         let disposition = if frame_count == 0 {
             let has_frame_artifacts = hidden_workspace_has_frame_artifacts(Path::new(&paths.frames_dir));
@@ -141,7 +182,7 @@ impl HiddenSegmentWorkspaceRepair {
             )
         }) {
             SegmentWorkspaceCleanupDisposition::ReferencedByIncompleteBatch
-        } else if !visible_segment_exists {
+        } else if !visible_segment_usable {
             SegmentWorkspaceCleanupDisposition::MissingVisibleSegmentSibling
         } else if !batch_references.is_empty() {
             SegmentWorkspaceCleanupDisposition::CompletedOnly
@@ -372,6 +413,11 @@ mod tests {
             .block_on(test);
     }
 
+    fn write_openable_visible_segment(path: &Path) {
+        fs::write(path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10moovtrak")
+            .expect("visible segment should exist");
+    }
+
     #[test]
     fn hidden_segment_workspace_paths_resolve_visible_segment_path() {
         let frame_path = PathBuf::from(
@@ -485,8 +531,7 @@ mod tests {
             let workspace_dir = segment_dir.join(".session-live-segment-0001");
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames dir should exist");
-            fs::write(segment_dir.join("session-live-segment-0001.mov"), b"mov")
-                .expect("visible segment should exist");
+            write_openable_visible_segment(&segment_dir.join("session-live-segment-0001.mov"));
             fs::write(frames_dir.join("frame-1.jpg"), b"jpg")
                 .expect("frame artifact should exist");
 
@@ -573,8 +618,7 @@ mod tests {
             let workspace_dir = segment_dir.join(".session-preview-segment-0003");
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames dir should exist");
-            fs::write(segment_dir.join("session-preview-segment-0003.mov"), b"mov")
-                .expect("visible segment should exist");
+            write_openable_visible_segment(&segment_dir.join("session-preview-segment-0003.mov"));
             let frame_path = frames_dir.join("frame-1.png");
 
             let batch = store
@@ -638,8 +682,7 @@ mod tests {
             let workspace_dir = segment_dir.join(".session-preview-segment-0004");
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames dir should exist");
-            fs::write(segment_dir.join("session-preview-segment-0004.mov"), b"mov")
-                .expect("visible segment should exist");
+            write_openable_visible_segment(&segment_dir.join("session-preview-segment-0004.mov"));
             let frame_path = frames_dir.join("frame-1.png");
 
             let batch = store
@@ -703,6 +746,89 @@ mod tests {
     }
 
     #[test]
+    fn classify_hidden_segment_workspace_preserves_completed_workspace_when_visible_segment_is_invalid() {
+        run_async_test(async {
+            let dir = TestDir::new("classify-invalid-visible-segment");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let processing = crate::ProcessingStore::new(pool.clone());
+            let store = crate::FrameBatchStore::new(pool.clone());
+            let repair = HiddenSegmentWorkspaceRepair::new(store.clone(), processing.clone());
+
+            let segment_dir = dir.path().join("2026/04/12");
+            let workspace_dir = segment_dir.join(".session-preview-segment-0005");
+            let frames_dir = workspace_dir.join("frames");
+            std::fs::create_dir_all(&frames_dir).expect("frames dir should exist");
+            std::fs::write(
+                segment_dir.join("session-preview-segment-0005.mov"),
+                b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10mdatjunk",
+            )
+            .expect("invalid visible segment should exist");
+            let frame_path = frames_dir.join("frame-1.png");
+
+            let batch = store
+                .upsert_open_batch_for_frame("session-preview", "2026-04-12T10:00:00Z")
+                .await
+                .expect("batch should persist");
+            let frame = processing
+                .insert_frame(&NewFrame::new(
+                    "session-preview",
+                    frame_path.to_string_lossy().to_string(),
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+            store
+                .attach_frame_to_batch(frame.id, batch.id, &frame.captured_at)
+                .await
+                .expect("frame should attach");
+            let job = processing
+                .enqueue_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should queue");
+            let claimed = processing
+                .claim_queued_job(job.id)
+                .await
+                .expect("job should claim")
+                .expect("job should exist");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+            processing
+                .mark_job_failed(job.id, Some("terminal for cleanup"))
+                .await
+                .expect("job should be terminal");
+            store
+                .close_completed_batches_for_session("session-preview", None)
+                .await
+                .expect("batch should close");
+            store
+                .mark_batch_processing(batch.id)
+                .await
+                .expect("batch should mark processing");
+            store
+                .mark_batch_completed(batch.id, None)
+                .await
+                .expect("batch should complete");
+
+            let info = repair
+                .classify_hidden_segment_workspace(&workspace_dir)
+                .await
+                .expect("classification should succeed")
+                .expect("classification should exist");
+
+            assert_eq!(
+                info.disposition,
+                SegmentWorkspaceCleanupDisposition::MissingVisibleSegmentSibling
+            );
+            assert!(!info.safe_to_remove);
+            assert!(info.visible_segment_exists);
+            assert!(info.nonterminal_ocr_references.is_empty());
+            assert_eq!(info.batch_references[0].status, FrameBatchStatus::Completed);
+        });
+    }
+
+    #[test]
     fn repair_hidden_segment_workspaces_removes_only_safe_workspaces() {
         run_async_test(async {
             let dir = TestDir::new("repair-safe-workspaces");
@@ -719,8 +845,7 @@ mod tests {
             let safe_workspace_dir = day_dir.join(".session-safe-segment-0001");
             let safe_frames_dir = safe_workspace_dir.join("frames");
             std::fs::create_dir_all(&safe_frames_dir).expect("safe frames dir should exist");
-            std::fs::write(day_dir.join("session-safe-segment-0001.mov"), b"mov")
-                .expect("safe visible segment should exist");
+            write_openable_visible_segment(&day_dir.join("session-safe-segment-0001.mov"));
             let safe_frame_path = safe_frames_dir.join("frame-1.jpg");
             std::fs::write(&safe_frame_path, b"jpg").expect("safe frame should exist");
 
@@ -889,8 +1014,7 @@ mod tests {
 
             std::fs::create_dir_all(workspace_dir.join("frames"))
                 .expect("active frames dir should exist");
-            std::fs::write(day_dir.join("active-screen-session-segment-0001.mov"), b"mov")
-                .expect("visible segment should exist");
+            write_openable_visible_segment(&day_dir.join("active-screen-session-segment-0001.mov"));
 
             let result = repair
                 .repair_hidden_segment_workspaces_with_context(

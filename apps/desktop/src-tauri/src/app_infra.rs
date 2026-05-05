@@ -957,6 +957,34 @@ fn preview_image_bytes_from_cg_image(
 }
 
 #[cfg(target_os = "macos")]
+fn video_preview_request_matches_actual_time(
+    requested_time: cidre::cm::Time,
+    actual_time: cidre::cm::Time,
+) -> bool {
+    if requested_time.is_invalid() || actual_time.is_invalid() {
+        return false;
+    }
+
+    requested_time == actual_time
+}
+
+#[cfg(target_os = "macos")]
+fn log_video_preview_exact_miss(
+    video_path: &Path,
+    requested_time: cidre::cm::Time,
+    actual_time: cidre::cm::Time,
+) {
+    let delta_ms = actual_time.sub(requested_time).abs().as_secs() * 1000.0;
+    crate::native_capture::debug_log::log_warn(format!(
+        "[DEBUG-frame-preview] event=video_exact_miss path={} requested_time={} actual_time={} delta_ms={:.3}",
+        video_path.display(),
+        requested_time.as_secs(),
+        actual_time.as_secs(),
+        delta_ms,
+    ));
+}
+
+#[cfg(target_os = "macos")]
 fn extract_preview_image_from_video_blocking(
     video_path: PathBuf,
     offset_seconds: f64,
@@ -970,6 +998,8 @@ fn extract_preview_image_from_video_blocking(
 
     let mut image_generator = av::AssetImageGenerator::with_asset(&asset);
     image_generator.set_applies_preferred_track_transform(true);
+    image_generator.set_requested_time_tolerance_before(cm::Time::zero());
+    image_generator.set_requested_time_tolerance_after(cm::Time::zero());
 
     let duration_seconds = asset.duration().as_secs();
     let clamped_offset_seconds = if duration_seconds.is_finite() && duration_seconds > 0.0 {
@@ -983,12 +1013,20 @@ fn extract_preview_image_from_video_blocking(
     let video_path_for_error = video_path.clone();
     let mut callback = blocks::EscBlock::new3(
         move |image: Option<&cidre::cg::Image>,
-              _actual_time: cm::Time,
+              actual_time: cm::Time,
               error: Option<&ns::Error>| {
             let result = if let Some(error) = error {
                 Err(format!(
                     "failed to extract preview from video {}: {error}",
                     video_path_for_error.display()
+                ))
+            } else if !video_preview_request_matches_actual_time(request_time, actual_time) {
+                log_video_preview_exact_miss(&video_path_for_error, request_time, actual_time);
+                Err(format!(
+                    "failed to extract exact preview from video {}: requested_time={} actual_time={}",
+                    video_path_for_error.display(),
+                    request_time.as_secs(),
+                    actual_time.as_secs()
                 ))
             } else if let Some(image) = image {
                 preview_image_bytes_from_cg_image(image)
@@ -2208,6 +2246,55 @@ mod tests {
         let offset_seconds = estimate_frame_preview_offset_seconds(&frame, &related_frames);
 
         assert!((offset_seconds - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn video_preview_request_matches_exact_actual_time() {
+        let requested = cidre::cm::Time::with_secs(1.5, 600);
+        let actual = cidre::cm::Time::with_secs(1.5, 600);
+
+        assert!(video_preview_request_matches_actual_time(requested, actual));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn video_preview_request_rejects_non_exact_actual_time() {
+        let requested = cidre::cm::Time::with_secs(1.5, 600);
+        let actual = cidre::cm::Time::with_secs(1.0 / 600.0 + 1.5, 600);
+
+        assert!(!video_preview_request_matches_actual_time(requested, actual));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn video_preview_request_rejects_invalid_actual_time() {
+        let requested = cidre::cm::Time::with_secs(1.5, 600);
+
+        assert!(!video_preview_request_matches_actual_time(
+            requested,
+            cidre::cm::Time::invalid()
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn video_preview_exact_miss_log_includes_requested_actual_and_delta() {
+        let dir = TestDir::new("frame-preview-exact-miss-log");
+        let log_path = dir.path().join("native-capture-debug.log");
+        let requested = cidre::cm::Time::with_secs(1.5, 600);
+        let actual = cidre::cm::Time::with_secs(1.0 / 600.0 + 1.5, 600);
+
+        capture_runtime::configure_debug_log(true, Some(log_path.clone()));
+        log_video_preview_exact_miss(Path::new("/tmp/session-preview-segment-0001.mov"), requested, actual);
+        capture_runtime::configure_debug_log(false, None);
+
+        let contents = fs::read_to_string(&log_path).expect("exact miss log file should exist");
+        assert!(contents.contains("[DEBUG-frame-preview] event=video_exact_miss"));
+        assert!(contents.contains("path=/tmp/session-preview-segment-0001.mov"));
+        assert!(contents.contains("requested_time=1.5"));
+        assert!(contents.contains("actual_time=1.5016666666666667"));
+        assert!(contents.contains("delta_ms=1.667"));
     }
 
     #[test]
