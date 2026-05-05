@@ -9,6 +9,7 @@
     startCapture,
     stopCapture,
   } from "$lib/capture-controls.svelte";
+  import { initTheme } from "$lib/theme.svelte";
   interface Props {
     children: Snippet;
   }
@@ -22,6 +23,12 @@
 
   const devEnabled = $derived(developerOptions.value);
   const devLoaded = $derived(developerOptions.loaded);
+
+  // Initialize the global theme runtime during layout creation so theme
+  // resolution starts before the shell's first render instead of waiting for a
+  // post-render `$effect`. `initTheme` is idempotent and remains safe in the
+  // SPA-only setup.
+  initTheme();
 
   $effect(() => {
     loadDeveloperOptions();
@@ -182,6 +189,264 @@
     padding: 0;
   }
 
+  /* ── Semantic theme tokens ─────────────────────────────────────
+     Tokens live on `:root` so any descendant — including portaled or
+     `:global` styled content — can consume them. Two themes are defined:
+     dark (default, mirrors the prior hard-coded chrome exactly so this
+     slice is a no-op on first paint) and a bright, high-legibility light
+     theme. The active set is selected by `data-theme` on `<html>`, written
+     by `$lib/theme.svelte`. We deliberately avoid `prefers-color-scheme`
+     media queries here because the runtime owns the decision (the user
+     can pin `light`/`dark` explicitly via `appearance`). */
+  :global(:root) {
+    /* Dark theme — current chrome values, lifted verbatim. */
+    --app-bg: #0c0c0e;
+    --app-fg: #e2e2e8;
+    --app-fg-muted: #8a8aaa;
+    --app-fg-subtle: #45455a;
+
+    --app-titlebar-bg: #08080c;
+    --app-titlebar-border: #15151f;
+    --app-titlebar-title: #45455a;
+
+    --app-status-bg: #0a0a10;
+    --app-status-border: #161624;
+    --app-status-fg: #555574;
+    --app-status-dot: #2a2a3a;
+
+    --app-status-running-fg: #ff5d6c;
+    --app-status-running-border: #3a1820;
+    --app-status-running-dot: #ff3148;
+    --app-status-running-dot-glow: rgba(255, 49, 72, 0.18);
+
+    --app-status-paused-fg: #d6a14a;
+    --app-status-paused-border: #3a2818;
+    --app-status-paused-dot: #d6a14a;
+    --app-status-paused-dot-glow: rgba(214, 161, 74, 0.16);
+
+    --app-record-start-bg: #1a0f12;
+    --app-record-start-fg: #ff8a96;
+    --app-record-start-border: #3a1820;
+    --app-record-start-bg-hover: #2a1218;
+    --app-record-start-fg-hover: #ffb0b9;
+    --app-record-start-border-hover: #5a2030;
+
+    --app-record-stop-bg: #170d0f;
+    --app-record-stop-fg: #f0f0f5;
+    --app-record-stop-border: #4a1c26;
+    --app-record-stop-bg-hover: #2a1218;
+    --app-record-stop-border-hover: #6a2434;
+
+    --app-record-glyph-start: #ff3148;
+    --app-record-glyph-stop: #ff8a96;
+
+    --app-icon-fg: #8a8aaa;
+    --app-icon-fg-hover: #e2e2e8;
+    --app-icon-bg-hover: #1a1a2a;
+    --app-icon-border-hover: #2a2a3a;
+    --app-icon-bg-active: #14141f;
+    --app-icon-border-active: #2a2a3a;
+
+    /* Surface / control tokens shared by the dashboard, settings, and the
+       shared bits-ui-backed controls (Switch, Select, RadioGroup, Slider).
+       Keeping these centralized means each component declares the dark
+       palette once via these tokens and the light theme below flips them
+       in one place — no per-component palette duplication. */
+    --app-surface: #0e0e16;
+    --app-surface-raised: #13131a;
+    --app-surface-hover: #1a1a2a;
+    --app-surface-active: #131320;
+    --app-border: #1e1e2e;
+    --app-border-strong: #2a2a3a;
+    --app-border-hover: #3a3a5a;
+    --app-text-strong: #e2e2e8;
+    --app-text: #c0c0d0;
+    --app-text-muted: #7a7a9a;
+    --app-text-subtle: #44445a;
+    --app-text-faint: #33334a;
+    --app-accent: #3dffa0;
+    --app-accent-strong: #2a8a60;
+    --app-accent-bg: #0d1f15;
+    --app-accent-border: #1a4a30;
+    --app-accent-glow: rgba(61, 255, 160, 0.18);
+
+    --app-warn: #d6a14a;
+    --app-warn-strong: #c47a30;
+    --app-warn-bg: #1a1208;
+    --app-warn-border: #7a4a18;
+
+    --app-danger: #ff6b7a;
+    --app-danger-strong: #ff4455;
+    --app-danger-bg: #2e0f14;
+    --app-danger-bg-soft: #0e0a0a;
+    --app-danger-border: #4a1a20;
+    --app-danger-text: #ff8090;
+
+    --app-info: #60b0ff;
+    --app-info-strong: #4a6aaa;
+    --app-info-bg: #0c1a2e;
+    --app-info-border: #1a3050;
+
+    --app-neutral-bg: #1a1a2a;
+    --app-neutral-border: #2a2a3a;
+    --app-neutral-text: #7070a0;
+
+    --app-source-screen: #c0b0ff;
+    --app-source-screen-strong: #5a4aaa;
+    --app-source-screen-bg: #1a1a3a;
+    --app-source-screen-border: #2a2a5a;
+
+    --app-source-mic: #80d0a8;
+    --app-source-mic-strong: #4a8a6a;
+    --app-source-mic-bg: #0f2e1f;
+    --app-source-mic-border: #1a4a30;
+
+    --app-source-sysaudio: #b0c080;
+    --app-source-sysaudio-strong: #6a7a4a;
+    --app-source-sysaudio-bg: #2a2010;
+    --app-source-sysaudio-border: #4a3a18;
+
+    --app-overlay-bg: rgba(10, 10, 16, 0.78);
+    --app-overlay-bg-strong: rgba(10, 10, 16, 0.82);
+    --app-overlay-border: rgba(255, 255, 255, 0.06);
+
+    --app-ocr-box: rgba(120, 220, 160, 0.45);
+    --app-ocr-box-hover: rgba(120, 220, 160, 0.95);
+    --app-ocr-box-fill: rgba(120, 220, 160, 0.10);
+    --app-ocr-chip-bg: rgba(8, 14, 10, 0.96);
+    --app-ocr-chip-text: #eaffef;
+    --app-ocr-chip-border: rgba(120, 220, 160, 0.6);
+    --app-ocr-hover-shadow: rgba(0, 0, 0, 0.45);
+    --app-ocr-hover-inset: rgba(255, 255, 255, 0.04);
+    --app-ocr-chip-text-shadow: none;
+  }
+
+  /* Light theme — bright, neutral, high contrast. The accent stays in the
+     red family to preserve recording-status semantics; backgrounds and
+     borders flip to warm-cool greys so legibility on a 13px monospace body
+     remains strong. */
+  :global([data-theme="light"]) {
+    --app-bg: #f6f6f4;
+    --app-fg: #14141a;
+    --app-fg-muted: #5a5a6a;
+    --app-fg-subtle: #8a8a9a;
+
+    --app-titlebar-bg: #ececea;
+    --app-titlebar-border: #d4d4d2;
+    --app-titlebar-title: #9a9aa8;
+
+    --app-status-bg: #ffffff;
+    --app-status-border: #d8d8dc;
+    --app-status-fg: #5a5a6a;
+    --app-status-dot: #c4c4cc;
+
+    --app-status-running-fg: #c81d2e;
+    --app-status-running-border: #f1b9bf;
+    --app-status-running-dot: #d62236;
+    --app-status-running-dot-glow: rgba(214, 34, 54, 0.22);
+
+    --app-status-paused-fg: #8a5a10;
+    --app-status-paused-border: #ecd9b0;
+    --app-status-paused-dot: #c08018;
+    --app-status-paused-dot-glow: rgba(192, 128, 24, 0.22);
+
+    --app-record-start-bg: #ffffff;
+    --app-record-start-fg: #c81d2e;
+    --app-record-start-border: #ecbcc2;
+    --app-record-start-bg-hover: #fff0f2;
+    --app-record-start-fg-hover: #a01624;
+    --app-record-start-border-hover: #d68c95;
+
+    --app-record-stop-bg: #c81d2e;
+    --app-record-stop-fg: #ffffff;
+    --app-record-stop-border: #a01624;
+    --app-record-stop-bg-hover: #a01624;
+    --app-record-stop-border-hover: #7a1019;
+
+    --app-record-glyph-start: #c81d2e;
+    --app-record-glyph-stop: #ffffff;
+
+    --app-icon-fg: #5a5a6a;
+    --app-icon-fg-hover: #14141a;
+    --app-icon-bg-hover: #e2e2e0;
+    --app-icon-border-hover: #c8c8c6;
+    --app-icon-bg-active: #dcdcda;
+    --app-icon-border-active: #b8b8b6;
+
+    /* Light surface palette mirrors the structural roles of the dark
+       palette so any consumer styled against the tokens flips coherently.
+       Greys are warmed slightly to match the `#f6f6f4` page background; the
+       accent stays in the green family (matching dashboard "OK" and the
+       primary save button) but darkens for legibility on white. */
+    --app-surface: #ffffff;
+    --app-surface-raised: #fbfbfa;
+    --app-surface-hover: #eeeeec;
+    --app-surface-active: #e8f1ea;
+    --app-border: #d8d8d4;
+    --app-border-strong: #c4c4c0;
+    --app-border-hover: #a4a4a0;
+    --app-text-strong: #14141a;
+    --app-text: #2a2a32;
+    --app-text-muted: #5a5a6a;
+    --app-text-subtle: #7a7a86;
+    --app-text-faint: #9a9aa4;
+    --app-accent: #1f7a4a;
+    --app-accent-strong: #155a36;
+    --app-accent-bg: #e6f4ec;
+    --app-accent-border: #9bd3b4;
+    --app-accent-glow: rgba(31, 122, 74, 0.16);
+
+    --app-warn: #9a5a12;
+    --app-warn-strong: #7f4300;
+    --app-warn-bg: #fff1df;
+    --app-warn-border: #dfbc8a;
+
+    --app-danger: #c43a48;
+    --app-danger-strong: #b42332;
+    --app-danger-bg: #fff0f2;
+    --app-danger-bg-soft: #fff6f7;
+    --app-danger-border: #e4b6be;
+    --app-danger-text: #d24a59;
+
+    --app-info: #2b78c5;
+    --app-info-strong: #225fa3;
+    --app-info-bg: #eef5ff;
+    --app-info-border: #bdd3ef;
+
+    --app-neutral-bg: #f2f3f6;
+    --app-neutral-border: #d5d7de;
+    --app-neutral-text: #636a79;
+
+    --app-source-screen: #6f5ed1;
+    --app-source-screen-strong: #5949b8;
+    --app-source-screen-bg: #f1edff;
+    --app-source-screen-border: #cdc3f2;
+
+    --app-source-mic: #2f8e59;
+    --app-source-mic-strong: #287a4a;
+    --app-source-mic-bg: #e8f5ec;
+    --app-source-mic-border: #afd8bf;
+
+    --app-source-sysaudio: #8b7a2c;
+    --app-source-sysaudio-strong: #786821;
+    --app-source-sysaudio-bg: #faf4df;
+    --app-source-sysaudio-border: #dbc98a;
+
+    --app-overlay-bg: rgba(255, 255, 255, 0.78);
+    --app-overlay-bg-strong: rgba(255, 255, 255, 0.86);
+    --app-overlay-border: rgba(20, 24, 32, 0.12);
+
+    --app-ocr-box: rgba(31, 122, 74, 0.42);
+    --app-ocr-box-hover: rgba(31, 122, 74, 0.88);
+    --app-ocr-box-fill: transparent;
+    --app-ocr-chip-bg: rgba(255, 255, 255, 0.92);
+    --app-ocr-chip-text: #155a36;
+    --app-ocr-chip-border: rgba(31, 122, 74, 0.24);
+    --app-ocr-hover-shadow: rgba(21, 28, 38, 0.18);
+    --app-ocr-hover-inset: transparent;
+    --app-ocr-chip-text-shadow: none;
+  }
+
   :global(html) {
     height: 100%;
     overscroll-behavior: none;
@@ -189,14 +454,17 @@
 
   :global(body) {
     min-height: 100%;
-    background-color: #0c0c0e;
-    color: #e2e2e8;
+    background-color: var(--app-bg);
+    color: var(--app-fg);
     font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
       "Cascadia Code", "Fira Code", monospace;
     font-size: 13px;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     overscroll-behavior: none;
+    /* Smooth the chrome flip when the user toggles `appearance`. Kept
+       short so the change still feels responsive. */
+    transition: background-color 0.18s ease, color 0.18s ease;
   }
 
   :global(a) {
@@ -227,8 +495,8 @@
        macOS native traffic lights drawn by Tauri's overlay title-bar. The
        right side keeps its tighter inset since nothing native sits there. */
     padding: 0 8px 0 78px;
-    background: #08080c;
-    border-bottom: 1px solid #15151f;
+    background: var(--app-titlebar-bg);
+    border-bottom: 1px solid var(--app-titlebar-border);
     user-select: none;
     -webkit-user-select: none;
     /* Sticky so the title bar stays visible when a route's main content
@@ -264,7 +532,7 @@
     font-weight: 700;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: #45455a;
+    color: var(--app-titlebar-title);
   }
 
   /* ── Recording status indicator ───────────────────────────── */
@@ -273,14 +541,14 @@
     align-items: center;
     gap: 6px;
     padding: 3px 8px;
-    background: #0a0a10;
-    border: 1px solid #161624;
+    background: var(--app-status-bg);
+    border: 1px solid var(--app-status-border);
     border-radius: 4px;
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: #555574;
+    color: var(--app-status-fg);
     font-variant-numeric: tabular-nums;
   }
 
@@ -288,26 +556,26 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #2a2a3a;
+    background: var(--app-status-dot);
     flex: 0 0 auto;
   }
 
   .titlebar__status--running {
-    color: #ff5d6c;
-    border-color: #3a1820;
+    color: var(--app-status-running-fg);
+    border-color: var(--app-status-running-border);
   }
   .titlebar__status--running .titlebar__status-dot {
-    background: #ff3148;
-    box-shadow: 0 0 0 3px rgba(255, 49, 72, 0.18);
+    background: var(--app-status-running-dot);
+    box-shadow: 0 0 0 3px var(--app-status-running-dot-glow);
     animation: titlebar-pulse 1.4s ease-in-out infinite;
   }
   .titlebar__status--paused {
-    color: #d6a14a;
-    border-color: #3a2818;
+    color: var(--app-status-paused-fg);
+    border-color: var(--app-status-paused-border);
   }
   .titlebar__status--paused .titlebar__status-dot {
-    background: #d6a14a;
-    box-shadow: 0 0 0 3px rgba(214, 161, 74, 0.16);
+    background: var(--app-status-paused-dot);
+    box-shadow: 0 0 0 3px var(--app-status-paused-dot-glow);
   }
 
   @keyframes titlebar-pulse {
@@ -329,30 +597,30 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+    transition: background 0.12s, border-color 0.12s, opacity 0.12s, color 0.12s;
   }
   .titlebar__record:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
   .titlebar__record--start {
-    background: #1a0f12;
-    color: #ff8a96;
-    border-color: #3a1820;
+    background: var(--app-record-start-bg);
+    color: var(--app-record-start-fg);
+    border-color: var(--app-record-start-border);
   }
   .titlebar__record--start:not(:disabled):hover {
-    background: #2a1218;
-    color: #ffb0b9;
-    border-color: #5a2030;
+    background: var(--app-record-start-bg-hover);
+    color: var(--app-record-start-fg-hover);
+    border-color: var(--app-record-start-border-hover);
   }
   .titlebar__record--stop {
-    background: #170d0f;
-    color: #f0f0f5;
-    border-color: #4a1c26;
+    background: var(--app-record-stop-bg);
+    color: var(--app-record-stop-fg);
+    border-color: var(--app-record-stop-border);
   }
   .titlebar__record--stop:not(:disabled):hover {
-    background: #2a1218;
-    border-color: #6a2434;
+    background: var(--app-record-stop-bg-hover);
+    border-color: var(--app-record-stop-border-hover);
   }
   .titlebar__record-glyph {
     display: inline-block;
@@ -360,11 +628,11 @@
     height: 8px;
     line-height: 1;
     text-align: center;
-    color: #ff3148;
+    color: var(--app-record-glyph-start);
     font-size: 12px;
   }
   .titlebar__record--stop .titlebar__record-glyph {
-    color: #ff8a96;
+    color: var(--app-record-glyph-stop);
   }
   .titlebar__record-glyph--square {
     background: currentColor;
@@ -384,7 +652,7 @@
     width: 28px;
     height: 28px;
     border-radius: 4px;
-    color: #8a8aaa;
+    color: var(--app-icon-fg);
     border: 1px solid transparent;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
@@ -394,14 +662,14 @@
     padding: 0 12px 0 10px;
   }
   .titlebar__settings:hover {
-    background: #1a1a2a;
-    color: #e2e2e8;
-    border-color: #2a2a3a;
+    background: var(--app-icon-bg-hover);
+    color: var(--app-icon-fg-hover);
+    border-color: var(--app-icon-border-hover);
   }
   .titlebar__settings--active {
-    background: #14141f;
-    color: #e2e2e8;
-    border-color: #2a2a3a;
+    background: var(--app-icon-bg-active);
+    color: var(--app-icon-fg-hover);
+    border-color: var(--app-icon-border-active);
   }
   .titlebar__settings-icon {
     display: block;
