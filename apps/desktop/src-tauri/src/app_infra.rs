@@ -904,7 +904,7 @@ fn image_bytes_from_cg_image(
     format_label: &str,
     mime_type: &'static str,
 ) -> Result<(Vec<u8>, &'static str), String> {
-    use cidre::{cf, cg, ut};
+    use cidre::{cf, cg};
     use tempfile::NamedTempFile;
 
     let type_identifier = ut_type.id();
@@ -954,18 +954,6 @@ fn preview_image_bytes_from_cg_image(
     image_bytes_from_cg_image(image, ut::Type::webp(), "WebP", "image/webp").or_else(
         |_webp_error| image_bytes_from_cg_image(image, ut::Type::jpeg(), "JPEG", "image/jpeg"),
     )
-}
-
-#[cfg(target_os = "macos")]
-fn video_preview_request_matches_actual_time(
-    requested_time: cidre::cm::Time,
-    actual_time: cidre::cm::Time,
-) -> bool {
-    if requested_time.is_invalid() || actual_time.is_invalid() {
-        return false;
-    }
-
-    requested_time == actual_time
 }
 
 #[cfg(target_os = "macos")]
@@ -1020,14 +1008,19 @@ fn extract_preview_image_from_video_blocking(
                     "failed to extract preview from video {}: {error}",
                     video_path_for_error.display()
                 ))
-            } else if !video_preview_request_matches_actual_time(request_time, actual_time) {
+            } else if request_time.is_valid()
+                && actual_time.is_valid()
+                && request_time != actual_time
+            {
                 log_video_preview_exact_miss(&video_path_for_error, request_time, actual_time);
-                Err(format!(
-                    "failed to extract exact preview from video {}: requested_time={} actual_time={}",
-                    video_path_for_error.display(),
-                    request_time.as_secs(),
-                    actual_time.as_secs()
-                ))
+                if let Some(image) = image {
+                    preview_image_bytes_from_cg_image(image)
+                } else {
+                    Err(format!(
+                        "failed to extract preview from video {}: empty image result",
+                        video_path_for_error.display()
+                    ))
+                }
             } else if let Some(image) = image {
                 preview_image_bytes_from_cg_image(image)
             } else {
@@ -2246,35 +2239,6 @@ mod tests {
         let offset_seconds = estimate_frame_preview_offset_seconds(&frame, &related_frames);
 
         assert!((offset_seconds - 1.5).abs() < f64::EPSILON);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn video_preview_request_matches_exact_actual_time() {
-        let requested = cidre::cm::Time::with_secs(1.5, 600);
-        let actual = cidre::cm::Time::with_secs(1.5, 600);
-
-        assert!(video_preview_request_matches_actual_time(requested, actual));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn video_preview_request_rejects_non_exact_actual_time() {
-        let requested = cidre::cm::Time::with_secs(1.5, 600);
-        let actual = cidre::cm::Time::with_secs(1.0 / 600.0 + 1.5, 600);
-
-        assert!(!video_preview_request_matches_actual_time(requested, actual));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn video_preview_request_rejects_invalid_actual_time() {
-        let requested = cidre::cm::Time::with_secs(1.5, 600);
-
-        assert!(!video_preview_request_matches_actual_time(
-            requested,
-            cidre::cm::Time::invalid()
-        ));
     }
 
     #[cfg(target_os = "macos")]
