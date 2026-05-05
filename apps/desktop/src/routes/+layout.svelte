@@ -6,8 +6,11 @@
   import {
     bootstrapCaptureControls,
     captureControls,
+    sourceSelection,
     startCapture,
     stopCapture,
+    subscribeRuntimeSources,
+    toggleSourceSelected,
   } from "$lib/capture-controls.svelte";
   import { initTheme } from "$lib/theme.svelte";
   interface Props {
@@ -68,6 +71,65 @@
   const captureLoadingSettings = $derived(captureControls.loadingSettings);
   const captureStatusLabel = $derived(captureControls.statusLabel);
   const captureStatusModifier = $derived(captureControls.statusModifier);
+
+  // ── Per-source runtime indicators ──────────────────────────────────────
+  // While a capture session is running, fetch `get_idle_debug` periodically
+  // through the shared seam so the title bar can show small per-source
+  // icons (screen / microphone / system audio) with running vs paused
+  // state. The subscription auto-clears when the session stops.
+  $effect(() => {
+    if (!isCapturing) return;
+    const release = subscribeRuntimeSources();
+    return release;
+  });
+
+  type SourceLane = {
+    key: "screen" | "microphone" | "systemAudio";
+    label: string;
+  };
+  const sourceLanes: SourceLane[] = [
+    { key: "screen", label: "Screen" },
+    { key: "microphone", label: "Microphone" },
+    { key: "systemAudio", label: "System audio" },
+  ];
+
+  // While recording, each pill reflects the *live* runtime status of the
+  // source. While idle/stopped, each pill reflects whether that source is
+  // *selected* for the next session — clicking the pill toggles the
+  // corresponding `RecordingSettings` flag through the same Tauri command
+  // the settings page uses.
+  type LiveState = "running" | "paused" | "starting" | "off";
+  type SelectState = "selected" | "unselected";
+
+  function liveStateFor(key: SourceLane["key"]): LiveState {
+    const rs = captureControls.runtimeSources;
+    if (!rs) return "off";
+    const src = rs[key];
+    if (!src.requested) return "off";
+    if (src.paused) return "paused";
+    if (src.sessionActive && src.writerActive) return "running";
+    return "starting";
+  }
+  function selectStateFor(key: SourceLane["key"]): SelectState {
+    return sourceSelection.isSelected(key) ? "selected" : "unselected";
+  }
+
+  function liveTitleFor(lane: SourceLane, state: LiveState): string {
+    const verb =
+      state === "running"
+        ? "recording"
+        : state === "paused"
+          ? "paused"
+          : state === "starting"
+            ? "starting…"
+            : "off";
+    return `${lane.label}: ${verb}`;
+  }
+  function selectTitleFor(lane: SourceLane, state: SelectState): string {
+    return state === "selected"
+      ? `${lane.label}: enabled — click to skip on next recording`
+      : `${lane.label}: disabled — click to include in next recording`;
+  }
 </script>
 
 <div class="app-shell">
@@ -114,6 +176,119 @@
           <span>{captureLoadingStart ? "Starting…" : "Record"}</span>
         </button>
       {/if}
+      {#snippet sourceIcon(key: SourceLane["key"])}
+        {#if key === "screen"}
+          <svg
+            class="titlebar__source-icon"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="2" y="4" width="20" height="13" rx="2" />
+            <path d="M8 21h8" />
+            <path d="M12 17v4" />
+          </svg>
+        {:else if key === "microphone"}
+          <svg
+            class="titlebar__source-icon"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="9" y="2.5" width="6" height="12" rx="3" />
+            <path d="M5.5 11a6.5 6.5 0 0 0 13 0" />
+            <path d="M12 17.5v3.5" />
+            <path d="M9 21h6" />
+          </svg>
+        {:else}
+          <svg
+            class="titlebar__source-icon"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M11 5 6.5 9H3v6h3.5L11 19z" />
+            <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+            <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+          </svg>
+        {/if}
+      {/snippet}
+      {#each sourceLanes as lane (lane.key)}
+        {#if isCapturing}
+          {@const state = liveStateFor(lane.key)}
+          <span
+            class="titlebar__source titlebar__source--{lane.key} titlebar__source--{state}"
+            title={liveTitleFor(lane, state)}
+            aria-label={liveTitleFor(lane, state)}
+            role="status"
+          >
+            {@render sourceIcon(lane.key)}
+            <span class="titlebar__source-state" aria-hidden="true">
+              {#if state === "running"}
+                <span class="titlebar__source-dot"></span>
+              {:else if state === "paused"}
+                <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                  <rect x="1" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
+                  <rect x="5" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
+                </svg>
+              {:else if state === "starting"}
+                <span class="titlebar__source-ring"></span>
+              {:else}
+                <span class="titlebar__source-slash"></span>
+              {/if}
+            </span>
+          </span>
+        {:else}
+          {@const state = selectStateFor(lane.key)}
+          <button
+            type="button"
+            class="titlebar__source titlebar__source--toggle titlebar__source--{lane.key} titlebar__source--{state}"
+            title={selectTitleFor(lane, state)}
+            aria-label={selectTitleFor(lane, state)}
+            aria-pressed={state === "selected"}
+            disabled={sourceSelection.isSaving(lane.key) || captureControls.loadingSettings}
+            onclick={() => toggleSourceSelected(lane.key)}
+          >
+            {@render sourceIcon(lane.key)}
+            <span class="titlebar__source-state" aria-hidden="true">
+              {#if state === "selected"}
+                <!-- Checkmark: source will be captured on next start -->
+                <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                  <path
+                    d="M1.5 4.2 3.2 5.9 6.5 2.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              {:else}
+                <!-- Diagonal slash: source will be skipped -->
+                <span class="titlebar__source-slash"></span>
+              {/if}
+            </span>
+          </button>
+        {/if}
+      {/each}
     </div>
 
     <!-- Inert centre area carries the drag region. Title is decorative. -->
@@ -581,6 +756,109 @@
   @keyframes titlebar-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.55; }
+  }
+
+  /* ── Per-source recording pills ───────────────────────────────
+     One pill per requested capture source (screen / microphone /
+     system audio), rendered after the Record/Stop button. Each pill
+     pairs the source's icon with a status icon: a pulsing red dot
+     while live, pause bars while inactivity-paused, or a hollow ring
+     while the source is still spinning up. Sources not requested for
+     the current session aren't rendered. The pill chrome mirrors
+     `.titlebar__status` so the title bar stays visually coherent. */
+  .titlebar__source {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 7px;
+    height: 22px;
+    background: var(--app-status-bg);
+    border: 1px solid var(--app-status-border);
+    border-radius: 4px;
+    color: var(--app-status-fg);
+  }
+  .titlebar__source-icon {
+    display: block;
+    flex: 0 0 auto;
+  }
+  .titlebar__source-state {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 8px;
+    height: 8px;
+    line-height: 1;
+    flex: 0 0 auto;
+  }
+  .titlebar__source-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--app-status-running-dot);
+    box-shadow: 0 0 0 2px var(--app-status-running-dot-glow);
+    animation: titlebar-pulse 1.4s ease-in-out infinite;
+  }
+  .titlebar__source-ring {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    box-sizing: border-box;
+    opacity: 0.7;
+  }
+  .titlebar__source--running {
+    color: var(--app-status-running-fg);
+    border-color: var(--app-status-running-border);
+  }
+  .titlebar__source--paused {
+    color: var(--app-status-paused-fg);
+    border-color: var(--app-status-paused-border);
+  }
+  .titlebar__source--starting {
+    color: var(--app-fg-muted);
+  }
+  .titlebar__source--off {
+    color: var(--app-fg-subtle);
+    opacity: 0.55;
+  }
+
+  /* ── Toggle mode (idle / not recording) ───────────────────── */
+  .titlebar__source--toggle {
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
+  }
+  .titlebar__source--toggle:disabled {
+    cursor: progress;
+    opacity: 0.6;
+  }
+  .titlebar__source--toggle.titlebar__source--selected {
+    color: var(--app-text-strong);
+    border-color: var(--app-border-strong);
+    background: var(--app-surface-raised);
+  }
+  .titlebar__source--toggle.titlebar__source--unselected {
+    color: var(--app-fg-subtle);
+    border-color: var(--app-status-border);
+    background: var(--app-status-bg);
+    opacity: 0.7;
+  }
+  .titlebar__source--toggle:not(:disabled):hover {
+    color: var(--app-text-strong);
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+    opacity: 1;
+  }
+  /* Diagonal slash glyph used when a source is unselected (idle) or
+     forcibly off (live). Drawn as a thin rotated bar so it reads as
+     "muted/skipped" without bringing in another SVG. */
+  .titlebar__source-slash {
+    width: 8px;
+    height: 1.5px;
+    background: currentColor;
+    border-radius: 1px;
+    transform: rotate(-45deg);
+    opacity: 0.85;
   }
 
   /* ── Record / Stop button ─────────────────────────────────── */
