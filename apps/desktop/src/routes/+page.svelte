@@ -1,10 +1,10 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Image } from "@tauri-apps/api/image";
   import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
-  import { BaseDirectory, writeFile } from "@tauri-apps/plugin-fs";
+  import { BaseDirectory, readFile, writeFile } from "@tauri-apps/plugin-fs";
   import { Calendar } from "bits-ui";
   import {
     CalendarDate,
@@ -85,6 +85,12 @@
   // edges instead of being filtered out by an overly tight range query.
   const AUDIO_SEGMENT_RANGE_PADDING_MS = 60_000;
   const AUDIO_SEGMENT_REFRESH_DEBOUNCE_MS = 100;
+  const ACTIVE_PREVIEW_FETCH_DEBOUNCE_MS = 100;
+  const ACTIVE_PREVIEW_PREFETCH_RADIUS = 5;
+  const ACTIVE_PREVIEW_FAST_SCRUB_RADIUS = 1;
+  const ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS = 1.2;
+  const PREVIEW_CACHE_MAX_ENTRIES = 96;
+  const PREVIEW_FAILURE_CACHE_TTL_MS = 5_000;
   // Safety cap on pages walked per poll while chasing the current head. At
   // 50 frames/page this catches up bursts of a few thousand frames between
   // polls. If the cap is hit before reaching the head we fall back to a full
@@ -179,20 +185,79 @@
   // than appending mismatched frames.
   let timelineGeneration = 0;
 
-  // Decoded `data:` URLs keyed by frame id. Reactive so the rail re-renders as
+  // Preview file paths keyed by frame id. Reactive so the rail re-renders as
   // previews stream in without any extra plumbing.
   let previewCache = $state<Map<number, string>>(new Map());
+  let previewMimeTypeCache = $state<Map<number, string>>(new Map());
+  let previewFailedAt = $state<Map<number, number>>(new Map());
   // Tracks the in-flight requests so concurrent scrolls don't fan out a
   // request per slot per scroll tick for the same id.
   const previewInFlight = new Set<number>();
-  let frameActionStatus = $state<string | null>(null);
+  type FrameActionStatus = {
+    message: string;
+    detail: string | null;
+    tone: "neutral" | "error";
+  };
+
+  let frameActionStatus = $state<FrameActionStatus | null>(null);
   let frameActionStatusTimer: ReturnType<typeof setTimeout> | null = null;
+  let frameActionStatusHovered = $state(false);
   let stageActionsMenuOpen = $state(false);
+  let activePreviewFetchGeneration = 0;
+  let activePreviewFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastTimelineScrollSample = { left: 0, at: 0 };
+  let previewScrubVelocityPxPerMs = $state(0);
+  let previewCacheReuseCount = $state(0);
+  let previewCacheHitCount = $state(0);
+  let previewCacheMissCount = $state(0);
+  let previewFailureCacheHitCount = $state(0);
+  let previewInFlightJoinCount = $state(0);
+  let previewDirectPathCount = $state(0);
+  let previewGeneratedPathCount = $state(0);
+  let previewStaleRetryCount = $state(0);
+  let activePreviewLoadErrorFrameId = $state<number | null>(null);
+
+  function handleActivePreviewLoadError(frameId: number): void {
+    if (activePreviewLoadErrorFrameId === frameId) return;
+    activePreviewLoadErrorFrameId = frameId;
+    previewStaleRetryCount += 1;
+    dropPreviewCacheEntry(frameId);
+    clearPreviewFailure(frameId);
+    void ensurePreview(frameId);
+  }
 
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
   const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
+  let lastPreviewReuseFrameId = $state<number | null>(null);
   let timelineActiveDuplicateOf = $state<FrameDto | null>(null);
   let timelineActiveDuplicateLookupGeneration = 0;
+
+  // Preview load/error state belongs to the currently selected frame only.
+  // Clear it on frame switches so a stale message from an older request does
+  // not sit over the next frame while its own preview is still loading.
+  $effect(() => {
+    const activeId = timelineActive?.id ?? null;
+    if (activeId == null) {
+      setFrameActionStatus(null);
+      return;
+    }
+    if (activePreviewLoadErrorFrameId !== activeId) {
+      setFrameActionStatus(null);
+    }
+  });
+
+  $effect(() => {
+    const activeId = timelineActive?.id ?? null;
+    if (activeId == null) {
+      lastPreviewReuseFrameId = null;
+      return;
+    }
+    if (lastPreviewReuseFrameId === activeId) return;
+    lastPreviewReuseFrameId = activeId;
+    if (previewCache.has(activeId)) {
+      previewCacheReuseCount += 1;
+    }
+  });
 
   $effect(() => {
     const active = timelineActive;
@@ -777,17 +842,169 @@
     return path.split(/[\\/]/).pop() ?? path;
   }
 
-  function setFrameActionStatus(message: string | null) {
-    frameActionStatus = message;
+  function clearFrameActionStatusTimer() {
     if (frameActionStatusTimer) {
       clearTimeout(frameActionStatusTimer);
       frameActionStatusTimer = null;
     }
-    if (!message) return;
+  }
+
+  function scheduleFrameActionStatusDismiss() {
+    clearFrameActionStatusTimer();
+    if (!frameActionStatus || frameActionStatusHovered) return;
     frameActionStatusTimer = setTimeout(() => {
       frameActionStatus = null;
       frameActionStatusTimer = null;
     }, 2200);
+  }
+
+  function setFrameActionStatus(
+    message: string | null,
+    options?: {
+      detail?: string | null;
+      tone?: FrameActionStatus["tone"];
+    },
+  ) {
+    frameActionStatus = message
+      ? {
+          message,
+          detail: options?.detail ?? null,
+          tone: options?.tone ?? "neutral",
+        }
+      : null;
+    frameActionStatusHovered = false;
+    clearFrameActionStatusTimer();
+    if (!message) return;
+    scheduleFrameActionStatusDismiss();
+  }
+
+  function isTimelineActiveFrame(frameId: number): boolean {
+    return timelineActive?.id === frameId;
+  }
+
+  function clearActivePreviewFetchTimer(): void {
+    if (activePreviewFetchTimer != null) {
+      clearTimeout(activePreviewFetchTimer);
+      activePreviewFetchTimer = null;
+    }
+  }
+
+  function trimPreviewCache(): void {
+    if (previewCache.size <= PREVIEW_CACHE_MAX_ENTRIES) return;
+    const next = new Map(previewCache);
+    while (next.size > PREVIEW_CACHE_MAX_ENTRIES) {
+      const oldestFrameId = next.keys().next().value;
+      if (oldestFrameId == null) break;
+      next.delete(oldestFrameId);
+    }
+    previewCache = next;
+  }
+
+  function touchPreviewCache(frameId: number, url: string): void {
+    const next = new Map(previewCache);
+    next.delete(frameId);
+    next.set(frameId, url);
+    previewCache = next;
+    trimPreviewCache();
+  }
+
+  function rememberPreviewFailure(frameId: number): void {
+    const next = new Map(previewFailedAt);
+    next.set(frameId, Date.now());
+    previewFailedAt = next;
+  }
+
+  function clearPreviewFailure(frameId: number): void {
+    if (!previewFailedAt.has(frameId)) return;
+    const next = new Map(previewFailedAt);
+    next.delete(frameId);
+    previewFailedAt = next;
+  }
+
+  function dropPreviewCacheEntry(frameId: number): void {
+    if (previewCache.has(frameId)) {
+      const next = new Map(previewCache);
+      next.delete(frameId);
+      previewCache = next;
+    }
+    if (previewMimeTypeCache.has(frameId)) {
+      const nextMimeTypes = new Map(previewMimeTypeCache);
+      nextMimeTypes.delete(frameId);
+      previewMimeTypeCache = nextMimeTypes;
+    }
+  }
+
+  function recentlyFailedPreview(frameId: number): boolean {
+    const failedAt = previewFailedAt.get(frameId);
+    if (failedAt == null) return false;
+    if (Date.now() - failedAt < PREVIEW_FAILURE_CACHE_TTL_MS) {
+      return true;
+    }
+    clearPreviewFailure(frameId);
+    return false;
+  }
+
+  function currentPreviewPrefetchRadius(): number {
+    return previewScrubVelocityPxPerMs >= ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS
+      ? ACTIVE_PREVIEW_FAST_SCRUB_RADIUS
+      : ACTIVE_PREVIEW_PREFETCH_RADIUS;
+  }
+
+  function prefetchPreviewNeighbors(activeIndex: number): void {
+    const radius = currentPreviewPrefetchRadius();
+    for (let offset = 1; offset <= radius; offset += 1) {
+      const newer = timelineFrames[activeIndex - offset];
+      const older = timelineFrames[activeIndex + offset];
+      if (newer && !previewCache.has(newer.id) && !previewInFlight.has(newer.id)) {
+        void ensurePreview(newer.id);
+      }
+      if (older && !previewCache.has(older.id) && !previewInFlight.has(older.id)) {
+        void ensurePreview(older.id);
+      }
+    }
+  }
+
+  function onFrameActionStatusPointerEnter() {
+    frameActionStatusHovered = true;
+    clearFrameActionStatusTimer();
+  }
+
+  function onFrameActionStatusPointerLeave() {
+    frameActionStatusHovered = false;
+    scheduleFrameActionStatusDismiss();
+  }
+
+  function prettifyFramePreviewError(rawMessage: string): string {
+    const message = rawMessage
+      .replace(/^failed to get frame preview \d+:\s*/i, "")
+      .trim();
+
+    if (/no decodable video sample found/i.test(message)) {
+      return "Couldn't load the frame preview from this recording.";
+    }
+    if (/sample did not contain an image buffer/i.test(message)) {
+      return "Couldn't decode an image from the frame preview.";
+    }
+    if (/failed to start reading video samples/i.test(message)) {
+      return "Couldn't read the recording while generating the frame preview.";
+    }
+    if (/failed to read video sample/i.test(message)) {
+      return "Couldn't read a video sample for the frame preview.";
+    }
+    if (/failed to convert preview sample .* CGImage/i.test(message)) {
+      return "Couldn't convert the frame preview into an image.";
+    }
+    if (/failed to join video preview extraction task/i.test(message)) {
+      return "Frame preview generation stopped unexpectedly.";
+    }
+    if (/only supported on macOS/i.test(message)) {
+      return "Video fallback previews are only supported on macOS.";
+    }
+    if (/not found/i.test(message)) {
+      return "This frame preview is no longer available.";
+    }
+
+    return "Couldn't load the frame preview.";
   }
 
   function previewSourceLabel(sourceKind: FramePreviewDto["sourceKind"]): string {
@@ -799,11 +1016,6 @@
       case "video_fallback":
         return "video fallback";
     }
-  }
-
-  function mimeTypeFromDataUrl(dataUrl: string): string | null {
-    const match = /^data:([^;,]+)[;,]/.exec(dataUrl);
-    return match?.[1] ?? null;
   }
 
   function fileExtensionForMimeType(mimeType: string | null): string {
@@ -820,30 +1032,14 @@
     }
   }
 
-  function activeFrameDownloadName(frame: FrameDto, dataUrl: string): string {
+  function activeFrameDownloadName(frame: FrameDto, mimeType: string | null): string {
     const capturedAt = frame.capturedAt.replace(/[^0-9A-Za-z]+/g, "-").replace(/^-+|-+$/g, "");
-    const ext = fileExtensionForMimeType(mimeTypeFromDataUrl(dataUrl));
+    const ext = fileExtensionForMimeType(mimeType);
     return `frame-${frame.id}-${capturedAt || "capture"}.${ext}`;
   }
 
-  async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
-    const response = await fetch(dataUrl);
-    return await response.blob();
-  }
-
-  function dataUrlPayloadBytes(dataUrl: string): Uint8Array {
-    const comma = dataUrl.indexOf(",");
-    if (comma < 0) throw new Error("invalid data URL");
-    const meta = dataUrl.slice(0, comma);
-    const payload = dataUrl.slice(comma + 1);
-    if (meta.endsWith(";base64")) {
-      return Uint8Array.from(atob(payload), (char) => char.charCodeAt(0));
-    }
-    return new TextEncoder().encode(decodeURIComponent(payload));
-  }
-
-  async function previewDataUrlToClipboardImage(dataUrl: string): Promise<Image> {
-    const blob = await dataUrlToBlob(dataUrl);
+  async function previewFilePathToClipboardImage(filePath: string): Promise<Image> {
+    const blob = new Blob([await readFile(filePath)]);
     const image = await createImageBitmap(blob);
     try {
       const canvas = document.createElement("canvas");
@@ -868,7 +1064,7 @@
     }
 
     try {
-      const image = await previewDataUrlToClipboardImage(previewUrl);
+      const image = await previewFilePathToClipboardImage(previewUrl);
       try {
         await writeImage(image);
       } finally {
@@ -892,9 +1088,13 @@
     }
 
     try {
-      await writeFile(activeFrameDownloadName(frame, previewUrl), dataUrlPayloadBytes(previewUrl), {
+      await writeFile(
+        activeFrameDownloadName(frame, previewMimeTypeCache.get(frame.id) ?? null),
+        await readFile(previewUrl),
+        {
         baseDir: BaseDirectory.Download,
-      });
+        },
+      );
       setFrameActionStatus(`Saved frame ${frame.id} to Downloads`);
       stageActionsMenuOpen = false;
     } catch (err) {
@@ -910,9 +1110,7 @@
 
   $effect(() => {
     return () => {
-      if (frameActionStatusTimer) {
-        clearTimeout(frameActionStatusTimer);
-      }
+      clearFrameActionStatusTimer();
     };
   });
 
@@ -1023,29 +1221,57 @@
    * break the whole rail; the slot simply renders without an image.
    */
   async function ensurePreview(frameId: number): Promise<void> {
-    if (previewCache.has(frameId)) return;
-    if (previewInFlight.has(frameId)) return;
+    if (previewCache.has(frameId)) {
+      previewCacheHitCount += 1;
+      const url = previewCache.get(frameId);
+      if (url) touchPreviewCache(frameId, url);
+      return;
+    }
+    if (recentlyFailedPreview(frameId)) {
+      previewFailureCacheHitCount += 1;
+      return;
+    }
+    previewCacheMissCount += 1;
+    if (previewInFlight.has(frameId)) {
+      previewInFlightJoinCount += 1;
+      return;
+    }
     previewInFlight.add(frameId);
-    const isActiveFrame = timelineActive?.id === frameId;
+    const isActiveFrame = isTimelineActiveFrame(frameId);
     if (isActiveFrame) {
       setFrameActionStatus("Loading frame preview...");
     }
     try {
-      const dto = await invoke<FramePreviewDto>("get_frame_preview", {
+      const dto = await invoke<FramePreviewDto | null>("get_frame_preview", {
         request: { frameId },
       });
-      const url = `data:${dto.mimeType};base64,${dto.dataBase64}`;
-      // Reassign the Map so Svelte's reactivity picks the change up.
-      const next = new Map(previewCache);
-      next.set(frameId, url);
-      previewCache = next;
-      if (isActiveFrame) {
+      if (!dto) {
+        throw new Error(`frame preview ${frameId} not found`);
+      }
+      clearPreviewFailure(frameId);
+      touchPreviewCache(frameId, dto.filePath);
+      if (activePreviewLoadErrorFrameId === frameId) {
+        activePreviewLoadErrorFrameId = null;
+      }
+      const nextMimeTypes = new Map(previewMimeTypeCache);
+      nextMimeTypes.set(frameId, dto.mimeType);
+      previewMimeTypeCache = nextMimeTypes;
+      if (dto.sourceKind === "original_frame") {
+        previewDirectPathCount += 1;
+      } else {
+        previewGeneratedPathCount += 1;
+      }
+      if (isTimelineActiveFrame(frameId)) {
         setFrameActionStatus(null);
       }
     } catch (error) {
-      if (isActiveFrame) {
-        const message = error instanceof Error ? error.message : String(error);
-        setFrameActionStatus(`Frame preview failed: ${message}`);
+      rememberPreviewFailure(frameId);
+      const message = error instanceof Error ? error.message : String(error);
+      if (isTimelineActiveFrame(frameId)) {
+        setFrameActionStatus(prettifyFramePreviewError(message), {
+          detail: message,
+          tone: "error",
+        });
       }
     } finally {
       previewInFlight.delete(frameId);
@@ -1101,6 +1327,9 @@
         // Drop cached previews from any prior generation — keeping them
         // would grow unboundedly across refreshes.
         previewCache = new Map();
+        previewMimeTypeCache = new Map();
+        previewFailedAt = new Map();
+        activePreviewLoadErrorFrameId = null;
         // Targeted picker invalidation: only invalidate months actually
         // covered by the freshly loaded frames. Wholesale clearing of
         // `summariesByDate`/`loadedMonths` would force the open picker to
@@ -1492,6 +1721,12 @@
 
   function onTimelineScroll(event: Event) {
     const el = event.currentTarget as HTMLDivElement;
+    const now = performance.now();
+    const deltaMs = now - lastTimelineScrollSample.at;
+    if (deltaMs > 0) {
+      previewScrubVelocityPxPerMs = Math.abs(el.scrollLeft - lastTimelineScrollSample.left) / deltaMs;
+    }
+    lastTimelineScrollSample = { left: el.scrollLeft, at: now };
     timelineScrollLeft = el.scrollLeft;
     // Resize-induced scroll guard: when the window grows, `cqi`-based track
     // margins recompute non-atomically with `clientWidth`, so the browser
@@ -1755,11 +1990,29 @@
     return () => ro.disconnect();
   });
 
-  // Eagerly fetch a preview for whichever frame is currently active so the
-  // big preview stage updates promptly on scrub.
+  // Debounce active-frame preview loads so fast scrubs do not fire one
+  // backend request per transient frame crossed. The latest-only generation
+  // token ensures an older scheduled fetch cannot start after a newer active
+  // frame supersedes it.
   $effect(() => {
     const active = timelineActive;
-    if (active) ensurePreview(active.id);
+    const activeIndex = timelineActiveIndex;
+    activePreviewFetchGeneration += 1;
+    const gen = activePreviewFetchGeneration;
+    clearActivePreviewFetchTimer();
+    if (!active || previewCache.has(active.id) || previewInFlight.has(active.id)) {
+      return;
+    }
+    activePreviewFetchTimer = setTimeout(() => {
+      activePreviewFetchTimer = null;
+      if (gen !== activePreviewFetchGeneration) return;
+      if (!isTimelineActiveFrame(active.id)) return;
+      void ensurePreview(active.id);
+      prefetchPreviewNeighbors(activeIndex);
+    }, ACTIVE_PREVIEW_FETCH_DEBOUNCE_MS);
+    return () => {
+      clearActivePreviewFetchTimer();
+    };
   });
 
   // ─── On-demand OCR for the active frame ──────────────────────────────────
@@ -2920,7 +3173,23 @@
         <span class="timeline__empty-hint">capture a session to populate the timeline</span>
       </div>
     {:else if timelineActive}
-      {@const previewUrl = previewCache.get(timelineActive.id)}
+      {@const previewPath = previewCache.get(timelineActive.id)}
+      {@const previewUrl = previewPath ? convertFileSrc(previewPath) : null}
+      {#if frameActionStatus}
+        <div
+          class="timeline__stage-status"
+          class:timeline__stage-status--error={frameActionStatus.tone === "error"}
+          role="status"
+          aria-live="polite"
+          onpointerenter={onFrameActionStatusPointerEnter}
+          onpointerleave={onFrameActionStatusPointerLeave}
+        >
+          <div class="timeline__stage-status-summary">{frameActionStatus.message}</div>
+          {#if frameActionStatus.detail}
+            <div class="timeline__stage-status-detail">{frameActionStatus.detail}</div>
+          {/if}
+        </div>
+      {/if}
       {#if previewUrl}
         <details class="timeline__stage-actions" open={stageActionsMenuOpen} ontoggle={onStageActionsToggle}>
           <summary
@@ -2945,17 +3214,19 @@
             >download</button>
           </div>
         </details>
-        {#if frameActionStatus}
-          <div class="timeline__stage-status" role="status" aria-live="polite">
-            {frameActionStatus}
-          </div>
-        {/if}
         <div
           class="timeline__preview"
           role="img"
           aria-label={`frame ${timelineActive.id}`}
           style={`background-image: url("${previewUrl}");`}
         ></div>
+        <img
+          class="timeline__preview-load-sentinel"
+          src={previewUrl}
+          alt=""
+          aria-hidden="true"
+          onerror={() => handleActivePreviewLoadError(timelineActive.id)}
+        />
         <!-- OCR overlay: anchored to the painted background-image rect
              (background-size: contain, centered) inside the stage. The
              rect is derived from stage size + the active frame's intrinsic
@@ -2982,7 +3253,9 @@
           </div>
         {/if}
       {:else}
-        <div class="timeline__preview-pending">decoding preview…</div>
+        <div class="timeline__preview-pending">
+          {frameActionStatus?.tone === "error" ? "preview unavailable" : "decoding preview…"}
+        </div>
       {/if}
     {/if}
 
@@ -3041,6 +3314,24 @@
             <span class="timeline__overlay-val timeline__overlay-truncate">{timelineActive.equivalenceHint}</span>
           </div>
         {/if}
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">preview</span>
+          <span class="timeline__overlay-val timeline__overlay-truncate">
+            reuse {previewCacheReuseCount} reqHit {previewCacheHitCount} miss {previewCacheMissCount} fail {previewFailureCacheHitCount} join {previewInFlightJoinCount}
+          </span>
+        </div>
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">previewSrc</span>
+          <span class="timeline__overlay-val timeline__overlay-truncate">
+            direct {previewDirectPathCount} generated {previewGeneratedPathCount} retry {previewStaleRetryCount}
+          </span>
+        </div>
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">prefetch</span>
+          <span class="timeline__overlay-val">
+            r{currentPreviewPrefetchRadius()} @ {previewScrubVelocityPxPerMs.toFixed(2)}px/ms
+          </span>
+        </div>
         {#if timelineActiveDuplicateOf}
           {@const duplicateOf = timelineActiveDuplicateOf}
           <div class="timeline__overlay-row">
@@ -4154,6 +4445,14 @@
     user-select: none;
   }
 
+  .timeline__preview-load-sentinel {
+    position: absolute;
+    width: 0;
+    height: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
   .timeline__stage-actions {
     position: absolute;
     top: 10px;
@@ -4281,15 +4580,39 @@
     z-index: 2;
     max-width: min(60%, 360px);
     padding: 6px 8px;
+    display: grid;
+    gap: 4px;
     background: var(--app-overlay-bg-strong);
     border: 1px solid var(--app-overlay-border);
-    border-radius: 4px;
+    border-radius: 8px;
     color: var(--app-text);
     font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    line-height: 1.35;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
+    box-shadow: 0 10px 24px color-mix(in srgb, var(--app-bg) 28%, transparent);
+  }
+
+  .timeline__stage-status-summary {
+    font-weight: 700;
+  }
+
+  .timeline__stage-status-detail {
+    max-height: 8.2em;
+    overflow: auto;
+    padding-top: 3px;
+    border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+    color: var(--app-text-subtle);
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 9px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .timeline__stage-status--error {
+    color: color-mix(in srgb, var(--app-danger) 72%, var(--app-text) 28%);
+    border-color: color-mix(in srgb, var(--app-danger) 40%, var(--app-overlay-border));
   }
 
   .timeline__preview-pending {

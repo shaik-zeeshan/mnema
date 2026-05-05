@@ -16,12 +16,14 @@
 // invoked client-side.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { AppearanceSetting, RecordingSettings } from "$lib/types";
 
 export type ResolvedTheme = "light" | "dark";
 
 const DEFAULT_APPEARANCE: AppearanceSetting = "system";
 const DEFAULT_RESOLVED: ResolvedTheme = "dark";
+const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
 
 const _state = $state<{
   appearance: AppearanceSetting;
@@ -117,6 +119,7 @@ export async function loadTheme(): Promise<void> {
 let _initialized = false;
 let _mediaQuery: MediaQueryList | null = null;
 let _mediaListener: ((e: MediaQueryListEvent) => void) | null = null;
+let _settingsListenerInitialized = false;
 
 /**
  * Initialize the theme runtime: applies the current (default) resolution
@@ -141,6 +144,16 @@ export function initTheme(): void {
     // `addEventListener` is the modern API; older Safari fell back to
     // `addListener` but the Tauri webview is current enough not to need it.
     _mediaQuery.addEventListener("change", _mediaListener);
+  }
+
+  if (typeof window !== "undefined" && !_settingsListenerInitialized) {
+    _settingsListenerInitialized = true;
+    // Each Tauri window owns its own in-memory theme runtime, so every window
+    // must subscribe to the shared settings-change event to stay in sync when
+    // another window persists a new appearance value.
+    void listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
+      setAppearance(event.payload.appearance ?? DEFAULT_APPEARANCE);
+    });
   }
 
   void loadTheme();
