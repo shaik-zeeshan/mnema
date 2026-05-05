@@ -25,8 +25,6 @@
   const isDebug = $derived($page.url.pathname.startsWith("/debug"));
   const showMainTitlebar = $derived(isMainRoute);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
-  const dedicatedWindowTitle = $derived(isSettings ? "Settings" : isDebug ? "Debug" : "z");
-
   let windowPlatform = $state<"macos" | "windows" | "other">("other");
 
   $effect(() => {
@@ -329,9 +327,8 @@
       {/if}
     </div>
 
-    <!-- Inert centre area carries the drag region. Title is decorative. -->
+    <!-- Inert centre area carries the drag region. -->
     <div class="titlebar__drag" data-tauri-drag-region>
-      <span class="titlebar__title" data-tauri-drag-region>z</span>
     </div>
 
     <div class="titlebar__group titlebar__group--right">
@@ -398,9 +395,7 @@
 
   {#if showDedicatedTitlebar}
   <header class="surface-titlebar">
-    <div class="surface-titlebar__drag" data-tauri-drag-region>
-      <span class="surface-titlebar__title" data-tauri-drag-region>{dedicatedWindowTitle}</span>
-    </div>
+    <div class="surface-titlebar__drag" data-tauri-drag-region></div>
     <div class="surface-titlebar__actions">
       <button
         type="button"
@@ -794,17 +789,6 @@
     align-items: center;
   }
 
-  .surface-titlebar__title {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-titlebar-title);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
   .surface-titlebar__actions {
     display: inline-flex;
     align-items: center;
@@ -857,14 +841,6 @@
        even when empty, the height of the row catches mousedown for window
        drag. */
     cursor: default;
-  }
-
-  .titlebar__title {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--app-titlebar-title);
   }
 
   /* ── Recording status indicator ───────────────────────────── */
