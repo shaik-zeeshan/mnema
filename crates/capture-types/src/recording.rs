@@ -102,6 +102,18 @@ pub fn default_follow_timeline_live() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum AppearanceSetting {
+    System,
+    Light,
+    Dark,
+}
+
+pub fn default_appearance() -> AppearanceSetting {
+    AppearanceSetting::System
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum OcrRecognitionMode {
     Fast,
     Accurate,
@@ -165,6 +177,8 @@ pub struct RecordingSettings {
     pub preview_cache_ttl_seconds: u64,
     #[serde(default = "default_follow_timeline_live")]
     pub follow_timeline_live: bool,
+    #[serde(default = "default_appearance")]
+    pub appearance: AppearanceSetting,
     #[serde(default = "default_ocr_settings")]
     pub ocr: OcrSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
@@ -205,6 +219,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub preview_cache_ttl_seconds: u64,
     #[serde(default = "default_follow_timeline_live")]
     pub follow_timeline_live: bool,
+    #[serde(default = "default_appearance")]
+    pub appearance: AppearanceSetting,
     #[serde(default = "default_ocr_settings")]
     pub ocr: OcrSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]

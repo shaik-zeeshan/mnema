@@ -3,6 +3,8 @@ export type ActivityMode =
 	| "system_input_or_screen"
 	| "system_input_or_screen_or_audio";
 
+export type AppearanceSetting = "system" | "light" | "dark";
+
 export interface RecordingSettings {
 	captureScreen: boolean;
 	captureMicrophone: boolean;
@@ -21,6 +23,7 @@ export interface RecordingSettings {
 	systemAudioActivitySensitivity: number;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
+	appearance: AppearanceSetting;
 	ocr: OcrSettings;
 	developerOptionsEnabled: boolean;
 }

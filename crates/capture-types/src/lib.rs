@@ -118,6 +118,7 @@ mod tests {
             default_preview_cache_ttl_seconds()
         );
         assert_eq!(settings.follow_timeline_live, default_follow_timeline_live());
+        assert_eq!(settings.appearance, default_appearance());
         assert_eq!(settings.ocr, default_ocr_settings());
         assert_eq!(
             settings.inactivity_activity_mode,
@@ -160,6 +161,7 @@ mod tests {
             default_preview_cache_ttl_seconds()
         );
         assert_eq!(request.follow_timeline_live, default_follow_timeline_live());
+        assert_eq!(request.appearance, default_appearance());
         assert_eq!(request.ocr, default_ocr_settings());
     }
 }
