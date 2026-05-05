@@ -66,19 +66,19 @@
     font-weight: 700;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: #44445a;
+    color: var(--app-text-subtle);
   }
 
   .menu__title {
     font-size: 22px;
     font-weight: 600;
     letter-spacing: -0.01em;
-    color: #e2e2e8;
+    color: var(--app-text-strong);
   }
 
   .menu__sub {
     font-size: 12px;
-    color: #6a6a88;
+    color: var(--app-text-muted);
     max-width: 44ch;
   }
 
@@ -93,16 +93,16 @@
     flex-direction: column;
     gap: 8px;
     padding: 16px 18px;
-    background: #0e0e16;
-    border: 1px solid #1a1a2a;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     border-radius: 8px;
-    color: #c0c0d8;
+    color: var(--app-text);
     transition: background 0.15s, border-color 0.15s, transform 0.15s;
   }
 
   .card:hover {
-    background: #13131e;
-    border-color: #2a2a3e;
+    background: var(--app-surface-raised);
+    border-color: var(--app-border-strong);
   }
 
   .card:active {
@@ -111,41 +111,41 @@
 
   .card:focus-visible {
     outline: none;
-    border-color: #3dffa0;
-    box-shadow: 0 0 0 2px rgba(61, 255, 160, 0.18);
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
   }
 
   .card--primary {
-    background: linear-gradient(180deg, #11111c 0%, #0e0e16 100%);
-    border-color: #1e1e2e;
+    background: linear-gradient(180deg, var(--app-surface-active) 0%, var(--app-surface) 100%);
+    border-color: var(--app-border);
   }
 
   .card__row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    color: #44445a;
+    color: var(--app-text-subtle);
     font-size: 12px;
   }
 
   .card__icon {
-    color: #3dffa0;
+    color: var(--app-accent);
     font-size: 11px;
     letter-spacing: 0.1em;
   }
 
   .card__icon--debug {
-    color: #ff8855;
+    color: var(--app-warn-strong);
   }
 
   .card__chev {
     font-size: 13px;
-    color: #44445a;
+    color: var(--app-text-subtle);
     transition: transform 0.15s, color 0.15s;
   }
 
   .card:hover .card__chev {
-    color: #c0c0d8;
+    color: var(--app-text);
     transform: translateX(2px);
   }
 
@@ -153,13 +153,13 @@
     font-size: 14px;
     font-weight: 600;
     letter-spacing: 0.02em;
-    color: #e2e2e8;
+    color: var(--app-text-strong);
   }
 
   .card__desc {
     font-size: 11.5px;
     line-height: 1.55;
-    color: #6a6a88;
+    color: var(--app-text-muted);
   }
 
   .menu__back {
@@ -170,7 +170,7 @@
     padding: 6px 10px;
     margin-top: 4px;
     border-radius: 4px;
-    color: #44445a;
+    color: var(--app-text-subtle);
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.12em;
@@ -180,15 +180,15 @@
   }
 
   .menu__back:hover {
-    color: #c0c0d8;
-    background: #13131e;
-    border-color: #1e1e2e;
+    color: var(--app-text);
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
   }
 
   .menu__back:focus-visible {
     outline: none;
-    color: #c0c0d8;
-    border-color: #3dffa0;
-    box-shadow: 0 0 0 2px rgba(61, 255, 160, 0.18);
+    color: var(--app-text);
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
   }
 </style>
