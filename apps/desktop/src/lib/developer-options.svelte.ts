@@ -5,7 +5,11 @@
 // visibility and redirects react immediately without a round-trip.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { RecordingSettings } from "$lib/types";
+
+const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
+let _settingsSyncInitialized = false;
 
 const _state = $state<{ value: boolean; loaded: boolean }>({
   value: false,
@@ -25,12 +29,22 @@ export function setDeveloperOptionsEnabled(enabled: boolean): void {
   _state.loaded = true;
 }
 
+function initDeveloperOptionsSync(): void {
+  if (_settingsSyncInitialized || typeof window === "undefined") return;
+  _settingsSyncInitialized = true;
+
+  void listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
+    setDeveloperOptionsEnabled(event.payload.developerOptionsEnabled ?? false);
+  });
+}
+
 /**
  * Best-effort load of the persisted developer-options flag. Failures are
  * swallowed and the flag stays at its current (or default `false`) value —
  * the gating is fail-safe: hidden Debug surfaces are the secure default.
  */
 export async function loadDeveloperOptions(): Promise<void> {
+  initDeveloperOptionsSync();
   try {
     const s = await invoke<RecordingSettings>("get_recording_settings");
     _state.value = s.developerOptionsEnabled ?? false;

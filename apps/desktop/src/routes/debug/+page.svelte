@@ -42,6 +42,7 @@
   let loadingPermissions = $state(false);
   let loadingStart = $state(false);
   let loadingStop = $state(false);
+  const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
   let loadingSettings = $state(false);
 
   // ─── Idle debug ──────────────────────────────────────────────────────────
@@ -331,6 +332,7 @@
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
+    let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let destroyed = false;
 
     listen<MicrophoneControllerState>("microphone_controller_changed", () => {
@@ -351,10 +353,19 @@
       else unlistenAutoDisconnectFailure = fn;
     });
 
+    listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
+      recordingSettings = event.payload;
+      clearError();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenRecordingSettingsChanged = fn;
+    });
+
     return () => {
       destroyed = true;
       unlistenControllerChanged?.();
       unlistenAutoDisconnectFailure?.();
+      unlistenRecordingSettingsChanged?.();
     };
   });
 
