@@ -25,6 +25,8 @@
     MicrophoneAutoDisconnectTransitionFailedEvent,
   } from "$lib/types";
 
+  const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
+
   // ─── State ────────────────────────────────────────────────────────────────
 
   let captureSupport = $state<CaptureSupport | null>(null);
@@ -110,6 +112,72 @@
   let micError = $state<string | null>(null);
   let recSaved = $state(false);
   let micSaved = $state(false);
+
+  // ─── Tabs ─────────────────────────────────────────────────────────────────
+  // The page is split into one-tab-at-a-time categories so the long settings
+  // list doesn't overwhelm. Tabs are local UI state only — no persistence.
+  type SettingsTab =
+    | "capture"
+    | "video"
+    | "storage"
+    | "behavior"
+    | "microphone"
+    | "ocr"
+    | "developer";
+
+  let activeTab = $state<SettingsTab>("capture");
+
+  const tabs: { id: SettingsTab; label: string; description: string }[] = [
+    { id: "capture",    label: "Capture",     description: "Sources & segments" },
+    { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
+    { id: "storage",    label: "Storage",     description: "Save path, startup, appearance" },
+    { id: "behavior",   label: "Behavior",    description: "Inactivity, timeline" },
+    { id: "microphone", label: "Microphone",  description: "Devices & disconnect policy" },
+    { id: "ocr",        label: "OCR & Cache", description: "Recognition & previews" },
+    { id: "developer",  label: "Developer",   description: "Debug toggles & logs" },
+  ];
+
+  // Keyboard navigation for the tablist follows the WAI-ARIA Authoring
+  // Practices "Tabs (Manual Activation)" pattern: ←/→ move focus and
+  // activate the next/previous tab, Home/End jump to the first/last tab.
+  // We use a roving-tabindex (only the active tab is tabbable) so screen
+  // reader users can land on the tablist and step through tabs naturally.
+  function handleTabKeydown(event: KeyboardEvent) {
+    const currentIndex = tabs.findIndex((t) => t.id === activeTab);
+    if (currentIndex === -1) return;
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = tabs.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextTab = tabs[nextIndex];
+    activeTab = nextTab.id;
+    // Move DOM focus to the newly-active tab so the roving tabindex stays
+    // visually and assistively accurate.
+    const el = document.getElementById(`settings-tab-${nextTab.id}`);
+    el?.focus();
+  }
+
+  // ─── Auto-save plumbing ──────────────────────────────────────────────────
+  // To avoid feedback loops (sync from backend → drafts change → save),
+  // we serialize the current draft set to a snapshot string and compare
+  // against the last successfully-saved snapshot. After the backend echoes
+  // back the persisted values, syncRecDrafts/syncMicDrafts updates that
+  // baseline so the effect sees "no change" and stays quiet.
+  const RECORDING_AUTOSAVE_DEBOUNCE_MS = 450;
+  const MIC_AUTOSAVE_DEBOUNCE_MS = 250;
+
+  let lastSavedRecSnapshot = $state<string | null>(null);
+  let lastSavedMicSnapshot = $state<string | null>(null);
+  let recAutoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let micAutoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Capture-support fetch lifecycle: tracks whether the in-flight request
   // is still running and whether it ended in an unrecoverable failure.
@@ -213,12 +281,78 @@
       draftCustomMbps = null;
       draftCustomMbpsRaw = "";
     }
+    // Mark this draft set as the "saved baseline" so the auto-save effect
+    // does not immediately re-fire after we accept backend-echoed values.
+    lastSavedRecSnapshot = buildRecSnapshot();
   }
 
   function syncMicDrafts(s: MicrophoneControllerState) {
     draftPreferenceMode = s.preference.mode;
     draftDeviceId = s.preference.deviceId ?? null;
     draftDisconnectPolicy = s.disconnectPolicy;
+    lastSavedMicSnapshot = buildMicSnapshot();
+  }
+
+  function buildRecRequest() {
+    return {
+      captureScreen: draftCaptureScreen,
+      captureMicrophone: draftCaptureMicrophone,
+      captureSystemAudio: draftCaptureSystemAudio,
+      segmentDurationSeconds: draftSegmentDuration,
+      screenFrameRate: draftFrameRate,
+      saveDirectory: draftSaveDirectory,
+      autoStart: draftAutoStart,
+      pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
+      idleTimeoutSeconds: draftIdleTimeoutSeconds,
+      activityMode: draftActivityMode,
+      microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
+      systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
+      nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
+      previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
+      followTimelineLive: draftFollowTimelineLive,
+      appearance: draftAppearance,
+      developerOptionsEnabled: draftDeveloperOptionsEnabled,
+      ocr: {
+        recognitionMode: draftOcrRecognitionMode,
+        languageCorrection: draftOcrLanguageCorrection,
+      },
+      screenResolution: draftResolutionMode === "custom"
+        ? {
+            mode: "custom" as const,
+            width: draftCustomWidth!,
+            height: draftCustomHeight!,
+          }
+        : {
+            mode: "preset" as const,
+            preset: draftResolutionMode === "original" ? "original" as const : draftResolutionPreset,
+          },
+      videoBitrate: draftBitrateMode === "custom"
+        ? { mode: "custom" as const, preset: null, customMbps: draftCustomMbps! }
+        : { mode: "preset" as const, preset: draftBitratePreset, customMbps: null },
+    };
+  }
+
+  function buildMicRequest() {
+    return {
+      preference: {
+        mode: draftPreferenceMode,
+        deviceId: draftPreferenceMode === "specific_device" ? draftDeviceId : null,
+      },
+      disconnectPolicy: draftDisconnectPolicy,
+    };
+  }
+
+  // Snapshots are stable JSON strings derived from the very same payload
+  // shape the backend sees. Using the request shape (rather than every raw
+  // draft variable) ensures invalid intermediate states — e.g. a custom
+  // resolution with `null` width while the user is typing — don't generate
+  // spurious snapshot churn that the auto-save guard would have to filter.
+  function buildRecSnapshot(): string {
+    return JSON.stringify(buildRecRequest());
+  }
+
+  function buildMicSnapshot(): string {
+    return JSON.stringify(buildMicRequest());
   }
 
   // ─── Actions ──────────────────────────────────────────────────────────────
@@ -335,42 +469,7 @@
     recSaved = false;
     try {
       const updated = await invoke<RecordingSettings>("update_recording_settings", {
-        request: {
-          captureScreen: draftCaptureScreen,
-          captureMicrophone: draftCaptureMicrophone,
-          captureSystemAudio: draftCaptureSystemAudio,
-          segmentDurationSeconds: draftSegmentDuration,
-          screenFrameRate: draftFrameRate,
-          saveDirectory: draftSaveDirectory,
-          autoStart: draftAutoStart,
-          pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
-          idleTimeoutSeconds: draftIdleTimeoutSeconds,
-          activityMode: draftActivityMode,
-          microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
-          systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
-          nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
-          previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
-          followTimelineLive: draftFollowTimelineLive,
-          appearance: draftAppearance,
-          developerOptionsEnabled: draftDeveloperOptionsEnabled,
-          ocr: {
-            recognitionMode: draftOcrRecognitionMode,
-            languageCorrection: draftOcrLanguageCorrection,
-          },
-          screenResolution: draftResolutionMode === "custom"
-            ? {
-                mode: "custom",
-                width: draftCustomWidth!,
-                height: draftCustomHeight!,
-              }
-            : {
-                mode: "preset",
-                preset: draftResolutionMode === "original" ? "original" : draftResolutionPreset,
-              },
-          videoBitrate: draftBitrateMode === "custom"
-            ? { mode: "custom", preset: null, customMbps: draftCustomMbps! }
-            : { mode: "preset", preset: draftBitratePreset, customMbps: null },
-        },
+        request: buildRecRequest(),
       });
       recordingSettings = updated;
       syncRecDrafts(updated);
@@ -410,13 +509,7 @@
     micSaved = false;
     try {
       const updated = await invoke<MicrophoneControllerState>("update_microphone_controller", {
-        request: {
-          preference: {
-            mode: draftPreferenceMode,
-            deviceId: draftPreferenceMode === "specific_device" ? draftDeviceId : null,
-          },
-          disconnectPolicy: draftDisconnectPolicy,
-        },
+        request: buildMicRequest(),
       });
       micState = updated;
       syncMicDrafts(updated);
@@ -429,13 +522,46 @@
     }
   }
 
-  async function saveSettings() {
-    if (recSaveBlocked || micApplyBlocked || !micState) {
-      return;
-    }
+  // ─── Auto-save effects ────────────────────────────────────────────────────
+  // Each effect tracks the relevant draft snapshot and schedules a debounced
+  // save when (a) the snapshot diverges from the last persisted value and
+  // (b) validation does not block. This replaces the manual Save button while
+  // preserving validation semantics — invalid drafts simply don't trigger the
+  // backend call, so persisted state stays consistent.
+  $effect(() => {
+    // Track the current snapshot reactively. Until the initial load completes,
+    // the baseline is null and we must not persist.
+    if (recordingSettings === null || lastSavedRecSnapshot === null) return;
+    const current = buildRecSnapshot();
+    if (current === lastSavedRecSnapshot) return;
+    if (recSaveBlocked) return;
+    if (savingRecSettings) return;
 
-    await Promise.all([saveRecordingSettings(), saveMicSettings()]);
-  }
+    if (recAutoSaveTimer !== null) clearTimeout(recAutoSaveTimer);
+    recAutoSaveTimer = setTimeout(() => {
+      recAutoSaveTimer = null;
+      // Re-check guards at fire time — drafts may have changed during debounce.
+      if (recSaveBlocked || savingRecSettings) return;
+      if (buildRecSnapshot() === lastSavedRecSnapshot) return;
+      void saveRecordingSettings();
+    }, RECORDING_AUTOSAVE_DEBOUNCE_MS);
+  });
+
+  $effect(() => {
+    if (micState === null || lastSavedMicSnapshot === null) return;
+    const current = buildMicSnapshot();
+    if (current === lastSavedMicSnapshot) return;
+    if (micApplyBlocked) return;
+    if (savingMicSettings) return;
+
+    if (micAutoSaveTimer !== null) clearTimeout(micAutoSaveTimer);
+    micAutoSaveTimer = setTimeout(() => {
+      micAutoSaveTimer = null;
+      if (micApplyBlocked || savingMicSettings) return;
+      if (buildMicSnapshot() === lastSavedMicSnapshot) return;
+      void saveMicSettings();
+    }, MIC_AUTOSAVE_DEBOUNCE_MS);
+  });
 
   // ─── Recording settings validation ───────────────────────────────────────
 
@@ -566,6 +692,7 @@
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
+    let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let destroyed = false;
 
     listen<MicrophoneControllerState>("microphone_controller_changed", (event) => {
@@ -588,52 +715,44 @@
       else unlistenAutoDisconnectFailure = fn;
     });
 
+    listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
+      recordingSettings = event.payload;
+      syncRecDrafts(event.payload);
+      recError = null;
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenRecordingSettingsChanged = fn;
+    });
+
     return () => {
       destroyed = true;
       unlistenControllerChanged?.();
       unlistenAutoDisconnectFailure?.();
+      unlistenRecordingSettingsChanged?.();
     };
   });
 </script>
 
-<!-- ── Sticky action bar (Back + Save always reachable) ──────────────── -->
-<div class="action-bar" role="toolbar" aria-label="Settings actions">
-  <div class="action-bar__left">
-    <a class="back-link" href="/menu" aria-label="Back to menu">
-      <span class="back-link__chevron" aria-hidden="true">‹</span>
-      <span class="back-link__label">Back</span>
-    </a>
-    <div class="action-bar__title-block">
-      <span class="action-bar__eyebrow">control center</span>
-      <h1 class="action-bar__title">Settings</h1>
-    </div>
-  </div>
-
-  <div class="action-bar__right">
-    <div class="action-bar__status" aria-live="polite">
-      {#if recSaveBlocked || micApplyBlocked || !micState}
-        <span class="action-bar__status-text action-bar__status-text--blocked">unsaved · resolve issues</span>
-      {:else if savingRecSettings || savingMicSettings}
-        <span class="action-bar__status-text">writing changes…</span>
-      {:else if recSaved || micSaved}
-        <span class="action-bar__status-text action-bar__status-text--ok">✓ saved</span>
-      {:else}
-        <span class="action-bar__status-text">draft ready</span>
-      {/if}
-    </div>
-    <button
-      class="btn btn--primary"
-      onclick={saveSettings}
-      disabled={savingRecSettings || savingMicSettings || recSaveBlocked || micApplyBlocked || !micState}
-      title="Save recording and microphone settings"
-    >
-      {savingRecSettings || savingMicSettings ? "Saving…" : "Save"}
-    </button>
-  </div>
-</div>
-
 <!-- ── Page intro ──────────────────────────────────────────────────────── -->
 <header class="page-header">
+  <div class="page-header__head">
+    <div>
+      <h1 class="page-header__title">Settings</h1>
+    </div>
+    <div class="page-header__status" aria-live="polite">
+      {#if recError || micError}
+        <span class="page-header__status-text page-header__status-text--error">save failed</span>
+      {:else if recSaveBlocked || micApplyBlocked}
+        <span class="page-header__status-text page-header__status-text--blocked">resolve issues</span>
+      {:else if savingRecSettings || savingMicSettings}
+        <span class="page-header__status-text page-header__status-text--saving">saving</span>
+      {:else if recSaved || micSaved}
+        <span class="page-header__status-text page-header__status-text--ok">saved</span>
+      {:else}
+        <span class="page-header__status-text">auto-save on</span>
+      {/if}
+    </div>
+  </div>
   <p class="page-subtitle">Tune capture, microphone &amp; diagnostics for this workstation.</p>
 
   {#if recordingSettings}
@@ -662,8 +781,36 @@
   {/if}
 </header>
 
+<!-- ── Tab navigation ─────────────────────────────────────────────────────
+     Categorized tabs replace the previous long scrolling list. Only one
+     section is mounted at a time (see the `{#if activeTab === ...}` guards
+     below) so the page stays focused and changes within an unselected tab
+     don't trigger reactivity in unrelated UI. -->
+<nav class="tab-nav" aria-label="Settings categories">
+  <div class="tab-nav__list" role="tablist" tabindex="-1" onkeydown={handleTabKeydown}>
+    {#each tabs as tab}
+      <button
+        class="tab-nav__tab"
+        class:tab-nav__tab--active={activeTab === tab.id}
+        role="tab"
+        aria-selected={activeTab === tab.id}
+        aria-controls="settings-panel-{tab.id}"
+        id="settings-tab-{tab.id}"
+        tabindex={activeTab === tab.id ? 0 : -1}
+        onclick={() => { activeTab = tab.id; }}
+        title={tab.description}
+        type="button"
+      >
+        <span class="tab-nav__label">{tab.label}</span>
+      </button>
+    {/each}
+  </div>
+</nav>
+
 <!-- ── Capture & sources ───────────────────────────────────────────────── -->
-<section class="card" aria-labelledby="card-capture">
+{#if activeTab === "capture"}
+<div role="tabpanel" id="settings-panel-capture" aria-labelledby="settings-tab-capture" tabindex="0">
+<section class="card">
   <div class="card__header">
     <div class="card__heading">
       <span class="card__index">01</span>
@@ -720,11 +867,15 @@
     </div>
   {/if}
 </section>
+</div>
+{/if}
 
 <!-- ── Recording details (split into focused cards) ────────────────────── -->
 {#if !loadingRecSettings}
+  {#if activeTab === "video"}
+    <div role="tabpanel" id="settings-panel-video" aria-labelledby="settings-tab-video" tabindex="0">
     <!-- ── Card: Video Output ─────────────────────── -->
-    <section class="card" aria-labelledby="card-video">
+    <section class="card">
       <div class="card__header">
         <div class="card__heading">
           <span class="card__index">02</span>
@@ -984,9 +1135,13 @@
       </div>
     </div>
     </section>
+    </div>
+  {/if}
 
+  {#if activeTab === "storage"}
+    <div role="tabpanel" id="settings-panel-storage" aria-labelledby="settings-tab-storage" tabindex="0">
     <!-- ── Card: Storage & Startup ─────────────────────── -->
-    <section class="card" aria-labelledby="card-storage">
+    <section class="card">
       <div class="card__header">
         <div class="card__heading">
           <span class="card__index">03</span>
@@ -1050,13 +1205,17 @@
         ]}
       />
       <p class="group-hint">
-        Save settings to apply the new theme — it switches immediately, without a reload.
+        Theme switches immediately when you pick a new option — settings auto-save in the background.
       </p>
     </div>
     </section>
+    </div>
+  {/if}
 
+  {#if activeTab === "behavior"}
+    <div role="tabpanel" id="settings-panel-behavior" aria-labelledby="settings-tab-behavior" tabindex="0">
     <!-- ── Card: Inactivity ─────────────────────── -->
-    <section class="card" aria-labelledby="card-inactivity">
+    <section class="card">
       <div class="card__header">
         <div class="card__heading">
           <span class="card__index">04</span>
@@ -1208,14 +1367,43 @@
     </div>
     </section>
 
-    <!-- ── Card: Diagnostics & Developer ─────────────────────── -->
-    <section class="card" aria-labelledby="card-diag">
+    <!-- ── Card: Timeline (sibling card inside the Behavior tab) ── -->
+    <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          <span class="card__index">05</span>
+          <span class="card__index">04b</span>
           <div>
-            <h2 id="card-diag" class="card__title">OCR, Diagnostics &amp; Developer</h2>
-            <p class="card__subtitle">OCR behavior, caches, developer surfaces and log files.</p>
+            <h2 class="card__title">Timeline</h2>
+            <p class="card__subtitle">How the dashboard timeline tracks newly captured frames.</p>
+          </div>
+        </div>
+      </div>
+
+    <div class="settings-group">
+      <span class="group-label">Timeline</span>
+      <Switch
+        bind:checked={draftFollowTimelineLive}
+        label="Follow latest frame automatically"
+        description="Keep the dashboard timeline pinned to the newest frame as new frames arrive"
+      />
+      <p class="group-hint">
+        When disabled, the currently selected frame stays selected until you scrub or click a different frame.
+      </p>
+    </div>
+    </section>
+    </div>
+  {/if}
+
+  {#if activeTab === "ocr"}
+    <div role="tabpanel" id="settings-panel-ocr" aria-labelledby="settings-tab-ocr" tabindex="0">
+    <!-- ── Card: OCR & Cache ─────────────────────── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">06</span>
+          <div>
+            <h2 class="card__title">OCR &amp; Previews</h2>
+            <p class="card__subtitle">Recognition behavior and preview-cache lifetime.</p>
           </div>
         </div>
       </div>
@@ -1282,18 +1470,23 @@
         {/if}
       </p>
     </div>
-
-    <div class="settings-group">
-      <span class="group-label">Timeline</span>
-      <Switch
-        bind:checked={draftFollowTimelineLive}
-        label="Follow latest frame automatically"
-        description="Keep the dashboard timeline pinned to the newest frame as new frames arrive"
-      />
-      <p class="group-hint">
-        When disabled, the currently selected frame stays selected until you scrub or click a different frame.
-      </p>
+    </section>
     </div>
+  {/if}
+
+  {#if activeTab === "developer"}
+    <div role="tabpanel" id="settings-panel-developer" aria-labelledby="settings-tab-developer" tabindex="0">
+    <!-- ── Card: Developer & Logs ─────────────────────── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">07</span>
+          <div>
+            <h2 class="card__title">Developer &amp; Logs</h2>
+            <p class="card__subtitle">Debug surfaces, native capture diagnostics, and log files.</p>
+          </div>
+        </div>
+      </div>
 
     <!-- ── Developer Options ─────────────────────────────────── -->
     <div class="settings-group">
@@ -1305,7 +1498,7 @@
       />
       <p class="group-hint">
         When disabled, the Debug page is hidden and visiting it redirects to the Timeline.
-        Save settings to apply the change.
+        Changes auto-save and apply immediately.
       </p>
     </div>
 
@@ -1319,7 +1512,7 @@
       />
       <p class="group-hint">
         When enabled, native capture internals are logged to a file for troubleshooting.
-        Save settings to apply the change.
+        Changes auto-save and apply immediately.
       </p>
 
       {#if debugLogStatus}
@@ -1430,6 +1623,8 @@
       {/if}
     </div>
     </section>
+    </div>
+  {/if}
 
     {#if recError}
       <div class="inline-error">
@@ -1452,7 +1647,9 @@
 {/if}
 
 <!-- ── Microphone settings ───────────────────────────────────────────────── -->
-<section class="card" aria-labelledby="card-mic">
+{#if activeTab === "microphone"}
+<div role="tabpanel" id="settings-panel-microphone" aria-labelledby="settings-tab-microphone" tabindex="0">
+<section class="card">
   <div class="card__header">
     <div class="card__heading">
       <span class="card__index">06</span>
@@ -1562,115 +1759,103 @@
     <button class="btn btn--ghost btn--sm" onclick={loadMicState}>Retry</button>
   {/if}
 </section>
+</div>
+{/if}
 
 <style>
-  /* ── Sticky action bar ─────────────────────────────────────── */
-  .action-bar {
-    position: sticky;
-    top: var(--app-titlebar-height, 36px);
-    z-index: 20;
+  /* ── Tab nav ──────────────────────────────────────────────────────────
+     Compact horizontal strip; each tab shows index + label + tiny hint.
+     The active tab gets the accent treatment so the user always knows
+     which category is being edited. */
+  .tab-nav {
+    margin: 0 0 12px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+  }
+
+  .tab-nav__list {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 14px 18px;
-    margin: 0 -24px 8px;
-    background: color-mix(in srgb, var(--app-bg) 92%, transparent);
-    backdrop-filter: saturate(140%) blur(10px);
-    -webkit-backdrop-filter: saturate(140%) blur(10px);
-    border-bottom: 1px solid var(--app-border);
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding: 6px;
+    overflow-x: auto;
   }
 
-  .action-bar::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: -1px;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--app-accent-strong) 30%, var(--app-accent) 50%, var(--app-accent-strong) 70%, transparent);
-    opacity: 0.35;
-    pointer-events: none;
-  }
-
-  .action-bar__left {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    min-width: 0;
-  }
-
-  .action-bar__title-block {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .action-bar__eyebrow {
-    font-size: 8px;
-    font-weight: 700;
-    letter-spacing: 0.24em;
-    text-transform: uppercase;
-    color: var(--app-accent-strong);
-  }
-
-  .action-bar__title {
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: var(--app-text-strong);
-    line-height: 1.1;
-  }
-
-  .action-bar__right {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-shrink: 0;
-  }
-
-  .action-bar__status {
+  .tab-nav__tab {
+    flex: 1 1 0;
     display: inline-flex;
     align-items: center;
-    margin-right: 4px;
+    justify-content: center;
+    padding: 8px 14px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: center;
+    white-space: nowrap;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    color: var(--app-text-muted);
+    min-width: 0;
   }
 
-  .action-bar__status-text {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    position: relative;
-    padding-left: 12px;
+  .tab-nav__tab:hover {
+    background: var(--app-surface-hover);
+    border-color: var(--app-border);
+    color: var(--app-text);
   }
 
-  .action-bar__status-text::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--app-accent-strong);
+  .tab-nav__tab:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
   }
 
-  .action-bar__status-text--blocked {
-    color: var(--app-warn);
-  }
-  .action-bar__status-text--blocked::before {
-    background: var(--app-warn-strong);
-  }
-
-  .action-bar__status-text--ok {
+  .tab-nav__tab--active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
     color: var(--app-accent);
   }
-  .action-bar__status-text--ok::before {
-    background: var(--app-accent);
-    box-shadow: 0 0 6px var(--app-accent-glow);
+
+  .tab-nav__tab--active:hover {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent);
+  }
+
+  .tab-nav__label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--app-text-strong);
+    line-height: 1.2;
+  }
+
+  .tab-nav__tab--active .tab-nav__label {
+    color: var(--app-accent);
+  }
+
+  :global([data-theme="light"]) .tab-nav {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .tab-nav__tab {
+    color: var(--app-text-muted);
+  }
+  :global([data-theme="light"]) .tab-nav__tab:hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .tab-nav__tab--active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent-strong);
+  }
+  :global([data-theme="light"]) .tab-nav__label {
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .tab-nav__tab--active .tab-nav__label {
+    color: var(--app-accent-strong);
   }
 
   /* ── Page header ───────────────────────────────────────────── */
@@ -1683,43 +1868,84 @@
     border-bottom: 1px dashed var(--app-border);
   }
 
-  .back-link {
+  .page-header__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .page-header__title {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--app-text-strong);
+    line-height: 1.1;
+  }
+
+  .page-header__status {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 10px 4px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--app-border);
-    background: transparent;
-    color: var(--app-text-muted);
-    font-size: 10px;
+    flex-shrink: 0;
+  }
+
+  .page-header__status-text {
+    font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    transition: color 0.12s, background 0.12s, border-color 0.12s;
-  }
-
-  .back-link:hover {
-    color: var(--app-text);
-    background: var(--app-surface-raised);
-    border-color: var(--app-border-strong);
-  }
-
-  .back-link:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    color: var(--app-text);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
-  }
-
-  .back-link__chevron {
-    font-size: 14px;
-    line-height: 1;
     color: var(--app-text-subtle);
+    position: relative;
+    padding-left: 12px;
+    white-space: nowrap;
   }
 
-  .back-link:hover .back-link__chevron {
-    color: var(--app-text);
+  .page-header__status-text::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--app-accent-strong);
+  }
+
+  .page-header__status-text--blocked {
+    color: var(--app-warn);
+  }
+  .page-header__status-text--blocked::before {
+    background: var(--app-warn-strong);
+  }
+
+  .page-header__status-text--ok {
+    color: var(--app-accent);
+  }
+  .page-header__status-text--ok::before {
+    background: var(--app-accent);
+    box-shadow: 0 0 6px var(--app-accent-glow);
+  }
+
+  .page-header__status-text--saving {
+    color: var(--app-accent-strong);
+  }
+  .page-header__status-text--saving::before {
+    background: var(--app-accent);
+    animation: status-pulse 1.1s ease-in-out infinite;
+  }
+
+  .page-header__status-text--error {
+    color: var(--app-danger);
+  }
+  .page-header__status-text--error::before {
+    background: var(--app-danger);
+    box-shadow: 0 0 6px var(--app-danger);
+  }
+
+  @keyframes status-pulse {
+    0%, 100% { opacity: 0.35; transform: translateY(-50%) scale(0.85); }
+    50% { opacity: 1; transform: translateY(-50%) scale(1.1); }
   }
 
   /* ── Status strip ─────────────────────────────────────────── */
@@ -1942,17 +2168,6 @@
   .btn:disabled {
     opacity: 0.35;
     cursor: not-allowed;
-  }
-
-  .btn--primary {
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-  }
-
-  .btn--primary:not(:disabled):hover {
-    background: var(--app-surface-active);
-    border-color: var(--app-accent);
   }
 
   .btn--ghost {
@@ -2645,53 +2860,17 @@
      consume layout-level semantic tokens. Keeping the override flat
      (one selector per affected rule) makes it easy to audit which
      tokens still hard-code dark values. */
-  :global([data-theme="light"]) .action-bar {
-    background: rgba(246, 246, 244, 0.92);
-    border-bottom-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .action-bar__title {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .action-bar__eyebrow {
-    color: var(--app-accent-strong);
-  }
-  :global([data-theme="light"]) .action-bar__status-text {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .action-bar__status-text::before {
-    background: var(--app-accent-strong);
-  }
-  :global([data-theme="light"]) .action-bar__status-text--blocked {
-    color: var(--app-warn);
-  }
-  :global([data-theme="light"]) .action-bar__status-text--blocked::before {
-    background: var(--app-warn-strong);
-  }
-  :global([data-theme="light"]) .action-bar__status-text--ok {
-    color: var(--app-accent);
-  }
-  :global([data-theme="light"]) .action-bar__status-text--ok::before {
-    background: var(--app-accent);
-    box-shadow: 0 0 6px var(--app-accent-glow);
-  }
-
   :global([data-theme="light"]) .page-header {
     border-bottom-color: var(--app-border);
   }
-  :global([data-theme="light"]) .back-link {
-    border-color: var(--app-border);
+  :global([data-theme="light"]) .page-header__title {
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .page-header__status-text {
     color: var(--app-text-muted);
   }
-  :global([data-theme="light"]) .back-link:hover {
-    color: var(--app-text-strong);
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .back-link__chevron {
-    color: var(--app-text-subtle);
-  }
-  :global([data-theme="light"]) .back-link:hover .back-link__chevron {
-    color: var(--app-text-strong);
+  :global([data-theme="light"]) .page-header__status-text::before {
+    background: var(--app-accent-strong);
   }
 
   :global([data-theme="light"]) .status-pill {
@@ -2761,15 +2940,6 @@
     color: var(--app-text-faint);
   }
 
-  :global([data-theme="light"]) .btn--primary {
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-    border-color: var(--app-accent-border);
-  }
-  :global([data-theme="light"]) .btn--primary:not(:disabled):hover {
-    background: var(--app-surface-active);
-    border-color: var(--app-accent);
-  }
   :global([data-theme="light"]) .btn--ghost {
     color: var(--app-text-muted);
     border-color: var(--app-border-strong);

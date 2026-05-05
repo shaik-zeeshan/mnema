@@ -145,6 +145,18 @@
   // right edge.
   let timelineScrollLeft = $state(0);
   let timelineViewportWidth = $state(0);
+  // Last `clientWidth` of the rail acknowledged by the `ResizeObserver`. Used
+  // by `onTimelineScroll` to discriminate user-driven scroll events from
+  // resize-induced ones: when the window grows, the rail's `cqi`-based track
+  // margins recompute non-atomically with `clientWidth`, momentarily shrinking
+  // `maxScroll = scrollWidth - clientWidth`. The browser then clamps
+  // `scrollLeft` and fires `scroll` against that transient state. Without
+  // this guard, `onTimelineScroll` would happily commit a newer
+  // `timelineActiveIndex` derived from the clamped scroll position, jumping
+  // the active frame on every window resize. We treat `timelineActiveIndex`
+  // as the source of truth across resizes and restore `scrollLeft` from it
+  // in the resize observer below.
+  let lastTimelineRailClientWidth = 0;
   // DB-sourced audio segments overlapping the loaded frame window. The DB is
   // the source of truth for the timeline lane: rows arrive from
   // `list_audio_segments` and are mapped to UI records keyed by row id. We
@@ -1481,6 +1493,18 @@
   function onTimelineScroll(event: Event) {
     const el = event.currentTarget as HTMLDivElement;
     timelineScrollLeft = el.scrollLeft;
+    // Resize-induced scroll guard: when the window grows, `cqi`-based track
+    // margins recompute non-atomically with `clientWidth`, so the browser
+    // emits a `scroll` event against a transiently inconsistent
+    // `(scrollLeft, scrollWidth, clientWidth)` triple before the
+    // `ResizeObserver` can re-sync us. Recomputing the active index from
+    // that triple jumps the user to a different frame on every enlarge.
+    // Detect this by comparing `clientWidth` to the value the observer last
+    // acknowledged: load-more grows `scrollWidth` but not `clientWidth`, so
+    // genuine user scrubs during pagination still pass through.
+    if (el.clientWidth !== lastTimelineRailClientWidth) {
+      return;
+    }
     const maxScroll = el.scrollWidth - el.clientWidth;
     const advance = Math.max(0, maxScroll - el.scrollLeft);
     const idx = Math.max(
@@ -1689,16 +1713,43 @@
   });
 
   // Track the rail's viewport width so the windowing window stays correct
-  // across resizes. Only the slots near the viewport are rendered.
+  // across resizes. Only the slots near the viewport are rendered. Also acts
+  // as the **resize-recovery seam**: every observer fire records the current
+  // `clientWidth` and re-pins `scrollLeft` to the canonical
+  // `timelineActiveIndex`. The browser preserves `scrollLeft` across resize
+  // only as a number — when the window grows, `cqi`-driven margin reflow
+  // briefly shrinks `maxScroll`, the browser clamps `scrollLeft`, and an
+  // intervening `scroll` event would otherwise corrupt the active index.
+  // `onTimelineScroll` filters those events out via the
+  // `lastTimelineRailClientWidth` mismatch check above, and this observer
+  // then restores the parked frame after the resize settles.
   $effect(() => {
     const el = timelineRail;
     if (!el) return;
     timelineViewportWidth = el.clientWidth;
+    lastTimelineRailClientWidth = el.clientWidth;
     if (typeof ResizeObserver === "undefined") return;
+    let firstFire = true;
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         timelineViewportWidth = entry.contentRect.width;
       }
+      // The synthetic first fire happens immediately after `observe` and
+      // doesn't represent a real resize: the rail was just laid out and the
+      // initial scroll position has already been set by callers like
+      // `loadTimelinePage` via `syncTimelineScrollToActiveFrame`. Skipping
+      // it avoids an extra programmatic scroll on mount.
+      if (firstFire) {
+        firstFire = false;
+        lastTimelineRailClientWidth = el.clientWidth;
+        return;
+      }
+      lastTimelineRailClientWidth = el.clientWidth;
+      // Restore scroll from the canonical active index. The intermediate
+      // browser-emitted `scroll` event (clamped during reflow) was filtered
+      // out by `onTimelineScroll`, so `timelineActiveIndex` still points at
+      // the user's parked frame.
+      void syncTimelineScrollToActiveFrame();
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -3803,9 +3854,8 @@
     font-size: 9px;
   }
 
-  /* The previous `.timeline__menu-link` / `.timeline__menu-icon` ghost-anchor
-     to `/menu` moved into the app-wide title bar as `.titlebar__settings`,
-     so its dashboard-local rules were removed. */
+  /* The previous dashboard-local settings/menu anchor moved into the shared
+     title bar as reusable surface actions, so those local rules were removed. */
 
   /* ── Date jump picker ──────────────────────────────────────── */
   .timeline__jump {

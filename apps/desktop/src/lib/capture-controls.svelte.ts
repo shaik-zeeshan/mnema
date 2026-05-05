@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { captureSession, setSession } from "$lib/session.svelte";
 import type {
   CaptureSession,
@@ -29,6 +30,9 @@ const _state = $state<{
   sessionGeneration: 0,
   runtimeSources: null,
 });
+
+const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
+let _settingsSyncInitialized = false;
 
 function serializeError(err: unknown): string {
   return typeof err === "string" ? err : (JSON.stringify(err) ?? "Unknown error");
@@ -92,6 +96,7 @@ export const captureControls = {
 };
 
 export async function bootstrapCaptureControls(): Promise<void> {
+  initRecordingSettingsSync();
   _state.loadingSettings = true;
   const gen = _state.sessionGeneration;
   try {
@@ -110,6 +115,16 @@ export async function bootstrapCaptureControls(): Promise<void> {
     _state.loadingSettings = false;
     _state.bootstrapped = true;
   }
+}
+
+function initRecordingSettingsSync(): void {
+  if (_settingsSyncInitialized || typeof window === "undefined") return;
+  _settingsSyncInitialized = true;
+
+  void listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
+    _state.recordingSettings = event.payload;
+    _state.error = null;
+  });
 }
 
 export async function startCapture(): Promise<void> {

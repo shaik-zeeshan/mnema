@@ -741,29 +741,98 @@
     };
   });
 
-</script>
+  // ─── Section tabs ────────────────────────────────────────────────────────
+  // Reorganize the dense Debug page into discrete sections so only one is
+  // mounted at a time. This keeps the dedicated debug window focused, lets
+  // long-lived backgrounds (probe polling, idle polling, etc.) ride next to
+  // the section that owns them, and dramatically reduces what the renderer
+  // paints when several heavy lists are present at once.
+  type DebugTab =
+    | "session"
+    | "runtime"
+    | "probe"
+    | "inactivity"
+    | "infra"
+    | "workspaces"
+    | "jobs";
 
-<!-- ── Sticky action bar ───────────────────────────────────────────────── -->
-<div class="action-bar" role="toolbar" aria-label="Debug navigation">
-  <div class="action-bar__left">
-    <a class="back-link" href="/menu" aria-label="Back to menu">
-      <span class="back-link__chevron" aria-hidden="true">‹</span>
-      <span class="back-link__label">Back</span>
-    </a>
-    <div class="action-bar__title-block">
-      <span class="action-bar__eyebrow">control center</span>
-      <h1 class="action-bar__title">Debug</h1>
-    </div>
-  </div>
-</div>
+  const debugTabs: { id: DebugTab; label: string }[] = [
+    { id: "session", label: "Session" },
+    { id: "runtime", label: "Runtime" },
+    { id: "probe", label: "Probe" },
+    { id: "inactivity", label: "Inactivity" },
+    { id: "infra", label: "Infra" },
+    { id: "workspaces", label: "Workspaces" },
+    { id: "jobs", label: "Jobs" },
+  ];
+
+  let activeTab = $state<DebugTab>("session");
+
+  // ─── Jobs pagination ─────────────────────────────────────────────────────
+  // Recent-jobs can grow unbounded; render a fixed-size window. The selected
+  // job detail panel is rendered outside the paginated list so the user can
+  // still see it after paging away from the row that owns it.
+  const JOBS_PAGE_SIZE = 5;
+  let jobsPage = $state(0);
+  const jobsPageCount = $derived(Math.max(1, Math.ceil(jobs.length / JOBS_PAGE_SIZE)));
+  // Clamp the current page when the underlying job list shrinks (e.g. after
+  // a refresh that drops a previously-listed job). This avoids landing on an
+  // empty page that confusingly shows no rows despite jobs.length > 0.
+  $effect(() => {
+    if (jobsPage > jobsPageCount - 1) {
+      jobsPage = jobsPageCount - 1;
+    }
+    if (jobsPage < 0) jobsPage = 0;
+  });
+  const jobsPageStart = $derived(jobsPage * JOBS_PAGE_SIZE);
+  const pagedJobs = $derived(jobs.slice(jobsPageStart, jobsPageStart + JOBS_PAGE_SIZE));
+  const selectedJobPage = $derived.by(() => {
+    if (selectedJobId == null) return null;
+    const idx = jobs.findIndex((j) => j.id === selectedJobId);
+    if (idx < 0) return null;
+    return Math.floor(idx / JOBS_PAGE_SIZE);
+  });
+  const selectedJobOnAnotherPage = $derived(
+    selectedJobPage != null && selectedJobPage !== jobsPage,
+  );
+
+  function goToSelectedJobPage() {
+    if (selectedJobPage != null) jobsPage = selectedJobPage;
+  }
+
+</script>
 
 <!-- ── Page header ──────────────────────────────────────────────────────── -->
 <header class="page-header">
+  <div class="page-header__row">
+    <div class="page-header__title-block">
+      <h1 class="page-header__title">Debug</h1>
+    </div>
+  </div>
   <p class="page-subtitle">Recording status &amp; controls.</p>
 </header>
 
+<div class="debug-tabs" role="tablist" aria-label="Debug sections">
+    {#each debugTabs as tab (tab.id)}
+      <button
+        type="button"
+        role="tab"
+        id="debug-tab-{tab.id}"
+        aria-selected={activeTab === tab.id}
+        aria-controls="debug-panel-{tab.id}"
+        tabindex={activeTab === tab.id ? 0 : -1}
+        class="debug-tabs__btn"
+        class:debug-tabs__btn--active={activeTab === tab.id}
+        onclick={() => (activeTab = tab.id)}
+      >
+        {tab.label}
+      </button>
+    {/each}
+</div>
+
 <!-- ── Recording status ─────────────────────────────────────────────────── -->
-<section class="card">
+{#if activeTab === "session"}
+<section class="card" id="debug-panel-session" aria-labelledby="debug-tab-session">
   <h2 class="card__title">Session</h2>
 
   <div class="session-status" class:session-status--recording={isCapturing}>
@@ -874,9 +943,11 @@
     </button>
   </div>
 </section>
+{/if}
 
 <!-- ── Runtime sources ──────────────────────────────────────────────────── -->
-<section class="card card--debug">
+{#if activeTab === "runtime"}
+<section class="card card--debug" id="debug-panel-runtime" aria-labelledby="debug-tab-runtime">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Runtime Sources
@@ -996,9 +1067,11 @@
     <p class="empty">runtime status only available while a session is active</p>
   {/if}
 </section>
+{/if}
 
 <!-- ── System probe ──────────────────────────────────────────────────────── -->
-<section class="card">
+{#if activeTab === "probe"}
+<section class="card" id="debug-panel-probe" aria-labelledby="debug-tab-probe">
   <h2 class="card__title">System Probe</h2>
   <div class="probe-grid">
     <div class="probe-block">
@@ -1078,9 +1151,11 @@
     </div>
   </div>
 </section>
+{/if}
 
 <!-- ── Native idle debug ─────────────────────────────────────────────────── -->
-<section class="card card--debug">
+{#if activeTab === "inactivity"}
+<section class="card card--debug" id="debug-panel-inactivity" aria-labelledby="debug-tab-inactivity">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Inactivity Policy
@@ -1345,9 +1420,11 @@
     <p class="empty">—</p>
   {/if}
 </section>
+{/if}
 
 <!-- ── App Infra / Background Jobs ───────────────────────────────────────── -->
-<section class="card card--debug">
+{#if activeTab === "infra"}
+<section class="card card--debug" id="debug-panel-infra" aria-labelledby="debug-tab-infra">
   <h2 class="card__title">
     <span class="card__num">05</span>
     <span class="debug-tag">dbg</span>
@@ -1396,9 +1473,11 @@
     <p class="empty">—</p>
   {/if}
 </section>
+{/if}
 
 <!-- ── Hidden segment workspace classifier ───────────────────────────────── -->
-<section class="card card--debug">
+{#if activeTab === "workspaces"}
+<section class="card card--debug" id="debug-panel-workspaces" aria-labelledby="debug-tab-workspaces">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Segment Workspace Cleanup
@@ -1516,9 +1595,11 @@
     <p class="empty">enter a hidden segment workspace path to classify</p>
   {/if}
 </section>
+{/if}
 
 <!-- ── Background Jobs ───────────────────────────────────────────────────── -->
-<section class="card card--debug">
+{#if activeTab === "jobs"}
+<section class="card card--debug" id="debug-panel-jobs" aria-labelledby="debug-tab-jobs">
   <h2 class="card__title">
     <span class="card__num">06</span>
     <span class="debug-tag">dbg</span>
@@ -1562,6 +1643,11 @@
   <div class="idle-section-label">
     Recent jobs
     {#if loadingJobs}<span class="idle-note">loading…</span>{/if}
+    {#if jobs.length > 0}
+      <span class="idle-note">
+        {jobsPageStart + 1}–{Math.min(jobsPageStart + JOBS_PAGE_SIZE, jobs.length)} of {jobs.length}
+      </span>
+    {/if}
   </div>
   {#if jobsError}
     <p class="debug-err">{jobsError}</p>
@@ -1569,7 +1655,7 @@
     <p class="empty">no jobs yet</p>
   {:else}
     <ul class="job-list">
-      {#each jobs as job (job.id)}
+      {#each pagedJobs as job (job.id)}
         {@const isSelected = selectedJobId === job.id}
         <li>
           <button
@@ -1586,6 +1672,31 @@
         </li>
       {/each}
     </ul>
+    {#if jobsPageCount > 1}
+      <div class="job-pager" role="group" aria-label="Recent jobs pagination">
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm"
+          onclick={() => (jobsPage = Math.max(0, jobsPage - 1))}
+          disabled={jobsPage === 0}
+          aria-label="Previous page"
+        >
+          ‹ prev
+        </button>
+        <span class="job-pager__info">
+          page {jobsPage + 1} / {jobsPageCount}
+        </span>
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm"
+          onclick={() => (jobsPage = Math.min(jobsPageCount - 1, jobsPage + 1))}
+          disabled={jobsPage >= jobsPageCount - 1}
+          aria-label="Next page"
+        >
+          next ›
+        </button>
+      </div>
+    {/if}
   {/if}
 
   <!-- Selected job detail -->
@@ -1600,6 +1711,17 @@
       >
         {loadingSelectedJob ? "…" : "↻"}
       </button>
+      {#if selectedJobOnAnotherPage}
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm"
+          onclick={goToSelectedJobPage}
+          style="margin-left: 6px;"
+          aria-label="Jump to the page containing the selected job"
+        >
+          show in list
+        </button>
+      {/if}
     </div>
     {#if selectedJobError}
       <p class="debug-err">{selectedJobError}</p>
@@ -1642,6 +1764,7 @@
     {/if}
   {/if}
 </section>
+{/if}
 
 <!-- ── Error display ─────────────────────────────────────────────────────── -->
 {#if lastError}
@@ -1655,65 +1778,6 @@
 {/if}
 
 <style>
-  /* ── Sticky action bar ─────────────────────────────────────── */
-  .action-bar {
-    position: sticky;
-    top: var(--app-titlebar-height, 36px);
-    z-index: 20;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 14px 18px;
-    margin: 0 -24px 8px;
-    background: color-mix(in srgb, var(--app-bg) 92%, transparent);
-    backdrop-filter: saturate(140%) blur(10px);
-    -webkit-backdrop-filter: saturate(140%) blur(10px);
-    border-bottom: 1px solid var(--app-border);
-  }
-
-  .action-bar::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: -1px;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--app-accent-strong) 30%, var(--app-accent) 50%, var(--app-accent-strong) 70%, transparent);
-    opacity: 0.35;
-    pointer-events: none;
-  }
-
-  .action-bar__left {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    min-width: 0;
-  }
-
-  .action-bar__title-block {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .action-bar__eyebrow {
-    font-size: 8px;
-    font-weight: 700;
-    letter-spacing: 0.24em;
-    text-transform: uppercase;
-    color: var(--app-accent-strong);
-  }
-
-  .action-bar__title {
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: var(--app-text-strong);
-    line-height: 1.1;
-  }
-
   /* ── Page header ───────────────────────────────────────────── */
   .page-header {
     display: flex;
@@ -1722,45 +1786,6 @@
     margin-bottom: 6px;
     padding-bottom: 12px;
     border-bottom: 1px dashed var(--app-border);
-  }
-
-  .back-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px 4px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--app-border);
-    background: transparent;
-    color: var(--app-text-muted);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    transition: color 0.12s, background 0.12s, border-color 0.12s;
-  }
-
-  .back-link:hover {
-    color: var(--app-text);
-    background: var(--app-surface-raised);
-    border-color: var(--app-border-strong);
-  }
-
-  .back-link:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    color: var(--app-text);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
-  }
-
-  .back-link__chevron {
-    font-size: 14px;
-    line-height: 1;
-    color: var(--app-text-subtle);
-  }
-
-  .back-link:hover .back-link__chevron {
-    color: var(--app-text);
   }
 
   .page-header__row {
@@ -1776,12 +1801,16 @@
     gap: 2px;
   }
 
-  .page-header__eyebrow {
-    font-size: 9px;
+  .page-header__title {
+    font-size: 14px;
     font-weight: 700;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
+    letter-spacing: 0.04em;
+    color: var(--app-text-strong);
+    line-height: 1.1;
+  }
+
+  .page-header__close {
+    min-width: 72px;
   }
 
   .page-header__meta {
@@ -2790,5 +2819,67 @@
   .rs-legend__dot--on { background: linear-gradient(90deg, var(--app-source-mic-strong) 0%, var(--app-source-mic) 100%); }
   .rs-legend__dot--paused { background: linear-gradient(90deg, var(--app-warn-strong) 0%, var(--app-warn) 100%); }
   .rs-legend__dot--off { background: var(--app-neutral-border); }
+
+  /* ── Section tabs ──────────────────────────────────────────── */
+  .debug-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+  }
+
+  .debug-tabs__btn {
+    appearance: none;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: color 0.12s, background 0.12s, border-color 0.12s;
+  }
+
+  .debug-tabs__btn:hover {
+    color: var(--app-text);
+    background: var(--app-surface-raised);
+  }
+
+  .debug-tabs__btn:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+
+  .debug-tabs__btn--active {
+    color: var(--app-text-strong);
+    background: var(--app-surface-raised);
+    border-color: var(--app-border-strong);
+  }
+
+  /* ── Jobs pager ─────────────────────────────────────────────── */
+  .job-pager {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--app-border);
+  }
+
+  .job-pager__info {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
 
 </style>

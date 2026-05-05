@@ -3,6 +3,7 @@
   import { goto } from "$app/navigation";
   import type { Snippet } from "svelte";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
+  import { closeCurrentWindow, isDedicatedSurfaceWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
   import {
     bootstrapCaptureControls,
     captureControls,
@@ -19,10 +20,39 @@
 
   let { children }: Props = $props();
 
+  const isMainRoute = $derived($page.url.pathname === "/");
   const isSettings = $derived($page.url.pathname.startsWith("/settings"));
   const isDebug = $derived($page.url.pathname.startsWith("/debug"));
-  const isMenu = $derived($page.url.pathname.startsWith("/menu"));
-  const showTimelineLink = $derived(isSettings || isDebug || isMenu);
+  const showMainTitlebar = $derived(isMainRoute);
+  const showDedicatedTitlebar = isDedicatedSurfaceWindow();
+  const dedicatedWindowTitle = $derived(isSettings ? "Settings" : isDebug ? "Debug" : "z");
+
+  let windowPlatform = $state<"macos" | "windows" | "other">("other");
+
+  $effect(() => {
+    if (typeof navigator === "undefined") return;
+
+    const ua = navigator.userAgent.toLowerCase();
+    if (ua.includes("mac os x") || ua.includes("macintosh")) {
+      windowPlatform = "macos";
+      return;
+    }
+    if (ua.includes("windows")) {
+      windowPlatform = "windows";
+      return;
+    }
+    windowPlatform = "other";
+  });
+
+  $effect(() => {
+    if (typeof document === "undefined") return;
+
+    document.documentElement.classList.toggle("dedicated-surface-window", showDedicatedTitlebar);
+
+    return () => {
+      document.documentElement.classList.remove("dedicated-surface-window");
+    };
+  });
 
   const devEnabled = $derived(developerOptions.value);
   const devLoaded = $derived(developerOptions.loaded);
@@ -62,7 +92,7 @@
   const showChildren = $derived(!isDebug || (devLoaded && devEnabled));
 
   // Routes that want a centered, padded reading column.
-  const isNarrow = $derived(isSettings || isDebug || isMenu);
+  const isNarrow = $derived(isSettings || isDebug);
 
   // ── Recording status mirrored from the shared capture-controls seam ────
   const isCapturing = $derived(captureControls.running);
@@ -78,7 +108,7 @@
   // icons (screen / microphone / system audio) with running vs paused
   // state. The subscription auto-clears when the session stops.
   $effect(() => {
-    if (!isCapturing) return;
+    if (!showMainTitlebar || !isCapturing) return;
     const release = subscribeRuntimeSources();
     return release;
   });
@@ -132,7 +162,14 @@
   }
 </script>
 
-<div class="app-shell">
+<svelte:body class:dedicated-surface-window={showDedicatedTitlebar} />
+
+<div
+  class="app-shell"
+  class:app-shell--dedicated={showDedicatedTitlebar}
+  class:app-shell--macos={showDedicatedTitlebar && windowPlatform === "macos"}
+  class:app-shell--windows={showDedicatedTitlebar && windowPlatform === "windows"}
+>
   <!--
     Custom desktop title bar. The Tauri window uses macOS's overlay title-bar
     style, so the OS still draws native traffic lights in the top-left; this
@@ -141,154 +178,155 @@
     interactive control sits outside that region so clicks/taps reach the
     button.
   -->
+  {#if showMainTitlebar}
   <header class="titlebar">
     <div class="titlebar__group titlebar__group--left">
-      <span
-        class="titlebar__status titlebar__status--{captureStatusModifier}"
-        aria-live="polite"
-        title="Recording status"
-      >
-        <span class="titlebar__status-dot" aria-hidden="true"></span>
-        <span class="titlebar__status-label">{captureStatusLabel}</span>
-      </span>
-      {#if isCapturing}
-        <button
-          type="button"
-          class="titlebar__record titlebar__record--stop"
-          onclick={stopCapture}
-          disabled={captureLoadingStop}
-          title="Stop recording"
-          aria-label="Stop recording"
+      {#if showMainTitlebar}
+        <span
+          class="titlebar__status titlebar__status--{captureStatusModifier}"
+          aria-live="polite"
+          title="Recording status"
         >
-          <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
-          <span>{captureLoadingStop ? "Stopping…" : "Stop"}</span>
-        </button>
-      {:else}
-        <button
-          type="button"
-          class="titlebar__record titlebar__record--start"
-          onclick={startCapture}
-          disabled={captureLoadingStart || captureLoadingSettings}
-          title="Start recording"
-          aria-label="Start recording"
-        >
-          <span class="titlebar__record-glyph" aria-hidden="true">●</span>
-          <span>{captureLoadingStart ? "Starting…" : "Record"}</span>
-        </button>
-      {/if}
-      {#snippet sourceIcon(key: SourceLane["key"])}
-        {#if key === "screen"}
-          <svg
-            class="titlebar__source-icon"
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <rect x="2" y="4" width="20" height="13" rx="2" />
-            <path d="M8 21h8" />
-            <path d="M12 17v4" />
-          </svg>
-        {:else if key === "microphone"}
-          <svg
-            class="titlebar__source-icon"
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <rect x="9" y="2.5" width="6" height="12" rx="3" />
-            <path d="M5.5 11a6.5 6.5 0 0 0 13 0" />
-            <path d="M12 17.5v3.5" />
-            <path d="M9 21h6" />
-          </svg>
-        {:else}
-          <svg
-            class="titlebar__source-icon"
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M11 5 6.5 9H3v6h3.5L11 19z" />
-            <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-            <path d="M18.5 5.5a9 9 0 0 1 0 13" />
-          </svg>
-        {/if}
-      {/snippet}
-      {#each sourceLanes as lane (lane.key)}
+          <span class="titlebar__status-dot" aria-hidden="true"></span>
+          <span class="titlebar__status-label">{captureStatusLabel}</span>
+        </span>
         {#if isCapturing}
-          {@const state = liveStateFor(lane.key)}
-          <span
-            class="titlebar__source titlebar__source--{lane.key} titlebar__source--{state}"
-            title={liveTitleFor(lane, state)}
-            aria-label={liveTitleFor(lane, state)}
-            role="status"
-          >
-            {@render sourceIcon(lane.key)}
-            <span class="titlebar__source-state" aria-hidden="true">
-              {#if state === "running"}
-                <span class="titlebar__source-dot"></span>
-              {:else if state === "paused"}
-                <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
-                  <rect x="1" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
-                  <rect x="5" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
-                </svg>
-              {:else if state === "starting"}
-                <span class="titlebar__source-ring"></span>
-              {:else}
-                <span class="titlebar__source-slash"></span>
-              {/if}
-            </span>
-          </span>
-        {:else}
-          {@const state = selectStateFor(lane.key)}
           <button
             type="button"
-            class="titlebar__source titlebar__source--toggle titlebar__source--{lane.key} titlebar__source--{state}"
-            title={selectTitleFor(lane, state)}
-            aria-label={selectTitleFor(lane, state)}
-            aria-pressed={state === "selected"}
-            disabled={sourceSelection.isSaving(lane.key) || captureControls.loadingSettings}
-            onclick={() => toggleSourceSelected(lane.key)}
+            class="titlebar__record titlebar__record--stop"
+            onclick={stopCapture}
+            disabled={captureLoadingStop}
+            title="Stop recording"
+            aria-label="Stop recording"
           >
-            {@render sourceIcon(lane.key)}
-            <span class="titlebar__source-state" aria-hidden="true">
-              {#if state === "selected"}
-                <!-- Checkmark: source will be captured on next start -->
-                <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
-                  <path
-                    d="M1.5 4.2 3.2 5.9 6.5 2.5"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.6"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-              {:else}
-                <!-- Diagonal slash: source will be skipped -->
-                <span class="titlebar__source-slash"></span>
-              {/if}
-            </span>
+            <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
+            <span>{captureLoadingStop ? "Stopping…" : "Stop"}</span>
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="titlebar__record titlebar__record--start"
+            onclick={startCapture}
+            disabled={captureLoadingStart || captureLoadingSettings}
+            title="Start recording"
+            aria-label="Start recording"
+          >
+            <span class="titlebar__record-glyph" aria-hidden="true">●</span>
+            <span>{captureLoadingStart ? "Starting…" : "Record"}</span>
           </button>
         {/if}
-      {/each}
+        {#snippet sourceIcon(key: SourceLane["key"])}
+          {#if key === "screen"}
+            <svg
+              class="titlebar__source-icon"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="2" y="4" width="20" height="13" rx="2" />
+              <path d="M8 21h8" />
+              <path d="M12 17v4" />
+            </svg>
+          {:else if key === "microphone"}
+            <svg
+              class="titlebar__source-icon"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="9" y="2.5" width="6" height="12" rx="3" />
+              <path d="M5.5 11a6.5 6.5 0 0 0 13 0" />
+              <path d="M12 17.5v3.5" />
+              <path d="M9 21h6" />
+            </svg>
+          {:else}
+            <svg
+              class="titlebar__source-icon"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M11 5 6.5 9H3v6h3.5L11 19z" />
+              <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+              <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+            </svg>
+          {/if}
+        {/snippet}
+        {#each sourceLanes as lane (lane.key)}
+          {#if isCapturing}
+            {@const state = liveStateFor(lane.key)}
+            <span
+              class="titlebar__source titlebar__source--{lane.key} titlebar__source--{state}"
+              title={liveTitleFor(lane, state)}
+              aria-label={liveTitleFor(lane, state)}
+              role="status"
+            >
+              {@render sourceIcon(lane.key)}
+              <span class="titlebar__source-state" aria-hidden="true">
+                {#if state === "running"}
+                  <span class="titlebar__source-dot"></span>
+                {:else if state === "paused"}
+                  <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                    <rect x="1" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
+                    <rect x="5" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
+                  </svg>
+                {:else if state === "starting"}
+                  <span class="titlebar__source-ring"></span>
+                {:else}
+                  <span class="titlebar__source-slash"></span>
+                {/if}
+              </span>
+            </span>
+          {:else}
+            {@const state = selectStateFor(lane.key)}
+            <button
+              type="button"
+              class="titlebar__source titlebar__source--toggle titlebar__source--{lane.key} titlebar__source--{state}"
+              title={selectTitleFor(lane, state)}
+              aria-label={selectTitleFor(lane, state)}
+              aria-pressed={state === "selected"}
+              disabled={sourceSelection.isSaving(lane.key) || captureControls.loadingSettings}
+              onclick={() => toggleSourceSelected(lane.key)}
+            >
+              {@render sourceIcon(lane.key)}
+              <span class="titlebar__source-state" aria-hidden="true">
+                {#if state === "selected"}
+                  <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                    <path
+                      d="M1.5 4.2 3.2 5.9 6.5 2.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                {:else}
+                  <span class="titlebar__source-slash"></span>
+                {/if}
+              </span>
+            </button>
+          {/if}
+        {/each}
+      {/if}
     </div>
 
     <!-- Inert centre area carries the drag region. Title is decorative. -->
@@ -297,12 +335,13 @@
     </div>
 
     <div class="titlebar__group titlebar__group--right">
-      {#if showTimelineLink}
-        <a
-          class="titlebar__settings titlebar__settings--labelled"
-          href="/"
-          aria-label="Return to timeline"
-          title="Back to timeline"
+      {#if showMainTitlebar}
+        <button
+          type="button"
+          class="titlebar__settings"
+          aria-label="Open settings"
+          title="Settings"
+          onclick={() => void openSettingsWindow()}
         >
           <svg
             class="titlebar__settings-icon"
@@ -316,41 +355,71 @@
             stroke-linejoin="round"
             aria-hidden="true"
           >
-            <circle cx="12" cy="12" r="7" />
-            <path d="M12 8.5v4.25l2.75 1.75" />
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
-          <span class="titlebar__settings-label">Back to Timeline</span>
-        </a>
+        </button>
+        {#if devEnabled}
+          <button
+            type="button"
+            class="titlebar__settings"
+            aria-label="Open debug"
+            title="Debug"
+            onclick={() => void openDebugWindow()}
+          >
+            <svg
+              class="titlebar__settings-icon"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M9 3h6" />
+              <path d="M10 9V7a2 2 0 1 1 4 0v2" />
+              <rect x="5" y="9" width="14" height="10" rx="2" />
+              <path d="M8 13h.01" />
+              <path d="M16 13h.01" />
+              <path d="M9 19v2" />
+              <path d="M15 19v2" />
+              <path d="M2 12h3" />
+              <path d="M19 12h3" />
+            </svg>
+          </button>
+        {/if}
       {/if}
-      <a
-        class="titlebar__settings"
-        class:titlebar__settings--active={isMenu}
-        href="/menu"
-        aria-label="Open menu"
-        title="Menu"
-      >
-        <!-- Inline gear icon. Larger and more recognisable than the prior
-             ⚙ glyph, sized to match the 28px title-bar control footprint. -->
-        <svg
-          class="titlebar__settings-icon"
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.75"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-      </a>
     </div>
   </header>
+  {/if}
 
-  <main class="app-content" class:app-content--narrow={isNarrow}>
+  {#if showDedicatedTitlebar}
+  <header class="surface-titlebar">
+    <div class="surface-titlebar__drag" data-tauri-drag-region>
+      <span class="surface-titlebar__title" data-tauri-drag-region>{dedicatedWindowTitle}</span>
+    </div>
+    <div class="surface-titlebar__actions">
+      <button
+        type="button"
+        class="surface-titlebar__close"
+        aria-label="Close window"
+        title="Close"
+        onclick={() => void closeCurrentWindow()}
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+          <path d="M2.5 2.5 9.5 9.5" />
+          <path d="M9.5 2.5 2.5 9.5" />
+        </svg>
+        <span>Close</span>
+      </button>
+    </div>
+  </header>
+  {/if}
+
+  <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar}>
     {#if showChildren}
       {@render children()}
     {/if}
@@ -627,6 +696,10 @@
     overscroll-behavior: none;
   }
 
+  :global(html.dedicated-surface-window) {
+    background: transparent;
+  }
+
   :global(body) {
     min-height: 100%;
     background-color: var(--app-bg);
@@ -642,16 +715,29 @@
     transition: background-color 0.18s ease, color 0.18s ease;
   }
 
+  :global(body.dedicated-surface-window) {
+    background: transparent;
+  }
+
   :global(a) {
     text-decoration: none;
   }
 
   .app-shell {
     --app-titlebar-height: 36px;
+    --app-window-radius: 10px;
     display: flex;
     flex-direction: column;
     min-height: 100vh;
     min-height: 100dvh;
+  }
+
+  .app-shell--macos {
+    --app-window-radius: 12px;
+  }
+
+  .app-shell--windows {
+    --app-window-radius: 8px;
   }
 
   /* ── Title bar ────────────────────────────────────────────────
@@ -680,6 +766,77 @@
     position: sticky;
     top: 0;
     z-index: 100;
+  }
+
+  .surface-titlebar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    height: 40px;
+    padding: 0 10px 0 14px;
+    background: var(--app-titlebar-bg);
+    border-radius: var(--app-window-radius) var(--app-window-radius) 0 0;
+    box-shadow: inset 0 -1px 0 var(--app-titlebar-border);
+    user-select: none;
+    -webkit-user-select: none;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .surface-titlebar__drag {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+  }
+
+  .surface-titlebar__title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--app-titlebar-title);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .surface-titlebar__actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+  }
+
+  .surface-titlebar__close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 72px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid var(--app-icon-border-hover);
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    font-family: inherit;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+
+  .surface-titlebar__close:hover {
+    background: var(--app-icon-bg-hover);
+    border-color: var(--app-border-hover);
+    color: var(--app-text-strong);
   }
 
   .titlebar__group {
@@ -919,9 +1076,7 @@
     height: 7px;
   }
 
-  /* ── Settings link ────────────────────────────────────────── */
-  /* Sized noticeably larger than the previous ⚙ glyph so the "open
-     menu/settings" affordance is unambiguous on every page. */
+  /* ── Surface actions ──────────────────────────────────────── */
   .titlebar__settings {
     display: inline-flex;
     align-items: center;
@@ -932,6 +1087,9 @@
     border-radius: 4px;
     color: var(--app-icon-fg);
     border: 1px solid transparent;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
   .titlebar__settings--labelled {
@@ -943,11 +1101,6 @@
     background: var(--app-icon-bg-hover);
     color: var(--app-icon-fg-hover);
     border-color: var(--app-icon-border-hover);
-  }
-  .titlebar__settings--active {
-    background: var(--app-icon-bg-active);
-    color: var(--app-icon-fg-hover);
-    border-color: var(--app-icon-border-active);
   }
   .titlebar__settings-icon {
     display: block;
@@ -972,15 +1125,35 @@
     min-height: 0;
   }
 
+  .app-content--dedicated {
+    background: var(--app-bg);
+    border-radius: 0 0 var(--app-window-radius) var(--app-window-radius);
+    overflow: hidden;
+  }
+
+  .app-shell--dedicated {
+    background: var(--app-bg);
+    border-radius: var(--app-window-radius);
+    overflow: hidden;
+    padding: 0;
+  }
+
   /* The narrow column is opt-in — only routes that explicitly want a
-     centered, padded reading column (currently `/settings`, `/debug`, and
-     `/menu`) request it. Surfaces like the timeline consume the full
+     centered, padded reading column (currently `/settings` and `/debug`)
+     request it. Surfaces like the timeline consume the full
      viewport width by default so previews and dense controls aren't
      artificially capped. */
   .app-content--narrow {
     max-width: 860px;
     margin: 0 auto;
-    padding: 0 24px 64px;
+    padding: calc(var(--app-titlebar-height) + 14px) 24px 64px;
+    gap: 14px;
+  }
+
+  .app-content--dedicated.app-content--narrow {
+    max-width: none;
+    margin: 0;
+    padding: 16px 20px 28px;
     gap: 14px;
   }
 </style>
