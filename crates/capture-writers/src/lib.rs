@@ -818,9 +818,9 @@ fn create_video_asset_writer_with_source_hint(
 pub fn append_video_sample_to_writer(
     writer_state: &mut VideoAssetWriterState,
     sample_buf: &cidre::cm::SampleBuf,
-) -> Result<(), CaptureErrorResponse> {
+) -> Result<bool, CaptureErrorResponse> {
     if !sample_buf.data_is_ready() {
-        return Ok(());
+        return Ok(false);
     }
 
     if !writer_state.started {
@@ -839,7 +839,7 @@ pub fn append_video_sample_to_writer(
     }
 
     if !writer_state.input.is_ready_for_more_media_data() {
-        return Ok(());
+        return Ok(false);
     }
 
     let appended = writer_state
@@ -866,7 +866,7 @@ pub fn append_video_sample_to_writer(
 
     writer_state.appended_samples += 1;
 
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(target_os = "macos")]
