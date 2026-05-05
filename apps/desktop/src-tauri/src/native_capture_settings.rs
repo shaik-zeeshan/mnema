@@ -1,4 +1,5 @@
 use capture_types::{
+    default_appearance,
     default_developer_options_enabled, default_idle_timeout_seconds,
     default_follow_timeline_live, default_inactivity_activity_mode,
     default_microphone_activity_sensitivity,
@@ -78,6 +79,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         developer_options_enabled: default_developer_options_enabled(),
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: default_follow_timeline_live(),
+        appearance: default_appearance(),
         ocr: default_ocr_settings(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
@@ -339,6 +341,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         developer_options_enabled: request.developer_options_enabled,
         preview_cache_ttl_seconds: request.preview_cache_ttl_seconds,
         follow_timeline_live: request.follow_timeline_live,
+        appearance: request.appearance,
         ocr: request.ocr,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
@@ -378,6 +381,7 @@ fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
         developer_options_enabled: parsed.developer_options_enabled,
         preview_cache_ttl_seconds: parsed.preview_cache_ttl_seconds,
         follow_timeline_live: parsed.follow_timeline_live,
+        appearance: parsed.appearance,
         ocr: parsed.ocr,
         pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
         idle_timeout_seconds: parsed.idle_timeout_seconds,
@@ -692,6 +696,7 @@ mod tests {
             default_preview_cache_ttl_seconds()
         );
         assert_eq!(loaded.follow_timeline_live, default_follow_timeline_live());
+        assert_eq!(loaded.appearance, default_appearance());
         assert_eq!(loaded.ocr, default_ocr_settings());
     }
 
@@ -713,6 +718,7 @@ mod tests {
             developer_options_enabled: false,
             preview_cache_ttl_seconds: MAX_PREVIEW_CACHE_TTL_SECONDS + 1,
             follow_timeline_live: false,
+            appearance: default_appearance(),
             ocr: default_ocr_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,

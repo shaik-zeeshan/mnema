@@ -640,10 +640,11 @@ impl InactivityState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capture_types::{
-        default_inactivity_activity_mode, default_video_bitrate, InactivityActivityMode,
-        RecordingSettings, ScreenResolution, ScreenResolutionPreset,
-    };
+use capture_types::{
+    default_appearance, default_inactivity_activity_mode, default_video_bitrate,
+    InactivityActivityMode,
+    RecordingSettings, ScreenResolution, ScreenResolutionPreset,
+};
 
     fn empty_audio_activity() -> AudioActivitySourceState {
         AudioActivitySourceState {
@@ -699,6 +700,7 @@ mod tests {
             developer_options_enabled: false,
             preview_cache_ttl_seconds: capture_types::default_preview_cache_ttl_seconds(),
             follow_timeline_live: false,
+            appearance: default_appearance(),
             ocr: capture_types::default_ocr_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
