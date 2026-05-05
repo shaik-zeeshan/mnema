@@ -777,6 +777,17 @@
     }, 2200);
   }
 
+  function previewSourceLabel(sourceKind: FramePreviewDto["sourceKind"]): string {
+    switch (sourceKind) {
+      case "original_frame":
+        return "stored frame";
+      case "segment_frame_fallback":
+        return "segment frame fallback";
+      case "video_fallback":
+        return "video fallback";
+    }
+  }
+
   function mimeTypeFromDataUrl(dataUrl: string): string | null {
     const match = /^data:([^;,]+)[;,]/.exec(dataUrl);
     return match?.[1] ?? null;
@@ -996,6 +1007,10 @@
     if (previewCache.has(frameId)) return;
     if (previewInFlight.has(frameId)) return;
     previewInFlight.add(frameId);
+    const isActiveFrame = timelineActive?.id === frameId;
+    if (isActiveFrame) {
+      setFrameActionStatus("Loading frame preview...");
+    }
     try {
       const dto = await invoke<FramePreviewDto>("get_frame_preview", {
         request: { frameId },
@@ -1005,8 +1020,14 @@
       const next = new Map(previewCache);
       next.set(frameId, url);
       previewCache = next;
-    } catch {
-      // Best-effort: leave the cache untouched so a retry on next render is possible.
+      if (isActiveFrame) {
+        setFrameActionStatus(null);
+      }
+    } catch (error) {
+      if (isActiveFrame) {
+        const message = error instanceof Error ? error.message : String(error);
+        setFrameActionStatus(`Frame preview failed: ${message}`);
+      }
     } finally {
       previewInFlight.delete(frameId);
     }

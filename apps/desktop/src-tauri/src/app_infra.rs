@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -17,6 +18,7 @@ pub type AppInfraState = Arc<::app_infra::AppInfra>;
 pub type FramePreviewCacheState = Mutex<FramePreviewCache>;
 
 const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
+const FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -38,9 +40,16 @@ struct CachedFramePreview {
     cached_at: Instant,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedVideoPreviewFailure {
+    message: String,
+    cached_at: Instant,
+}
+
 #[derive(Debug, Default)]
 pub struct FramePreviewCache {
     entries: HashMap<i64, CachedFramePreview>,
+    video_failures: HashMap<PathBuf, CachedVideoPreviewFailure>,
 }
 
 impl FramePreviewCache {
@@ -65,6 +74,7 @@ impl FramePreviewCache {
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.video_failures.clear();
     }
 
     #[cfg(test)]
@@ -90,6 +100,30 @@ impl FramePreviewCache {
 
             self.entries.remove(&oldest_frame_id);
         }
+    }
+
+    fn get_video_failure(&mut self, video_path: &Path, now: Instant) -> Option<String> {
+        self.evict_expired_video_failures(now);
+        self.video_failures
+            .get(video_path)
+            .map(|entry| entry.message.clone())
+    }
+
+    fn insert_video_failure(&mut self, video_path: &Path, message: String, now: Instant) {
+        self.evict_expired_video_failures(now);
+        self.video_failures.insert(
+            video_path.to_path_buf(),
+            CachedVideoPreviewFailure {
+                message,
+                cached_at: now,
+            },
+        );
+    }
+
+    fn evict_expired_video_failures(&mut self, now: Instant) {
+        self.video_failures.retain(|_, entry| {
+            now.duration_since(entry.cached_at) < FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL
+        });
     }
 }
 
@@ -810,26 +844,84 @@ fn read_nearest_segment_frame_preview(
         .transpose()
 }
 
+fn read_segment_frame_preview_or_return_video_error(
+    frame: &::app_infra::Frame,
+    related_frames: &[::app_infra::Frame],
+    video_path: &Path,
+    video_error: impl Into<String>,
+) -> ::app_infra::Result<Option<FramePreviewDto>> {
+    let video_error = video_error.into();
+
+    if let Some(bytes) = read_nearest_segment_frame_preview(frame, related_frames)? {
+        crate::native_capture::debug_log::log_warn(format!(
+            "[DEBUG-frame-preview] frame_id={} falling back to persisted segment frame after video preview failure at {}: {}",
+            frame.id,
+            video_path.display(),
+            video_error,
+        ));
+        return Ok(Some(frame_preview_payload(
+            bytes,
+            frame_image_mime_type(Path::new(&frame.file_path)),
+            FramePreviewSourceKindDto::SegmentFrameFallback,
+        )));
+    }
+
+    Err(::app_infra::AppInfraError::Io(std::io::Error::other(video_error)))
+}
+
+fn mov_file_appears_openable_for_preview(video_path: &Path) -> std::io::Result<bool> {
+    const SEARCH_WINDOW_BYTES: u64 = 256 * 1024;
+
+    let mut file = fs::File::open(video_path)?;
+    let file_len = file.metadata()?.len();
+    if file_len < 8 {
+        return Ok(false);
+    }
+
+    let prefix_len = file_len.min(SEARCH_WINDOW_BYTES) as usize;
+    let mut prefix = vec![0_u8; prefix_len];
+    file.read_exact(&mut prefix)?;
+    if prefix.windows(4).any(|window| window == b"moov") {
+        return Ok(true);
+    }
+
+    if file_len <= SEARCH_WINDOW_BYTES {
+        return Ok(false);
+    }
+
+    let suffix_len = file_len.min(SEARCH_WINDOW_BYTES) as usize;
+    file.seek(SeekFrom::End(-(suffix_len as i64)))?;
+    let mut suffix = vec![0_u8; suffix_len];
+    file.read_exact(&mut suffix)?;
+
+    Ok(suffix.windows(4).any(|window| window == b"moov"))
+}
+
 #[cfg(target_os = "macos")]
-fn png_bytes_from_cg_image(image: &cidre::cg::Image) -> Result<Vec<u8>, String> {
+fn image_bytes_from_cg_image(
+    image: &cidre::cg::Image,
+    ut_type: &cidre::ut::Type,
+    format_label: &str,
+    mime_type: &'static str,
+) -> Result<(Vec<u8>, &'static str), String> {
     use cidre::{cf, cg, ut};
     use tempfile::NamedTempFile;
 
-    let png_type_identifier = ut::Type::png().id();
+    let type_identifier = ut_type.id();
     let output_file = NamedTempFile::new()
-        .map_err(|error| format!("failed to create temporary PNG output file: {error}"))?;
+        .map_err(|error| format!("failed to create temporary {format_label} output file: {error}"))?;
     let output_path = output_file.path();
     let output_url = cf::Url::with_file_path(&output_path).ok_or_else(|| {
         format!(
-            "failed to create temporary PNG output URL at {}",
+            "failed to create temporary {format_label} output URL at {}",
             output_path.display()
         )
     })?;
     let mut image_destination =
-        cg::ImageDst::with_url(output_url.as_ref(), png_type_identifier.as_cf(), 1).ok_or_else(
+        cg::ImageDst::with_url(output_url.as_ref(), type_identifier.as_cf(), 1).ok_or_else(
             || {
                 format!(
-                    "failed to create temporary PNG image destination at {}",
+                    "failed to create temporary {format_label} image destination at {}",
                     output_path.display()
                 )
             },
@@ -838,24 +930,37 @@ fn png_bytes_from_cg_image(image: &cidre::cg::Image) -> Result<Vec<u8>, String> 
 
     if !image_destination.finalize() {
         return Err(format!(
-            "failed to finalize temporary PNG image destination at {}",
+            "failed to finalize temporary {format_label} image destination at {}",
             output_path.display()
         ));
     }
 
-    fs::read(output_path).map_err(|error| {
-        format!(
-            "failed to read temporary PNG output at {}: {error}",
-            output_path.display()
-        )
-    })
+    fs::read(output_path)
+        .map(|bytes| (bytes, mime_type))
+        .map_err(|error| {
+            format!(
+                "failed to read temporary {format_label} output at {}: {error}",
+                output_path.display()
+            )
+        })
 }
 
 #[cfg(target_os = "macos")]
-fn extract_preview_png_from_video_blocking(
+fn preview_image_bytes_from_cg_image(
+    image: &cidre::cg::Image,
+) -> Result<(Vec<u8>, &'static str), String> {
+    use cidre::ut;
+
+    image_bytes_from_cg_image(image, ut::Type::webp(), "WebP", "image/webp").or_else(
+        |_webp_error| image_bytes_from_cg_image(image, ut::Type::jpeg(), "JPEG", "image/jpeg"),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn extract_preview_image_from_video_blocking(
     video_path: PathBuf,
     offset_seconds: f64,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, &'static str), String> {
     use cidre::{av, blocks, cm, ns};
     use std::sync::mpsc;
 
@@ -886,7 +991,7 @@ fn extract_preview_png_from_video_blocking(
                     video_path_for_error.display()
                 ))
             } else if let Some(image) = image {
-                png_bytes_from_cg_image(image)
+                preview_image_bytes_from_cg_image(image)
             } else {
                 Err(format!(
                     "failed to extract preview from video {}: empty image result",
@@ -905,28 +1010,29 @@ fn extract_preview_png_from_video_blocking(
 }
 
 #[cfg(target_os = "macos")]
-async fn extract_preview_png_from_video(
+async fn extract_preview_image_from_video(
     video_path: &Path,
     offset_seconds: f64,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, &'static str), String> {
     tokio::task::spawn_blocking({
         let video_path = video_path.to_path_buf();
-        move || extract_preview_png_from_video_blocking(video_path, offset_seconds)
+        move || extract_preview_image_from_video_blocking(video_path, offset_seconds)
     })
     .await
     .map_err(|error| format!("failed to join video preview extraction task: {error}"))?
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn extract_preview_png_from_video(
+async fn extract_preview_image_from_video(
     _video_path: &Path,
     _offset_seconds: f64,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, &'static str), String> {
     Err("video frame preview fallback is only supported on macOS".to_string())
 }
 
 async fn get_frame_preview_inner(
     infra: &::app_infra::AppInfra,
+    cache: &FramePreviewCacheState,
     frame_id: i64,
 ) -> ::app_infra::Result<Option<FramePreviewDto>> {
     let Some(frame) = infra.get_frame(frame_id).await? else {
@@ -977,16 +1083,93 @@ async fn get_frame_preview_inner(
         )));
     }
 
+    let video_metadata = fs::metadata(&segment_paths.video_path)?;
+    if video_metadata.len() == 0 {
+        return read_segment_frame_preview_or_return_video_error(
+            &frame,
+            &related_frames,
+            &segment_paths.video_path,
+            format!(
+                "segment video is empty for frame {} at {}",
+                frame.id,
+                segment_paths.video_path.display()
+            ),
+        );
+    }
+
+    if !mov_file_appears_openable_for_preview(&segment_paths.video_path)? {
+        return read_segment_frame_preview_or_return_video_error(
+            &frame,
+            &related_frames,
+            &segment_paths.video_path,
+            format!(
+                "segment video is missing moov atom for frame {} at {}",
+                frame.id,
+                segment_paths.video_path.display()
+            ),
+        );
+    }
+
+    let now = Instant::now();
+    if let Some(cached_video_error) = cache
+        .lock()
+        .expect("frame preview cache poisoned")
+        .get_video_failure(&segment_paths.video_path, now)
+    {
+        return read_segment_frame_preview_or_return_video_error(
+            &frame,
+            &related_frames,
+            &segment_paths.video_path,
+            cached_video_error,
+        );
+    }
+
     let offset_seconds = estimate_frame_preview_offset_seconds(&frame, &related_frames);
-    let bytes = extract_preview_png_from_video(&segment_paths.video_path, offset_seconds)
-        .await
-        .map_err(|error| ::app_infra::AppInfraError::Io(std::io::Error::other(error)))?;
+    let (bytes, mime_type) = match extract_preview_image_from_video(&segment_paths.video_path, offset_seconds).await {
+        Ok(result) => result,
+        Err(video_error) => {
+            cache
+                .lock()
+                .expect("frame preview cache poisoned")
+                .insert_video_failure(&segment_paths.video_path, video_error.clone(), now);
+            return read_segment_frame_preview_or_return_video_error(
+                &frame,
+                &related_frames,
+                &segment_paths.video_path,
+                video_error,
+            );
+        }
+    };
 
     Ok(Some(frame_preview_payload(
         bytes,
-        "image/png",
+        mime_type,
         FramePreviewSourceKindDto::VideoFallback,
     )))
+}
+
+async fn get_frame_preview_inner_with_logging(
+    infra: &::app_infra::AppInfra,
+    cache: &FramePreviewCacheState,
+    frame_id: i64,
+) -> ::app_infra::Result<Option<FramePreviewDto>> {
+    let started_at = Instant::now();
+    let result = get_frame_preview_inner(infra, cache, frame_id).await;
+    let elapsed_ms = started_at.elapsed().as_millis();
+
+    match &result {
+        Ok(Some(_preview)) => {}
+        Ok(None) => crate::native_capture::debug_log::log_warn(format!(
+            "[DEBUG-frame-preview] frame_id={} missing elapsed_ms={}",
+            frame_id, elapsed_ms,
+        )),
+        Err(error) => crate::native_capture::debug_log::log_error(format!(
+            "[DEBUG-frame-preview] frame_id={} failed elapsed_ms={} error={}",
+            frame_id, elapsed_ms, error,
+        )),
+    }
+
+    result
 }
 
 fn preview_cache_ttl(settings: &crate::native_capture::RecordingSettingsState) -> Duration {
@@ -1675,7 +1858,7 @@ pub async fn get_frame_preview(
 
     if ttl.is_zero() {
         cache.lock().expect("frame preview cache poisoned").clear();
-        return get_frame_preview_inner(&infra, request.frame_id)
+        return get_frame_preview_inner_with_logging(&infra, &cache, request.frame_id)
             .await
             .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
     }
@@ -1690,7 +1873,7 @@ pub async fn get_frame_preview(
         return Ok(Some(preview));
     }
 
-    let preview = get_frame_preview_inner(&infra, request.frame_id)
+    let preview = get_frame_preview_inner_with_logging(&infra, &cache, request.frame_id)
         .await
         .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id))?;
 
@@ -2034,6 +2217,7 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let cache = FramePreviewCacheState::default();
             let frame_path = dir.path().join("frame-preview.png");
             let frame_bytes = b"not-a-real-png-but-preview-bytes";
             fs::write(&frame_path, frame_bytes).expect("frame preview file should be written");
@@ -2047,7 +2231,7 @@ mod tests {
                 .await
                 .expect("frame should be inserted");
 
-            let preview = get_frame_preview_inner(&infra, stored_frame.id)
+            let preview = get_frame_preview_inner(&infra, &cache, stored_frame.id)
                 .await
                 .expect("preview should load")
                 .expect("preview should exist");
@@ -2068,6 +2252,7 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let cache = FramePreviewCacheState::default();
             let workspace_dir = dir.path().join("2026/04/12/.session-preview-segment-0001");
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames directory should be created");
@@ -2096,7 +2281,7 @@ mod tests {
                 .await
                 .expect("sibling frame should be inserted");
 
-            let preview = get_frame_preview_inner(&infra, target_frame.id)
+            let preview = get_frame_preview_inner(&infra, &cache, target_frame.id)
                 .await
                 .expect("preview should load")
                 .expect("preview should exist");
@@ -2111,12 +2296,13 @@ mod tests {
     }
 
     #[test]
-    fn get_frame_preview_inner_does_not_use_segment_frame_fallback_when_visible_video_exists() {
+    fn get_frame_preview_inner_falls_back_to_segment_frame_when_visible_video_cannot_be_opened() {
         run_async_test(async {
             let dir = TestDir::new("frame-preview-video-preferred");
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let cache = FramePreviewCacheState::default();
             let segment_dir = dir.path().join("2026/04/12");
             let workspace_dir = segment_dir.join(".session-preview-segment-0001");
             let frames_dir = workspace_dir.join("frames");
@@ -2149,19 +2335,53 @@ mod tests {
                 .await
                 .expect("sibling frame should be inserted");
 
-            let error = get_frame_preview_inner(&infra, target_frame.id)
+            let preview = get_frame_preview_inner(&infra, &cache, target_frame.id)
                 .await
-                .expect_err("visible video should be attempted before sibling PNG fallback");
+                .expect("preview should load")
+                .expect("preview should exist");
+
+            assert_eq!(preview.mime_type, "image/png");
+            assert_eq!(
+                preview.source_kind,
+                FramePreviewSourceKindDto::SegmentFrameFallback
+            );
+            assert_eq!(preview.data_base64, BASE64_STANDARD.encode(sibling_bytes));
+        });
+    }
+
+    #[test]
+    fn get_frame_preview_inner_returns_error_immediately_when_visible_video_is_empty_and_no_segment_frame_exists() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-preview-empty-video");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let cache = FramePreviewCacheState::default();
+            let segment_dir = dir.path().join("2026/04/12");
+            let workspace_dir = segment_dir.join(".session-preview-segment-0001");
+            let frames_dir = workspace_dir.join("frames");
+            fs::create_dir_all(&frames_dir).expect("frames directory should be created");
+
+            let target_frame_path = frames_dir.join("frame-1744459201500-1.png");
+            let video_path = segment_dir.join("session-preview-segment-0001.mov");
+            fs::write(&video_path, b"").expect("visible segment video should be written");
+
+            let target_frame = infra
+                .insert_frame(&::app_infra::NewFrame::new(
+                    "session-preview",
+                    target_frame_path.to_string_lossy().to_string(),
+                    "2025-04-12T10:00:01.500Z",
+                ))
+                .await
+                .expect("target frame should be inserted");
+
+            let error = get_frame_preview_inner(&infra, &cache, target_frame.id)
+                .await
+                .expect_err("empty visible video without persisted fallback should error");
 
             let error_message = error.to_string();
-            assert!(
-                error_message.contains(&video_path.display().to_string())
-                    || error_message
-                        .contains("video frame preview fallback is only supported on macOS"),
-                "unexpected error: {error_message}"
-            );
-            assert!(!error_message.contains("segment video does not exist"));
-            assert_ne!(BASE64_STANDARD.encode(sibling_bytes), error_message);
+            assert!(error_message.contains("segment video is empty"));
+            assert!(error_message.contains(&video_path.display().to_string()));
         });
     }
 
@@ -2220,6 +2440,58 @@ mod tests {
         cache.clear();
 
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn frame_preview_cache_returns_video_failure_within_ttl() {
+        let mut cache = FramePreviewCache::default();
+        let now = Instant::now();
+        let video_path = Path::new("/tmp/segment-0001.mov");
+
+        cache.insert_video_failure(video_path, "cannot open".to_string(), now);
+
+        assert_eq!(
+            cache.get_video_failure(video_path, now + Duration::from_secs(1)),
+            Some("cannot open".to_string())
+        );
+    }
+
+    #[test]
+    fn mov_file_appears_openable_for_preview_requires_moov_atom() {
+        let dir = TestDir::new("frame-preview-moov-check");
+        let missing_moov_path = dir.path().join("missing-moov.mov");
+        let with_moov_path = dir.path().join("with-moov.mov");
+
+        fs::write(&missing_moov_path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  ")
+            .expect("mov fixture without moov should be written");
+        fs::write(&with_moov_path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  moov")
+            .expect("mov fixture with moov should be written");
+
+        assert!(
+            !mov_file_appears_openable_for_preview(&missing_moov_path)
+                .expect("missing-moov fixture should read")
+        );
+        assert!(
+            mov_file_appears_openable_for_preview(&with_moov_path)
+                .expect("with-moov fixture should read")
+        );
+    }
+
+    #[test]
+    fn frame_preview_cache_evicts_expired_video_failures() {
+        let mut cache = FramePreviewCache::default();
+        let now = Instant::now();
+        let video_path = Path::new("/tmp/segment-0001.mov");
+
+        cache.insert_video_failure(video_path, "cannot open".to_string(), now);
+
+        assert_eq!(
+            cache.get_video_failure(
+                video_path,
+                now + FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL + Duration::from_secs(1)
+            ),
+            None
+        );
     }
 
     #[test]
