@@ -1165,7 +1165,7 @@ fn read_segment_frame_preview_or_return_video_error(
                 frame_image_mime_type(Path::new(&frame.file_path)),
             )
         } else {
-            let cache_dir = std::env::temp_dir().join("z-preview-test-cache");
+            let cache_dir = std::env::temp_dir().join("mnema-preview-test-cache");
             persist_generated_frame_preview_in_dir(
                 &cache_dir,
                 frame.id,
@@ -1479,7 +1479,7 @@ async fn get_frame_preview_inner(
                     frame_image_mime_type(Path::new(&frame.file_path)),
                 )
             } else {
-                let cache_dir = std::env::temp_dir().join("z-preview-test-cache");
+                let cache_dir = std::env::temp_dir().join("mnema-preview-test-cache");
                 persist_generated_frame_preview_in_dir(
                     &cache_dir,
                     frame.id,
@@ -1630,7 +1630,7 @@ async fn get_frame_preview_inner(
     let persisted_path = if let Some(app_handle) = app_handle {
         persist_generated_frame_preview(app_handle, frame.id, &bytes, mime_type)
     } else {
-        let cache_dir = std::env::temp_dir().join("z-preview-test-cache");
+        let cache_dir = std::env::temp_dir().join("mnema-preview-test-cache");
         persist_generated_frame_preview_in_dir(&cache_dir, frame.id, &bytes, mime_type)
     }
     .map_err(::app_infra::AppInfraError::OcrEngine)?;
@@ -2731,44 +2731,44 @@ mod tests {
     }
 
     #[test]
-    fn resolve_base_dir_from_save_directory_uses_hidden_subdirectory() {
+    fn resolve_base_dir_from_save_directory_uses_save_directory_as_base_dir() {
         let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
-            "/tmp/z-recordings",
+            "/tmp/mnema-recordings",
         );
 
-        assert_eq!(layout.base_dir(), &PathBuf::from("/tmp/z-recordings").join(".z"));
+        assert_eq!(layout.base_dir(), &PathBuf::from("/tmp/mnema-recordings"));
     }
 
     #[test]
     fn resolve_base_dir_from_save_directory_keeps_database_out_of_segment_root() {
         let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
-            "/tmp/z-recordings/session-output",
+            "/tmp/mnema-recordings/session-output",
         );
         let base_dir = layout.base_dir();
 
-        assert_eq!(base_dir.parent(), Some(Path::new("/tmp/z-recordings/session-output")));
+        assert_eq!(base_dir.parent(), Some(Path::new("/tmp/mnema-recordings/session-output")));
         assert_eq!(
             base_dir.file_name().and_then(|value| value.to_str()),
-            Some(".z")
+            Some("session-output")
         );
     }
 
     #[test]
     fn recordings_root_dir_nests_under_dot_z() {
         let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
-            "/tmp/z-recordings",
+            "/tmp/mnema-recordings",
         );
 
         assert_eq!(
             layout.recordings_root(),
-            PathBuf::from("/tmp/z-recordings").join(".z").join("recordings")
+            PathBuf::from("/tmp/mnema-recordings").join("recordings")
         );
     }
 
     #[test]
     fn recordings_root_dir_is_child_of_base_dir() {
         let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
-            "/tmp/z-recordings",
+            "/tmp/mnema-recordings",
         );
         let base_dir = layout.base_dir().clone();
         let recordings_root = layout.recordings_root();

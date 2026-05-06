@@ -1028,7 +1028,7 @@ mod tests {
 
         fn managed_recordings_day_path(&self, year: &str, month: &str, day: &str) -> PathBuf {
             self.path
-                .join(format!(".z/recordings/{year}/{month}/{day}"))
+                .join(format!("recordings/{year}/{month}/{day}"))
         }
     }
 

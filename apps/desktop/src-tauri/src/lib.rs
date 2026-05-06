@@ -21,7 +21,7 @@ pub fn run() {
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)
                 .level_for("capture_runtime", tauri_plugin_log::log::LevelFilter::Debug)
-                .level_for("z_lib", tauri_plugin_log::log::LevelFilter::Debug)
+                .level_for("mnema_lib", tauri_plugin_log::log::LevelFilter::Debug)
                 .targets([
                     Target::new(TargetKind::Stderr),
                     Target::new(TargetKind::LogDir {

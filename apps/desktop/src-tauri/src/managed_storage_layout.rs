@@ -1,6 +1,4 @@
 use std::path::PathBuf;
-
-const MANAGED_STORAGE_DIR_NAME: &str = ".z";
 const RECORDINGS_DIR_NAME: &str = "recordings";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,7 +9,7 @@ pub(crate) struct ManagedStorageLayout {
 impl ManagedStorageLayout {
     pub(crate) fn from_save_directory(save_directory: &str) -> Self {
         Self {
-            base_dir: PathBuf::from(save_directory).join(MANAGED_STORAGE_DIR_NAME),
+            base_dir: PathBuf::from(save_directory),
         }
     }
 
@@ -36,33 +34,33 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn managed_storage_layout_uses_hidden_subdirectory() {
-        let layout = ManagedStorageLayout::from_save_directory("/tmp/z-recordings");
+    fn managed_storage_layout_uses_save_directory_as_base_dir() {
+        let layout = ManagedStorageLayout::from_save_directory("/tmp/mnema-recordings");
 
-        assert_eq!(layout.base_dir(), &PathBuf::from("/tmp/z-recordings").join(".z"));
+        assert_eq!(layout.base_dir(), &PathBuf::from("/tmp/mnema-recordings"));
     }
 
     #[test]
     fn managed_storage_layout_keeps_database_out_of_segment_root() {
-        let layout = ManagedStorageLayout::from_save_directory("/tmp/z-recordings/session-output");
+        let layout = ManagedStorageLayout::from_save_directory("/tmp/mnema-recordings/session-output");
 
-        assert_eq!(layout.base_dir().parent(), Some(Path::new("/tmp/z-recordings/session-output")));
-        assert_eq!(layout.base_dir().file_name().and_then(|value| value.to_str()), Some(".z"));
+        assert_eq!(layout.base_dir().parent(), Some(Path::new("/tmp/mnema-recordings/session-output")));
+        assert_eq!(layout.base_dir().file_name().and_then(|value| value.to_str()), Some("session-output"));
     }
 
     #[test]
-    fn recordings_root_nests_under_dot_z() {
-        let layout = ManagedStorageLayout::from_save_directory("/tmp/z-recordings");
+    fn recordings_root_nests_under_save_directory() {
+        let layout = ManagedStorageLayout::from_save_directory("/tmp/mnema-recordings");
 
         assert_eq!(
             layout.recordings_root(),
-            PathBuf::from("/tmp/z-recordings").join(".z").join("recordings")
+            PathBuf::from("/tmp/mnema-recordings").join("recordings")
         );
     }
 
     #[test]
     fn recordings_root_is_child_of_base_dir() {
-        let layout = ManagedStorageLayout::from_save_directory("/tmp/z-recordings");
+        let layout = ManagedStorageLayout::from_save_directory("/tmp/mnema-recordings");
         let base_dir = layout.base_dir().clone();
         let recordings_root = layout.recordings_root();
 

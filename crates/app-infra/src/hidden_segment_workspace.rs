@@ -839,7 +839,7 @@ mod tests {
             let processing = crate::ProcessingStore::new(pool.clone());
             let store = crate::FrameBatchStore::new(pool.clone());
             let repair = HiddenSegmentWorkspaceRepair::new(store.clone(), processing.clone());
-            let recordings_root = dir.path().join(".z/recordings");
+            let recordings_root = dir.path().join("recordings");
             let day_dir = recordings_root.join("2026/04/12");
 
             let safe_workspace_dir = day_dir.join(".session-safe-segment-0001");
@@ -972,7 +972,7 @@ mod tests {
                 crate::FrameBatchStore::new(pool.clone()),
                 crate::ProcessingStore::new(pool),
             );
-            let recordings_root = dir.path().join(".z/recordings");
+            let recordings_root = dir.path().join("recordings");
             let workspace_dir = recordings_root.join("2026/04/12/.session-empty-segment-0001");
 
             std::fs::create_dir_all(workspace_dir.join("frames"))
@@ -1008,7 +1008,7 @@ mod tests {
                 crate::FrameBatchStore::new(pool.clone()),
                 crate::ProcessingStore::new(pool),
             );
-            let recordings_root = dir.path().join(".z/recordings");
+            let recordings_root = dir.path().join("recordings");
             let day_dir = recordings_root.join("2026/04/12");
             let workspace_dir = day_dir.join(".active-screen-session-segment-0001");
 

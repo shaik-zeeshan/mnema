@@ -2612,7 +2612,7 @@ fn system_sleep_clears_paused_screen_state_so_wake_can_restart_capture() {
     assert_eq!(
         outputs.microphone_file.as_deref(),
         Some(
-            "/tmp/native-capture-tests/.z/segments/native-session-screen-pause/1/audio/microphone.m4a"
+            "/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a"
         )
     );
     assert_eq!(
@@ -2777,7 +2777,7 @@ fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
     assert_eq!(
         outputs.microphone_file.as_deref(),
         Some(
-            "/tmp/native-capture-tests/.z/segments/native-session-screen-pause/1/audio/microphone.m4a"
+            "/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a"
         )
     );
     assert_eq!(
@@ -4060,12 +4060,12 @@ fn screen_paused_runtime_fixture() -> NativeCaptureRuntime {
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: None,
             screen_files: Vec::new(),
-            microphone_file: Some("/tmp/native-capture-tests/.z/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()),
-            microphone_files: vec!["/tmp/native-capture-tests/.z/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()],
+            microphone_file: Some("/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()),
+            microphone_files: vec!["/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()],
             system_audio_file: None,
             system_audio_files: Vec::new(),
         }),
-        microphone_recording_file: Some("/tmp/native-capture-tests/.z/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()),
+        microphone_recording_file: Some("/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()),
         recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,

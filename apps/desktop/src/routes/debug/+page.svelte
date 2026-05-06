@@ -1530,7 +1530,7 @@
     <input
       class="job-input"
       type="text"
-      placeholder="/…/.z/recordings/YYYY/MM/DD/.session-segment-####"
+      placeholder="/…/recordings/YYYY/MM/DD/.session-segment-####"
       bind:value={workspaceDirInput}
       disabled={loadingWorkspaceClassification}
       spellcheck="false"

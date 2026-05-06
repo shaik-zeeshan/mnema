@@ -121,7 +121,7 @@ fn is_managed_hidden_segment_workspace_dir(segment_dir: &Path) -> bool {
     let Some(recordings_dir) = year_dir.parent() else {
         return false;
     };
-    let Some(dot_z_dir) = recordings_dir.parent() else {
+    let Some(base_dir) = recordings_dir.parent() else {
         return false;
     };
 
@@ -131,7 +131,7 @@ fn is_managed_hidden_segment_workspace_dir(segment_dir: &Path) -> bool {
         && recordings_dir
             .file_name()
             .is_some_and(|name| name == "recordings")
-        && dot_z_dir.file_name().is_some_and(|name| name == ".z")
+        && base_dir.parent().is_some()
 }
 
 fn hidden_segment_workspace_dir_for_frame(path: &Path) -> Option<&Path> {
@@ -195,7 +195,7 @@ mod tests {
         }
 
         fn managed_recordings_day_path(&self, year: &str, month: &str, day: &str) -> PathBuf {
-            self.path.join(format!(".z/recordings/{year}/{month}/{day}"))
+            self.path.join(format!("recordings/{year}/{month}/{day}"))
         }
     }
 
@@ -368,7 +368,7 @@ mod tests {
         let dir = TestDir::new("workspace-recursive-cleanup");
         let segment_dir = dir
             .path()
-            .join(".z/recordings/2026/04/12/.session-y-segment-0001");
+            .join("recordings/2026/04/12/.session-y-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
         fs::write(
@@ -397,7 +397,7 @@ mod tests {
         let dir = TestDir::new("shared-workspace-mixed-batches");
         let segment_dir = dir
             .path()
-            .join(".z/recordings/2026/04/12/.session-shared-segment-0001");
+            .join("recordings/2026/04/12/.session-shared-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
         fs::write(

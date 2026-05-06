@@ -38,7 +38,7 @@
   let draftCaptureMicrophone = $state(false);
   let draftCaptureSystemAudio = $state(false);
   let draftSegmentDuration = $state(60);
-  let draftFrameRate = $state(30);
+  let draftFrameRate = $state(1);
   let draftSaveDirectory = $state("");
   let draftAutoStart = $state(false);
 

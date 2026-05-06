@@ -56,8 +56,8 @@ pub(crate) struct AppliedRecordingSettingsUpdate {
 
 pub(crate) fn default_save_directory() -> String {
     std::env::var("HOME")
-        .map(|home| Path::new(&home).join(".z_records"))
-        .unwrap_or_else(|_| PathBuf::from(".z_records"))
+        .map(|home| Path::new(&home).join(".mnema"))
+        .unwrap_or_else(|_| PathBuf::from(".mnema"))
         .to_string_lossy()
         .to_string()
 }
@@ -68,7 +68,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         capture_microphone: false,
         capture_system_audio: false,
         segment_duration_seconds: 60,
-        screen_frame_rate: 30,
+        screen_frame_rate: 1,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::Original,
         },
@@ -673,7 +673,7 @@ mod tests {
                 "captureMicrophone": false,
                 "captureSystemAudio": false,
                 "segmentDurationSeconds": 60,
-                "screenFrameRate": 30,
+                "screenFrameRate": 1,
                 "screenResolution": { "mode": "preset", "preset": "original" },
                 "videoBitrate": { "mode": "preset", "preset": "medium" },
                 "saveDirectory": "/tmp",
@@ -707,7 +707,7 @@ mod tests {
             capture_microphone: false,
             capture_system_audio: false,
             segment_duration_seconds: 60,
-            screen_frame_rate: 30,
+            screen_frame_rate: 1,
             screen_resolution: ScreenResolution::Preset {
                 preset: ScreenResolutionPreset::Original,
             },
