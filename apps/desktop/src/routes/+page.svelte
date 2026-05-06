@@ -1,10 +1,10 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+  import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Image } from "@tauri-apps/api/image";
   import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
-  import { BaseDirectory, readFile, writeFile } from "@tauri-apps/plugin-fs";
+  import { BaseDirectory, writeFile } from "@tauri-apps/plugin-fs";
   import { Calendar } from "bits-ui";
   import {
     CalendarDate,
@@ -16,6 +16,7 @@
     resyncCaptureSession,
   } from "$lib/capture-controls.svelte";
   import { developerOptions } from "$lib/developer-options.svelte";
+  import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import type {
     AudioSegmentDto,
     AudioSegmentMediaDto,
@@ -1045,7 +1046,7 @@
   }
 
   async function previewFilePathToClipboardImage(filePath: string): Promise<Image> {
-    const blob = new Blob([await readFile(filePath)]);
+    const blob = new Blob([await readFramePreviewBytes(filePath)]);
     const image = await createImageBitmap(blob);
     try {
       const canvas = document.createElement("canvas");
@@ -1096,7 +1097,7 @@
     try {
       await writeFile(
         activeFrameDownloadName(frame, previewMimeTypeCache.get(frame.id) ?? null),
-        await readFile(previewUrl),
+        await readFramePreviewBytes(previewUrl),
         {
         baseDir: BaseDirectory.Download,
         },
@@ -3199,7 +3200,7 @@
       </div>
     {:else if timelineActive}
       {@const previewPath = previewCache.get(timelineActive.id)}
-      {@const previewUrl = previewPath ? convertFileSrc(previewPath) : null}
+      {@const previewUrl = previewPath ? framePreviewAssetUrl(previewPath) : null}
       {#if frameActionStatus}
         <div
           class="timeline__stage-status"
