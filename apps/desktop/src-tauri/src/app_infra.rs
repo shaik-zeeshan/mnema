@@ -7,11 +7,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+use std::sync::OnceLock;
+
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
 use capture_types::{OcrRecognitionMode, OcrSettings};
-#[cfg(target_os = "macos")]
-use cidre::arc::Retain;
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, path::BaseDirectory};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -85,6 +86,7 @@ struct LegacyScreenSegmentFrameIndex {
 pub struct FramePreviewState {
     cache: FramePreviewCache,
     in_flight: HashMap<i64, Vec<oneshot::Sender<Result<Option<FramePreviewDto>, String>>>>,
+    video_in_flight: HashMap<PathBuf, Vec<oneshot::Sender<Result<(), String>>>>,
 }
 
 #[derive(Debug, Default)]
@@ -105,6 +107,7 @@ impl FramePreviewState {
     fn clear(&mut self) {
         self.cache.clear();
         self.in_flight.clear();
+        self.video_in_flight.clear();
     }
 
     fn get_video_failure(&mut self, video_path: &Path, now: Instant) -> Option<String> {
@@ -136,6 +139,27 @@ impl FramePreviewState {
         }
     }
 
+    fn begin_video_request(
+        &mut self,
+        video_path: &Path,
+    ) -> Result<(), oneshot::Receiver<Result<(), String>>> {
+        if let Some(waiters) = self.video_in_flight.get_mut(video_path) {
+            let (tx, rx) = oneshot::channel();
+            waiters.push(tx);
+            return Err(rx);
+        }
+
+        self.video_in_flight.insert(video_path.to_path_buf(), Vec::new());
+        Ok(())
+    }
+
+    fn finish_video_request(&mut self, video_path: &Path, result: Result<(), String>) {
+        let waiters = self.video_in_flight.remove(video_path).unwrap_or_default();
+        for waiter in waiters {
+            let _ = waiter.send(result.clone());
+        }
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.cache.len()
@@ -144,6 +168,11 @@ impl FramePreviewState {
     #[cfg(test)]
     fn in_flight_len(&self) -> usize {
         self.in_flight.len()
+    }
+
+    #[cfg(test)]
+    fn video_in_flight_len(&self) -> usize {
+        self.video_in_flight.len()
     }
 }
 
@@ -1072,22 +1101,7 @@ fn indexed_frame_preview_offset(
         }
     }
 
-    let target_unix_ms = frame_preview_unix_ms(frame);
-    let nearest = target_unix_ms.and_then(|target| {
-        index
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let captured_at = i128::from(entry.captured_at_unix_ms);
-                Some(((target - captured_at).abs(), entry.video_offset_ms))
-            })
-            .min_by_key(|(distance, _)| *distance)
-    });
-
-    Ok(nearest.map(|(_, video_offset_ms)| IndexedFramePreviewOffset {
-        video_offset_ms,
-        exact_match: false,
-    }))
+    Ok(None)
 }
 
 fn read_nearest_segment_frame_preview(
@@ -1198,6 +1212,28 @@ fn mov_file_appears_openable_for_preview(video_path: &Path) -> std::io::Result<b
     Ok(suffix.windows(4).any(|window| window == b"moov"))
 }
 
+#[cfg(test)]
+type TestVideoPreviewExtractor =
+    dyn Fn(PathBuf, f64) -> Result<(Vec<u8>, &'static str), String> + Send + Sync;
+
+#[cfg(test)]
+fn test_video_preview_extractor_state() -> &'static Mutex<Option<Arc<TestVideoPreviewExtractor>>> {
+    static STATE: OnceLock<Mutex<Option<Arc<TestVideoPreviewExtractor>>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn run_test_video_preview_extractor(
+    video_path: &Path,
+    offset_seconds: f64,
+) -> Option<Result<(Vec<u8>, &'static str), String>> {
+    let extractor = test_video_preview_extractor_state()
+        .lock()
+        .expect("test video preview extractor poisoned")
+        .clone();
+    extractor.map(|extractor| extractor(video_path.to_path_buf(), offset_seconds))
+}
+
 #[cfg(target_os = "macos")]
 fn image_bytes_from_cg_image(
     image: &cidre::cg::Image,
@@ -1258,8 +1294,22 @@ fn preview_image_bytes_from_cg_image(
 }
 
 #[cfg(target_os = "macos")]
+fn exact_preview_requested_time(video_offset_ms: u64) -> cidre::cm::Time {
+    let value = i64::try_from(video_offset_ms)
+        .ok()
+        .and_then(|offset_ms| offset_ms.checked_mul(600))
+        .map(|scaled_ms| (scaled_ms + 999) / 1000)
+        .unwrap_or(i64::MAX);
+    cidre::cm::Time::new(value, 600)
+}
+
+#[cfg(target_os = "macos")]
 fn log_video_preview_exact_miss(
     video_path: &Path,
+    frame: &::app_infra::Frame,
+    used_indexed_offset: bool,
+    require_exact_time: bool,
+    offset_seconds: f64,
     requested_time: cidre::cm::Time,
     actual_time: cidre::cm::Time,
 ) {
@@ -1268,9 +1318,18 @@ fn log_video_preview_exact_miss(
         return;
     }
 
+    let frame_identity = parse_frame_identity_from_path(Path::new(&frame.file_path))
+        .map(|(captured_at_unix_ms, frame_index)| format!("{captured_at_unix_ms}:{frame_index}"))
+        .unwrap_or_else(|| "unknown".to_string());
+
     crate::native_capture::debug_log::log_warn(format!(
-        "[DEBUG-frame-preview] event=video_exact_miss path={} requested_time={} actual_time={} delta_ms={:.3}",
+        "[DEBUG-frame-preview] event=video_exact_miss path={} frame_id={} frame_identity={} used_indexed_offset={} require_exact_time={} offset_seconds={} requested_time={} actual_time={} delta_ms={:.3}",
         video_path.display(),
+        frame.id,
+        frame_identity,
+        used_indexed_offset,
+        require_exact_time,
+        offset_seconds,
         requested_time.as_secs(),
         actual_time.as_secs(),
         delta_ms,
@@ -1278,76 +1337,23 @@ fn log_video_preview_exact_miss(
 }
 
 #[cfg(target_os = "macos")]
-fn sample_time_to_ms(time: cidre::cm::Time) -> Option<u64> {
-    if !time.is_numeric() || time.scale <= 0 {
-        return None;
-    }
-
-    let value_ms = i128::from(time.value)
-        .checked_mul(1_000)?
-        .checked_add(i128::from(time.scale / 2))?
-        / i128::from(time.scale);
-
-    u64::try_from(value_ms).ok()
-}
-
-#[cfg(target_os = "macos")]
 fn extract_preview_image_from_video_blocking(
     video_path: PathBuf,
+    frame: &::app_infra::Frame,
+    exact_offset_ms: Option<u64>,
     offset_seconds: f64,
+    require_exact_time: bool,
 ) -> Result<(Vec<u8>, &'static str), String> {
-    use cidre::{av, cm, cv, ns, vt};
+    #[cfg(test)]
+    if let Some(result) = run_test_video_preview_extractor(&video_path, offset_seconds) {
+        return result;
+    }
+
+    use cidre::{av, cm, ns};
 
     let video_url = ns::Url::with_fs_path_str(&video_path.to_string_lossy(), false);
     let asset = av::UrlAsset::with_url(&video_url, None)
         .ok_or_else(|| format!("failed to open video asset at {}", video_path.display()))?;
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    let video_path_for_tracks = video_path.clone();
-    asset.load_tracks_with_media_type_block(&av::MediaType::video(), move |tracks, error| {
-        let result = if let Some(tracks) = tracks {
-            Ok(tracks.retained())
-        } else if let Some(error) = error {
-            Err(format!(
-                "failed to load video tracks for {}: {error}",
-                video_path_for_tracks.display()
-            ))
-        } else {
-            Err(format!(
-                "failed to load video tracks for {}",
-                video_path_for_tracks.display()
-            ))
-        };
-        let _ = tx.send(result);
-    });
-    let video_tracks = rx
-        .recv_timeout(Duration::from_secs(20))
-        .map_err(|error| format!("timed out loading video tracks for {}: {error}", video_path.display()))??;
-    let video_track = video_tracks
-        .first()
-        .ok_or_else(|| format!("video asset has no video track at {}", video_path.display()))?;
-
-    let output_settings = ns::Dictionary::with_keys_values(
-        &[cv::pixel_buffer::keys::pixel_format().as_ns()],
-        &[cv::PixelFormat::_32_BGRA.to_ns_number().as_id_ref()],
-    );
-
-    let mut reader = av::AssetReader::with_asset(asset.as_ref())
-        .map_err(|_| format!("failed to create asset reader for {}", video_path.display()))?;
-    let mut reader_output = av::AssetReaderTrackOutput::with_track(video_track, Some(&output_settings))
-        .map_err(|_| format!("failed to create track reader output for {}", video_path.display()))?;
-    reader_output.set_always_copies_sample_data(false);
-    let reader_output_ref: &av::AssetReaderOutput =
-        unsafe { &*(&*reader_output as *const _ as *const av::AssetReaderOutput) };
-    if !reader.can_add_output(reader_output_ref) {
-        return Err(format!(
-            "failed to add video reader output for {}",
-            video_path.display()
-        ));
-    }
-    reader
-        .add_output(reader_output_ref)
-        .map_err(|_| format!("failed to attach video reader output for {}", video_path.display()))?;
 
     let duration_seconds = asset.duration().as_secs();
     let clamped_offset_seconds = if duration_seconds.is_finite() && duration_seconds > 0.0 {
@@ -1355,88 +1361,38 @@ fn extract_preview_image_from_video_blocking(
     } else {
         0.0
     };
-    let requested_time = cm::Time::with_secs(clamped_offset_seconds, 600);
-    let requested_time_ms = sample_time_to_ms(requested_time)
-        .ok_or_else(|| format!("invalid requested preview time for {}", video_path.display()))?;
-
-    let started = reader.start_reading().map_err(|_| {
-        format!(
-            "failed to start reading video samples for preview extraction at {}",
-            video_path.display()
-        )
-    })?;
-    if !started {
-        if let Some(error) = reader.error() {
-            return Err(format!(
-                "failed to start reading video samples for preview extraction at {}: {error}",
-                video_path.display()
-            ));
-        }
-        return Err(format!(
-            "failed to start reading video samples for preview extraction at {}",
-            video_path.display()
-        ));
+    let requested_time = exact_offset_ms
+        .map(exact_preview_requested_time)
+        .unwrap_or_else(|| cm::Time::with_secs(clamped_offset_seconds, 600));
+    let mut image_generator = av::AssetImageGenerator::with_asset(asset.as_ref());
+    image_generator.set_applies_preferred_track_transform(true);
+    if require_exact_time {
+        image_generator.set_requested_time_tolerance_before(cm::Time::zero());
+        image_generator.set_requested_time_tolerance_after(cm::Time::zero());
     }
 
-    let mut best_match: Option<(u64, cidre::arc::R<cidre::cm::SampleBuf>)> = None;
-
-    loop {
-        let sample_buf = reader_output
-            .next_sample_buf()
-            .map_err(|_| format!("failed to read video sample from {}", video_path.display()))?;
-        let Some(sample_buf) = sample_buf else {
-            break;
-        };
-
-        let Some(actual_time_ms) = sample_time_to_ms(sample_buf.pts()) else {
-            continue;
-        };
-        let delta_ms = actual_time_ms.abs_diff(requested_time_ms);
-
-        let should_replace = match &best_match {
-            Some((best_delta_ms, best_sample)) => {
-                delta_ms < *best_delta_ms
-                    || (delta_ms == *best_delta_ms && sample_buf.pts() < best_sample.pts())
-            }
-            None => true,
-        };
-        if should_replace {
-            best_match = Some((delta_ms, sample_buf.retained()));
-            if delta_ms == 0 {
-                break;
-            }
-        }
-
-        if actual_time_ms > requested_time_ms && delta_ms > 2_000 {
-            break;
-        }
-    }
-
-    let Some((delta_ms, sample_buf)) = best_match else {
-        return Err(format!(
-            "failed to extract preview from video {}: no decodable video sample found",
-            video_path.display()
-        ));
-    };
-
-    let actual_time = sample_buf.pts();
-    if requested_time.is_valid() && actual_time.is_valid() && requested_time != actual_time {
-        log_video_preview_exact_miss(&video_path, requested_time, actual_time);
-    }
-    let image_buf = sample_buf.image_buf().ok_or_else(|| {
+    let (cg_image, actual_time) = tokio::runtime::Handle::current().block_on(async {
+        image_generator.cg_image_for_time(requested_time).await
+    })
+    .map_err(|error| {
         format!(
-            "failed to extract preview from video {}: sample did not contain an image buffer (delta_ms={delta_ms})",
-            video_path.display()
-        )
-    })?;
-    let pixel_buf: &cidre::cv::PixelBuf = image_buf;
-    let cg_image = vt::cg_image_from_cv_pixel_buf(pixel_buf, None).map_err(|status| {
-        format!(
-            "failed to convert preview sample from video {} into CGImage (status: {:?})",
+            "failed to generate preview image from video {} at {}s: {error}",
             video_path.display(),
-            status
+            clamped_offset_seconds,
         )
     })?;
+
+    if requested_time.is_valid() && actual_time.is_valid() && requested_time != actual_time {
+        log_video_preview_exact_miss(
+            &video_path,
+            frame,
+            exact_offset_ms.is_some(),
+            require_exact_time,
+            offset_seconds,
+            requested_time,
+            actual_time,
+        );
+    }
 
     preview_image_bytes_from_cg_image(cg_image.as_ref())
 }
@@ -1444,11 +1400,23 @@ fn extract_preview_image_from_video_blocking(
 #[cfg(target_os = "macos")]
 async fn extract_preview_image_from_video(
     video_path: &Path,
+    frame: &::app_infra::Frame,
+    exact_offset_ms: Option<u64>,
     offset_seconds: f64,
+    require_exact_time: bool,
 ) -> Result<(Vec<u8>, &'static str), String> {
     tokio::task::spawn_blocking({
         let video_path = video_path.to_path_buf();
-        move || extract_preview_image_from_video_blocking(video_path, offset_seconds)
+        let frame = frame.clone();
+        move || {
+            extract_preview_image_from_video_blocking(
+                video_path,
+                &frame,
+                exact_offset_ms,
+                offset_seconds,
+                require_exact_time,
+            )
+        }
     })
     .await
     .map_err(|error| format!("failed to join video preview extraction task: {error}"))?
@@ -1458,6 +1426,7 @@ async fn extract_preview_image_from_video(
 async fn extract_preview_image_from_video(
     _video_path: &Path,
     _offset_seconds: f64,
+    _require_exact_time: bool,
 ) -> Result<(Vec<u8>, &'static str), String> {
     Err("video frame preview fallback is only supported on macOS".to_string())
 }
@@ -1583,24 +1552,78 @@ async fn get_frame_preview_inner(
         );
     }
 
-    let offset_seconds = indexed_frame_preview_offset(&frame, &segment_paths.video_path)?
+    let indexed_offset = indexed_frame_preview_offset(&frame, &segment_paths.video_path)?;
+    let exact_offset_ms = indexed_offset
+        .as_ref()
+        .filter(|offset| offset.exact_match)
+        .map(|offset| offset.video_offset_ms);
+    let require_exact_time = indexed_offset.as_ref().is_some_and(|offset| offset.exact_match);
+    let offset_seconds = indexed_offset
         .map(|offset| offset.video_offset_ms as f64 / 1000.0)
         .unwrap_or_else(|| estimate_frame_preview_offset_seconds(&frame, &related_frames));
-    let (bytes, mime_type) = match extract_preview_image_from_video(&segment_paths.video_path, offset_seconds).await {
-        Ok(result) => result,
-        Err(video_error) => {
-            cache
-                .lock()
-                .expect("frame preview cache poisoned")
-                .insert_video_failure(&segment_paths.video_path, video_error.clone(), now);
-            return read_segment_frame_preview_or_return_video_error(
-                &frame,
-                infra,
-                &related_frames,
-                &segment_paths.video_path,
-                app_handle,
-                video_error,
-            );
+    let (bytes, mime_type) = loop {
+        let video_request_guard = {
+            let mut preview_state = cache.lock().expect("frame preview cache poisoned");
+            match preview_state.begin_video_request(&segment_paths.video_path) {
+                Ok(()) => Ok(()),
+                Err(rx) => Err(rx),
+            }
+        };
+
+        match video_request_guard {
+            Ok(()) => {
+                let result =
+                    extract_preview_image_from_video(
+                        &segment_paths.video_path,
+                        &frame,
+                        exact_offset_ms,
+                        offset_seconds,
+                        require_exact_time,
+                    )
+                    .await;
+                let notify_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
+                cache
+                    .lock()
+                    .expect("frame preview cache poisoned")
+                    .finish_video_request(&segment_paths.video_path, notify_result);
+
+                match result {
+                    Ok(result) => break result,
+                    Err(video_error) => {
+                        cache
+                            .lock()
+                            .expect("frame preview cache poisoned")
+                            .insert_video_failure(&segment_paths.video_path, video_error.clone(), now);
+                        return read_segment_frame_preview_or_return_video_error(
+                            &frame,
+                            infra,
+                            &related_frames,
+                            &segment_paths.video_path,
+                            app_handle,
+                            video_error,
+                        );
+                    }
+                }
+            }
+            Err(waiter) => {
+                let leader_result = waiter.await.map_err(|_| {
+                    ::app_infra::AppInfraError::Io(std::io::Error::other(format!(
+                        "video preview request waiter dropped for {}",
+                        segment_paths.video_path.display()
+                    )))
+                })?;
+
+                if let Err(video_error) = leader_result {
+                    return read_segment_frame_preview_or_return_video_error(
+                        &frame,
+                        infra,
+                        &related_frames,
+                        &segment_paths.video_path,
+                        app_handle,
+                        video_error,
+                    );
+                }
+            }
         }
     };
 
@@ -2567,6 +2590,9 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
+        sync::{Arc, atomic::{AtomicUsize, Ordering}},
+        thread,
+        time::Duration,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -2606,6 +2632,40 @@ mod tests {
             .build()
             .expect("test runtime should build")
             .block_on(test);
+    }
+
+    fn run_multithread_async_test(test: impl std::future::Future<Output = ()> + Send + 'static) {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(test);
+    }
+
+    struct TestVideoPreviewExtractorGuard;
+
+    impl TestVideoPreviewExtractorGuard {
+        fn install(extractor: Arc<TestVideoPreviewExtractor>) -> Self {
+            let mut state = test_video_preview_extractor_state()
+                .lock()
+                .expect("test video preview extractor poisoned");
+            assert!(
+                state.is_none(),
+                "test video preview extractor should not already be installed"
+            );
+            *state = Some(extractor);
+            Self
+        }
+    }
+
+    impl Drop for TestVideoPreviewExtractorGuard {
+        fn drop(&mut self) {
+            let mut state = test_video_preview_extractor_state()
+                .lock()
+                .expect("test video preview extractor poisoned");
+            *state = None;
+        }
     }
 
     #[test]
@@ -2916,19 +2976,61 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn exact_preview_requested_time_rounds_up_to_video_tick() {
+        let requested = exact_preview_requested_time(56_133);
+
+        assert_eq!(requested.as_secs(), 56.13333333333333);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn video_preview_exact_miss_log_includes_requested_actual_and_delta() {
         let dir = TestDir::new("frame-preview-exact-miss-log");
         let log_path = dir.path().join("native-capture-debug.log");
         let requested = cidre::cm::Time::with_secs(1.5, 600);
         let actual = cidre::cm::Time::with_secs(1.0 / 600.0 + 1.5, 600);
+        let frame = ::app_infra::Frame {
+            id: 2,
+            session_id: "session-preview".to_string(),
+            file_path: dir
+                .path()
+                .join(".session-preview-segment-0001/frames/frame-1744459201500-000042.jpg")
+                .to_string_lossy()
+                .to_string(),
+            captured_at: "2025-04-12T10:00:01.500Z".to_string(),
+            width: None,
+            height: None,
+            equivalence: ::app_infra::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
 
         capture_runtime::configure_debug_log(true, Some(log_path.clone()));
-        log_video_preview_exact_miss(Path::new("/tmp/session-preview-segment-0001.mov"), requested, actual);
+        log_video_preview_exact_miss(
+            Path::new("/tmp/session-preview-segment-0001.mov"),
+            &frame,
+            true,
+            true,
+            1.5,
+            requested,
+            actual,
+        );
         capture_runtime::configure_debug_log(false, None);
 
         let contents = fs::read_to_string(&log_path).expect("exact miss log file should exist");
         assert!(contents.contains("[DEBUG-frame-preview] event=video_exact_miss"));
         assert!(contents.contains("path=/tmp/session-preview-segment-0001.mov"));
+        assert!(contents.contains("frame_id=2"));
+        assert!(contents.contains("frame_identity=1744459201500:42"));
+        assert!(contents.contains("used_indexed_offset=true"));
+        assert!(contents.contains("require_exact_time=true"));
+        assert!(contents.contains("offset_seconds=1.5"));
         assert!(contents.contains("requested_time=1.5"));
         assert!(contents.contains("actual_time=1.5016666666666667"));
         assert!(contents.contains("delta_ms=1.667"));
@@ -3112,6 +3214,98 @@ mod tests {
     }
 
     #[test]
+    fn get_frame_preview_inner_serializes_video_extraction_per_segment() {
+        run_multithread_async_test(async {
+            let dir = TestDir::new("frame-preview-video-serialization");
+            let infra = Arc::new(
+                ::app_infra::AppInfra::initialize(dir.path())
+                    .await
+                    .expect("app infra should initialize"),
+            );
+            let cache = Arc::new(FramePreviewCacheState::default());
+            let segment_dir = dir.path().join("2026/04/12");
+            let workspace_dir = segment_dir.join(".session-preview-segment-0001");
+            let frames_dir = workspace_dir.join("frames");
+            fs::create_dir_all(&frames_dir).expect("frames directory should be created");
+
+            let video_path = segment_dir.join("session-preview-segment-0001.mov");
+            fs::write(&video_path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  moov mdat")
+                .expect("visible segment video should be written");
+
+            let mut frame_ids = Vec::new();
+            for index in 0..4 {
+                let frame_path =
+                    frames_dir.join(format!("frame-1744459201{index}00-{index}.png"));
+                let captured_at = format!("2025-04-12T10:00:01.{index}00Z");
+                let frame = infra
+                    .insert_frame(&::app_infra::NewFrame::new(
+                        "session-preview",
+                        frame_path.to_string_lossy().to_string(),
+                        captured_at,
+                    ))
+                    .await
+                    .expect("frame should be inserted");
+                frame_ids.push(frame.id);
+            }
+
+            let concurrent_calls = Arc::new(AtomicUsize::new(0));
+            let max_concurrent_calls = Arc::new(AtomicUsize::new(0));
+            let _extractor_guard = TestVideoPreviewExtractorGuard::install(Arc::new({
+                let concurrent_calls = Arc::clone(&concurrent_calls);
+                let max_concurrent_calls = Arc::clone(&max_concurrent_calls);
+                move |path, _offset_seconds| {
+                    struct ActiveCallGuard {
+                        concurrent_calls: Arc<AtomicUsize>,
+                    }
+
+                    impl Drop for ActiveCallGuard {
+                        fn drop(&mut self) {
+                            self.concurrent_calls.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    }
+
+                    let active = concurrent_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_concurrent_calls.fetch_max(active, Ordering::SeqCst);
+                    let _active_call_guard = ActiveCallGuard {
+                        concurrent_calls: Arc::clone(&concurrent_calls),
+                    };
+
+                    thread::sleep(Duration::from_millis(40));
+                    if active > 1 {
+                        return Err(format!(
+                            "test extractor saw concurrent access for {}",
+                            path.display()
+                        ));
+                    }
+
+                    Ok((b"preview-bytes".to_vec(), "image/png"))
+                }
+            }));
+
+            let mut tasks = Vec::new();
+            for frame_id in frame_ids {
+                let infra = Arc::clone(&infra);
+                let cache = Arc::clone(&cache);
+                tasks.push(tokio::spawn(async move {
+                    get_frame_preview_inner(&infra, &cache, None, frame_id).await
+                }));
+            }
+
+            for task in tasks {
+                let preview = task
+                    .await
+                    .expect("preview task should complete")
+                    .expect("preview should load")
+                    .expect("preview should exist");
+                assert_eq!(preview.source_kind, FramePreviewSourceKindDto::VideoFallback);
+                assert!(Path::new(&preview.file_path).is_file());
+            }
+
+            assert_eq!(max_concurrent_calls.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
     fn frame_preview_cache_returns_entries_within_ttl() {
         let dir = TestDir::new("frame-preview-cache-hit");
         let preview_path = dir.path().join("frame-preview.png");
@@ -3169,6 +3363,25 @@ mod tests {
         cache.clear();
 
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn frame_preview_state_collapses_duplicate_in_flight_video_requests() {
+        run_async_test(async {
+            let mut state = FramePreviewState::default();
+            let video_path = Path::new("/tmp/segment-0001.mov");
+
+            assert!(state.begin_video_request(video_path).is_ok());
+            let waiter = state
+                .begin_video_request(video_path)
+                .expect_err("second request should subscribe to the in-flight video leader");
+            assert_eq!(state.video_in_flight_len(), 1);
+
+            state.finish_video_request(video_path, Ok(()));
+
+            assert_eq!(state.video_in_flight_len(), 0);
+            assert_eq!(waiter.await.expect("waiter should receive result"), Ok(()));
+        });
     }
 
     #[test]
@@ -3289,6 +3502,7 @@ mod tests {
         state.clear();
 
         assert_eq!(state.in_flight_len(), 0);
+        assert_eq!(state.video_in_flight_len(), 0);
         assert_eq!(state.len(), 0);
     }
 
