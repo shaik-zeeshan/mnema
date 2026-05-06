@@ -50,7 +50,7 @@ The scan-and-cleanup flow that classifies a **Hidden Segment Workspace** using *
 _Avoid_: temp cleanup, workspace GC, segment dir sweep
 
 **Managed Storage Layout**:
-The derived on-disk layout rooted at `<saveDirectory>/.z` that owns app-infra state such as SQLite and the recordings tree.
+The derived on-disk layout rooted at `<saveDirectory>` that owns app-infra state such as SQLite and the recordings tree.
 _Avoid_: save dir helper, path utility, storage paths
 
 **Audio Activity Sample**:
@@ -70,7 +70,7 @@ _Avoid_: raw audio sample, activity reading, latest level
 - A **Recording Lifecycle** coordinates screen, microphone, and system-audio capture within one recording runtime.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - A **Managed Storage Layout** is derived from one `saveDirectory` value.
-- A **Managed Storage Layout** contains the recordings tree under `<saveDirectory>/.z/recordings`.
+- A **Managed Storage Layout** contains the recordings tree under `<saveDirectory>/recordings`.
 - **Captured Frame Equivalence** determines whether a new **Captured Frame** needs a new **OCR Job**.
 - **Captured Frame Equivalence Scope** determines which earlier **Captured Frame** values are eligible comparison candidates.
 - A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier **Captured Frame** in the same session already has the same content fingerprint.
