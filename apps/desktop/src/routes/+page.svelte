@@ -85,11 +85,11 @@
   // edges instead of being filtered out by an overly tight range query.
   const AUDIO_SEGMENT_RANGE_PADDING_MS = 60_000;
   const AUDIO_SEGMENT_REFRESH_DEBOUNCE_MS = 100;
-  const ACTIVE_PREVIEW_FETCH_DEBOUNCE_MS = 100;
-  const ACTIVE_PREVIEW_PREFETCH_RADIUS = 5;
-  const ACTIVE_PREVIEW_FAST_SCRUB_RADIUS = 1;
-  const ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS = 1.2;
-  const PREVIEW_CACHE_MAX_ENTRIES = 96;
+  const ACTIVE_PREVIEW_FETCH_FAST_SCRUB_DEBOUNCE_MS = 40;
+  const ACTIVE_PREVIEW_PREFETCH_RADIUS = 8;
+  const ACTIVE_PREVIEW_FAST_SCRUB_RADIUS = 2;
+  const ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS = 2;
+  const PREVIEW_CACHE_MAX_ENTRIES = 192;
   const PREVIEW_FAILURE_CACHE_TTL_MS = 5_000;
   // Safety cap on pages walked per poll while chasing the current head. At
   // 50 frames/page this catches up bursts of a few thousand frames between
@@ -948,6 +948,12 @@
     return previewScrubVelocityPxPerMs >= ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS
       ? ACTIVE_PREVIEW_FAST_SCRUB_RADIUS
       : ACTIVE_PREVIEW_PREFETCH_RADIUS;
+  }
+
+  function currentActivePreviewFetchDebounceMs(): number {
+    return previewScrubVelocityPxPerMs >= ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS
+      ? ACTIVE_PREVIEW_FETCH_FAST_SCRUB_DEBOUNCE_MS
+      : 0;
   }
 
   function prefetchPreviewNeighbors(activeIndex: number): void {
@@ -1990,13 +1996,14 @@
     return () => ro.disconnect();
   });
 
-  // Debounce active-frame preview loads so fast scrubs do not fire one
-  // backend request per transient frame crossed. The latest-only generation
-  // token ensures an older scheduled fetch cannot start after a newer active
-  // frame supersedes it.
+  // Slow scrubs should show each frame's preview promptly, so we only debounce
+  // while the user is moving fast enough to outrun the preview pipeline. The
+  // latest-only generation token ensures an older scheduled fetch cannot start
+  // after a newer active frame supersedes it.
   $effect(() => {
     const active = timelineActive;
     const activeIndex = timelineActiveIndex;
+    const debounceMs = currentActivePreviewFetchDebounceMs();
     activePreviewFetchGeneration += 1;
     const gen = activePreviewFetchGeneration;
     clearActivePreviewFetchTimer();
@@ -2009,7 +2016,7 @@
       if (!isTimelineActiveFrame(active.id)) return;
       void ensurePreview(active.id);
       prefetchPreviewNeighbors(activeIndex);
-    }, ACTIVE_PREVIEW_FETCH_DEBOUNCE_MS);
+    }, debounceMs);
     return () => {
       clearActivePreviewFetchTimer();
     };
