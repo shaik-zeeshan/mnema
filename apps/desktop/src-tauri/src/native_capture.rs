@@ -1,26 +1,23 @@
+mod activity;
 #[path = "native_capture_debug_log.rs"]
 pub(crate) mod debug_log;
 #[path = "native_capture_inactivity.rs"]
 pub(crate) mod inactivity;
-#[path = "native_capture_output.rs"]
-pub(crate) mod output;
-#[path = "native_capture_settings.rs"]
-pub(crate) mod settings;
-#[path = "native_capture_system_idle.rs"]
-pub(crate) mod system_idle;
-mod activity;
 mod lifecycle;
 mod microphone;
+#[path = "native_capture_output.rs"]
+pub(crate) mod output;
 mod runtime;
 mod segments;
+#[path = "native_capture_settings.rs"]
+pub(crate) mod settings;
+mod silero_vad;
+#[path = "native_capture_system_idle.rs"]
+pub(crate) mod system_idle;
 #[cfg(test)]
 mod tests;
+mod vad;
 
-use settings::{
-    apply_recording_settings_update, current_auto_start,
-    current_native_capture_debug_logging_enabled, current_recording_settings,
-    initialize_recording_settings_state_from_disk,
-};
 use capture_microphone as microphone_capture;
 use capture_types::{
     CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, CapturePermissions,
@@ -30,11 +27,17 @@ use capture_types::{
     UpdateMicrophoneControllerRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
     VideoBitratePreset, VideoBitrateSettings,
 };
+use settings::{
+    apply_recording_settings_update, current_auto_start,
+    current_native_capture_debug_logging_enabled, current_recording_settings,
+    initialize_recording_settings_state_from_disk,
+};
 use std::sync::{Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
 pub use capture_types::IdleDebugInfo;
 pub(crate) use debug_log::install_panic_hook;
+use lifecycle::{RecordingLifecycle, StartRecordingLifecycleOutcome};
 use microphone::{
     resolve_capture_microphone_device_id, should_wait_for_same_microphone_device,
     update_microphone_controller as update_microphone_controller_impl,
@@ -43,7 +46,6 @@ pub use microphone::{
     start_microphone_device_change_notifier, MicrophoneControllerPreferencesState,
     MicrophoneDeviceChangeNotifierState,
 };
-use lifecycle::{RecordingLifecycle, StartRecordingLifecycleOutcome};
 use runtime::validate_start_request;
 pub type NativeCaptureState = Mutex<RecordingLifecycle>;
 pub use settings::RecordingSettingsState;
@@ -53,8 +55,7 @@ pub use settings::RecordingSettingsState;
 pub(crate) use settings::current_recording_settings as read_recording_settings;
 
 #[cfg(target_os = "macos")]
-pub type SystemWakeNotifierState =
-    std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>;
+pub type SystemWakeNotifierState = std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>;
 
 #[cfg(not(target_os = "macos"))]
 pub type SystemWakeNotifierState = std::sync::Mutex<Vec<()>>;
@@ -62,6 +63,46 @@ pub type SystemWakeNotifierState = std::sync::Mutex<Vec<()>>;
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
 pub const RECORDING_SETTINGS_CHANGED_EVENT: &str = "recording_settings_changed";
+pub const APP_NOTIFICATIONS_CHANGED_EVENT: &str = "app_notifications_changed";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppNotification {
+    pub id: String,
+    pub severity: String,
+    pub title: String,
+    pub message: String,
+    pub created_at_unix_ms: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct AppNotificationsRuntime {
+    notifications: Vec<AppNotification>,
+}
+
+impl AppNotificationsRuntime {
+    fn list(&self) -> Vec<AppNotification> {
+        self.notifications.clone()
+    }
+
+    fn push_session_notification(&mut self, notification: AppNotification) -> Vec<AppNotification> {
+        self.notifications.retain(|item| item.id != notification.id);
+        self.notifications.push(notification);
+        self.list()
+    }
+
+    fn clear_one(&mut self, id: &str) -> Vec<AppNotification> {
+        self.notifications.retain(|item| item.id != id);
+        self.list()
+    }
+
+    fn clear_all(&mut self) -> Vec<AppNotification> {
+        self.notifications.clear();
+        self.list()
+    }
+}
+
+pub type AppNotificationsState = Mutex<AppNotificationsRuntime>;
 
 fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
@@ -71,11 +112,27 @@ pub(super) fn emit_audio_segments_changed(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(AUDIO_SEGMENTS_CHANGED_EVENT, ());
 }
 
-fn emit_recording_settings_changed(
-    app_handle: &tauri::AppHandle,
-    settings: &RecordingSettings,
-) {
+fn emit_recording_settings_changed(app_handle: &tauri::AppHandle, settings: &RecordingSettings) {
     let _ = app_handle.emit(RECORDING_SETTINGS_CHANGED_EVENT, settings);
+}
+
+fn emit_app_notifications_changed(
+    app_handle: &tauri::AppHandle,
+    notifications: &[AppNotification],
+) {
+    let _ = app_handle.emit(APP_NOTIFICATIONS_CHANGED_EVENT, notifications);
+}
+
+fn push_app_notification(
+    app_handle: &tauri::AppHandle,
+    state: &AppNotificationsState,
+    notification: AppNotification,
+) {
+    let notifications = {
+        let mut runtime = state.lock().expect("app notifications state poisoned");
+        runtime.push_session_notification(notification)
+    };
+    emit_app_notifications_changed(app_handle, &notifications);
 }
 
 #[cfg(target_os = "macos")]
@@ -139,13 +196,14 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
                 handle_system_will_sleep(&app_handle);
             }
         });
-    let did_wake_guard = center.add_observer_guard(ns::workspace::notification::did_wake(), None, None, {
-        let app_handle = app_handle.clone();
-        move |_notification| {
-            emit_system_did_wake(&app_handle);
-            recover_screen_capture_after_system_wake(&app_handle);
-        }
-    });
+    let did_wake_guard =
+        center.add_observer_guard(ns::workspace::notification::did_wake(), None, None, {
+            let app_handle = app_handle.clone();
+            move |_notification| {
+                emit_system_did_wake(&app_handle);
+                recover_screen_capture_after_system_wake(&app_handle);
+            }
+        });
 
     let notifier_state = app_handle.state::<SystemWakeNotifierState>();
     let mut notifier_slot = notifier_state
@@ -516,11 +574,11 @@ fn start_native_capture_inner(
     state: tauri::State<'_, NativeCaptureState>,
     microphone_controller_preferences_state: tauri::State<'_, MicrophoneControllerPreferencesState>,
     recording_settings_state: tauri::State<'_, RecordingSettingsState>,
+    app_notifications_state: tauri::State<'_, AppNotificationsState>,
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let incoming_sources = capture_sources_from_start_request(&request);
-    let settings = recording_settings_state
-        .inner();
+    let settings = recording_settings_state.inner();
     let settings = current_recording_settings(settings);
 
     let resolved_request = StartNativeCaptureRequest {
@@ -623,7 +681,7 @@ fn start_native_capture_inner(
 
     let requested_sources_for_log = sources.clone();
     let started_session = match runtime.start(
-        app_handle,
+        app_handle.clone(),
         &settings,
         sources,
         microphone_device_id_for_capture,
@@ -656,6 +714,34 @@ fn start_native_capture_inner(
         runtime.runtime().current_segment_index,
         settings.save_directory
     ));
+
+    if let Some(notice) = runtime.take_microphone_vad_fallback_notification() {
+        let message = format!(
+            "Configured microphone VAD '{}' could not run. Using '{}' for this recording session.",
+            vad::configured_adapter_as_str(notice.configured_adapter),
+            notice.effective_adapter.as_str(),
+        );
+        debug_log::log_warn(format!(
+            "microphone VAD fallback active: configured_adapter={}, effective_adapter={}, reason={}",
+            vad::configured_adapter_as_str(notice.configured_adapter),
+            notice.effective_adapter.as_str(),
+            notice.reason
+        ));
+        push_app_notification(
+            &app_handle,
+            app_notifications_state.inner(),
+            AppNotification {
+                id: format!(
+                    "microphone-vad-fallback-{}",
+                    vad::configured_adapter_as_str(notice.configured_adapter)
+                ),
+                severity: "warning".to_string(),
+                title: "Microphone VAD fallback".to_string(),
+                message,
+                created_at_unix_ms: runtime::now_unix_ms(),
+            },
+        );
+    }
 
     Ok(NativeCaptureSessionResponse {
         session: started_session,
@@ -706,6 +792,43 @@ pub fn get_capture_permissions(
 #[tauri::command]
 pub fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
     activity::get_idle_debug(state)
+}
+
+#[tauri::command]
+pub fn get_app_notifications(
+    state: tauri::State<'_, AppNotificationsState>,
+) -> Vec<AppNotification> {
+    state
+        .lock()
+        .expect("app notifications state poisoned")
+        .list()
+}
+
+#[tauri::command]
+pub fn clear_app_notification(
+    id: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppNotificationsState>,
+) -> Vec<AppNotification> {
+    let notifications = {
+        let mut runtime = state.lock().expect("app notifications state poisoned");
+        runtime.clear_one(&id)
+    };
+    emit_app_notifications_changed(&app_handle, &notifications);
+    notifications
+}
+
+#[tauri::command]
+pub fn clear_app_notifications(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppNotificationsState>,
+) -> Vec<AppNotification> {
+    let notifications = {
+        let mut runtime = state.lock().expect("app notifications state poisoned");
+        runtime.clear_all()
+    };
+    emit_app_notifications_changed(&app_handle, &notifications);
+    notifications
 }
 
 #[tauri::command]
@@ -760,6 +883,7 @@ pub fn maybe_auto_start_native_capture(app_handle: &tauri::AppHandle) {
         app_handle.state::<NativeCaptureState>(),
         app_handle.state::<MicrophoneControllerPreferencesState>(),
         app_handle.state::<RecordingSettingsState>(),
+        app_handle.state::<AppNotificationsState>(),
         app_handle.clone(),
     );
 }
@@ -817,10 +941,7 @@ pub fn update_recording_settings(
         }
     }
 
-    debug_log::configure(
-        &app_handle,
-        settings.native_capture_debug_logging_enabled,
-    );
+    debug_log::configure(&app_handle, settings.native_capture_debug_logging_enabled);
 
     if !previous_settings.native_capture_debug_logging_enabled
         && settings.native_capture_debug_logging_enabled
@@ -861,6 +982,7 @@ pub fn start_native_capture(
     state: tauri::State<'_, NativeCaptureState>,
     microphone_controller_preferences_state: tauri::State<'_, MicrophoneControllerPreferencesState>,
     recording_settings_state: tauri::State<'_, RecordingSettingsState>,
+    app_notifications_state: tauri::State<'_, AppNotificationsState>,
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     start_native_capture_inner(
@@ -869,6 +991,7 @@ pub fn start_native_capture(
         state,
         microphone_controller_preferences_state,
         recording_settings_state,
+        app_notifications_state,
         app_handle,
     )
 }

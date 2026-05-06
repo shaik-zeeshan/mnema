@@ -1,23 +1,8 @@
-use super::runtime::{
-    mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
-    stopped_session_from_runtime, NativeCaptureRuntime,
-};
 use super::activity::current_activity_snapshot;
 use super::output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
     finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file,
-};
-use super::segments::{
-    cleanup_failed_segment_dirs, create_segment_output_dirs, empty_output_files,
-    handle_inactivity_resume_error, pause_microphone_for_inactivity_with_app_handle,
-    pause_runtime_for_inactivity_with_app_handle, pause_screen_for_inactivity_with_app_handle,
-    pause_system_audio_for_inactivity_with_app_handle, plan_live_rotation_segment,
-    recover_from_segment_finalize_error, recover_screen_capture_after_wake,
-    reanchor_active_segment_timing, resume_microphone_from_inactivity,
-    resume_runtime_from_inactivity, resume_screen_from_inactivity,
-    resume_system_audio_from_inactivity, start_capture_runtime, start_segment,
-    stop_active_sessions_after_failure, stop_capture_runtime,
 };
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
@@ -25,10 +10,26 @@ use super::runtime::{
     microphone_planner_for_runtime, refresh_runtime_planner_dates, screen_planner_for_runtime,
     system_audio_planner_for_runtime,
 };
+use super::runtime::{
+    mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
+    stopped_session_from_runtime, NativeCaptureRuntime,
+};
+use super::segments::{
+    cleanup_failed_segment_dirs, create_segment_output_dirs, empty_output_files,
+    handle_inactivity_resume_error, pause_microphone_for_inactivity_with_app_handle,
+    pause_runtime_for_inactivity_with_app_handle, pause_screen_for_inactivity_with_app_handle,
+    pause_system_audio_for_inactivity_with_app_handle, plan_live_rotation_segment,
+    reanchor_active_segment_timing, recover_from_segment_finalize_error,
+    recover_screen_capture_after_wake, resume_microphone_from_inactivity,
+    resume_runtime_from_inactivity, resume_screen_from_inactivity,
+    resume_system_audio_from_inactivity, start_capture_runtime, start_segment,
+    stop_active_sessions_after_failure, stop_capture_runtime,
+};
+use super::vad::MicrophoneVadFallbackNotice;
+use capture_runtime::RuntimeSignal;
 use capture_types::{
     CaptureErrorResponse, CaptureSources, NativeCaptureSession, RecordingSettings,
 };
-use capture_runtime::RuntimeSignal;
 
 #[derive(Debug, Default)]
 pub(crate) struct RecordingLifecycle {
@@ -106,7 +107,9 @@ impl RecordingLifecycle {
                 });
             }
 
-            return Ok(StartRecordingLifecycleOutcome::AlreadyRunning(self.session()));
+            return Ok(StartRecordingLifecycleOutcome::AlreadyRunning(
+                self.session(),
+            ));
         }
 
         start_capture_runtime(
@@ -152,10 +155,7 @@ impl RecordingLifecycle {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn tick_inactivity(
-        &mut self,
-        app_handle: &tauri::AppHandle,
-    ) -> TickOutcome {
+    pub(crate) fn tick_inactivity(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
         if let Some(error) = capture_screen::take_screen_capture_session_stop_error(
             self.runtime.active_screen_session.as_mut(),
         ) {
@@ -172,7 +172,7 @@ impl RecordingLifecycle {
         }
 
         let now = super::runtime::now_monotonic_marker_ms();
-        let activity_snapshot = current_activity_snapshot(&self.runtime);
+        let activity_snapshot = current_activity_snapshot(&mut self.runtime);
         let effective_idle = self
             .runtime
             .inactivity
@@ -257,9 +257,10 @@ impl RecordingLifecycle {
             .inactivity
             .should_pause_system_audio_for_inactivity(now, activity_snapshot)
         {
-            if let Err(error) =
-                pause_system_audio_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))
-            {
+            if let Err(error) = pause_system_audio_for_inactivity_with_app_handle(
+                &mut self.runtime,
+                Some(app_handle),
+            ) {
                 super::debug_log::log(format!(
                     "failed to pause system audio capture for inactivity: [{}] {}",
                     error.code, error.message
@@ -370,7 +371,8 @@ impl RecordingLifecycle {
             return TickOutcome::SkipRotation;
         }
 
-        if self.runtime.inactivity.is_paused && self.runtime.current_segment_output_files.is_none() {
+        if self.runtime.inactivity.is_paused && self.runtime.current_segment_output_files.is_none()
+        {
             return TickOutcome::SkipRotation;
         }
 
@@ -476,13 +478,14 @@ impl RecordingLifecycle {
         let mut legacy_rotated = false;
 
         if active_sources.screen || active_sources.system_audio {
-            let rotate_result =
-                capture_screen::rotate_screen_capture_session(capture_screen::RotateScreenCaptureSessionArgs {
+            let rotate_result = capture_screen::rotate_screen_capture_session(
+                capture_screen::RotateScreenCaptureSessionArgs {
                     active_session: &mut self.runtime.active_screen_session,
                     segment_dir: &segment_dir,
                     screen_output_file: Some(&screen_output_file),
                     system_audio_output_path: system_audio_output_path.as_deref(),
-                });
+                },
+            );
 
             match rotate_result {
                 Ok(rotated) => {
@@ -499,7 +502,11 @@ impl RecordingLifecycle {
                     legacy_rotated = true;
                 }
                 Err(_) => {
-                    cleanup_failed_segment_dirs(&segment_dir, microphone_audio_dir, system_audio_dir);
+                    cleanup_failed_segment_dirs(
+                        &segment_dir,
+                        microphone_audio_dir,
+                        system_audio_dir,
+                    );
                     stop_active_sessions_after_failure(&mut self.runtime);
                     mark_runtime_session_failed(&mut self.runtime);
                     return TickOutcome::StopLoop;
@@ -508,10 +515,12 @@ impl RecordingLifecycle {
         }
 
         if legacy_rotated {
-            if capture_screen::stop_screen_capture_session(capture_screen::StopScreenCaptureSessionArgs {
-                active_session: &mut self.runtime.active_screen_session,
-                inactivity_tail_trim_seconds: 0,
-            })
+            if capture_screen::stop_screen_capture_session(
+                capture_screen::StopScreenCaptureSessionArgs {
+                    active_session: &mut self.runtime.active_screen_session,
+                    inactivity_tail_trim_seconds: 0,
+                },
+            )
             .is_err()
             {
                 cleanup_failed_segment_dirs(&segment_dir, microphone_audio_dir, system_audio_dir);
@@ -553,7 +562,11 @@ impl RecordingLifecycle {
             ) = match started_segment {
                 Ok(value) => value,
                 Err(_) => {
-                    cleanup_failed_segment_dirs(&segment_dir, microphone_audio_dir, system_audio_dir);
+                    cleanup_failed_segment_dirs(
+                        &segment_dir,
+                        microphone_audio_dir,
+                        system_audio_dir,
+                    );
                     stop_active_sessions_after_failure(&mut self.runtime);
                     mark_runtime_session_failed(&mut self.runtime);
                     return TickOutcome::StopLoop;
@@ -575,7 +588,11 @@ impl RecordingLifecycle {
                         .to_string_lossy()
                         .to_string();
                     if session.rotate_output_file(&microphone_output_file).is_err() {
-                        cleanup_failed_segment_dirs(&segment_dir, microphone_audio_dir, system_audio_dir);
+                        cleanup_failed_segment_dirs(
+                            &segment_dir,
+                            microphone_audio_dir,
+                            system_audio_dir,
+                        );
                         cleanup_unusable_segment_artifacts(
                             Some(&next_segment_outputs),
                             next_recording_file.as_deref(),
@@ -602,7 +619,11 @@ impl RecordingLifecycle {
                     .to_string_lossy()
                     .to_string();
                 if session.rotate_output_file(&microphone_output_file).is_err() {
-                    cleanup_failed_segment_dirs(&segment_dir, microphone_audio_dir, system_audio_dir);
+                    cleanup_failed_segment_dirs(
+                        &segment_dir,
+                        microphone_audio_dir,
+                        system_audio_dir,
+                    );
                     cleanup_unusable_segment_artifacts(
                         Some(&next_segment_outputs),
                         next_recording_file.as_deref(),
@@ -696,8 +717,7 @@ impl RecordingLifecycle {
         self.runtime.recording_file = next_recording_file;
         self.runtime.microphone_recording_file = next_microphone_recording_file;
         self.runtime.system_audio_recording_file = next_system_audio_recording_file;
-        if let Err(error) = reanchor_active_segment_timing(&mut self.runtime, "rotating segments")
-        {
+        if let Err(error) = reanchor_active_segment_timing(&mut self.runtime, "rotating segments") {
             super::debug_log::log(format!(
                 "failed to re-anchor native capture segment timing while rotating segments: [{}] {}",
                 error.code, error.message
@@ -722,5 +742,11 @@ impl RecordingLifecycle {
 
     pub(crate) fn runtime_mut(&mut self) -> &mut NativeCaptureRuntime {
         &mut self.runtime
+    }
+
+    pub(crate) fn take_microphone_vad_fallback_notification(
+        &mut self,
+    ) -> Option<MicrophoneVadFallbackNotice> {
+        self.runtime.microphone_vad.take_new_fallback_notification()
     }
 }

@@ -216,7 +216,7 @@ impl InactivityState {
             - (sensitivity_fraction * (MAX_AUDIO_ACTIVITY_THRESHOLD - MIN_AUDIO_ACTIVITY_THRESHOLD))
     }
 
-    fn audio_source_sample(
+    fn threshold_audio_source_sample(
         now_monotonic_ms: u64,
         kind: ActivitySourceKind,
         source: AudioActivitySourceState,
@@ -249,6 +249,42 @@ impl InactivityState {
             kind,
             enabled: source.enabled,
             available,
+            idle_ms,
+            latest_normalized_level: source.latest_normalized_level,
+            activity_threshold: Some(activity_threshold),
+        }
+    }
+
+    fn decision_audio_source_sample(
+        now_monotonic_ms: u64,
+        kind: ActivitySourceKind,
+        source: AudioActivitySourceState,
+        activity_threshold: f32,
+        last_decision_qualified_monotonic_ms: &mut Option<u64>,
+    ) -> ActivitySourceSample {
+        let decision_qualified = source.enabled
+            && source
+                .latest_normalized_level
+                .is_some_and(|level| level >= activity_threshold);
+
+        if decision_qualified {
+            *last_decision_qualified_monotonic_ms =
+                Some(now_monotonic_ms.saturating_sub(source.idle_ms.unwrap_or(0)));
+        } else if !source.enabled {
+            *last_decision_qualified_monotonic_ms = None;
+        }
+
+        let idle_ms = if source.enabled {
+            last_decision_qualified_monotonic_ms
+                .map(|last_activity_ms| now_monotonic_ms.saturating_sub(last_activity_ms))
+        } else {
+            None
+        };
+
+        ActivitySourceSample {
+            kind,
+            enabled: source.enabled,
+            available: source.enabled && idle_ms.is_some(),
             idle_ms,
             latest_normalized_level: source.latest_normalized_level,
             activity_threshold: Some(activity_threshold),
@@ -292,8 +328,8 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> Vec<ActivitySourceSample> {
-        let microphone_threshold = self.microphone_activity_threshold();
         let system_audio_threshold = self.system_audio_activity_threshold();
+        let microphone_threshold = self.microphone_activity_threshold();
         let mut sources = Vec::with_capacity(ALL_ACTIVITY_SOURCES.len());
 
         for kind in ALL_ACTIVITY_SOURCES {
@@ -314,14 +350,14 @@ impl InactivityState {
                     latest_normalized_level: None,
                     activity_threshold: None,
                 },
-                ActivitySourceKind::MicrophoneCapture => Self::audio_source_sample(
+                ActivitySourceKind::MicrophoneCapture => Self::decision_audio_source_sample(
                     now_monotonic_ms,
                     kind,
                     snapshot.microphone_activity,
                     microphone_threshold,
                     &mut self.last_microphone_activity_monotonic_ms,
                 ),
-                ActivitySourceKind::SystemAudioCapture => Self::audio_source_sample(
+                ActivitySourceKind::SystemAudioCapture => Self::threshold_audio_source_sample(
                     now_monotonic_ms,
                     kind,
                     snapshot.system_audio_activity,
@@ -476,7 +512,8 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || self.is_system_audio_paused() || !snapshot.system_audio_activity.enabled {
+        if !self.enabled || self.is_system_audio_paused() || !snapshot.system_audio_activity.enabled
+        {
             return false;
         }
 
@@ -491,7 +528,10 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || !self.is_system_audio_paused() || !snapshot.system_audio_activity.enabled {
+        if !self.enabled
+            || !self.is_system_audio_paused()
+            || !snapshot.system_audio_activity.enabled
+        {
             return false;
         }
 
@@ -609,17 +649,16 @@ impl InactivityState {
         self.evaluate_policies_for_snapshot(now_monotonic_ms, snapshot)
             .system_audio
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-use capture_types::{
-    default_appearance, default_inactivity_activity_mode, default_video_bitrate,
-    InactivityActivityMode,
-    RecordingSettings, ScreenResolution, ScreenResolutionPreset,
-};
+    use capture_types::{
+        default_appearance, default_inactivity_activity_mode, default_microphone_vad_adapter,
+        default_video_bitrate, InactivityActivityMode, RecordingSettings, ScreenResolution,
+        ScreenResolutionPreset,
+    };
 
     fn empty_audio_activity() -> AudioActivitySourceState {
         AudioActivitySourceState {
@@ -682,6 +721,7 @@ use capture_types::{
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
             system_audio_activity_sensitivity: 50,
+            microphone_vad_adapter: default_microphone_vad_adapter(),
             inactivity_activity_mode: default_inactivity_activity_mode(),
         };
 

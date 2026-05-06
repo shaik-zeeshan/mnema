@@ -25,6 +25,15 @@ pub struct AudioActivityDecision {
     pub enabled: bool,
     pub idle_ms: Option<u64>,
     pub activity_threshold: Option<f32>,
+    pub detector: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrophoneVadStatus {
+    pub configured_adapter: String,
+    pub effective_adapter: String,
+    pub fallback_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +85,7 @@ pub struct IdleDebugInfo {
     pub microphone_activity_decision: AudioActivityDecision,
     pub system_audio_activity_sample: AudioActivitySample,
     pub system_audio_activity_decision: AudioActivityDecision,
+    pub microphone_vad: MicrophoneVadStatus,
     pub effective_idle_ms: u64,
     #[serde(rename = "effectiveActivitySource")]
     pub effective_idle_source: String,

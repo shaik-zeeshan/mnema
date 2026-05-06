@@ -7,12 +7,12 @@ use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
-use super::NativeCaptureState;
 use super::output::set_current_microphone_output_file;
 use super::runtime::{
     ensure_microphone_planner_for_runtime, now_unix_ms, refresh_runtime_planner_dates,
     NativeCaptureRuntime,
 };
+use super::NativeCaptureState;
 
 #[derive(Debug, Clone)]
 pub struct MicrophoneControllerPreferencesRuntime {

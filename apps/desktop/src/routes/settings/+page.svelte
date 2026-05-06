@@ -15,6 +15,7 @@
     NativeCaptureDebugLogStatus,
     OcrRecognitionMode,
     RecordingSettings,
+    MicrophoneVadAdapter,
     ResolutionMode,
     ResolutionPreset,
     VideoBitrateMode,
@@ -67,6 +68,7 @@
   let draftActivityMode = $state<ActivityMode>("system_input_only");
   let draftMicrophoneActivitySensitivity = $state(50);
   let draftSystemAudioActivitySensitivity = $state(50);
+  let draftMicrophoneVadAdapter = $state<MicrophoneVadAdapter>("silero");
 
   // Debug logging draft
   let draftNativeCaptureDebugLoggingEnabled = $state(false);
@@ -254,6 +256,7 @@
     draftActivityMode = s.activityMode ?? "system_input_only";
     draftMicrophoneActivitySensitivity = s.microphoneActivitySensitivity ?? 50;
     draftSystemAudioActivitySensitivity = s.systemAudioActivitySensitivity ?? 50;
+    draftMicrophoneVadAdapter = s.microphoneVadAdapter ?? "silero";
     draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
     draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
     draftFollowTimelineLive = s.followTimelineLive ?? false;
@@ -320,6 +323,7 @@
       activityMode: draftActivityMode,
       microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
       systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
+      microphoneVadAdapter: draftMicrophoneVadAdapter,
       nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
       previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
       followTimelineLive: draftFollowTimelineLive,
@@ -1299,8 +1303,8 @@
         <p class="group-hint">
           {#if draftActivityMode === "system_input_or_screen_or_audio"}
             <strong>Audio mode</strong> monitors keyboard/mouse, on-screen changes, <em>and</em>
-            audio levels from both the microphone and system audio. Any sound above the configured
-            sensitivity threshold counts as activity and keeps the recording running.
+            source-specific audio activity. Microphone activity is speech-first when voice detection
+            is enabled, while system audio still uses the configured level threshold.
           {:else if draftActivityMode === "system_input_or_screen"}
             <strong>Screen change mode</strong> monitors on-screen activity in addition to input events — useful for
             keeping recordings active during video calls, live streams, or media playback where you may not be
@@ -1312,6 +1316,37 @@
         </p>
 
         {#if draftActivityMode === "system_input_or_screen_or_audio"}
+          <div class="settings-divider"></div>
+          <span class="group-label">Microphone Voice Detection</span>
+          <RadioGroup
+            bind:value={draftMicrophoneVadAdapter}
+            options={[
+              {
+                value: "silero",
+                label: "Silero",
+                description: "Default speech detector. Falls back to WebRTC when unavailable.",
+              },
+              {
+                value: "webrtc",
+                label: "WebRTC",
+                description: "Lightweight local speech detector.",
+              },
+              {
+                value: "off",
+                label: "Off",
+                description: "Use legacy microphone peak-level activity.",
+              },
+            ]}
+            disabled={!draftCaptureMicrophone}
+          />
+          {#if !draftCaptureMicrophone}
+            <p class="group-hint group-hint--warn">Microphone capture is disabled — voice detection has no effect until enabled.</p>
+          {:else if draftMicrophoneVadAdapter === "off"}
+            <p class="group-hint">Microphone inactivity uses the legacy peak-level detector.</p>
+          {:else}
+            <p class="group-hint">Microphone inactivity uses local speech detection. Raw peak levels remain visible in debug output.</p>
+          {/if}
+
           <div class="settings-divider"></div>
           <span class="group-label">Microphone Activity Sensitivity</span>
           <Slider
@@ -1327,7 +1362,9 @@
             <p class="group-hint group-hint--warn">Microphone capture is disabled — this setting has no effect until enabled.</p>
           {:else}
             <p class="group-hint">
-              {#if draftMicrophoneActivitySensitivity >= 80}
+              {#if draftMicrophoneVadAdapter !== "off"}
+                Tunes the compatibility peak-level fallback used when no speech adapter is available.
+              {:else if draftMicrophoneActivitySensitivity >= 80}
                 <strong>Very high</strong> — whispers and background noise keep capture active.
               {:else if draftMicrophoneActivitySensitivity >= 60}
                 <strong>High</strong> — quiet speech counts as activity.

@@ -5,14 +5,32 @@ mod native_capture;
 mod windows;
 
 use tauri::Manager;
-use tauri_plugin_log::{Target, TargetKind};
+use tauri_plugin_log::{Target, TargetKind, WEBVIEW_TARGET};
 
 pub(crate) const APP_LOG_FILE_NAME: &str = "rust";
 
-fn should_forward_window_event(
-    event: &tauri::WindowEvent,
-    webview_window_found: bool,
-) -> bool {
+const APP_LOG_TARGET_PREFIXES: &[&str] = &[
+    "mnema",
+    "mnema_lib",
+    "app_infra",
+    "capture_runtime",
+    "capture_screen",
+    "capture_microphone",
+    "capture_writers",
+    "capture_types",
+    WEBVIEW_TARGET,
+];
+
+fn is_app_log_target(target: &str) -> bool {
+    APP_LOG_TARGET_PREFIXES.iter().any(|prefix| {
+        target == *prefix
+            || target
+                .strip_prefix(*prefix)
+                .is_some_and(|suffix| suffix.starts_with("::"))
+    })
+}
+
+fn should_forward_window_event(event: &tauri::WindowEvent, webview_window_found: bool) -> bool {
     matches!(event, tauri::WindowEvent::Destroyed) || webview_window_found
 }
 
@@ -24,11 +42,13 @@ pub fn run() {
         .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
         .manage(native_capture::SystemWakeNotifierState::default())
         .manage(native_capture::RecordingSettingsState::default())
+        .manage(native_capture::AppNotificationsState::default())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)
                 .level_for("capture_runtime", tauri_plugin_log::log::LevelFilter::Debug)
                 .level_for("mnema_lib", tauri_plugin_log::log::LevelFilter::Debug)
+                .filter(|metadata| is_app_log_target(metadata.target()))
                 .targets([
                     Target::new(TargetKind::Stderr),
                     Target::new(TargetKind::LogDir {
@@ -77,6 +97,9 @@ pub fn run() {
             native_capture::get_capture_support,
             native_capture::get_capture_permissions,
             native_capture::get_idle_debug,
+            native_capture::get_app_notifications,
+            native_capture::clear_app_notification,
+            native_capture::clear_app_notifications,
             native_capture::get_recording_settings,
             native_capture::update_recording_settings,
             native_capture::get_native_capture_debug_log_status,
@@ -104,7 +127,20 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::should_forward_window_event;
+    use super::{is_app_log_target, should_forward_window_event};
+
+    #[test]
+    fn app_log_filter_keeps_only_our_targets() {
+        assert!(is_app_log_target("mnema_lib::native_capture"));
+        assert!(is_app_log_target("capture_runtime"));
+        assert!(is_app_log_target("app_infra::processing::runtime"));
+        assert!(is_app_log_target(tauri_plugin_log::WEBVIEW_TARGET));
+
+        assert!(!is_app_log_target("ort::logging"));
+        assert!(!is_app_log_target("tauri"));
+        assert!(!is_app_log_target("sqlx::query"));
+        assert!(!is_app_log_target("capture_runtime_extra"));
+    }
 
     #[test]
     fn destroyed_events_are_forwarded_even_when_manager_lookup_fails() {

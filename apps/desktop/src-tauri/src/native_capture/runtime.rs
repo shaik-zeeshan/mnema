@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 
 use super::inactivity::InactivityState;
 use super::segments::FrameArtifactMessage;
+use super::vad::MicrophoneVadRuntime;
 
 #[derive(Debug, Default)]
 pub struct NativeCaptureRuntime {
@@ -45,6 +46,7 @@ pub struct NativeCaptureRuntime {
     pub runtime_controller: RuntimeController,
     pub runtime_state: RuntimeState,
     pub inactivity: InactivityState,
+    pub microphone_vad: MicrophoneVadRuntime,
     /// Per-source session metadata. Populated when a recording starts, cleared on reset.
     pub source_sessions: Option<SourceSessions>,
     #[cfg(target_os = "macos")]
@@ -116,7 +118,9 @@ fn session_reports_running(runtime: &NativeCaptureRuntime) -> bool {
             .is_some_and(|sources| sources.screen)
             && !runtime.inactivity.is_screen_paused()
             && runtime.recording_file.is_none()
-            && !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref())
+            && !capture_screen::screen_capture_session_is_live(
+                runtime.active_screen_session.as_ref(),
+            )
         {
             return false;
         }
@@ -178,6 +182,7 @@ pub(super) fn validate_start_request(
 pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
     runtime.inactivity = InactivityState::default();
+    runtime.microphone_vad = MicrophoneVadRuntime::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;
     runtime.segment_schedule = None;
@@ -204,6 +209,7 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
 pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
     runtime.inactivity = InactivityState::default();
+    runtime.microphone_vad = MicrophoneVadRuntime::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;
     runtime.segment_schedule = None;
@@ -297,9 +303,7 @@ pub(super) fn should_recover_from_segment_finalize_error(error: &CaptureErrorRes
                 "failed to remove intermediate ",
             ],
         )
-        .is_some_and(
-            super::output::is_missing_requested_screen_output_failure_detail,
-        );
+        .is_some_and(super::output::is_missing_requested_screen_output_failure_detail);
 
     capture_screen::should_recover_from_segment_finalize_error(error)
         || (error.code == "capture_output_processing_failed" && is_missing_requested_screen_output)

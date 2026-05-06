@@ -15,6 +15,12 @@
     toggleSourceSelected,
   } from "$lib/capture-controls.svelte";
   import { initTheme } from "$lib/theme.svelte";
+  import {
+    appNotifications,
+    clearAppNotification,
+    clearAppNotifications,
+    initAppNotifications,
+  } from "$lib/notifications.svelte";
   interface Props {
     children: Snippet;
   }
@@ -28,6 +34,7 @@
   const showMainTitlebar = $derived(isMainRoute);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   let windowPlatform = $state<"macos" | "windows" | "other">("other");
+  let notificationsOpen = $state(false);
 
   $effect(() => {
     if (typeof navigator === "undefined") return;
@@ -62,6 +69,7 @@
   // post-render `$effect`. `initTheme` is idempotent and remains safe in the
   // SPA-only setup.
   initTheme();
+  initAppNotifications();
 
   $effect(() => {
     loadDeveloperOptions();
@@ -93,6 +101,12 @@
 
   // Routes that want a centered, padded reading column.
   const isNarrow = $derived(isSettings || isDebug);
+  const notificationCount = $derived(appNotifications.count);
+  const hasNotifications = $derived(notificationCount > 0);
+
+  $effect(() => {
+    if (!hasNotifications) notificationsOpen = false;
+  });
 
   // ── Recording status mirrored from the shared capture-controls seam ────
   const isCapturing = $derived(captureControls.running);
@@ -335,6 +349,63 @@
 
     <div class="titlebar__group titlebar__group--right">
       {#if showMainTitlebar}
+        {#if hasNotifications}
+          <div class="titlebar__notifications">
+            <button
+              type="button"
+              class="titlebar__settings titlebar__notifications-button"
+              aria-label="Open notifications"
+              aria-expanded={notificationsOpen}
+              title="Notifications"
+              onclick={() => notificationsOpen = !notificationsOpen}
+            >
+              <svg
+                class="titlebar__settings-icon"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+              </svg>
+              <span class="titlebar__notification-dot" aria-hidden="true">{notificationCount}</span>
+            </button>
+            {#if notificationsOpen}
+              <div class="notification-popover" role="dialog" aria-label="Notifications">
+                <div class="notification-popover__head">
+                  <span>Notifications</span>
+                  <button type="button" class="notification-popover__clear" onclick={() => void clearAppNotifications()}>
+                    Clear all
+                  </button>
+                </div>
+                <div class="notification-popover__list">
+                  {#each appNotifications.items as notification (notification.id)}
+                    <div class="notification-item notification-item--{notification.severity}">
+                      <div class="notification-item__body">
+                        <span class="notification-item__title">{notification.title}</span>
+                        <span class="notification-item__message">{notification.message}</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="notification-item__clear"
+                        aria-label="Clear notification"
+                        onclick={() => void clearAppNotification(notification.id)}
+                      >
+                        x
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+        {/if}
         <button
           type="button"
           class="titlebar__settings"
@@ -1083,6 +1154,114 @@
   .titlebar__settings-icon {
     display: block;
     flex: 0 0 auto;
+  }
+  .titlebar__notifications {
+    position: relative;
+    display: inline-flex;
+  }
+  .titlebar__notifications-button {
+    position: relative;
+  }
+  .titlebar__notification-dot {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    min-width: 12px;
+    height: 12px;
+    padding: 0 3px;
+    border-radius: 999px;
+    background: var(--app-warn);
+    color: var(--app-bg);
+    font-size: 8px;
+    font-weight: 800;
+    line-height: 12px;
+    text-align: center;
+  }
+  .notification-popover {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 20;
+    width: min(340px, calc(100vw - 24px));
+    max-height: 360px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
+  }
+  .notification-popover__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--app-border);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--app-text-strong);
+  }
+  .notification-popover__clear,
+  .notification-item__clear {
+    border: 0;
+    background: transparent;
+    color: var(--app-text-muted);
+    cursor: pointer;
+    font: inherit;
+  }
+  .notification-popover__clear {
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .notification-popover__clear:hover,
+  .notification-item__clear:hover {
+    color: var(--app-text-strong);
+  }
+  .notification-popover__list {
+    overflow-y: auto;
+    padding: 6px;
+  }
+  .notification-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 9px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+  }
+  .notification-item + .notification-item {
+    margin-top: 6px;
+  }
+  .notification-item--warning {
+    border-color: var(--app-warn-border);
+    background: var(--app-warn-bg);
+  }
+  .notification-item__body {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .notification-item__title {
+    color: var(--app-text-strong);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .notification-item__message {
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+  .notification-item__clear {
+    align-self: start;
+    width: 20px;
+    height: 20px;
+    font-size: 16px;
+    line-height: 18px;
   }
   .titlebar__settings-label {
     display: block;

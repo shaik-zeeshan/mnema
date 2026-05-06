@@ -16,6 +16,13 @@ export interface AudioActivityDecision {
 	enabled: boolean;
 	idleMs: number | null;
 	activityThreshold: number | null;
+	detector: string | null;
+}
+
+export interface MicrophoneVadStatus {
+	configuredAdapter: string;
+	effectiveAdapter: string;
+	fallbackReason: string | null;
 }
 
 export interface IdleDebugInfo {
@@ -34,6 +41,7 @@ export interface IdleDebugInfo {
 	microphoneActivityDecision: AudioActivityDecision;
 	systemAudioActivitySample: AudioActivitySample;
 	systemAudioActivityDecision: AudioActivityDecision;
+	microphoneVad: MicrophoneVadStatus;
 	effectiveIdleMs: number;
 	effectiveActivitySource: ActivitySourceKind;
 	screenEffectiveIdleMs: number;
