@@ -4279,7 +4279,7 @@ mod tests {
 
         assert_eq!(
             path,
-            Path::new("/tmp/session/frames/frame-1717000123456-000042.png")
+            Path::new("/tmp/session/frames/frame-1717000123456-000042.jpg")
         );
     }
 
