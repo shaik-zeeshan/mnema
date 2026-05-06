@@ -35,11 +35,6 @@ const HYBRID_SOURCES: [ActivitySourceKind; 2] = [
     ActivitySourceKind::SystemInput,
     ActivitySourceKind::ScreenCapture,
 ];
-const AUDIO_ONLY_SOURCES: [ActivitySourceKind; 3] = [
-    ActivitySourceKind::SystemInput,
-    ActivitySourceKind::MicrophoneCapture,
-    ActivitySourceKind::SystemAudioCapture,
-];
 const MICROPHONE_ONLY_SOURCES: [ActivitySourceKind; 1] = [ActivitySourceKind::MicrophoneCapture];
 const SYSTEM_AUDIO_ONLY_SOURCES: [ActivitySourceKind; 1] = [ActivitySourceKind::SystemAudioCapture];
 // Map the 0-100 sensitivity slider onto a bounded normalized audio threshold.
@@ -190,8 +185,8 @@ impl InactivityState {
     }
 
     /// Returns true when either microphone or system audio is paused.
-    /// This is a convenience helper for code paths that need to know whether
-    /// any audio source is paused without distinguishing which one.
+    /// This is kept only for crate tests that assert family pause state.
+    #[cfg(test)]
     pub(crate) fn is_any_audio_paused(&self) -> bool {
         self.is_microphone_paused() || self.is_system_audio_paused()
     }
@@ -281,16 +276,6 @@ impl InactivityState {
             InactivityActivityMode::SystemInputOnly => &SYSTEM_AUDIO_ONLY_SOURCES,
             InactivityActivityMode::SystemInputOrScreen => &SYSTEM_AUDIO_ONLY_SOURCES,
             InactivityActivityMode::SystemInputOrScreenOrAudio => &SYSTEM_AUDIO_ONLY_SOURCES,
-        }
-    }
-
-    /// Returns the combined audio source kinds for backward-compatible code
-    /// paths (e.g. the legacy combined audio policy evaluation).
-    fn audio_source_kinds_for_mode(&self) -> &'static [ActivitySourceKind] {
-        match self.activity_mode {
-            InactivityActivityMode::SystemInputOnly => &SYSTEM_INPUT_ONLY_SOURCES,
-            InactivityActivityMode::SystemInputOrScreen => &SYSTEM_INPUT_ONLY_SOURCES,
-            InactivityActivityMode::SystemInputOrScreenOrAudio => &AUDIO_ONLY_SOURCES,
         }
     }
 
@@ -625,17 +610,6 @@ impl InactivityState {
             .system_audio
     }
 
-    /// Legacy combined audio policy evaluation for backward-compatible code
-    /// paths. Uses all audio source kinds combined.
-    pub(crate) fn evaluate_audio_policy_for_snapshot(
-        &mut self,
-        now_monotonic_ms: u64,
-        snapshot: ActivitySnapshot,
-    ) -> ActivityPolicyEvaluation {
-        let sources = self.source_samples(now_monotonic_ms, snapshot);
-        let fallback = self.fallback_idle(now_monotonic_ms);
-        Self::evaluate_policy_from_samples(&sources, fallback, self.audio_source_kinds_for_mode())
-    }
 }
 
 #[cfg(test)]
