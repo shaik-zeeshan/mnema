@@ -2,23 +2,78 @@
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import type { Snippet } from "svelte";
+  import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
-
+  import { closeCurrentWindow, isDedicatedSurfaceWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
+  import {
+    bootstrapCaptureControls,
+    captureControls,
+    sourceSelection,
+    startCapture,
+    stopCapture,
+    subscribeRuntimeSources,
+    toggleSourceSelected,
+  } from "$lib/capture-controls.svelte";
+  import { initTheme } from "$lib/theme.svelte";
   interface Props {
     children: Snippet;
   }
 
   let { children }: Props = $props();
 
-  const isSettings = $derived($page.url.pathname.startsWith("/settings"));
-  const isDebug = $derived($page.url.pathname.startsWith("/debug"));
-  const isMenu = $derived($page.url.pathname.startsWith("/menu"));
+  const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
+  const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
+  const isSettings = $derived(normalizedPathname.startsWith("/settings"));
+  const isDebug = $derived(normalizedPathname.startsWith("/debug"));
+  const showMainTitlebar = $derived(isMainRoute);
+  const showDedicatedTitlebar = isDedicatedSurfaceWindow();
+  let windowPlatform = $state<"macos" | "windows" | "other">("other");
+
+  $effect(() => {
+    if (typeof navigator === "undefined") return;
+
+    const ua = navigator.userAgent.toLowerCase();
+    if (ua.includes("mac os x") || ua.includes("macintosh")) {
+      windowPlatform = "macos";
+      return;
+    }
+    if (ua.includes("windows")) {
+      windowPlatform = "windows";
+      return;
+    }
+    windowPlatform = "other";
+  });
+
+  $effect(() => {
+    if (typeof document === "undefined") return;
+
+    document.documentElement.classList.toggle("dedicated-surface-window", showDedicatedTitlebar);
+
+    return () => {
+      document.documentElement.classList.remove("dedicated-surface-window");
+    };
+  });
 
   const devEnabled = $derived(developerOptions.value);
   const devLoaded = $derived(developerOptions.loaded);
 
+  // Initialize the global theme runtime during layout creation so theme
+  // resolution starts before the shell's first render instead of waiting for a
+  // post-render `$effect`. `initTheme` is idempotent and remains safe in the
+  // SPA-only setup.
+  initTheme();
+
   $effect(() => {
     loadDeveloperOptions();
+  });
+
+  // Bootstrap shared capture state once for the whole app — the title bar
+  // status indicator and record/stop action depend on it. The route pages
+  // (e.g. dashboard, debug) also call `bootstrapCaptureControls`, but each
+  // call is guarded by `captureControls.bootstrapped`, so this is idempotent.
+  $effect(() => {
+    if (captureControls.bootstrapped) return;
+    void bootstrapCaptureControls();
   });
 
   // Gate direct visits to `/debug` behind developer-options. We wait until
@@ -37,11 +92,331 @@
   const showChildren = $derived(!isDebug || (devLoaded && devEnabled));
 
   // Routes that want a centered, padded reading column.
-  const isNarrow = $derived(isSettings || isDebug || isMenu);
+  const isNarrow = $derived(isSettings || isDebug);
+
+  // ── Recording status mirrored from the shared capture-controls seam ────
+  const isCapturing = $derived(captureControls.running);
+  const captureLoadingStart = $derived(captureControls.loadingStart);
+  const captureLoadingStop = $derived(captureControls.loadingStop);
+  const captureLoadingSettings = $derived(captureControls.loadingSettings);
+  const captureStatusLabel = $derived(captureControls.statusLabel);
+  const captureStatusModifier = $derived(captureControls.statusModifier);
+
+  // ── Per-source runtime indicators ──────────────────────────────────────
+  // While a capture session is running, fetch `get_idle_debug` periodically
+  // through the shared seam so the title bar can show small per-source
+  // icons (screen / microphone / system audio) with running vs paused
+  // state. The subscription auto-clears when the session stops.
+  $effect(() => {
+    if (!showMainTitlebar || !isCapturing) return;
+    const release = subscribeRuntimeSources();
+    return release;
+  });
+
+  type SourceLane = {
+    key: "screen" | "microphone" | "systemAudio";
+    label: string;
+  };
+  const sourceLanes: SourceLane[] = [
+    { key: "screen", label: "Screen" },
+    { key: "microphone", label: "Microphone" },
+    { key: "systemAudio", label: "System audio" },
+  ];
+
+  // While recording, each pill reflects the *live* runtime status of the
+  // source. While idle/stopped, each pill reflects whether that source is
+  // *selected* for the next session — clicking the pill toggles the
+  // corresponding `RecordingSettings` flag through the same Tauri command
+  // the settings page uses.
+  type LiveState = "running" | "paused" | "starting" | "off";
+  type SelectState = "selected" | "unselected";
+
+  function liveStateFor(key: SourceLane["key"]): LiveState {
+    const rs = captureControls.runtimeSources;
+    if (!rs) return "off";
+    const src = rs[key];
+    if (!src.requested) return "off";
+    if (src.paused) return "paused";
+    if (src.sessionActive && src.writerActive) return "running";
+    return "starting";
+  }
+  function selectStateFor(key: SourceLane["key"]): SelectState {
+    return sourceSelection.isSelected(key) ? "selected" : "unselected";
+  }
+
+  function liveTitleFor(lane: SourceLane, state: LiveState): string {
+    const verb =
+      state === "running"
+        ? "recording"
+        : state === "paused"
+          ? "paused"
+          : state === "starting"
+            ? "starting…"
+            : "off";
+    return `${lane.label}: ${verb}`;
+  }
+  function selectTitleFor(lane: SourceLane, state: SelectState): string {
+    return state === "selected"
+      ? `${lane.label}: enabled — click to skip on next recording`
+      : `${lane.label}: disabled — click to include in next recording`;
+  }
 </script>
 
-<div class="app-shell">
-  <main class="app-content" class:app-content--narrow={isNarrow}>
+<svelte:body class:dedicated-surface-window={showDedicatedTitlebar} />
+
+<div
+  class="app-shell"
+  class:app-shell--dedicated={showDedicatedTitlebar}
+  class:app-shell--macos={showDedicatedTitlebar && windowPlatform === "macos"}
+  class:app-shell--windows={showDedicatedTitlebar && windowPlatform === "windows"}
+>
+  <!--
+    Custom desktop title bar. The Tauri window uses macOS's overlay title-bar
+    style, so the OS still draws native traffic lights in the top-left; this
+    bar reserves space for them via `.titlebar` left padding. The drag region
+    is restricted to the inert filler area (`data-tauri-drag-region`); every
+    interactive control sits outside that region so clicks/taps reach the
+    button.
+  -->
+  {#if showMainTitlebar}
+  <header class="titlebar">
+    <div class="titlebar__group titlebar__group--left">
+      {#if showMainTitlebar}
+        <span
+          class="titlebar__status titlebar__status--{captureStatusModifier}"
+          aria-live="polite"
+          title="Recording status"
+        >
+          <span class="titlebar__status-dot" aria-hidden="true"></span>
+          <span class="titlebar__status-label">{captureStatusLabel}</span>
+        </span>
+        {#if isCapturing}
+          <button
+            type="button"
+            class="titlebar__record titlebar__record--stop"
+            onclick={stopCapture}
+            disabled={captureLoadingStop}
+            title="Stop recording"
+            aria-label="Stop recording"
+          >
+            <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
+            <span>{captureLoadingStop ? "Stopping…" : "Stop"}</span>
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="titlebar__record titlebar__record--start"
+            onclick={startCapture}
+            disabled={captureLoadingStart || captureLoadingSettings}
+            title="Start recording"
+            aria-label="Start recording"
+          >
+            <span class="titlebar__record-glyph" aria-hidden="true">●</span>
+            <span>{captureLoadingStart ? "Starting…" : "Record"}</span>
+          </button>
+        {/if}
+        {#snippet sourceIcon(key: SourceLane["key"])}
+          {#if key === "screen"}
+            <svg
+              class="titlebar__source-icon"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="2" y="4" width="20" height="13" rx="2" />
+              <path d="M8 21h8" />
+              <path d="M12 17v4" />
+            </svg>
+          {:else if key === "microphone"}
+            <svg
+              class="titlebar__source-icon"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="9" y="2.5" width="6" height="12" rx="3" />
+              <path d="M5.5 11a6.5 6.5 0 0 0 13 0" />
+              <path d="M12 17.5v3.5" />
+              <path d="M9 21h6" />
+            </svg>
+          {:else}
+            <svg
+              class="titlebar__source-icon"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M11 5 6.5 9H3v6h3.5L11 19z" />
+              <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+              <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+            </svg>
+          {/if}
+        {/snippet}
+        {#each sourceLanes as lane (lane.key)}
+          {#if isCapturing}
+            {@const state = liveStateFor(lane.key)}
+            <span
+              class="titlebar__source titlebar__source--{lane.key} titlebar__source--{state}"
+              title={liveTitleFor(lane, state)}
+              aria-label={liveTitleFor(lane, state)}
+              role="status"
+            >
+              {@render sourceIcon(lane.key)}
+              <span class="titlebar__source-state" aria-hidden="true">
+                {#if state === "running"}
+                  <span class="titlebar__source-dot"></span>
+                {:else if state === "paused"}
+                  <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                    <rect x="1" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
+                    <rect x="5" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
+                  </svg>
+                {:else if state === "starting"}
+                  <span class="titlebar__source-ring"></span>
+                {:else}
+                  <span class="titlebar__source-slash"></span>
+                {/if}
+              </span>
+            </span>
+          {:else}
+            {@const state = selectStateFor(lane.key)}
+            <button
+              type="button"
+              class="titlebar__source titlebar__source--toggle titlebar__source--{lane.key} titlebar__source--{state}"
+              title={selectTitleFor(lane, state)}
+              aria-label={selectTitleFor(lane, state)}
+              aria-pressed={state === "selected"}
+              disabled={sourceSelection.isSaving(lane.key) || captureControls.loadingSettings}
+              onclick={() => toggleSourceSelected(lane.key)}
+            >
+              {@render sourceIcon(lane.key)}
+              <span class="titlebar__source-state" aria-hidden="true">
+                {#if state === "selected"}
+                  <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+                    <path
+                      d="M1.5 4.2 3.2 5.9 6.5 2.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                {:else}
+                  <span class="titlebar__source-slash"></span>
+                {/if}
+              </span>
+            </button>
+          {/if}
+        {/each}
+      {/if}
+    </div>
+
+    <!-- Inert centre area carries the drag region. -->
+    <div class="titlebar__drag" data-tauri-drag-region>
+    </div>
+
+    <div class="titlebar__group titlebar__group--right">
+      {#if showMainTitlebar}
+        <button
+          type="button"
+          class="titlebar__settings"
+          aria-label="Open settings"
+          title="Settings"
+          onclick={() => void openSettingsWindow()}
+        >
+          <svg
+            class="titlebar__settings-icon"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+        {#if devEnabled}
+          <button
+            type="button"
+            class="titlebar__settings"
+            aria-label="Open debug"
+            title="Debug"
+            onclick={() => void openDebugWindow()}
+          >
+            <svg
+              class="titlebar__settings-icon"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M9 3h6" />
+              <path d="M10 9V7a2 2 0 1 1 4 0v2" />
+              <rect x="5" y="9" width="14" height="10" rx="2" />
+              <path d="M8 13h.01" />
+              <path d="M16 13h.01" />
+              <path d="M9 19v2" />
+              <path d="M15 19v2" />
+              <path d="M2 12h3" />
+              <path d="M19 12h3" />
+            </svg>
+          </button>
+        {/if}
+      {/if}
+    </div>
+  </header>
+  {/if}
+
+  {#if showDedicatedTitlebar}
+  <header class="surface-titlebar">
+    <div class="surface-titlebar__drag" data-tauri-drag-region></div>
+    <div class="surface-titlebar__actions">
+      <button
+        type="button"
+        class="surface-titlebar__close"
+        aria-label="Close window"
+        title="Close"
+        onclick={() => void closeCurrentWindow()}
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+          <path d="M2.5 2.5 9.5 9.5" />
+          <path d="M9.5 2.5 2.5 9.5" />
+        </svg>
+        <span>Close</span>
+      </button>
+    </div>
+  </header>
+  {/if}
+
+  <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar}>
     {#if showChildren}
       {@render children()}
     {/if}
@@ -55,19 +430,290 @@
     padding: 0;
   }
 
+  /* ── Semantic theme tokens ─────────────────────────────────────
+     Tokens live on `:root` so any descendant — including portaled or
+     `:global` styled content — can consume them. Two themes are defined:
+     dark (default, mirrors the prior hard-coded chrome exactly so this
+     slice is a no-op on first paint) and a bright, high-legibility light
+     theme. The active set is selected by `data-theme` on `<html>`, written
+     by `$lib/theme.svelte`. We deliberately avoid `prefers-color-scheme`
+     media queries here because the runtime owns the decision (the user
+     can pin `light`/`dark` explicitly via `appearance`). */
+  :global(:root) {
+    /* Dark theme — current chrome values, lifted verbatim. */
+    --app-bg: #0c0c0e;
+    --app-fg: #e2e2e8;
+    --app-fg-muted: #8a8aaa;
+    --app-fg-subtle: #45455a;
+
+    --app-titlebar-bg: #08080c;
+    --app-titlebar-border: #15151f;
+    --app-titlebar-title: #45455a;
+
+    --app-status-bg: #0a0a10;
+    --app-status-border: #161624;
+    --app-status-fg: #555574;
+    --app-status-dot: #2a2a3a;
+
+    --app-status-running-fg: #ff5d6c;
+    --app-status-running-border: #3a1820;
+    --app-status-running-dot: #ff3148;
+    --app-status-running-dot-glow: rgba(255, 49, 72, 0.18);
+
+    --app-status-paused-fg: #d6a14a;
+    --app-status-paused-border: #3a2818;
+    --app-status-paused-dot: #d6a14a;
+    --app-status-paused-dot-glow: rgba(214, 161, 74, 0.16);
+
+    --app-record-start-bg: #1a0f12;
+    --app-record-start-fg: #ff8a96;
+    --app-record-start-border: #3a1820;
+    --app-record-start-bg-hover: #2a1218;
+    --app-record-start-fg-hover: #ffb0b9;
+    --app-record-start-border-hover: #5a2030;
+
+    --app-record-stop-bg: #170d0f;
+    --app-record-stop-fg: #f0f0f5;
+    --app-record-stop-border: #4a1c26;
+    --app-record-stop-bg-hover: #2a1218;
+    --app-record-stop-border-hover: #6a2434;
+
+    --app-record-glyph-start: #ff3148;
+    --app-record-glyph-stop: #ff8a96;
+
+    --app-icon-fg: #8a8aaa;
+    --app-icon-fg-hover: #e2e2e8;
+    --app-icon-bg-hover: #1a1a2a;
+    --app-icon-border-hover: #2a2a3a;
+    --app-icon-bg-active: #14141f;
+    --app-icon-border-active: #2a2a3a;
+
+    /* Surface / control tokens shared by the dashboard, settings, and the
+       shared bits-ui-backed controls (Switch, Select, RadioGroup, Slider).
+       Keeping these centralized means each component declares the dark
+       palette once via these tokens and the light theme below flips them
+       in one place — no per-component palette duplication. */
+    --app-surface: #0e0e16;
+    --app-surface-raised: #13131a;
+    --app-surface-hover: #1a1a2a;
+    --app-surface-active: #131320;
+    --app-border: #1e1e2e;
+    --app-border-strong: #2a2a3a;
+    --app-border-hover: #3a3a5a;
+    --app-text-strong: #e2e2e8;
+    --app-text: #c0c0d0;
+    --app-text-muted: #7a7a9a;
+    --app-text-subtle: #44445a;
+    --app-text-faint: #33334a;
+    --app-accent: #3dffa0;
+    --app-accent-strong: #2a8a60;
+    --app-accent-bg: #0d1f15;
+    --app-accent-border: #1a4a30;
+    --app-accent-glow: rgba(61, 255, 160, 0.18);
+
+    --app-warn: #d6a14a;
+    --app-warn-strong: #c47a30;
+    --app-warn-bg: #1a1208;
+    --app-warn-border: #7a4a18;
+
+    --app-danger: #ff6b7a;
+    --app-danger-strong: #ff4455;
+    --app-danger-bg: #2e0f14;
+    --app-danger-bg-soft: #0e0a0a;
+    --app-danger-border: #4a1a20;
+    --app-danger-text: #ff8090;
+
+    --app-info: #60b0ff;
+    --app-info-strong: #4a6aaa;
+    --app-info-bg: #0c1a2e;
+    --app-info-border: #1a3050;
+
+    --app-neutral-bg: #1a1a2a;
+    --app-neutral-border: #2a2a3a;
+    --app-neutral-text: #7070a0;
+
+    --app-source-screen: #c0b0ff;
+    --app-source-screen-strong: #5a4aaa;
+    --app-source-screen-bg: #1a1a3a;
+    --app-source-screen-border: #2a2a5a;
+
+    --app-source-mic: #80d0a8;
+    --app-source-mic-strong: #4a8a6a;
+    --app-source-mic-bg: #0f2e1f;
+    --app-source-mic-border: #1a4a30;
+
+    --app-source-sysaudio: #b0c080;
+    --app-source-sysaudio-strong: #6a7a4a;
+    --app-source-sysaudio-bg: #2a2010;
+    --app-source-sysaudio-border: #4a3a18;
+
+    --app-overlay-bg: rgba(10, 10, 16, 0.78);
+    --app-overlay-bg-strong: rgba(10, 10, 16, 0.82);
+    --app-overlay-border: rgba(255, 255, 255, 0.06);
+
+    --app-ocr-box: rgba(120, 220, 160, 0.45);
+    --app-ocr-box-hover: rgba(120, 220, 160, 0.95);
+    --app-ocr-box-fill: rgba(120, 220, 160, 0.10);
+    --app-ocr-chip-bg: rgba(8, 14, 10, 0.96);
+    --app-ocr-chip-text: #eaffef;
+    --app-ocr-chip-border: rgba(120, 220, 160, 0.6);
+    --app-ocr-hover-shadow: rgba(0, 0, 0, 0.45);
+    --app-ocr-hover-inset: rgba(255, 255, 255, 0.04);
+    --app-ocr-chip-text-shadow: none;
+  }
+
+  /* Light theme — bright, neutral, high contrast. The accent stays in the
+     red family to preserve recording-status semantics; backgrounds and
+     borders flip to warm-cool greys so legibility on a 13px monospace body
+     remains strong. */
+  :global([data-theme="light"]) {
+    --app-bg: #f6f6f4;
+    --app-fg: #14141a;
+    --app-fg-muted: #5a5a6a;
+    --app-fg-subtle: #8a8a9a;
+
+    --app-titlebar-bg: #ececea;
+    --app-titlebar-border: #d4d4d2;
+    --app-titlebar-title: #9a9aa8;
+
+    --app-status-bg: #ffffff;
+    --app-status-border: #d8d8dc;
+    --app-status-fg: #5a5a6a;
+    --app-status-dot: #c4c4cc;
+
+    --app-status-running-fg: #c81d2e;
+    --app-status-running-border: #f1b9bf;
+    --app-status-running-dot: #d62236;
+    --app-status-running-dot-glow: rgba(214, 34, 54, 0.22);
+
+    --app-status-paused-fg: #8a5a10;
+    --app-status-paused-border: #ecd9b0;
+    --app-status-paused-dot: #c08018;
+    --app-status-paused-dot-glow: rgba(192, 128, 24, 0.22);
+
+    --app-record-start-bg: #ffffff;
+    --app-record-start-fg: #c81d2e;
+    --app-record-start-border: #ecbcc2;
+    --app-record-start-bg-hover: #fff0f2;
+    --app-record-start-fg-hover: #a01624;
+    --app-record-start-border-hover: #d68c95;
+
+    --app-record-stop-bg: #c81d2e;
+    --app-record-stop-fg: #ffffff;
+    --app-record-stop-border: #a01624;
+    --app-record-stop-bg-hover: #a01624;
+    --app-record-stop-border-hover: #7a1019;
+
+    --app-record-glyph-start: #c81d2e;
+    --app-record-glyph-stop: #ffffff;
+
+    --app-icon-fg: #5a5a6a;
+    --app-icon-fg-hover: #14141a;
+    --app-icon-bg-hover: #e2e2e0;
+    --app-icon-border-hover: #c8c8c6;
+    --app-icon-bg-active: #dcdcda;
+    --app-icon-border-active: #b8b8b6;
+
+    /* Light surface palette mirrors the structural roles of the dark
+       palette so any consumer styled against the tokens flips coherently.
+       Greys are warmed slightly to match the `#f6f6f4` page background; the
+       accent stays in the green family (matching dashboard "OK" and the
+       primary save button) but darkens for legibility on white. */
+    --app-surface: #ffffff;
+    --app-surface-raised: #fbfbfa;
+    --app-surface-hover: #eeeeec;
+    --app-surface-active: #e8f1ea;
+    --app-border: #d8d8d4;
+    --app-border-strong: #c4c4c0;
+    --app-border-hover: #a4a4a0;
+    --app-text-strong: #14141a;
+    --app-text: #2a2a32;
+    --app-text-muted: #5a5a6a;
+    --app-text-subtle: #7a7a86;
+    --app-text-faint: #9a9aa4;
+    --app-accent: #1f7a4a;
+    --app-accent-strong: #155a36;
+    --app-accent-bg: #e6f4ec;
+    --app-accent-border: #9bd3b4;
+    --app-accent-glow: rgba(31, 122, 74, 0.16);
+
+    --app-warn: #9a5a12;
+    --app-warn-strong: #7f4300;
+    --app-warn-bg: #fff1df;
+    --app-warn-border: #dfbc8a;
+
+    --app-danger: #c43a48;
+    --app-danger-strong: #b42332;
+    --app-danger-bg: #fff0f2;
+    --app-danger-bg-soft: #fff6f7;
+    --app-danger-border: #e4b6be;
+    --app-danger-text: #d24a59;
+
+    --app-info: #2b78c5;
+    --app-info-strong: #225fa3;
+    --app-info-bg: #eef5ff;
+    --app-info-border: #bdd3ef;
+
+    --app-neutral-bg: #f2f3f6;
+    --app-neutral-border: #d5d7de;
+    --app-neutral-text: #636a79;
+
+    --app-source-screen: #6f5ed1;
+    --app-source-screen-strong: #5949b8;
+    --app-source-screen-bg: #f1edff;
+    --app-source-screen-border: #cdc3f2;
+
+    --app-source-mic: #2f8e59;
+    --app-source-mic-strong: #287a4a;
+    --app-source-mic-bg: #e8f5ec;
+    --app-source-mic-border: #afd8bf;
+
+    --app-source-sysaudio: #8b7a2c;
+    --app-source-sysaudio-strong: #786821;
+    --app-source-sysaudio-bg: #faf4df;
+    --app-source-sysaudio-border: #dbc98a;
+
+    --app-overlay-bg: rgba(255, 255, 255, 0.78);
+    --app-overlay-bg-strong: rgba(255, 255, 255, 0.86);
+    --app-overlay-border: rgba(20, 24, 32, 0.12);
+
+    --app-ocr-box: rgba(31, 122, 74, 0.42);
+    --app-ocr-box-hover: rgba(31, 122, 74, 0.88);
+    --app-ocr-box-fill: transparent;
+    --app-ocr-chip-bg: rgba(255, 255, 255, 0.92);
+    --app-ocr-chip-text: #155a36;
+    --app-ocr-chip-border: rgba(31, 122, 74, 0.24);
+    --app-ocr-hover-shadow: rgba(21, 28, 38, 0.18);
+    --app-ocr-hover-inset: transparent;
+    --app-ocr-chip-text-shadow: none;
+  }
+
   :global(html) {
     height: 100%;
+    overscroll-behavior: none;
+  }
+
+  :global(html.dedicated-surface-window) {
+    background: transparent;
   }
 
   :global(body) {
     min-height: 100%;
-    background-color: #0c0c0e;
-    color: #e2e2e8;
+    background-color: var(--app-bg);
+    color: var(--app-fg);
     font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
       "Cascadia Code", "Fira Code", monospace;
     font-size: 13px;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+    /* Smooth the chrome flip when the user toggles `appearance`. Kept
+       short so the change still feels responsive. */
+    transition: background-color 0.18s ease, color 0.18s ease;
+  }
+
+  :global(body.dedicated-surface-window) {
+    background: transparent;
   }
 
   :global(a) {
@@ -75,9 +721,377 @@
   }
 
   .app-shell {
+    --app-titlebar-height: 36px;
+    --app-window-radius: 10px;
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  .app-shell--macos {
+    --app-window-radius: 12px;
+  }
+
+  .app-shell--windows {
+    --app-window-radius: 8px;
+  }
+
+  /* ── Title bar ────────────────────────────────────────────────
+     Fixed-height custom title bar that sits at the top of every route.
+     Tauri's `decorations: false` window means this is the only chrome the
+     user sees; the inert filler area carries `data-tauri-drag-region` so
+     dragging the empty space moves the window, while the controls on
+     either side remain ordinary (clickable) interactive elements. */
+  .titlebar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: var(--app-titlebar-height);
+    /* Reserve ~72px on the left so our content never collides with the
+       macOS native traffic lights drawn by Tauri's overlay title-bar. The
+       right side keeps its tighter inset since nothing native sits there. */
+    padding: 0 8px 0 78px;
+    background: var(--app-titlebar-bg);
+    border-bottom: 1px solid var(--app-titlebar-border);
+    user-select: none;
+    -webkit-user-select: none;
+    /* Sticky so the title bar stays visible when a route's main content
+       scrolls vertically. Uses position: sticky rather than fixed so layout
+       below it doesn't need to compensate with extra padding. */
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .surface-titlebar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    height: 40px;
+    padding: 0 10px 0 14px;
+    background: var(--app-titlebar-bg);
+    border-radius: var(--app-window-radius) var(--app-window-radius) 0 0;
+    box-shadow: inset 0 -1px 0 var(--app-titlebar-border);
+    user-select: none;
+    -webkit-user-select: none;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .surface-titlebar__drag {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+  }
+
+  .surface-titlebar__actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+  }
+
+  .surface-titlebar__close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 72px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid var(--app-icon-border-hover);
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    font-family: inherit;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+
+  .surface-titlebar__close:hover {
+    background: var(--app-icon-bg-hover);
+    border-color: var(--app-border-hover);
+    color: var(--app-text-strong);
+  }
+
+  .titlebar__group {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+  }
+
+  .titlebar__drag {
+    flex: 1 1 auto;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    /* Ensure the drag area stays an explicit drop target for the cursor —
+       even when empty, the height of the row catches mousedown for window
+       drag. */
+    cursor: default;
+  }
+
+  /* ── Recording status indicator ───────────────────────────── */
+  .titlebar__status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    background: var(--app-status-bg);
+    border: 1px solid var(--app-status-border);
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--app-status-fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .titlebar__status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--app-status-dot);
+    flex: 0 0 auto;
+  }
+
+  .titlebar__status--running {
+    color: var(--app-status-running-fg);
+    border-color: var(--app-status-running-border);
+  }
+  .titlebar__status--running .titlebar__status-dot {
+    background: var(--app-status-running-dot);
+    box-shadow: 0 0 0 3px var(--app-status-running-dot-glow);
+    animation: titlebar-pulse 1.4s ease-in-out infinite;
+  }
+  .titlebar__status--paused {
+    color: var(--app-status-paused-fg);
+    border-color: var(--app-status-paused-border);
+  }
+  .titlebar__status--paused .titlebar__status-dot {
+    background: var(--app-status-paused-dot);
+    box-shadow: 0 0 0 3px var(--app-status-paused-dot-glow);
+  }
+
+  @keyframes titlebar-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+  }
+
+  /* ── Per-source recording pills ───────────────────────────────
+     One pill per requested capture source (screen / microphone /
+     system audio), rendered after the Record/Stop button. Each pill
+     pairs the source's icon with a status icon: a pulsing red dot
+     while live, pause bars while inactivity-paused, or a hollow ring
+     while the source is still spinning up. Sources not requested for
+     the current session aren't rendered. The pill chrome mirrors
+     `.titlebar__status` so the title bar stays visually coherent. */
+  .titlebar__source {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 7px;
+    height: 22px;
+    background: var(--app-status-bg);
+    border: 1px solid var(--app-status-border);
+    border-radius: 4px;
+    color: var(--app-status-fg);
+  }
+  .titlebar__source-icon {
+    display: block;
+    flex: 0 0 auto;
+  }
+  .titlebar__source-state {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 8px;
+    height: 8px;
+    line-height: 1;
+    flex: 0 0 auto;
+  }
+  .titlebar__source-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--app-status-running-dot);
+    box-shadow: 0 0 0 2px var(--app-status-running-dot-glow);
+    animation: titlebar-pulse 1.4s ease-in-out infinite;
+  }
+  .titlebar__source-ring {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    box-sizing: border-box;
+    opacity: 0.7;
+  }
+  .titlebar__source--running {
+    color: var(--app-status-running-fg);
+    border-color: var(--app-status-running-border);
+  }
+  .titlebar__source--paused {
+    color: var(--app-status-paused-fg);
+    border-color: var(--app-status-paused-border);
+  }
+  .titlebar__source--starting {
+    color: var(--app-fg-muted);
+  }
+  .titlebar__source--off {
+    color: var(--app-fg-subtle);
+    opacity: 0.55;
+  }
+
+  /* ── Toggle mode (idle / not recording) ───────────────────── */
+  .titlebar__source--toggle {
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
+  }
+  .titlebar__source--toggle:disabled {
+    cursor: progress;
+    opacity: 0.6;
+  }
+  .titlebar__source--toggle.titlebar__source--selected {
+    color: var(--app-text-strong);
+    border-color: var(--app-border-strong);
+    background: var(--app-surface-raised);
+  }
+  .titlebar__source--toggle.titlebar__source--unselected {
+    color: var(--app-fg-subtle);
+    border-color: var(--app-status-border);
+    background: var(--app-status-bg);
+    opacity: 0.7;
+  }
+  .titlebar__source--toggle:not(:disabled):hover {
+    color: var(--app-text-strong);
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+    opacity: 1;
+  }
+  /* Diagonal slash glyph used when a source is unselected (idle) or
+     forcibly off (live). Drawn as a thin rotated bar so it reads as
+     "muted/skipped" without bringing in another SVG. */
+  .titlebar__source-slash {
+    width: 8px;
+    height: 1.5px;
+    background: currentColor;
+    border-radius: 1px;
+    transform: rotate(-45deg);
+    opacity: 0.85;
+  }
+
+  /* ── Record / Stop button ─────────────────────────────────── */
+  .titlebar__record {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    font-family: inherit;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, opacity 0.12s, color 0.12s;
+  }
+  .titlebar__record:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .titlebar__record--start {
+    background: var(--app-record-start-bg);
+    color: var(--app-record-start-fg);
+    border-color: var(--app-record-start-border);
+  }
+  .titlebar__record--start:not(:disabled):hover {
+    background: var(--app-record-start-bg-hover);
+    color: var(--app-record-start-fg-hover);
+    border-color: var(--app-record-start-border-hover);
+  }
+  .titlebar__record--stop {
+    background: var(--app-record-stop-bg);
+    color: var(--app-record-stop-fg);
+    border-color: var(--app-record-stop-border);
+  }
+  .titlebar__record--stop:not(:disabled):hover {
+    background: var(--app-record-stop-bg-hover);
+    border-color: var(--app-record-stop-border-hover);
+  }
+  .titlebar__record-glyph {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    line-height: 1;
+    text-align: center;
+    color: var(--app-record-glyph-start);
+    font-size: 12px;
+  }
+  .titlebar__record--stop .titlebar__record-glyph {
+    color: var(--app-record-glyph-stop);
+  }
+  .titlebar__record-glyph--square {
+    background: currentColor;
+    border-radius: 1px;
+    width: 7px;
+    height: 7px;
+  }
+
+  /* ── Surface actions ──────────────────────────────────────── */
+  .titlebar__settings {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    color: var(--app-icon-fg);
+    border: 1px solid transparent;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .titlebar__settings--labelled {
+    gap: 6px;
+    width: auto;
+    padding: 0 12px 0 10px;
+  }
+  .titlebar__settings:hover {
+    background: var(--app-icon-bg-hover);
+    color: var(--app-icon-fg-hover);
+    border-color: var(--app-icon-border-hover);
+  }
+  .titlebar__settings-icon {
+    display: block;
+    flex: 0 0 auto;
+  }
+  .titlebar__settings-label {
+    display: block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    text-transform: uppercase;
+    white-space: nowrap;
   }
 
   /* ── Content ──────────────────────────────────────────────── */
@@ -89,15 +1103,42 @@
     min-height: 0;
   }
 
+  .app-content--dedicated {
+    background: var(--app-bg);
+    border-radius: 0 0 var(--app-window-radius) var(--app-window-radius);
+    overflow: hidden;
+  }
+
+  .app-shell--dedicated {
+    background: var(--app-bg);
+    border-radius: var(--app-window-radius);
+    overflow: hidden;
+    padding: 0;
+    /* Pin the dedicated surface to the viewport so the page header + tab
+       strip stay in place and only the scroll region inside the panel area
+       moves. Without this the shell grows past the viewport (it inherits
+       only `min-height: 100vh` from `.app-shell`) and the entire window
+       scrolls instead of just the panel content. */
+    height: 100vh;
+    height: 100dvh;
+  }
+
   /* The narrow column is opt-in — only routes that explicitly want a
-     centered, padded reading column (currently `/settings`, `/debug`, and
-     `/menu`) request it. Surfaces like the timeline consume the full
+     centered, padded reading column (currently `/settings` and `/debug`)
+     request it. Surfaces like the timeline consume the full
      viewport width by default so previews and dense controls aren't
      artificially capped. */
   .app-content--narrow {
-    max-width: 640px;
+    max-width: 860px;
     margin: 0 auto;
-    padding: 28px 20px 64px;
+    padding: calc(var(--app-titlebar-height) + 14px) 24px 64px;
+    gap: 14px;
+  }
+
+  .app-content--dedicated.app-content--narrow {
+    max-width: none;
+    margin: 0;
+    padding: 16px 20px 28px;
     gap: 14px;
   }
 </style>

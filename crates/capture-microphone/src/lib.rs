@@ -8,9 +8,8 @@ use capture_writers::{
     append_audio_sample_to_writer, create_audio_asset_writer_for_sample_format,
     derive_audio_activity_level_from_sample_buf, derive_audio_sample_format_from_sample_buf,
     finalize_microphone_output_context as writers_finalize_microphone_output_context,
-    finish_audio_asset_writer_discarding_inactivity_tail,
-    set_audio_writer_activity_threshold, set_audio_writer_inactivity_tail_trim_seconds,
-    AudioAssetWriterState, AudioSampleFormat,
+    finish_audio_asset_writer_discarding_inactivity_tail, set_audio_writer_activity_threshold,
+    set_audio_writer_inactivity_tail_trim_seconds, AudioAssetWriterState, AudioSampleFormat,
 };
 
 #[cfg(target_os = "macos")]
@@ -34,6 +33,10 @@ static LAST_MICROPHONE_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static LAST_MICROPHONE_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "macos")]
+static LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "macos")]
+static LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(target_os = "macos")]
 fn microphone_activity_monotonic_epoch() -> &'static Instant {
@@ -64,9 +67,30 @@ fn now_microphone_activity_marker_ms() -> u64 {
 
 #[cfg(target_os = "macos")]
 fn store_microphone_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u64) {
-    LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    let level = level.clamp(0.0, 1.0);
+    LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.store(level.to_bits(), Ordering::Relaxed);
     LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS.store(now_monotonic_ms, Ordering::Relaxed);
     LAST_MICROPHONE_ACTIVITY_UNIX_MS.store(now_unix_ms, Ordering::Relaxed);
+    record_microphone_activity_window_peak(level);
+}
+
+#[cfg(target_os = "macos")]
+fn record_microphone_activity_window_peak(level: f32) {
+    LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let level_bits = level.to_bits();
+    let mut observed_bits = LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    while f32::from_bits(observed_bits) < level {
+        match LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.compare_exchange_weak(
+            observed_bits,
+            level_bits,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(next_bits) => observed_bits = next_bits,
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -87,6 +111,8 @@ pub fn reset_last_microphone_activity_unix_ms() {
     LAST_MICROPHONE_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
     LAST_MICROPHONE_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
     LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.store(0, Ordering::Relaxed);
+    LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.store(0, Ordering::Relaxed);
+    LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.store(0, Ordering::Relaxed);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -118,6 +144,30 @@ pub fn microphone_activity_idle_ms() -> Option<u64> {
 pub fn microphone_activity_level() -> Option<f32> {
     last_microphone_activity_unix_ms()
         .map(|_| f32::from_bits(LAST_MICROPHONE_ACTIVITY_LEVEL_BITS.load(Ordering::Relaxed)))
+}
+
+#[cfg(target_os = "macos")]
+pub fn take_microphone_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.swap(0, Ordering::Relaxed);
+    let level_bits = LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.swap(0, Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
+#[cfg(target_os = "macos")]
+pub fn peek_microphone_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT.load(Ordering::Relaxed);
+    let level_bits = LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn take_microphone_activity_window_peak_level() -> Option<f32> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn peek_microphone_activity_window_peak_level() -> Option<f32> {
+    None
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -216,7 +266,8 @@ mod tests {
         microphone_output_callback_objc_exception_error, microphone_output_callback_panic_error,
         observe_microphone_format, reset_last_microphone_activity_unix_ms,
         resolve_microphone_finalize_format, resolve_microphone_live_format,
-        store_microphone_activity, AudioSampleFormat, MicFormatStabilityState, OnceLock,
+        store_microphone_activity, take_microphone_activity_window_peak_level, AudioSampleFormat,
+        MicFormatStabilityState, OnceLock,
     };
 
     fn microphone_activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -298,6 +349,38 @@ mod tests {
         assert_eq!(last_microphone_activity_unix_ms(), None);
         assert_eq!(microphone_activity_level(), None);
         assert_eq!(microphone_activity_idle_ms(), None);
+    }
+
+    #[test]
+    fn microphone_activity_window_peak_tracks_max_until_taken() {
+        let _guard = microphone_activity_state_test_guard();
+        reset_last_microphone_activity_unix_ms();
+
+        store_microphone_activity(0.05, 10_000, 20_000);
+        store_microphone_activity(0.80, 10_010, 20_010);
+        store_microphone_activity(0.10, 10_020, 20_020);
+
+        assert_eq!(take_microphone_activity_window_peak_level(), Some(0.80));
+        assert_eq!(take_microphone_activity_window_peak_level(), None);
+        assert_eq!(microphone_activity_level(), Some(0.10));
+
+        reset_last_microphone_activity_unix_ms();
+    }
+
+    #[test]
+    fn microphone_activity_window_peak_peek_preserves_value_until_taken() {
+        let _guard = microphone_activity_state_test_guard();
+        reset_last_microphone_activity_unix_ms();
+
+        store_microphone_activity(0.05, 10_000, 20_000);
+        store_microphone_activity(0.80, 10_010, 20_010);
+
+        assert_eq!(peek_microphone_activity_window_peak_level(), Some(0.80));
+        assert_eq!(peek_microphone_activity_window_peak_level(), Some(0.80));
+        assert_eq!(take_microphone_activity_window_peak_level(), Some(0.80));
+        assert_eq!(peek_microphone_activity_window_peak_level(), None);
+
+        reset_last_microphone_activity_unix_ms();
     }
 
     fn microphone_callback_error_from_panic<F>(panic_fn: F) -> capture_types::CaptureErrorResponse
@@ -507,8 +590,8 @@ mod microphone_delegate {
             sample_buf: &cidre::cm::SampleBuf,
             _connection: &cidre::av::CaptureConnection,
         ) {
-            let objc_result = ns::try_catch(|| {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let objc_result = ns::try_catch(|| {
                     let ctx = self.inner_mut();
                     if ctx.first_error.is_some() {
                         return;
@@ -571,17 +654,17 @@ mod microphone_delegate {
                     if let Err(error) = flush_pending_microphone_samples(ctx) {
                         ctx.first_error = Some(error);
                     }
-                }));
+                });
 
-                if let Err(payload) = result {
+                if let Err(exception) = objc_result {
                     self.inner_mut().first_error =
-                        Some(microphone_output_callback_panic_error(payload));
+                        Some(microphone_output_callback_objc_exception_error(exception));
                 }
-            });
+            }));
 
-            if let Err(exception) = objc_result {
+            if let Err(payload) = result {
                 self.inner_mut().first_error =
-                    Some(microphone_output_callback_objc_exception_error(exception));
+                    Some(microphone_output_callback_panic_error(payload));
             }
         }
     }
@@ -1129,14 +1212,13 @@ fn start_avfoundation_microphone_capture_session_with_output_file(
     })?;
 
     let mut audio_output = av::capture::AudioDataOutput::new();
-    let output_delegate = MicAudioDataOutputDelegate::with(
-        microphone_output_context_for_output_url(
+    let output_delegate =
+        MicAudioDataOutputDelegate::with(microphone_output_context_for_output_url(
             output_url,
             output_file,
             tail_trim_seconds,
             activity_threshold,
-        ),
-    );
+        ));
     let output_queue = dispatch::Queue::serial_with_ar_pool();
     audio_output.set_sample_buf_delegate(Some(output_delegate.as_ref()), Some(&output_queue));
 

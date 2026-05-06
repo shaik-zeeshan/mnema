@@ -1,13 +1,25 @@
+#[path = "native_capture_debug_log.rs"]
+pub(crate) mod debug_log;
+#[path = "native_capture_inactivity.rs"]
+pub(crate) mod inactivity;
+#[path = "native_capture_output.rs"]
+pub(crate) mod output;
+#[path = "native_capture_settings.rs"]
+pub(crate) mod settings;
+#[path = "native_capture_system_idle.rs"]
+pub(crate) mod system_idle;
 mod activity;
+mod lifecycle;
 mod microphone;
 mod runtime;
 mod segments;
 #[cfg(test)]
 mod tests;
 
-use crate::native_capture_settings::{
-    default_recording_settings, load_recording_settings_from_disk, persist_recording_settings,
-    validate_recording_settings,
+use settings::{
+    apply_recording_settings_update, current_auto_start,
+    current_native_capture_debug_logging_enabled, current_recording_settings,
+    initialize_recording_settings_state_from_disk,
 };
 use capture_microphone as microphone_capture;
 use capture_types::{
@@ -18,10 +30,11 @@ use capture_types::{
     UpdateMicrophoneControllerRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
     VideoBitratePreset, VideoBitrateSettings,
 };
-use std::sync::OnceLock;
-use tauri::Manager;
+use std::sync::{Mutex, OnceLock};
+use tauri::{Emitter, Manager};
 
-pub use activity::IdleDebugInfo;
+pub use capture_types::IdleDebugInfo;
+pub(crate) use debug_log::install_panic_hook;
 use microphone::{
     resolve_capture_microphone_device_id, should_wait_for_same_microphone_device,
     update_microphone_controller as update_microphone_controller_impl,
@@ -30,12 +43,121 @@ pub use microphone::{
     start_microphone_device_change_notifier, MicrophoneControllerPreferencesState,
     MicrophoneDeviceChangeNotifierState,
 };
-use runtime::{
-    mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
-    stopped_session_from_runtime, validate_start_request,
-};
-pub use runtime::{NativeCaptureState, RecordingSettingsState};
-use segments::{start_capture_runtime, stop_capture_runtime};
+use lifecycle::{RecordingLifecycle, StartRecordingLifecycleOutcome};
+use runtime::validate_start_request;
+pub type NativeCaptureState = Mutex<RecordingLifecycle>;
+pub use settings::RecordingSettingsState;
+// Re-exported so adapter-level Tauri commands (e.g. `open_debug_window`) can
+// read the persisted recording settings through the same seam used by the
+// rest of `native_capture` without bypassing it to touch persistence directly.
+pub(crate) use settings::current_recording_settings as read_recording_settings;
+
+#[cfg(target_os = "macos")]
+pub type SystemWakeNotifierState =
+    std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>;
+
+#[cfg(not(target_os = "macos"))]
+pub type SystemWakeNotifierState = std::sync::Mutex<Vec<()>>;
+
+pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
+pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
+pub const RECORDING_SETTINGS_CHANGED_EVENT: &str = "recording_settings_changed";
+
+fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
+    let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
+}
+
+pub(super) fn emit_audio_segments_changed(app_handle: &tauri::AppHandle) {
+    let _ = app_handle.emit(AUDIO_SEGMENTS_CHANGED_EVENT, ());
+}
+
+fn emit_recording_settings_changed(
+    app_handle: &tauri::AppHandle,
+    settings: &RecordingSettings,
+) {
+    let _ = app_handle.emit(RECORDING_SETTINGS_CHANGED_EVENT, settings);
+}
+
+#[cfg(target_os = "macos")]
+fn handle_system_will_sleep(app_handle: &tauri::AppHandle) {
+    let state = app_handle.state::<NativeCaptureState>();
+    let mut runtime = match state.lock() {
+        Ok(runtime) => runtime,
+        Err(_) => return,
+    };
+
+    if runtime.handle_system_will_sleep() {
+        let runtime_state = runtime.runtime();
+        debug_log::log_info(format!(
+            "marked screen capture inactive for system sleep (session_id='{}', requested_sources={})",
+            runtime_log_session_id(runtime_state),
+            format_optional_capture_source_flags(runtime_state.requested_sources.as_ref())
+        ));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn recover_screen_capture_after_system_wake(app_handle: &tauri::AppHandle) {
+    let state = app_handle.state::<NativeCaptureState>();
+    let mut runtime = match state.lock() {
+        Ok(runtime) => runtime,
+        Err(_) => return,
+    };
+
+    match runtime.recover_after_wake(Some(app_handle)) {
+        Ok(true) => {
+            let runtime_state = runtime.runtime();
+            debug_log::log_info(format!(
+                "recovered screen capture after system wake (session_id='{}', requested_sources={})",
+                runtime_log_session_id(runtime_state),
+                format_optional_capture_source_flags(runtime_state.requested_sources.as_ref())
+            ));
+        }
+        Ok(false) => {}
+        Err(error) => {
+            let runtime_state = runtime.runtime();
+            debug_log::log_error(format!(
+                "failed to recover screen capture after system wake (session_id='{}', requested_sources={}): [{}] {}",
+                runtime_log_session_id(runtime_state),
+                format_optional_capture_source_flags(runtime_state.requested_sources.as_ref()),
+                error.code,
+                error.message
+            ));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
+    use cidre::ns;
+
+    let mut center = ns::Workspace::shared().notification_center();
+    let will_sleep_guard =
+        center.add_observer_guard(ns::workspace::notification::will_sleep(), None, None, {
+            let app_handle = app_handle.clone();
+            move |_notification| {
+                handle_system_will_sleep(&app_handle);
+            }
+        });
+    let did_wake_guard = center.add_observer_guard(ns::workspace::notification::did_wake(), None, None, {
+        let app_handle = app_handle.clone();
+        move |_notification| {
+            emit_system_did_wake(&app_handle);
+            recover_screen_capture_after_system_wake(&app_handle);
+        }
+    });
+
+    let notifier_state = app_handle.state::<SystemWakeNotifierState>();
+    let mut notifier_slot = notifier_state
+        .lock()
+        .expect("system wake notifier state poisoned");
+    notifier_slot.clear();
+    notifier_slot.push(will_sleep_guard);
+    notifier_slot.push(did_wake_guard);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_system_wake_notifier(_app_handle: tauri::AppHandle) {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CaptureSupportSnapshot {
@@ -176,12 +298,13 @@ fn inactivity_activity_mode_label(mode: &InactivityActivityMode) -> &'static str
 
 fn recording_settings_overview(settings: &RecordingSettings) -> String {
     format!(
-        "sources={}, auto_start={}, save_directory='{}', debug_logging={}, preview_cache_ttl_seconds={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, microphone_activity_sensitivity={}, system_audio_activity_sensitivity={}, activity_mode={}",
+        "sources={}, auto_start={}, save_directory='{}', debug_logging={}, preview_cache_ttl_seconds={}, follow_timeline_live={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, microphone_activity_sensitivity={}, system_audio_activity_sensitivity={}, activity_mode={}",
         format_capture_source_flags(&capture_sources_from_settings(settings)),
         settings.auto_start,
         settings.save_directory,
         settings.native_capture_debug_logging_enabled,
         settings.preview_cache_ttl_seconds,
+        settings.follow_timeline_live,
         settings.segment_duration_seconds,
         settings.screen_frame_rate,
         format_screen_resolution(&settings.screen_resolution),
@@ -229,6 +352,13 @@ fn describe_recording_settings_changes(
         changes.push(format!(
             "preview_cache_ttl_seconds {} -> {}",
             previous.preview_cache_ttl_seconds, next.preview_cache_ttl_seconds
+        ));
+    }
+
+    if previous.follow_timeline_live != next.follow_timeline_live {
+        changes.push(format!(
+            "follow_timeline_live {} -> {}",
+            previous.follow_timeline_live, next.follow_timeline_live
         ));
     }
 
@@ -330,7 +460,7 @@ fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
 
     *last_snapshot = Some(snapshot.clone());
 
-    crate::native_capture_debug_log::log(format!(
+    debug_log::log(format!(
         "observed native capture support (platform='{}', native_supported={}, supported_sources={})",
         snapshot.platform,
         snapshot.native_capture_supported,
@@ -354,14 +484,14 @@ fn log_capture_permissions_if_changed(permissions: &CapturePermissions) {
 
     *last_snapshot = Some(snapshot.clone());
 
-    crate::native_capture_debug_log::log(format!(
+    debug_log::log(format!(
         "observed native capture permissions (screen={}, microphone={}, system_audio={})",
         snapshot.screen, snapshot.microphone, snapshot.system_audio
     ));
 }
 
 fn log_loaded_recording_settings(source: &str, settings: &RecordingSettings) {
-    crate::native_capture_debug_log::log(format!(
+    debug_log::log_info(format!(
         "loaded recording settings from {source} ({})",
         recording_settings_overview(settings)
     ));
@@ -374,7 +504,7 @@ fn log_recording_settings_changes(previous: &RecordingSettings, next: &Recording
         return;
     }
 
-    crate::native_capture_debug_log::log(format!(
+    debug_log::log_info(format!(
         "updated recording settings ({})",
         changes.join(", ")
     ));
@@ -390,10 +520,8 @@ fn start_native_capture_inner(
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let incoming_sources = capture_sources_from_start_request(&request);
     let settings = recording_settings_state
-        .lock()
-        .expect("recording settings state poisoned")
-        .settings
-        .clone();
+        .inner();
+    let settings = current_recording_settings(settings);
 
     let resolved_request = StartNativeCaptureRequest {
         capture_screen: settings.capture_screen,
@@ -402,7 +530,7 @@ fn start_native_capture_inner(
     };
     let resolved_sources = capture_sources_from_start_request(&resolved_request);
 
-    crate::native_capture_debug_log::log(format!(
+    debug_log::log_info(format!(
         "attempting native capture {origin} start (incoming_sources={}, resolved_sources={}, save_directory='{}')",
         format_capture_source_flags(&incoming_sources),
         format_capture_source_flags(&resolved_sources),
@@ -413,7 +541,7 @@ fn start_native_capture_inner(
     let sources = match validate_start_request(&resolved_request, &support) {
         Ok(sources) => sources,
         Err(error) => {
-            crate::native_capture_debug_log::log(format!(
+            debug_log::log_warn(format!(
                 "rejected native capture {origin} start during source validation (resolved_sources={}, supported_sources={}): [{}] {}",
                 format_capture_source_flags(&resolved_sources),
                 format_capture_source_flags(&support.supported_sources),
@@ -434,7 +562,7 @@ fn start_native_capture_inner(
         ) {
             Ok(state) => state,
             Err(error) => {
-                crate::native_capture_debug_log::log(format!(
+                debug_log::log_error(format!(
                     "failed to resolve microphone controller state for native capture {origin} start: [{}] {}",
                     error.code, error.message
                 ));
@@ -448,7 +576,7 @@ fn start_native_capture_inner(
                 message: "The selected microphone is unavailable. Reconnect the same device or change microphone preference."
                     .to_string(),
             };
-            crate::native_capture_debug_log::log(format!(
+            debug_log::log_warn(format!(
                 "rejected native capture {origin} start because the selected microphone is unavailable and wait-for-same-device is active: [{}] {}",
                 error.code, error.message
             ));
@@ -461,18 +589,18 @@ fn start_native_capture_inner(
     };
 
     let mut runtime = state.lock().expect("native capture state poisoned");
-    if runtime.is_running {
+    if runtime.runtime().is_running {
         let existing_sources =
-            format_optional_capture_source_flags(runtime.requested_sources.as_ref());
-        let session_id = runtime_log_session_id(&runtime);
+            format_optional_capture_source_flags(runtime.runtime().requested_sources.as_ref());
+        let session_id = runtime_log_session_id(runtime.runtime());
 
-        if runtime.requested_sources.as_ref() != Some(&sources) {
+        if runtime.runtime().requested_sources.as_ref() != Some(&sources) {
             let error = CaptureErrorResponse {
                 code: "capture_session_already_running".to_string(),
                 message: "A native capture session is already running with different sources"
                     .to_string(),
             };
-            crate::native_capture_debug_log::log(format!(
+            debug_log::log_warn(format!(
                 "rejected native capture {origin} start because another session is already running (session_id='{}', existing_sources={}, requested_sources={}): [{}] {}",
                 session_id,
                 existing_sources,
@@ -483,43 +611,54 @@ fn start_native_capture_inner(
             return Err(error);
         }
 
-        crate::native_capture_debug_log::log(format!(
+        debug_log::log_info(format!(
             "native capture {origin} start requested while session is already running; returning existing session (session_id='{}', requested_sources={})",
             session_id, existing_sources
         ));
 
         return Ok(NativeCaptureSessionResponse {
-            session: session_from_runtime(&runtime),
+            session: runtime.session(),
         });
     }
 
     let requested_sources_for_log = sources.clone();
-    if let Err(error) = start_capture_runtime(
-        &mut runtime,
+    let started_session = match runtime.start(
         app_handle,
         &settings,
         sources,
         microphone_device_id_for_capture,
     ) {
-        crate::native_capture_debug_log::log(format!(
-            "failed to start native capture ({origin}, requested_sources={}): [{}] {}",
-            format_capture_source_flags(&requested_sources_for_log),
-            error.code,
-            error.message
-        ));
-        return Err(error);
-    }
+        Ok(StartRecordingLifecycleOutcome::Started(session)) => session,
+        Ok(StartRecordingLifecycleOutcome::AlreadyRunning(session)) => {
+            debug_log::log_info(format!(
+                "native capture {origin} start requested while session is already running; returning existing session (session_id='{}', requested_sources={})",
+                session_log_session_id(&session),
+                format_optional_capture_source_flags(session.requested_sources.as_ref())
+            ));
 
-    crate::native_capture_debug_log::log(format!(
+            return Ok(NativeCaptureSessionResponse { session });
+        }
+        Err(error) => {
+            debug_log::log_error(format!(
+                "failed to start native capture ({origin}, requested_sources={}): [{}] {}",
+                format_capture_source_flags(&requested_sources_for_log),
+                error.code,
+                error.message
+            ));
+            return Err(error);
+        }
+    };
+
+    debug_log::log_info(format!(
         "started native capture successfully ({origin}, session_id='{}', requested_sources={}, segment_index={}, save_directory='{}')",
-        runtime_log_session_id(&runtime),
-        format_optional_capture_source_flags(runtime.requested_sources.as_ref()),
-        runtime.current_segment_index,
+        runtime_log_session_id(runtime.runtime()),
+        format_optional_capture_source_flags(runtime.runtime().requested_sources.as_ref()),
+        runtime.runtime().current_segment_index,
         settings.save_directory
     ));
 
     Ok(NativeCaptureSessionResponse {
-        session: session_from_runtime(&runtime),
+        session: started_session,
     })
 }
 
@@ -560,7 +699,7 @@ pub fn get_capture_permissions(
 
     CapturePermissionsResponse {
         permissions,
-        session: session_from_runtime(&runtime),
+        session: runtime.session(),
     }
 }
 
@@ -593,44 +732,19 @@ pub fn update_microphone_controller(
 
 pub fn initialize_recording_settings_from_disk(app_handle: &tauri::AppHandle) {
     reset_capture_log_snapshots();
-
-    let loaded_settings = match load_recording_settings_from_disk(app_handle) {
-        Some(settings) => {
-            crate::native_capture_debug_log::configure(
-                app_handle,
-                settings.native_capture_debug_logging_enabled,
-            );
-            log_loaded_recording_settings("disk", &settings);
-            settings
-        }
-        None => {
-            let settings = default_recording_settings();
-            crate::native_capture_debug_log::configure(
-                app_handle,
-                settings.native_capture_debug_logging_enabled,
-            );
-            log_loaded_recording_settings("defaults", &settings);
-            settings
-        }
-    };
-
     let settings_state = app_handle.state::<RecordingSettingsState>();
-    let mut runtime = settings_state
-        .lock()
-        .expect("recording settings state poisoned");
-    runtime.settings = loaded_settings;
+    let loaded = initialize_recording_settings_state_from_disk(app_handle, settings_state.inner());
+
+    debug_log::configure(
+        app_handle,
+        loaded.settings.native_capture_debug_logging_enabled,
+    );
+    log_loaded_recording_settings(loaded.source, &loaded.settings);
 }
 
 pub fn maybe_auto_start_native_capture(app_handle: &tauri::AppHandle) {
-    let auto_start_enabled = {
-        let settings_state = app_handle.state::<RecordingSettingsState>();
-        let auto_start = settings_state
-            .lock()
-            .expect("recording settings state poisoned")
-            .settings
-            .auto_start;
-        auto_start
-    };
+    let settings_state = app_handle.state::<RecordingSettingsState>();
+    let auto_start_enabled = current_auto_start(settings_state.inner());
 
     if !auto_start_enabled {
         return;
@@ -654,11 +768,7 @@ pub fn maybe_auto_start_native_capture(app_handle: &tauri::AppHandle) {
 pub fn get_recording_settings(
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> RecordingSettings {
-    state
-        .lock()
-        .expect("recording settings state poisoned")
-        .settings
-        .clone()
+    current_recording_settings(state.inner())
 }
 
 #[tauri::command]
@@ -666,13 +776,9 @@ pub fn get_native_capture_debug_log_status(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> NativeCaptureDebugLogStatus {
-    let enabled = state
-        .lock()
-        .expect("recording settings state poisoned")
-        .settings
-        .native_capture_debug_logging_enabled;
+    let enabled = current_native_capture_debug_logging_enabled(state.inner());
 
-    crate::native_capture_debug_log::status(&app_handle, enabled)
+    debug_log::status(&app_handle, enabled)
 }
 
 #[tauri::command]
@@ -680,13 +786,9 @@ pub fn delete_native_capture_debug_log(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<NativeCaptureDebugLogStatus, CaptureErrorResponse> {
-    let enabled = state
-        .lock()
-        .expect("recording settings state poisoned")
-        .settings
-        .native_capture_debug_logging_enabled;
+    let enabled = current_native_capture_debug_logging_enabled(state.inner());
 
-    crate::native_capture_debug_log::delete(&app_handle, enabled)
+    debug_log::delete(&app_handle, enabled)
 }
 
 #[tauri::command]
@@ -695,17 +797,12 @@ pub fn update_recording_settings(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let settings = validate_recording_settings(request)?;
-    persist_recording_settings(&app_handle, &settings)?;
-
-    let mut runtime = state.lock().expect("recording settings state poisoned");
-    let previous_settings = runtime.settings.clone();
-    let previous_save_directory = runtime.settings.save_directory.clone();
-    runtime.settings = settings.clone();
-
-    let save_directory_changed = previous_save_directory != settings.save_directory;
-    let debug_logging_enabled_changed = previous_settings.native_capture_debug_logging_enabled
-        != settings.native_capture_debug_logging_enabled;
+    let update = apply_recording_settings_update(&app_handle, state.inner(), request)?;
+    let settings = update.settings;
+    let previous_settings = update.previous_settings;
+    let previous_save_directory = update.previous_save_directory;
+    let save_directory_changed = update.save_directory_changed;
+    let debug_logging_enabled_changed = update.debug_logging_enabled_changed;
 
     if previous_settings.native_capture_debug_logging_enabled
         && !settings.native_capture_debug_logging_enabled
@@ -713,14 +810,14 @@ pub fn update_recording_settings(
         log_recording_settings_changes(&previous_settings, &settings);
 
         if save_directory_changed {
-            crate::native_capture_debug_log::log(format!(
+            debug_log::log_info(format!(
                 "recording save directory changed from '{}' to '{}'; app infrastructure database location will update on next app start",
                 previous_save_directory, settings.save_directory
             ));
         }
     }
 
-    crate::native_capture_debug_log::configure(
+    debug_log::configure(
         &app_handle,
         settings.native_capture_debug_logging_enabled,
     );
@@ -731,11 +828,9 @@ pub fn update_recording_settings(
         reset_capture_log_snapshots();
     }
 
-    drop(runtime);
-
     if settings.native_capture_debug_logging_enabled {
         if debug_logging_enabled_changed {
-            crate::native_capture_debug_log::log(format!(
+            debug_log::log_info(format!(
                 "native capture debug logging {}",
                 if previous_settings.native_capture_debug_logging_enabled {
                     "re-enabled"
@@ -749,11 +844,13 @@ pub fn update_recording_settings(
     }
 
     if save_directory_changed && settings.native_capture_debug_logging_enabled {
-        crate::native_capture_debug_log::log(format!(
+        debug_log::log_info(format!(
             "recording save directory changed from '{}' to '{}'; app infrastructure database location will update on next app start",
             previous_save_directory, settings.save_directory
         ));
     }
+
+    emit_recording_settings_changed(&app_handle, &settings);
 
     Ok(settings)
 }
@@ -782,43 +879,40 @@ pub fn stop_native_capture(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let mut runtime = state.lock().expect("native capture state poisoned");
-    let session_id = runtime_log_session_id(&runtime).to_string();
-    let requested_sources = runtime.requested_sources.clone();
-    let output_files_before_stop = runtime.output_files.clone();
+    let session_id = runtime_log_session_id(runtime.runtime()).to_string();
+    let requested_sources = runtime.runtime().requested_sources.clone();
+    let output_files_before_stop = runtime.runtime().output_files.clone();
 
-    crate::native_capture_debug_log::log(format!(
+    debug_log::log_info(format!(
         "received native capture stop request (is_running={}, session_id='{}', requested_sources={}, output_files_before_stop={})",
-        runtime.is_running,
+        runtime.runtime().is_running,
         session_id,
         format_optional_capture_source_flags(requested_sources.as_ref()),
         format_output_file_counts(output_files_before_stop.as_ref())
     ));
 
-    if let Err(error) = stop_capture_runtime(&mut runtime, Some(&app_handle)) {
-        if capture_screen::should_preserve_runtime_on_stop_error(&error) {
-            crate::native_capture_debug_log::log(format!(
-                "failed to stop native capture but preserved runtime for recovery (session_id='{}'): [{}] {}",
-                session_id,
-                error.code,
-                error.message
-            ));
+    let session = match runtime.stop(&app_handle) {
+        Ok(session) => session,
+        Err(error) => {
+            if capture_screen::should_preserve_runtime_on_stop_error(&error) {
+                debug_log::log_error(format!(
+                    "failed to stop native capture but preserved runtime for recovery (session_id='{}'): [{}] {}",
+                    session_id,
+                    error.code,
+                    error.message
+                ));
+            } else {
+                debug_log::log_error(format!(
+                    "failed to stop native capture; runtime marked stopped (session_id='{}'): [{}] {}",
+                    session_id, error.code, error.message
+                ));
+            }
+
             return Err(error);
         }
+    };
 
-        request_segment_loop_stop(&runtime);
-        mark_runtime_session_stopped(&mut runtime);
-        crate::native_capture_debug_log::log(format!(
-            "failed to stop native capture; runtime marked stopped (session_id='{}'): [{}] {}",
-            session_id, error.code, error.message
-        ));
-        return Err(error);
-    }
-
-    request_segment_loop_stop(&runtime);
-    mark_runtime_session_stopped(&mut runtime);
-    let session = stopped_session_from_runtime(&runtime);
-
-    crate::native_capture_debug_log::log(format!(
+    debug_log::log_info(format!(
         "stopped native capture successfully (session_id='{}', requested_sources={}, finalized_outputs={})",
         session_log_session_id(&session),
         format_optional_capture_source_flags(session.requested_sources.as_ref()),

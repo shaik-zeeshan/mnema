@@ -1,8 +1,9 @@
 use super::activity::{
-    current_activity_snapshot, idle_debug_activity_sources, idle_debug_family_fields,
+    current_activity_snapshot, current_activity_snapshot_for_debug, idle_debug_activity_sources, idle_debug_family_fields,
     lock_runtime_for_idle_debug,
 };
 use super::describe_recording_settings_changes;
+use super::lifecycle::RecordingLifecycle;
 use super::microphone::microphone_auto_disconnect_transition_failed_event;
 #[cfg(target_os = "macos")]
 use super::microphone::{
@@ -22,10 +23,11 @@ use super::runtime::{
 use super::segments::{
     audio_duration_time_to_ms, audio_segment_started_at_unix_ms_for_file,
     audio_segment_window_from_duration_ms, cleanup_failed_segment_dirs,
-    committed_audio_segments_for_output_files, handle_inactivity_resume_error,
+    committed_audio_segments_for_output_files,
     pause_microphone_for_inactivity, pause_runtime_for_inactivity, pause_screen_for_inactivity,
     pause_system_audio_for_inactivity, plan_live_rotation_segment,
-    process_inactivity_audio_transitions_for_snapshot, resume_microphone_from_inactivity,
+    process_inactivity_audio_transitions_for_snapshot,
+    recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity_with_start_segment, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
     segment_loop_sleep_duration, StartedSegmentState,
@@ -34,26 +36,71 @@ use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
     FrameArtifactForwardingResult, FrameArtifactMessage,
 };
-use crate::native_capture_inactivity::{
+use super::inactivity::{
     ActivityPolicyEvaluation, ActivitySnapshot, AudioActivitySourceState, InactivityState,
 };
-use crate::native_capture_output::set_current_microphone_output_file;
-use crate::native_capture_settings::{
+use super::output::set_current_microphone_output_file;
+use super::settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
     validate_recording_settings_with_resolution_support,
 };
 #[cfg(target_os = "macos")]
-use capture_runtime::{CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule};
+use capture_runtime::{current_date_prefix, CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule};
 use capture_runtime::{RuntimeController, RuntimeState};
 use capture_types::{
-    default_inactivity_activity_mode, default_preview_cache_ttl_seconds, default_video_bitrate,
+    default_appearance, default_inactivity_activity_mode, default_ocr_settings,
+    default_preview_cache_ttl_seconds,
+    default_video_bitrate,
+    AppearanceSetting,
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
     InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
     MicrophonePreference, MicrophonePreferenceMode, RecordingSettings, ScreenResolution,
     ScreenResolutionPreset, SourceSessionMeta, SourceSessions, StartNativeCaptureRequest,
     UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio::sync::mpsc;
+
+struct TestDir {
+    path: PathBuf,
+}
+
+impl TestDir {
+    fn new(label: &str) -> Self {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("native-capture-{label}-{unique}"));
+
+        fs::create_dir_all(&path).expect("test directory should be created");
+
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn run_async_test(test: impl std::future::Future<Output = ()>) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build")
+        .block_on(test);
+}
 
 fn recording_settings_fixture() -> RecordingSettings {
     RecordingSettings {
@@ -71,11 +118,40 @@ fn recording_settings_fixture() -> RecordingSettings {
         native_capture_debug_logging_enabled: false,
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+        follow_timeline_live: false,
+        appearance: default_appearance(),
+        ocr: default_ocr_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
         system_audio_activity_sensitivity: 50,
         inactivity_activity_mode: default_inactivity_activity_mode(),
+    }
+}
+
+fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest {
+    let settings = recording_settings_fixture();
+    UpdateRecordingSettingsRequest {
+        capture_screen: settings.capture_screen,
+        capture_microphone: settings.capture_microphone,
+        capture_system_audio: settings.capture_system_audio,
+        segment_duration_seconds: settings.segment_duration_seconds,
+        screen_frame_rate: settings.screen_frame_rate,
+        screen_resolution: settings.screen_resolution,
+        video_bitrate: settings.video_bitrate,
+        save_directory: settings.save_directory,
+        auto_start: settings.auto_start,
+        native_capture_debug_logging_enabled: settings.native_capture_debug_logging_enabled,
+        developer_options_enabled: settings.developer_options_enabled,
+        preview_cache_ttl_seconds: settings.preview_cache_ttl_seconds,
+        follow_timeline_live: settings.follow_timeline_live,
+        appearance: settings.appearance,
+        ocr: settings.ocr,
+        pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
+        idle_timeout_seconds: settings.idle_timeout_seconds,
+        microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
+        system_audio_activity_sensitivity: settings.system_audio_activity_sensitivity,
+        inactivity_activity_mode: settings.inactivity_activity_mode,
     }
 }
 
@@ -108,9 +184,18 @@ fn audio_duration_time_to_ms_preserves_fractional_seconds() {
 #[cfg(target_os = "macos")]
 #[test]
 fn audio_duration_time_to_ms_rejects_non_positive_and_non_numeric_duration() {
-    assert_eq!(audio_duration_time_to_ms(cidre::cm::Time::new(0, 1_000)), None);
-    assert_eq!(audio_duration_time_to_ms(cidre::cm::Time::new(-1, 1_000)), None);
-    assert_eq!(audio_duration_time_to_ms(cidre::cm::Time::indefinit()), None);
+    assert_eq!(
+        audio_duration_time_to_ms(cidre::cm::Time::new(0, 1_000)),
+        None
+    );
+    assert_eq!(
+        audio_duration_time_to_ms(cidre::cm::Time::new(-1, 1_000)),
+        None
+    );
+    assert_eq!(
+        audio_duration_time_to_ms(cidre::cm::Time::indefinit()),
+        None
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -290,6 +375,74 @@ fn resumed_segment_state_fixture(screen_file: String) -> StartedSegmentState {
     )
 }
 
+#[cfg(target_os = "macos")]
+fn running_screen_capture_runtime_fixture() -> NativeCaptureRuntime {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+
+    NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_index: 1,
+        screen_frame_rate: 30,
+        screen_resolution: ScreenResolution::default(),
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        segment_planner: Some(SegmentPlanner::with_date_prefix(
+            "/tmp/native-capture-tests",
+            "native-session-wake-screen",
+            "2026/04/23",
+        )),
+        microphone_planner: Some(SegmentPlanner::with_date_prefix(
+            "/tmp/native-capture-tests",
+            "native-session-wake-mic",
+            "2026/04/23",
+        )),
+        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
+            "/tmp/native-capture-tests",
+            "native-session-wake-system-audio",
+            "2026/04/23",
+        )),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: Some("/tmp/screen.mov".to_string()),
+            screen_files: vec!["/tmp/screen.mov".to_string()],
+            microphone_file: Some("/tmp/mic.m4a".to_string()),
+            microphone_files: vec!["/tmp/mic.m4a".to_string()],
+            system_audio_file: Some("/tmp/system-audio.m4a".to_string()),
+            system_audio_files: vec!["/tmp/system-audio.m4a".to_string()],
+        }),
+        output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        recording_file: Some("/tmp/screen.mov".to_string()),
+        microphone_recording_file: Some("/tmp/mic.m4a".to_string()),
+        system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
+        source_sessions: Some(independent_source_sessions_fixture()),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    }
+}
+
 #[test]
 fn validate_start_request_rejects_system_audio_when_not_supported() {
     let request = StartNativeCaptureRequest {
@@ -327,6 +480,8 @@ fn describe_recording_settings_changes_lists_high_signal_differences() {
         auto_start: true,
         native_capture_debug_logging_enabled: true,
         preview_cache_ttl_seconds: 0,
+        follow_timeline_live: true,
+        appearance: AppearanceSetting::Dark,
         segment_duration_seconds: 120,
         screen_frame_rate: 24,
         screen_resolution: ScreenResolution::Preset {
@@ -357,6 +512,7 @@ fn describe_recording_settings_changes_lists_high_signal_differences() {
         "preview_cache_ttl_seconds {} -> 0",
         default_preview_cache_ttl_seconds()
     )));
+    assert!(changes.contains(&"follow_timeline_live false -> true".to_string()));
     assert!(changes.contains(&"segment_duration_seconds 60 -> 120".to_string()));
     assert!(changes.contains(&"screen_frame_rate 30 -> 24".to_string()));
     assert!(changes.contains(&"screen_resolution original -> 720p".to_string()));
@@ -376,22 +532,7 @@ fn validate_recording_settings_rejects_all_sources_disabled() {
         capture_screen: false,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect_err("all sources disabled must be rejected");
 
@@ -405,22 +546,7 @@ fn validate_recording_settings_rejects_system_audio_without_screen() {
         capture_screen: false,
         capture_microphone: true,
         capture_system_audio: true,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect_err("system audio without screen must be rejected");
 
@@ -438,23 +564,11 @@ fn validate_recording_settings_allows_storing_resolution_when_screen_disabled() 
             capture_screen: false,
             capture_microphone: true,
             capture_system_audio: false,
-            segment_duration_seconds: 60,
-            screen_frame_rate: 30,
             screen_resolution: ScreenResolution::Custom {
                 width: 1280,
                 height: 720,
             },
-            video_bitrate: default_video_bitrate(),
-            save_directory: "/tmp".to_string(),
-            auto_start: false,
-            native_capture_debug_logging_enabled: false,
-            developer_options_enabled: false,
-            preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-            pause_capture_on_inactivity: true,
-            idle_timeout_seconds: 10,
-            microphone_activity_sensitivity: 50,
-            system_audio_activity_sensitivity: 50,
-            inactivity_activity_mode: default_inactivity_activity_mode(),
+            ..update_recording_settings_request_fixture()
         },
         true,
     )
@@ -477,22 +591,10 @@ fn validate_recording_settings_allows_non_original_resolution_when_screen_disabl
             capture_screen: false,
             capture_microphone: true,
             capture_system_audio: false,
-            segment_duration_seconds: 60,
-            screen_frame_rate: 30,
             screen_resolution: ScreenResolution::Preset {
                 preset: ScreenResolutionPreset::P720,
             },
-            video_bitrate: default_video_bitrate(),
-            save_directory: "/tmp".to_string(),
-            auto_start: false,
-            native_capture_debug_logging_enabled: false,
-            developer_options_enabled: false,
-            preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-            pause_capture_on_inactivity: true,
-            idle_timeout_seconds: 10,
-            microphone_activity_sensitivity: 50,
-            system_audio_activity_sensitivity: 50,
-            inactivity_activity_mode: default_inactivity_activity_mode(),
+            ..update_recording_settings_request_fixture()
         },
         false,
     )
@@ -514,22 +616,10 @@ fn validate_recording_settings_rejects_non_original_resolution_when_screen_enabl
             capture_screen: true,
             capture_microphone: false,
             capture_system_audio: false,
-            segment_duration_seconds: 60,
-            screen_frame_rate: 30,
             screen_resolution: ScreenResolution::Preset {
                 preset: ScreenResolutionPreset::P720,
             },
-            video_bitrate: default_video_bitrate(),
-            save_directory: "/tmp".to_string(),
-            auto_start: false,
-            native_capture_debug_logging_enabled: false,
-            developer_options_enabled: false,
-            preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-            pause_capture_on_inactivity: true,
-            idle_timeout_seconds: 10,
-            microphone_activity_sensitivity: 50,
-            system_audio_activity_sensitivity: 50,
-            inactivity_activity_mode: default_inactivity_activity_mode(),
+            ..update_recording_settings_request_fixture()
         },
         false,
     )
@@ -544,23 +634,11 @@ fn validate_recording_settings_rejects_too_small_custom_resolution() {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
         screen_resolution: ScreenResolution::Custom {
             width: 8,
             height: 8,
         },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect_err("too small resolution should be rejected");
 
@@ -573,26 +651,12 @@ fn validate_recording_settings_defaults_preset_bitrate_when_preset_value_missing
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
         video_bitrate: VideoBitrateSettings {
             mode: VideoBitrateMode::Preset,
             preset: None,
             custom_mbps: Some(12),
         },
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect("preset mode should normalize bitrate values");
 
@@ -610,26 +674,12 @@ fn validate_recording_settings_rejects_custom_bitrate_out_of_range() {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
         video_bitrate: VideoBitrateSettings {
             mode: VideoBitrateMode::Custom,
             preset: Some(VideoBitratePreset::High),
             custom_mbps: Some(41),
         },
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect_err("custom bitrate above max should be rejected");
 
@@ -646,22 +696,10 @@ fn validate_recording_settings_accepts_audio_activity_mode_and_sensitivity() {
         capture_screen: true,
         capture_microphone: true,
         capture_system_audio: true,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 75,
         system_audio_activity_sensitivity: 75,
         inactivity_activity_mode: InactivityActivityMode::SystemInputOrScreenOrAudio,
+        ..update_recording_settings_request_fixture()
     })
     .expect("audio-aware inactivity settings should be valid");
 
@@ -679,22 +717,8 @@ fn validate_recording_settings_preserves_native_capture_debug_logging_flag() {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
         native_capture_debug_logging_enabled: true,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect("debug logging flag should round-trip through validation");
 
@@ -707,22 +731,8 @@ fn validate_recording_settings_preserves_developer_options_flag() {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
         developer_options_enabled: true,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
-        microphone_activity_sensitivity: 50,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect("developer options flag should round-trip through validation");
 
@@ -735,22 +745,8 @@ fn validate_recording_settings_rejects_audio_activity_sensitivity_above_max() {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
-        segment_duration_seconds: 60,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
-        },
-        video_bitrate: default_video_bitrate(),
-        save_directory: "/tmp".to_string(),
-        auto_start: false,
-        native_capture_debug_logging_enabled: false,
-        developer_options_enabled: false,
-        preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
-        pause_capture_on_inactivity: true,
-        idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 101,
-        system_audio_activity_sensitivity: 50,
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        ..update_recording_settings_request_fixture()
     })
     .expect_err("sensitivity above max must be rejected");
 
@@ -782,6 +778,9 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         native_capture_debug_logging_enabled: false,
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+        follow_timeline_live: false,
+        appearance: default_appearance(),
+        ocr: default_ocr_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -816,6 +815,9 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         native_capture_debug_logging_enabled: false,
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+        follow_timeline_live: false,
+        appearance: default_appearance(),
+        ocr: default_ocr_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -846,6 +848,9 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         native_capture_debug_logging_enabled: false,
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+        follow_timeline_live: false,
+        appearance: default_appearance(),
+        ocr: default_ocr_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1019,6 +1024,97 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         .requested_sources
         .as_ref()
         .is_some_and(|sources| { sources.screen && sources.microphone && sources.system_audio }));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn session_from_runtime_reports_not_running_when_screen_capture_is_broken_after_wake_failure() {
+    let mut runtime = running_screen_capture_runtime_fixture();
+
+    recover_screen_capture_after_wake_with_start_segment(
+        &mut runtime,
+        None,
+        |_, _, _, _, _, _, _, _, _, _| {
+            Err(CaptureErrorResponse {
+                code: "capture_stream_start_failed".to_string(),
+                message: "wake restart failed".to_string(),
+            })
+        },
+    )
+    .expect_err("wake recovery failure should bubble");
+
+    let session = super::runtime::session_from_runtime(&runtime);
+
+    assert!(!session.is_running);
+    assert_eq!(
+        session.requested_sources,
+        Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        })
+    );
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        })
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn close_frame_batches_for_stopped_screen_session_id_closes_stale_open_batch() {
+    run_async_test(async {
+        let dir = TestDir::new("close-frame-batches-stop");
+        let infra = Arc::new(
+            ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize"),
+        );
+        let session_id = "native-session-stop-close";
+
+        infra
+            .capture_frame(
+                &::app_infra::NewFrame::new(
+                    session_id,
+                    "/tmp/native-session-stop-close-segment-0001/frames/frame-1.png",
+                    "2026-05-02T13:40:00Z",
+                ),
+                None,
+            )
+            .await
+            .expect("first frame should persist");
+
+        let open_before = infra
+            .list_frame_batches(Some(session_id))
+            .await
+            .expect("frame batches should list")
+            .into_iter()
+            .find(|batch| batch.batch_started_at == "2026-05-02T13:40:00Z")
+            .expect("first batch should exist");
+        assert_eq!(open_before.status, ::app_infra::FrameBatchStatus::Open);
+
+        super::segments::close_frame_batches_for_stopped_screen_session_id_async(
+            &infra, session_id,
+        )
+        .await
+        .expect("stop cleanup should close frame batches");
+
+        let batches = infra
+            .list_frame_batches(Some(session_id))
+            .await
+            .expect("frame batches should list after stop cleanup");
+        assert!(batches
+            .iter()
+            .all(|batch| batch.status != ::app_infra::FrameBatchStatus::Open));
+        assert!(batches
+            .iter()
+            .any(|batch| batch.status == ::app_infra::FrameBatchStatus::Closed));
+        assert!(batches.iter().all(|batch| batch.finalize_job_id.is_some()));
+    });
 }
 
 #[test]
@@ -1227,15 +1323,45 @@ fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources(
     assert!(snapshot.system_audio_activity.enabled);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn current_activity_snapshot_for_debug_does_not_drain_system_audio_peak() {
+    // Uses global capture-screen test state, so keep the assertion window as
+    // small as possible: debug should observe the peak without draining it,
+    // and the next normal take should still receive the same peak.
+    capture_screen::reset_last_screen_activity_unix_ms();
+    capture_screen::record_system_audio_activity_for_tests(0.20, 10_000, 20_000);
+
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: true,
+        }),
+        ..Default::default()
+    };
+
+    let debug_snapshot = current_activity_snapshot_for_debug(&runtime);
+
+    assert_eq!(debug_snapshot.system_audio_activity.latest_normalized_level, Some(0.20));
+    assert_eq!(
+        capture_screen::take_system_audio_activity_window_peak_level(),
+        Some(0.20)
+    );
+
+    capture_screen::reset_last_screen_activity_unix_ms();
+}
+
 #[test]
 fn idle_debug_activity_sources_include_audio_fields() {
     let policy = ActivityPolicyEvaluation {
-        effective_idle: crate::native_capture_inactivity::EffectiveIdle {
-            source: crate::native_capture_inactivity::ActivitySourceKind::MicrophoneCapture,
+        effective_idle: super::inactivity::EffectiveIdle {
+            source: super::inactivity::ActivitySourceKind::MicrophoneCapture,
             idle_ms: 250,
         },
-        sources: vec![crate::native_capture_inactivity::ActivitySourceSample {
-            kind: crate::native_capture_inactivity::ActivitySourceKind::MicrophoneCapture,
+        sources: vec![super::inactivity::ActivitySourceSample {
+            kind: super::inactivity::ActivitySourceKind::MicrophoneCapture,
             enabled: true,
             available: true,
             idle_ms: Some(250),
@@ -1258,18 +1384,17 @@ fn idle_debug_activity_sources_include_audio_fields() {
 
 #[test]
 fn lock_runtime_for_idle_debug_recovers_poisoned_state() {
-    let state = std::sync::Mutex::new(NativeCaptureRuntime {
-        is_running: true,
-        source_sessions: Some(SourceSessions {
-            screen: Some(SourceSessionMeta {
-                session_id: "session-1".to_string(),
-                started_at_unix_ms: 123,
-            }),
-            microphone: None,
-            system_audio: None,
+    let mut lifecycle = RecordingLifecycle::default();
+    lifecycle.runtime_mut().is_running = true;
+    lifecycle.runtime_mut().source_sessions = Some(SourceSessions {
+        screen: Some(SourceSessionMeta {
+            session_id: "session-1".to_string(),
+            started_at_unix_ms: 123,
         }),
-        ..Default::default()
+        microphone: None,
+        system_audio: None,
     });
+    let state = std::sync::Mutex::new(lifecycle);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _runtime = state.lock().expect("state should lock before poisoning");
@@ -1279,6 +1404,7 @@ fn lock_runtime_for_idle_debug_recovers_poisoned_state() {
     assert!(state.is_poisoned());
 
     let runtime = lock_runtime_for_idle_debug(&state);
+    let runtime = runtime.runtime();
 
     assert!(runtime.is_running);
     assert_eq!(
@@ -1729,6 +1855,36 @@ fn next_microphone_output_file_for_runtime_uses_microphone_planner_session() {
     assert!(!path.contains("system-audio-system-audio-session-segment"));
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn segment_planner_date_refresh_updates_all_runtime_planners() {
+    let mut runtime = NativeCaptureRuntime {
+        segment_planner: Some(SegmentPlanner::with_date_prefix(
+            "/tmp/native-capture-tests",
+            "screen-session",
+            "2026/04/16",
+        )),
+        microphone_planner: Some(SegmentPlanner::with_date_prefix(
+            "/tmp/native-capture-tests",
+            "microphone-session",
+            "2026/04/16",
+        )),
+        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
+            "/tmp/native-capture-tests",
+            "system-audio-session",
+            "2026/04/16",
+        )),
+        ..Default::default()
+    };
+
+    let refreshed = super::runtime::refresh_runtime_planner_dates(&mut runtime);
+
+    assert_eq!(runtime.segment_planner.as_ref().map(|planner| planner.date_prefix()), Some(refreshed.as_str()));
+    assert_eq!(runtime.microphone_planner.as_ref().map(|planner| planner.date_prefix()), Some(refreshed.as_str()));
+    assert_eq!(runtime.system_audio_planner.as_ref().map(|planner| planner.date_prefix()), Some(refreshed.as_str()));
+    assert_eq!(refreshed.split('/').count(), 3);
+}
+
 #[test]
 fn set_current_microphone_output_file_tracks_all_segments() {
     let mut output_files = CaptureOutputFiles {
@@ -1872,11 +2028,9 @@ fn rotation_seeds_missing_system_audio_planner_before_planning_output_path() {
 
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    let system_audio_planner = ensure_system_audio_planner_for_runtime(
-        &mut runtime,
-        "rotating segments",
-    )
-    .expect("system-audio planner seeding should succeed");
+    let system_audio_planner =
+        ensure_system_audio_planner_for_runtime(&mut runtime, "rotating segments")
+            .expect("system-audio planner seeding should succeed");
 
     let planned = plan_live_rotation_segment(
         &runtime,
@@ -2018,7 +2172,13 @@ fn try_forward_frame_artifact_enqueues_when_capacity_available() {
             captured_at_unix_ms: 1,
             width: Some(100),
             height: Some(100),
-            content_fingerprint: Some(7),
+            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::Ready(
+                capture_screen::CapturedFrameEquivalence {
+                    hint: "hint-1".to_string(),
+                    proof: b"proof-1".to_vec(),
+                    version: capture_screen::CAPTURED_FRAME_EQUIVALENCE_VERSION,
+                },
+            ),
         },
     );
 
@@ -2042,7 +2202,7 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_at_unix_ms: 1,
             width: None,
             height: None,
-            content_fingerprint: None,
+            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
     let second = try_forward_frame_artifact(
@@ -2052,7 +2212,7 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_at_unix_ms: 2,
             width: None,
             height: None,
-            content_fingerprint: None,
+            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
 
@@ -2082,7 +2242,7 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
             captured_at_unix_ms: 1,
             width: None,
             height: None,
-            content_fingerprint: None,
+            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
 
@@ -2096,7 +2256,7 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
                 captured_at_unix_ms: 2,
                 width: None,
                 height: None,
-                content_fingerprint: None,
+                captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
         )
     });
@@ -2141,7 +2301,7 @@ fn try_forward_frame_artifact_reports_closed_receiver() {
             captured_at_unix_ms: 1,
             width: None,
             height: None,
-            content_fingerprint: None,
+            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
 
@@ -2160,7 +2320,7 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
                 captured_at_unix_ms: i,
                 width: None,
                 height: None,
-                content_fingerprint: None,
+                captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
         ))
         .expect("channel should have capacity");
@@ -2223,70 +2383,50 @@ fn flush_frame_artifacts_is_noop_when_channel_closed() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_transient_failure_keeps_runtime_paused_for_retry() {
+fn inactivity_resume_soft_pause_is_noop_without_family_pause_state() {
     let mut runtime = paused_runtime_fixture();
 
-    let error = resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            Err(CaptureErrorResponse {
-                code: "capture_stream_start_failed".to_string(),
-                message: "temporary startup failure".to_string(),
-            })
-        },
-    )
-    .expect_err("transient resume failure should bubble to retry handler");
+    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
+        panic!("legacy soft-resume should not restart segments when no per-family pause is active")
+    })
+    .expect("soft-resume should tolerate legacy paused state without restart");
 
-    assert!(!handle_inactivity_resume_error(&mut runtime, error));
     assert!(runtime.is_running);
     assert_eq!(runtime.runtime_state, RuntimeState::Running);
-    assert!(runtime.inactivity.is_paused);
+    assert!(!runtime.inactivity.is_paused);
     assert_eq!(runtime.current_segment_index, 1);
     assert!(runtime.current_segment_output_files.is_none());
     assert!(runtime.recording_file.is_none());
-    assert!(runtime.segment_planner.is_some());
-    assert!(runtime.segment_schedule.is_some());
-    assert!(runtime.capture_clock.is_some());
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_retry_success_clears_paused_state_and_restores_segment_outputs() {
+fn inactivity_resume_soft_pause_clears_paused_state_without_restarting_outputs() {
     let mut runtime = paused_runtime_fixture();
-    // Replace planner with a known date prefix so expected paths are deterministic.
-    runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
-        "/tmp/native-capture-tests",
-        "native-session-resume",
-        "2026/04/19",
-    ));
-    runtime.microphone_planner = Some(SegmentPlanner::with_date_prefix(
-        "/tmp/native-capture-tests",
-        "native-session-resume-mic",
-        "2026/04/19",
-    ));
-    runtime.system_audio_planner = Some(SegmentPlanner::with_date_prefix(
-        "/tmp/native-capture-tests",
-        "native-session-resume-system",
-        "2026/04/19",
-    ));
+    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
+        panic!("soft-resume should not restart outputs")
+    })
+    .expect("legacy soft-resume should succeed");
 
-    let error = resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            Err(CaptureErrorResponse {
-                code: "capture_stream_start_failed".to_string(),
-                message: "temporary startup failure".to_string(),
-            })
-        },
-    )
-    .expect_err("first resume attempt should fail transiently");
-    assert!(!handle_inactivity_resume_error(&mut runtime, error));
+    assert!(runtime.is_running);
+    assert_eq!(runtime.runtime_state, RuntimeState::Running);
+    assert!(!runtime.inactivity.is_paused);
+    assert_eq!(runtime.current_segment_index, 1);
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.current_segment_output_files.is_none());
+}
 
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() {
+    let mut runtime = running_screen_capture_runtime_fixture();
     let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov".to_string();
+        "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
+            .to_string();
 
-    resume_runtime_from_inactivity_with_start_segment(
+    let recovered = recover_screen_capture_after_wake_with_start_segment(
         &mut runtime,
+        None,
         |segment_dir,
          screen_output,
          system_audio_output_path,
@@ -2302,7 +2442,7 @@ fn inactivity_resume_retry_success_clears_paused_state_and_restores_segment_outp
                 &CaptureSources {
                     screen: true,
                     microphone: false,
-                    system_audio: false,
+                    system_audio: true,
                 }
             );
             assert_eq!(frame_rate, 30);
@@ -2311,56 +2451,459 @@ fn inactivity_resume_retry_success_clears_paused_state_and_restores_segment_outp
             assert_eq!(microphone_device_id, None);
             assert!(frame_tx.is_none());
             assert!(microphone_output_path.is_none());
-            assert!(system_audio_output_path.is_none());
-            // segment_dir must be the hidden workspace directory
             assert_eq!(
-                segment_dir.file_name().and_then(|name| name.to_str()),
-                Some(".native-session-resume-segment-0002")
+                segment_dir,
+                std::path::Path::new(
+                    "/tmp/native-capture-tests/2026/04/23/.native-session-wake-screen-segment-0002"
+                )
             );
-            // screen_output must be the visible dated path, not inside the workspace dir
             assert_eq!(
                 screen_output,
                 Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov"
+                    "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
+                ))
+            );
+            assert_eq!(
+                system_audio_output_path,
+                Some(std::path::Path::new(
+                    "/tmp/native-capture-tests/2026/04/23/audio/system-audio-native-session-wake-system-audio-segment-0002.m4a"
                 ))
             );
 
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+            let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
+            state.3 = system_audio_output_path.map(|path| path.to_string_lossy().to_string());
+            Ok(state)
         },
     )
-    .expect("later resume retry should succeed");
+    .expect("wake recovery should restart screen capture");
 
-    assert!(runtime.is_running);
-    assert_eq!(runtime.runtime_state, RuntimeState::Running);
-    assert!(!runtime.inactivity.is_paused);
+    assert!(recovered);
     assert_eq!(runtime.current_segment_index, 2);
     assert_eq!(runtime.recording_file, Some(expected_screen_file.clone()));
-    let segment_outputs = runtime
+    assert_eq!(
+        runtime.system_audio_recording_file.as_deref(),
+        Some(
+            "/tmp/native-capture-tests/2026/04/23/audio/system-audio-native-session-wake-system-audio-segment-0002.m4a"
+        )
+    );
+    let outputs = runtime
         .current_segment_output_files
         .as_ref()
-        .expect("resume should restore current segment outputs");
-    let expected_screen_files = vec![expected_screen_file.clone()];
-    assert_eq!(segment_outputs.screen_file, Some(expected_screen_file));
-    assert_eq!(&segment_outputs.screen_files, &expected_screen_files);
+        .expect("wake recovery should refresh current segment outputs");
+    assert_eq!(outputs.screen_file, Some(expected_screen_file));
+    assert_eq!(outputs.microphone_file.as_deref(), Some("/tmp/mic.m4a"));
+    assert_eq!(outputs.microphone_files, vec!["/tmp/mic.m4a".to_string()]);
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        })
+    );
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_invalid_runtime_state_marks_runtime_failed() {
+fn system_sleep_clears_live_screen_state_but_preserves_microphone_continuation() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
+
+    let handled = lifecycle.handle_system_will_sleep();
+
+    assert!(handled);
+    let runtime = lifecycle.runtime();
+    assert!(runtime.is_running);
+    assert!(runtime.active_screen_session.is_none());
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.system_audio_recording_file.is_none());
+    assert_eq!(runtime.microphone_recording_file.as_deref(), Some("/tmp/mic.m4a"));
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("microphone continuation should remain trackable");
+    assert_eq!(outputs.screen_file.as_deref(), Some("/tmp/screen.mov"));
+    assert_eq!(outputs.screen_files, vec!["/tmp/screen.mov".to_string()]);
+    assert_eq!(
+        outputs.system_audio_file.as_deref(),
+        Some("/tmp/system-audio.m4a")
+    );
+    assert_eq!(
+        outputs.system_audio_files,
+        vec!["/tmp/system-audio.m4a".to_string()]
+    );
+    assert_eq!(outputs.microphone_file.as_deref(), Some("/tmp/mic.m4a"));
+    assert_eq!(outputs.microphone_files, vec!["/tmp/mic.m4a".to_string()]);
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        })
+    );
+
+    let session = lifecycle.session();
+    assert!(!session.is_running);
+    assert_eq!(
+        session.requested_sources,
+        Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        })
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn system_sleep_is_ignored_when_screen_capture_is_not_live() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = paused_runtime_fixture();
+
+    let handled = lifecycle.handle_system_will_sleep();
+
+    assert!(!handled);
+    let runtime = lifecycle.runtime();
+    assert!(runtime.is_running);
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.current_segment_output_files.is_none());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn system_sleep_clears_paused_screen_state_so_wake_can_restart_capture() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = screen_paused_runtime_fixture();
+    lifecycle.runtime_mut().requested_sources = Some(CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: true,
+    });
+    lifecycle.runtime_mut().current_segment_sources = Some(CaptureSources {
+        screen: false,
+        microphone: true,
+        system_audio: false,
+    });
+    lifecycle.runtime_mut().system_audio_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-screen-pause-system-audio",
+        "2026/04/23",
+    ));
+    lifecycle.runtime_mut().recording_file = Some("/tmp/stale-paused-screen.mov".to_string());
+    lifecycle.runtime_mut().system_audio_recording_file =
+        Some("/tmp/stale-paused-system-audio.m4a".to_string());
+
+    let handled = lifecycle.handle_system_will_sleep();
+
+    assert!(handled);
+    let runtime = lifecycle.runtime();
+    assert!(runtime.active_screen_session.is_none());
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.system_audio_recording_file.is_none());
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("microphone continuation should remain trackable while screen is paused");
+    assert!(outputs.screen_file.is_none());
+    assert!(outputs.screen_files.is_empty());
+    assert!(outputs.system_audio_file.is_none());
+    assert!(outputs.system_audio_files.is_empty());
+    assert_eq!(
+        outputs.microphone_file.as_deref(),
+        Some(
+            "/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a"
+        )
+    );
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        })
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn system_sleep_handler_matches_broken_screen_session_shape() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
+
+    assert!(lifecycle.handle_system_will_sleep());
+
+    let session = lifecycle.session();
+    assert!(!session.is_running);
+    assert_eq!(
+        lifecycle.runtime().current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        })
+    );
+    assert!(!super::runtime::system_audio_writer_active_for_runtime(
+        lifecycle.runtime()
+    ));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_failure_clears_screen_bookkeeping_but_preserves_live_microphone() {
+    let mut runtime = running_screen_capture_runtime_fixture();
+
+    let error = recover_screen_capture_after_wake_with_start_segment(
+        &mut runtime,
+        None,
+        |_, _, _, _, _, _, _, _, _, _| {
+            Err(CaptureErrorResponse {
+                code: "capture_stream_start_failed".to_string(),
+                message: "wake restart failed".to_string(),
+            })
+        },
+    )
+    .expect_err("wake recovery failure should bubble");
+
+    assert_eq!(error.code, "capture_stream_start_failed");
+    assert_eq!(runtime.current_segment_index, 1);
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.system_audio_recording_file.is_none());
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("microphone continuation should remain trackable");
+    assert!(outputs.screen_file.is_none());
+    assert!(outputs.system_audio_file.is_none());
+    assert_eq!(outputs.microphone_file.as_deref(), Some("/tmp/mic.m4a"));
+    assert_eq!(outputs.microphone_files, vec!["/tmp/mic.m4a".to_string()]);
+    assert!(runtime.is_running);
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        })
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
+    let mut runtime = screen_paused_runtime_fixture();
+    runtime.requested_sources = Some(CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: true,
+    });
+    runtime.current_segment_sources = Some(CaptureSources {
+        screen: false,
+        microphone: true,
+        system_audio: false,
+    });
+    runtime.system_audio_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-screen-pause-system-audio",
+        "2026/04/23",
+    ));
+
+    let expected_date_prefix = current_date_prefix();
+    let expected_screen_file = format!(
+        "/tmp/native-capture-tests/{expected_date_prefix}/native-session-screen-pause-segment-0002.mov"
+    );
+    let expected_system_audio_file = "/tmp/native-capture-tests/2026/04/23/audio/system-audio-native-session-screen-pause-system-audio-segment-0002.m4a"
+        .to_string();
+    let recovered = recover_screen_capture_after_wake_with_start_segment(
+        &mut runtime,
+        None,
+        |segment_dir,
+         screen_output_file,
+         system_audio_output_path,
+         sources,
+         screen_frame_rate,
+         _screen_resolution,
+         _effective_screen_bitrate_bps,
+         _microphone_device_id,
+         _frame_artifact_tx,
+         _microphone_output_path| {
+            assert_eq!(
+                segment_dir.to_string_lossy(),
+                format!(
+                    "/tmp/native-capture-tests/{expected_date_prefix}/.native-session-screen-pause-segment-0002"
+                )
+            );
+            assert_eq!(
+                screen_output_file.expect("screen output should be planned").to_string_lossy(),
+                expected_screen_file
+            );
+            assert_eq!(
+                system_audio_output_path
+                    .expect("system audio should be planned")
+                    .to_string_lossy(),
+                expected_system_audio_file
+            );
+            assert_eq!(
+                *sources,
+                CaptureSources {
+                    screen: true,
+                    microphone: false,
+                    system_audio: true,
+                }
+            );
+            assert_eq!(screen_frame_rate, 30);
+
+            let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
+            state.0.system_audio_file = Some(expected_system_audio_file.clone());
+            state.0.system_audio_files = vec![expected_system_audio_file.clone()];
+            state.3 = Some(expected_system_audio_file.clone());
+            Ok(state)
+        },
+    )
+    .expect("wake recovery should restart paused screen capture");
+
+    assert!(recovered);
+    assert_eq!(runtime.current_segment_index, 2);
+    assert_eq!(runtime.recording_file, Some(expected_screen_file.clone()));
+    assert_eq!(
+        runtime.system_audio_recording_file.as_deref(),
+        Some(expected_system_audio_file.as_str())
+    );
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("wake recovery should refresh current segment outputs");
+    assert_eq!(outputs.screen_file, Some(expected_screen_file));
+    assert_eq!(
+        outputs.microphone_file.as_deref(),
+        Some(
+            "/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a"
+        )
+    );
+    assert_eq!(
+        outputs.system_audio_file.as_deref(),
+        Some(expected_system_audio_file.as_str())
+    );
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        })
+    );
+    assert!(!runtime.inactivity.is_screen_paused());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_finalizes_stale_screen_output_after_sleep_even_when_recording_file_was_cleared() {
+    let dir = TestDir::new("wake-recovery-sleep-stale-screen");
+    let stale_screen_file = dir.path().join("stale-sleep-screen.mov");
+    fs::write(&stale_screen_file, b"stale-screen-bytes").expect("stale screen file should exist");
+
+    let mut runtime = running_screen_capture_runtime_fixture();
+    runtime.requested_sources = Some(CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: false,
+    });
+    runtime.current_segment_sources = Some(CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: false,
+    });
+    runtime.system_audio_planner = None;
+    runtime.current_segment_output_files = Some(CaptureOutputFiles {
+        screen_file: Some(stale_screen_file.to_string_lossy().to_string()),
+        screen_files: vec![stale_screen_file.to_string_lossy().to_string()],
+        microphone_file: Some("/tmp/mic.m4a".to_string()),
+        microphone_files: vec!["/tmp/mic.m4a".to_string()],
+        system_audio_file: None,
+        system_audio_files: Vec::new(),
+    });
+    runtime.recording_file = Some(stale_screen_file.to_string_lossy().to_string());
+    runtime.system_audio_recording_file = None;
+
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = runtime;
+    assert!(lifecycle.handle_system_will_sleep());
+
+    let expected_screen_file = format!(
+        "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
+    );
+
+    let recovered = recover_screen_capture_after_wake_with_start_segment(
+        lifecycle.runtime_mut(),
+        None,
+        |segment_dir,
+         screen_output_file,
+         system_audio_output_path,
+         sources,
+         screen_frame_rate,
+         _screen_resolution,
+         _effective_screen_bitrate_bps,
+         _microphone_device_id,
+         _frame_artifact_tx,
+         _microphone_output_path| {
+            assert_eq!(
+                segment_dir.to_string_lossy(),
+                "/tmp/native-capture-tests/2026/04/23/.native-session-wake-screen-segment-0002"
+            );
+            assert_eq!(
+                screen_output_file.expect("screen output should be planned").to_string_lossy(),
+                expected_screen_file
+            );
+            assert!(system_audio_output_path.is_none());
+            assert_eq!(
+                *sources,
+                CaptureSources {
+                    screen: true,
+                    microphone: false,
+                    system_audio: false,
+                }
+            );
+            assert_eq!(screen_frame_rate, 30);
+
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        },
+    )
+    .expect("wake recovery should restart screen capture");
+
+    assert!(recovered);
+    let runtime = lifecycle.runtime();
+    let committed = runtime
+        .output_files
+        .as_ref()
+        .expect("stale output files should be committed during wake recovery");
+    assert_eq!(
+        committed.screen_file.as_deref(),
+        Some(stale_screen_file.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        committed.screen_files,
+        vec![stale_screen_file.to_string_lossy().to_string()]
+    );
+    assert!(committed.system_audio_file.is_none());
+    assert!(committed.system_audio_files.is_empty());
+    assert_eq!(runtime.current_segment_index, 2);
+    assert_eq!(runtime.recording_file, Some(expected_screen_file));
+    assert!(runtime.system_audio_recording_file.is_none());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn inactivity_resume_no_longer_requires_planner_for_legacy_soft_resume() {
     let mut runtime = paused_runtime_fixture();
     runtime.segment_planner = None;
 
-    let error = resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            unreachable!("invalid runtime state should fail before restart")
-        },
-    )
-    .expect_err("missing planner should fail loudly");
+    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
+        panic!("legacy soft-resume should not need planner restart machinery")
+    })
+    .expect("legacy soft-resume should succeed without planner");
 
-    assert!(handle_inactivity_resume_error(&mut runtime, error));
-    assert!(!runtime.is_running);
-    assert_eq!(runtime.runtime_state, RuntimeState::Failed);
+    assert!(runtime.is_running);
+    assert_eq!(runtime.runtime_state, RuntimeState::Running);
     assert!(!runtime.inactivity.is_paused);
 }
 
@@ -2473,7 +3016,7 @@ fn inactivity_resume_with_paused_audio_refreshes_sources_without_planning_system
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_uses_resumed_sources_for_dedicated_write_planning() {
+fn inactivity_resume_does_not_restart_or_plan_dedicated_outputs_for_legacy_soft_resume() {
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -2516,62 +3059,13 @@ fn inactivity_resume_uses_resumed_sources_for_dedicated_write_planning() {
         ..Default::default()
     };
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/22/native-session-resume-screen-segment-0002.mov"
-            .to_string();
-
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |segment_dir,
-         screen_output,
-         system_audio_output_path,
-         sources,
-         _fr,
-         _res,
-         _br,
-         _mic,
-         _tx,
-         microphone_output_path| {
-            assert_eq!(
-                sources,
-                &CaptureSources {
-                    screen: true,
-                    microphone: true,
-                    system_audio: true,
-                }
-            );
-            assert_eq!(
-                segment_dir,
-                std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/.native-session-resume-screen-segment-0002"
-                )
-            );
-            assert_eq!(
-                screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/native-session-resume-screen-segment-0002.mov"
-                ))
-            );
-            assert_eq!(
-                microphone_output_path,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/audio/microphone-native-session-resume-mic-segment-0002.m4a"
-                ))
-            );
-            assert_eq!(
-                system_audio_output_path,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/audio/system-audio-native-session-resume-system-audio-segment-0002.m4a"
-                ))
-            );
-
-            let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
-            state.2 = microphone_output_path.map(|path| path.to_string_lossy().to_string());
-            state.3 = system_audio_output_path.map(|path| path.to_string_lossy().to_string());
-            Ok(state)
+        |_, _, _, _, _, _, _, _, _, _| {
+            panic!("legacy soft-resume should not plan new output files")
         },
     )
-    .expect("legacy inactivity resume should still plan dedicated source outputs");
+    .expect("legacy soft-resume should succeed without dedicated planning");
 
     assert_eq!(
         runtime.current_segment_sources,
@@ -2581,18 +3075,8 @@ fn inactivity_resume_uses_resumed_sources_for_dedicated_write_planning() {
             system_audio: true,
         })
     );
-    assert_eq!(
-        runtime.microphone_recording_file.as_deref(),
-        Some(
-            "/tmp/native-capture-tests/2026/04/22/audio/microphone-native-session-resume-mic-segment-0002.m4a"
-        )
-    );
-    assert_eq!(
-        runtime.system_audio_recording_file.as_deref(),
-        Some(
-            "/tmp/native-capture-tests/2026/04/22/audio/system-audio-native-session-resume-system-audio-segment-0002.m4a"
-        )
-    );
+    assert!(runtime.microphone_recording_file.is_none());
+    assert!(runtime.system_audio_recording_file.is_none());
 }
 
 #[cfg(target_os = "macos")]
@@ -2941,6 +3425,7 @@ fn live_audio_inactivity_pause_does_not_resume_microphone_without_threshold_acti
 
     let active_snapshot = ActivitySnapshot {
         system_input_idle_ms: Some(0),
+        screen_activity_enabled: true,
         screen_activity_idle_ms: Some(0),
         microphone_activity: AudioActivitySourceState {
             enabled: true,
@@ -2955,6 +3440,7 @@ fn live_audio_inactivity_pause_does_not_resume_microphone_without_threshold_acti
 
     let silent_snapshot = ActivitySnapshot {
         system_input_idle_ms: Some(0),
+        screen_activity_enabled: true,
         screen_activity_idle_ms: Some(0),
         microphone_activity: AudioActivitySourceState {
             enabled: true,
@@ -3093,6 +3579,63 @@ fn pause_microphone_for_inactivity_noop_when_microphone_not_requested() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn inactivity_audio_transition_does_not_keep_trying_to_pause_unrequested_microphone() {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            last_activity_monotonic_ms: 0,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    let idle_snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(20_000),
+        screen_activity_enabled: true,
+        screen_activity_idle_ms: Some(20_000),
+        microphone_activity: AudioActivitySourceState::default(),
+        system_audio_activity: AudioActivitySourceState::default(),
+    };
+
+    assert!(
+        !runtime
+            .inactivity
+            .should_pause_microphone_for_inactivity(20_000, idle_snapshot),
+        "unrequested microphone should never report a pause transition"
+    );
+
+    process_inactivity_audio_transitions_for_snapshot(&mut runtime, 20_000, idle_snapshot)
+        .expect("unrequested microphone transition should be a noop");
+
+    assert!(!runtime.inactivity.is_microphone_paused());
+
+    assert!(
+        !runtime
+            .inactivity
+            .should_pause_microphone_for_inactivity(21_000, idle_snapshot),
+        "repeated idle ticks should stay as noops for unrequested microphone"
+    );
+
+    process_inactivity_audio_transitions_for_snapshot(&mut runtime, 21_000, idle_snapshot)
+        .expect("repeated unrequested microphone transition should stay a noop");
+
+    assert!(!runtime.inactivity.is_microphone_paused());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn resume_microphone_from_inactivity_noop_when_microphone_not_requested() {
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
@@ -3154,6 +3697,113 @@ fn pause_system_audio_for_inactivity_noop_when_system_audio_not_requested() {
     assert!(
         !runtime.inactivity.is_paused,
         "is_paused should not be set when source not requested"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn inactivity_audio_transition_does_not_keep_trying_to_pause_unrequested_system_audio() {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            last_activity_monotonic_ms: 0,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    let idle_snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(20_000),
+        screen_activity_enabled: true,
+        screen_activity_idle_ms: Some(20_000),
+        microphone_activity: AudioActivitySourceState::default(),
+        system_audio_activity: AudioActivitySourceState::default(),
+    };
+
+    assert!(
+        !runtime
+            .inactivity
+            .should_pause_system_audio_for_inactivity(20_000, idle_snapshot),
+        "unrequested system audio should never report a pause transition"
+    );
+
+    process_inactivity_audio_transitions_for_snapshot(&mut runtime, 20_000, idle_snapshot)
+        .expect("unrequested system audio transition should be a noop");
+
+    assert!(!runtime.inactivity.is_system_audio_paused());
+
+    assert!(
+        !runtime
+            .inactivity
+            .should_pause_system_audio_for_inactivity(21_000, idle_snapshot),
+        "repeated idle ticks should stay as noops for unrequested system audio"
+    );
+
+    process_inactivity_audio_transitions_for_snapshot(&mut runtime, 21_000, idle_snapshot)
+        .expect("repeated unrequested system audio transition should stay a noop");
+
+    assert!(!runtime.inactivity.is_system_audio_paused());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn pause_screen_for_inactivity_noop_when_screen_not_requested() {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    let idle_snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(20_000),
+        screen_activity_enabled: false,
+        screen_activity_idle_ms: Some(20_000),
+        microphone_activity: AudioActivitySourceState::default(),
+        system_audio_activity: AudioActivitySourceState::default(),
+    };
+
+    assert!(
+        !runtime
+            .inactivity
+            .should_pause_screen_for_inactivity(20_000, idle_snapshot),
+        "unrequested screen should never report a pause transition"
+    );
+
+    pause_screen_for_inactivity(&mut runtime).expect("screen pause should noop when unrequested");
+
+    assert!(
+        !runtime.inactivity.is_screen_paused(),
+        "screen_paused should not be set when screen is not requested"
+    );
+    assert!(
+        !runtime.inactivity.is_paused,
+        "is_paused should not be set when screen is not requested"
     );
 }
 
@@ -3237,6 +3887,7 @@ fn resume_system_audio_from_inactivity_noop_without_planner_metadata_when_no_scr
 #[test]
 fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_flow() {
     let mut runtime = screen_paused_with_system_audio_runtime_fixture(false);
+    let expected_date_prefix = current_date_prefix();
     runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
         "/tmp/native-capture-tests",
         "native-session-screen",
@@ -3245,8 +3896,9 @@ fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_fl
     runtime.system_audio_planner = None;
     runtime.source_sessions = None;
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/22/native-session-screen-segment-0002.mov".to_string();
+    let expected_screen_file = format!(
+        "/tmp/native-capture-tests/{expected_date_prefix}/native-session-screen-segment-0002.mov"
+    );
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
@@ -3256,16 +3908,14 @@ fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_fl
             assert!(!sources.microphone);
             assert_eq!(
                 screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/native-session-screen-segment-0002.mov"
-                ))
+                Some(std::path::Path::new(expected_screen_file.as_str()))
             );
             let system_audio_output_path = system_audio_output_path
                 .expect("system audio output should be planned for resume write flow");
             assert_eq!(
                 system_audio_output_path.parent(),
                 Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/audio"
+                    format!("/tmp/native-capture-tests/{expected_date_prefix}/audio").as_str()
                 ))
             );
             assert!(
@@ -3287,7 +3937,7 @@ fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_fl
         .as_ref()
         .expect("system audio planner should be seeded for actual resume/write flow");
     assert_eq!(planner.save_root_dir(), "/tmp/native-capture-tests");
-    assert_eq!(planner.date_prefix(), "2026/04/22");
+    assert_eq!(planner.date_prefix(), expected_date_prefix);
     assert_ne!(planner.session_id(), "native-session-screen");
     assert_eq!(
         runtime
@@ -3410,12 +4060,12 @@ fn screen_paused_runtime_fixture() -> NativeCaptureRuntime {
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: None,
             screen_files: Vec::new(),
-            microphone_file: Some("/tmp/native-capture-tests/.z/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()),
-            microphone_files: vec!["/tmp/native-capture-tests/.z/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()],
+            microphone_file: Some("/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()),
+            microphone_files: vec!["/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()],
             system_audio_file: None,
             system_audio_files: Vec::new(),
         }),
-        microphone_recording_file: Some("/tmp/native-capture-tests/.z/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()),
+        microphone_recording_file: Some("/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a".to_string()),
         recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
@@ -3668,7 +4318,7 @@ fn resume_screen_from_inactivity_requires_capture_clock() {
 
 #[test]
 fn idle_debug_family_fields_reflect_independent_screen_and_audio_evaluations() {
-    use crate::native_capture_inactivity::{
+    use super::inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -3715,7 +4365,7 @@ fn idle_debug_family_fields_reflect_independent_screen_and_audio_evaluations() {
 
 #[test]
 fn idle_debug_family_fields_show_screen_paused_audio_active() {
-    use crate::native_capture_inactivity::{
+    use super::inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -3765,7 +4415,7 @@ fn idle_debug_family_fields_show_screen_paused_audio_active() {
 
 #[test]
 fn idle_debug_family_fields_show_audio_paused_screen_active() {
-    use crate::native_capture_inactivity::{
+    use super::inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -3812,7 +4462,7 @@ fn idle_debug_family_fields_show_audio_paused_screen_active() {
 
 #[test]
 fn idle_debug_family_fields_both_paused() {
-    use crate::native_capture_inactivity::{
+    use super::inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -3857,7 +4507,10 @@ fn idle_debug_family_fields_both_paused() {
 
 #[test]
 fn idle_debug_info_serialization_includes_separate_family_fields() {
-    use super::activity::{IdleDebugInfo, RuntimeSourceStatus, RuntimeSourcesStatus};
+    use capture_types::{
+        AudioActivityDecision, AudioActivitySample, IdleDebugInfo, RuntimeSourceStatus,
+        RuntimeSourcesStatus,
+    };
 
     let info = IdleDebugInfo {
         system_idle_ms: None,
@@ -3869,18 +4522,26 @@ fn idle_debug_info_serialization_includes_separate_family_fields() {
         activity_mode: "system_input_or_screen_or_audio".to_string(),
         microphone_activity_sensitivity: 50,
         system_audio_activity_sensitivity: 50,
-        microphone_activity_threshold: 0.08,
-        system_audio_activity_threshold: 0.08,
         screen_activity_last_unix_ms: None,
         screen_activity_idle_ms: None,
-        microphone_activity_last_unix_ms: None,
-        microphone_activity_idle_ms: None,
-        microphone_activity_level: None,
-        microphone_activity_enabled: true,
-        system_audio_activity_last_unix_ms: None,
-        system_audio_activity_idle_ms: None,
-        system_audio_activity_level: None,
-        system_audio_activity_enabled: false,
+        microphone_activity_sample: AudioActivitySample {
+            last_unix_ms: None,
+            level: None,
+        },
+        microphone_activity_decision: AudioActivityDecision {
+            enabled: true,
+            idle_ms: None,
+            activity_threshold: Some(0.08),
+        },
+        system_audio_activity_sample: AudioActivitySample {
+            last_unix_ms: None,
+            level: None,
+        },
+        system_audio_activity_decision: AudioActivityDecision {
+            enabled: false,
+            idle_ms: None,
+            activity_threshold: Some(0.08),
+        },
         effective_idle_ms: 250,
         effective_idle_source: "microphone_capture".to_string(),
         screen_effective_idle_ms: 8_000,
@@ -4078,6 +4739,7 @@ fn resume_screen_from_inactivity_does_not_require_system_audio_metadata_when_aud
 #[test]
 fn resume_screen_includes_system_audio_when_audio_not_paused() {
     let mut runtime = screen_paused_with_system_audio_runtime_fixture(false);
+    let expected_date_prefix = current_date_prefix();
     runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
         "/tmp/native-capture-tests",
         "screen-session",
@@ -4106,7 +4768,7 @@ fn resume_screen_includes_system_audio_when_audio_not_paused() {
             assert_eq!(
                 system_audio_output_path,
                 Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/19/audio/system-audio-system-audio-session-segment-0002.m4a"
+                    format!("/tmp/native-capture-tests/{expected_date_prefix}/audio/system-audio-system-audio-session-segment-0002.m4a").as_str()
                 ))
             );
 
@@ -4441,6 +5103,7 @@ fn live_audio_inactivity_pause_detaches_system_audio_writer_truth_while_screen_s
 
     let active_snapshot = ActivitySnapshot {
         system_input_idle_ms: Some(0),
+        screen_activity_enabled: true,
         screen_activity_idle_ms: Some(0),
         microphone_activity: AudioActivitySourceState::default(),
         system_audio_activity: AudioActivitySourceState {
@@ -4455,6 +5118,7 @@ fn live_audio_inactivity_pause_detaches_system_audio_writer_truth_while_screen_s
 
     let silent_snapshot = ActivitySnapshot {
         system_input_idle_ms: Some(0),
+        screen_activity_enabled: true,
         screen_activity_idle_ms: Some(0),
         microphone_activity: AudioActivitySourceState::default(),
         system_audio_activity: AudioActivitySourceState {
@@ -4665,7 +5329,7 @@ fn inactivity_resume_sets_current_segment_sources_via_active_sources_helper() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_uses_contiguous_segment_index_when_schedule_has_advanced() {
+fn inactivity_resume_soft_resume_preserves_segment_index_when_schedule_has_advanced() {
     let mut runtime = paused_runtime_fixture();
     runtime.current_segment_index = 4;
     runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
@@ -4678,36 +5342,20 @@ fn inactivity_resume_uses_contiguous_segment_index_when_schedule_has_advanced() 
 
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0005.mov".to_string();
-
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |segment_dir, screen_output, _, _, _, _, _, _, _, _| {
-            assert_eq!(
-                segment_dir,
-                std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/19/.native-session-resume-segment-0005"
-                )
-            );
-            assert_eq!(
-                screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0005.mov"
-                ))
-            );
-
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        |_, _, _, _, _, _, _, _, _, _| {
+            panic!("legacy soft-resume should not create a new segment")
         },
     )
-    .expect("resume should keep numbering contiguous");
+    .expect("soft-resume should preserve current segment numbering");
 
-    assert_eq!(runtime.current_segment_index, 5);
+    assert_eq!(runtime.current_segment_index, 4);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn inactivity_resume_reanchors_segment_boundary_timing() {
+fn inactivity_resume_soft_resume_preserves_segment_boundary_timing() {
     let mut runtime = paused_runtime_fixture();
     runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
         "/tmp/native-capture-tests",
@@ -4719,13 +5367,10 @@ fn inactivity_resume_reanchors_segment_boundary_timing() {
 
     std::thread::sleep(std::time::Duration::from_millis(70));
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov".to_string();
-
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
         |_, _, _, _, _, _, _, _, _, _| {
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+            panic!("legacy soft-resume should not restart segment outputs")
         },
     )
     .expect("resume should succeed");
@@ -4757,8 +5402,8 @@ fn inactivity_resume_reanchors_segment_boundary_timing() {
             &schedule,
             &clock,
         )
-        .is_none(),
-        "resume should reset segment timing instead of immediately rotating again"
+        .is_some(),
+        "soft-resume should preserve the existing segment timing cadence"
     );
 
     std::thread::sleep(std::time::Duration::from_millis(70));
@@ -4777,7 +5422,7 @@ fn inactivity_resume_reanchors_segment_boundary_timing() {
     )
     .expect("rotation should trigger after the new segment reaches its duration");
 
-    assert_eq!(delayed_rotation.next_index, 3);
+    assert_eq!(delayed_rotation.next_index, 2);
 }
 
 // --- Issue 3: pause_audio ordering – mic stops after screen restart ---
@@ -5001,6 +5646,28 @@ fn resume_audio_from_inactivity_refreshes_sources_when_screen_paused_without_sou
             .as_ref()
             .map(|planner| planner.session_id())
     );
+    assert_eq!(
+        runtime
+            .segment_planner
+            .as_ref()
+            .map(|planner| planner.date_prefix()),
+        runtime
+            .microphone_planner
+            .as_ref()
+            .map(|planner| planner.date_prefix())
+    );
+    assert!(
+        runtime.system_audio_planner.is_none()
+            || runtime
+                .segment_planner
+                .as_ref()
+                .map(|planner| planner.date_prefix())
+                == runtime
+                    .system_audio_planner
+                    .as_ref()
+                    .map(|planner| planner.date_prefix()),
+        "system-audio planner should either remain absent for the no-op branch or share the refreshed date"
+    );
 }
 
 // --- Slice 3b6: pause_screen preserves current_segment_sources for active audio ---
@@ -5123,6 +5790,7 @@ fn screen_idle_with_threshold_active_microphone_pauses_only_screen_in_activity_m
         };
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(10_001),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(10_001),
             microphone_activity: AudioActivitySourceState {
                 enabled: true,
@@ -5161,10 +5829,7 @@ fn screen_idle_with_threshold_active_microphone_pauses_only_screen_in_activity_m
 #[cfg(target_os = "macos")]
 #[test]
 fn screen_idle_with_threshold_active_system_audio_pauses_screen_without_audio_family_pause() {
-    for activity_mode in [
-        InactivityActivityMode::SystemInputOrScreen,
-        InactivityActivityMode::SystemInputOrScreenOrAudio,
-    ] {
+    for activity_mode in [InactivityActivityMode::SystemInputOrScreen] {
         let runtime_controller = running_runtime_controller();
         let runtime_state = runtime_controller.state();
         let mut runtime = NativeCaptureRuntime {
@@ -5207,6 +5872,7 @@ fn screen_idle_with_threshold_active_system_audio_pauses_screen_without_audio_fa
         };
         let snapshot = ActivitySnapshot {
             system_input_idle_ms: Some(10_001),
+            screen_activity_enabled: true,
             screen_activity_idle_ms: Some(10_001),
             microphone_activity: AudioActivitySourceState::default(),
             system_audio_activity: AudioActivitySourceState {
@@ -6773,96 +7439,32 @@ fn pause_screen_fatal_finalize_preserves_audio_continuation() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn resume_runtime_from_inactivity_passes_dated_paths_to_start_segment_closure() {
-    let runtime_controller = running_runtime_controller();
-    let runtime_state = runtime_controller.state();
-
-    let mut runtime = NativeCaptureRuntime {
-        is_running: true,
-        requested_sources: Some(CaptureSources {
-            screen: true,
-            microphone: false,
-            system_audio: false,
-        }),
-        current_segment_index: 1,
-        screen_frame_rate: 30,
-        screen_resolution: ScreenResolution::default(),
-        segment_loop_control: None,
-        capture_clock: Some(CaptureClock::start_now()),
-        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
-        segment_planner: Some(SegmentPlanner::with_date_prefix(
-            "/tmp/dated-resume-tests",
-            "dated-session",
-            "2026/04/16",
-        )),
-        microphone_planner: Some(SegmentPlanner::with_date_prefix(
-            "/tmp/dated-resume-tests",
-            "dated-microphone-session",
-            "2026/04/16",
-        )),
-        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
-            "/tmp/dated-resume-tests",
-            "dated-system-audio-session",
-            "2026/04/16",
-        )),
-        runtime_controller,
-        runtime_state,
-        inactivity: InactivityState {
-            enabled: true,
-            idle_timeout_seconds: 10,
-            is_paused: true,
-            ..InactivityState::default()
-        },
-        ..Default::default()
-    };
-
-    let expected_screen_file =
-        "/tmp/dated-resume-tests/2026/04/16/dated-session-segment-0002.mov".to_string();
+fn resume_runtime_from_inactivity_soft_resume_keeps_existing_segment_without_restart() {
+    let mut runtime = paused_runtime_fixture();
+    runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
+        "/tmp/dated-resume-tests",
+        "dated-session",
+        "2026/04/16",
+    ));
 
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |segment_dir,
-         screen_output,
-         system_audio_output_path,
-         _sources,
-         _fr,
-         _res,
-         _br,
-         _mic,
-         _tx,
-         _mic_path| {
-            assert_eq!(
-                segment_dir,
-                std::path::Path::new(
-                    "/tmp/dated-resume-tests/2026/04/16/.dated-session-segment-0002"
-                ),
-                "segment_dir should be the hidden workspace under YYYY/MM/DD"
-            );
-            assert_eq!(
-                screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/dated-resume-tests/2026/04/16/dated-session-segment-0002.mov"
-                )),
-                "screen_output should be the visible dated file path"
-            );
-            // system_audio is disabled for this fixture, so no output path is passed
-            assert!(
-                system_audio_output_path.is_none(),
-                "system_audio_output_path should be None when system_audio source is disabled"
-            );
-
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        |_, _, _, _, _, _, _, _, _, _| {
+            panic!("legacy soft-resume should not restart the existing segment")
         },
     )
-    .expect("resume with dated planner should succeed");
+    .expect("legacy soft-resume should succeed");
 
     assert!(!runtime.inactivity.is_paused);
-    assert_eq!(runtime.current_segment_index, 2);
+    assert_eq!(runtime.current_segment_index, 1);
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.current_segment_output_files.is_none());
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
+    let expected_date_prefix = current_date_prefix();
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -6907,9 +7509,9 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
         ..Default::default()
     };
 
-    let expected_screen_file =
-        "/tmp/dated-screen-resume-tests/2026/04/16/dated-screen-session-segment-0002.mov"
-            .to_string();
+    let expected_screen_file = format!(
+        "/tmp/dated-screen-resume-tests/{expected_date_prefix}/dated-screen-session-segment-0002.mov"
+    );
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
@@ -6917,15 +7519,13 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
             assert_eq!(
                 segment_dir,
                 std::path::Path::new(
-                    "/tmp/dated-screen-resume-tests/2026/04/16/.dated-screen-session-segment-0002"
+                    format!("/tmp/dated-screen-resume-tests/{expected_date_prefix}/.dated-screen-session-segment-0002").as_str()
                 ),
                 "segment_dir should be the hidden workspace under YYYY/MM/DD"
             );
             assert_eq!(
                 screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/dated-screen-resume-tests/2026/04/16/dated-screen-session-segment-0002.mov"
-                )),
+                Some(std::path::Path::new(expected_screen_file.as_str())),
                 "screen_output should be the visible dated file path"
             );
             assert!(
@@ -6945,6 +7545,7 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
 #[cfg(target_os = "macos")]
 #[test]
 fn resume_screen_from_inactivity_skips_dated_system_audio_path_when_audio_paused() {
+    let expected_date_prefix = current_date_prefix();
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -6989,9 +7590,9 @@ fn resume_screen_from_inactivity_skips_dated_system_audio_path_when_audio_paused
         ..Default::default()
     };
 
-    let expected_screen_file =
-        "/tmp/dated-screen-resume-tests/2026/04/16/dated-screen-session-segment-0002.mov"
-            .to_string();
+    let expected_screen_file = format!(
+        "/tmp/dated-screen-resume-tests/{expected_date_prefix}/dated-screen-session-segment-0002.mov"
+    );
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
@@ -6999,14 +7600,12 @@ fn resume_screen_from_inactivity_skips_dated_system_audio_path_when_audio_paused
             assert_eq!(
                 segment_dir,
                 std::path::Path::new(
-                    "/tmp/dated-screen-resume-tests/2026/04/16/.dated-screen-session-segment-0002"
+                    format!("/tmp/dated-screen-resume-tests/{expected_date_prefix}/.dated-screen-session-segment-0002").as_str()
                 )
             );
             assert_eq!(
                 screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/dated-screen-resume-tests/2026/04/16/dated-screen-session-segment-0002.mov"
-                ))
+                Some(std::path::Path::new(expected_screen_file.as_str()))
             );
             assert!(sources.screen);
             assert!(!sources.microphone);

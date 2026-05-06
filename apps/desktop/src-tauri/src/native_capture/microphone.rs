@@ -1,4 +1,3 @@
-use crate::native_capture_output::set_current_microphone_output_file;
 use capture_microphone as microphone_capture;
 use capture_types::{
     CaptureErrorResponse, CaptureSources, MicrophoneControllerState, MicrophoneDisconnectPolicy,
@@ -8,8 +7,11 @@ use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
+use super::NativeCaptureState;
+use super::output::set_current_microphone_output_file;
 use super::runtime::{
-    ensure_microphone_planner_for_runtime, now_unix_ms, NativeCaptureRuntime, NativeCaptureState,
+    ensure_microphone_planner_for_runtime, now_unix_ms, refresh_runtime_planner_dates,
+    NativeCaptureRuntime,
 };
 
 #[derive(Debug, Clone)]
@@ -224,6 +226,7 @@ fn maybe_reconnect_waiting_microphone_session(
         Ok(runtime) => runtime,
         Err(_) => return,
     };
+    let runtime = runtime.runtime_mut();
 
     let mut stop_failed_while_waiting = false;
 
@@ -235,7 +238,7 @@ fn maybe_reconnect_waiting_microphone_session(
     ) {
         if let Some(session) = runtime.active_microphone_session.as_mut() {
             if let Err(error) = session.stop() {
-                crate::native_capture_debug_log::log(format!(
+                super::debug_log::log(format!(
                     "failed to stop microphone session while waiting for same device: [{}] {}",
                     error.code, error.message
                 ));
@@ -252,9 +255,11 @@ fn maybe_reconnect_waiting_microphone_session(
         return;
     }
 
-    if ensure_microphone_planner_for_runtime(&mut runtime, "reconnecting microphone").is_err() {
+    if ensure_microphone_planner_for_runtime(runtime, "reconnecting microphone").is_err() {
         return;
     }
+
+    refresh_runtime_planner_dates(runtime);
 
     let microphone_recording_file = match next_microphone_output_file_for_runtime(&runtime) {
         Ok(path) => path,

@@ -2,13 +2,13 @@ use capture_types::{
     CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, ScreenResolution,
     ScreenResolutionPreset,
 };
-
 #[cfg(target_os = "macos")]
 use capture_writers::{
     append_audio_sample_to_writer, append_video_sample_to_writer, create_audio_asset_writer,
     create_video_asset_writer_for_sample_buf,
     finalize_screen_video_output_context as writers_finalize_screen_video_output_context,
     finish_audio_asset_writer, finish_audio_asset_writer_discarding_inactivity_tail,
+    finish_video_asset_writer,
     set_audio_writer_inactivity_tail_trim_seconds, AudioAssetWriterState, VideoAssetWriterState,
 };
 
@@ -21,6 +21,8 @@ use cidre::objc;
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
+mod equivalence;
+
 use std::ffi::c_void;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
@@ -56,11 +58,36 @@ pub struct ScreenFrameArtifact {
     pub captured_at_unix_ms: u64,
     pub width: Option<u32>,
     pub height: Option<u32>,
-    pub content_fingerprint: Option<u64>,
+    pub captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 }
+
+pub use equivalence::{
+    captured_frame_equivalence_from_image_path, captured_frame_equivalence_proofs_match,
+    captured_frame_equivalence_from_interleaved_bytes, CapturedFrameEquivalence,
+    CapturedFrameEquivalenceOutcome,
+    CAPTURED_FRAME_EQUIVALENCE_VERSION,
+};
 
 pub type ScreenFrameArtifactHandler =
     std::sync::Arc<dyn Fn(ScreenFrameArtifact) + Send + Sync + 'static>;
+
+pub const SCREEN_SEGMENT_FRAME_INDEX_VERSION: u32 = 1;
+const SCREEN_SEGMENT_FRAME_INDEX_MAGIC: &[u8; 4] = b"SFI1";
+const SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN: usize = 12;
+const SCREEN_SEGMENT_FRAME_INDEX_ENTRY_LEN: usize = 24;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenSegmentFrameIndexEntry {
+    pub captured_at_unix_ms: u64,
+    pub frame_index: u64,
+    pub video_offset_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenSegmentFrameIndex {
+    pub version: u32,
+    pub entries: Vec<ScreenSegmentFrameIndexEntry>,
+}
 
 #[derive(Clone)]
 pub struct ScreenFrameExportConfig {
@@ -94,7 +121,93 @@ fn screen_frame_artifact_path(
     frame_index: u64,
     captured_at_unix_ms: u64,
 ) -> PathBuf {
-    artifact_dir.join(format!("frame-{captured_at_unix_ms}-{frame_index:06}.png"))
+    artifact_dir.join(format!("frame-{captured_at_unix_ms}-{frame_index:06}.jpg"))
+}
+
+pub fn screen_segment_frame_index_path(video_path: &Path) -> PathBuf {
+    let parent = video_path.parent().unwrap_or_else(|| Path::new(""));
+    let stem = video_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("segment");
+    parent.join(format!("{stem}.frame-index.bin"))
+}
+
+pub fn legacy_screen_segment_frame_index_path(video_path: &Path) -> PathBuf {
+    let parent = video_path.parent().unwrap_or_else(|| Path::new(""));
+    let stem = video_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("segment");
+    parent.join(format!("{stem}.frame-index.json"))
+}
+
+pub fn encode_screen_segment_frame_index(index: &ScreenSegmentFrameIndex) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(
+        SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN
+            + index.entries.len().saturating_mul(SCREEN_SEGMENT_FRAME_INDEX_ENTRY_LEN),
+    );
+    bytes.extend_from_slice(SCREEN_SEGMENT_FRAME_INDEX_MAGIC);
+    bytes.extend_from_slice(&index.version.to_le_bytes());
+    bytes.extend_from_slice(&(index.entries.len() as u32).to_le_bytes());
+    for entry in &index.entries {
+        bytes.extend_from_slice(&entry.captured_at_unix_ms.to_le_bytes());
+        bytes.extend_from_slice(&entry.frame_index.to_le_bytes());
+        bytes.extend_from_slice(&entry.video_offset_ms.to_le_bytes());
+    }
+    bytes
+}
+
+pub fn decode_screen_segment_frame_index(bytes: &[u8]) -> Result<ScreenSegmentFrameIndex, String> {
+    if bytes.len() < SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN {
+        return Err("frame index payload is too short".to_string());
+    }
+    if &bytes[0..4] != SCREEN_SEGMENT_FRAME_INDEX_MAGIC {
+        return Err("frame index payload has invalid magic".to_string());
+    }
+
+    let version = u32::from_le_bytes(bytes[4..8].try_into().expect("version bytes"));
+    let count = u32::from_le_bytes(bytes[8..12].try_into().expect("count bytes")) as usize;
+    let expected_len = SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN
+        .checked_add(count.saturating_mul(SCREEN_SEGMENT_FRAME_INDEX_ENTRY_LEN))
+        .ok_or_else(|| "frame index payload length overflowed".to_string())?;
+    if bytes.len() != expected_len {
+        return Err(format!(
+            "frame index payload length {} did not match expected {}",
+            bytes.len(),
+            expected_len
+        ));
+    }
+
+    let mut entries = Vec::with_capacity(count);
+    let mut offset = SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN;
+    while offset < bytes.len() {
+        let captured_at_unix_ms = u64::from_le_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .expect("captured_at bytes"),
+        );
+        let frame_index = u64::from_le_bytes(
+            bytes[offset + 8..offset + 16]
+                .try_into()
+                .expect("frame_index bytes"),
+        );
+        let video_offset_ms = u64::from_le_bytes(
+            bytes[offset + 16..offset + 24]
+                .try_into()
+                .expect("video_offset bytes"),
+        );
+        entries.push(ScreenSegmentFrameIndexEntry {
+            captured_at_unix_ms,
+            frame_index,
+            video_offset_ms,
+        });
+        offset += SCREEN_SEGMENT_FRAME_INDEX_ENTRY_LEN;
+    }
+
+    Ok(ScreenSegmentFrameIndex { version, entries })
 }
 
 #[cfg(target_os = "macos")]
@@ -196,6 +309,10 @@ static LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "macos")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "macos")]
+static LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(target_os = "macos")]
 // Coalesce noisy per-frame screen samples without approaching the minimum
@@ -203,9 +320,13 @@ static LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
 // for low-FPS or jittery sessions.
 const SCREEN_ACTIVITY_DEBOUNCE_WINDOW_MS: u64 = 250;
 #[cfg(target_os = "macos")]
-const SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT: usize = 8;
+const SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE: usize = 8;
 #[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE: usize = 4;
+#[cfg(target_os = "macos")]
+const SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE: usize = 3;
+#[cfg(target_os = "macos")]
+const SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP: u64 = 32;
 #[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 #[cfg(target_os = "macos")]
@@ -305,9 +426,31 @@ fn now_monotonic_marker_ms() -> u64 {
 
 #[cfg(target_os = "macos")]
 fn store_system_audio_activity(level: f32, now_monotonic_ms: u64, now_unix_ms: u64) {
-    LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    let level = level.clamp(0.0, 1.0);
+    LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(level.to_bits(), Ordering::Relaxed);
     LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.store(now_monotonic_ms, Ordering::Relaxed);
     LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.store(now_unix_ms, Ordering::Relaxed);
+    record_system_audio_activity_window_peak(level);
+}
+
+#[cfg(target_os = "macos")]
+fn record_system_audio_activity_window_peak(level: f32) {
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    let level_bits = level.to_bits();
+    let mut observed_bits =
+        LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    while f32::from_bits(observed_bits) < level {
+        match LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.compare_exchange_weak(
+            observed_bits,
+            level_bits,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(next_bits) => observed_bits = next_bits,
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -438,52 +581,54 @@ fn mix_screen_activity_pixel_probe_bytes(
         return false;
     }
 
-    let last_row = height.saturating_sub(1);
-    let probe_denominator = SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT
-        .saturating_sub(1)
+    let tile_rows = height.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
+    let tile_cols = sample_width
+        .div_ceil(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE)
+        .min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE)
         .max(1);
     let max_start_col = sample_width.saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
     let mut sampled_any_probe = false;
 
-    for probe_index in 0..SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT {
-        let row = if last_row == 0 {
-            0
-        } else {
-            probe_index.saturating_mul(last_row) / probe_denominator
-        };
-        let col = if max_start_col == 0 {
-            0
-        } else {
-            probe_index.wrapping_mul(1_103_515_245) % (max_start_col + 1)
-        };
-        let sample_len = (sample_width - col).min(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
-        let Some(sample_end_in_row) = col.checked_add(sample_len) else {
-            continue;
-        };
-        if sample_end_in_row > bytes_per_row {
-            continue;
+    for tile_row in 0..tile_rows {
+        let row = (((tile_row.saturating_mul(2)).saturating_add(1)).saturating_mul(height)
+            / tile_rows.saturating_mul(2))
+        .min(height.saturating_sub(1));
+
+        for tile_col in 0..tile_cols {
+            let desired_col = (((tile_col.saturating_mul(2)).saturating_add(1))
+                .saturating_mul(sample_width)
+                / tile_cols.saturating_mul(2))
+            .saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE / 2);
+            let col = desired_col.min(max_start_col);
+            let sample_len = (sample_width - col).min(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
+            let Some(sample_end_in_row) = col.checked_add(sample_len) else {
+                continue;
+            };
+            if sample_end_in_row > bytes_per_row {
+                continue;
+            }
+
+            let Some(sample_start) = row
+                .checked_mul(bytes_per_row)
+                .and_then(|row_offset| row_offset.checked_add(col))
+            else {
+                continue;
+            };
+            let Some(sample_end) = sample_start.checked_add(sample_len) else {
+                continue;
+            };
+            if sample_end > total_accessible_bytes {
+                continue;
+            }
+
+            let sample =
+                unsafe { std::slice::from_raw_parts(base_address.add(sample_start), sample_len) };
+
+            mix_screen_activity_fingerprint(hash, row as u64);
+            mix_screen_activity_fingerprint(hash, col as u64);
+            mix_screen_activity_fingerprint_bytes(hash, sample);
+            sampled_any_probe = true;
         }
-
-        let Some(sample_start) = row
-            .checked_mul(bytes_per_row)
-            .and_then(|row_offset| row_offset.checked_add(col))
-        else {
-            continue;
-        };
-        let Some(sample_end) = sample_start.checked_add(sample_len) else {
-            continue;
-        };
-        if sample_end > total_accessible_bytes {
-            continue;
-        }
-
-        let sample =
-            unsafe { std::slice::from_raw_parts(base_address.add(sample_start), sample_len) };
-
-        mix_screen_activity_fingerprint(hash, row as u64);
-        mix_screen_activity_fingerprint(hash, col as u64);
-        mix_screen_activity_fingerprint_bytes(hash, sample);
-        sampled_any_probe = true;
     }
 
     sampled_any_probe
@@ -560,11 +705,12 @@ fn screen_activity_sample_fingerprint(sample_buf: &mut cidre::cm::SampleBuf) -> 
     let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
     let mut has_content_signal = false;
 
+    // `dirty_rects` and `bounding_rect` churn on cursor movement and other tiny
+    // overlays. Keep only the stable geometry attachments in the exported frame
+    // fingerprint so cursor flicker does not look like new content.
     for key in [
-        cidre::sc::FrameInfo::dirty_rects(),
         cidre::sc::FrameInfo::content_rect(),
         cidre::sc::FrameInfo::screen_rect(),
-        cidre::sc::FrameInfo::bounding_rect(),
     ] {
         has_content_signal |=
             mix_screen_activity_attachment_fingerprint(&mut hash, sample_buf, key);
@@ -576,6 +722,88 @@ fn screen_activity_sample_fingerprint(sample_buf: &mut cidre::cm::SampleBuf) -> 
     }
 
     has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
+}
+
+#[cfg(target_os = "macos")]
+fn screen_activity_sample_captured_frame_equivalence(
+    sample_buf: &mut cidre::cm::SampleBuf,
+) -> Option<CapturedFrameEquivalenceOutcome> {
+    let pixel_buf = sample_buf.image_buf_mut()?;
+    let plane_count = pixel_buf.plane_count();
+    let pixel_width = pixel_buf.width();
+    if plane_count != 0 {
+        return None;
+    }
+
+    let height = pixel_buf.height();
+    let bytes_per_row = unsafe { CVPixelBufferGetBytesPerRow(pixel_buf) };
+    let pixel_format = pixel_buf.pixel_format();
+    let lock_flags = cidre::cv::pixel_buffer::LockFlags::READ_ONLY;
+
+    if bytes_per_row == 0
+        || pixel_width == 0
+        || height == 0
+    {
+        return None;
+    }
+
+    unsafe {
+        if pixel_buf.lock_base_addr(lock_flags).result().is_err() {
+            return None;
+        }
+    }
+
+    let base_address = unsafe { CVPixelBufferGetBaseAddress(pixel_buf) } as *const u8;
+    let total_accessible_bytes = unsafe { CVPixelBufferGetDataSize(pixel_buf) };
+    if base_address.is_null() || total_accessible_bytes == 0 {
+        let _ = unsafe { pixel_buf.unlock_lock_base_addr(lock_flags).result() };
+        return None;
+    }
+
+    let total_bytes = bytes_per_row.checked_mul(height)?;
+    let accessible_bytes = total_accessible_bytes.min(total_bytes);
+    let bytes = unsafe { std::slice::from_raw_parts(base_address, accessible_bytes) };
+
+    let equivalence = non_planar_screen_activity_captured_frame_equivalence(
+        bytes,
+        bytes_per_row,
+        pixel_width,
+        height,
+        pixel_format,
+    );
+
+    let _ = unsafe { pixel_buf.unlock_lock_base_addr(lock_flags).result() };
+    equivalence
+}
+
+#[cfg(target_os = "macos")]
+fn non_planar_screen_activity_captured_frame_equivalence(
+    bytes: &[u8],
+    bytes_per_row: usize,
+    pixel_width: usize,
+    height: usize,
+    pixel_format: cidre::cv::PixelFormat,
+) -> Option<CapturedFrameEquivalenceOutcome> {
+    if bytes.is_empty() || bytes_per_row == 0 || pixel_width == 0 || height == 0 {
+        return None;
+    }
+
+    let channel_order = match pixel_format {
+        cidre::cv::PixelFormat::_32_BGRA => [2, 1, 0, 3],
+        cidre::cv::PixelFormat::_32_RGBA => [0, 1, 2, 3],
+        cidre::cv::PixelFormat::_32_ARGB => [1, 2, 3, 0],
+        cidre::cv::PixelFormat::_32_ABGR => [3, 2, 1, 0],
+        _ => return None,
+    };
+
+    captured_frame_equivalence_from_interleaved_bytes(
+        bytes,
+        bytes_per_row,
+        pixel_width,
+        height,
+        channel_order,
+    )
+    .map(CapturedFrameEquivalenceOutcome::ready)
 }
 
 #[cfg(target_os = "macos")]
@@ -646,32 +874,118 @@ fn screen_activity_bitmap_fingerprint(
     }
 
     let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
-    let row_stride = (height / SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT).max(1);
-    let column_stride =
-        ((width.saturating_mul(4)) / SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT).max(1);
-    let max_column_offset =
-        bytes_per_row.saturating_sub(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE);
+    let tile_rows = height.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
+    let tile_cols = width.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
     let mut has_content_signal = false;
 
-    for probe_index in 0..SCREEN_ACTIVITY_FINGERPRINT_PROBE_COUNT {
-        let row = (probe_index.saturating_mul(row_stride)).min(height.saturating_sub(1));
-        let row_offset = row.saturating_mul(bytes_per_row);
-        let column_offset = (probe_index.saturating_mul(column_stride)).min(max_column_offset);
-        let probe_offset = row_offset.saturating_add(column_offset);
-        let Some(sample) = bytes.get(
-            probe_offset..probe_offset.saturating_add(SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE),
-        ) else {
-            continue;
-        };
+    for tile_row in 0..tile_rows {
+        let row_start = tile_row.saturating_mul(height) / tile_rows;
+        let row_end = ((tile_row.saturating_add(1)).saturating_mul(height) / tile_rows)
+            .max(row_start.saturating_add(1))
+            .min(height);
 
-        let mut probe_bytes = [0u8; SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE];
-        probe_bytes.copy_from_slice(sample);
-        let value = u32::from_le_bytes(probe_bytes) as u64;
-        has_content_signal |= value != 0;
-        mix_screen_activity_fingerprint(&mut hash, value);
+        for tile_col in 0..tile_cols {
+            let col_start = tile_col.saturating_mul(width) / tile_cols;
+            let col_end = ((tile_col.saturating_add(1)).saturating_mul(width) / tile_cols)
+                .max(col_start.saturating_add(1))
+                .min(width);
+
+            let Some(value) = screen_activity_bitmap_tile_summary(
+                bytes,
+                bytes_per_row,
+                width,
+                height,
+                row_start,
+                row_end,
+                col_start,
+                col_end,
+            ) else {
+                continue;
+            };
+
+            has_content_signal |= value != 0;
+            mix_screen_activity_fingerprint(&mut hash, row_start as u64);
+            mix_screen_activity_fingerprint(&mut hash, col_start as u64);
+            mix_screen_activity_fingerprint(&mut hash, value);
+        }
     }
 
     has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
+}
+
+#[cfg(target_os = "macos")]
+fn screen_activity_bitmap_tile_summary(
+    bytes: &[u8],
+    bytes_per_row: usize,
+    width: usize,
+    height: usize,
+    row_start: usize,
+    row_end: usize,
+    col_start: usize,
+    col_end: usize,
+) -> Option<u64> {
+    if row_start >= row_end || col_start >= col_end || width == 0 || height == 0 {
+        return None;
+    }
+
+    let sample_rows = (row_end - row_start)
+        .min(SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE)
+        .max(1);
+    let sample_cols = (col_end - col_start)
+        .min(SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE)
+        .max(1);
+    let mut sum_r = 0_u64;
+    let mut sum_g = 0_u64;
+    let mut sum_b = 0_u64;
+    let mut sum_a = 0_u64;
+    let mut sample_count = 0_u64;
+
+    for sample_row in 0..sample_rows {
+        let row = row_start
+            + (((sample_row.saturating_mul(2)).saturating_add(1))
+                .saturating_mul(row_end - row_start)
+                / sample_rows.saturating_mul(2))
+                .min(row_end - row_start - 1);
+
+        for sample_col in 0..sample_cols {
+            let col = col_start
+                + (((sample_col.saturating_mul(2)).saturating_add(1))
+                    .saturating_mul(col_end - col_start)
+                    / sample_cols.saturating_mul(2))
+                    .min(col_end - col_start - 1);
+            let pixel_offset = row
+                .checked_mul(bytes_per_row)?
+                .checked_add(col.checked_mul(4)?)?;
+            let pixel = bytes.get(pixel_offset..pixel_offset + 4)?;
+
+            sum_b += pixel[0] as u64;
+            sum_g += pixel[1] as u64;
+            sum_r += pixel[2] as u64;
+            sum_a += pixel[3] as u64;
+            sample_count += 1;
+        }
+    }
+
+    if sample_count == 0 {
+        return None;
+    }
+
+    let avg_b = (sum_b / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
+    let avg_g = (sum_g / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
+    let avg_r = (sum_r / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
+    let avg_a = (sum_a / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
+
+    Some(avg_b | (avg_g << 8) | (avg_r << 16) | (avg_a << 24))
+}
+
+#[cfg(all(target_os = "macos", test))]
+fn screen_frame_content_bitmap_fingerprint(
+    bytes: &[u8],
+    bytes_per_row: usize,
+    width: usize,
+    height: usize,
+) -> Option<u64> {
+    screen_activity_bitmap_fingerprint(bytes, bytes_per_row, width, height)
 }
 
 #[cfg(target_os = "macos")]
@@ -762,6 +1076,8 @@ pub fn reset_last_screen_activity_unix_ms() {
     LAST_SYSTEM_AUDIO_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);
     LAST_SYSTEM_AUDIO_ACTIVITY_MONOTONIC_MS.store(0, Ordering::Relaxed);
     LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.store(0, Ordering::Relaxed);
+    LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.store(0, Ordering::Relaxed);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -787,7 +1103,14 @@ struct ScreenFrameExportRuntime {
     callback_queue: cidre::arc::R<dispatch::Queue>,
     on_frame_exported: ScreenFrameArtifactHandler,
     first_error: Arc<Mutex<Option<CaptureErrorResponse>>>,
+    segment_frame_index: Arc<Mutex<ScreenSegmentFrameIndexState>>,
     next_frame_index: u64,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Default)]
+struct ScreenSegmentFrameIndexState {
+    entries: Vec<ScreenSegmentFrameIndexEntry>,
 }
 
 #[cfg(target_os = "macos")]
@@ -798,6 +1121,45 @@ impl std::fmt::Debug for ScreenFrameExportRuntime {
             .field("next_frame_index", &self.next_frame_index)
             .finish_non_exhaustive()
     }
+}
+
+#[cfg(target_os = "macos")]
+fn push_screen_segment_frame_index_entry(
+    state: &Arc<Mutex<ScreenSegmentFrameIndexState>>,
+    entry: ScreenSegmentFrameIndexEntry,
+) {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entries
+        .push(entry);
+}
+
+#[cfg(target_os = "macos")]
+fn persist_screen_segment_frame_index(
+    screen_video_output_file: &str,
+    frame_export: &ScreenFrameExportRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    let entries = frame_export
+        .segment_frame_index
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entries
+        .clone();
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let index = finalized_screen_segment_frame_index(screen_video_output_file, &entries)?;
+    let index_path = screen_segment_frame_index_path(Path::new(screen_video_output_file));
+    let bytes = encode_screen_segment_frame_index(&index);
+    std::fs::write(&index_path, bytes).map_err(|error| CaptureErrorResponse {
+        code: "io_error".to_string(),
+        message: format!(
+            "Failed to write screen segment frame index {}: {error}",
+            index_path.display()
+        ),
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -828,6 +1190,233 @@ fn store_first_stream_output_error(
     if first_error.is_none() {
         *first_error = Some(error);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn sample_time_to_ms(time: cidre::cm::Time) -> Option<u64> {
+    if !time.is_numeric() || time.scale <= 0 {
+        return None;
+    }
+
+    let value_ms = i128::from(time.value)
+        .checked_mul(1_000)?
+        .checked_add(i128::from(time.scale / 2))?
+        / i128::from(time.scale);
+
+    u64::try_from(value_ms).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn finalized_screen_segment_frame_index(
+    screen_video_output_file: &str,
+    entries: &[ScreenSegmentFrameIndexEntry],
+) -> Result<ScreenSegmentFrameIndex, CaptureErrorResponse> {
+    if entries.is_empty() {
+        return Ok(ScreenSegmentFrameIndex {
+            version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: Vec::new(),
+        });
+    }
+
+    let result = {
+        let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+        use cidre::{av, cv, ns};
+
+        let video_url = ns::Url::with_fs_path_str(screen_video_output_file, false);
+        let asset = av::UrlAsset::with_url(&video_url, None).ok_or_else(|| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to open finalized screen recording for frame index extraction: {screen_video_output_file}"
+            ),
+        })?;
+        let video_tracks = load_asset_tracks_with_timeout(
+            asset.as_ref(),
+            av::MediaType::video(),
+            "capture_output_processing_failed",
+            "Timed out while loading finalized screen recording video track",
+        )?;
+        let video_track = video_tracks.first().ok_or_else(|| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Finalized screen recording has no video track for frame index extraction: {screen_video_output_file}"
+            ),
+        })?;
+
+        let mut reader =
+            av::AssetReader::with_asset(asset.as_ref()).map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to create asset reader for finalized screen frame index extraction: {screen_video_output_file}"
+                ),
+            })?;
+        let output_settings = ns::Dictionary::with_keys_values(
+            &[cv::pixel_buffer::keys::pixel_format().as_ns()],
+            &[cv::PixelFormat::_32_BGRA.to_ns_number().as_id_ref()],
+        );
+        let mut reader_output = av::AssetReaderTrackOutput::with_track(video_track, Some(&output_settings))
+            .map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to create video track reader output for finalized frame index extraction: {screen_video_output_file}"
+                ),
+            })?;
+        reader_output.set_always_copies_sample_data(false);
+
+        let reader_output_ref: &av::AssetReaderOutput =
+            unsafe { &*(&*reader_output as *const _ as *const av::AssetReaderOutput) };
+        if !reader.can_add_output(reader_output_ref) {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to add video reader output for finalized frame index extraction: {screen_video_output_file}"
+                ),
+            });
+        }
+        reader
+            .add_output(reader_output_ref)
+            .map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to attach video reader output for finalized frame index extraction: {screen_video_output_file}"
+                ),
+            })?;
+
+        let started = reader.start_reading().map_err(|_| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to start reading finalized screen recording for frame index extraction: {screen_video_output_file}"
+            ),
+        })?;
+        if !started {
+            if let Some(error) = reader.error() {
+                return Err(error_with_ns_error(
+                    "capture_output_processing_failed",
+                    "Failed to start reading finalized screen recording for frame index extraction",
+                    error.as_ref(),
+                ));
+            }
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to start reading finalized screen recording for frame index extraction: {screen_video_output_file}"
+                ),
+            });
+        }
+
+        let mut finalized_entries = Vec::with_capacity(entries.len());
+        let mut entry_iter = entries.iter();
+        let mut next_entry = entry_iter.next();
+        let mut first_sample_offset_ms: Option<u64> = None;
+
+        while let Some(entry) = next_entry {
+            let sample_buf = reader_output
+                .next_sample_buf()
+                .map_err(|_| CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Failed to read video sample while building finalized frame index: {screen_video_output_file}"
+                    ),
+                })?;
+            let Some(sample_buf) = sample_buf else {
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Finalized screen recording ended before frame index extraction consumed all indexed frames: {screen_video_output_file}"
+                    ),
+                });
+            };
+
+            let sample_offset_ms = sample_time_to_ms(sample_buf.pts()).ok_or_else(|| {
+                CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Finalized screen recording sample had non-numeric PTS during frame index extraction: {screen_video_output_file}"
+                    ),
+                }
+            })?;
+            let first_sample_offset_ms = *first_sample_offset_ms.get_or_insert(sample_offset_ms);
+            finalized_entries.push(ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: entry.captured_at_unix_ms,
+                frame_index: entry.frame_index,
+                video_offset_ms: sample_offset_ms.saturating_sub(first_sample_offset_ms),
+            });
+            next_entry = entry_iter.next();
+        }
+
+        match reader.status() {
+            cidre::av::asset::ReaderStatus::Completed | cidre::av::asset::ReaderStatus::Reading => {}
+            cidre::av::asset::ReaderStatus::Failed => {
+                if let Some(error) = reader.error() {
+                    return Err(error_with_ns_error(
+                        "capture_output_processing_failed",
+                        "Finalized screen frame index reader failed",
+                        error.as_ref(),
+                    ));
+                }
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Finalized screen frame index reader failed".to_string(),
+                });
+            }
+            status => {
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Finalized screen frame index reader ended unexpectedly (status: {:?})",
+                        status
+                    ),
+                });
+            }
+        }
+
+        if !screen_segment_frame_index_offsets_are_monotonic(&finalized_entries) {
+            capture_runtime::debug_log!(
+                "[capture-screen] finalized screen frame index offsets regressed for {}",
+                screen_video_output_file
+            );
+        }
+
+        let finalized_index = ScreenSegmentFrameIndex {
+            version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: finalized_entries,
+        };
+        reader.cancel_reading();
+        Ok(finalized_index)
+    };
+
+    result
+}
+
+pub fn screen_segment_frame_index_offsets_are_monotonic(entries: &[ScreenSegmentFrameIndexEntry]) -> bool {
+    entries
+        .windows(2)
+        .all(|pair| pair[0].video_offset_ms <= pair[1].video_offset_ms)
+}
+
+#[cfg(target_os = "macos")]
+pub fn rebuild_screen_segment_frame_index_from_video(
+    video_path: &Path,
+    entries: &[ScreenSegmentFrameIndexEntry],
+) -> Result<ScreenSegmentFrameIndex, String> {
+    finalized_screen_segment_frame_index(&video_path.to_string_lossy(), entries).map_err(|error| {
+        format!(
+            "failed to rebuild screen segment frame index from {}: [{}] {}",
+            video_path.display(),
+            error.code,
+            error.message
+        )
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn rebuild_screen_segment_frame_index_from_video(
+    video_path: &Path,
+    _entries: &[ScreenSegmentFrameIndexEntry],
+) -> Result<ScreenSegmentFrameIndex, String> {
+    Err(format!(
+        "rebuilding screen segment frame index from {} is only supported on macOS",
+        video_path.display()
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -880,20 +1469,31 @@ fn stream_output_callback_objc_exception_error(
     error
 }
 
+#[cfg(all(target_os = "macos", test))]
+fn run_nested_objc_exception_and_panic_boundary_for_test() {
+    let reason = cidre::ns::str!(c"nested test objc exception");
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = cidre::ns::try_catch(|| {
+            cidre::ns::Exception::raise(reason);
+        });
+    }));
+}
+
 #[cfg(target_os = "macos")]
 struct PreparedScreenFrameExport {
+    frame_index: u64,
     file_path: PathBuf,
     captured_at_unix_ms: u64,
     width: Option<u32>,
     height: Option<u32>,
-    content_fingerprint: Option<u64>,
+    captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 }
 
 #[cfg(target_os = "macos")]
 fn prepare_screen_frame_export(
     runtime: &mut ScreenFrameExportRuntime,
     sample_buf: &cidre::cm::SampleBuf,
-    content_fingerprint: Option<u64>,
+    captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 ) -> PreparedScreenFrameExport {
     let captured_at_unix_ms = now_unix_ms();
     let frame_index = runtime.next_frame_index;
@@ -909,6 +1509,7 @@ fn prepare_screen_frame_export(
         .unwrap_or((None, None));
 
     PreparedScreenFrameExport {
+        frame_index,
         file_path: screen_frame_artifact_path(
             &runtime.artifact_dir,
             frame_index,
@@ -917,79 +1518,107 @@ fn prepare_screen_frame_export(
         captured_at_unix_ms,
         width,
         height,
-        content_fingerprint,
+        captured_frame_equivalence,
     }
 }
 
 #[cfg(target_os = "macos")]
-fn save_screen_sample_as_png(
+fn save_screen_sample_as_jpeg(
     sample_buf: &cidre::cm::SampleBuf,
     output_path: &Path,
 ) -> Result<(), CaptureErrorResponse> {
-    use cidre::{cg, ut, vt};
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    {
+        use cidre::{cg, ut, vt};
 
-    let image_buf = sample_buf.image_buf().ok_or_else(|| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: "Screen frame sample did not contain an image buffer".to_string(),
-    })?;
-    let pixel_buf: &cidre::cv::PixelBuf = image_buf;
-    let cg_image =
-        vt::cg_image_from_cv_pixel_buf(pixel_buf, None).map_err(|status| CaptureErrorResponse {
+        let image_buf = sample_buf.image_buf().ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
-            message: format!(
-                "Failed to create CGImage from screen frame sample (status: {:?})",
-                status
-            ),
+            message: "Screen frame sample did not contain an image buffer".to_string(),
+        })?;
+        let pixel_buf: &cidre::cv::PixelBuf = image_buf;
+        let cg_image = vt::cg_image_from_cv_pixel_buf(pixel_buf, None).map_err(|status| {
+            CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to create CGImage from screen frame sample (status: {:?})",
+                    status
+                ),
+            }
         })?;
 
-    let output_url =
-        cidre::cf::Url::with_file_path(output_path).ok_or_else(|| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: format!(
-                "Failed to create output URL for screen frame artifact: {}",
-                output_path.display()
-            ),
-        })?;
+        let output_url =
+            cidre::cf::Url::with_file_path(output_path).ok_or_else(|| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to create output URL for screen frame artifact: {}",
+                    output_path.display()
+                ),
+            })?;
 
-    let png_type_id = ut::Type::png().id();
+        let jpeg_type_id = ut::Type::jpeg().id();
 
-    let mut destination = cg::ImageDst::with_url(output_url.as_ref(), png_type_id.as_cf(), 1)
-        .ok_or_else(|| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: format!(
-                "Failed to create PNG destination for screen frame artifact: {}",
-                output_path.display()
-            ),
-        })?;
-    destination.add_image(cg_image.as_ref(), None);
+        let mut destination = cg::ImageDst::with_url(output_url.as_ref(), jpeg_type_id.as_cf(), 1)
+            .ok_or_else(|| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: image_destination_creation_failure_message(output_path, "JPEG"),
+            })?;
+        destination.add_image(cg_image.as_ref(), None);
 
-    if destination.finalize() {
-        Ok(())
-    } else {
-        Err(CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: format!(
-                "Failed to finalize PNG screen frame artifact: {}",
-                output_path.display()
-            ),
-        })
+        if destination.finalize() {
+            Ok(())
+        } else {
+            Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to finalize JPEG screen frame artifact: {}",
+                    output_path.display()
+                ),
+            })
+        }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn image_destination_creation_failure_message(output_path: &Path, format_name: &str) -> String {
+    let parent_dir = output_path.parent();
+    let parent_exists = parent_dir.is_some_and(|parent| parent.exists());
+    let file_exists = output_path.exists();
+
+    format!(
+        "Failed to create {format_name} destination for screen frame artifact: {} (parent: {}; parent_exists: {}; file_exists: {})",
+        output_path.display(),
+        parent_dir
+            .map(|parent| parent.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
+        parent_exists,
+        file_exists
+    )
 }
 
 #[cfg(target_os = "macos")]
 fn export_screen_frame_artifact(
     runtime: &mut ScreenFrameExportRuntime,
     sample_buf: cidre::arc::R<cidre::cm::SampleBuf>,
-    content_fingerprint: Option<u64>,
+    captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 ) -> Result<(), CaptureErrorResponse> {
-    let prepared = prepare_screen_frame_export(runtime, sample_buf.as_ref(), content_fingerprint);
+    let prepared = prepare_screen_frame_export(
+        runtime,
+        sample_buf.as_ref(),
+        captured_frame_equivalence,
+    );
     let callback_queue = runtime.callback_queue.retained();
     let on_frame_exported = runtime.on_frame_exported.clone();
     let first_error = runtime.first_error.clone();
+    let segment_frame_index = runtime.segment_frame_index.clone();
     let file_path = prepared.file_path.clone();
+    let pending_index_entry = Some(ScreenSegmentFrameIndexEntry {
+        captured_at_unix_ms: prepared.captured_at_unix_ms,
+        frame_index: prepared.frame_index,
+        video_offset_ms: 0,
+    });
 
     callback_queue.async_once(move || {
-        if let Err(error) = save_screen_sample_as_png(sample_buf.as_ref(), &file_path) {
+        if let Err(error) = save_screen_sample_as_jpeg(sample_buf.as_ref(), &file_path) {
             store_first_frame_export_error(&first_error, error.clone());
             capture_runtime::debug_log!(
                 "[capture-screen] failed to export screen frame artifact {}: [{}] {}",
@@ -1000,12 +1629,39 @@ fn export_screen_frame_artifact(
             return;
         }
 
+        if let Some(entry) = pending_index_entry {
+            push_screen_segment_frame_index_entry(&segment_frame_index, entry);
+        }
+
+        let captured_frame_equivalence = match prepared.captured_frame_equivalence {
+            CapturedFrameEquivalenceOutcome::Ready(equivalence) => {
+                CapturedFrameEquivalenceOutcome::Ready(equivalence)
+            }
+            CapturedFrameEquivalenceOutcome::Quarantined(error) => {
+                match captured_frame_equivalence_from_image_path(&file_path) {
+                    CapturedFrameEquivalenceOutcome::Ready(equivalence) => {
+                        capture_runtime::debug_log!(
+                            "[capture-screen] recovered captured frame equivalence from exported artifact {} after live sample failure: {}",
+                            file_path.display(),
+                            error
+                        );
+                        CapturedFrameEquivalenceOutcome::Ready(equivalence)
+                    }
+                    CapturedFrameEquivalenceOutcome::Quarantined(fallback_error) => {
+                        CapturedFrameEquivalenceOutcome::Quarantined(format!(
+                            "{error}; fallback from exported artifact failed: {fallback_error}"
+                        ))
+                    }
+                }
+            }
+        };
+
         (on_frame_exported)(ScreenFrameArtifact {
             file_path: file_path.to_string_lossy().to_string(),
             captured_at_unix_ms: prepared.captured_at_unix_ms,
             width: prepared.width,
             height: prepared.height,
-            content_fingerprint: prepared.content_fingerprint,
+            captured_frame_equivalence,
         });
     });
 
@@ -1032,6 +1688,7 @@ fn screen_frame_export_runtime(
         callback_queue: dispatch::Queue::serial_with_ar_pool(),
         on_frame_exported: config.on_frame_exported,
         first_error: Arc::new(Mutex::new(None)),
+        segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
         next_frame_index: 0,
     }))
 }
@@ -1071,16 +1728,12 @@ mod stream_output_delegate {
                     super::screen_activity_sample_fingerprint(sample_buf);
                 let _ =
                     super::maybe_mark_screen_activity_for_fingerprint(screen_activity_fingerprint);
-
-                if let Some(frame_export) = ctx.frame_export.as_mut() {
-                    if let Err(error) = export_screen_frame_artifact(
-                        frame_export,
-                        sample_buf.retained(),
-                        screen_activity_fingerprint,
-                    ) {
-                        store_first_stream_output_error(&mut ctx.first_error, error);
-                    }
-                }
+                let captured_frame_equivalence = super::screen_activity_sample_captured_frame_equivalence(sample_buf)
+                .unwrap_or_else(|| {
+                    super::CapturedFrameEquivalenceOutcome::quarantined(
+                        "failed to derive captured frame equivalence from screen sample",
+                    )
+                });
 
                 if ctx.screen_video_writer.is_none() {
                     let Some(output_file) = ctx.screen_video_output_file.as_deref() else {
@@ -1101,9 +1754,26 @@ mod stream_output_delegate {
                     }
                 }
 
-                ctx.screen_video_writer
-                    .as_mut()
-                    .map(|writer| append_video_sample_to_writer(writer, sample_buf))
+                match ctx.screen_video_writer.as_mut() {
+                    Some(writer) => match append_video_sample_to_writer(writer, sample_buf) {
+                        Ok(appended) => {
+                            if appended {
+                                if let Some(frame_export) = ctx.frame_export.as_mut() {
+                                    if let Err(error) = export_screen_frame_artifact(
+                                        frame_export,
+                                        sample_buf.retained(),
+                                        captured_frame_equivalence,
+                                    ) {
+                                        store_first_stream_output_error(&mut ctx.first_error, error);
+                                    }
+                                }
+                            }
+                            None
+                        }
+                        Err(error) => Some(Err(error)),
+                    },
+                    None => None,
+                }
             }
             cidre::sc::OutputType::Audio => {
                 super::maybe_mark_system_audio_activity_for_sample(sample_buf);
@@ -1128,25 +1798,25 @@ mod stream_output_delegate {
             sample_buf: &mut cidre::cm::SampleBuf,
             kind: cidre::sc::OutputType,
         ) {
-            let objc_result = ns::try_catch(|| {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let objc_result = ns::try_catch(|| {
                     let ctx = self.inner_mut();
 
                     handle_stream_did_output_sample_buf(ctx, sample_buf, kind);
-                }));
+                });
 
-                if let Err(payload) = result {
+                if let Err(exception) = objc_result {
                     store_first_stream_output_error(
                         &mut self.inner_mut().first_error,
-                        stream_output_callback_panic_error(payload),
+                        stream_output_callback_objc_exception_error(exception),
                     );
                 }
-            });
+            }));
 
-            if let Err(exception) = objc_result {
+            if let Err(payload) = result {
                 store_first_stream_output_error(
                     &mut self.inner_mut().first_error,
-                    stream_output_callback_objc_exception_error(exception),
+                    stream_output_callback_panic_error(payload),
                 );
             }
         }
@@ -1155,6 +1825,75 @@ mod stream_output_delegate {
 
 #[cfg(target_os = "macos")]
 use stream_output_delegate::ScStreamOutputDelegate;
+
+#[cfg(target_os = "macos")]
+mod stream_delegate {
+    use super::{error_with_ns_error, log_capture_error, ScStreamDelegateState};
+    use cidre::objc;
+    use cidre::sc::StreamDelegate;
+
+    cidre::define_obj_type!(
+        pub(super) ScStreamDelegate + cidre::sc::StreamDelegateImpl,
+        ScStreamDelegateState,
+        ZScStreamDelegate
+    );
+
+    impl cidre::sc::StreamDelegate for ScStreamDelegate {}
+
+    #[cidre::objc::add_methods]
+    impl cidre::sc::StreamDelegateImpl for ScStreamDelegate {
+        extern "C" fn impl_stream_did_stop_with_err(
+            &mut self,
+            _cmd: Option<&cidre::objc::Sel>,
+            _stream: &cidre::sc::Stream,
+            error: &cidre::ns::Error,
+        ) {
+            let stop_error = error_with_ns_error(
+                "capture_stream_system_stopped",
+                "ScreenCaptureKit stream stopped unexpectedly",
+                error,
+            );
+            log_capture_error("ScreenCaptureKit delegate reported stopped stream", &stop_error);
+            let mut state = self
+                .inner_mut()
+                .lifecycle_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.stream_live = false;
+            state.stop_error = Some(stop_error);
+        }
+
+        extern "C" fn impl_stream_did_become_inactive(
+            &mut self,
+            _cmd: Option<&cidre::objc::Sel>,
+            _stream: &cidre::sc::Stream,
+        ) {
+            let mut state = self
+                .inner_mut()
+                .lifecycle_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.stream_live = false;
+        }
+
+        extern "C" fn impl_stream_did_become_active(
+            &mut self,
+            _cmd: Option<&cidre::objc::Sel>,
+            _stream: &cidre::sc::Stream,
+        ) {
+            let mut state = self
+                .inner_mut()
+                .lifecycle_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.stream_live = true;
+            state.stop_error = None;
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+use stream_delegate::ScStreamDelegate;
 
 #[cfg(target_os = "macos")]
 fn should_append_screen_sample(sample_buf: &cidre::cm::SampleBuf) -> bool {
@@ -1167,8 +1906,27 @@ fn should_append_screen_sample(sample_buf: &cidre::cm::SampleBuf) -> bool {
         .and_then(cf::Type::try_as_number)
         .and_then(|status| status.to_i32());
 
+    should_append_screen_sample_with_state(
+        status_value,
+        sample_buf.data_is_ready(),
+        sample_buf.image_buf().is_some(),
+        sc::FrameStatus::Complete as i32,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn should_append_screen_sample_with_state(
+    status_value: Option<i32>,
+    data_is_ready: bool,
+    has_image_buffer: bool,
+    complete_status: i32,
+) -> bool {
+    if !data_is_ready || !has_image_buffer {
+        return false;
+    }
+
     match status_value {
-        Some(value) => value == sc::FrameStatus::Complete as i32,
+        Some(value) => value == complete_status,
         None => true,
     }
 }
@@ -1218,27 +1976,32 @@ fn validate_screen_video_file(path: &str) -> Result<(), CaptureErrorResponse> {
         });
     }
 
-    let output_url = ns::Url::with_fs_path_str(path, false);
-    let asset = av::UrlAsset::with_url(&output_url, None).ok_or_else(|| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: "Failed to open finalized screen recording for validation".to_string(),
-    })?;
-
-    let tracks = load_asset_tracks_with_timeout(
-        asset.as_ref(),
-        av::MediaType::video(),
-        "capture_output_processing_failed",
-        "Timed out while validating finalized screen recording video track",
-    )?;
-
-    if tracks.is_empty() {
-        return Err(CaptureErrorResponse {
+    let result = {
+        let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+        let output_url = ns::Url::with_fs_path_str(path, false);
+        let asset = av::UrlAsset::with_url(&output_url, None).ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
-            message: FINALIZED_SCREEN_RECORDING_NO_VIDEO_TRACK_ERROR_MESSAGE.to_string(),
-        });
-    }
+            message: "Failed to open finalized screen recording for validation".to_string(),
+        })?;
 
-    Ok(())
+        let tracks = load_asset_tracks_with_timeout(
+            asset.as_ref(),
+            av::MediaType::video(),
+            "capture_output_processing_failed",
+            "Timed out while validating finalized screen recording video track",
+        )?;
+
+        if tracks.is_empty() {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: FINALIZED_SCREEN_RECORDING_NO_VIDEO_TRACK_ERROR_MESSAGE.to_string(),
+            });
+        }
+
+        Ok(())
+    };
+
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -1365,12 +2128,37 @@ struct AvFoundationCaptureSession {
 #[derive(Debug)]
 struct ScreenCaptureKitCaptureSession {
     stream: cidre::arc::R<cidre::sc::Stream>,
+    _stream_delegate: cidre::arc::R<ScStreamDelegate>,
     stream_output_delegate: cidre::arc::R<ScStreamOutputDelegate>,
     stream_output_queue: cidre::arc::R<dispatch::Queue>,
     sources: ScreenCaptureSources,
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportConfig>,
     system_audio_inactivity_tail_buffer_seconds: u64,
+    lifecycle_state: Arc<Mutex<ScreenCaptureKitLifecycleState>>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+struct ScreenCaptureKitLifecycleState {
+    stream_live: bool,
+    stop_error: Option<CaptureErrorResponse>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for ScreenCaptureKitLifecycleState {
+    fn default() -> Self {
+        Self {
+            stream_live: true,
+            stop_error: None,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct ScStreamDelegateState {
+    lifecycle_state: Arc<Mutex<ScreenCaptureKitLifecycleState>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1391,6 +2179,20 @@ unsafe impl Send for ActiveCaptureSession {}
 
 #[cfg(target_os = "macos")]
 impl ActiveCaptureSession {
+    fn is_screen_stream_live(&self) -> bool {
+        match &self.backend {
+            CaptureBackendSession::AvFoundation(_) => true,
+            CaptureBackendSession::ScreenCaptureKit(session) => session.is_stream_live(),
+        }
+    }
+
+    fn take_screen_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+        match &mut self.backend {
+            CaptureBackendSession::AvFoundation(_) => None,
+            CaptureBackendSession::ScreenCaptureKit(session) => session.take_stop_error(),
+        }
+    }
+
     fn stop(&mut self) -> Result<(), CaptureErrorResponse> {
         match &mut self.backend {
             CaptureBackendSession::AvFoundation(session) => session.stop(),
@@ -1457,6 +2259,21 @@ impl AvFoundationCaptureSession {
 
 #[cfg(target_os = "macos")]
 impl ScreenCaptureKitCaptureSession {
+    fn is_stream_live(&self) -> bool {
+        self.lifecycle_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stream_live
+    }
+
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+        self.lifecycle_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stop_error
+            .take()
+    }
+
     fn is_stop_timeout_code(code: &str) -> bool {
         matches!(
             code,
@@ -1566,6 +2383,39 @@ impl ScreenCaptureKitCaptureSession {
         Ok(())
     }
 
+    fn pause_screen_outputs_for_inactivity(&mut self) -> Result<(), CaptureErrorResponse> {
+        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+        let ctx = self.stream_output_delegate.inner_mut();
+
+        if ctx.screen_video_output_file.is_none() && ctx.frame_export.is_none() {
+            return Ok(());
+        }
+
+        let screen_video_output_file = ctx.screen_video_output_file.take();
+        let mut frame_export = ctx.frame_export.take();
+        let mut failures = Vec::new();
+
+        if let Some(mut writer) = ctx.screen_video_writer.take() {
+            if let Err(error) = finish_video_asset_writer(&mut writer) {
+                if capture_writers::is_no_video_samples_error_message("screen", &error.message) {
+                    if let Some(path) = screen_video_output_file.as_deref() {
+                        maybe_remove_screen_video_file(path);
+                    }
+                }
+                failures.push(format!("screen video writer failed: {}", error.message));
+            }
+        }
+
+        if let Err(error) = finalize_screen_frame_export(
+            screen_video_output_file.as_deref(),
+            frame_export.as_mut(),
+        ) {
+            failures.push(format!("screen frame export failed: {}", error.message));
+        }
+
+        capture_writers::aggregate_output_processing_failures(failures)
+    }
+
     fn resume_system_audio_writer(
         &mut self,
         output_path: &str,
@@ -1588,6 +2438,32 @@ impl ScreenCaptureKitCaptureSession {
         );
         ctx.system_audio_writer = Some(writer);
         ctx.system_audio_tail_trim_seconds = 0;
+        Ok(())
+    }
+
+    fn resume_screen_outputs(
+        &mut self,
+        segment_dir: &Path,
+        recording_file: &str,
+    ) -> Result<(), CaptureErrorResponse> {
+        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
+        let ctx = self.stream_output_delegate.inner_mut();
+        if ctx.screen_video_output_file.is_some() || ctx.frame_export.is_some() {
+            return Err(CaptureErrorResponse {
+                code: "invalid_runtime_state".to_string(),
+                message: "Screen outputs are already active; pause before resuming".to_string(),
+            });
+        }
+
+        ctx.screen_video_output_file = self.sources.screen.then(|| recording_file.to_string());
+        ctx.screen_video_writer = None;
+        ctx.video_bitrate_bps = self.video_bitrate_bps;
+        ctx.frame_export = if self.sources.screen {
+            screen_frame_export_runtime(segment_dir, self.frame_export.clone())?
+        } else {
+            None
+        };
+        ctx.first_error = None;
         Ok(())
     }
 
@@ -1648,6 +2524,7 @@ impl ScreenCaptureKitCaptureSession {
         let mut previous_context =
             std::mem::replace(self.stream_output_delegate.inner_mut(), next_context);
         finalize_rotated_segment_context(&mut previous_context)?;
+        drop(previous_context);
 
         Ok(RotatedCaptureOutputs {
             recording_file,
@@ -2101,7 +2978,7 @@ fn start_screen_capture_kit_session(
     video_bitrate_bps: Option<u32>,
     options: ScreenCaptureSessionOptions,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
-    use cidre::{api, cm, ns, sc};
+    use cidre::{api, ns, sc};
 
     if !api::version!(macos = 15.0) {
         let error = CaptureErrorResponse {
@@ -2185,19 +3062,18 @@ fn start_screen_capture_kit_session(
             display.height().max(1) as u32,
         );
 
-        let mut screen_stream_cfg = sc::StreamCfg::new();
-        screen_stream_cfg.set_width(stream_resolution.width as usize);
-        screen_stream_cfg.set_height(stream_resolution.height as usize);
-        screen_stream_cfg.set_minimum_frame_interval(cm::Time::new(1, screen_frame_rate as i32));
-        screen_stream_cfg.set_shows_cursor(sources.screen);
-        screen_stream_cfg.set_captures_audio(sources.system_audio);
-        screen_stream_cfg.set_capture_mic(false);
-        if sources.system_audio {
-            screen_stream_cfg.set_sample_rate(48_000);
-            screen_stream_cfg.set_channel_count(2);
-        }
+        let screen_stream_cfg = configured_screen_capture_kit_stream_cfg(
+            &stream_resolution,
+            screen_frame_rate,
+            sources,
+        );
 
-        let stream = cidre::sc::Stream::new(&filter, &screen_stream_cfg);
+        let lifecycle_state = Arc::new(Mutex::new(ScreenCaptureKitLifecycleState::default()));
+        let stream_delegate = ScStreamDelegate::with(ScStreamDelegateState {
+            lifecycle_state: lifecycle_state.clone(),
+        });
+        let stream =
+            cidre::sc::Stream::with_delegate(&filter, &screen_stream_cfg, stream_delegate.as_ref());
         let stream_output_queue = dispatch::Queue::serial_with_ar_pool();
         let stream_output_delegate =
             ScStreamOutputDelegate::with(stream_output_context_for_segment(
@@ -2251,6 +3127,7 @@ fn start_screen_capture_kit_session(
             session: ActiveCaptureSession {
                 backend: CaptureBackendSession::ScreenCaptureKit(ScreenCaptureKitCaptureSession {
                     stream,
+                    _stream_delegate: stream_delegate,
                     stream_output_delegate,
                     stream_output_queue,
                     sources: *sources,
@@ -2258,6 +3135,7 @@ fn start_screen_capture_kit_session(
                     frame_export: options.frame_export,
                     system_audio_inactivity_tail_buffer_seconds: options
                         .system_audio_inactivity_tail_trim_seconds,
+                    lifecycle_state,
                 }),
             },
             recording_file: output_file_str,
@@ -2270,6 +3148,32 @@ fn start_screen_capture_kit_session(
     })();
 
     finalize_startup_result(start_result, &session_dir)
+}
+
+#[cfg(target_os = "macos")]
+fn configured_screen_capture_kit_stream_cfg(
+    stream_resolution: &ScreenCaptureResolution,
+    screen_frame_rate: u32,
+    sources: &ScreenCaptureSources,
+) -> cidre::arc::R<cidre::sc::StreamCfg> {
+    use cidre::{cm, sc};
+
+    let mut screen_stream_cfg = sc::StreamCfg::new();
+    screen_stream_cfg.set_width(stream_resolution.width as usize);
+    screen_stream_cfg.set_height(stream_resolution.height as usize);
+    screen_stream_cfg.set_minimum_frame_interval(cm::Time::new(1, screen_frame_rate as i32));
+    // Request a packed 32-bit buffer so live captured-frame equivalence can read
+    // interleaved pixels directly instead of falling back to the exported JPEG.
+    screen_stream_cfg.set_pixel_format(cidre::cv::PixelFormat::_32_BGRA);
+    screen_stream_cfg.set_shows_cursor(sources.screen);
+    screen_stream_cfg.set_captures_audio(sources.system_audio);
+    screen_stream_cfg.set_capture_mic(false);
+    if sources.system_audio {
+        screen_stream_cfg.set_sample_rate(48_000);
+        screen_stream_cfg.set_channel_count(2);
+    }
+
+    screen_stream_cfg
 }
 
 #[cfg(target_os = "macos")]
@@ -2359,6 +3263,7 @@ fn synchronize_stream_output_queue(queue: Option<&dispatch::Queue>) {
 
 #[cfg(target_os = "macos")]
 fn finalize_screen_frame_export(
+    screen_video_output_file: Option<&str>,
     frame_export: Option<&mut ScreenFrameExportRuntime>,
 ) -> Result<(), CaptureErrorResponse> {
     let Some(frame_export) = frame_export else {
@@ -2366,6 +3271,13 @@ fn finalize_screen_frame_export(
     };
 
     synchronize_stream_output_queue(Some(frame_export.callback_queue.as_ref()));
+
+    if let Some(screen_video_output_file) = screen_video_output_file {
+        if let Err(error) = persist_screen_segment_frame_index(screen_video_output_file, frame_export)
+        {
+            log_capture_error("ScreenCaptureKit frame index finalization failed", &error);
+        }
+    }
 
     if let Some(error) = take_frame_export_error(&frame_export.first_error) {
         log_capture_error("ScreenCaptureKit frame export finalization failed", &error);
@@ -2376,6 +3288,7 @@ fn finalize_screen_frame_export(
 
 #[cfg(target_os = "macos")]
 fn finalize_secondary_stream_outputs(
+    screen_video_output_file: Option<&str>,
     system_audio_output_file: Option<&str>,
     system_audio_writer: Option<&mut AudioAssetWriterState>,
     system_audio_tail_trim_seconds: u64,
@@ -2391,8 +3304,7 @@ fn finalize_secondary_stream_outputs(
             finish_audio_asset_writer(writer)
         };
         if let Err(error) = result {
-            if capture_writers::is_no_audio_samples_error_message("system audio", &error.message)
-            {
+            if capture_writers::is_no_audio_samples_error_message("system audio", &error.message) {
                 if let Some(path) = system_audio_output_file {
                     maybe_remove_system_audio_file(path);
                 }
@@ -2401,7 +3313,7 @@ fn finalize_secondary_stream_outputs(
         }
     }
 
-    finalize_screen_frame_export(frame_export)?;
+    finalize_screen_frame_export(screen_video_output_file, frame_export)?;
 
     capture_writers::aggregate_output_processing_failures(failures)
 }
@@ -2466,21 +3378,19 @@ where
 fn finalize_stream_output_context(
     context: &mut StreamOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
-    finalize_stream_output_context_impl(
+    let mut screen_video_writer = context.screen_video_writer.take();
+    let mut system_audio_writer = context.system_audio_writer.take();
+    let result = finalize_stream_output_context_impl(
         context.screen_video_output_file.as_deref(),
-        context.screen_video_writer.is_some(),
+        screen_video_writer.is_some(),
         context.first_error.take(),
-        |first_error| {
-            writers_finalize_screen_video_output_context(
-                context.screen_video_writer.as_mut(),
-                first_error,
-            )
-        },
+        |first_error| writers_finalize_screen_video_output_context(screen_video_writer.as_mut(), first_error),
         validate_screen_video_file,
         || {
             finalize_secondary_stream_outputs(
+                context.screen_video_output_file.as_deref(),
                 context.system_audio_output_file.as_deref(),
-                context.system_audio_writer.as_mut(),
+                system_audio_writer.as_mut(),
                 context.system_audio_tail_trim_seconds,
                 context.frame_export.as_mut(),
             )
@@ -2492,15 +3402,56 @@ fn finalize_stream_output_context(
                 error,
             )
         },
-    )
+    );
+
+    drop(screen_video_writer);
+    drop(system_audio_writer);
+
+    result
 }
 
 #[cfg(target_os = "macos")]
 fn finalize_rotated_segment_context(
     context: &mut StreamOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
-    match finalize_stream_output_context(context) {
+    let screen_video_output_file = context.screen_video_output_file.clone();
+    finalize_rotated_segment_context_impl(
+        screen_video_output_file.as_deref(),
+        || finalize_stream_output_context(context),
+        |path| {
+            maybe_remove_screen_video_file(path);
+            !Path::new(path).exists()
+        },
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn finalize_rotated_segment_context_impl<Finalize, Remove>(
+    screen_video_output_file: Option<&str>,
+    finalize: Finalize,
+    mut remove_screen_video: Remove,
+) -> Result<(), CaptureErrorResponse>
+where
+    Finalize: FnOnce() -> Result<(), CaptureErrorResponse>,
+    Remove: FnMut(&str) -> bool,
+{
+    match finalize() {
         Err(error) if should_recover_from_segment_finalize_error(&error) => {
+            if let Some(path) = screen_video_output_file {
+                if !remove_screen_video(path) {
+                    let error = CaptureErrorResponse {
+                        code: "capture_output_processing_failed".to_string(),
+                        message: format!(
+                            "Recovered rotated segment finalization failure but failed to remove invalid screen artifact at {path}"
+                        ),
+                    };
+                    log_capture_error(
+                        "failed to remove invalid screen artifact after rotated segment recovery",
+                        &error,
+                    );
+                    return Err(error);
+                }
+            }
             log_capture_error(
                 "recovered from ScreenCaptureKit rotated segment finalization failure",
                 &error,
@@ -2611,6 +3562,50 @@ pub fn resume_system_audio_writer(
 }
 
 #[cfg(target_os = "macos")]
+pub fn pause_screen_outputs_for_inactivity(
+    active_session: &mut Option<ActiveCaptureSession>,
+) -> Result<(), CaptureErrorResponse> {
+    let Some(session) = active_session.as_mut() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "No active screen capture session for screen output pause".to_string(),
+        });
+    };
+    match &mut session.backend {
+        CaptureBackendSession::ScreenCaptureKit(sck) => sck.pause_screen_outputs_for_inactivity(),
+        CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
+            code: "screen_pause_unsupported".to_string(),
+            message: "Screen soft-pause is only supported on the ScreenCaptureKit backend"
+                .to_string(),
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn resume_screen_outputs(
+    active_session: &mut Option<ActiveCaptureSession>,
+    segment_dir: &Path,
+    recording_file: &str,
+) -> Result<(), CaptureErrorResponse> {
+    let Some(session) = active_session.as_mut() else {
+        return Err(CaptureErrorResponse {
+            code: "invalid_runtime_state".to_string(),
+            message: "No active screen capture session for screen output resume".to_string(),
+        });
+    };
+    match &mut session.backend {
+        CaptureBackendSession::ScreenCaptureKit(sck) => {
+            sck.resume_screen_outputs(segment_dir, recording_file)
+        }
+        CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
+            code: "screen_resume_unsupported".to_string(),
+            message: "Screen soft-resume is only supported on the ScreenCaptureKit backend"
+                .to_string(),
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub struct StopScreenCaptureSessionArgs<'a> {
     pub active_session: &'a mut Option<ActiveCaptureSession>,
     pub inactivity_tail_trim_seconds: u64,
@@ -2691,6 +3686,18 @@ pub fn supports_system_audio_capture() -> bool {
 #[cfg(target_os = "macos")]
 pub fn should_preserve_runtime_on_stop_error(error: &CaptureErrorResponse) -> bool {
     ScreenCaptureKitCaptureSession::is_stop_timeout_code(error.code.as_str())
+}
+
+#[cfg(target_os = "macos")]
+pub fn screen_capture_session_is_live(active_session: Option<&ActiveCaptureSession>) -> bool {
+    active_session.is_some_and(ActiveCaptureSession::is_screen_stream_live)
+}
+
+#[cfg(target_os = "macos")]
+pub fn take_screen_capture_session_stop_error(
+    active_session: Option<&mut ActiveCaptureSession>,
+) -> Option<CaptureErrorResponse> {
+    active_session.and_then(ActiveCaptureSession::take_screen_stop_error)
 }
 
 #[cfg(target_os = "macos")]
@@ -2803,6 +3810,28 @@ pub fn resume_system_audio_writer(
 }
 
 #[cfg(not(target_os = "macos"))]
+pub fn pause_screen_outputs_for_inactivity(
+    _active_session: &mut Option<ActiveCaptureSession>,
+) -> Result<(), CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "Screen soft-pause is currently supported only on macOS".to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn resume_screen_outputs(
+    _active_session: &mut Option<ActiveCaptureSession>,
+    _segment_dir: &Path,
+    _recording_file: &str,
+) -> Result<(), CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "Screen soft-resume is currently supported only on macOS".to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn stop_screen_capture_session(
     _args: StopScreenCaptureSessionArgs<'_>,
 ) -> Result<(), CaptureErrorResponse> {
@@ -2901,6 +3930,47 @@ pub fn system_audio_activity_level() -> Option<f32> {
         .map(|_| f32::from_bits(LAST_SYSTEM_AUDIO_ACTIVITY_LEVEL_BITS.load(Ordering::Relaxed)))
 }
 
+#[cfg(target_os = "macos")]
+pub fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.swap(0, Ordering::Relaxed);
+    let level_bits = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.swap(0, Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
+#[cfg(target_os = "macos")]
+pub fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
+    let sample_count = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_SAMPLE_COUNT.load(Ordering::Relaxed);
+    let level_bits = LAST_SYSTEM_AUDIO_ACTIVITY_WINDOW_PEAK_LEVEL_BITS.load(Ordering::Relaxed);
+    (sample_count > 0).then_some(f32::from_bits(level_bits))
+}
+
+#[cfg(target_os = "macos")]
+pub fn record_system_audio_activity_for_tests(
+    level: f32,
+    now_monotonic_ms: u64,
+    now_unix_ms: u64,
+) {
+    store_system_audio_activity(level, now_monotonic_ms, now_unix_ms);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn take_system_audio_activity_window_peak_level() -> Option<f32> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn record_system_audio_activity_for_tests(
+    _level: f32,
+    _now_monotonic_ms: u64,
+    _now_unix_ms: u64,
+) {
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn last_screen_activity_unix_ms() -> Option<u64> {
     None
@@ -2929,6 +3999,68 @@ pub fn system_audio_activity_level() -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use std::process::Command;
+
+    #[test]
+    fn screen_segment_frame_index_binary_round_trips() {
+        let index = ScreenSegmentFrameIndex {
+            version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: vec![
+                ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 1,
+                    frame_index: 2,
+                    video_offset_ms: 3,
+                },
+                ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 4,
+                    frame_index: 5,
+                    video_offset_ms: 6,
+                },
+            ],
+        };
+
+        let bytes = encode_screen_segment_frame_index(&index);
+        let decoded = decode_screen_segment_frame_index(&bytes).expect("binary frame index should decode");
+
+        assert_eq!(decoded, index);
+    }
+
+    #[test]
+    fn screen_segment_frame_index_offsets_monotonic_check_rejects_swapped_adjacent_offsets() {
+        let entries = vec![
+            ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: 1,
+                frame_index: 57,
+                video_offset_ms: 57_067,
+            },
+            ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: 2,
+                frame_index: 58,
+                video_offset_ms: 56_067,
+            },
+        ];
+
+        assert!(!screen_segment_frame_index_offsets_are_monotonic(&entries));
+    }
+
+    #[test]
+    fn screen_segment_frame_index_offsets_monotonic_check_accepts_increasing_offsets() {
+        let entries = vec![
+            ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: 1,
+                frame_index: 57,
+                video_offset_ms: 56_067,
+            },
+            ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: 2,
+                frame_index: 58,
+                video_offset_ms: 57_067,
+            },
+        ];
+
+        assert!(screen_segment_frame_index_offsets_are_monotonic(&entries));
+    }
 
     #[cfg(target_os = "macos")]
     fn screen_activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -2948,6 +4080,32 @@ mod tests {
             .expect_err("panic should be caught");
 
         stream_output_callback_panic_error(payload)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nested_objc_exception_inside_catch_unwind_does_not_abort_subprocess() {
+        const ENV_NAME: &str = "CAPTURE_SCREEN_NESTED_OBJC_EXCEPTION_CHILD";
+
+        if std::env::var_os(ENV_NAME).is_some() {
+            run_nested_objc_exception_and_panic_boundary_for_test();
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().expect("current test binary should exist"))
+            .env(ENV_NAME, "1")
+            .arg("--exact")
+            .arg("tests::nested_objc_exception_inside_catch_unwind_does_not_abort_subprocess")
+            .arg("--nocapture")
+            .output()
+            .expect("child process should run nested exception harness");
+
+        assert!(
+            output.status.success(),
+            "nested ObjC exception should be contained without aborting child process\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -2994,6 +4152,26 @@ mod tests {
 
         assert_eq!(resolved.width, 1002);
         assert_eq!(resolved.height, 778);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn configured_screen_capture_kit_stream_cfg_requests_bgra_pixel_format() {
+        let cfg = configured_screen_capture_kit_stream_cfg(
+            &ScreenCaptureResolution {
+                width: 1280,
+                height: 720,
+            },
+            1,
+            &ScreenCaptureSources {
+                screen: true,
+                system_audio: false,
+            },
+        );
+
+        assert_eq!(cfg.width(), 1280);
+        assert_eq!(cfg.height(), 720);
+        assert_eq!(cfg.pixel_format(), cidre::cv::PixelFormat::_32_BGRA);
     }
 
     // --- output_files_for_session path-layout regression ---
@@ -3101,8 +4279,34 @@ mod tests {
 
         assert_eq!(
             path,
-            Path::new("/tmp/session/frames/frame-1717000123456-000042.png")
+            Path::new("/tmp/session/frames/frame-1717000123456-000042.jpg")
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_capture_kit_lifecycle_state_defaults_to_live() {
+        let state = ScreenCaptureKitLifecycleState::default();
+
+        assert!(state.stream_live);
+        assert!(state.stop_error.is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_capture_kit_lifecycle_state_tracks_stop_error() {
+        let mut state = ScreenCaptureKitLifecycleState::default();
+        state.stream_live = false;
+        state.stop_error = Some(CaptureErrorResponse {
+            code: "capture_stream_system_stopped".to_string(),
+            message: "ScreenCaptureKit stream stopped unexpectedly: stopped by system (code: -3821)"
+                .to_string(),
+        });
+
+        assert!(!state.stream_live);
+        let stop_error = state.stop_error.expect("stop error should be recorded");
+        assert_eq!(stop_error.code, "capture_stream_system_stopped");
+        assert!(stop_error.message.contains("-3821"));
     }
 
     #[cfg(target_os = "macos")]
@@ -3182,6 +4386,83 @@ mod tests {
             "message should contain exception name: {}",
             error.message
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_append_screen_sample_with_state_accepts_complete_ready_image_samples() {
+        assert!(should_append_screen_sample_with_state(
+            Some(1),
+            true,
+            true,
+            1
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_append_screen_sample_with_state_preserves_missing_status_for_ready_image_samples() {
+        assert!(should_append_screen_sample_with_state(None, true, true, 1));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_append_screen_sample_with_state_rejects_non_ready_samples() {
+        assert!(!should_append_screen_sample_with_state(
+            Some(1),
+            false,
+            true,
+            1
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_append_screen_sample_with_state_rejects_samples_without_image_buffers() {
+        assert!(!should_append_screen_sample_with_state(
+            Some(1),
+            true,
+            false,
+            1
+        ));
+        assert!(!should_append_screen_sample_with_state(
+            None, true, false, 1
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_append_screen_sample_with_state_rejects_non_complete_status_samples() {
+        assert!(!should_append_screen_sample_with_state(
+            Some(2),
+            true,
+            true,
+            1
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn image_destination_creation_failure_message_includes_parent_context() {
+        let unique = format!(
+            "capture-screen-png-dst-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        );
+        let base_dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&base_dir).expect("base dir should be created");
+        let output_path = base_dir.join("frame.jpg");
+
+        let message = image_destination_creation_failure_message(&output_path, "JPEG");
+
+        assert!(message.contains(&output_path.display().to_string()));
+        assert!(message.contains(&format!("parent: {}", base_dir.display())));
+        assert!(message.contains("parent_exists: true"));
+        assert!(message.contains("file_exists: false"));
+
+        std::fs::remove_dir_all(&base_dir).expect("base dir should be removed");
     }
 
     #[cfg(target_os = "macos")]
@@ -3392,6 +4673,30 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn finalize_rotated_segment_context_keeps_recoverable_failures_fatal_when_invalid_screen_artifact_survives_cleanup(
+    ) {
+        let error = finalize_rotated_segment_context_impl(
+            Some("/tmp/stale-invalid-screen.mov"),
+            || {
+                Err(capture_writers::aggregate_output_processing_failures(vec![
+                    format!(
+                        "{SCREEN_VIDEO_WRITER_FAILURE_PREFIX}{SCREEN_VIDEO_FINALIZE_ASSET_WRITER_FAILURE_PREFIX}The operation could not be completed {AVFOUNDATION_FAILURE_CODE_11800_SUFFIX}"
+                    ),
+                ])
+                .expect_err("single recoverable failure should aggregate"))
+            },
+            |_path| false,
+        )
+        .expect_err("rotated recovery must fail when invalid artifact cleanup fails");
+
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert!(error.message.contains(
+            "failed to remove invalid screen artifact at /tmp/stale-invalid-screen.mov"
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn finalize_rotated_segment_context_keeps_nonrecoverable_failures_fatal() {
         let mut context = StreamOutputContext {
             screen_video_output_file: Some("/tmp/missing-screen.mov".to_string()),
@@ -3531,12 +4836,13 @@ mod tests {
             on_frame_exported: std::sync::Arc::new(|_| {}),
             first_error: Arc::new(Mutex::new(Some(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Failed to finalize PNG screen frame artifact: boom".to_string(),
+                message: "Failed to finalize JPEG screen frame artifact: boom".to_string(),
             }))),
+            segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
             next_frame_index: 0,
         };
 
-        let result = finalize_screen_frame_export(Some(&mut runtime));
+        let result = finalize_screen_frame_export(None, Some(&mut runtime));
 
         assert!(result.is_ok());
         assert!(take_frame_export_error(&runtime.first_error).is_none());
@@ -3552,8 +4858,9 @@ mod tests {
             on_frame_exported: std::sync::Arc::new(|_| {}),
             first_error: Arc::new(Mutex::new(Some(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Failed to finalize PNG screen frame artifact: boom".to_string(),
+                message: "Failed to finalize JPEG screen frame artifact: boom".to_string(),
             }))),
+            segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
             next_frame_index: 0,
         };
 
@@ -3562,11 +4869,24 @@ mod tests {
             completed_for_queue.store(true, Ordering::SeqCst);
         });
 
-        let result = finalize_screen_frame_export(Some(&mut runtime));
+        let result = finalize_screen_frame_export(None, Some(&mut runtime));
 
         assert!(result.is_ok());
         assert!(completed.load(Ordering::SeqCst));
         assert!(take_frame_export_error(&runtime.first_error).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_segment_frame_index_path_uses_video_stem() {
+        let path = screen_segment_frame_index_path(Path::new(
+            "/tmp/2026/04/12/session-preview-segment-0001.mov",
+        ));
+
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/2026/04/12/session-preview-segment-0001.frame-index.bin")
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -3766,6 +5086,40 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn system_audio_activity_window_peak_tracks_max_until_taken() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+
+        store_system_audio_activity(0.02, 10_000, 20_000);
+        store_system_audio_activity(0.60, 10_010, 20_010);
+        store_system_audio_activity(0.08, 10_020, 20_020);
+
+        assert_eq!(take_system_audio_activity_window_peak_level(), Some(0.60));
+        assert_eq!(take_system_audio_activity_window_peak_level(), None);
+        assert_eq!(system_audio_activity_level(), Some(0.08));
+
+        reset_last_screen_activity_unix_ms();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_audio_activity_window_peak_peek_preserves_value_until_taken() {
+        let _guard = screen_activity_state_test_guard();
+        reset_last_screen_activity_unix_ms();
+
+        store_system_audio_activity(0.15, 10_000, 20_000);
+        store_system_audio_activity(0.70, 10_010, 20_010);
+
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.70));
+        assert_eq!(peek_system_audio_activity_window_peak_level(), Some(0.70));
+        assert_eq!(take_system_audio_activity_window_peak_level(), Some(0.70));
+        assert_eq!(peek_system_audio_activity_window_peak_level(), None);
+
+        reset_last_screen_activity_unix_ms();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn mix_screen_activity_pixel_probe_bytes_skips_invalid_bounds() {
         let bytes = [1_u8, 2, 3];
         let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
@@ -3796,6 +5150,139 @@ mod tests {
             bytes.len(),
         ));
         assert_ne!(hash, SCREEN_ACTIVITY_FINGERPRINT_SEED);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn non_planar_screen_activity_equivalence_uses_pixel_width_not_row_byte_width() {
+        let pixel_width = 32;
+        let height = 32;
+        let bytes_per_row = pixel_width * 4;
+        let bytes = vec![128_u8; bytes_per_row * height];
+
+        let live_equivalence = non_planar_screen_activity_captured_frame_equivalence(
+            &bytes,
+            bytes_per_row,
+            pixel_width,
+            height,
+            cidre::cv::PixelFormat::_32_BGRA,
+        );
+
+        assert!(
+            matches!(live_equivalence, Some(CapturedFrameEquivalenceOutcome::Ready(_))),
+            "live non-planar screen samples should derive equivalence from pixel dimensions"
+        );
+
+        let byte_width_bug_shape = non_planar_screen_activity_captured_frame_equivalence(
+            &bytes,
+            bytes_per_row,
+            bytes_per_row,
+            height,
+            cidre::cv::PixelFormat::_32_BGRA,
+        );
+
+        assert!(
+            byte_width_bug_shape.is_none(),
+            "row byte width must not be accepted where pixel width is required"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn non_planar_screen_activity_equivalence_accepts_bgra_bytes_without_fallback_shape() {
+        let pixel_width = 8;
+        let height = 8;
+        let bytes_per_row = pixel_width * 4;
+        let bytes = vec![96_u8; bytes_per_row * height];
+
+        let equivalence = non_planar_screen_activity_captured_frame_equivalence(
+            &bytes,
+            bytes_per_row,
+            pixel_width,
+            height,
+            cidre::cv::PixelFormat::_32_BGRA,
+        );
+
+        assert!(matches!(
+            equivalence,
+            Some(CapturedFrameEquivalenceOutcome::Ready(_))
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_activity_bitmap_fingerprint_detects_localized_center_change() {
+        let width = 64;
+        let height = 64;
+        let bytes_per_row = width * 4;
+        let baseline = vec![128_u8; bytes_per_row * height];
+        let mut changed = baseline.clone();
+
+        for changed_row in 32..40 {
+            for changed_col in 32..40 {
+                let changed_offset = changed_row * bytes_per_row + changed_col * 4;
+                changed[changed_offset..changed_offset + 4].copy_from_slice(&[32, 32, 32, 255]);
+            }
+        }
+
+        let baseline_fingerprint =
+            screen_activity_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
+        let changed_fingerprint =
+            screen_activity_bitmap_fingerprint(&changed, bytes_per_row, width, height);
+
+        assert_ne!(baseline_fingerprint, changed_fingerprint);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_frame_content_bitmap_fingerprint_ignores_cursor_sized_change() {
+        let width = 64;
+        let height = 64;
+        let bytes_per_row = width * 4;
+        let baseline = vec![128_u8; bytes_per_row * height];
+        let mut cursor_changed = baseline.clone();
+
+        for row in 35..37 {
+            for col in 35..37 {
+                let offset = row * bytes_per_row + col * 4;
+                cursor_changed[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+
+        let baseline_fingerprint =
+            screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
+        let cursor_changed_fingerprint = screen_frame_content_bitmap_fingerprint(
+            &cursor_changed,
+            bytes_per_row,
+            width,
+            height,
+        );
+
+        assert_eq!(baseline_fingerprint, cursor_changed_fingerprint);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_frame_content_bitmap_fingerprint_detects_larger_localized_change() {
+        let width = 64;
+        let height = 64;
+        let bytes_per_row = width * 4;
+        let baseline = vec![128_u8; bytes_per_row * height];
+        let mut changed = baseline.clone();
+
+        for row in 32..40 {
+            for col in 32..40 {
+                let offset = row * bytes_per_row + col * 4;
+                changed[offset..offset + 4].copy_from_slice(&[32, 32, 32, 255]);
+            }
+        }
+
+        let baseline_fingerprint =
+            screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
+        let changed_fingerprint =
+            screen_frame_content_bitmap_fingerprint(&changed, bytes_per_row, width, height);
+
+        assert_ne!(baseline_fingerprint, changed_fingerprint);
     }
 }
 
@@ -3849,214 +5336,221 @@ pub fn strip_audio_from_recording_file(recording_file: &str) -> Result<(), Captu
     let input_url = ns::Url::with_fs_path_str(recording_file, false);
     let temp_url = ns::Url::with_fs_path_str(temp_path.to_string_lossy().as_ref(), false);
 
-    let asset = av::UrlAsset::with_url(&input_url, None).ok_or_else(|| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: "Failed to open recording for video-only conversion".to_string(),
-    })?;
-
-    let video_tracks = load_asset_tracks_with_timeout(
-        asset.as_ref(),
-        av::MediaType::video(),
-        "capture_output_processing_failed",
-        "Timed out while loading recording video track",
-    )?;
-    let video_track = video_tracks.first().ok_or_else(|| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: "Recording has no video track to preserve".to_string(),
-    })?;
-
-    let mut reader =
-        av::AssetReader::with_asset(asset.as_ref()).map_err(|_| CaptureErrorResponse {
+    let result = {
+        let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+        let asset = av::UrlAsset::with_url(&input_url, None).ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
-            message: "Failed to create asset reader for video-only conversion".to_string(),
+            message: "Failed to open recording for video-only conversion".to_string(),
         })?;
 
-    let mut reader_output =
-        av::AssetReaderTrackOutput::with_track(video_track, None).map_err(|_| {
-            CaptureErrorResponse {
+        let video_tracks = load_asset_tracks_with_timeout(
+            asset.as_ref(),
+            av::MediaType::video(),
+            "capture_output_processing_failed",
+            "Timed out while loading recording video track",
+        )?;
+        let video_track = video_tracks.first().ok_or_else(|| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: "Recording has no video track to preserve".to_string(),
+        })?;
+
+        let mut reader =
+            av::AssetReader::with_asset(asset.as_ref()).map_err(|_| CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Failed to create video track reader output".to_string(),
-            }
-        })?;
-    reader_output.set_always_copies_sample_data(false);
+                message: "Failed to create asset reader for video-only conversion".to_string(),
+            })?;
 
-    let reader_output_ref: &av::AssetReaderOutput =
-        unsafe { &*(&*reader_output as *const _ as *const av::AssetReaderOutput) };
-    if !reader.can_add_output(reader_output_ref) {
-        return Err(CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to add video track reader output".to_string(),
-        });
-    }
-    reader
-        .add_output(reader_output_ref)
-        .map_err(|_| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to attach video track reader output".to_string(),
-        })?;
+        let mut reader_output =
+            av::AssetReaderTrackOutput::with_track(video_track, None).map_err(|_| {
+                CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Failed to create video track reader output".to_string(),
+                }
+            })?;
+        reader_output.set_always_copies_sample_data(false);
 
-    let mut writer = av::AssetWriter::with_url_and_file_type(&temp_url, av::FileType::qt())
-        .map_err(|_| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to create video-only asset writer".to_string(),
-        })?;
-    let mut writer_input =
-        av::AssetWriterInput::with_media_type_and_output_settings(av::MediaType::video(), None)
+        let reader_output_ref: &av::AssetReaderOutput =
+            unsafe { &*(&*reader_output as *const _ as *const av::AssetReaderOutput) };
+        if !reader.can_add_output(reader_output_ref) {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to add video track reader output".to_string(),
+            });
+        }
+        reader
+            .add_output(reader_output_ref)
             .map_err(|_| CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Failed to create video-only writer input".to_string(),
+                message: "Failed to attach video track reader output".to_string(),
             })?;
-    writer_input.set_expects_media_data_in_real_time(false);
 
-    if !writer.can_add_input(&writer_input) {
-        return Err(CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to add video-only writer input".to_string(),
-        });
-    }
-    writer
-        .add_input(&writer_input)
-        .map_err(|_| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to attach video-only writer input".to_string(),
-        })?;
+        let mut writer = av::AssetWriter::with_url_and_file_type(&temp_url, av::FileType::qt())
+            .map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to create video-only asset writer".to_string(),
+            })?;
+        let mut writer_input =
+            av::AssetWriterInput::with_media_type_and_output_settings(av::MediaType::video(), None)
+                .map_err(|_| CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Failed to create video-only writer input".to_string(),
+                })?;
+        writer_input.set_expects_media_data_in_real_time(false);
 
-    let started_reading = reader.start_reading().map_err(|_| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: "Failed to start reading recording for video-only conversion".to_string(),
-    })?;
-    if !started_reading {
-        if let Some(error) = reader.error() {
-            return Err(error_with_ns_error(
-                "capture_output_processing_failed",
-                "Failed to start reading recording for video-only conversion",
-                error.as_ref(),
-            ));
+        if !writer.can_add_input(&writer_input) {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to add video-only writer input".to_string(),
+            });
         }
+        writer
+            .add_input(&writer_input)
+            .map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to attach video-only writer input".to_string(),
+            })?;
 
-        return Err(CaptureErrorResponse {
+        let started_reading = reader.start_reading().map_err(|_| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
             message: "Failed to start reading recording for video-only conversion".to_string(),
-        });
-    }
-
-    if !writer.start_writing() {
-        return Err(capture_writers::writer_error_response(
-            &writer,
-            "capture_output_processing_failed",
-            "Failed to start writing video-only recording",
-        ));
-    }
-    writer.start_session_at_src_time(cidre::cm::Time::zero());
-
-    loop {
-        let sample_buf = reader_output
-            .next_sample_buf()
-            .map_err(|_| CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
-                message: "Failed to read video sample during video-only conversion".to_string(),
-            })?;
-
-        let Some(sample_buf) = sample_buf else {
-            break;
-        };
-
-        while !writer_input.is_ready_for_more_media_data() {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-
-        let appended = writer_input
-            .append_sample_buf(sample_buf.as_ref())
-            .map_err(|_| CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
-                message: "Failed to append video sample during video-only conversion".to_string(),
-            })?;
-
-        if !appended {
-            return Err(capture_writers::writer_error_response(
-                &writer,
-                "capture_output_processing_failed",
-                "Failed to append video sample during video-only conversion",
-            ));
-        }
-    }
-
-    writer_input.mark_as_finished();
-    writer.finish_writing();
-
-    let wait_deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        match writer.status() {
-            cidre::av::asset::WriterStatus::Completed => break,
-            cidre::av::asset::WriterStatus::Failed => {
-                return Err(capture_writers::writer_error_response(
-                    &writer,
-                    "capture_output_processing_failed",
-                    "Failed to finalize video-only recording",
-                ));
-            }
-            status if std::time::Instant::now() >= wait_deadline => {
-                return Err(CaptureErrorResponse {
-                    code: "capture_output_processing_failed".to_string(),
-                    message: format!(
-                        "Timed out while finalizing video-only recording (status: {:?})",
-                        status
-                    ),
-                });
-            }
-            _ => std::thread::sleep(Duration::from_millis(10)),
-        }
-    }
-
-    match reader.status() {
-        cidre::av::asset::ReaderStatus::Completed => {}
-        cidre::av::asset::ReaderStatus::Failed => {
+        })?;
+        if !started_reading {
             if let Some(error) = reader.error() {
                 return Err(error_with_ns_error(
                     "capture_output_processing_failed",
-                    "Video-only conversion reader failed",
+                    "Failed to start reading recording for video-only conversion",
                     error.as_ref(),
                 ));
             }
 
             return Err(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Video-only conversion reader failed".to_string(),
+                message: "Failed to start reading recording for video-only conversion".to_string(),
             });
         }
-        status => {
+
+        if !writer.start_writing() {
+            return Err(capture_writers::writer_error_response(
+                &writer,
+                "capture_output_processing_failed",
+                "Failed to start writing video-only recording",
+            ));
+        }
+        writer.start_session_at_src_time(cidre::cm::Time::zero());
+
+        loop {
+            let sample_buf = reader_output
+                .next_sample_buf()
+                .map_err(|_| CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Failed to read video sample during video-only conversion".to_string(),
+                })?;
+
+            let Some(sample_buf) = sample_buf else {
+                break;
+            };
+
+            while !writer_input.is_ready_for_more_media_data() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            let appended = writer_input
+                .append_sample_buf(sample_buf.as_ref())
+                .map_err(|_| CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Failed to append video sample during video-only conversion".to_string(),
+                })?;
+
+            if !appended {
+                return Err(capture_writers::writer_error_response(
+                    &writer,
+                    "capture_output_processing_failed",
+                    "Failed to append video sample during video-only conversion",
+                ));
+            }
+        }
+
+        writer_input.mark_as_finished();
+        writer.finish_writing();
+
+        let wait_deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match writer.status() {
+                cidre::av::asset::WriterStatus::Completed => break,
+                cidre::av::asset::WriterStatus::Failed => {
+                    return Err(capture_writers::writer_error_response(
+                        &writer,
+                        "capture_output_processing_failed",
+                        "Failed to finalize video-only recording",
+                    ));
+                }
+                status if std::time::Instant::now() >= wait_deadline => {
+                    return Err(CaptureErrorResponse {
+                        code: "capture_output_processing_failed".to_string(),
+                        message: format!(
+                            "Timed out while finalizing video-only recording (status: {:?})",
+                            status
+                        ),
+                    });
+                }
+                _ => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+
+        match reader.status() {
+            cidre::av::asset::ReaderStatus::Completed => {}
+            cidre::av::asset::ReaderStatus::Failed => {
+                if let Some(error) = reader.error() {
+                    return Err(error_with_ns_error(
+                        "capture_output_processing_failed",
+                        "Video-only conversion reader failed",
+                        error.as_ref(),
+                    ));
+                }
+
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Video-only conversion reader failed".to_string(),
+                });
+            }
+            status => {
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Video-only conversion reader ended unexpectedly (status: {:?})",
+                        status
+                    ),
+                });
+            }
+        }
+
+        reader.cancel_reading();
+
+        let video_only_asset =
+            av::UrlAsset::with_url(&temp_url, None).ok_or_else(|| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to verify video-only recording".to_string(),
+            })?;
+        let audio_tracks = load_asset_tracks_with_timeout(
+            video_only_asset.as_ref(),
+            av::MediaType::audio(),
+            "capture_output_processing_failed",
+            "Timed out while validating video-only recording audio tracks",
+        )?;
+        if !audio_tracks.is_empty() {
             return Err(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: format!(
-                    "Video-only conversion reader ended unexpectedly (status: {:?})",
-                    status
-                ),
+                message: "Video-only conversion produced an unexpected audio track".to_string(),
             });
         }
-    }
 
-    let video_only_asset =
-        av::UrlAsset::with_url(&temp_url, None).ok_or_else(|| CaptureErrorResponse {
+        std::fs::rename(&temp_path, input_path).map_err(|error| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
-            message: "Failed to verify video-only recording".to_string(),
-        })?;
-    let audio_tracks = load_asset_tracks_with_timeout(
-        video_only_asset.as_ref(),
-        av::MediaType::audio(),
-        "capture_output_processing_failed",
-        "Timed out while validating video-only recording audio tracks",
-    )?;
-    if !audio_tracks.is_empty() {
-        return Err(CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Video-only conversion produced an unexpected audio track".to_string(),
-        });
-    }
+            message: format!("Failed to replace recording with video-only mov: {error}"),
+        })
+    };
 
-    std::fs::rename(&temp_path, input_path).map_err(|error| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: format!("Failed to replace recording with video-only mov: {error}"),
-    })
+    result
 }
 
 #[cfg(not(target_os = "macos"))]

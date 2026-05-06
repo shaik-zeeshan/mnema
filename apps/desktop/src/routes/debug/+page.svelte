@@ -14,6 +14,10 @@
     AppInfraStatus,
     AppJobDto,
     BackgroundJobStatus,
+    SegmentWorkspaceCleanupDebugInfoDto,
+    SegmentWorkspaceCleanupDisposition,
+    FrameBatchStatus,
+    ProcessingJobStatus,
   } from "$lib/types";
   import { captureSession, setSession } from "$lib/session.svelte";
 
@@ -38,6 +42,7 @@
   let loadingPermissions = $state(false);
   let loadingStart = $state(false);
   let loadingStop = $state(false);
+  const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
   let loadingSettings = $state(false);
 
   // ─── Idle debug ──────────────────────────────────────────────────────────
@@ -123,17 +128,17 @@
             key: "microphone",
             label: "Microphone",
             glyph: "🎙",
-            sample: { lastUnixMs: idleDebug.microphoneActivityLastUnixMs, idleMs: null, level: idleDebug.microphoneActivityLevel },
-            qualifiedIdleMs: idleDebug.microphoneActivityIdleMs,
-            qualifiedThreshold: idleDebug.microphoneActivityThreshold,
+            sample: { lastUnixMs: idleDebug.microphoneActivitySample.lastUnixMs, idleMs: null, level: idleDebug.microphoneActivitySample.level },
+            qualifiedIdleMs: idleDebug.microphoneActivityDecision.idleMs,
+            qualifiedThreshold: idleDebug.microphoneActivityDecision.activityThreshold,
           },
           {
             key: "systemAudio",
             label: "System Audio",
             glyph: "🔊",
-            sample: { lastUnixMs: idleDebug.systemAudioActivityLastUnixMs, idleMs: null, level: idleDebug.systemAudioActivityLevel },
-            qualifiedIdleMs: idleDebug.systemAudioActivityIdleMs,
-            qualifiedThreshold: idleDebug.systemAudioActivityThreshold,
+            sample: { lastUnixMs: idleDebug.systemAudioActivitySample.lastUnixMs, idleMs: null, level: idleDebug.systemAudioActivitySample.level },
+            qualifiedIdleMs: idleDebug.systemAudioActivityDecision.idleMs,
+            qualifiedThreshold: idleDebug.systemAudioActivityDecision.activityThreshold,
           },
         ]
       : []
@@ -327,6 +332,7 @@
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
+    let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let destroyed = false;
 
     listen<MicrophoneControllerState>("microphone_controller_changed", () => {
@@ -347,10 +353,19 @@
       else unlistenAutoDisconnectFailure = fn;
     });
 
+    listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
+      recordingSettings = event.payload;
+      clearError();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenRecordingSettingsChanged = fn;
+    });
+
     return () => {
       destroyed = true;
       unlistenControllerChanged?.();
       unlistenAutoDisconnectFailure?.();
+      unlistenRecordingSettingsChanged?.();
     };
   });
 
@@ -404,6 +419,78 @@
     };
   });
 
+  // ─── Wake/visibility resync ───────────────────────────────────────────────
+  // After macOS sleep/wake the native capture pipeline may have been torn
+  // down and restarted while the webview was suspended, leaving the shared
+  // session store stale. The backend-emitted `system_did_wake` event is the
+  // primary reliable trigger; foreground/drift heuristics remain as backstops.
+  // Every resync snapshots the generation so a wake-triggered refresh can
+  // never overwrite a newer authoritative action.
+  //
+  // Tauri/macOS does not reliably flip `document.visibilityState` on every
+  // wake (the webview can stay "visible" while the system slept), so we
+  // listen to a small union of triggers in addition to `visibilitychange`:
+  // window `focus`, `pageshow`, `online`, and a wall-clock drift watchdog
+  // (a 1Hz tick whose late arrival flags a process suspension). The 5s
+  // threshold is generous enough that normal jank/GC pauses don't trigger a
+  // resync; a real sleep is typically tens of seconds or more. Mirrors the
+  // dashboard's wake resync.
+  const WAKE_DRIFT_THRESHOLD_MS = 5_000;
+  const WAKE_DRIFT_TICK_MS = 1_000;
+  $effect(() => {
+    if (typeof document === "undefined") return;
+    async function resyncCaptureSession() {
+      const gen = sessionGeneration;
+      try {
+        const r = await invoke<GetPermissionsResponse>("get_capture_permissions");
+        if (sessionGeneration !== gen) return; // superseded by start/stop
+        if (r.session) setSession(r.session);
+      } catch {
+        // Best-effort — the periodic reconcile still covers steady-state drift.
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      void resyncCaptureSession();
+    };
+    const onFocus = () => { void resyncCaptureSession(); };
+    let unlistenSystemDidWake: (() => void) | undefined;
+    let destroyed = false;
+
+    listen("system_did_wake", () => {
+      void resyncCaptureSession();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSystemDidWake = fn;
+    });
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("pageshow", onFocus);
+    window.addEventListener("online", onFocus);
+
+    let lastTick = Date.now();
+    const driftTimer = setInterval(() => {
+      const now = Date.now();
+      const drift = now - lastTick - WAKE_DRIFT_TICK_MS;
+      lastTick = now;
+      if (drift >= WAKE_DRIFT_THRESHOLD_MS) {
+        // Wall-clock jumped — process was suspended. Treat as a wake.
+        void resyncCaptureSession();
+      }
+    }, WAKE_DRIFT_TICK_MS);
+
+    return () => {
+      destroyed = true;
+      unlistenSystemDidWake?.();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pageshow", onFocus);
+      window.removeEventListener("online", onFocus);
+      clearInterval(driftTimer);
+    };
+  });
+
   // ─── App Infra ────────────────────────────────────────────────────────────
 
   let infraStatus = $state<AppInfraStatus | null>(null);
@@ -429,6 +516,80 @@
   let postSubmitPollCount = $state(0);
   const POST_SUBMIT_POLL_MAX = 8;  // poll up to ~8s after submit then stop
   const POST_SUBMIT_POLL_MS = 1000;
+
+  // ─── Hidden segment workspace classifier ──────────────────────────────────
+
+  let workspaceDirInput = $state("");
+  let workspaceClassification = $state<SegmentWorkspaceCleanupDebugInfoDto | null>(null);
+  // `null` here means "no path looked like a hidden segment workspace" (the
+  // backend returned `Option::None`); distinct from "have not run yet".
+  let workspaceClassificationLoaded = $state(false);
+  let workspaceClassificationError = $state<string | null>(null);
+  let loadingWorkspaceClassification = $state(false);
+
+  async function classifyWorkspace() {
+    const trimmed = workspaceDirInput.trim();
+    if (!trimmed) {
+      workspaceClassificationError = "workspace path is required";
+      return;
+    }
+    loadingWorkspaceClassification = true;
+    workspaceClassificationError = null;
+    try {
+      const result = await invoke<SegmentWorkspaceCleanupDebugInfoDto | null>(
+        "classify_hidden_segment_workspace",
+        { request: { workspaceDir: trimmed } }
+      );
+      workspaceClassification = result;
+      workspaceClassificationLoaded = true;
+    } catch (err) {
+      workspaceClassification = null;
+      workspaceClassificationLoaded = false;
+      workspaceClassificationError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      loadingWorkspaceClassification = false;
+    }
+  }
+
+  function dispositionLabel(d: SegmentWorkspaceCleanupDisposition): string {
+    switch (d) {
+      case "referenced_by_incomplete_batch": return "referenced by incomplete batch";
+      case "referenced_by_nonterminal_ocr": return "referenced by non-terminal OCR";
+      case "missing_visible_segment_sibling": return "missing visible segment sibling";
+      case "completed_only": return "completed only";
+      case "no_references": return "no references";
+      default: return d;
+    }
+  }
+
+  function dispositionBadgeClass(d: SegmentWorkspaceCleanupDisposition): string {
+    switch (d) {
+      case "completed_only":
+      case "no_references":
+        return "badge badge--ok badge--sm";
+      case "referenced_by_incomplete_batch":
+      case "referenced_by_nonterminal_ocr":
+        return "badge badge--warn badge--sm";
+      case "missing_visible_segment_sibling":
+        return "badge badge--err badge--sm";
+      default:
+        return "badge badge--neutral badge--sm";
+    }
+  }
+
+  function batchStatusBadgeClass(status: FrameBatchStatus): string {
+    if (status === "completed") return "badge badge--ok badge--sm";
+    if (status === "failed") return "badge badge--err badge--sm";
+    if (status === "processing") return "badge badge--running badge--sm";
+    return "badge badge--neutral badge--sm";
+  }
+
+  function ocrStatusBadgeClass(status: ProcessingJobStatus): string {
+    if (status === "completed") return "badge badge--ok badge--sm";
+    if (status === "failed") return "badge badge--err badge--sm";
+    if (status === "running") return "badge badge--running badge--sm";
+    return "badge badge--neutral badge--sm";
+  }
 
   async function fetchInfraStatus() {
     loadingInfraStatus = true;
@@ -591,22 +752,123 @@
     };
   });
 
+  // ─── Section tabs ────────────────────────────────────────────────────────
+  // Reorganize the dense Debug page into discrete sections so only one is
+  // mounted at a time. This keeps the dedicated debug window focused, lets
+  // long-lived backgrounds (probe polling, idle polling, etc.) ride next to
+  // the section that owns them, and dramatically reduces what the renderer
+  // paints when several heavy lists are present at once.
+  type DebugTab =
+    | "session"
+    | "runtime"
+    | "probe"
+    | "inactivity"
+    | "infra"
+    | "workspaces"
+    | "jobs";
+
+  const debugTabs: { id: DebugTab; label: string }[] = [
+    { id: "session", label: "Session" },
+    { id: "runtime", label: "Runtime" },
+    { id: "probe", label: "Probe" },
+    { id: "inactivity", label: "Inactivity" },
+    { id: "infra", label: "Infra" },
+    { id: "workspaces", label: "Workspaces" },
+    { id: "jobs", label: "Jobs" },
+  ];
+
+  let activeTab = $state<DebugTab>("session");
+
+  // Scroll-region element. The wrapper persists across tab switches (only
+  // the inner `{#if activeTab === ...}` panel re-mounts), so without an
+  // explicit reset the previous tab's `scrollTop` would carry over.
+  // Reset to the top whenever `activeTab` changes.
+  let scrollRegion = $state<HTMLDivElement | null>(null);
+
+  $effect(() => {
+    activeTab;
+    scrollRegion?.scrollTo({ top: 0, behavior: "auto" });
+  });
+
+  // ─── Jobs pagination ─────────────────────────────────────────────────────
+  // Recent-jobs can grow unbounded; render a fixed-size window. The selected
+  // job detail panel is rendered outside the paginated list so the user can
+  // still see it after paging away from the row that owns it.
+  const JOBS_PAGE_SIZE = 5;
+  let jobsPage = $state(0);
+  const jobsPageCount = $derived(Math.max(1, Math.ceil(jobs.length / JOBS_PAGE_SIZE)));
+  // Clamp the current page when the underlying job list shrinks (e.g. after
+  // a refresh that drops a previously-listed job). This avoids landing on an
+  // empty page that confusingly shows no rows despite jobs.length > 0.
+  $effect(() => {
+    if (jobsPage > jobsPageCount - 1) {
+      jobsPage = jobsPageCount - 1;
+    }
+    if (jobsPage < 0) jobsPage = 0;
+  });
+  const jobsPageStart = $derived(jobsPage * JOBS_PAGE_SIZE);
+  const pagedJobs = $derived(jobs.slice(jobsPageStart, jobsPageStart + JOBS_PAGE_SIZE));
+  const selectedJobPage = $derived.by(() => {
+    if (selectedJobId == null) return null;
+    const idx = jobs.findIndex((j) => j.id === selectedJobId);
+    if (idx < 0) return null;
+    return Math.floor(idx / JOBS_PAGE_SIZE);
+  });
+  const selectedJobOnAnotherPage = $derived(
+    selectedJobPage != null && selectedJobPage !== jobsPage,
+  );
+
+  function goToSelectedJobPage() {
+    if (selectedJobPage != null) jobsPage = selectedJobPage;
+  }
+
 </script>
 
 <!-- ── Page header ──────────────────────────────────────────────────────── -->
-<div class="page-header">
-  <nav class="page-header__nav" aria-label="Debug navigation">
-    <a class="back-link" href="/menu" aria-label="Back to menu">
-      <span class="back-link__chevron" aria-hidden="true">‹</span>
-      <span class="back-link__label">Back</span>
-    </a>
-  </nav>
-  <h1 class="page-title">Debug</h1>
-  <p class="page-subtitle">recording status &amp; controls</p>
+<header class="page-header">
+  <div class="page-header__row">
+    <div class="page-header__title-block">
+      <h1 class="page-header__title">Debug</h1>
+    </div>
+  </div>
+  <p class="page-subtitle">Recording status &amp; controls.</p>
+</header>
+
+<!-- Wrapper carries the dashed separator below the tab chips so the
+     pinned head of the dedicated Debug window matches `.page-header`'s
+     bottom divider. The chip card itself keeps its own border. -->
+<div class="debug-tabs-wrap">
+<div class="debug-tabs" role="tablist" aria-label="Debug sections">
+    {#each debugTabs as tab (tab.id)}
+      <button
+        type="button"
+        role="tab"
+        id="debug-tab-{tab.id}"
+        aria-selected={activeTab === tab.id}
+        aria-controls="debug-panel-{tab.id}"
+        tabindex={activeTab === tab.id ? 0 : -1}
+        class="debug-tabs__btn"
+        class:debug-tabs__btn--active={activeTab === tab.id}
+        onclick={() => (activeTab = tab.id)}
+      >
+        {tab.label}
+      </button>
+    {/each}
+</div>
 </div>
 
+<!-- ── Scroll region ──────────────────────────────────────────────────────
+     Only the panel area below the tab strip scrolls. The page header and
+     tabs stay pinned at the top of the dedicated Debug window so tab
+     switches never push the controls off-screen. See the matching
+     `.settings-scroll` block in settings/+page.svelte for the same
+     pattern; both rely on `.app-shell--dedicated` being viewport-pinned
+     in +layout.svelte. -->
+<div class="debug-scroll" bind:this={scrollRegion}>
+
 <!-- ── Recording status ─────────────────────────────────────────────────── -->
-<section class="card">
+{#if activeTab === "session"}
+<section class="card" id="debug-panel-session" aria-labelledby="debug-tab-session">
   <h2 class="card__title">Session</h2>
 
   <div class="session-status" class:session-status--recording={isCapturing}>
@@ -717,9 +979,11 @@
     </button>
   </div>
 </section>
+{/if}
 
 <!-- ── Runtime sources ──────────────────────────────────────────────────── -->
-<section class="card card--debug">
+{#if activeTab === "runtime"}
+<section class="card card--debug" id="debug-panel-runtime" aria-labelledby="debug-tab-runtime">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Runtime Sources
@@ -839,9 +1103,11 @@
     <p class="empty">runtime status only available while a session is active</p>
   {/if}
 </section>
+{/if}
 
 <!-- ── System probe ──────────────────────────────────────────────────────── -->
-<section class="card">
+{#if activeTab === "probe"}
+<section class="card" id="debug-panel-probe" aria-labelledby="debug-tab-probe">
   <h2 class="card__title">System Probe</h2>
   <div class="probe-grid">
     <div class="probe-block">
@@ -921,9 +1187,11 @@
     </div>
   </div>
 </section>
+{/if}
 
 <!-- ── Native idle debug ─────────────────────────────────────────────────── -->
-<section class="card card--debug">
+{#if activeTab === "inactivity"}
+<section class="card card--debug" id="debug-panel-inactivity" aria-labelledby="debug-tab-inactivity">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Inactivity Policy
@@ -979,21 +1247,21 @@
       {#if idleDebug.activityMode === "system_input_or_screen_or_audio"}
         <li>
            <span class="kv-key kv-key--wide">mic activity idle</span>
-          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.microphoneActivityIdleMs)}</span>
-          {#if idleDebug.microphoneActivityLevel != null}
-            <span class="idle-note">level {(idleDebug.microphoneActivityLevel * 100).toFixed(0)}%</span>
+          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.microphoneActivityDecision.idleMs)}</span>
+          {#if idleDebug.microphoneActivitySample.level != null}
+            <span class="idle-note">level {(idleDebug.microphoneActivitySample.level * 100).toFixed(0)}%</span>
           {/if}
-          {#if !idleDebug.microphoneActivityEnabled}
+          {#if !idleDebug.microphoneActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
           {/if}
         </li>
         <li>
            <span class="kv-key kv-key--wide">sys audio activity idle</span>
-          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.systemAudioActivityIdleMs)}</span>
-          {#if idleDebug.systemAudioActivityLevel != null}
-            <span class="idle-note">level {(idleDebug.systemAudioActivityLevel * 100).toFixed(0)}%</span>
+          <span class="kv-val kv-val--mono">{formatIdleMs(idleDebug.systemAudioActivityDecision.idleMs)}</span>
+          {#if idleDebug.systemAudioActivitySample.level != null}
+            <span class="idle-note">level {(idleDebug.systemAudioActivitySample.level * 100).toFixed(0)}%</span>
           {/if}
-          {#if !idleDebug.systemAudioActivityEnabled}
+          {#if !idleDebug.systemAudioActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
           {/if}
         </li>
@@ -1027,11 +1295,11 @@
       </div>
 
       <!-- Microphone detector -->
-      <div class="detector-card detector-card--mic" class:detector-card--paused={idleDebug.microphonePaused && idleDebug.microphoneActivityEnabled} class:detector-card--off={!idleDebug.microphoneActivityEnabled}>
+      <div class="detector-card detector-card--mic" class:detector-card--paused={idleDebug.microphonePaused && idleDebug.microphoneActivityDecision.enabled} class:detector-card--off={!idleDebug.microphoneActivityDecision.enabled}>
         <div class="detector-card__header">
           <span class="detector-card__icon">🎙</span>
           <span class="detector-card__name">Microphone</span>
-          {#if !idleDebug.microphoneActivityEnabled}
+          {#if !idleDebug.microphoneActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
           {:else if idleDebug.microphonePaused}
             <span class="badge badge--warn badge--sm">paused</span>
@@ -1048,27 +1316,27 @@
             <span class="detector-card__metric-label">source</span>
             <span class="detector-card__metric-source">{formatEffectiveSource(idleDebug.microphoneEffectiveActivitySource)}</span>
           </div>
-          {#if idleDebug.microphoneActivityLevel != null}
+          {#if idleDebug.microphoneActivitySample.level != null}
             <div class="detector-card__metric">
               <span class="detector-card__metric-label">level</span>
-              <span class="detector-card__metric-value">{(idleDebug.microphoneActivityLevel * 100).toFixed(0)}%</span>
+              <span class="detector-card__metric-value">{(idleDebug.microphoneActivitySample.level * 100).toFixed(0)}%</span>
             </div>
           {/if}
           {#if idleDebug.microphoneActivitySensitivity != null}
             <div class="detector-card__metric">
               <span class="detector-card__metric-label">sensitivity</span>
-              <span class="detector-card__metric-source">{idleDebug.microphoneActivitySensitivity}%{#if idleDebug.microphoneActivityThreshold != null} (thr {(idleDebug.microphoneActivityThreshold * 100).toFixed(1)}%){/if}</span>
+              <span class="detector-card__metric-source">{idleDebug.microphoneActivitySensitivity}%{#if idleDebug.microphoneActivityDecision.activityThreshold != null} (thr {(idleDebug.microphoneActivityDecision.activityThreshold * 100).toFixed(1)}%){/if}</span>
             </div>
           {/if}
         </div>
       </div>
 
       <!-- System audio detector -->
-      <div class="detector-card detector-card--sysaudio" class:detector-card--paused={idleDebug.systemAudioPaused && idleDebug.systemAudioActivityEnabled} class:detector-card--off={!idleDebug.systemAudioActivityEnabled}>
+      <div class="detector-card detector-card--sysaudio" class:detector-card--paused={idleDebug.systemAudioPaused && idleDebug.systemAudioActivityDecision.enabled} class:detector-card--off={!idleDebug.systemAudioActivityDecision.enabled}>
         <div class="detector-card__header">
           <span class="detector-card__icon">🔊</span>
           <span class="detector-card__name">System Audio</span>
-          {#if !idleDebug.systemAudioActivityEnabled}
+          {#if !idleDebug.systemAudioActivityDecision.enabled}
             <span class="badge badge--neutral badge--sm">off</span>
           {:else if idleDebug.systemAudioPaused}
             <span class="badge badge--warn badge--sm">paused</span>
@@ -1085,16 +1353,16 @@
             <span class="detector-card__metric-label">source</span>
             <span class="detector-card__metric-source">{formatEffectiveSource(idleDebug.systemAudioEffectiveActivitySource)}</span>
           </div>
-          {#if idleDebug.systemAudioActivityLevel != null}
+          {#if idleDebug.systemAudioActivitySample.level != null}
             <div class="detector-card__metric">
               <span class="detector-card__metric-label">level</span>
-              <span class="detector-card__metric-value">{(idleDebug.systemAudioActivityLevel * 100).toFixed(0)}%</span>
+              <span class="detector-card__metric-value">{(idleDebug.systemAudioActivitySample.level * 100).toFixed(0)}%</span>
             </div>
           {/if}
           {#if idleDebug.systemAudioActivitySensitivity != null}
             <div class="detector-card__metric">
               <span class="detector-card__metric-label">sensitivity</span>
-              <span class="detector-card__metric-source">{idleDebug.systemAudioActivitySensitivity}%{#if idleDebug.systemAudioActivityThreshold != null} (thr {(idleDebug.systemAudioActivityThreshold * 100).toFixed(1)}%){/if}</span>
+              <span class="detector-card__metric-source">{idleDebug.systemAudioActivitySensitivity}%{#if idleDebug.systemAudioActivityDecision.activityThreshold != null} (thr {(idleDebug.systemAudioActivityDecision.activityThreshold * 100).toFixed(1)}%){/if}</span>
             </div>
           {/if}
         </div>
@@ -1162,24 +1430,24 @@
           <span class="kv-val kv-val--mono">{idleDebug.systemAudioActivitySensitivity}%</span>
         </li>
       {/if}
-      {#if idleDebug.microphoneActivityThreshold != null}
+      {#if idleDebug.microphoneActivityDecision.activityThreshold != null}
         <li>
           <span class="kv-key kv-key--wide">mic threshold</span>
-          <span class="kv-val kv-val--mono">{(idleDebug.microphoneActivityThreshold * 100).toFixed(1)}%</span>
+          <span class="kv-val kv-val--mono">{(idleDebug.microphoneActivityDecision.activityThreshold * 100).toFixed(1)}%</span>
           <span class="idle-note">normalised level; audio above this counts as activity</span>
         </li>
       {/if}
-      {#if idleDebug.microphoneActivityLastUnixMs != null}
+      {#if idleDebug.microphoneActivitySample.lastUnixMs != null}
         <li>
           <span class="kv-key kv-key--wide">mic raw sample</span>
-          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.microphoneActivityLastUnixMs)}</span>
+          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.microphoneActivitySample.lastUnixMs)}</span>
           <span class="idle-note">timestamp, not detector decision</span>
         </li>
       {/if}
-      {#if idleDebug.systemAudioActivityLastUnixMs != null}
+      {#if idleDebug.systemAudioActivitySample.lastUnixMs != null}
         <li>
           <span class="kv-key kv-key--wide">sys-audio raw sample</span>
-          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.systemAudioActivityLastUnixMs)}</span>
+          <span class="kv-val kv-val--mono">{formatTimestamp(idleDebug.systemAudioActivitySample.lastUnixMs)}</span>
           <span class="idle-note">timestamp, not detector decision</span>
         </li>
       {/if}
@@ -1188,9 +1456,11 @@
     <p class="empty">—</p>
   {/if}
 </section>
+{/if}
 
 <!-- ── App Infra / Background Jobs ───────────────────────────────────────── -->
-<section class="card card--debug">
+{#if activeTab === "infra"}
+<section class="card card--debug" id="debug-panel-infra" aria-labelledby="debug-tab-infra">
   <h2 class="card__title">
     <span class="card__num">05</span>
     <span class="debug-tag">dbg</span>
@@ -1239,9 +1509,133 @@
     <p class="empty">—</p>
   {/if}
 </section>
+{/if}
+
+<!-- ── Hidden segment workspace classifier ───────────────────────────────── -->
+{#if activeTab === "workspaces"}
+<section class="card card--debug" id="debug-panel-workspaces" aria-labelledby="debug-tab-workspaces">
+  <h2 class="card__title">
+    <span class="debug-tag">dbg</span>
+    Segment Workspace Cleanup
+    <span class="idle-note">classify a hidden segment workspace dir</span>
+  </h2>
+
+  <form
+    class="job-submit-form"
+    onsubmit={(e) => {
+      e.preventDefault();
+      classifyWorkspace();
+    }}
+  >
+    <input
+      class="job-input"
+      type="text"
+      placeholder="/…/recordings/YYYY/MM/DD/.session-segment-####"
+      bind:value={workspaceDirInput}
+      disabled={loadingWorkspaceClassification}
+      spellcheck="false"
+      autocomplete="off"
+    />
+    <button
+      class="btn btn--primary btn--sm"
+      type="submit"
+      disabled={loadingWorkspaceClassification || workspaceDirInput.trim() === ""}
+    >
+      {loadingWorkspaceClassification ? "…" : "classify"}
+    </button>
+  </form>
+
+  {#if workspaceClassificationError}
+    <p class="debug-err">{workspaceClassificationError}</p>
+  {:else if workspaceClassificationLoaded && workspaceClassification == null}
+    <p class="empty">
+      not a hidden segment workspace path (expected a directory named
+      <code>.&lt;session&gt;-segment-####</code>)
+    </p>
+  {:else if workspaceClassification}
+    {@const info = workspaceClassification}
+    <ul class="kv-list">
+      <li>
+        <span class="kv-key kv-key--wide">disposition</span>
+        <span class={dispositionBadgeClass(info.disposition)}>
+          {dispositionLabel(info.disposition)}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">safe to remove</span>
+        <span class={info.safeToRemove ? "badge badge--ok badge--sm" : "badge badge--warn badge--sm"}>
+          {info.safeToRemove ? "yes" : "no"}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">visible segment</span>
+        <span class={info.visibleSegmentExists ? "badge badge--ok badge--sm" : "badge badge--err badge--sm"}>
+          {info.visibleSegmentExists ? "present" : "missing"}
+        </span>
+        <span class="kv-val kv-val--mono" title={info.paths.visibleSegmentPath}>
+          {shortenPath(info.paths.visibleSegmentPath)}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">frame count</span>
+        <span class="kv-val kv-val--mono">{info.frameCount}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">workspace</span>
+        <span class="kv-val kv-val--mono" title={info.paths.workspaceDir}>
+          {shortenPath(info.paths.workspaceDir)}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">frames dir</span>
+        <span class="kv-val kv-val--mono" title={info.paths.framesDir}>
+          {shortenPath(info.paths.framesDir)}
+        </span>
+      </li>
+    </ul>
+
+    <div class="idle-section-label">
+      Batch references
+      <span class="idle-note">{info.batchReferences.length}</span>
+    </div>
+    {#if info.batchReferences.length === 0}
+      <p class="empty">none</p>
+    {:else}
+      <ul class="kv-list">
+        {#each info.batchReferences as ref (ref.batchId)}
+          <li>
+            <span class="kv-key kv-key--wide">batch #{ref.batchId}</span>
+            <span class={batchStatusBadgeClass(ref.status)}>{ref.status}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    <div class="idle-section-label">
+      Non-terminal OCR references
+      <span class="idle-note">{info.nonterminalOcrReferences.length}</span>
+    </div>
+    {#if info.nonterminalOcrReferences.length === 0}
+      <p class="empty">none</p>
+    {:else}
+      <ul class="kv-list">
+        {#each info.nonterminalOcrReferences as ref (ref.jobId)}
+          <li>
+            <span class="kv-key kv-key--wide">frame #{ref.frameId} · job #{ref.jobId}</span>
+            <span class={ocrStatusBadgeClass(ref.status)}>{ref.status}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {:else}
+    <p class="empty">enter a hidden segment workspace path to classify</p>
+  {/if}
+</section>
+{/if}
 
 <!-- ── Background Jobs ───────────────────────────────────────────────────── -->
-<section class="card card--debug">
+{#if activeTab === "jobs"}
+<section class="card card--debug" id="debug-panel-jobs" aria-labelledby="debug-tab-jobs">
   <h2 class="card__title">
     <span class="card__num">06</span>
     <span class="debug-tag">dbg</span>
@@ -1285,6 +1679,11 @@
   <div class="idle-section-label">
     Recent jobs
     {#if loadingJobs}<span class="idle-note">loading…</span>{/if}
+    {#if jobs.length > 0}
+      <span class="idle-note">
+        {jobsPageStart + 1}–{Math.min(jobsPageStart + JOBS_PAGE_SIZE, jobs.length)} of {jobs.length}
+      </span>
+    {/if}
   </div>
   {#if jobsError}
     <p class="debug-err">{jobsError}</p>
@@ -1292,7 +1691,7 @@
     <p class="empty">no jobs yet</p>
   {:else}
     <ul class="job-list">
-      {#each jobs as job (job.id)}
+      {#each pagedJobs as job (job.id)}
         {@const isSelected = selectedJobId === job.id}
         <li>
           <button
@@ -1309,6 +1708,31 @@
         </li>
       {/each}
     </ul>
+    {#if jobsPageCount > 1}
+      <div class="job-pager" role="group" aria-label="Recent jobs pagination">
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm"
+          onclick={() => (jobsPage = Math.max(0, jobsPage - 1))}
+          disabled={jobsPage === 0}
+          aria-label="Previous page"
+        >
+          ‹ prev
+        </button>
+        <span class="job-pager__info">
+          page {jobsPage + 1} / {jobsPageCount}
+        </span>
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm"
+          onclick={() => (jobsPage = Math.min(jobsPageCount - 1, jobsPage + 1))}
+          disabled={jobsPage >= jobsPageCount - 1}
+          aria-label="Next page"
+        >
+          next ›
+        </button>
+      </div>
+    {/if}
   {/if}
 
   <!-- Selected job detail -->
@@ -1323,6 +1747,17 @@
       >
         {loadingSelectedJob ? "…" : "↻"}
       </button>
+      {#if selectedJobOnAnotherPage}
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm"
+          onclick={goToSelectedJobPage}
+          style="margin-left: 6px;"
+          aria-label="Jump to the page containing the selected job"
+        >
+          show in list
+        </button>
+      {/if}
     </div>
     {#if selectedJobError}
       <p class="debug-err">{selectedJobError}</p>
@@ -1365,6 +1800,7 @@
     {/if}
   {/if}
 </section>
+{/if}
 
 <!-- ── Error display ─────────────────────────────────────────────────────── -->
 {#if lastError}
@@ -1377,57 +1813,33 @@
   </section>
 {/if}
 
+</div><!-- /.debug-scroll -->
+
 <style>
+  /* ── Scroll region ────────────────────────────────────────────────────
+     Wraps every tab panel + the bottom error card so the page header and
+     `.debug-tabs` strip stay pinned while only this region scrolls.
+     `flex: 1 1 0` claims the leftover height inside `.app-content`, and
+     `min-height: 0` lets the child shrink below its intrinsic content
+     height in the flex column (without it the whole dedicated Debug
+     window would scroll). */
+  .debug-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
   /* ── Page header ───────────────────────────────────────────── */
   .page-header {
-    margin-bottom: 4px;
-    padding-bottom: 14px;
-    border-bottom: 1px solid #16161e;
-  }
-
-  .page-header__nav {
     display: flex;
-    align-items: center;
-    margin-bottom: 10px;
-  }
-
-  .back-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px 4px 6px;
-    border-radius: 4px;
-    border: 1px solid #1f1f2e;
-    background: transparent;
-    color: #7a7a9a;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    transition: color 0.12s, background 0.12s, border-color 0.12s;
-  }
-
-  .back-link:hover {
-    color: #c0c0d8;
-    background: #13131e;
-    border-color: #2a2a3e;
-  }
-
-  .back-link:focus-visible {
-    outline: none;
-    border-color: #3dffa0;
-    color: #c0c0d8;
-    box-shadow: 0 0 0 2px rgba(61, 255, 160, 0.18);
-  }
-
-  .back-link__chevron {
-    font-size: 14px;
-    line-height: 1;
-    color: #5a5a7a;
-  }
-
-  .back-link:hover .back-link__chevron {
-    color: #a0a0c0;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 6px;
+    padding-bottom: 12px;
+    border-bottom: 1px dashed var(--app-border);
   }
 
   .page-header__row {
@@ -1443,12 +1855,16 @@
     gap: 2px;
   }
 
-  .page-header__eyebrow {
-    font-size: 9px;
+  .page-header__title {
+    font-size: 14px;
     font-weight: 700;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: #4a4a7a;
+    letter-spacing: 0.04em;
+    color: var(--app-text-strong);
+    line-height: 1.1;
+  }
+
+  .page-header__close {
+    min-width: 72px;
   }
 
   .page-header__meta {
@@ -1463,58 +1879,49 @@
     gap: 6px;
     padding: 3px 9px;
     border-radius: 999px;
-    background: #0d0d14;
-    border: 1px solid #1e1e2e;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #6a6a88;
+    color: var(--app-text-muted);
   }
 
   .page-header__pill--rec {
-    background: #14080a;
-    border-color: #3a1a20;
-    color: #ff6070;
+    background: var(--app-danger-bg-soft);
+    border-color: var(--app-danger-border);
+    color: var(--app-danger);
   }
 
   .page-header__pill--warn {
-    background: #14100a;
-    border-color: #3a2810;
-    color: #c09030;
+    background: var(--app-warn-bg);
+    border-color: var(--app-warn-border);
+    color: var(--app-warn);
   }
 
   .page-header__pill-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #33334a;
+    background: var(--app-text-faint);
   }
 
   .page-header__pill-dot--rec {
-    background: #ff4455;
+    background: var(--app-danger-strong);
     animation: pulse-rec 1.2s ease-in-out infinite;
-  }
-
-  .page-title {
-    font-size: 22px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: #f0f0f5;
-    line-height: 1.05;
   }
 
   .page-subtitle {
     font-size: 10px;
-    color: #44445a;
+    color: var(--app-text-subtle);
     letter-spacing: 0.06em;
-    margin-top: 8px;
   }
 
   /* ── Cards ─────────────────────────────────────────────────── */
   .card {
-    background: #13131a;
-    border: 1px solid #1e1e2e;
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border);
     border-radius: 6px;
     padding: 18px 20px;
     display: flex;
@@ -1530,17 +1937,17 @@
     right: 14px;
     top: 0;
     height: 1px;
-    background: linear-gradient(90deg, transparent 0%, #2a2a40 30%, #2a2a40 70%, transparent 100%);
+    background: linear-gradient(90deg, transparent 0%, var(--app-border-strong) 30%, var(--app-border-strong) 70%, transparent 100%);
     opacity: 0.6;
   }
 
   .card--debug::before {
-    background: linear-gradient(90deg, transparent 0%, #2a2235 50%, transparent 100%);
+    background: linear-gradient(90deg, transparent 0%, var(--app-border-strong) 50%, transparent 100%);
   }
 
   .card--error {
-    border-color: #3a1a20;
-    background: #0e0a0a;
+    border-color: var(--app-danger-border);
+    background: var(--app-danger-bg-soft);
   }
 
   .card__title {
@@ -1548,7 +1955,7 @@
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #44445a;
+    color: var(--app-text-subtle);
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1561,13 +1968,13 @@
     min-width: 22px;
     height: 16px;
     padding: 0 4px;
-    background: #0a0a12;
-    border: 1px solid #1e1e2e;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     border-radius: 2px;
     font-size: 9px;
     font-weight: 800;
     letter-spacing: 0.08em;
-    color: #5a5a7a;
+    color: var(--app-text-muted);
   }
 
   .card__title-action {
@@ -1576,7 +1983,7 @@
 
   /* ── Collapsible advanced blocks ─────────────────────────── */
   .advanced {
-    border-top: 1px dashed #1a1a26;
+    border-top: 1px dashed var(--app-border);
     padding-top: 10px;
     margin-top: 2px;
   }
@@ -1599,7 +2006,7 @@
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #5a5a7a;
+    color: var(--app-text-muted);
     user-select: none;
     transition: color 0.12s;
   }
@@ -1610,7 +2017,7 @@
     content: "▸";
     display: inline-block;
     font-size: 9px;
-    color: #3a3a54;
+    color: var(--app-text-subtle);
     transition: transform 0.15s;
   }
 
@@ -1619,7 +2026,7 @@
   }
 
   .advanced__summary:hover {
-    color: #a0a0c0;
+    color: var(--app-text);
   }
 
   /* ── Session status ─────────────────────────────────────────── */
@@ -1628,15 +2035,15 @@
     align-items: center;
     gap: 10px;
     padding: 10px 14px;
-    background: #0d0d14;
-    border: 1px solid #1e1e2e;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     border-radius: 5px;
     transition: background 0.2s, border-color 0.2s;
   }
 
   .session-status--recording {
-    background: #0a1410;
-    border-color: #1a3020;
+    background: var(--app-source-mic-bg);
+    border-color: var(--app-source-mic-border);
   }
 
   .rec-dot {
@@ -1644,13 +2051,13 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #33334a;
+    background: var(--app-text-faint);
     flex-shrink: 0;
     transition: background 0.2s;
   }
 
   .rec-dot--active {
-    background: #ff4455;
+    background: var(--app-danger-strong);
     animation: pulse-rec 1.2s ease-in-out infinite;
   }
 
@@ -1664,12 +2071,12 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #44445a;
+    color: var(--app-text-subtle);
     transition: color 0.2s;
   }
 
   .session-status--recording .session-label {
-    color: #ff6070;
+    color: var(--app-danger);
   }
 
   .source-session-grid {
@@ -1683,8 +2090,8 @@
     flex-direction: column;
     gap: 8px;
     padding: 10px 12px;
-    background: #0d0d14;
-    border: 1px solid #1a1a28;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     border-radius: 4px;
   }
 
@@ -1702,7 +2109,7 @@
 
   .settings-preview__label {
     font-size: 10px;
-    color: #33334a;
+    color: var(--app-text-faint);
     letter-spacing: 0.06em;
   }
 
@@ -1748,38 +2155,38 @@
   }
 
   .btn--primary {
-    background: #0f2e1f;
-    color: #3dffa0;
-    border-color: #1a4a30;
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
   }
 
   .btn--primary:not(:disabled):hover {
-    background: #1a3d2a;
-    border-color: #3dffa0;
+    background: var(--app-surface-active);
+    border-color: var(--app-accent);
   }
 
   .btn--danger {
-    background: #2e0f14;
-    color: #ff6b7a;
-    border-color: #4a1a20;
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
   }
 
   .btn--danger:not(:disabled):hover {
-    background: #3d1a20;
-    border-color: #ff6b7a;
+    background: var(--app-danger-bg-soft);
+    border-color: var(--app-danger);
   }
 
   .btn--ghost {
     background: transparent;
-    color: #7a7a9a;
-    border-color: #2a2a3a;
+    color: var(--app-text-muted);
+    border-color: var(--app-border-strong);
     font-size: 10px;
   }
 
   .btn--ghost:not(:disabled):hover {
-    background: #1a1a2a;
-    color: #a0a0c0;
-    border-color: #3a3a5a;
+    background: var(--app-surface-hover);
+    color: var(--app-text);
+    border-color: var(--app-border-hover);
   }
 
   .btn--sm {
@@ -1795,8 +2202,8 @@
   }
 
   .probe-block {
-    background: #0e0e16;
-    border: 1px solid #1a1a2a;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     border-radius: 4px;
     padding: 12px;
     display: flex;
@@ -1815,7 +2222,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #6a6a88;
+    color: var(--app-text-muted);
   }
 
   /* ── KV list ────────────────────────────────────────────────── */
@@ -1840,14 +2247,14 @@
   }
 
   .kv-key {
-    color: #3a3a54;
+    color: var(--app-text-subtle);
     font-size: 10px;
     white-space: nowrap;
     min-width: 60px;
   }
 
   .kv-val {
-    color: #9090b0;
+    color: var(--app-text);
     font-size: 11px;
   }
 
@@ -1864,21 +2271,21 @@
   }
 
   .badge--ok {
-    background: #0f2e1f;
-    color: #3dffa0;
-    border: 1px solid #1a4a30;
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    border: 1px solid var(--app-accent-border);
   }
 
   .badge--err {
-    background: #2e0f14;
-    color: #ff6b7a;
-    border: 1px solid #4a1a20;
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+    border: 1px solid var(--app-danger-border);
   }
 
   .badge--neutral {
-    background: #1a1a2a;
-    color: #7070a0;
-    border: 1px solid #2a2a3a;
+    background: var(--app-neutral-bg);
+    color: var(--app-neutral-text);
+    border: 1px solid var(--app-neutral-border);
   }
 
   .badge--sm {
@@ -1888,13 +2295,13 @@
 
   /* ── Error ──────────────────────────────────────────────────── */
   .error-pre {
-    background: #0e0a0a;
-    border: 1px solid #3a1a20;
+    background: var(--app-danger-bg-soft);
+    border: 1px solid var(--app-danger-border);
     border-radius: 4px;
     padding: 10px 12px;
     font-family: inherit;
     font-size: 11px;
-    color: #ff8090;
+    color: var(--app-danger-text);
     white-space: pre-wrap;
     word-break: break-all;
     max-height: 160px;
@@ -1903,7 +2310,7 @@
 
   /* ── Misc ───────────────────────────────────────────────────── */
   .empty {
-    color: #2a2a40;
+    color: var(--app-text-faint);
     font-size: 11px;
     font-style: italic;
   }
@@ -1911,8 +2318,8 @@
   /* ── Debug card ─────────────────────────────────────────────── */
   .card--debug {
     border-style: dashed;
-    border-color: #252535;
-    background: #0e0e15;
+    border-color: var(--app-border-strong);
+    background: var(--app-surface);
     opacity: 0.92;
   }
 
@@ -1920,13 +2327,13 @@
     display: inline-flex;
     align-items: center;
     padding: 0 5px;
-    background: #1a1a2a;
-    border: 1px solid #2a2a40;
+    background: var(--app-neutral-bg);
+    border: 1px solid var(--app-neutral-border);
     border-radius: 2px;
     font-size: 8px;
     font-weight: 800;
     letter-spacing: 0.1em;
-    color: #5a5a7a;
+    color: var(--app-text-muted);
     text-transform: uppercase;
   }
 
@@ -1937,7 +2344,7 @@
   .kv-val--mono {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 10px;
-    color: #8080a8;
+    color: var(--app-text);
   }
 
   /* ── Idle debug sub-sections ────────────────────────── */
@@ -1946,13 +2353,13 @@
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #33334a;
+    color: var(--app-text-faint);
     margin-top: 4px;
   }
 
   .idle-note {
     font-size: 9px;
-    color: #33334a;
+    color: var(--app-text-faint);
     font-style: italic;
     margin-left: 4px;
   }
@@ -1965,8 +2372,8 @@
   }
 
   .detector-card {
-    background: #0b0b12;
-    border: 1px solid #1e1e2e;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     border-radius: 5px;
     padding: 10px;
     display: flex;
@@ -1975,11 +2382,11 @@
     transition: border-color 0.15s, background 0.15s;
   }
 
-  .detector-card--screen { border-left: 2px solid #5a4aaa; }
-  .detector-card--mic { border-left: 2px solid #4a8a6a; }
-  .detector-card--sysaudio { border-left: 2px solid #6a7a4a; }
+  .detector-card--screen { border-left: 2px solid var(--app-source-screen-strong); }
+  .detector-card--mic { border-left: 2px solid var(--app-source-mic-strong); }
+  .detector-card--sysaudio { border-left: 2px solid var(--app-source-sysaudio-strong); }
 
-  .detector-card--paused { background: #12100a; }
+  .detector-card--paused { background: var(--app-warn-bg); }
   .detector-card--off { opacity: 0.55; }
 
   .detector-card__header {
@@ -1998,7 +2405,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #6a6a88;
+    color: var(--app-text-muted);
     flex: 1;
   }
 
@@ -2016,7 +2423,7 @@
 
   .detector-card__metric-label {
     font-size: 9px;
-    color: #3a3a54;
+    color: var(--app-text-subtle);
     min-width: 56px;
   }
 
@@ -2024,17 +2431,17 @@
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 11px;
     font-weight: 700;
-    color: #c0b0ff;
+    color: var(--app-source-screen);
     letter-spacing: 0.04em;
   }
 
-  .detector-card--mic .detector-card__metric-value { color: #80d0a8; }
-  .detector-card--sysaudio .detector-card__metric-value { color: #b0c080; }
+  .detector-card--mic .detector-card__metric-value { color: var(--app-source-mic); }
+  .detector-card--sysaudio .detector-card__metric-value { color: var(--app-source-sysaudio); }
 
   .detector-card__metric-source {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 9px;
-    color: #606080;
+    color: var(--app-text-muted);
   }
 
   /* ── Effective idle summary (subordinate) ────────────── */
@@ -2043,14 +2450,14 @@
     align-items: center;
     gap: 8px;
     padding: 6px 10px;
-    background: #0a0a10;
-    border: 1px solid #1a1a28;
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border);
     border-radius: 3px;
   }
 
   .effective-idle-summary__label {
     font-size: 9px;
-    color: #3a3a54;
+    color: var(--app-text-subtle);
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -2060,40 +2467,40 @@
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 11px;
     font-weight: 700;
-    color: #8080a8;
+    color: var(--app-text);
   }
 
   .effective-idle-summary__source {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 9px;
-    color: #505068;
+    color: var(--app-text-muted);
   }
 
   .effective-idle-block__note {
     font-size: 9px;
-    color: #4a4470;
+    color: var(--app-text-muted);
     line-height: 1.5;
     margin-top: 4px;
-    border-top: 1px solid #1e1a30;
+    border-top: 1px solid var(--app-border);
     padding-top: 6px;
   }
 
   .effective-idle-block__note em {
     font-style: normal;
-    color: #7060a8;
+    color: var(--app-source-screen);
     font-weight: 600;
   }
 
   .debug-err {
     font-size: 10px;
-    color: #a05050;
+    color: var(--app-danger);
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
   }
 
   .badge--warn {
-    background: #201608;
-    color: #c09030;
-    border: 1px solid #3a2810;
+    background: var(--app-warn-bg);
+    color: var(--app-warn);
+    border: 1px solid var(--app-warn-border);
   }
 
   /* ── Inactivity hint ────────────────────────────────────────── */
@@ -2102,8 +2509,8 @@
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
-    background: #0d0c0a;
-    border: 1px solid #3a3010;
+    background: var(--app-warn-bg);
+    border: 1px solid var(--app-warn-border);
     border-radius: 4px;
   }
 
@@ -2111,7 +2518,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #a07820;
+    background: var(--app-warn-strong);
     flex-shrink: 0;
     animation: pulse-idle 2s ease-in-out infinite;
   }
@@ -2126,7 +2533,7 @@
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #8a6a18;
+    color: var(--app-warn);
   }
 
   /* ── App Infra ──────────────────────────────────────────────── */
@@ -2139,7 +2546,7 @@
   .infra-db-path {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 9px;
-    color: #44445a;
+    color: var(--app-text-subtle);
     word-break: break-all;
     line-height: 1.5;
   }
@@ -2153,13 +2560,13 @@
   }
 
   .job-input {
-    background: #0d0d14;
-    border: 1px solid #2a2a3e;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
     border-radius: 3px;
     padding: 4px 8px;
     font-family: inherit;
     font-size: 11px;
-    color: #9090b0;
+    color: var(--app-text);
     outline: none;
     flex: 1;
     min-width: 80px;
@@ -2167,11 +2574,11 @@
   }
 
   .job-input:focus {
-    border-color: #4a4a7a;
+    border-color: var(--app-info-strong);
   }
 
   .job-input::placeholder {
-    color: #33334a;
+    color: var(--app-text-faint);
   }
 
   .job-input:disabled {
@@ -2205,26 +2612,26 @@
   }
 
   .job-row:hover {
-    background: #0e0e18;
-    border-color: #2a2a40;
+    background: var(--app-surface-raised);
+    border-color: var(--app-border-strong);
   }
 
   .job-row--selected {
-    background: #0e0e20;
-    border-color: #3a3a60;
+    background: var(--app-info-bg);
+    border-color: var(--app-info-border);
   }
 
   .job-row__id {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 9px;
-    color: #44445a;
+    color: var(--app-text-subtle);
     min-width: 28px;
     flex-shrink: 0;
   }
 
   .job-row__kind {
     font-size: 10px;
-    color: #6060a0;
+    color: var(--app-info-strong);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2234,15 +2641,15 @@
   .job-row__ts {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 9px;
-    color: #33334a;
+    color: var(--app-text-faint);
     flex-shrink: 0;
     margin-left: auto;
   }
 
   .badge--running {
-    background: #0c1a2e;
-    color: #60b0ff;
-    border: 1px solid #1a3050;
+    background: var(--app-info-bg);
+    color: var(--app-info);
+    border: 1px solid var(--app-info-border);
   }
 
   .kv-list-block {
@@ -2254,7 +2661,7 @@
   .job-detail-text {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 10px;
-    color: #7070a0;
+    color: var(--app-neutral-text);
     white-space: pre-wrap;
     word-break: break-all;
     line-height: 1.5;
@@ -2265,7 +2672,7 @@
   }
 
   .job-detail-text--err {
-    color: #a05050;
+    color: var(--app-danger);
   }
 
   /* ── Runtime sources ────────────────────────────────────────── */
@@ -2277,8 +2684,8 @@
 
   .rs-lane {
     position: relative;
-    background: #0a0a11;
-    border: 1px solid #1c1c2c;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     border-radius: 5px;
     padding: 12px 12px 10px;
     display: flex;
@@ -2296,13 +2703,13 @@
     width: 2px;
     opacity: 0.85;
   }
-  .rs-lane--screen::before { background: linear-gradient(180deg, #5a4aaa 0%, #2a2050 100%); }
-  .rs-lane--microphone::before { background: linear-gradient(180deg, #4a8a6a 0%, #1a3a2a 100%); }
-  .rs-lane--systemAudio::before { background: linear-gradient(180deg, #b09040 0%, #4a3a18 100%); }
+  .rs-lane--screen::before { background: linear-gradient(180deg, var(--app-source-screen-strong) 0%, var(--app-source-screen-border) 100%); }
+  .rs-lane--microphone::before { background: linear-gradient(180deg, var(--app-source-mic-strong) 0%, var(--app-source-mic-border) 100%); }
+  .rs-lane--systemAudio::before { background: linear-gradient(180deg, var(--app-source-sysaudio-strong) 0%, var(--app-source-sysaudio-border) 100%); }
 
   .rs-lane--off { opacity: 0.5; }
-  .rs-lane--paused { background: #100c08; border-color: #2a2418; }
-  .rs-lane--running { border-color: #1f3d2a; }
+  .rs-lane--paused { background: var(--app-warn-bg); border-color: var(--app-warn-border); }
+  .rs-lane--running { border-color: var(--app-accent-border); }
 
   .rs-lane__head {
     display: flex;
@@ -2321,7 +2728,7 @@
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #7a7a98;
+    color: var(--app-text-muted);
     flex: 1;
   }
 
@@ -2335,12 +2742,12 @@
     border: 1px solid transparent;
     white-space: nowrap;
   }
-  .rs-state--running { background: #0c2218; color: #4dffa8; border-color: #1a4a30; }
-  .rs-state--paused { background: #2a2010; color: #ffb060; border-color: #4a3a18; }
-  .rs-state--partial { background: #1a1a3a; color: #a0a0ff; border-color: #2a2a5a; }
-  .rs-state--idle { background: #161622; color: #6a6a8a; border-color: #26263a; }
-  .rs-state--off { background: #16161e; color: #44445a; border-color: #20202c; }
-  .rs-state--unknown { background: #1c0e0e; color: #c08080; border-color: #3a1a1a; }
+  .rs-state--running { background: var(--app-source-mic-bg); color: var(--app-source-mic); border-color: var(--app-source-mic-border); }
+  .rs-state--paused { background: var(--app-warn-bg); color: var(--app-warn); border-color: var(--app-warn-border); }
+  .rs-state--partial { background: var(--app-source-screen-bg); color: var(--app-source-screen); border-color: var(--app-source-screen-border); }
+  .rs-state--idle { background: var(--app-neutral-bg); color: var(--app-neutral-text); border-color: var(--app-neutral-border); }
+  .rs-state--off { background: var(--app-surface-raised); color: var(--app-text-subtle); border-color: var(--app-border); }
+  .rs-state--unknown { background: var(--app-danger-bg-soft); color: var(--app-danger-text); border-color: var(--app-danger-border); }
 
   /* Truth rows: tiny indicator + label + value. */
   .rs-rows {
@@ -2353,7 +2760,7 @@
   }
 
   .rs-rows--activity {
-    border-top: 1px dashed #1a1a26;
+    border-top: 1px dashed var(--app-border);
     padding-top: 8px;
   }
 
@@ -2369,7 +2776,7 @@
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #383852;
+    color: var(--app-text-subtle);
   }
 
   /* Indicator bar — colour by state, mimicking a tiny status LED. */
@@ -2379,7 +2786,7 @@
     width: 100%;
     height: 4px;
     border-radius: 2px;
-    background: #14141e;
+    background: var(--app-neutral-bg);
     overflow: hidden;
   }
   .rs-row__bar-fill {
@@ -2389,20 +2796,20 @@
     transition: background 0.15s, opacity 0.15s;
   }
   .rs-row__bar[data-state="on"] .rs-row__bar-fill {
-    background: linear-gradient(90deg, #1a4a30 0%, #3dffa0 100%);
-    box-shadow: 0 0 6px rgba(61, 255, 160, 0.35);
+    background: linear-gradient(90deg, var(--app-source-mic-strong) 0%, var(--app-source-mic) 100%);
+    box-shadow: 0 0 6px var(--app-accent-glow);
   }
   .rs-row__bar[data-state="paused"] .rs-row__bar-fill {
-    background: linear-gradient(90deg, #4a3618 0%, #ffb060 100%);
+    background: linear-gradient(90deg, var(--app-warn-strong) 0%, var(--app-warn) 100%);
     opacity: 0.85;
   }
-  .rs-row__bar[data-state="off"] .rs-row__bar-fill { background: #2a2030; opacity: 0.6; }
-  .rs-row__bar[data-state="idle"] .rs-row__bar-fill { background: #20202e; }
-  .rs-row__bar[data-state="unknown"] .rs-row__bar-fill { background: repeating-linear-gradient(45deg, #3a1a1a 0 3px, #1a0a0a 3px 6px); }
+  .rs-row__bar[data-state="off"] .rs-row__bar-fill { background: var(--app-neutral-border); opacity: 0.6; }
+  .rs-row__bar[data-state="idle"] .rs-row__bar-fill { background: var(--app-neutral-text); }
+  .rs-row__bar[data-state="unknown"] .rs-row__bar-fill { background: repeating-linear-gradient(45deg, var(--app-danger-border) 0 3px, var(--app-danger-bg-soft) 3px 6px); }
 
   .rs-row__val {
     font-size: 10px;
-    color: #a0a0c0;
+    color: var(--app-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2410,7 +2817,7 @@
   .rs-row__val--mono {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 10px;
-    color: #8a8ab0;
+    color: var(--app-text-muted);
     /* Sample/activity readouts: show full text, allow wrapping. */
     overflow: visible;
     text-overflow: clip;
@@ -2424,8 +2831,8 @@
     align-items: center;
     gap: 8px;
     padding: 6px 8px;
-    background: #07070d;
-    border: 1px solid #16161e;
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border);
     border-radius: 3px;
   }
   .rs-path__label {
@@ -2433,12 +2840,12 @@
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #383852;
+    color: var(--app-text-subtle);
   }
   .rs-path__val {
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 10px;
-    color: #7a7aa8;
+    color: var(--app-text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2451,10 +2858,10 @@
     gap: 14px;
     align-items: center;
     font-size: 9px;
-    color: #4a4a66;
+    color: var(--app-text-muted);
     letter-spacing: 0.04em;
     padding-top: 4px;
-    border-top: 1px dashed #1a1a26;
+    border-top: 1px dashed var(--app-border);
   }
   .rs-legend span { display: inline-flex; align-items: center; gap: 5px; }
   .rs-legend__dot {
@@ -2463,8 +2870,74 @@
     height: 4px;
     border-radius: 1px;
   }
-  .rs-legend__dot--on { background: linear-gradient(90deg, #1a4a30 0%, #3dffa0 100%); }
-  .rs-legend__dot--paused { background: linear-gradient(90deg, #4a3618 0%, #ffb060 100%); }
-  .rs-legend__dot--off { background: #2a2030; }
+  .rs-legend__dot--on { background: linear-gradient(90deg, var(--app-source-mic-strong) 0%, var(--app-source-mic) 100%); }
+  .rs-legend__dot--paused { background: linear-gradient(90deg, var(--app-warn-strong) 0%, var(--app-warn) 100%); }
+  .rs-legend__dot--off { background: var(--app-neutral-border); }
+
+  /* ── Section tabs ──────────────────────────────────────────── */
+  .debug-tabs-wrap {
+    padding-bottom: 12px;
+    border-bottom: 1px dashed var(--app-border);
+  }
+  .debug-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+  }
+
+  .debug-tabs__btn {
+    appearance: none;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: color 0.12s, background 0.12s, border-color 0.12s;
+  }
+
+  .debug-tabs__btn:hover {
+    color: var(--app-text);
+    background: var(--app-surface-raised);
+  }
+
+  .debug-tabs__btn:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+
+  .debug-tabs__btn--active {
+    color: var(--app-text-strong);
+    background: var(--app-surface-raised);
+    border-color: var(--app-border-strong);
+  }
+
+  /* ── Jobs pager ─────────────────────────────────────────────── */
+  .job-pager {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--app-border);
+  }
+
+  .job-pager__info {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
 
 </style>

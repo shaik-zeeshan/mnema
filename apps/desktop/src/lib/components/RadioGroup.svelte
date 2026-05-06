@@ -85,7 +85,7 @@
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: #44445a;
+    color: var(--app-text-subtle);
   }
 
   :global(.rg-root) {
@@ -110,17 +110,17 @@
   }
 
   :global(.rg-item:hover) {
-    background: #131320;
-    border-color: #2a2a3a;
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-strong);
   }
 
   :global(.rg-item[data-state="checked"]) {
-    background: #0d1f15;
-    border-color: #1a3020;
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
   }
 
   :global(.rg-item:focus-visible) {
-    outline: 1px solid #3dffa0;
+    outline: 1px solid var(--app-accent);
     outline-offset: 1px;
   }
 
@@ -131,22 +131,22 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    border: 1px solid #2a2a3a;
-    background: #1a1a2a;
+    border: 1px solid var(--app-border-strong);
+    background: var(--app-surface);
     flex-shrink: 0;
     transition: border-color 0.12s, background 0.12s;
   }
 
   .rg-indicator--checked {
-    border-color: #3dffa0;
-    background: #0f2e1f;
+    border-color: var(--app-accent);
+    background: var(--app-accent-bg);
   }
 
   .rg-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #3dffa0;
+    background: var(--app-accent);
   }
 
   .rg-item-text {
@@ -158,13 +158,13 @@
   .rg-item-label {
     font-size: 12px;
     font-weight: 500;
-    color: #c0c0d0;
+    color: var(--app-text);
     letter-spacing: 0.02em;
   }
 
   .rg-item-desc {
     font-size: 10px;
-    color: #44445a;
+    color: var(--app-text-muted);
     letter-spacing: 0.02em;
   }
   :global(.rg-item[data-disabled]) {
@@ -174,15 +174,15 @@
   }
 
   .rg-indicator--disabled {
-    border-color: #1e1e2e;
-    background: #0e0e16;
+    border-color: var(--app-border);
+    background: var(--app-surface);
   }
 
   .rg-item-label--disabled {
-    color: #33334a;
+    color: var(--app-text-faint);
   }
 
   .rg-item-desc--disabled {
-    color: #252535;
+    color: var(--app-text-faint);
   }
 </style>

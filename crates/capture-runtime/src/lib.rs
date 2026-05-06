@@ -17,6 +17,10 @@ use std::time::{Duration, Instant};
 
 use chrono::Local;
 
+pub fn current_date_prefix() -> String {
+    Local::now().format("%Y/%m/%d").to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeState {
     Idle,
@@ -108,18 +112,13 @@ impl RuntimeController {
 pub struct SegmentPlanner {
     save_root_dir: String,
     session_id: String,
-    /// Start-date folder component: "YYYY/MM/DD"
+    /// Date folder component for the next allocated outputs: "YYYY/MM/DD"
     date_prefix: String,
 }
 
 impl SegmentPlanner {
     pub fn new(save_root_dir: impl Into<String>, session_id: impl Into<String>) -> Self {
-        let now = Local::now();
-        Self::with_date_prefix(
-            save_root_dir,
-            session_id,
-            now.format("%Y/%m/%d").to_string(),
-        )
+        Self::with_date_prefix(save_root_dir, session_id, current_date_prefix())
     }
 
     /// Build a planner with an explicit date prefix (useful for testing).
@@ -145,6 +144,10 @@ impl SegmentPlanner {
 
     pub fn date_prefix(&self) -> &str {
         &self.date_prefix
+    }
+
+    pub fn set_date_prefix(&mut self, date_prefix: impl Into<String>) {
+        self.date_prefix = date_prefix.into();
     }
 
     /// Base directory for this session's date: `<save_root>/YYYY/MM/DD`
@@ -432,7 +435,7 @@ mod tests {
     #[test]
     fn planner_new_captures_today() {
         let planner = SegmentPlanner::new("/tmp/records", "sess-1");
-        let today = chrono::Local::now().format("%Y/%m/%d").to_string();
+        let today = current_date_prefix();
         assert_eq!(planner.date_prefix(), today);
     }
 

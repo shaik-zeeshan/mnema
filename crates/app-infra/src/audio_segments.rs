@@ -136,10 +136,10 @@ impl AudioSegmentStore {
         source_session_id: Option<&str>,
     ) -> Result<Vec<AudioSegment>> {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at FROM audio_segments WHERE started_at < ",
+            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at FROM audio_segments WHERE started_at <= ",
         );
         query.push_bind(range_end);
-        query.push(" AND ended_at > ");
+        query.push(" AND ended_at >= ");
         query.push_bind(range_start);
 
         if let Some(source_kind) = source_kind.as_ref() {

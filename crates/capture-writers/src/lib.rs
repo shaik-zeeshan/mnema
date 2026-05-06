@@ -9,6 +9,8 @@ unsafe extern "C" {
 #[cfg(target_os = "macos")]
 use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
+use cidre::objc::autorelease_pool::AutoreleasePoolPage;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
@@ -135,6 +137,21 @@ impl<T> AudioTailSampleBuffer<T> {
         active: bool,
     ) -> bool {
         let Some(sample_end_secs) = sample_end_secs.filter(|value| value.is_finite()) else {
+            if active {
+                self.observed_active_sample = true;
+                self.latest_sample_end_secs = Some(
+                    self.latest_sample_end_secs
+                        .map(|latest| latest.max(f64::NEG_INFINITY))
+                        .unwrap_or(f64::NEG_INFINITY),
+                );
+                self.samples.push_back(TimedAudioTailSample {
+                    sample,
+                    end_secs: f64::NEG_INFINITY,
+                    active,
+                });
+                return true;
+            }
+
             return false;
         };
 
@@ -494,6 +511,8 @@ fn create_audio_asset_writer_with_format_internal(
 ) -> Result<AudioAssetWriterState, CaptureErrorResponse> {
     use cidre::{av, cat, ns};
 
+    let _autorelease_pool = AutoreleasePoolPage::push();
+
     let format_id = ns::Number::with_u32(cat::audio::Format::MPEG4_AAC.0);
     let sample_rate = ns::Number::with_f64(format.sample_rate_hz);
     let channel_count = ns::Number::with_i64(format.channel_count as i64);
@@ -679,6 +698,8 @@ fn create_video_asset_writer_with_source_hint(
 ) -> Result<VideoAssetWriterState, CaptureErrorResponse> {
     use cidre::{av, ns};
 
+    let _autorelease_pool = AutoreleasePoolPage::push();
+
     let build_output_settings = |include_bitrate: bool| {
         source_format_hint.and_then(|format_desc| {
             if format_desc.media_type() != cidre::cm::MediaType::VIDEO {
@@ -803,9 +824,9 @@ fn create_video_asset_writer_with_source_hint(
 pub fn append_video_sample_to_writer(
     writer_state: &mut VideoAssetWriterState,
     sample_buf: &cidre::cm::SampleBuf,
-) -> Result<(), CaptureErrorResponse> {
+) -> Result<bool, CaptureErrorResponse> {
     if !sample_buf.data_is_ready() {
-        return Ok(());
+        return Ok(false);
     }
 
     if !writer_state.started {
@@ -824,7 +845,7 @@ pub fn append_video_sample_to_writer(
     }
 
     if !writer_state.input.is_ready_for_more_media_data() {
-        return Ok(());
+        return Ok(false);
     }
 
     let appended = writer_state
@@ -851,7 +872,7 @@ pub fn append_video_sample_to_writer(
 
     writer_state.appended_samples += 1;
 
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(target_os = "macos")]
@@ -905,6 +926,8 @@ fn finish_audio_asset_writer_with_tail_policy(
     writer_state: &mut AudioAssetWriterState,
     flush_tail: bool,
 ) -> Result<(), CaptureErrorResponse> {
+    let _autorelease_pool = AutoreleasePoolPage::push();
+
     if flush_tail {
         flush_audio_tail_buffer(writer_state)?;
     } else {
@@ -950,6 +973,8 @@ fn finish_audio_asset_writer_with_tail_policy(
 pub fn finish_video_asset_writer(
     writer_state: &mut VideoAssetWriterState,
 ) -> Result<(), CaptureErrorResponse> {
+    let _autorelease_pool = AutoreleasePoolPage::push();
+
     if !writer_state.started || writer_state.appended_samples == 0 {
         return Err(no_video_samples_error(writer_state.label));
     }
@@ -1349,6 +1374,19 @@ mod tests {
         assert!(!buffer.append_timed("nonnumeric", None, 10, false));
 
         assert_eq!(buffer.pop_sample_before_tail(10), Some("active-short"));
+        assert!(buffer.samples.is_empty());
+    }
+
+    #[test]
+    fn audio_tail_buffer_keeps_unknown_timing_samples_appendable() {
+        let mut buffer = AudioTailSampleBuffer::default();
+
+        assert!(buffer.append_timed("unknown-timing-audio", None, 10, true));
+
+        assert_eq!(
+            buffer.pop_sample_before_tail(10),
+            Some("unknown-timing-audio")
+        );
         assert!(buffer.samples.is_empty());
     }
 

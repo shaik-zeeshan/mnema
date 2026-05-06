@@ -4,8 +4,9 @@ use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, T
 use crate::{AppInfraError, Result};
 
 use super::{
-    Frame, FrameSummary, NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus,
-    ProcessingResult, ProcessingResultDraft, ProcessingSubject,
+    Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary, NewFrame, ProcessingJob,
+    ProcessingJobDraft, ProcessingJobStatus, ProcessingResult, ProcessingResultDraft,
+    ProcessingSubject,
 };
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
@@ -20,16 +21,26 @@ pub struct FrameProcessingJob {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct FrameOcrEnqueueResult {
-    pub frame: Frame,
-    pub job: Option<ProcessingJob>,
+pub struct ProcessingJobCompletion {
+    pub job: ProcessingJob,
+    pub result: ProcessingResult,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ProcessingJobCompletion {
-    pub job: ProcessingJob,
-    pub result: ProcessingResult,
+pub struct SegmentWorkspaceOcrReference {
+    pub frame_id: i64,
+    pub job_id: i64,
+    pub status: ProcessingJobStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusedFrameWindow {
+    pub frames: Vec<Frame>,
+    pub target_index: usize,
+    pub has_newer: bool,
+    pub has_older: bool,
 }
 
 #[derive(Clone)]
@@ -62,6 +73,14 @@ impl ProcessingStore {
             .ok_or(AppInfraError::FrameNotFound(frame_id))
     }
 
+    pub(crate) async fn get_frame_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame_id: i64,
+    ) -> Result<Option<Frame>> {
+        get_frame_optional(&mut **transaction, frame_id).await
+    }
+
     pub async fn enqueue_job(&self, draft: &ProcessingJobDraft) -> Result<ProcessingJob> {
         let job_id = insert_processing_job_record(
             &self.pool,
@@ -91,58 +110,156 @@ impl ProcessingStore {
             .ok_or(AppInfraError::ProcessingJobNotFound(job_id))
     }
 
-    pub(crate) async fn has_previous_frame_with_content_fingerprint_in_transaction(
+    pub(crate) async fn get_latest_processing_job_for_subject_and_processor_in_transaction(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,
-        session_id: &str,
-        before_frame_id: i64,
-        content_fingerprint: &str,
-    ) -> Result<bool> {
-        let previous_fingerprint = sqlx::query(
-            "SELECT 1 \
-             FROM frames \
-             WHERE session_id = ?1 AND id < ?2 AND content_fingerprint = ?3 \
+        subject: &ProcessingSubject,
+        processor: &str,
+    ) -> Result<Option<ProcessingJob>> {
+        let row = sqlx::query(
+            "SELECT \
+                id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+                created_at, updated_at, started_at, finished_at \
+             FROM processing_jobs \
+             WHERE subject_type = ?1 AND subject_id = ?2 AND processor = ?3 \
+             ORDER BY id DESC \
              LIMIT 1",
         )
-        .bind(session_id)
-        .bind(before_frame_id)
-        .bind(content_fingerprint)
+        .bind(subject.subject_type())
+        .bind(subject.subject_id)
+        .bind(processor)
         .fetch_optional(&mut **transaction)
         .await?;
 
-        Ok(previous_fingerprint.is_some())
+        row.map(map_processing_job).transpose()
     }
 
-    #[cfg(test)]
-    pub(crate) async fn insert_frame_and_enqueue_ocr_job(
+    pub(crate) async fn requeue_processing_job_in_transaction(
         &self,
-        frame: &NewFrame,
+        transaction: &mut Transaction<'_, Sqlite>,
+        job_id: i64,
         payload_json: Option<&str>,
-    ) -> Result<FrameProcessingJob> {
-        let mut transaction = self.pool.begin().await?;
+    ) -> Result<ProcessingJob> {
+        let update = sqlx::query(
+            "UPDATE processing_jobs \
+             SET status = 'queued', \
+                 payload_json = COALESCE(?2, payload_json), \
+                 last_error = NULL, \
+                 started_at = NULL, \
+                 finished_at = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status IN ('completed', 'failed')",
+        )
+        .bind(job_id)
+        .bind(payload_json)
+        .execute(&mut **transaction)
+        .await?;
 
-        let stored_frame = self
-            .insert_frame_in_transaction(&mut transaction, frame)
-            .await?;
-        let stored_job = self
-            .enqueue_processor_job_for_frame_in_transaction(
-                &mut transaction,
-                stored_frame.id,
-                super::OCR_PROCESSOR,
-                payload_json,
-            )
-            .await?;
+        if update.rows_affected() == 0 {
+            let current = get_processing_job_optional(&mut **transaction, job_id)
+                .await?
+                .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+            return Err(processing_job_invalid_transition(
+                job_id,
+                &current.status,
+                ProcessingJobStatus::Queued.as_str(),
+            ));
+        }
 
-        transaction.commit().await?;
+        delete_processing_result_for_job(&mut **transaction, job_id).await?;
 
-        Ok(FrameProcessingJob {
-            frame: stored_frame,
-            job: stored_job,
-        })
+        get_processing_job_optional(&mut **transaction, job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))
     }
 
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
         get_frame_optional(&self.pool, frame_id).await
+    }
+
+    pub async fn list_earlier_frames_with_equivalence_hint_in_scope(
+        &self,
+        session_id: &str,
+        before_frame_id: i64,
+        equivalence_hint: &str,
+        workspace_prefix: Option<&str>,
+    ) -> Result<Vec<Frame>> {
+        let rows = if let Some(workspace_prefix) = workspace_prefix {
+            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+            sqlx::query(
+                "SELECT id, session_id, file_path, captured_at, width, height, \
+                        equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                        created_at, updated_at \
+                 FROM frames \
+                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
+                 ORDER BY id DESC",
+            )
+            .bind(session_id)
+            .bind(before_frame_id)
+            .bind(equivalence_hint)
+            .bind(like_pattern)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, session_id, file_path, captured_at, width, height, \
+                        equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                        created_at, updated_at \
+                 FROM frames \
+                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 \
+                 ORDER BY id DESC",
+            )
+            .bind(session_id)
+            .bind(before_frame_id)
+            .bind(equivalence_hint)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        rows.into_iter().map(map_frame).collect()
+    }
+
+    pub(crate) async fn list_earlier_frames_with_equivalence_hint_in_scope_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        session_id: &str,
+        before_frame_id: i64,
+        equivalence_hint: &str,
+        workspace_prefix: Option<&str>,
+    ) -> Result<Vec<Frame>> {
+        let rows = if let Some(workspace_prefix) = workspace_prefix {
+            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+            sqlx::query(
+                "SELECT id, session_id, file_path, captured_at, width, height, \
+                        equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                        created_at, updated_at \
+                 FROM frames \
+                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
+                 ORDER BY id DESC",
+            )
+            .bind(session_id)
+            .bind(before_frame_id)
+            .bind(equivalence_hint)
+            .bind(like_pattern)
+            .fetch_all(&mut **transaction)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, session_id, file_path, captured_at, width, height, \
+                        equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                        created_at, updated_at \
+                 FROM frames \
+                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 \
+                 ORDER BY id DESC",
+            )
+            .bind(session_id)
+            .bind(before_frame_id)
+            .bind(equivalence_hint)
+            .fetch_all(&mut **transaction)
+            .await?
+        };
+
+        rows.into_iter().map(map_frame).collect()
     }
 
     pub async fn list_frames_for_segment_workspace(
@@ -152,7 +269,9 @@ impl ProcessingStore {
     ) -> Result<Vec<Frame>> {
         let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
         let rows = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at \
              FROM frames \
              WHERE session_id = ?1 AND file_path LIKE ?2 ESCAPE '\\' \
              ORDER BY captured_at ASC, id ASC",
@@ -163,6 +282,49 @@ impl ProcessingStore {
         .await?;
 
         rows.into_iter().map(map_frame).collect()
+    }
+
+    pub(crate) async fn list_nonterminal_ocr_references_for_workspace(
+        &self,
+        workspace_prefix: &str,
+    ) -> Result<Vec<SegmentWorkspaceOcrReference>> {
+        let rows = sqlx::query(
+            "SELECT \
+                frames.id AS frame_id, \
+                processing_jobs.id AS job_id, \
+                processing_jobs.status AS job_status \
+             FROM frames \
+             INNER JOIN processing_jobs ON processing_jobs.subject_id = frames.id \
+                 AND processing_jobs.subject_type = ?2 \
+                 AND processing_jobs.processor = ?3 \
+             WHERE frames.file_path LIKE ?1 ESCAPE '\\' \
+             ORDER BY frames.id ASC, processing_jobs.id ASC",
+        )
+        .bind(format!("{}%", Self::escape_sql_like_pattern(workspace_prefix)))
+        .bind(super::FRAME_SUBJECT_TYPE)
+        .bind(super::OCR_PROCESSOR)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut references = Vec::new();
+        let mut seen_job_ids = std::collections::HashSet::new();
+
+        for row in rows {
+            let job_id = row.get::<i64, _>("job_id");
+            let status = ProcessingJobStatus::from_str(&row.get::<String, _>("job_status"))?;
+            if matches!(status, ProcessingJobStatus::Completed | ProcessingJobStatus::Failed) {
+                continue;
+            }
+            if seen_job_ids.insert(job_id) {
+                references.push(SegmentWorkspaceOcrReference {
+                    frame_id: row.get("frame_id"),
+                    job_id,
+                    status,
+                });
+            }
+        }
+
+        Ok(references)
     }
 
     fn escape_sql_like_pattern(value: &str) -> String {
@@ -193,7 +355,9 @@ impl ProcessingStore {
         }
 
         let mut query_builder = QueryBuilder::<Sqlite>::new(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at FROM frames",
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at FROM frames",
         );
 
         let mut has_where_clause = false;
@@ -257,13 +421,94 @@ impl ProcessingStore {
         rows.into_iter().map(map_frame_summary).collect()
     }
 
+    pub async fn get_timeline_window_around_frame(
+        &self,
+        frame_id: i64,
+        newer_limit: u32,
+        older_limit: u32,
+    ) -> Result<FocusedFrameWindow> {
+        let target = self.get_required_frame(frame_id).await?;
+
+        let newer_rows = sqlx::query(
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at \
+             FROM frames \
+             WHERE id > ?1 \
+             ORDER BY id ASC \
+             LIMIT ?2",
+        )
+        .bind(frame_id)
+        .bind(newer_limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let older_rows = sqlx::query(
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at \
+             FROM frames \
+             WHERE id < ?1 \
+             ORDER BY id DESC \
+             LIMIT ?2",
+        )
+        .bind(frame_id)
+        .bind(older_limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut newer_frames = newer_rows
+            .into_iter()
+            .map(map_frame)
+            .collect::<Result<Vec<_>>>()?;
+        newer_frames.reverse();
+
+        let target_index = newer_frames.len();
+        let older_frames = older_rows
+            .into_iter()
+            .map(map_frame)
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut frames = newer_frames;
+        frames.push(target);
+        frames.extend(older_frames);
+
+        let tail_id = frames
+            .last()
+            .map(|frame| frame.id)
+            .ok_or(AppInfraError::FrameNotFound(frame_id))?;
+        let head_id = frames
+            .first()
+            .map(|frame| frame.id)
+            .ok_or(AppInfraError::FrameNotFound(frame_id))?;
+        let has_newer = sqlx::query("SELECT 1 FROM frames WHERE id > ?1 LIMIT 1")
+            .bind(head_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some();
+        let has_older = sqlx::query("SELECT 1 FROM frames WHERE id < ?1 LIMIT 1")
+            .bind(tail_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some();
+
+        Ok(FocusedFrameWindow {
+            frames,
+            target_index,
+            has_newer,
+            has_older,
+        })
+    }
+
     pub async fn get_latest_frame_in_range(
         &self,
         captured_at_start: &str,
         captured_at_end: &str,
     ) -> Result<Option<Frame>> {
         let row = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+            "SELECT id, session_id, file_path, captured_at, width, height, \
+                    equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                    created_at, updated_at \
              FROM frames \
              WHERE captured_at >= ?1 AND captured_at <= ?2 \
              ORDER BY captured_at DESC, id DESC \
@@ -444,6 +689,63 @@ impl ProcessingStore {
         Ok(result.rows_affected())
     }
 
+    pub async fn backfill_frame_equivalence(&self) -> Result<u64> {
+        let rows = sqlx::query(
+            "SELECT id, file_path FROM frames WHERE equivalence_status IS NULL ORDER BY id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut updated = 0_u64;
+
+        for row in rows {
+            let frame_id: i64 = row.get("id");
+            let file_path: String = row.get("file_path");
+            let equivalence = match capture_screen::captured_frame_equivalence_from_image_path(
+                std::path::Path::new(&file_path),
+            ) {
+                capture_screen::CapturedFrameEquivalenceOutcome::Ready(equivalence) => {
+                    FrameEquivalence::ready(
+                        equivalence.hint,
+                        equivalence.proof,
+                        equivalence.version,
+                    )
+                }
+                capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
+                    capture_runtime::debug_log!(
+                        "[app-infra] quarantined frame {} during equivalence backfill: {}",
+                        frame_id,
+                        error
+                    );
+                    FrameEquivalence::quarantined(error)
+                }
+            };
+
+            sqlx::query(
+                "UPDATE frames \
+                 SET equivalence_hint = ?2, \
+                     equivalence_proof = ?3, \
+                     equivalence_version = ?4, \
+                     equivalence_status = ?5, \
+                     equivalence_error = ?6, \
+                     updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = ?1",
+            )
+            .bind(frame_id)
+            .bind(equivalence.hint.as_deref())
+            .bind(equivalence.proof.as_deref())
+            .bind(equivalence.version)
+            .bind(equivalence.status.as_ref().map(FrameEquivalenceStatus::as_str))
+            .bind(equivalence.error.as_deref())
+            .execute(&self.pool)
+            .await?;
+
+            updated = updated.saturating_add(1);
+        }
+
+        Ok(updated)
+    }
+
     pub async fn mark_job_failed(
         &self,
         job_id: i64,
@@ -622,15 +924,29 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let result = sqlx::query(
-        "INSERT INTO frames (session_id, file_path, captured_at, width, height, content_fingerprint) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO frames (
+            session_id,
+            file_path,
+            captured_at,
+            width,
+            height,
+            equivalence_hint,
+            equivalence_proof,
+            equivalence_version,
+            equivalence_status,
+            equivalence_error
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )
     .bind(&frame.session_id)
     .bind(&frame.file_path)
     .bind(&frame.captured_at)
     .bind(frame.width)
     .bind(frame.height)
-    .bind(frame.content_fingerprint.as_deref())
+    .bind(frame.equivalence.hint.as_deref())
+    .bind(frame.equivalence.proof.as_deref())
+    .bind(frame.equivalence.version)
+    .bind(frame.equivalence.status.as_ref().map(FrameEquivalenceStatus::as_str))
+    .bind(frame.equivalence.error.as_deref())
     .execute(executor)
     .await?;
 
@@ -666,7 +982,9 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let row = sqlx::query(
-        "SELECT id, session_id, file_path, captured_at, width, height, content_fingerprint, created_at, updated_at \
+        "SELECT id, session_id, file_path, captured_at, width, height, \
+                equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                created_at, updated_at \
          FROM frames \
          WHERE id = ?1",
     )
@@ -731,6 +1049,14 @@ where
 }
 
 fn map_frame(row: SqliteRow) -> Result<Frame> {
+    let equivalence_status = row
+        .get::<Option<String>, _>("equivalence_status")
+        .map(|status| {
+            FrameEquivalenceStatus::from_str(&status)
+                .ok_or(AppInfraError::InvalidFrameEquivalenceStatus(status))
+        })
+        .transpose()?;
+
     Ok(Frame {
         id: row.get("id"),
         session_id: row.get("session_id"),
@@ -738,7 +1064,13 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
         captured_at: row.get("captured_at"),
         width: row.get("width"),
         height: row.get("height"),
-        content_fingerprint: row.get("content_fingerprint"),
+        equivalence: FrameEquivalence {
+            hint: row.get("equivalence_hint"),
+            proof: row.get("equivalence_proof"),
+            version: row.get("equivalence_version"),
+            status: equivalence_status,
+            error: row.get("equivalence_error"),
+        },
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })

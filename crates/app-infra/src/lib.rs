@@ -1,8 +1,12 @@
-mod db;
 mod audio_segments;
+mod captured_frame_equivalence;
 mod captured_frame_pipeline;
+mod db;
 pub mod error;
-mod frame_batches;
+mod frame_batch_artifact_cleanup;
+mod frame_batch_runtime;
+mod frame_batch_store;
+mod hidden_segment_workspace;
 pub mod jobs;
 pub mod processing;
 pub mod status;
@@ -14,25 +18,36 @@ use sqlx::SqlitePool;
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };
+pub use captured_frame_equivalence::{
+    CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,
+};
 pub use captured_frame_pipeline::{
-    CapturedFramePipeline, CapturedFramePipelineResult, ClosedFrameBatchSummary,
+    CapturedFramePipeline, CapturedFramePipelineResult, CapturedFrameReprocessingOutcome,
+    CapturedFrameReprocessingResult, ClosedFrameBatchSummary,
 };
 pub use error::{AppInfraError, Result};
-pub use frame_batches::{
-    FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchRuntime,
-    FrameBatchStatus, FrameBatchStore, FrameBatchWindow, FRAME_BATCH_DURATION_MINUTES,
-    FRAME_BATCH_FINALIZE_JOB_KIND,
+pub use frame_batch_store::{
+    FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchStatus,
+    FrameBatchStore, FrameBatchWindow, SegmentWorkspaceBatchReference,
+    FRAME_BATCH_DURATION_MINUTES, FRAME_BATCH_FINALIZE_JOB_KIND,
+};
+pub use frame_batch_runtime::FrameBatchRuntime;
+pub use hidden_segment_workspace::{
+    HiddenSegmentWorkspacePaths, HiddenSegmentWorkspaceRepairContext,
+    HiddenSegmentWorkspaceRepairResult,
+    SegmentWorkspaceCleanupDebugInfo, SegmentWorkspaceCleanupDisposition,
 };
 pub use jobs::{
     default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
     CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
 pub use processing::{
-    AppleVisionOcrEngine, Frame, FrameOcrEnqueueResult, FrameProcessingJob, FrameSummary, NewFrame,
-    OcrEngine, OcrOutput, OcrProcessorBackend, OcrProvider, OcrRequest, ProcessingJob,
-    ProcessingJobCompletion, ProcessingJobDraft, ProcessingJobRunOutcome, ProcessingJobStatus,
-    ProcessingResult, ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject,
-    ProcessorBackend, ProcessorRegistry, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
+    AppleVisionOcrEngine, FocusedFrameWindow, Frame, FrameEquivalence, FrameEquivalenceStatus,
+    FrameProcessingJob, FrameSummary, NewFrame, OcrEngine, OcrOutput, OcrProcessorBackend,
+    OcrProvider, OcrRequest, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
+    ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingResult, ProcessingResultDraft,
+    ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
+    SegmentWorkspaceOcrReference, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
@@ -43,6 +58,7 @@ pub struct AppInfra {
     audio_segments: AudioSegmentStore,
     frame_batches: FrameBatchStore,
     processing: ProcessingStore,
+    captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
     runtime: JobRuntime,
     frame_batch_runtime: FrameBatchRuntime,
@@ -63,12 +79,18 @@ impl AppInfra {
         let audio_segments = AudioSegmentStore::new(database.pool().clone());
         let frame_batches = FrameBatchStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
+        let captured_frame_equivalence =
+            CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
+        processing.backfill_frame_equivalence().await?;
         jobs.reconcile_orphaned_running_jobs().await?;
         processing.reconcile_orphaned_running_jobs().await?;
         frame_batches
             .reconcile_closed_batches_without_finalize_jobs()
+            .await?;
+        frame_batches
+            .reconcile_open_batches_without_active_capture()
             .await?;
         let runtime = JobRuntime::new(default_worker_thread_count())?;
         let frame_batch_runtime = FrameBatchRuntime::new(frame_batches.clone());
@@ -80,6 +102,7 @@ impl AppInfra {
             audio_segments,
             frame_batches,
             processing,
+            captured_frame_equivalence,
             captured_frame_pipeline,
             runtime,
             frame_batch_runtime,
@@ -91,40 +114,29 @@ impl AppInfra {
         self.database.pool()
     }
 
-    pub fn database_path(&self) -> &Path {
-        self.database.database_path()
-    }
-
-    pub fn jobs(&self) -> &JobStore {
+    #[cfg(test)]
+    pub(crate) fn jobs(&self) -> &JobStore {
         &self.jobs
     }
 
-    pub fn audio_segments(&self) -> &AudioSegmentStore {
+    #[cfg(test)]
+    pub(crate) fn audio_segments(&self) -> &AudioSegmentStore {
         &self.audio_segments
     }
 
-    pub fn processing(&self) -> &ProcessingStore {
+    #[cfg(test)]
+    pub(crate) fn processing(&self) -> &ProcessingStore {
         &self.processing
     }
 
-    pub fn frame_batches(&self) -> &FrameBatchStore {
+    #[cfg(test)]
+    pub(crate) fn frame_batches(&self) -> &FrameBatchStore {
         &self.frame_batches
     }
 
-    pub fn captured_frame_pipeline(&self) -> &CapturedFramePipeline {
+    #[cfg(test)]
+    pub(crate) fn captured_frame_pipeline(&self) -> &CapturedFramePipeline {
         &self.captured_frame_pipeline
-    }
-
-    pub fn runtime(&self) -> &JobRuntime {
-        &self.runtime
-    }
-
-    pub fn processing_runtime(&self) -> &ProcessingRuntime {
-        &self.processing_runtime
-    }
-
-    pub fn frame_batch_runtime(&self) -> &FrameBatchRuntime {
-        &self.frame_batch_runtime
     }
 
     pub async fn enqueue_job(
@@ -147,38 +159,24 @@ impl AppInfra {
         self.processing.insert_frame(frame).await
     }
 
-    pub async fn insert_frame_and_enqueue_processing_job(
+    pub async fn debug_insert_frame_and_enqueue_processing_job(
         &self,
         frame: &NewFrame,
         processor: &str,
         payload_json: Option<&str>,
     ) -> Result<FrameProcessingJob> {
         self.captured_frame_pipeline
-            .insert_frame_and_enqueue_processor_job(frame, processor, payload_json)
+            .debug_insert_frame_and_enqueue_processor_job(frame, processor, payload_json)
             .await
     }
 
-    pub async fn insert_frame_and_enqueue_ocr_job(
+    pub async fn debug_insert_frame_and_enqueue_ocr_job(
         &self,
         frame: &NewFrame,
         payload_json: Option<&str>,
     ) -> Result<FrameProcessingJob> {
-        self.insert_frame_and_enqueue_processing_job(frame, OCR_PROCESSOR, payload_json)
+        self.debug_insert_frame_and_enqueue_processing_job(frame, OCR_PROCESSOR, payload_json)
             .await
-    }
-
-    pub async fn insert_frame_and_maybe_enqueue_ocr_job(
-        &self,
-        frame: &NewFrame,
-        payload_json: Option<&str>,
-    ) -> Result<FrameOcrEnqueueResult> {
-        self.captured_frame_pipeline
-            .capture_frame(frame, payload_json)
-            .await
-            .map(|result| FrameOcrEnqueueResult {
-                frame: result.frame,
-                job: result.job,
-            })
     }
 
     pub async fn capture_frame(
@@ -191,12 +189,13 @@ impl AppInfra {
             .await
     }
 
-    pub async fn insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+    pub async fn reprocess_captured_frame_ocr(
         &self,
-        frame: &NewFrame,
+        frame_id: i64,
         payload_json: Option<&str>,
-    ) -> Result<FrameOcrEnqueueResult> {
-        self.insert_frame_and_maybe_enqueue_ocr_job(frame, payload_json)
+    ) -> Result<CapturedFrameReprocessingResult> {
+        self.captured_frame_pipeline
+            .reprocess_captured_frame_ocr(frame_id, payload_json)
             .await
     }
 
@@ -222,6 +221,17 @@ impl AppInfra {
             .await
     }
 
+    pub async fn get_timeline_window_around_frame(
+        &self,
+        frame_id: i64,
+        newer_limit: u32,
+        older_limit: u32,
+    ) -> Result<FocusedFrameWindow> {
+        self.processing
+            .get_timeline_window_around_frame(frame_id, newer_limit, older_limit)
+            .await
+    }
+
     pub async fn get_latest_frame_in_range(
         &self,
         captured_at_start: &str,
@@ -244,8 +254,35 @@ impl AppInfra {
         self.frame_batches.list_frames_for_batch(batch_id).await
     }
 
+    pub async fn close_and_schedule_all_frame_batches_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<FrameBatch>> {
+        self.frame_batches
+            .close_and_schedule_all_batches_for_session(session_id)
+            .await
+    }
+
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
         self.processing.get_frame(frame_id).await
+    }
+
+    pub async fn get_nearest_earlier_equivalent_frame(
+        &self,
+        frame_id: i64,
+    ) -> Result<Option<Frame>> {
+        self.captured_frame_equivalence
+            .get_frame_and_find_nearest_earlier_equivalent_frame_in_default_scope(frame_id)
+            .await
+    }
+
+    pub async fn get_earliest_earlier_equivalent_frame(
+        &self,
+        frame_id: i64,
+    ) -> Result<Option<Frame>> {
+        self.captured_frame_equivalence
+            .get_frame_and_find_earliest_earlier_equivalent_frame_in_default_scope(frame_id)
+            .await
     }
 
     pub async fn list_frames_for_segment_workspace(
@@ -255,6 +292,36 @@ impl AppInfra {
     ) -> Result<Vec<Frame>> {
         self.processing
             .list_frames_for_segment_workspace(session_id, workspace_prefix)
+            .await
+    }
+
+    pub async fn classify_hidden_segment_workspace(
+        &self,
+        workspace_dir: &Path,
+    ) -> Result<Option<SegmentWorkspaceCleanupDebugInfo>> {
+        self.frame_batches
+            .classify_hidden_segment_workspace(workspace_dir)
+            .await
+    }
+
+    pub async fn repair_hidden_segment_workspaces(
+        &self,
+        recordings_root: &Path,
+    ) -> Result<HiddenSegmentWorkspaceRepairResult> {
+        self.repair_hidden_segment_workspaces_with_context(
+            recordings_root,
+            &HiddenSegmentWorkspaceRepairContext::default(),
+        )
+        .await
+    }
+
+    pub async fn repair_hidden_segment_workspaces_with_context(
+        &self,
+        recordings_root: &Path,
+        context: &HiddenSegmentWorkspaceRepairContext,
+    ) -> Result<HiddenSegmentWorkspaceRepairResult> {
+        self.frame_batches
+            .repair_hidden_segment_workspaces_with_context(recordings_root, context)
             .await
     }
 
@@ -470,12 +537,82 @@ mod tests {
             .with_dimensions(1920, 1080)
     }
 
-    fn test_frame_with_fingerprint(
+    fn write_test_png_rgba(
+        dir: &TestDir,
+        file_name: &str,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> String {
+        let path = dir.path().join(file_name);
+        image::save_buffer(&path, pixels, width, height, image::ColorType::Rgba8)
+            .expect("test png should be written");
+        path.to_string_lossy().into_owned()
+    }
+
+    fn solid_rgba(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+        for _ in 0..(width as usize * height as usize) {
+            pixels.extend_from_slice(&rgba);
+        }
+        pixels
+    }
+
+    fn set_pixel_rgba(pixels: &mut [u8], width: u32, x: u32, y: u32, rgba: [u8; 4]) {
+        let offset = ((y * width + x) * 4) as usize;
+        pixels[offset..offset + 4].copy_from_slice(&rgba);
+    }
+
+    fn test_frame_with_equivalent_image(
+        dir: &TestDir,
         session_id: &str,
         file_name: &str,
-        content_fingerprint: &str,
+        captured_at: &str,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
     ) -> NewFrame {
-        test_frame(session_id, file_name).with_content_fingerprint(content_fingerprint)
+        let file_path = write_test_png_rgba(dir, file_name, width, height, pixels);
+        let equivalence = match capture_screen::captured_frame_equivalence_from_image_path(
+            Path::new(&file_path),
+        ) {
+            capture_screen::CapturedFrameEquivalenceOutcome::Ready(equivalence) => {
+                FrameEquivalence::ready(equivalence.hint, equivalence.proof, equivalence.version)
+            }
+            capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
+                panic!("test image equivalence should compute: {error}");
+            }
+        };
+
+        NewFrame::new(session_id, file_path, captured_at)
+            .with_dimensions(width as i64, height as i64)
+            .with_equivalence(equivalence)
+    }
+
+    fn test_segment_frame_with_equivalent_image(
+        dir: &TestDir,
+        session_id: &str,
+        segment_index: u64,
+        file_name: &str,
+        captured_at: &str,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) -> NewFrame {
+        let frames_dir = dir.path().join(format!(
+            "2026/04/12/.{session_id}-segment-{segment_index:04}/frames"
+        ));
+        fs::create_dir_all(&frames_dir).expect("segment frames dir should exist");
+        let relative_name = format!("2026/04/12/.{session_id}-segment-{segment_index:04}/frames/{file_name}");
+        test_frame_with_equivalent_image(
+            dir,
+            session_id,
+            &relative_name,
+            captured_at,
+            pixels,
+            width,
+            height,
+        )
     }
 
     #[derive(Debug)]
@@ -740,7 +877,7 @@ mod tests {
             .expect("app infra should initialize");
 
             let persisted = initial
-                .insert_frame_and_enqueue_processing_job(
+                .debug_insert_frame_and_enqueue_processing_job(
                     &test_frame("session-processing-restart", "frame-processing-restart.png"),
                     TEST_PROCESSOR,
                     Some("{\"mode\":\"queued\"}"),
@@ -808,7 +945,7 @@ mod tests {
             .expect("app infra should initialize");
 
             let persisted = initial
-                .insert_frame_and_enqueue_processing_job(
+                .debug_insert_frame_and_enqueue_processing_job(
                     &test_frame("session-processing-running", "frame-processing-running.png"),
                     TEST_PROCESSOR,
                     None,
@@ -866,7 +1003,7 @@ mod tests {
             .expect("app infra should initialize");
 
             let persisted = initial
-                .insert_frame_and_enqueue_processing_job(
+                .debug_insert_frame_and_enqueue_processing_job(
                     &test_frame("session-processing-retry", "frame-processing-retry.png"),
                     TEST_PROCESSOR,
                     None,
@@ -1108,8 +1245,14 @@ mod tests {
                 .await
                 .expect("overlapping audio segments should list");
             assert_eq!(overlapping.len(), 2);
-            assert_eq!(overlapping[0].source_kind, AudioSegmentSourceKind::Microphone);
-            assert_eq!(overlapping[1].source_kind, AudioSegmentSourceKind::SystemAudio);
+            assert_eq!(
+                overlapping[0].source_kind,
+                AudioSegmentSourceKind::Microphone
+            );
+            assert_eq!(
+                overlapping[1].source_kind,
+                AudioSegmentSourceKind::SystemAudio
+            );
 
             let microphone_only = infra
                 .list_audio_segments_overlapping_range(
@@ -1122,9 +1265,28 @@ mod tests {
                 .expect("filtered audio segments should list");
             assert_eq!(microphone_only, vec![updated]);
 
+            let touching_boundary = infra
+                .list_audio_segments_overlapping_range(
+                    "2026-04-12T10:01:00Z",
+                    "2026-04-12T10:01:00Z",
+                    None,
+                    None,
+                )
+                .await
+                .expect("boundary-touching audio segments should list");
+            assert_eq!(touching_boundary.len(), 2);
+            assert_eq!(
+                touching_boundary[0].source_kind,
+                AudioSegmentSourceKind::Microphone
+            );
+            assert_eq!(
+                touching_boundary[1].source_kind,
+                AudioSegmentSourceKind::SystemAudio
+            );
+
             let outside = infra
                 .list_audio_segments_overlapping_range(
-                    "2026-04-12T10:02:00Z",
+                    "2026-04-12T10:02:01Z",
                     "2026-04-12T10:03:00Z",
                     None,
                     None,
@@ -1378,6 +1540,88 @@ mod tests {
     }
 
     #[test]
+    fn timeline_window_around_frame_is_newest_first_and_reports_older_history() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-timeline-window");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let first = infra
+                .insert_frame(&test_frame("session-a", "frame-1.png"))
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .insert_frame(&test_frame("session-a", "frame-2.png"))
+                .await
+                .expect("second frame should persist");
+            let third = infra
+                .insert_frame(&test_frame("session-a", "frame-3.png"))
+                .await
+                .expect("third frame should persist");
+            let fourth = infra
+                .insert_frame(&test_frame("session-a", "frame-4.png"))
+                .await
+                .expect("fourth frame should persist");
+            let fifth = infra
+                .insert_frame(&test_frame("session-a", "frame-5.png"))
+                .await
+                .expect("fifth frame should persist");
+
+            let window = infra
+                .get_timeline_window_around_frame(third.id, 1, 1)
+                .await
+                .expect("timeline window should resolve");
+
+            assert_eq!(
+                window
+                    .frames
+                    .iter()
+                    .map(|frame| frame.id)
+                    .collect::<Vec<_>>(),
+                vec![fourth.id, third.id, second.id]
+            );
+            assert_eq!(window.target_index, 1);
+            assert!(window.has_newer);
+            assert!(window.has_older);
+
+            let oldest_window = infra
+                .get_timeline_window_around_frame(first.id, 2, 2)
+                .await
+                .expect("oldest timeline window should resolve");
+
+            assert_eq!(
+                oldest_window
+                    .frames
+                    .iter()
+                    .map(|frame| frame.id)
+                    .collect::<Vec<_>>(),
+                vec![third.id, second.id, first.id]
+            );
+            assert_eq!(oldest_window.target_index, 2);
+            assert!(oldest_window.has_newer);
+            assert!(!oldest_window.has_older);
+
+            let newest_window = infra
+                .get_timeline_window_around_frame(fifth.id, 2, 1)
+                .await
+                .expect("newest timeline window should resolve");
+
+            assert_eq!(
+                newest_window
+                    .frames
+                    .iter()
+                    .map(|frame| frame.id)
+                    .collect::<Vec<_>>(),
+                vec![fifth.id, fourth.id]
+            );
+            assert_eq!(newest_window.target_index, 0);
+            assert!(!newest_window.has_newer);
+            assert!(newest_window.has_older);
+        });
+    }
+
+    #[test]
     fn list_frames_for_segment_workspace_escapes_like_wildcards() {
         run_async_test(async {
             let dir = TestDir::new("segment-workspace-like-escape");
@@ -1451,10 +1695,7 @@ mod tests {
             assert_eq!(job.subject_id, persisted.frame.id);
             assert_eq!(job.processor, OCR_PROCESSOR);
             assert_eq!(job.status, ProcessingJobStatus::Queued);
-            assert_eq!(
-                job.payload_json.as_deref(),
-                Some("{\"language\":\"eng\"}")
-            );
+            assert_eq!(job.payload_json.as_deref(), Some("{\"language\":\"eng\"}"));
             assert_eq!(persisted.active_batch.session_id, "session-pipeline");
             assert_eq!(persisted.active_batch.frame_count, 1);
             assert!(persisted.closed_batches.is_empty());
@@ -1468,7 +1709,44 @@ mod tests {
     }
 
     #[test]
-    fn insert_frame_and_enqueue_ocr_job_persists_linked_subject() {
+    fn stopping_session_closes_and_schedules_last_open_frame_batch() {
+        run_async_test(async {
+            let dir = TestDir::new("captured-frame-stop-close");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let persisted = infra
+                .capture_frame(
+                    &test_frame("session-stop-close", "frame-final.png"),
+                    Some("{\"language\":\"eng\"}"),
+                )
+                .await
+                .expect("captured frame pipeline should persist frame and job");
+            assert_eq!(persisted.active_batch.status, FrameBatchStatus::Open);
+            assert!(persisted.active_batch.finalize_job_id.is_none());
+
+            let closed = infra
+                .close_and_schedule_all_frame_batches_for_session("session-stop-close")
+                .await
+                .expect("stopped session should close final batch");
+            assert_eq!(closed.len(), 1);
+
+            let batch = infra
+                .get_frame_batch(persisted.active_batch.id)
+                .await
+                .expect("batch should be readable")
+                .expect("batch should exist");
+            assert_eq!(batch.status, FrameBatchStatus::Closed);
+            assert!(
+                batch.finalize_job_id.is_some(),
+                "closed final batch should schedule cleanup finalization"
+            );
+        });
+    }
+
+    #[test]
+    fn debug_insert_frame_and_enqueue_ocr_job_persists_linked_subject() {
         run_async_test(async {
             let dir = TestDir::new("processing-enqueue");
             let infra = AppInfra::initialize(dir.path())
@@ -1476,7 +1754,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             let persisted = infra
-                .insert_frame_and_enqueue_ocr_job(
+                .debug_insert_frame_and_enqueue_ocr_job(
                     &test_frame("session-ocr", "frame-ocr.png"),
                     Some("{\"language\":\"eng\"}"),
                 )
@@ -1507,24 +1785,57 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let repeated_pixels = solid_rgba(width, height, [64, 64, 64, 255]);
+            let mut changed_pixels = repeated_pixels.clone();
+            for y in 8..20 {
+                for x in 8..20 {
+                    set_pixel_rgba(&mut changed_pixels, width, x, y, [240, 240, 240, 255]);
+                }
+            }
 
             let first = infra
-                .insert_frame_and_maybe_enqueue_ocr_job(
-                    &test_frame_with_fingerprint("session-dedupe", "frame-1.png", "abc123"),
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe",
+                        "frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                        &repeated_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
                 .expect("first frame should persist");
             let duplicate = infra
-                .insert_frame_and_maybe_enqueue_ocr_job(
-                    &test_frame_with_fingerprint("session-dedupe", "frame-2.png", "abc123"),
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe",
+                        "frame-2.png",
+                        "2026-04-12T10:00:01Z",
+                        &repeated_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
                 .expect("duplicate frame should persist");
             let changed = infra
-                .insert_frame_and_maybe_enqueue_ocr_job(
-                    &test_frame_with_fingerprint("session-dedupe", "frame-3.png", "def456"),
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe",
+                        "frame-3.png",
+                        "2026-04-12T10:00:02Z",
+                        &changed_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
@@ -1539,9 +1850,9 @@ mod tests {
                 .await
                 .expect("frames should list");
             assert_eq!(frames.len(), 3);
-            assert_eq!(frames[0].content_fingerprint.as_deref(), Some("def456"));
-            assert_eq!(frames[1].content_fingerprint.as_deref(), Some("abc123"));
-            assert_eq!(frames[2].content_fingerprint.as_deref(), Some("abc123"));
+            assert_eq!(frames[0].equivalence.hint, changed.frame.equivalence.hint);
+            assert_eq!(frames[1].equivalence.hint, duplicate.frame.equivalence.hint);
+            assert_eq!(frames[2].equivalence.hint, first.frame.equivalence.hint);
 
             let duplicate_jobs = infra
                 .list_processing_jobs_for_subject(&ProcessingSubject::frame(duplicate.frame.id))
@@ -1558,24 +1869,57 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let repeated_pixels = solid_rgba(width, height, [64, 64, 64, 255]);
+            let mut changed_pixels = repeated_pixels.clone();
+            for y in 8..20 {
+                for x in 8..20 {
+                    set_pixel_rgba(&mut changed_pixels, width, x, y, [240, 240, 240, 255]);
+                }
+            }
 
             let first = infra
-                .insert_frame_and_maybe_enqueue_ocr_job(
-                    &test_frame_with_fingerprint("session-dedupe-repeat", "frame-1.png", "abc123"),
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe-repeat",
+                        "frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                        &repeated_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
                 .expect("first frame should persist");
             let changed = infra
-                .insert_frame_and_maybe_enqueue_ocr_job(
-                    &test_frame_with_fingerprint("session-dedupe-repeat", "frame-2.png", "def456"),
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe-repeat",
+                        "frame-2.png",
+                        "2026-04-12T10:00:01Z",
+                        &changed_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
                 .expect("changed frame should persist");
             let repeated = infra
-                .insert_frame_and_maybe_enqueue_ocr_job(
-                    &test_frame_with_fingerprint("session-dedupe-repeat", "frame-3.png", "abc123"),
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe-repeat",
+                        "frame-3.png",
+                        "2026-04-12T10:00:02Z",
+                        &repeated_pixels,
+                        width,
+                        height,
+                    ),
                     None,
                 )
                 .await
@@ -1590,15 +1934,228 @@ mod tests {
                 .await
                 .expect("frames should list");
             assert_eq!(frames.len(), 3);
-            assert_eq!(frames[0].content_fingerprint.as_deref(), Some("abc123"));
-            assert_eq!(frames[1].content_fingerprint.as_deref(), Some("def456"));
-            assert_eq!(frames[2].content_fingerprint.as_deref(), Some("abc123"));
+            assert_eq!(frames[0].equivalence.hint, repeated.frame.equivalence.hint);
+            assert_eq!(frames[1].equivalence.hint, changed.frame.equivalence.hint);
+            assert_eq!(frames[2].equivalence.hint, first.frame.equivalence.hint);
 
             let repeated_jobs = infra
                 .list_processing_jobs_for_subject(&ProcessingSubject::frame(repeated.frame.id))
                 .await
                 .expect("repeated jobs should list");
             assert!(repeated_jobs.is_empty());
+
+            let resolved = infra
+                .get_nearest_earlier_equivalent_frame(repeated.frame.id)
+                .await
+                .expect("nearest earlier equivalent frame should resolve");
+            assert_eq!(resolved, Some(first.frame));
+        });
+    }
+
+    #[test]
+    fn equivalent_frames_in_different_segment_workspaces_do_not_skip_ocr() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-ocr-dedupe-segment-scoped");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [88, 88, 88, 255]);
+
+            let first = infra
+                .capture_frame(
+                    &test_segment_frame_with_equivalent_image(
+                        &dir,
+                        "session-segment-scope",
+                        1,
+                        "frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .capture_frame(
+                    &test_segment_frame_with_equivalent_image(
+                        &dir,
+                        "session-segment-scope",
+                        2,
+                        "frame-2.png",
+                        "2026-04-12T10:00:01Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("second frame should persist");
+
+            assert!(first.job.is_some());
+            assert!(
+                second.job.is_some(),
+                "equivalent frames in different segment workspaces must not skip OCR"
+            );
+        });
+    }
+
+    #[test]
+    fn earlier_equivalent_frame_lookup_does_not_cross_segment_workspaces() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-ocr-ui-fallback-segment-scoped");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [104, 104, 104, 255]);
+
+            let first = infra
+                .capture_frame(
+                    &test_segment_frame_with_equivalent_image(
+                        &dir,
+                        "session-segment-ui-scope",
+                        1,
+                        "frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .capture_frame(
+                    &test_segment_frame_with_equivalent_image(
+                        &dir,
+                        "session-segment-ui-scope",
+                        2,
+                        "frame-2.png",
+                        "2026-04-12T10:00:01Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("second frame should persist");
+
+            assert!(first.job.is_some());
+            assert!(second.job.is_some());
+
+            let resolved = infra
+                .get_nearest_earlier_equivalent_frame(second.frame.id)
+                .await
+                .expect("cross-segment equivalent frame lookup should succeed");
+            assert_eq!(resolved, None);
+        });
+    }
+
+    #[test]
+    fn same_fingerprint_but_different_frame_bytes_skip_ocr() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-ocr-dedupe-byte-confirmation");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [96, 96, 96, 255]);
+
+            let first = infra
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe-confirmed",
+                        "frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe-confirmed",
+                        "frame-2.png",
+                        "2026-04-12T10:00:01Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("second frame should persist");
+
+            assert!(first.job.is_some());
+            assert!(
+                second.job.is_none(),
+                "same-fingerprint frames should skip OCR even when bytes differ"
+            );
+        });
+    }
+
+    #[test]
+    fn same_fingerprint_but_different_frame_bytes_stay_skipped_after_time_passes() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-ocr-dedupe-same-fingerprint-late");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [112, 112, 112, 255]);
+
+            let first = infra
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe-same-fingerprint-late",
+                        "frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+            let second = infra
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-dedupe-same-fingerprint-late",
+                        "frame-2.png",
+                        "2026-04-12T10:00:06Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("second frame should persist");
+
+            assert!(first.job.is_some());
+            assert!(
+                second.job.is_none(),
+                "same-fingerprint frames should stay skipped until the fingerprint changes"
+            );
         });
     }
 
@@ -1663,6 +2220,136 @@ mod tests {
     }
 
     #[test]
+    fn startup_reconciles_open_batches_from_stopped_sessions() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-batch-startup-open-reconcile");
+            let initial = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let batch = initial
+                .frame_batches()
+                .upsert_open_batch_for_frame("session-open-reconcile", "2026-04-12T10:01:00Z")
+                .await
+                .expect("batch should persist");
+            let frame = initial
+                .processing()
+                .insert_frame(&test_frame("session-open-reconcile", "frame-open.png"))
+                .await
+                .expect("frame should persist");
+            initial
+                .frame_batches()
+                .attach_frame_to_batch(frame.id, batch.id, &frame.captured_at)
+                .await
+                .expect("frame should attach");
+
+            drop(initial);
+
+            let recovered = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should recover open batches");
+            let reconciled = recovered
+                .get_frame_batch(batch.id)
+                .await
+                .expect("batch should be readable")
+                .expect("batch should exist");
+            assert_eq!(reconciled.status, FrameBatchStatus::Closed);
+            assert!(
+                reconciled.finalize_job_id.is_some(),
+                "startup should schedule finalization for orphaned open batch"
+            );
+        });
+    }
+
+    #[test]
+    fn startup_retries_failed_finalize_jobs_and_repairs_processing_batches() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-batch-startup-finalize-retry");
+            let initial = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let persisted = initial
+                .capture_frame(
+                    &NewFrame::new(
+                        "session-finalize-retry",
+                        "/tmp/session-finalize-retry-segment-0001/frames/frame-1.png",
+                        "2026-04-12T10:01:00Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect("frame should persist");
+
+            let closed = initial
+                .close_and_schedule_all_frame_batches_for_session("session-finalize-retry")
+                .await
+                .expect("batch should close and schedule");
+            assert_eq!(closed.len(), 1);
+
+            let scheduled_batch = initial
+                .get_frame_batch(closed[0].id)
+                .await
+                .expect("scheduled batch should be readable")
+                .expect("scheduled batch should exist");
+            let first_job_id = scheduled_batch
+                .finalize_job_id
+                .expect("closed batch should have finalize job");
+            initial
+                .jobs()
+                .mark_failed(first_job_id, Some("expected finalize failure"))
+                .await
+                .expect("finalize job should fail");
+
+            initial
+                .frame_batches()
+                .mark_batch_processing(persisted.active_batch.id)
+                .await
+                .expect("batch should enter processing to simulate interrupted finalization");
+
+            drop(initial);
+
+            let recovered = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should re-initialize");
+
+            let repaired = recovered
+                .get_frame_batch(persisted.active_batch.id)
+                .await
+                .expect("batch should be readable")
+                .expect("batch should exist");
+            assert_eq!(repaired.status, FrameBatchStatus::Closed);
+            let retried_job_id = repaired
+                .finalize_job_id
+                .expect("startup should schedule replacement finalize job");
+            assert_ne!(retried_job_id, first_job_id);
+
+            let retried_job = recovered
+                .get_job(retried_job_id)
+                .await
+                .expect("replacement finalize job should be readable")
+                .expect("replacement finalize job should exist");
+            assert_eq!(retried_job.kind, FRAME_BATCH_FINALIZE_JOB_KIND);
+            assert_eq!(retried_job.status, BackgroundJobStatus::Queued);
+
+            let original_job = recovered
+                .get_job(first_job_id)
+                .await
+                .expect("original finalize job should be readable")
+                .expect("original finalize job should exist");
+            assert_eq!(original_job.status, BackgroundJobStatus::Failed);
+
+            let finalize_job_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM background_jobs WHERE kind = ?1")
+                    .bind(FRAME_BATCH_FINALIZE_JOB_KIND)
+                    .fetch_one(recovered.pool())
+                    .await
+                    .expect("finalize jobs should count");
+            assert_eq!(finalize_job_count, 2);
+        });
+    }
+
+    #[test]
     fn batch_insert_rolls_back_frame_and_job_when_attachment_fails() {
         run_async_test(async {
             let dir = TestDir::new("frame-batch-atomic");
@@ -1688,10 +2375,14 @@ mod tests {
                 .captured_frame_pipeline()
                 .capture_frame_in_transaction(
                     &mut transaction,
-                    &test_frame_with_fingerprint(
+                    &test_frame_with_equivalent_image(
+                        &dir,
                         "session-batch-atomic",
                         "frame-atomic.png",
-                        "atomic-fingerprint",
+                        "2026-04-12T10:01:00Z",
+                        &solid_rgba(32, 32, [72, 72, 72, 255]),
+                        32,
+                        32,
                     ),
                     None,
                 )
@@ -1812,7 +2503,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             let first = infra
-                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                .capture_frame(
                     &NewFrame::new(
                         "session-finalize-atomic",
                         "/tmp/session-finalize-atomic-segment-0001/frames/frame-1.png",
@@ -1836,7 +2527,7 @@ mod tests {
             .expect("failure trigger should install");
 
             let error = infra
-                .insert_frame_into_batch_and_maybe_enqueue_ocr_job(
+                .capture_frame(
                     &NewFrame::new(
                         "session-finalize-atomic",
                         "/tmp/session-finalize-atomic-segment-0002/frames/frame-2.png",
@@ -1869,13 +2560,12 @@ mod tests {
             assert_eq!(frames.len(), 1);
             assert_eq!(frames[0].id, first.frame.id);
 
-            let finalize_job_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM background_jobs WHERE kind = ?1",
-            )
-            .bind(FRAME_BATCH_FINALIZE_JOB_KIND)
-            .fetch_one(infra.pool())
-            .await
-            .expect("finalize jobs should count");
+            let finalize_job_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM background_jobs WHERE kind = ?1")
+                    .bind(FRAME_BATCH_FINALIZE_JOB_KIND)
+                    .fetch_one(infra.pool())
+                    .await
+                    .expect("finalize jobs should count");
             assert_eq!(finalize_job_count, 0);
         });
     }
@@ -1889,22 +2579,239 @@ mod tests {
                 .expect("app infra should initialize");
 
             let first = infra
-                .insert_frame_and_maybe_enqueue_ocr_job(
-                    &test_frame("session-no-fingerprint", "frame-1.png"),
-                    None,
-                )
+                .capture_frame(&test_frame("session-no-fingerprint", "frame-1.png"), None)
                 .await
                 .expect("first frame should persist");
             let second = infra
-                .insert_frame_and_maybe_enqueue_ocr_job(
-                    &test_frame("session-no-fingerprint", "frame-2.png"),
-                    None,
-                )
+                .capture_frame(&test_frame("session-no-fingerprint", "frame-2.png"), None)
                 .await
                 .expect("second frame should persist");
 
             assert!(first.job.is_some());
             assert!(second.job.is_some());
+        });
+    }
+
+    #[test]
+    fn reprocess_captured_frame_ocr_creates_job_when_none_exists() {
+        run_async_test(async {
+            let dir = TestDir::new("captured-frame-reprocessing-create");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [80, 80, 80, 255]);
+
+            infra
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-reprocess-create",
+                        "frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("first frame should persist");
+            let duplicate = infra
+                .capture_frame(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "session-reprocess-create",
+                        "frame-2.png",
+                        "2026-04-12T10:00:01Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    None,
+                )
+                .await
+                .expect("duplicate frame should persist");
+            assert!(duplicate.job.is_none());
+
+            let reprocessed = infra
+                .reprocess_captured_frame_ocr(duplicate.frame.id, Some("{\"language\":\"eng\"}"))
+                .await
+                .expect("reprocessing should create an OCR job");
+
+            assert_eq!(
+                reprocessed.outcome,
+                CapturedFrameReprocessingOutcome::Created
+            );
+            assert_eq!(reprocessed.job.subject_id, duplicate.frame.id);
+            assert_eq!(reprocessed.job.processor, OCR_PROCESSOR);
+            assert_eq!(reprocessed.job.status, ProcessingJobStatus::Queued);
+            assert_eq!(
+                reprocessed.job.payload_json.as_deref(),
+                Some("{\"language\":\"eng\"}")
+            );
+
+            let subject_jobs = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::frame(duplicate.frame.id))
+                .await
+                .expect("subject jobs should list");
+            assert_eq!(subject_jobs, vec![reprocessed.job.clone()]);
+        });
+    }
+
+    #[test]
+    fn reprocess_captured_frame_ocr_ignores_queued_job_and_keeps_payload() {
+        run_async_test(async {
+            let dir = TestDir::new("captured-frame-reprocessing-ignore");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let persisted = infra
+                .capture_frame(
+                    &test_frame("session-reprocess-ignore", "frame-queued.png"),
+                    Some("{\"language\":\"eng\"}"),
+                )
+                .await
+                .expect("captured frame pipeline should persist frame and job");
+            let queued_job = persisted.job.expect("ocr job should be queued");
+
+            let reprocessed = infra
+                .reprocess_captured_frame_ocr(queued_job.subject_id, Some("{\"language\":\"fra\"}"))
+                .await
+                .expect("queued reprocessing should be ignored");
+
+            assert_eq!(
+                reprocessed.outcome,
+                CapturedFrameReprocessingOutcome::Ignored
+            );
+            assert_eq!(reprocessed.job.id, queued_job.id);
+            assert_eq!(
+                reprocessed.job.payload_json.as_deref(),
+                Some("{\"language\":\"eng\"}")
+            );
+        });
+    }
+
+    #[test]
+    fn reprocess_captured_frame_ocr_requeues_terminal_job_and_clears_results() {
+        run_async_test(async {
+            let dir = TestDir::new("captured-frame-reprocessing-requeue");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let persisted = infra
+                .capture_frame(
+                    &test_frame("session-reprocess-requeue", "frame-terminal.png"),
+                    Some("{\"language\":\"eng\"}"),
+                )
+                .await
+                .expect("captured frame pipeline should persist frame and job");
+            let queued_job = persisted.job.expect("ocr job should be queued");
+
+            infra
+                .claim_queued_processing_job(queued_job.id)
+                .await
+                .expect("job should start")
+                .expect("job should claim successfully");
+            infra
+                .complete_processing_job(
+                    queued_job.id,
+                    &ProcessingResultDraft::new().with_result_text("first pass"),
+                )
+                .await
+                .expect("job should complete");
+            assert!(infra
+                .get_processing_result_for_job(queued_job.id)
+                .await
+                .expect("result lookup should succeed")
+                .is_some());
+
+            let reprocessed = infra
+                .reprocess_captured_frame_ocr(persisted.frame.id, Some("{\"language\":\"fra\"}"))
+                .await
+                .expect("terminal job should requeue");
+
+            assert_eq!(
+                reprocessed.outcome,
+                CapturedFrameReprocessingOutcome::Requeued
+            );
+            assert_eq!(reprocessed.job.id, queued_job.id);
+            assert_eq!(reprocessed.job.status, ProcessingJobStatus::Queued);
+            assert_eq!(reprocessed.job.attempt_count, 1);
+            assert_eq!(
+                reprocessed.job.payload_json.as_deref(),
+                Some("{\"language\":\"fra\"}")
+            );
+            assert_eq!(reprocessed.job.last_error, None);
+            assert!(reprocessed.job.started_at.is_none());
+            assert!(reprocessed.job.finished_at.is_none());
+            assert!(infra
+                .get_processing_result_for_job(queued_job.id)
+                .await
+                .expect("requeued result lookup should succeed")
+                .is_none());
+
+            let subject_results = infra
+                .list_processing_results_for_subject(&ProcessingSubject::frame(persisted.frame.id))
+                .await
+                .expect("subject results should list");
+            assert!(subject_results.is_empty());
+        });
+    }
+
+    #[test]
+    fn reprocess_captured_frame_ocr_rejects_running_job() {
+        run_async_test(async {
+            let dir = TestDir::new("captured-frame-reprocessing-running");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let persisted = infra
+                .capture_frame(
+                    &test_frame("session-reprocess-running", "frame-running.png"),
+                    None,
+                )
+                .await
+                .expect("captured frame pipeline should persist frame and job");
+            let queued_job = persisted.job.expect("ocr job should be queued");
+
+            infra
+                .claim_queued_processing_job(queued_job.id)
+                .await
+                .expect("job should start")
+                .expect("job should claim successfully");
+
+            let error = infra
+                .reprocess_captured_frame_ocr(persisted.frame.id, None)
+                .await
+                .expect_err("running jobs should reject reprocessing");
+
+            assert!(matches!(
+                error,
+                AppInfraError::ProcessingJobInvalidTransition { job_id, ref from, ref to }
+                    if job_id == queued_job.id && from == "running" && to == "queued"
+            ));
+        });
+    }
+
+    #[test]
+    fn reprocess_captured_frame_ocr_requires_existing_frame() {
+        run_async_test(async {
+            let dir = TestDir::new("captured-frame-reprocessing-missing-frame");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let error = infra
+                .reprocess_captured_frame_ocr(404, None)
+                .await
+                .expect_err("missing frames should fail");
+
+            assert!(matches!(error, AppInfraError::FrameNotFound(404)));
         });
     }
 
@@ -1917,7 +2824,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             let persisted = infra
-                .insert_frame_and_enqueue_ocr_job(
+                .debug_insert_frame_and_enqueue_ocr_job(
                     &test_frame("session-results", "frame-results.png"),
                     None,
                 )
@@ -1985,7 +2892,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             let persisted = infra
-                .insert_frame_and_enqueue_ocr_job(
+                .debug_insert_frame_and_enqueue_ocr_job(
                     &test_frame("session-retry", "frame-retry.png"),
                     Some("{\"language\":\"eng\"}"),
                 )
@@ -2045,7 +2952,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             let persisted = infra
-                .insert_frame_and_enqueue_ocr_job(
+                .debug_insert_frame_and_enqueue_ocr_job(
                     &test_frame("session-complete", "frame-complete.png"),
                     None,
                 )
@@ -2077,7 +2984,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             let persisted = infra
-                .insert_frame_and_enqueue_ocr_job(
+                .debug_insert_frame_and_enqueue_ocr_job(
                     &test_frame("session-fail", "frame-fail.png"),
                     None,
                 )
@@ -2106,7 +3013,7 @@ mod tests {
                 .expect("app infra should initialize");
 
             let persisted = infra
-                .insert_frame_and_enqueue_ocr_job(
+                .debug_insert_frame_and_enqueue_ocr_job(
                     &test_frame("session-running", "frame-running.png"),
                     None,
                 )

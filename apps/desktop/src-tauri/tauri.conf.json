@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "z",
+  "productName": "mnema",
   "version": "0.1.0",
-  "identifier": "com.shaikzeeshan.z",
+  "identifier": "com.shaikzeeshan.mnema",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -10,22 +10,29 @@
     "frontendDist": "../build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "z",
+        "title": "mnema",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
     "macOS": {
-      "signingIdentity": "-",
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"
     },

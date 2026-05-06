@@ -6,11 +6,14 @@
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
   import { setDeveloperOptionsEnabled } from "$lib/developer-options.svelte";
+  import { setAppearance } from "$lib/theme.svelte";
   import type {
     ActivityMode,
+    AppearanceSetting,
     CaptureSupport,
     GeneralAppLogStatus,
     NativeCaptureDebugLogStatus,
+    OcrRecognitionMode,
     RecordingSettings,
     ResolutionMode,
     ResolutionPreset,
@@ -21,6 +24,8 @@
     MicrophoneDisconnectPolicy,
     MicrophoneAutoDisconnectTransitionFailedEvent,
   } from "$lib/types";
+
+  const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
 
   // ─── State ────────────────────────────────────────────────────────────────
 
@@ -33,7 +38,7 @@
   let draftCaptureMicrophone = $state(false);
   let draftCaptureSystemAudio = $state(false);
   let draftSegmentDuration = $state(60);
-  let draftFrameRate = $state(30);
+  let draftFrameRate = $state(1);
   let draftSaveDirectory = $state("");
   let draftAutoStart = $state(false);
 
@@ -72,6 +77,17 @@
   // Preview cache TTL draft (seconds; 0 disables)
   let draftPreviewCacheTtlSeconds = $state(3600);
 
+  // Timeline behavior draft
+  let draftFollowTimelineLive = $state(false);
+
+  // Appearance draft (system | light | dark). Drives the in-memory theme
+  // runtime in `$lib/theme.svelte` and is persisted via recording settings.
+  let draftAppearance = $state<AppearanceSetting>("system");
+
+  // OCR drafts
+  let draftOcrRecognitionMode = $state<OcrRecognitionMode>("fast");
+  let draftOcrLanguageCorrection = $state(false);
+
   // Debug log status
   let debugLogStatus = $state<NativeCaptureDebugLogStatus | null>(null);
   let loadingDebugLogStatus = $state(false);
@@ -96,6 +112,85 @@
   let micError = $state<string | null>(null);
   let recSaved = $state(false);
   let micSaved = $state(false);
+
+  // ─── Tabs ─────────────────────────────────────────────────────────────────
+  // The page is split into one-tab-at-a-time categories so the long settings
+  // list doesn't overwhelm. Tabs are local UI state only — no persistence.
+  type SettingsTab =
+    | "capture"
+    | "video"
+    | "storage"
+    | "behavior"
+    | "microphone"
+    | "ocr"
+    | "developer";
+
+  let activeTab = $state<SettingsTab>("capture");
+
+  // Scroll-region element. The wrapper persists across tab switches (only
+  // the inner `{#if activeTab === ...}` panel re-mounts), so without an
+  // explicit reset the previous tab's `scrollTop` would carry over and
+  // strand the user mid-page on the next tab. Reset to the top whenever
+  // `activeTab` changes — matches the typical tabbed-settings expectation.
+  let scrollRegion = $state<HTMLDivElement | null>(null);
+
+  $effect(() => {
+    // Track `activeTab` so this fires on every switch.
+    activeTab;
+    scrollRegion?.scrollTo({ top: 0, behavior: "auto" });
+  });
+
+  const tabs: { id: SettingsTab; label: string; description: string }[] = [
+    { id: "capture",    label: "Capture",     description: "Sources & segments" },
+    { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
+    { id: "storage",    label: "Storage",     description: "Save path, startup, appearance" },
+    { id: "behavior",   label: "Behavior",    description: "Inactivity, timeline" },
+    { id: "microphone", label: "Microphone",  description: "Devices & disconnect policy" },
+    { id: "ocr",        label: "OCR & Cache", description: "Recognition & previews" },
+    { id: "developer",  label: "Developer",   description: "Debug toggles & logs" },
+  ];
+
+  // Keyboard navigation for the tablist follows the WAI-ARIA Authoring
+  // Practices "Tabs (Manual Activation)" pattern: ←/→ move focus and
+  // activate the next/previous tab, Home/End jump to the first/last tab.
+  // We use a roving-tabindex (only the active tab is tabbable) so screen
+  // reader users can land on the tablist and step through tabs naturally.
+  function handleTabKeydown(event: KeyboardEvent) {
+    const currentIndex = tabs.findIndex((t) => t.id === activeTab);
+    if (currentIndex === -1) return;
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = tabs.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextTab = tabs[nextIndex];
+    activeTab = nextTab.id;
+    // Move DOM focus to the newly-active tab so the roving tabindex stays
+    // visually and assistively accurate.
+    const el = document.getElementById(`settings-tab-${nextTab.id}`);
+    el?.focus();
+  }
+
+  // ─── Auto-save plumbing ──────────────────────────────────────────────────
+  // To avoid feedback loops (sync from backend → drafts change → save),
+  // we serialize the current draft set to a snapshot string and compare
+  // against the last successfully-saved snapshot. After the backend echoes
+  // back the persisted values, syncRecDrafts/syncMicDrafts updates that
+  // baseline so the effect sees "no change" and stays quiet.
+  const RECORDING_AUTOSAVE_DEBOUNCE_MS = 450;
+  const MIC_AUTOSAVE_DEBOUNCE_MS = 250;
+
+  let lastSavedRecSnapshot = $state<string | null>(null);
+  let lastSavedMicSnapshot = $state<string | null>(null);
+  let recAutoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let micAutoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Capture-support fetch lifecycle: tracks whether the in-flight request
   // is still running and whether it ended in an unrecoverable failure.
@@ -161,7 +256,11 @@
     draftSystemAudioActivitySensitivity = s.systemAudioActivitySensitivity ?? 50;
     draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
     draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
+    draftFollowTimelineLive = s.followTimelineLive ?? false;
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
+    draftAppearance = s.appearance ?? "system";
+    draftOcrRecognitionMode = s.ocr?.recognitionMode ?? "fast";
+    draftOcrLanguageCorrection = s.ocr?.languageCorrection ?? false;
     if (s.screenResolution.mode === "custom") {
       draftResolutionMode = "custom";
       draftCustomWidth = s.screenResolution.width;
@@ -195,12 +294,78 @@
       draftCustomMbps = null;
       draftCustomMbpsRaw = "";
     }
+    // Mark this draft set as the "saved baseline" so the auto-save effect
+    // does not immediately re-fire after we accept backend-echoed values.
+    lastSavedRecSnapshot = buildRecSnapshot();
   }
 
   function syncMicDrafts(s: MicrophoneControllerState) {
     draftPreferenceMode = s.preference.mode;
     draftDeviceId = s.preference.deviceId ?? null;
     draftDisconnectPolicy = s.disconnectPolicy;
+    lastSavedMicSnapshot = buildMicSnapshot();
+  }
+
+  function buildRecRequest() {
+    return {
+      captureScreen: draftCaptureScreen,
+      captureMicrophone: draftCaptureMicrophone,
+      captureSystemAudio: draftCaptureSystemAudio,
+      segmentDurationSeconds: draftSegmentDuration,
+      screenFrameRate: draftFrameRate,
+      saveDirectory: draftSaveDirectory,
+      autoStart: draftAutoStart,
+      pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
+      idleTimeoutSeconds: draftIdleTimeoutSeconds,
+      activityMode: draftActivityMode,
+      microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
+      systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
+      nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
+      previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
+      followTimelineLive: draftFollowTimelineLive,
+      appearance: draftAppearance,
+      developerOptionsEnabled: draftDeveloperOptionsEnabled,
+      ocr: {
+        recognitionMode: draftOcrRecognitionMode,
+        languageCorrection: draftOcrLanguageCorrection,
+      },
+      screenResolution: draftResolutionMode === "custom"
+        ? {
+            mode: "custom" as const,
+            width: draftCustomWidth!,
+            height: draftCustomHeight!,
+          }
+        : {
+            mode: "preset" as const,
+            preset: draftResolutionMode === "original" ? "original" as const : draftResolutionPreset,
+          },
+      videoBitrate: draftBitrateMode === "custom"
+        ? { mode: "custom" as const, preset: null, customMbps: draftCustomMbps! }
+        : { mode: "preset" as const, preset: draftBitratePreset, customMbps: null },
+    };
+  }
+
+  function buildMicRequest() {
+    return {
+      preference: {
+        mode: draftPreferenceMode,
+        deviceId: draftPreferenceMode === "specific_device" ? draftDeviceId : null,
+      },
+      disconnectPolicy: draftDisconnectPolicy,
+    };
+  }
+
+  // Snapshots are stable JSON strings derived from the very same payload
+  // shape the backend sees. Using the request shape (rather than every raw
+  // draft variable) ensures invalid intermediate states — e.g. a custom
+  // resolution with `null` width while the user is typing — don't generate
+  // spurious snapshot churn that the auto-save guard would have to filter.
+  function buildRecSnapshot(): string {
+    return JSON.stringify(buildRecRequest());
+  }
+
+  function buildMicSnapshot(): string {
+    return JSON.stringify(buildMicRequest());
   }
 
   // ─── Actions ──────────────────────────────────────────────────────────────
@@ -317,40 +482,15 @@
     recSaved = false;
     try {
       const updated = await invoke<RecordingSettings>("update_recording_settings", {
-        request: {
-          captureScreen: draftCaptureScreen,
-          captureMicrophone: draftCaptureMicrophone,
-          captureSystemAudio: draftCaptureSystemAudio,
-          segmentDurationSeconds: draftSegmentDuration,
-          screenFrameRate: draftFrameRate,
-          saveDirectory: draftSaveDirectory,
-          autoStart: draftAutoStart,
-          pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
-          idleTimeoutSeconds: draftIdleTimeoutSeconds,
-          activityMode: draftActivityMode,
-          microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
-          systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
-          nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
-          previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
-          developerOptionsEnabled: draftDeveloperOptionsEnabled,
-          screenResolution: draftResolutionMode === "custom"
-            ? {
-                mode: "custom",
-                width: draftCustomWidth!,
-                height: draftCustomHeight!,
-              }
-            : {
-                mode: "preset",
-                preset: draftResolutionMode === "original" ? "original" : draftResolutionPreset,
-              },
-          videoBitrate: draftBitrateMode === "custom"
-            ? { mode: "custom", preset: null, customMbps: draftCustomMbps! }
-            : { mode: "preset", preset: draftBitratePreset, customMbps: null },
-        },
+        request: buildRecRequest(),
       });
       recordingSettings = updated;
       syncRecDrafts(updated);
       setDeveloperOptionsEnabled(updated.developerOptionsEnabled ?? false);
+      // Push the freshly-persisted appearance into the in-memory theme
+      // runtime so the entire UI (chrome + dashboard + settings) flips
+      // immediately, without waiting for a reload or settings round-trip.
+      setAppearance(updated.appearance ?? "system");
       recSaved = true;
       setTimeout(() => { recSaved = false; }, 2200);
       // Refresh debug log status since the enabled flag may have changed.
@@ -382,13 +522,7 @@
     micSaved = false;
     try {
       const updated = await invoke<MicrophoneControllerState>("update_microphone_controller", {
-        request: {
-          preference: {
-            mode: draftPreferenceMode,
-            deviceId: draftPreferenceMode === "specific_device" ? draftDeviceId : null,
-          },
-          disconnectPolicy: draftDisconnectPolicy,
-        },
+        request: buildMicRequest(),
       });
       micState = updated;
       syncMicDrafts(updated);
@@ -400,6 +534,47 @@
       savingMicSettings = false;
     }
   }
+
+  // ─── Auto-save effects ────────────────────────────────────────────────────
+  // Each effect tracks the relevant draft snapshot and schedules a debounced
+  // save when (a) the snapshot diverges from the last persisted value and
+  // (b) validation does not block. This replaces the manual Save button while
+  // preserving validation semantics — invalid drafts simply don't trigger the
+  // backend call, so persisted state stays consistent.
+  $effect(() => {
+    // Track the current snapshot reactively. Until the initial load completes,
+    // the baseline is null and we must not persist.
+    if (recordingSettings === null || lastSavedRecSnapshot === null) return;
+    const current = buildRecSnapshot();
+    if (current === lastSavedRecSnapshot) return;
+    if (recSaveBlocked) return;
+    if (savingRecSettings) return;
+
+    if (recAutoSaveTimer !== null) clearTimeout(recAutoSaveTimer);
+    recAutoSaveTimer = setTimeout(() => {
+      recAutoSaveTimer = null;
+      // Re-check guards at fire time — drafts may have changed during debounce.
+      if (recSaveBlocked || savingRecSettings) return;
+      if (buildRecSnapshot() === lastSavedRecSnapshot) return;
+      void saveRecordingSettings();
+    }, RECORDING_AUTOSAVE_DEBOUNCE_MS);
+  });
+
+  $effect(() => {
+    if (micState === null || lastSavedMicSnapshot === null) return;
+    const current = buildMicSnapshot();
+    if (current === lastSavedMicSnapshot) return;
+    if (micApplyBlocked) return;
+    if (savingMicSettings) return;
+
+    if (micAutoSaveTimer !== null) clearTimeout(micAutoSaveTimer);
+    micAutoSaveTimer = setTimeout(() => {
+      micAutoSaveTimer = null;
+      if (micApplyBlocked || savingMicSettings) return;
+      if (buildMicSnapshot() === lastSavedMicSnapshot) return;
+      void saveMicSettings();
+    }, MIC_AUTOSAVE_DEBOUNCE_MS);
+  });
 
   // ─── Recording settings validation ───────────────────────────────────────
 
@@ -530,6 +705,7 @@
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
+    let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let destroyed = false;
 
     listen<MicrophoneControllerState>("microphone_controller_changed", (event) => {
@@ -552,33 +728,45 @@
       else unlistenAutoDisconnectFailure = fn;
     });
 
+    listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
+      recordingSettings = event.payload;
+      syncRecDrafts(event.payload);
+      recError = null;
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenRecordingSettingsChanged = fn;
+    });
+
     return () => {
       destroyed = true;
       unlistenControllerChanged?.();
       unlistenAutoDisconnectFailure?.();
+      unlistenRecordingSettingsChanged?.();
     };
   });
 </script>
 
-<!-- ── Page header ──────────────────────────────────────────────────────── -->
+<!-- ── Page intro ──────────────────────────────────────────────────────── -->
 <header class="page-header">
-  <nav class="page-header__nav" aria-label="Settings navigation">
-    <a class="back-link" href="/menu" aria-label="Back to menu">
-      <span class="back-link__chevron" aria-hidden="true">‹</span>
-      <span class="back-link__label">Back</span>
-    </a>
-  </nav>
-  <div class="page-header__top">
-    <div class="page-header__title-block">
-      <span class="page-header__eyebrow">control center</span>
-      <h1 class="page-title">Settings</h1>
-      <p class="page-subtitle">Tune capture, microphone &amp; diagnostics for this workstation.</p>
+  <div class="page-header__head">
+    <div>
+      <h1 class="page-header__title">Settings</h1>
     </div>
-    <div class="page-header__meta" aria-hidden="true">
-      <span class="page-header__rule"></span>
-      <span class="page-header__corner">◉</span>
+    <div class="page-header__status" aria-live="polite">
+      {#if recError || micError}
+        <span class="page-header__status-text page-header__status-text--error">save failed</span>
+      {:else if recSaveBlocked || micApplyBlocked}
+        <span class="page-header__status-text page-header__status-text--blocked">resolve issues</span>
+      {:else if savingRecSettings || savingMicSettings}
+        <span class="page-header__status-text page-header__status-text--saving">saving</span>
+      {:else if recSaved || micSaved}
+        <span class="page-header__status-text page-header__status-text--ok">saved</span>
+      {:else}
+        <span class="page-header__status-text">auto-save on</span>
+      {/if}
     </div>
   </div>
+  <p class="page-subtitle">Tune capture, microphone &amp; diagnostics for this workstation.</p>
 
   {#if recordingSettings}
     <ul class="status-strip" aria-label="Current capture summary">
@@ -606,8 +794,46 @@
   {/if}
 </header>
 
+<!-- ── Tab navigation ─────────────────────────────────────────────────────
+     Categorized tabs replace the previous long scrolling list. Only one
+     section is mounted at a time (see the `{#if activeTab === ...}` guards
+     below) so the page stays focused and changes within an unselected tab
+     don't trigger reactivity in unrelated UI. -->
+<nav class="tab-nav" aria-label="Settings categories">
+  <div class="tab-nav__list" role="tablist" tabindex="-1" onkeydown={handleTabKeydown}>
+    {#each tabs as tab}
+      <button
+        class="tab-nav__tab"
+        class:tab-nav__tab--active={activeTab === tab.id}
+        role="tab"
+        aria-selected={activeTab === tab.id}
+        aria-controls="settings-panel-{tab.id}"
+        id="settings-tab-{tab.id}"
+        tabindex={activeTab === tab.id ? 0 : -1}
+        onclick={() => { activeTab = tab.id; }}
+        title={tab.description}
+        type="button"
+      >
+        <span class="tab-nav__label">{tab.label}</span>
+      </button>
+    {/each}
+  </div>
+</nav>
+
+<!-- ── Scroll region ──────────────────────────────────────────────────────
+     Only the panel area below the tabs scrolls. The page header and the
+     tab strip stay pinned at the top of the dedicated Settings window so
+     switching tabs never loses the user's place behind the viewport edge.
+     The wrapper participates in the flex column established by
+     `.app-content`, taking the leftover height (`flex: 1`) and isolating
+     overflow with `overflow-y: auto` + `min-height: 0` (the latter lets it
+     shrink below its content's intrinsic height inside the flex parent). -->
+<div class="settings-scroll" bind:this={scrollRegion}>
+
 <!-- ── Capture & sources ───────────────────────────────────────────────── -->
-<section class="card" aria-labelledby="card-capture">
+{#if activeTab === "capture"}
+<div role="tabpanel" id="settings-panel-capture" aria-labelledby="settings-tab-capture" tabindex="0">
+<section class="card">
   <div class="card__header">
     <div class="card__heading">
       <span class="card__index">01</span>
@@ -664,25 +890,23 @@
     </div>
   {/if}
 </section>
+</div>
+{/if}
 
-<!-- ── Recording details (video, storage, inactivity, diagnostics) ────── -->
+<!-- ── Recording details (split into focused cards) ────────────────────── -->
 {#if !loadingRecSettings}
-<section class="card" aria-labelledby="card-recording">
-  <div class="card__header">
-    <div class="card__heading">
-      <span class="card__index">02</span>
-      <div>
-        <h2 id="card-recording" class="card__title">Recording Details</h2>
-        <p class="card__subtitle">Video output, storage, inactivity rules &amp; diagnostics.</p>
-      </div>
-    </div>
-  </div>
-
-    <!-- ── Subsection: Video Output ─────────────────────── -->
-    <div class="subsection">
-      <div class="subsection__head">
-        <span class="subsection__kicker">B · Video Output</span>
-        <h3 class="subsection__title">Frame rate, resolution &amp; bitrate</h3>
+  {#if activeTab === "video"}
+    <div role="tabpanel" id="settings-panel-video" aria-labelledby="settings-tab-video" tabindex="0">
+    <!-- ── Card: Video Output ─────────────────────── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">02</span>
+          <div>
+            <h2 id="card-video" class="card__title">Video Output</h2>
+            <p class="card__subtitle">Frame rate, resolution &amp; bitrate.</p>
+          </div>
+        </div>
       </div>
 
     <div class="settings-group">
@@ -933,13 +1157,22 @@
         </span>
       </div>
     </div>
+    </section>
     </div>
+  {/if}
 
-    <!-- ── Subsection: Storage & Startup ─────────────────────── -->
-    <div class="subsection">
-      <div class="subsection__head">
-        <span class="subsection__kicker">C · Storage &amp; Startup</span>
-        <h3 class="subsection__title">Where files are saved and when capture begins</h3>
+  {#if activeTab === "storage"}
+    <div role="tabpanel" id="settings-panel-storage" aria-labelledby="settings-tab-storage" tabindex="0">
+    <!-- ── Card: Storage & Startup ─────────────────────── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">03</span>
+          <div>
+            <h2 id="card-storage" class="card__title">Storage &amp; Startup</h2>
+            <p class="card__subtitle">Where files are saved and when capture begins.</p>
+          </div>
+        </div>
       </div>
 
     <div class="settings-group">
@@ -964,13 +1197,56 @@
         description="Begin capturing immediately when the app opens"
       />
     </div>
-    </div>
 
-    <!-- ── Subsection: Inactivity ─────────────────────── -->
-    <div class="subsection">
-      <div class="subsection__head">
-        <span class="subsection__kicker">D · Inactivity</span>
-        <h3 class="subsection__title">Pause &amp; resume rules when you step away</h3>
+    <div class="settings-divider"></div>
+
+    <!-- ── Appearance ──────────────────────────────────────────
+         Theme runtime lives in `$lib/theme.svelte`; saving these
+         settings persists `appearance` and the save handler also calls
+         `setAppearance(...)` so the chrome, dashboard, and settings page
+         flip to the new theme immediately without a reload. -->
+    <div class="settings-group">
+      <span class="group-label">Appearance</span>
+      <RadioGroup
+        bind:value={draftAppearance}
+        options={[
+          {
+            value: "system",
+            label: "System",
+            description: "Follow the operating system theme automatically. Switches between Light and Dark when macOS does.",
+          },
+          {
+            value: "light",
+            label: "Light",
+            description: "Bright, high-contrast palette. Pinned regardless of the OS theme.",
+          },
+          {
+            value: "dark",
+            label: "Dark",
+            description: "Low-light palette tuned for long sessions. Pinned regardless of the OS theme.",
+          },
+        ]}
+      />
+      <p class="group-hint">
+        Theme switches immediately when you pick a new option — settings auto-save in the background.
+      </p>
+    </div>
+    </section>
+    </div>
+  {/if}
+
+  {#if activeTab === "behavior"}
+    <div role="tabpanel" id="settings-panel-behavior" aria-labelledby="settings-tab-behavior" tabindex="0">
+    <!-- ── Card: Inactivity ─────────────────────── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">04</span>
+          <div>
+            <h2 id="card-inactivity" class="card__title">Inactivity</h2>
+            <p class="card__subtitle">Pause &amp; resume rules when you step away.</p>
+          </div>
+        </div>
       </div>
 
     <div class="settings-group">
@@ -1112,14 +1388,86 @@
         {/if}
       {/if}
     </div>
+    </section>
+
+    <!-- ── Card: Timeline (sibling card inside the Behavior tab) ── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">04b</span>
+          <div>
+            <h2 class="card__title">Timeline</h2>
+            <p class="card__subtitle">How the dashboard timeline tracks newly captured frames.</p>
+          </div>
+        </div>
+      </div>
+
+    <div class="settings-group">
+      <span class="group-label">Timeline</span>
+      <Switch
+        bind:checked={draftFollowTimelineLive}
+        label="Follow latest frame automatically"
+        description="Keep the dashboard timeline pinned to the newest frame as new frames arrive"
+      />
+      <p class="group-hint">
+        When disabled, the currently selected frame stays selected until you scrub or click a different frame.
+      </p>
+    </div>
+    </section>
+    </div>
+  {/if}
+
+  {#if activeTab === "ocr"}
+    <div role="tabpanel" id="settings-panel-ocr" aria-labelledby="settings-tab-ocr" tabindex="0">
+    <!-- ── Card: OCR & Cache ─────────────────────── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">06</span>
+          <div>
+            <h2 class="card__title">OCR &amp; Previews</h2>
+            <p class="card__subtitle">Recognition behavior and preview-cache lifetime.</p>
+          </div>
+        </div>
+      </div>
+
+    <div class="settings-group">
+      <span class="group-label">OCR</span>
+      <RadioGroup
+        bind:value={draftOcrRecognitionMode}
+        label="Recognition Mode"
+        options={[
+          {
+            value: "fast",
+            label: "Fast",
+            description: "Lower CPU usage and smoother background OCR; recommended for continuous capture.",
+          },
+          {
+            value: "accurate",
+            label: "Accurate",
+            description: "Higher OCR accuracy at the cost of more CPU usage and heavier processing.",
+          },
+        ]}
+      />
+      <div class="settings-divider"></div>
+      <Switch
+        bind:checked={draftOcrLanguageCorrection}
+        label="Language correction"
+        description="Let Apple Vision spend extra work correcting recognized text using language models"
+      />
+      <p class="group-hint">
+        OCR settings are stored separately from capture settings so more OCR controls can be added here later.
+        {#if draftOcrRecognitionMode === "fast" && !draftOcrLanguageCorrection}
+          <strong>Current profile:</strong> lower CPU usage.
+        {:else if draftOcrRecognitionMode === "accurate" && draftOcrLanguageCorrection}
+          <strong>Current profile:</strong> highest OCR cost.
+        {:else}
+          <strong>Current profile:</strong> mixed CPU/accuracy tradeoff.
+        {/if}
+      </p>
     </div>
 
-    <!-- ── Subsection: Diagnostics ─────────────────────── -->
-    <div class="subsection">
-      <div class="subsection__head">
-        <span class="subsection__kicker">E · Diagnostics &amp; Developer</span>
-        <h3 class="subsection__title">Caches, developer surfaces and log files</h3>
-      </div>
+    <div class="settings-divider"></div>
 
     <!-- ── Preview Cache ─────────────────────────────────────── -->
     <div class="settings-group">
@@ -1145,6 +1493,23 @@
         {/if}
       </p>
     </div>
+    </section>
+    </div>
+  {/if}
+
+  {#if activeTab === "developer"}
+    <div role="tabpanel" id="settings-panel-developer" aria-labelledby="settings-tab-developer" tabindex="0">
+    <!-- ── Card: Developer & Logs ─────────────────────── -->
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">07</span>
+          <div>
+            <h2 class="card__title">Developer &amp; Logs</h2>
+            <p class="card__subtitle">Debug surfaces, native capture diagnostics, and log files.</p>
+          </div>
+        </div>
+      </div>
 
     <!-- ── Developer Options ─────────────────────────────────── -->
     <div class="settings-group">
@@ -1156,7 +1521,7 @@
       />
       <p class="group-hint">
         When disabled, the Debug page is hidden and visiting it redirects to the Timeline.
-        Save settings to apply the change.
+        Changes auto-save and apply immediately.
       </p>
     </div>
 
@@ -1170,7 +1535,7 @@
       />
       <p class="group-hint">
         When enabled, native capture internals are logged to a file for troubleshooting.
-        Save settings to apply the change.
+        Changes auto-save and apply immediately.
       </p>
 
       {#if debugLogStatus}
@@ -1280,7 +1645,9 @@
         </div>
       {/if}
     </div>
+    </section>
     </div>
+  {/if}
 
     {#if recError}
       <div class="inline-error">
@@ -1300,38 +1667,15 @@
         {/each}
       </div>
     {/if}
-
-    <div class="card__footer">
-      <div class="card__footer-meta">
-        {#if recSaveBlocked}
-          <span class="card__footer-status card__footer-status--blocked">unsaved · resolve issues above</span>
-        {:else if savingRecSettings}
-          <span class="card__footer-status">writing changes…</span>
-        {:else}
-          <span class="card__footer-status">draft ready</span>
-        {/if}
-      </div>
-      <div class="action-row">
-        <button
-          class="btn btn--primary"
-          onclick={saveRecordingSettings}
-          disabled={savingRecSettings || recSaveBlocked}
-        >
-          {savingRecSettings ? "Saving…" : "Save Recording Settings"}
-        </button>
-        {#if recSaved}
-          <span class="saved-badge">✓ Saved</span>
-        {/if}
-      </div>
-    </div>
-</section>
 {/if}
 
 <!-- ── Microphone settings ───────────────────────────────────────────────── -->
-<section class="card" aria-labelledby="card-mic">
+{#if activeTab === "microphone"}
+<div role="tabpanel" id="settings-panel-microphone" aria-labelledby="settings-tab-microphone" tabindex="0">
+<section class="card">
   <div class="card__header">
     <div class="card__heading">
-      <span class="card__index">02</span>
+      <span class="card__index">06</span>
       <div>
         <h2 id="card-mic" class="card__title">Microphone Controller</h2>
         <p class="card__subtitle">Choose the active device and how disconnects are handled.</p>
@@ -1433,136 +1777,230 @@
         <button class="btn btn--ghost btn--sm" onclick={() => micError = null}>×</button>
       </div>
     {/if}
-
-    <div class="card__footer">
-      <div class="card__footer-meta">
-        {#if micApplyBlocked}
-          <span class="card__footer-status card__footer-status--blocked">unsaved · select a device</span>
-        {:else if savingMicSettings}
-          <span class="card__footer-status">writing changes…</span>
-        {:else}
-          <span class="card__footer-status">draft ready</span>
-        {/if}
-      </div>
-      <div class="action-row">
-        <button
-          class="btn btn--primary"
-          onclick={saveMicSettings}
-          disabled={savingMicSettings || micApplyBlocked}
-        >
-          {savingMicSettings ? "Saving…" : "Save Microphone Settings"}
-        </button>
-        {#if micSaved}
-          <span class="saved-badge">✓ Saved</span>
-        {/if}
-      </div>
-    </div>
   {:else}
     <p class="empty-state">Failed to load microphone state.</p>
     <button class="btn btn--ghost btn--sm" onclick={loadMicState}>Retry</button>
   {/if}
 </section>
+</div>
+{/if}
+
+</div><!-- /.settings-scroll -->
 
 <style>
+  /* ── Scroll region ────────────────────────────────────────────────────
+     Wrapping all tab panels in a single flex child lets the page header
+     and tab strip stay pinned while only this region scrolls. `flex: 1`
+     claims the leftover viewport height inside `.app-content`, and
+     `min-height: 0` is required for the child to shrink below its
+     intrinsic content height in a flex column (otherwise the whole
+     dedicated window would scroll instead). The negative-margin /
+     positive-padding pair widens the scroll viewport to the page's
+     full reading-column width so the scrollbar sits flush with the
+     window edge while panel content keeps its 24px gutter. */
+  .settings-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    /* Re-establish the vertical rhythm previously provided by
+       `.app-content`'s flex `gap: 14px` so adjacent tab panels and the
+       wrapper itself keep matching spacing on tab switches. */
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  /* ── Tab nav ──────────────────────────────────────────────────────────
+     Compact horizontal strip; each tab shows index + label + tiny hint.
+     The active tab gets the accent treatment so the user always knows
+     which category is being edited. The wrapper carries a dashed
+     separator on its bottom edge that matches `.page-header`'s divider
+     so the pinned head of the dedicated window reads as a single
+     stationary block above the scrolling panel area. */
+  .tab-nav {
+    margin: 0;
+    padding-bottom: 12px;
+    border-bottom: 1px dashed var(--app-border);
+  }
+
+  .tab-nav__list {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding: 6px;
+    overflow-x: auto;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+  }
+
+  .tab-nav__tab {
+    flex: 1 1 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 14px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: center;
+    white-space: nowrap;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    color: var(--app-text-muted);
+    min-width: 0;
+  }
+
+  .tab-nav__tab:hover {
+    background: var(--app-surface-hover);
+    border-color: var(--app-border);
+    color: var(--app-text);
+  }
+
+  .tab-nav__tab:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+
+  .tab-nav__tab--active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent);
+  }
+
+  .tab-nav__tab--active:hover {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent);
+  }
+
+  .tab-nav__label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--app-text-strong);
+    line-height: 1.2;
+  }
+
+  .tab-nav__tab--active .tab-nav__label {
+    color: var(--app-accent);
+  }
+
+  :global([data-theme="light"]) .tab-nav {
+    border-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .tab-nav__list {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .tab-nav__tab {
+    color: var(--app-text-muted);
+  }
+  :global([data-theme="light"]) .tab-nav__tab:hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .tab-nav__tab--active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent-strong);
+  }
+  :global([data-theme="light"]) .tab-nav__label {
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .tab-nav__tab--active .tab-nav__label {
+    color: var(--app-accent-strong);
+  }
+
   /* ── Page header ───────────────────────────────────────────── */
   .page-header {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
     margin-bottom: 6px;
-    padding-bottom: 16px;
-    border-bottom: 1px dashed #1a1a26;
+    padding-bottom: 12px;
+    border-bottom: 1px dashed var(--app-border);
   }
 
-  .page-header__nav {
-    display: flex;
-    align-items: center;
-  }
-
-  .back-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px 4px 6px;
-    border-radius: 4px;
-    border: 1px solid #1f1f2e;
-    background: transparent;
-    color: #7a7a9a;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    transition: color 0.12s, background 0.12s, border-color 0.12s;
-  }
-
-  .back-link:hover {
-    color: #c0c0d8;
-    background: #13131e;
-    border-color: #2a2a3e;
-  }
-
-  .back-link:focus-visible {
-    outline: none;
-    border-color: #3dffa0;
-    color: #c0c0d8;
-    box-shadow: 0 0 0 2px rgba(61, 255, 160, 0.18);
-  }
-
-  .back-link__chevron {
-    font-size: 14px;
-    line-height: 1;
-    color: #5a5a7a;
-  }
-
-  .back-link:hover .back-link__chevron {
-    color: #a0a0c0;
-  }
-
-  .page-header__top {
+  .page-header__head {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 16px;
   }
 
-  .page-header__title-block {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .page-header__eyebrow {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.24em;
-    text-transform: uppercase;
-    color: #2a8a60;
-  }
-
-  .page-title {
-    font-size: 22px;
+  .page-header__title {
+    font-size: 14px;
     font-weight: 700;
     letter-spacing: 0.04em;
-    color: #f0f0f5;
+    color: var(--app-text-strong);
     line-height: 1.1;
   }
 
-  .page-subtitle {
-    font-size: 11px;
-    color: #6a6a88;
-    letter-spacing: 0.02em;
-    line-height: 1.5;
-    max-width: 48ch;
+  .page-header__status {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
   }
 
-  .page-header__corner {
-    font-size: 10px;
-    color: #1e3a2a;
-    letter-spacing: 0;
-    flex-shrink: 0;
-    margin-top: 6px;
-    user-select: none;
+  .page-header__status-text {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
+    position: relative;
+    padding-left: 12px;
+    white-space: nowrap;
+  }
+
+  .page-header__status-text::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--app-accent-strong);
+  }
+
+  .page-header__status-text--blocked {
+    color: var(--app-warn);
+  }
+  .page-header__status-text--blocked::before {
+    background: var(--app-warn-strong);
+  }
+
+  .page-header__status-text--ok {
+    color: var(--app-accent);
+  }
+  .page-header__status-text--ok::before {
+    background: var(--app-accent);
+    box-shadow: 0 0 6px var(--app-accent-glow);
+  }
+
+  .page-header__status-text--saving {
+    color: var(--app-accent-strong);
+  }
+  .page-header__status-text--saving::before {
+    background: var(--app-accent);
+    animation: status-pulse 1.1s ease-in-out infinite;
+  }
+
+  .page-header__status-text--error {
+    color: var(--app-danger);
+  }
+  .page-header__status-text--error::before {
+    background: var(--app-danger);
+    box-shadow: 0 0 6px var(--app-danger);
+  }
+
+  @keyframes status-pulse {
+    0%, 100% { opacity: 0.35; transform: translateY(-50%) scale(0.85); }
+    50% { opacity: 1; transform: translateY(-50%) scale(1.1); }
   }
 
   /* ── Status strip ─────────────────────────────────────────── */
@@ -1580,31 +2018,31 @@
     gap: 6px;
     padding: 4px 10px;
     border-radius: 999px;
-    border: 1px solid #1e1e2e;
-    background: #0e0e16;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
   }
 
   .status-pill__dot {
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: #2a2a3a;
+    background: var(--app-border-strong);
     transition: background 0.15s;
   }
 
   .status-pill--on {
-    border-color: #1a4a30;
-    background: #0a1410;
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
   }
 
   .status-pill--on .status-pill__dot {
-    background: #3dffa0;
-    box-shadow: 0 0 6px rgba(61, 255, 160, 0.4);
+    background: var(--app-accent);
+    box-shadow: 0 0 6px var(--app-accent-glow);
   }
 
   .status-pill--info {
-    border-color: #1e1e2e;
-    background: #0d0d18;
+    border-color: var(--app-border);
+    background: var(--app-surface-raised);
   }
 
   .status-pill__label {
@@ -1612,18 +2050,18 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #7a7a9a;
+    color: var(--app-text-muted);
   }
 
   .status-pill--on .status-pill__label {
-    color: #6acfa0;
+    color: var(--app-accent-strong);
   }
 
   /* ── Card ──────────────────────────────────────────────────── */
   .card {
     position: relative;
-    background: #13131a;
-    border: 1px solid #1e1e2e;
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border);
     border-radius: 8px;
     padding: 22px 22px 18px;
     display: flex;
@@ -1637,7 +2075,7 @@
     position: absolute;
     inset: 0 0 auto 0;
     height: 1px;
-    background: linear-gradient(90deg, transparent, #2a8a60 20%, #3dffa0 50%, #2a8a60 80%, transparent);
+    background: linear-gradient(90deg, transparent, var(--app-accent-strong) 20%, var(--app-accent) 50%, var(--app-accent-strong) 80%, transparent);
     opacity: 0.4;
   }
 
@@ -1662,13 +2100,13 @@
     min-width: 28px;
     height: 22px;
     padding: 0 6px;
-    background: #0a1410;
-    border: 1px solid #1a4a30;
+    background: var(--app-accent-bg);
+    border: 1px solid var(--app-accent-border);
     border-radius: 3px;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: #3dffa0;
+    color: var(--app-accent);
     flex-shrink: 0;
     margin-top: 1px;
   }
@@ -1677,64 +2115,17 @@
     font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.04em;
-    color: #d0d0e0;
+    color: var(--app-text-strong);
     line-height: 1.2;
     text-transform: none;
   }
 
   .card__subtitle {
     font-size: 10px;
-    color: #4a4a66;
+    color: var(--app-text-muted);
     letter-spacing: 0.02em;
     line-height: 1.5;
     margin-top: 3px;
-  }
-
-  /* ── Subsection (control-center cluster) ───────────────────── */
-  .subsection {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    padding: 14px 14px 14px 16px;
-    background: #0d0d15;
-    border: 1px solid #181826;
-    border-radius: 6px;
-    position: relative;
-  }
-
-  .subsection::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 14px;
-    bottom: 14px;
-    width: 2px;
-    background: #1a4a30;
-    border-radius: 1px;
-    opacity: 0.5;
-  }
-
-  .subsection__head {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid #16162200;
-  }
-
-  .subsection__kicker {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: #2a8a60;
-  }
-
-  .subsection__title {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: #9090b0;
   }
 
   /* ── Settings groups ──────────────────────────────────────── */
@@ -1749,7 +2140,7 @@
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: #44445a;
+    color: var(--app-text-subtle);
   }
 
   .settings-stack {
@@ -1757,25 +2148,25 @@
     flex-direction: column;
     gap: 12px;
     padding: 12px 14px;
-    background: #0e0e16;
-    border: 1px solid #1a1a2a;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     border-radius: 4px;
   }
 
   .settings-divider {
     height: 1px;
-    background: #1a1a26;
+    background: var(--app-border);
   }
 
   .group-hint {
     font-size: 10px;
-    color: #33334a;
+    color: var(--app-text-faint);
     letter-spacing: 0.03em;
     line-height: 1.5;
   }
 
   .group-hint--warn {
-    color: #8a5020;
+    color: var(--app-warn);
     font-weight: 600;
   }
 
@@ -1789,26 +2180,26 @@
   .text-input {
     flex: 1;
     padding: 7px 10px;
-    background: #0e0e16;
-    border: 1px solid #2a2a3a;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
     border-radius: 4px;
     font-family: inherit;
     font-size: 12px;
-    color: #c0c0d0;
+    color: var(--app-text);
     outline: none;
     transition: border-color 0.12s;
   }
 
   .text-input:focus {
-    border-color: #3dffa0;
+    border-color: var(--app-accent);
   }
 
   .text-input--empty {
-    border-color: #7a4a18;
+    border-color: var(--app-warn-border);
   }
 
   .text-input::placeholder {
-    color: #33334a;
+    color: var(--app-text-faint);
   }
 
   /* ── Buttons ───────────────────────────────────────────────── */
@@ -1834,28 +2225,17 @@
     cursor: not-allowed;
   }
 
-  .btn--primary {
-    background: #0f2e1f;
-    color: #3dffa0;
-    border-color: #1a4a30;
-  }
-
-  .btn--primary:not(:disabled):hover {
-    background: #1a3d2a;
-    border-color: #3dffa0;
-  }
-
   .btn--ghost {
     background: transparent;
-    color: #7a7a9a;
-    border-color: #2a2a3a;
+    color: var(--app-text-muted);
+    border-color: var(--app-border-strong);
     font-size: 10px;
   }
 
   .btn--ghost:not(:disabled):hover {
-    background: #1a1a2a;
-    color: #a0a0c0;
-    border-color: #3a3a5a;
+    background: var(--app-surface-hover);
+    color: var(--app-text);
+    border-color: var(--app-border-hover);
   }
 
   .btn--sm {
@@ -1863,69 +2243,11 @@
     font-size: 9px;
   }
 
-  .action-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  /* ── Card footer (action bar) ─────────────────────────────── */
-  .card__footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 14px;
-    flex-wrap: wrap;
-    margin-top: 4px;
-    padding: 12px 14px;
-    background: #0a0a12;
-    border: 1px solid #1a1a26;
-    border-radius: 5px;
-  }
-
-  .card__footer-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .card__footer-status {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: #44445a;
-    position: relative;
-    padding-left: 12px;
-  }
-
-  .card__footer-status::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #2a8a60;
-  }
-
-  .card__footer-status--blocked {
-    color: #a06820;
-  }
-
-  .card__footer-status--blocked::before {
-    background: #c07820;
-  }
-
   .saved-badge {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #3dffa0;
+    color: var(--app-accent);
     animation: fade-in-out 2.2s ease forwards;
   }
 
@@ -1949,15 +2271,15 @@
   }
 
   .badge--ok {
-    background: #0f2e1f;
-    color: #3dffa0;
-    border: 1px solid #1a4a30;
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    border: 1px solid var(--app-accent-border);
   }
 
   .badge--neutral {
-    background: #1a1a2a;
-    color: #7070a0;
-    border: 1px solid #2a2a3a;
+    background: var(--app-neutral-bg);
+    color: var(--app-neutral-text);
+    border: 1px solid var(--app-neutral-border);
   }
 
   .badge--sm {
@@ -1971,34 +2293,34 @@
     align-items: center;
     gap: 10px;
     padding: 10px 14px;
-    background: #0a1410;
-    border: 1px solid #1a3020;
+    background: var(--app-source-mic-bg);
+    border: 1px solid var(--app-source-mic-border);
     border-radius: 5px;
     transition: background 0.2s, border-color 0.2s;
   }
 
   .effective-device--none {
-    background: #0d0d14;
-    border-color: #1a1a2a;
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
   }
 
   .effective-device__dot {
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #33334a;
+    background: var(--app-text-faint);
     flex-shrink: 0;
     transition: background 0.2s;
   }
 
   .effective-device__dot--on {
-    background: #3dffa0;
+    background: var(--app-accent);
   }
 
   .effective-device__label {
     font-size: 12px;
     font-weight: 500;
-    color: #9090b0;
+    color: var(--app-text);
     display: flex;
     align-items: center;
     gap: 7px;
@@ -2018,32 +2340,32 @@
     gap: 9px;
     padding: 6px 10px;
     border-radius: 4px;
-    background: #0e0e16;
-    border: 1px solid #1a1a28;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     transition: border-color 0.12s;
   }
 
   .device-item--active {
-    border-color: #1a3020;
-    background: #0a1410;
+    border-color: var(--app-source-mic-border);
+    background: var(--app-source-mic-bg);
   }
 
   .device-item__dot {
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: #2a2a3a;
+    background: var(--app-border-strong);
     flex-shrink: 0;
     transition: background 0.15s;
   }
 
   .device-item__dot--active {
-    background: #3dffa0;
+    background: var(--app-accent);
   }
 
   .device-item__name {
     font-size: 11px;
-    color: #9090b0;
+    color: var(--app-text);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2062,13 +2384,13 @@
     align-items: flex-start;
     gap: 8px;
     padding: 10px 12px;
-    background: #0e0a0a;
-    border: 1px solid #3a1a20;
+    background: var(--app-danger-bg-soft);
+    border: 1px solid var(--app-danger-border);
     border-radius: 4px;
   }
 
   .inline-error__icon {
-    color: #ff6b7a;
+    color: var(--app-danger);
     font-size: 11px;
     flex-shrink: 0;
     margin-top: 1px;
@@ -2076,7 +2398,7 @@
 
   .inline-error__msg {
     font-size: 11px;
-    color: #cc5060;
+    color: var(--app-danger-text);
     flex: 1;
     word-break: break-word;
   }
@@ -2084,20 +2406,20 @@
   /* ── Misc ──────────────────────────────────────────────────── */
   .loading-text {
     font-size: 11px;
-    color: #33334a;
+    color: var(--app-text-faint);
     font-style: italic;
   }
 
   .empty-state {
     font-size: 11px;
-    color: #2a2a40;
+    color: var(--app-text-faint);
     font-style: italic;
   }
 
   /* ── Capture source hints ─────────────────────────────────── */
   .capture-source-hint {
     font-size: 10px;
-    color: #6a4a1a;
+    color: var(--app-warn);
     letter-spacing: 0.03em;
     line-height: 1.5;
     margin-top: 2px;
@@ -2109,8 +2431,8 @@
     flex-direction: column;
     gap: 5px;
     padding: 10px 12px;
-    background: #0d0b08;
-    border: 1px solid #3a2a10;
+    background: var(--app-warn-bg);
+    border: 1px solid var(--app-warn-border);
     border-radius: 4px;
   }
 
@@ -2119,14 +2441,14 @@
     align-items: baseline;
     gap: 7px;
     font-size: 11px;
-    color: #a06820;
+    color: var(--app-warn);
     line-height: 1.5;
   }
 
   .inline-validation__icon {
     font-size: 10px;
     flex-shrink: 0;
-    color: #c07820;
+    color: var(--app-warn-strong);
   }
 
   /* ── Resolution preset chips ──────────────────────────────────────── */
@@ -2142,8 +2464,8 @@
     align-items: center;
     gap: 2px;
     padding: 8px 16px;
-    background: #0e0e16;
-    border: 1px solid #2a2a3a;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
     border-radius: 4px;
     cursor: pointer;
     outline: none;
@@ -2153,17 +2475,17 @@
   }
 
   .preset-chip:hover {
-    background: #131320;
-    border-color: #3a3a5a;
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-hover);
   }
 
   .preset-chip--active {
-    background: #0d1f15;
-    border-color: #3dffa0;
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent);
   }
 
   .preset-chip:focus-visible {
-    outline: 1px solid #3dffa0;
+    outline: 1px solid var(--app-accent);
     outline-offset: 1px;
   }
 
@@ -2171,22 +2493,22 @@
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #c0c0d0;
+    color: var(--app-text);
     text-transform: uppercase;
   }
 
   .preset-chip--active .preset-chip__label {
-    color: #3dffa0;
+    color: var(--app-accent);
   }
 
   .preset-chip__dim {
     font-size: 9px;
-    color: #44445a;
+    color: var(--app-text-subtle);
     letter-spacing: 0.04em;
   }
 
   .preset-chip--active .preset-chip__dim {
-    color: #2a8a60;
+    color: var(--app-accent-strong);
   }
 
   /* ── Custom resolution inputs ─────────────────────────────────────── */
@@ -2208,7 +2530,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #33334a;
+    color: var(--app-text-faint);
   }
 
   .custom-res-input {
@@ -2218,7 +2540,7 @@
   .custom-res-sep {
     font-size: 18px;
     font-weight: 300;
-    color: #33334a;
+    color: var(--app-text-faint);
     padding-bottom: 7px;
     flex-shrink: 0;
     line-height: 1;
@@ -2230,21 +2552,21 @@
     align-items: flex-start;
     gap: 8px;
     padding: 9px 12px;
-    background: #0a0d14;
-    border: 1px solid #2a2a3a;
+    background: var(--app-neutral-bg);
+    border: 1px solid var(--app-neutral-border);
     border-radius: 4px;
   }
 
   .resolution-unsupported-notice__icon {
     font-size: 11px;
-    color: #6a6a88;
+    color: var(--app-neutral-text);
     flex-shrink: 0;
     margin-top: 1px;
   }
 
   .resolution-unsupported-notice__text {
     font-size: 10px;
-    color: #6a6a88;
+    color: var(--app-neutral-text);
     letter-spacing: 0.02em;
     line-height: 1.55;
   }
@@ -2254,27 +2576,27 @@
     align-items: flex-start;
     gap: 8px;
     padding: 9px 12px;
-    background: #0a0d14;
-    border: 1px solid #1e2640;
+    background: var(--app-info-bg);
+    border: 1px solid var(--app-info-border);
     border-radius: 4px;
   }
 
   .resolution-locked-notice__icon {
     font-size: 11px;
-    color: #4a6aaa;
+    color: var(--app-info-strong);
     flex-shrink: 0;
     margin-top: 1px;
   }
 
   .resolution-locked-notice__text {
     font-size: 10px;
-    color: #4a5a88;
+    color: var(--app-info-strong);
     letter-spacing: 0.02em;
     line-height: 1.55;
   }
 
   .resolution-locked-notice__text strong {
-    color: #6a8acc;
+    color: var(--app-info);
     font-weight: 700;
   }
 
@@ -2284,21 +2606,21 @@
     align-items: flex-start;
     gap: 8px;
     padding: 9px 12px;
-    background: #0d0d0a;
-    border: 1px solid #2a2a18;
+    background: var(--app-neutral-bg);
+    border: 1px solid var(--app-neutral-border);
     border-radius: 4px;
   }
 
   .resolution-pending-notice__icon {
     font-size: 11px;
-    color: #7a7a40;
+    color: var(--app-neutral-text);
     flex-shrink: 0;
     margin-top: 1px;
   }
 
   .resolution-pending-notice__text {
     font-size: 10px;
-    color: #5a5a30;
+    color: var(--app-neutral-text);
     letter-spacing: 0.02em;
     line-height: 1.55;
   }
@@ -2309,21 +2631,21 @@
     align-items: flex-start;
     gap: 8px;
     padding: 9px 12px;
-    background: #0d0b08;
-    border: 1px solid #3a2a10;
+    background: var(--app-warn-bg);
+    border: 1px solid var(--app-warn-border);
     border-radius: 4px;
   }
 
   .resolution-warn-notice__icon {
     font-size: 11px;
-    color: #c07820;
+    color: var(--app-warn-strong);
     flex-shrink: 0;
     margin-top: 1px;
   }
 
   .resolution-warn-notice__text {
     font-size: 10px;
-    color: #8a5820;
+    color: var(--app-warn);
     letter-spacing: 0.02em;
     line-height: 1.55;
   }
@@ -2333,21 +2655,21 @@
     align-items: flex-start;
     gap: 8px;
     padding: 9px 12px;
-    background: #0a1410;
-    border: 1px solid #1a3020;
+    background: var(--app-accent-bg);
+    border: 1px solid var(--app-accent-border);
     border-radius: 4px;
   }
 
   .resolution-supported-notice__icon {
     font-size: 11px;
-    color: #3dffa0;
+    color: var(--app-accent);
     flex-shrink: 0;
     margin-top: 1px;
   }
 
   .resolution-supported-notice__text {
     font-size: 10px;
-    color: #2a8a60;
+    color: var(--app-accent-strong);
     letter-spacing: 0.02em;
     line-height: 1.55;
   }
@@ -2365,8 +2687,8 @@
     align-items: center;
     gap: 2px;
     padding: 8px 16px;
-    background: #0e0e16;
-    border: 1px solid #2a2a3a;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
     border-radius: 4px;
     cursor: pointer;
     outline: none;
@@ -2376,17 +2698,17 @@
   }
 
   .bitrate-chip:hover {
-    background: #131320;
-    border-color: #3a3a5a;
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-hover);
   }
 
   .bitrate-chip--active {
-    background: #0d1f15;
-    border-color: #3dffa0;
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent);
   }
 
   .bitrate-chip:focus-visible {
-    outline: 1px solid #3dffa0;
+    outline: 1px solid var(--app-accent);
     outline-offset: 1px;
   }
 
@@ -2394,27 +2716,27 @@
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #c0c0d0;
+    color: var(--app-text);
     text-transform: uppercase;
   }
 
   .bitrate-chip--active .bitrate-chip__label {
-    color: #3dffa0;
+    color: var(--app-accent);
   }
 
   .bitrate-chip__mbps {
     font-size: 9px;
-    color: #44445a;
+    color: var(--app-text-subtle);
     letter-spacing: 0.04em;
   }
 
   .bitrate-chip--active .bitrate-chip__mbps {
-    color: #2a8a60;
+    color: var(--app-accent-strong);
   }
 
   /* ── Bitrate preset hint ──────────────────────────────────────────── */
   .bitrate-preset-hint strong {
-    color: #8080a0;
+    color: var(--app-neutral-text);
     font-weight: 700;
   }
 
@@ -2439,12 +2761,12 @@
 
   .custom-bitrate-unit {
     padding: 7px 10px;
-    background: #0e0e16;
-    border: 1px solid #2a2a3a;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
     border-left: none;
     border-radius: 0 4px 4px 0;
     font-size: 11px;
-    color: #44445a;
+    color: var(--app-text-subtle);
     letter-spacing: 0.06em;
     white-space: nowrap;
     font-weight: 600;
@@ -2458,21 +2780,21 @@
     align-items: flex-start;
     gap: 8px;
     padding: 9px 12px;
-    background: #0a0d14;
-    border: 1px solid #1e2640;
+    background: var(--app-info-bg);
+    border: 1px solid var(--app-info-border);
     border-radius: 4px;
   }
 
   .bitrate-compat-notice__icon {
     font-size: 11px;
-    color: #4a6aaa;
+    color: var(--app-info-strong);
     flex-shrink: 0;
     margin-top: 1px;
   }
 
   .bitrate-compat-notice__text {
     font-size: 10px;
-    color: #4a5a88;
+    color: var(--app-info-strong);
     letter-spacing: 0.02em;
     line-height: 1.55;
   }
@@ -2488,27 +2810,27 @@
     align-items: flex-start;
     gap: 8px;
     padding: 9px 12px;
-    background: #0a100d;
-    border: 1px solid #1a3028;
+    background: var(--app-accent-bg);
+    border: 1px solid var(--app-accent-border);
     border-radius: 4px;
   }
 
   .audio-activity-notice__icon {
     font-size: 11px;
-    color: #3dffa0;
+    color: var(--app-accent);
     flex-shrink: 0;
     margin-top: 1px;
   }
 
   .audio-activity-notice__text {
     font-size: 10px;
-    color: #2a7a58;
+    color: var(--app-accent-strong);
     letter-spacing: 0.02em;
     line-height: 1.55;
   }
 
   .audio-activity-notice__text strong {
-    color: #3dffa0;
+    color: var(--app-accent);
     font-weight: 700;
   }
 
@@ -2518,8 +2840,8 @@
     flex-direction: column;
     gap: 6px;
     padding: 10px 12px;
-    background: #0e0e16;
-    border: 1px solid #1a1a2a;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
     border-radius: 4px;
   }
 
@@ -2534,14 +2856,14 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: #33334a;
+    color: var(--app-text-faint);
     width: 48px;
     flex-shrink: 0;
   }
 
   .debug-log-status__value {
     font-size: 11px;
-    color: #9090b0;
+    color: var(--app-text);
     display: flex;
     align-items: center;
     gap: 6px;
@@ -2549,7 +2871,7 @@
 
   .debug-log-status__path {
     font-size: 10px;
-    color: #6060a0;
+    color: var(--app-info-strong);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2561,12 +2883,12 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #33334a;
+    background: var(--app-text-faint);
     flex-shrink: 0;
   }
 
   .debug-log-status__dot--on {
-    background: #3dffa0;
+    background: var(--app-accent);
   }
 
   .debug-log-actions {
@@ -2577,13 +2899,296 @@
 
   /* ── Danger button variant ───────────────────────────────────────── */
   .btn--danger {
-    background: #1e0a0a;
-    color: #ff6b7a;
-    border-color: #3a1a20;
+    background: var(--app-danger-bg-soft);
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
   }
 
   .btn--danger:not(:disabled):hover {
-    background: #2a1010;
-    border-color: #ff6b7a;
+    background: var(--app-danger-bg);
+    border-color: var(--app-danger);
+  }
+
+  /* ── Light theme overrides ────────────────────────────────────
+     The dark palette above is the source of truth; this block flips
+     just the surfaces, borders, and text colors that don't already
+     consume layout-level semantic tokens. Keeping the override flat
+     (one selector per affected rule) makes it easy to audit which
+     tokens still hard-code dark values. */
+  :global([data-theme="light"]) .page-header {
+    border-bottom-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .page-header__title {
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .page-header__status-text {
+    color: var(--app-text-muted);
+  }
+  :global([data-theme="light"]) .page-header__status-text::before {
+    background: var(--app-accent-strong);
+  }
+
+  :global([data-theme="light"]) .status-pill {
+    border-color: var(--app-border);
+    background: var(--app-surface);
+  }
+  :global([data-theme="light"]) .status-pill--on {
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+  }
+  :global([data-theme="light"]) .status-pill--info {
+    border-color: var(--app-border);
+    background: var(--app-surface-raised);
+  }
+  :global([data-theme="light"]) .status-pill__dot {
+    background: var(--app-text-faint);
+  }
+  :global([data-theme="light"]) .status-pill--on .status-pill__dot {
+    background: var(--app-accent);
+  }
+  :global([data-theme="light"]) .status-pill__label {
+    color: var(--app-text-muted);
+  }
+  :global([data-theme="light"]) .status-pill--on .status-pill__label {
+    color: var(--app-accent-strong);
+  }
+
+  :global([data-theme="light"]) .card {
+    background: var(--app-surface);
+    border-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .card__index {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent-strong);
+  }
+  :global([data-theme="light"]) .card__title {
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .card__subtitle {
+    color: var(--app-text-muted);
+  }
+
+  :global([data-theme="light"]) .group-label {
+    color: var(--app-text-subtle);
+  }
+  :global([data-theme="light"]) .settings-stack {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .settings-divider {
+    background: var(--app-border);
+  }
+  :global([data-theme="light"]) .group-hint {
+    color: var(--app-text-muted);
+  }
+
+  :global([data-theme="light"]) .text-input {
+    background: var(--app-surface);
+    border-color: var(--app-border-strong);
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .text-input:focus {
+    border-color: var(--app-accent);
+  }
+  :global([data-theme="light"]) .text-input::placeholder {
+    color: var(--app-text-faint);
+  }
+
+  :global([data-theme="light"]) .btn--ghost {
+    color: var(--app-text-muted);
+    border-color: var(--app-border-strong);
+  }
+  :global([data-theme="light"]) .btn--ghost:not(:disabled):hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+    border-color: var(--app-border-hover);
+  }
+  :global([data-theme="light"]) .saved-badge {
+    color: var(--app-accent-strong);
+  }
+
+  :global([data-theme="light"]) .badge--ok {
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    border-color: var(--app-accent-border);
+  }
+  :global([data-theme="light"]) .badge--neutral {
+    background: var(--app-surface-hover);
+    color: var(--app-text-muted);
+    border-color: var(--app-border);
+  }
+
+  :global([data-theme="light"]) .effective-device {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+  }
+  :global([data-theme="light"]) .effective-device--none {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .effective-device__dot {
+    background: var(--app-text-faint);
+  }
+  :global([data-theme="light"]) .effective-device__dot--on {
+    background: var(--app-accent);
+  }
+  :global([data-theme="light"]) .effective-device__label {
+    color: var(--app-text);
+  }
+
+  :global([data-theme="light"]) .device-item {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .device-item--active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+  }
+  :global([data-theme="light"]) .device-item__dot {
+    background: var(--app-text-faint);
+  }
+  :global([data-theme="light"]) .device-item__dot--active {
+    background: var(--app-accent);
+  }
+  :global([data-theme="light"]) .device-item__name {
+    color: var(--app-text);
+  }
+
+  :global([data-theme="light"]) .preset-chip,
+  :global([data-theme="light"]) .bitrate-chip {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border-strong);
+  }
+  :global([data-theme="light"]) .preset-chip:hover,
+  :global([data-theme="light"]) .bitrate-chip:hover {
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-hover);
+  }
+  :global([data-theme="light"]) .preset-chip--active,
+  :global([data-theme="light"]) .bitrate-chip--active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent);
+  }
+  :global([data-theme="light"]) .preset-chip__label,
+  :global([data-theme="light"]) .bitrate-chip__label {
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .preset-chip--active .preset-chip__label,
+  :global([data-theme="light"]) .bitrate-chip--active .bitrate-chip__label {
+    color: var(--app-accent-strong);
+  }
+  :global([data-theme="light"]) .preset-chip__dim,
+  :global([data-theme="light"]) .bitrate-chip__mbps {
+    color: var(--app-text-muted);
+  }
+
+  :global([data-theme="light"]) .custom-res-label {
+    color: var(--app-text-muted);
+  }
+  :global([data-theme="light"]) .custom-res-sep {
+    color: var(--app-text-muted);
+  }
+  :global([data-theme="light"]) .custom-bitrate-unit {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border-strong);
+    color: var(--app-text-muted);
+  }
+
+  :global([data-theme="light"]) .resolution-unsupported-notice,
+  :global([data-theme="light"]) .resolution-locked-notice,
+  :global([data-theme="light"]) .resolution-pending-notice,
+  :global([data-theme="light"]) .resolution-warn-notice,
+  :global([data-theme="light"]) .resolution-supported-notice,
+  :global([data-theme="light"]) .bitrate-compat-notice,
+  :global([data-theme="light"]) .audio-activity-notice {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .resolution-supported-notice {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+  }
+  :global([data-theme="light"]) .resolution-supported-notice__icon,
+  :global([data-theme="light"]) .audio-activity-notice__icon {
+    color: var(--app-accent-strong);
+  }
+  :global([data-theme="light"]) .resolution-supported-notice__text,
+  :global([data-theme="light"]) .audio-activity-notice__text {
+    color: var(--app-accent-strong);
+  }
+  :global([data-theme="light"]) .audio-activity-notice__text strong {
+    color: var(--app-accent-strong);
+  }
+  :global([data-theme="light"]) .resolution-locked-notice__text,
+  :global([data-theme="light"]) .bitrate-compat-notice__text {
+    color: var(--app-info-strong);
+  }
+  :global([data-theme="light"]) .resolution-locked-notice__text strong {
+    color: var(--app-info);
+  }
+
+  :global([data-theme="light"]) .capture-source-hint {
+    color: var(--app-warn);
+  }
+  :global([data-theme="light"]) .group-hint--warn {
+    color: var(--app-warn);
+  }
+
+  :global([data-theme="light"]) .inline-validation {
+    background: var(--app-warn-bg);
+    border-color: var(--app-warn-border);
+  }
+  :global([data-theme="light"]) .inline-validation__item {
+    color: var(--app-warn);
+  }
+  :global([data-theme="light"]) .inline-validation__icon {
+    color: var(--app-warn-strong);
+  }
+
+  :global([data-theme="light"]) .inline-error {
+    background: var(--app-danger-bg-soft);
+    border-color: var(--app-danger-border);
+  }
+  :global([data-theme="light"]) .inline-error__icon {
+    color: var(--app-danger-strong);
+  }
+  :global([data-theme="light"]) .inline-error__msg {
+    color: var(--app-danger);
+  }
+
+  :global([data-theme="light"]) .loading-text,
+  :global([data-theme="light"]) .empty-state {
+    color: var(--app-text-muted);
+  }
+
+  :global([data-theme="light"]) .debug-log-status {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+  }
+  :global([data-theme="light"]) .debug-log-status__label {
+    color: var(--app-text-muted);
+  }
+  :global([data-theme="light"]) .debug-log-status__value {
+    color: var(--app-text);
+  }
+  :global([data-theme="light"]) .debug-log-status__path {
+    color: var(--app-text-muted);
+  }
+  :global([data-theme="light"]) .debug-log-status__dot {
+    background: var(--app-text-faint);
+  }
+  :global([data-theme="light"]) .debug-log-status__dot--on {
+    background: var(--app-accent);
+  }
+
+  :global([data-theme="light"]) .btn--danger {
+    background: var(--app-danger-bg-soft);
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
+  }
+  :global([data-theme="light"]) .btn--danger:not(:disabled):hover {
+    background: var(--app-danger-bg);
+    border-color: var(--app-danger-strong);
   }
 </style>
