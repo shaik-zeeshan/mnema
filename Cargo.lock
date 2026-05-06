@@ -2697,6 +2697,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "mnema"
+version = "0.1.0"
+dependencies = [
+ "app-infra",
+ "base64 0.22.1",
+ "capture-microphone",
+ "capture-runtime",
+ "capture-screen",
+ "capture-types",
+ "capture-writers",
+ "cidre",
+ "cocoa",
+ "core-graphics 0.25.0",
+ "objc",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-fs",
+ "tauri-plugin-log",
+ "tauri-plugin-opener",
+ "tempfile",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6927,34 +6955,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "synstructure",
-]
-
-[[package]]
-name = "z"
-version = "0.1.0"
-dependencies = [
- "app-infra",
- "base64 0.22.1",
- "capture-microphone",
- "capture-runtime",
- "capture-screen",
- "capture-types",
- "capture-writers",
- "cidre",
- "cocoa",
- "core-graphics 0.25.0",
- "objc",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-fs",
- "tauri-plugin-log",
- "tauri-plugin-opener",
- "tempfile",
- "time",
- "tokio",
 ]
 
 [[package]]
