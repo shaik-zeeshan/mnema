@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
+    fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -13,6 +14,7 @@ use std::sync::OnceLock;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
 use capture_types::{OcrRecognitionMode, OcrSettings};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, path::BaseDirectory};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -21,6 +23,7 @@ use tokio::sync::oneshot;
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
 pub type FramePreviewCacheState = Mutex<FramePreviewState>;
 
+const APP_INFRA_LOCK_FILE_NAME: &str = ".app-infra.lock";
 const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
 const FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
 const FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS: f64 = 5.0;
@@ -1349,52 +1352,59 @@ fn extract_preview_image_from_video_blocking(
         return result;
     }
 
-    use cidre::{av, cm, ns};
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    let result = {
+        use cidre::{av, cm, ns};
 
-    let video_url = ns::Url::with_fs_path_str(&video_path.to_string_lossy(), false);
-    let asset = av::UrlAsset::with_url(&video_url, None)
-        .ok_or_else(|| format!("failed to open video asset at {}", video_path.display()))?;
+        let video_url = ns::Url::with_fs_path_str(&video_path.to_string_lossy(), false);
+        let asset = av::UrlAsset::with_url(&video_url, None)
+            .ok_or_else(|| format!("failed to open video asset at {}", video_path.display()))?;
 
-    let duration_seconds = asset.duration().as_secs();
-    let clamped_offset_seconds = if duration_seconds.is_finite() && duration_seconds > 0.0 {
-        offset_seconds.clamp(0.0, (duration_seconds - 0.001).max(0.0))
-    } else {
-        0.0
+        let duration_seconds = asset.duration().as_secs();
+        let clamped_offset_seconds = if duration_seconds.is_finite() && duration_seconds > 0.0 {
+            offset_seconds.clamp(0.0, (duration_seconds - 0.001).max(0.0))
+        } else {
+            0.0
+        };
+        let requested_time = exact_offset_ms
+            .map(exact_preview_requested_time)
+            .unwrap_or_else(|| cm::Time::with_secs(clamped_offset_seconds, 600));
+        let mut image_generator = av::AssetImageGenerator::with_asset(asset.as_ref());
+        image_generator.set_applies_preferred_track_transform(true);
+        if require_exact_time {
+            image_generator.set_requested_time_tolerance_before(cm::Time::zero());
+            image_generator.set_requested_time_tolerance_after(cm::Time::zero());
+        }
+
+        let (cg_image, actual_time) = tokio::runtime::Handle::current().block_on(async {
+            image_generator.cg_image_for_time(requested_time).await
+        })
+        .map_err(|error| {
+            format!(
+                "failed to generate preview image from video {} at {}s: {error}",
+                video_path.display(),
+                clamped_offset_seconds,
+            )
+        })?;
+
+        if requested_time.is_valid() && actual_time.is_valid() && requested_time != actual_time {
+            log_video_preview_exact_miss(
+                &video_path,
+                frame,
+                exact_offset_ms.is_some(),
+                require_exact_time,
+                offset_seconds,
+                requested_time,
+                actual_time,
+            );
+        }
+
+        let preview = preview_image_bytes_from_cg_image(cg_image.as_ref());
+        image_generator.cancel_all_cg_image_gen();
+        preview
     };
-    let requested_time = exact_offset_ms
-        .map(exact_preview_requested_time)
-        .unwrap_or_else(|| cm::Time::with_secs(clamped_offset_seconds, 600));
-    let mut image_generator = av::AssetImageGenerator::with_asset(asset.as_ref());
-    image_generator.set_applies_preferred_track_transform(true);
-    if require_exact_time {
-        image_generator.set_requested_time_tolerance_before(cm::Time::zero());
-        image_generator.set_requested_time_tolerance_after(cm::Time::zero());
-    }
 
-    let (cg_image, actual_time) = tokio::runtime::Handle::current().block_on(async {
-        image_generator.cg_image_for_time(requested_time).await
-    })
-    .map_err(|error| {
-        format!(
-            "failed to generate preview image from video {} at {}s: {error}",
-            video_path.display(),
-            clamped_offset_seconds,
-        )
-    })?;
-
-    if requested_time.is_valid() && actual_time.is_valid() && requested_time != actual_time {
-        log_video_preview_exact_miss(
-            &video_path,
-            frame,
-            exact_offset_ms.is_some(),
-            require_exact_time,
-            offset_seconds,
-            requested_time,
-            actual_time,
-        );
-    }
-
-    preview_image_bytes_from_cg_image(cg_image.as_ref())
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -1773,6 +1783,47 @@ pub async fn persist_screen_frame_artifact(
     infra.capture_frame(&frame, payload_json.as_deref()).await
 }
 
+#[derive(Debug)]
+struct AppInfraDirectoryLock {
+    _file: File,
+    path: PathBuf,
+}
+
+impl AppInfraDirectoryLock {
+    fn acquire(base_dir: &Path) -> Result<Self, String> {
+        fs::create_dir_all(base_dir).map_err(|error| {
+            format!(
+                "failed to create app infrastructure base directory {}: {error}",
+                base_dir.display()
+            )
+        })?;
+
+        let path = base_dir.join(APP_INFRA_LOCK_FILE_NAME);
+        let file = File::create(&path).map_err(|error| {
+            format!(
+                "failed to open app infrastructure lock file {}: {error}",
+                path.display()
+            )
+        })?;
+
+        file.try_lock_exclusive().map_err(|error| {
+            format!(
+                "app infrastructure is already active for {}: {error}",
+                base_dir.display()
+            )
+        })?;
+
+        Ok(Self { _file: file, path })
+    }
+}
+
+impl Drop for AppInfraDirectoryLock {
+    fn drop(&mut self) {
+        let _ = self._file.unlock();
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
     let app_handle = app.handle().clone();
     let resolved_base_dir = resolve_base_dir(app.handle())?;
@@ -1781,6 +1832,17 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
         resolved_base_dir.save_directory,
         resolved_base_dir.base_dir.display()
     ));
+
+    let directory_lock = AppInfraDirectoryLock::acquire(&resolved_base_dir.base_dir).map_err(
+        |error| {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to acquire app infrastructure directory lock (save_directory='{}', base_dir='{}'): {error}",
+                resolved_base_dir.save_directory,
+                resolved_base_dir.base_dir.display()
+            ));
+            error
+        },
+    )?;
 
     let infra = tauri::async_runtime::block_on(::app_infra::AppInfra::initialize(
         &resolved_base_dir.base_dir,
@@ -1805,6 +1867,13 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
             "app infrastructure state was already initialized; refusing duplicate setup",
         );
         return Err("app infrastructure state was already initialized".to_string());
+    }
+
+    if !app.manage(Mutex::new(Some(directory_lock))) {
+        crate::native_capture::debug_log::log_error(
+            "app infrastructure directory lock state was already initialized; refusing duplicate setup",
+        );
+        return Err("app infrastructure directory lock state was already initialized".to_string());
     }
 
     if !app.manage(frame_preview_cache) {
@@ -2751,6 +2820,23 @@ mod tests {
             base_dir.file_name().and_then(|value| value.to_str()),
             Some("session-output")
         );
+    }
+
+    #[test]
+    fn app_infra_directory_lock_rejects_second_owner_for_same_base_dir() {
+        let dir = TestDir::new("app-infra-lock");
+
+        let first = AppInfraDirectoryLock::acquire(dir.path())
+            .expect("first app infra directory lock should succeed");
+        let error = AppInfraDirectoryLock::acquire(dir.path())
+            .expect_err("second app infra directory lock should fail");
+
+        assert!(error.contains("already active"));
+
+        drop(first);
+
+        AppInfraDirectoryLock::acquire(dir.path())
+            .expect("directory lock should be reacquirable after release");
     }
 
     #[test]
