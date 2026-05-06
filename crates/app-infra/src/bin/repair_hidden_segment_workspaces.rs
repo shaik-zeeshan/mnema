@@ -31,7 +31,12 @@ async fn run() -> Result<(), String> {
     let recordings_root = base_dir.join("recordings");
     let infra = app_infra::AppInfra::initialize(&base_dir)
         .await
-        .map_err(|error| format!("failed to initialize app infra at {}: {error}", base_dir.display()))?;
+        .map_err(|error| {
+            format!(
+                "failed to initialize app infra at {}: {error}",
+                base_dir.display()
+            )
+        })?;
     let result = infra
         .repair_hidden_segment_workspaces(&recordings_root)
         .await

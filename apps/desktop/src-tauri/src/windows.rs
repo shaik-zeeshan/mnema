@@ -121,7 +121,8 @@ fn open_or_focus_window(
         return Ok(());
     }
 
-    let mut builder = WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(config.path.into()));
+    let mut builder =
+        WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(config.path.into()));
     builder = builder
         .title(config.title)
         .inner_size(config.inner_size.0, config.inner_size.1)
@@ -263,6 +264,9 @@ mod tests {
 
     #[test]
     fn unknown_window_destruction_has_no_side_effect() {
-        assert_eq!(destroyed_window_action("other"), DestroyedWindowAction::None);
+        assert_eq!(
+            destroyed_window_action("other"),
+            DestroyedWindowAction::None
+        );
     }
 }

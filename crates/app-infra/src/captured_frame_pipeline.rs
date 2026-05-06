@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
 
 use crate::{
-    captured_frame_equivalence::{
-        CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,
-    },
+    captured_frame_equivalence::{CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope},
     frame_batch_store::{FrameBatch, FrameBatchStore},
     processing::{
         Frame, FrameProcessingJob, NewFrame, ProcessingJob, ProcessingStore, OCR_PROCESSOR,

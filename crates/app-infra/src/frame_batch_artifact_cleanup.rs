@@ -243,13 +243,19 @@ mod tests {
 
     #[test]
     fn is_safe_frame_artifact_path_rejects_missing_segment_grandparent() {
-        assert!(!is_safe_frame_artifact_path(Path::new("/tmp/frames/frame-1.png")));
-        assert!(!is_safe_frame_artifact_path(Path::new("/data/session/frames/frame-1.png")));
+        assert!(!is_safe_frame_artifact_path(Path::new(
+            "/tmp/frames/frame-1.png"
+        )));
+        assert!(!is_safe_frame_artifact_path(Path::new(
+            "/data/session/frames/frame-1.png"
+        )));
     }
 
     #[test]
     fn is_safe_frame_artifact_path_rejects_relative_paths() {
-        assert!(!is_safe_frame_artifact_path(Path::new("frames/frame-1.png")));
+        assert!(!is_safe_frame_artifact_path(Path::new(
+            "frames/frame-1.png"
+        )));
     }
 
     #[test]
@@ -295,7 +301,10 @@ mod tests {
 
         let errors = cleanup_frame_artifacts(&[test_frame(bad_file.clone())]);
         assert!(errors.is_empty(), "no errors expected for skipped paths");
-        assert!(bad_file.exists(), "file with unsafe path must not be deleted");
+        assert!(
+            bad_file.exists(),
+            "file with unsafe path must not be deleted"
+        );
     }
 
     #[test]
@@ -305,15 +314,21 @@ mod tests {
         let segment_dir = recordings_day_dir.join(".session-x-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
-        fs::write(recordings_day_dir.join("session-x-segment-0001.mov"), b"fake mov")
-            .expect("visible segment should be written");
+        fs::write(
+            recordings_day_dir.join("session-x-segment-0001.mov"),
+            b"fake mov",
+        )
+        .expect("visible segment should be written");
         let frame_path = frames_dir.join("frame-1.png");
         fs::write(&frame_path, b"fake").expect("frame file should be written");
 
         let errors = cleanup_frame_artifacts(&[test_frame(frame_path.clone())]);
         assert!(errors.is_empty(), "cleanup should succeed without errors");
         assert!(!frame_path.exists(), "frame file should be deleted");
-        assert!(frames_dir.exists(), "hidden workspace frames/ dir should remain");
+        assert!(
+            frames_dir.exists(),
+            "hidden workspace frames/ dir should remain"
+        );
         assert!(segment_dir.exists(), "hidden workspace dir should remain");
     }
 
@@ -324,8 +339,11 @@ mod tests {
         let segment_dir = recordings_day_dir.join(".session-z-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
-        fs::write(recordings_day_dir.join("session-z-segment-0001.mov"), b"fake mov")
-            .expect("visible segment should be written");
+        fs::write(
+            recordings_day_dir.join("session-z-segment-0001.mov"),
+            b"fake mov",
+        )
+        .expect("visible segment should be written");
         let frame_path = frames_dir.join("frame-1.png");
 
         let errors = cleanup_frame_artifacts(&[test_frame(frame_path)]);
@@ -355,7 +373,10 @@ mod tests {
         fs::write(&audio_file, b"fake audio").expect("audio file should be written");
 
         let errors = cleanup_frame_artifacts(&[test_frame(frame_path.clone())]);
-        assert!(errors.is_empty(), "cleanup should succeed without errors: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "cleanup should succeed without errors: {errors:?}"
+        );
         assert!(!frame_path.exists());
         assert!(frames_dir.exists());
         assert!(segment_dir.exists());
@@ -440,7 +461,8 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_removes_hidden_workspace_frame_but_preserves_parent_dirs_when_visible_segment_exists() {
+    fn cleanup_removes_hidden_workspace_frame_but_preserves_parent_dirs_when_visible_segment_exists(
+    ) {
         let dir = TestDir::new("visible-segment-present");
         let recordings_day_dir = dir.managed_recordings_day_path("2026", "04", "12");
         let segment_dir = recordings_day_dir.join(".session-preview-segment-0001");
@@ -462,7 +484,8 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_removes_hidden_workspace_jpeg_but_preserves_parent_dirs_when_visible_segment_exists() {
+    fn cleanup_removes_hidden_workspace_jpeg_but_preserves_parent_dirs_when_visible_segment_exists()
+    {
         let dir = TestDir::new("visible-segment-present-jpeg");
         let recordings_day_dir = dir.managed_recordings_day_path("2026", "04", "12");
         let segment_dir = recordings_day_dir.join(".session-preview-segment-0001");
@@ -486,7 +509,9 @@ mod tests {
     #[test]
     fn cleanup_leaves_out_of_tree_hidden_segment_workspace_untouched() {
         let dir = TestDir::new("out-of-tree-workspace");
-        let segment_dir = dir.path().join("2026/04/12/.session-out-of-tree-segment-0001");
+        let segment_dir = dir
+            .path()
+            .join("2026/04/12/.session-out-of-tree-segment-0001");
         let frames_dir = segment_dir.join("frames");
         fs::create_dir_all(&frames_dir).expect("frames dir should be created");
         fs::write(

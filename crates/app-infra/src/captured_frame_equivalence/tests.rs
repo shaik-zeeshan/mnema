@@ -49,7 +49,13 @@ where
         .block_on(future);
 }
 
-fn write_test_png_rgba(dir: &TestDir, file_name: &str, width: u32, height: u32, pixels: &[u8]) -> String {
+fn write_test_png_rgba(
+    dir: &TestDir,
+    file_name: &str,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> String {
     let path = dir.path().join(file_name);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("test image parent should exist");
@@ -221,7 +227,10 @@ fn returns_nearest_earlier_match_in_session_scope() {
         .await;
 
         let resolved = resolver
-            .find_nearest_earlier_equivalent_frame(&repeated, &CapturedFrameEquivalenceScope::Session)
+            .find_nearest_earlier_equivalent_frame(
+                &repeated,
+                &CapturedFrameEquivalenceScope::Session,
+            )
             .await
             .expect("lookup should succeed")
             .expect("match should exist");
@@ -302,14 +311,20 @@ fn returns_earliest_earlier_match_in_session_scope() {
         .await;
 
         let nearest = resolver
-            .find_nearest_earlier_equivalent_frame(&repeated, &CapturedFrameEquivalenceScope::Session)
+            .find_nearest_earlier_equivalent_frame(
+                &repeated,
+                &CapturedFrameEquivalenceScope::Session,
+            )
             .await
             .expect("nearest lookup should succeed")
             .expect("nearest match should exist");
         assert_eq!(nearest, second);
 
         let earliest = resolver
-            .find_earliest_earlier_equivalent_frame(&repeated, &CapturedFrameEquivalenceScope::Session)
+            .find_earliest_earlier_equivalent_frame(
+                &repeated,
+                &CapturedFrameEquivalenceScope::Session,
+            )
             .await
             .expect("earliest lookup should succeed")
             .expect("earliest match should exist");
@@ -357,7 +372,10 @@ fn ignores_quarantined_earlier_candidates() {
         .await;
 
         let resolved = resolver
-            .find_nearest_earlier_equivalent_frame(&candidate, &CapturedFrameEquivalenceScope::Session)
+            .find_nearest_earlier_equivalent_frame(
+                &candidate,
+                &CapturedFrameEquivalenceScope::Session,
+            )
             .await
             .expect("lookup should succeed");
 
@@ -404,7 +422,10 @@ fn ignores_version_mismatches() {
         .await;
 
         let resolved = resolver
-            .find_nearest_earlier_equivalent_frame(&candidate, &CapturedFrameEquivalenceScope::Session)
+            .find_nearest_earlier_equivalent_frame(
+                &candidate,
+                &CapturedFrameEquivalenceScope::Session,
+            )
             .await
             .expect("lookup should succeed");
 
@@ -504,7 +525,10 @@ fn session_scope_can_match_outside_hidden_segment_workspace() {
         .await;
 
         let resolved = resolver
-            .find_nearest_earlier_equivalent_frame(&segment, &CapturedFrameEquivalenceScope::Session)
+            .find_nearest_earlier_equivalent_frame(
+                &segment,
+                &CapturedFrameEquivalenceScope::Session,
+            )
             .await
             .expect("lookup should succeed")
             .expect("match should exist");

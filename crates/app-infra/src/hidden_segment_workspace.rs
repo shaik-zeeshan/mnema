@@ -163,7 +163,8 @@ impl HiddenSegmentWorkspaceRepair {
             && visible_segment_appears_openable(Path::new(&paths.visible_segment_path));
 
         let disposition = if frame_count == 0 {
-            let has_frame_artifacts = hidden_workspace_has_frame_artifacts(Path::new(&paths.frames_dir));
+            let has_frame_artifacts =
+                hidden_workspace_has_frame_artifacts(Path::new(&paths.frames_dir));
             if has_frame_artifacts {
                 if visible_segment_exists {
                     SegmentWorkspaceCleanupDisposition::PendingFrameArtifacts
@@ -218,11 +219,15 @@ impl HiddenSegmentWorkspaceRepair {
         };
 
         for workspace_dir in workspace_dirs {
-            let Some(paths) = HiddenSegmentWorkspacePaths::from_workspace_dir(&workspace_dir) else {
+            let Some(paths) = HiddenSegmentWorkspacePaths::from_workspace_dir(&workspace_dir)
+            else {
                 continue;
             };
 
-            if matches_active_screen_session_workspace(&paths, context.active_screen_session_id.as_deref()) {
+            if matches_active_screen_session_workspace(
+                &paths,
+                context.active_screen_session_id.as_deref(),
+            ) {
                 capture_runtime::debug_log!(
                     "[app-infra][hidden-segment-workspaces] skipped active workspace {}",
                     paths.workspace_dir
@@ -231,7 +236,10 @@ impl HiddenSegmentWorkspaceRepair {
                 continue;
             }
 
-            let Some(info) = self.classify_hidden_segment_workspace(&workspace_dir).await? else {
+            let Some(info) = self
+                .classify_hidden_segment_workspace(&workspace_dir)
+                .await?
+            else {
                 continue;
             };
 
@@ -389,7 +397,8 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .expect("system time should be after unix epoch")
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!("hidden-segment-workspace-{label}-{unique}"));
+            let path =
+                std::env::temp_dir().join(format!("hidden-segment-workspace-{label}-{unique}"));
             fs::create_dir_all(&path).expect("test directory should exist");
             Self { path }
         }
@@ -507,7 +516,10 @@ mod tests {
                 .expect("classification should succeed")
                 .expect("classification should exist");
 
-            assert_eq!(info.disposition, SegmentWorkspaceCleanupDisposition::NoReferences);
+            assert_eq!(
+                info.disposition,
+                SegmentWorkspaceCleanupDisposition::NoReferences
+            );
             assert!(info.safe_to_remove);
             assert!(!info.visible_segment_exists);
             assert_eq!(info.frame_count, 0);
@@ -515,7 +527,8 @@ mod tests {
     }
 
     #[test]
-    fn classify_hidden_segment_workspace_reports_visible_segment_with_live_frame_artifacts_as_pending() {
+    fn classify_hidden_segment_workspace_reports_visible_segment_with_live_frame_artifacts_as_pending(
+    ) {
         run_async_test(async {
             let dir = TestDir::new("classify-pending-frame-artifacts");
             let database = Database::initialize(dir.path())
@@ -532,8 +545,7 @@ mod tests {
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames dir should exist");
             write_openable_visible_segment(&segment_dir.join("session-live-segment-0001.mov"));
-            fs::write(frames_dir.join("frame-1.jpg"), b"jpg")
-                .expect("frame artifact should exist");
+            fs::write(frames_dir.join("frame-1.jpg"), b"jpg").expect("frame artifact should exist");
 
             let info = repair
                 .classify_hidden_segment_workspace(&workspace_dir)
@@ -746,7 +758,8 @@ mod tests {
     }
 
     #[test]
-    fn classify_hidden_segment_workspace_preserves_completed_workspace_when_visible_segment_is_invalid() {
+    fn classify_hidden_segment_workspace_preserves_completed_workspace_when_visible_segment_is_invalid(
+    ) {
         run_async_test(async {
             let dir = TestDir::new("classify-invalid-visible-segment");
             let database = Database::initialize(dir.path())
@@ -911,7 +924,11 @@ mod tests {
                 .await
                 .expect("skipped frame should persist");
             store
-                .attach_frame_to_batch(skipped_frame.id, skipped_batch.id, &skipped_frame.captured_at)
+                .attach_frame_to_batch(
+                    skipped_frame.id,
+                    skipped_batch.id,
+                    &skipped_frame.captured_at,
+                )
                 .await
                 .expect("skipped frame should attach");
             let skipped_job = processing
@@ -952,7 +969,10 @@ mod tests {
             assert_eq!(result.scanned_workspace_count, 2);
             assert_eq!(result.removed_workspace_count, 1);
             assert_eq!(result.skipped_workspace_count, 1);
-            assert!(!safe_workspace_dir.exists(), "safe workspace should be removed");
+            assert!(
+                !safe_workspace_dir.exists(),
+                "safe workspace should be removed"
+            );
             assert!(
                 skipped_workspace_dir.exists(),
                 "workspace without visible segment should be preserved"
@@ -1029,7 +1049,10 @@ mod tests {
             assert_eq!(result.scanned_workspace_count, 1);
             assert_eq!(result.removed_workspace_count, 0);
             assert_eq!(result.skipped_workspace_count, 1);
-            assert!(workspace_dir.exists(), "active workspace should be preserved");
+            assert!(
+                workspace_dir.exists(),
+                "active workspace should be preserved"
+            );
         });
     }
 }

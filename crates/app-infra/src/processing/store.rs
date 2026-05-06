@@ -300,7 +300,10 @@ impl ProcessingStore {
              WHERE frames.file_path LIKE ?1 ESCAPE '\\' \
              ORDER BY frames.id ASC, processing_jobs.id ASC",
         )
-        .bind(format!("{}%", Self::escape_sql_like_pattern(workspace_prefix)))
+        .bind(format!(
+            "{}%",
+            Self::escape_sql_like_pattern(workspace_prefix)
+        ))
         .bind(super::FRAME_SUBJECT_TYPE)
         .bind(super::OCR_PROCESSOR)
         .fetch_all(&self.pool)
@@ -312,7 +315,10 @@ impl ProcessingStore {
         for row in rows {
             let job_id = row.get::<i64, _>("job_id");
             let status = ProcessingJobStatus::from_str(&row.get::<String, _>("job_status"))?;
-            if matches!(status, ProcessingJobStatus::Completed | ProcessingJobStatus::Failed) {
+            if matches!(
+                status,
+                ProcessingJobStatus::Completed | ProcessingJobStatus::Failed
+            ) {
                 continue;
             }
             if seen_job_ids.insert(job_id) {
@@ -735,7 +741,12 @@ impl ProcessingStore {
             .bind(equivalence.hint.as_deref())
             .bind(equivalence.proof.as_deref())
             .bind(equivalence.version)
-            .bind(equivalence.status.as_ref().map(FrameEquivalenceStatus::as_str))
+            .bind(
+                equivalence
+                    .status
+                    .as_ref()
+                    .map(FrameEquivalenceStatus::as_str),
+            )
             .bind(equivalence.error.as_deref())
             .execute(&self.pool)
             .await?;
@@ -945,7 +956,13 @@ where
     .bind(frame.equivalence.hint.as_deref())
     .bind(frame.equivalence.proof.as_deref())
     .bind(frame.equivalence.version)
-    .bind(frame.equivalence.status.as_ref().map(FrameEquivalenceStatus::as_str))
+    .bind(
+        frame
+            .equivalence
+            .status
+            .as_ref()
+            .map(FrameEquivalenceStatus::as_str),
+    )
     .bind(frame.equivalence.error.as_deref())
     .execute(executor)
     .await?;

@@ -51,7 +51,8 @@ impl FrameBatchRuntime {
 
         // Clean up artifacts while the batch is still in "processing" state so
         // a crash during cleanup leaves both the batch and job retryable.
-        let cleanup_errors = frame_batch_artifact_cleanup::cleanup_frame_artifacts(&batch_with_frames.frames);
+        let cleanup_errors =
+            frame_batch_artifact_cleanup::cleanup_frame_artifacts(&batch_with_frames.frames);
         if !cleanup_errors.is_empty() {
             capture_runtime::debug_log!(
                 "[app-infra][frame-batches] frame artifact cleanup for batch {batch_id}: {} file(s) failed to delete",

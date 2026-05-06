@@ -62,11 +62,7 @@ impl FrameEquivalence {
             return None;
         }
 
-        Some((
-            self.hint.as_deref()?,
-            self.proof.as_deref()?,
-            self.version?,
-        ))
+        Some((self.hint.as_deref()?, self.proof.as_deref()?, self.version?))
     }
 
     pub fn is_quarantined(&self) -> bool {

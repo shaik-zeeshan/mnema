@@ -16,7 +16,7 @@ use capture_screen::ScreenFrameArtifact;
 use capture_types::{OcrRecognitionMode, OcrSettings};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, path::BaseDirectory};
+use tauri::{path::BaseDirectory, Manager};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::oneshot;
 
@@ -152,7 +152,8 @@ impl FramePreviewState {
             return Err(rx);
         }
 
-        self.video_in_flight.insert(video_path.to_path_buf(), Vec::new());
+        self.video_in_flight
+            .insert(video_path.to_path_buf(), Vec::new());
         Ok(())
     }
 
@@ -182,7 +183,10 @@ impl FramePreviewState {
 impl FramePreviewCache {
     fn get(&mut self, frame_id: i64, ttl: Duration, now: Instant) -> Option<FramePreviewDto> {
         self.evict_expired(ttl, now);
-        let preview = self.entries.get(&frame_id).map(|entry| entry.preview.clone())?;
+        let preview = self
+            .entries
+            .get(&frame_id)
+            .map(|entry| entry.preview.clone())?;
         if !Path::new(&preview.file_path).is_file() {
             self.entries.remove(&frame_id);
             return None;
@@ -865,7 +869,12 @@ fn cleanup_generated_frame_preview_cache_dir(cache_dir: &Path) -> Result<(), Str
 
     let now = std::time::SystemTime::now();
     let mut files = fs::read_dir(cache_dir)
-        .map_err(|error| format!("failed to read preview cache directory {}: {error}", cache_dir.display()))?
+        .map_err(|error| {
+            format!(
+                "failed to read preview cache directory {}: {error}",
+                cache_dir.display()
+            )
+        })?
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let path = entry.path();
@@ -873,13 +882,17 @@ fn cleanup_generated_frame_preview_cache_dir(cache_dir: &Path) -> Result<(), Str
             if !metadata.is_file() {
                 return None;
             }
-            let modified = metadata.modified().ok().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let modified = metadata
+                .modified()
+                .ok()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             Some((path, modified))
         })
         .collect::<Vec<_>>();
 
     for (path, modified) in &files {
-        if now.duration_since(*modified).unwrap_or_default() > GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE {
+        if now.duration_since(*modified).unwrap_or_default() > GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE
+        {
             let _ = fs::remove_file(path);
         }
     }
@@ -894,17 +907,28 @@ fn cleanup_generated_frame_preview_cache_dir(cache_dir: &Path) -> Result<(), Str
     Ok(())
 }
 
-fn ensure_generated_frame_preview_cache_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn ensure_generated_frame_preview_cache_dir(
+    app_handle: &tauri::AppHandle,
+) -> Result<PathBuf, String> {
     let cache_dir = app_handle
         .path()
         .resolve(GENERATED_FRAME_PREVIEW_CACHE_DIR, BaseDirectory::AppCache)
         .map_err(|error| format!("failed to resolve app preview cache directory: {error}"))?;
-    fs::create_dir_all(&cache_dir)
-        .map_err(|error| format!("failed to create app preview cache directory {}: {error}", cache_dir.display()))?;
+    fs::create_dir_all(&cache_dir).map_err(|error| {
+        format!(
+            "failed to create app preview cache directory {}: {error}",
+            cache_dir.display()
+        )
+    })?;
     app_handle
         .asset_protocol_scope()
         .allow_directory(&cache_dir, true)
-        .map_err(|error| format!("failed to allow preview cache directory {} in asset scope: {error}", cache_dir.display()))?;
+        .map_err(|error| {
+            format!(
+                "failed to allow preview cache directory {} in asset scope: {error}",
+                cache_dir.display()
+            )
+        })?;
     cleanup_generated_frame_preview_cache_dir(&cache_dir)?;
     Ok(cache_dir)
 }
@@ -913,7 +937,12 @@ fn allow_preview_file(app_handle: &tauri::AppHandle, file_path: &Path) -> Result
     app_handle
         .asset_protocol_scope()
         .allow_file(file_path)
-        .map_err(|error| format!("failed to allow preview file {} in asset scope: {error}", file_path.display()))
+        .map_err(|error| {
+            format!(
+                "failed to allow preview file {} in asset scope: {error}",
+                file_path.display()
+            )
+        })
 }
 
 fn persist_generated_frame_preview_in_dir(
@@ -922,17 +951,32 @@ fn persist_generated_frame_preview_in_dir(
     bytes: &[u8],
     mime_type: &str,
 ) -> Result<PathBuf, String> {
-    fs::create_dir_all(cache_dir)
-        .map_err(|error| format!("failed to create preview cache directory {}: {error}", cache_dir.display()))?;
+    fs::create_dir_all(cache_dir).map_err(|error| {
+        format!(
+            "failed to create preview cache directory {}: {error}",
+            cache_dir.display()
+        )
+    })?;
     let output_path = cache_dir.join(generated_frame_preview_file_name(frame_id, mime_type));
     if !output_path.is_file() {
-        let temp_file = tempfile::NamedTempFile::new_in(cache_dir)
-            .map_err(|error| format!("failed to create temporary preview file in {}: {error}", cache_dir.display()))?;
-        fs::write(temp_file.path(), bytes)
-            .map_err(|error| format!("failed to write temporary preview file {}: {error}", temp_file.path().display()))?;
-        temp_file
-            .persist(&output_path)
-            .map_err(|error| format!("failed to persist generated preview file {}: {error}", output_path.display()))?;
+        let temp_file = tempfile::NamedTempFile::new_in(cache_dir).map_err(|error| {
+            format!(
+                "failed to create temporary preview file in {}: {error}",
+                cache_dir.display()
+            )
+        })?;
+        fs::write(temp_file.path(), bytes).map_err(|error| {
+            format!(
+                "failed to write temporary preview file {}: {error}",
+                temp_file.path().display()
+            )
+        })?;
+        temp_file.persist(&output_path).map_err(|error| {
+            format!(
+                "failed to persist generated preview file {}: {error}",
+                output_path.display()
+            )
+        })?;
     }
     Ok(output_path)
 }
@@ -944,7 +988,8 @@ fn persist_generated_frame_preview(
     mime_type: &str,
 ) -> Result<PathBuf, String> {
     let cache_dir = ensure_generated_frame_preview_cache_dir(app_handle)?;
-    let output_path = persist_generated_frame_preview_in_dir(&cache_dir, frame_id, bytes, mime_type)?;
+    let output_path =
+        persist_generated_frame_preview_in_dir(&cache_dir, frame_id, bytes, mime_type)?;
     allow_preview_file(app_handle, &output_path)?;
     Ok(output_path)
 }
@@ -1073,15 +1118,16 @@ fn indexed_frame_preview_offset(
             return Ok(None);
         }
         let bytes = fs::read(&legacy_path)?;
-        let legacy: LegacyScreenSegmentFrameIndex = serde_json::from_slice(&bytes).map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "failed to parse legacy screen segment frame index {}: {error}",
-                    legacy_path.display()
-                ),
-            )
-        })?;
+        let legacy: LegacyScreenSegmentFrameIndex =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "failed to parse legacy screen segment frame index {}: {error}",
+                        legacy_path.display()
+                    ),
+                )
+            })?;
         capture_screen::ScreenSegmentFrameIndex {
             version: legacy.version,
             entries: legacy
@@ -1096,12 +1142,12 @@ fn indexed_frame_preview_offset(
         }
     };
 
-    if let Some((captured_at_unix_ms, frame_index)) = parse_frame_identity_from_path(Path::new(&frame.file_path)) {
-        if let Some(entry) = index
-            .entries
-            .iter()
-            .find(|entry| entry.captured_at_unix_ms == captured_at_unix_ms && entry.frame_index == frame_index)
-        {
+    if let Some((captured_at_unix_ms, frame_index)) =
+        parse_frame_identity_from_path(Path::new(&frame.file_path))
+    {
+        if let Some(entry) = index.entries.iter().find(|entry| {
+            entry.captured_at_unix_ms == captured_at_unix_ms && entry.frame_index == frame_index
+        }) {
             return Ok(Some(IndexedFramePreviewOffset {
                 video_offset_ms: entry.video_offset_ms,
                 exact_match: true,
@@ -1189,7 +1235,9 @@ fn read_segment_frame_preview_or_return_video_error(
         )));
     }
 
-    Err(::app_infra::AppInfraError::Io(std::io::Error::other(video_error)))
+    Err(::app_infra::AppInfraError::Io(std::io::Error::other(
+        video_error,
+    )))
 }
 
 fn mov_file_appears_openable_for_preview(video_path: &Path) -> std::io::Result<bool> {
@@ -1253,8 +1301,9 @@ fn image_bytes_from_cg_image(
     use tempfile::NamedTempFile;
 
     let type_identifier = ut_type.id();
-    let output_file = NamedTempFile::new()
-        .map_err(|error| format!("failed to create temporary {format_label} output file: {error}"))?;
+    let output_file = NamedTempFile::new().map_err(|error| {
+        format!("failed to create temporary {format_label} output file: {error}")
+    })?;
     let output_path = output_file.path();
     let output_url = cf::Url::with_file_path(&output_path).ok_or_else(|| {
         format!(
@@ -1381,16 +1430,15 @@ fn extract_preview_image_from_video_blocking(
             image_generator.set_requested_time_tolerance_after(cm::Time::zero());
         }
 
-        let (cg_image, actual_time) = tokio::runtime::Handle::current().block_on(async {
-            image_generator.cg_image_for_time(requested_time).await
-        })
-        .map_err(|error| {
-            format!(
-                "failed to generate preview image from video {} at {}s: {error}",
-                video_path.display(),
-                clamped_offset_seconds,
-            )
-        })?;
+        let (cg_image, actual_time) = tokio::runtime::Handle::current()
+            .block_on(async { image_generator.cg_image_for_time(requested_time).await })
+            .map_err(|error| {
+                format!(
+                    "failed to generate preview image from video {} at {}s: {error}",
+                    video_path.display(),
+                    clamped_offset_seconds,
+                )
+            })?;
 
         if requested_time.is_valid() && actual_time.is_valid() && requested_time != actual_time {
             log_video_preview_exact_miss(
@@ -1572,7 +1620,9 @@ async fn get_frame_preview_inner(
         .as_ref()
         .filter(|offset| offset.exact_match)
         .map(|offset| offset.video_offset_ms);
-    let require_exact_time = indexed_offset.as_ref().is_some_and(|offset| offset.exact_match);
+    let require_exact_time = indexed_offset
+        .as_ref()
+        .is_some_and(|offset| offset.exact_match);
     let offset_seconds = indexed_offset
         .map(|offset| offset.video_offset_ms as f64 / 1000.0)
         .unwrap_or_else(|| estimate_frame_preview_offset_seconds(&frame, &related_frames));
@@ -1587,15 +1637,14 @@ async fn get_frame_preview_inner(
 
         match video_request_guard {
             Ok(()) => {
-                let result =
-                    extract_preview_image_from_video(
-                        &segment_paths.video_path,
-                        &frame,
-                        exact_offset_ms,
-                        offset_seconds,
-                        require_exact_time,
-                    )
-                    .await;
+                let result = extract_preview_image_from_video(
+                    &segment_paths.video_path,
+                    &frame,
+                    exact_offset_ms,
+                    offset_seconds,
+                    require_exact_time,
+                )
+                .await;
                 let notify_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
                 cache
                     .lock()
@@ -1608,7 +1657,11 @@ async fn get_frame_preview_inner(
                         cache
                             .lock()
                             .expect("frame preview cache poisoned")
-                            .insert_video_failure(&segment_paths.video_path, video_error.clone(), now);
+                            .insert_video_failure(
+                                &segment_paths.video_path,
+                                video_error.clone(),
+                                now,
+                            );
                         return read_segment_frame_preview_or_return_video_error(
                             &frame,
                             infra,
@@ -1906,10 +1959,9 @@ fn run_hidden_segment_workspace_repair_startup_pass(
     infra: &::app_infra::AppInfra,
     base_dir: &Path,
 ) {
-    let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
-        base_dir.to_path_buf(),
-    )
-    .recordings_root();
+    let recordings_root =
+        crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir.to_path_buf())
+            .recordings_root();
     let recordings_root_display = recordings_root.display().to_string();
 
     match tauri::async_runtime::block_on(repair_hidden_segment_workspaces_once(
@@ -1936,10 +1988,9 @@ fn run_hidden_segment_workspace_repair_startup_pass(
 }
 
 fn run_frame_index_sidecar_conversion_startup_pass(base_dir: &Path) {
-    let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
-        base_dir.to_path_buf(),
-    )
-    .recordings_root();
+    let recordings_root =
+        crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir.to_path_buf())
+            .recordings_root();
     let recordings_root_display = recordings_root.display().to_string();
 
     match convert_frame_index_sidecars_once(&recordings_root) {
@@ -2018,10 +2069,9 @@ fn spawn_hidden_segment_workspace_repair_worker(
     base_dir: PathBuf,
     app_handle: tauri::AppHandle,
 ) {
-    let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
-        base_dir,
-    )
-    .recordings_root();
+    let recordings_root =
+        crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir)
+            .recordings_root();
     let recordings_root_display = recordings_root.display().to_string();
 
     crate::native_capture::debug_log::log_info(format!(
@@ -2082,7 +2132,10 @@ fn convert_frame_index_sidecars_once(
             .map_err(|error| format!("failed to read {}: {error}", dir.display()))?;
         for entry in entries {
             let entry = entry.map_err(|error| {
-                format!("failed to read directory entry under {}: {error}", dir.display())
+                format!(
+                    "failed to read directory entry under {}: {error}",
+                    dir.display()
+                )
             })?;
             let path = entry.path();
             let file_type = entry.file_type().map_err(|error| {
@@ -2118,9 +2171,10 @@ fn convert_frame_index_sidecars_once(
 
             let bytes = fs::read(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-            let legacy: LegacyScreenSegmentFrameIndex = serde_json::from_slice(&bytes).map_err(
-                |error| format!("failed to parse legacy sidecar {}: {error}", path.display()),
-            )?;
+            let legacy: LegacyScreenSegmentFrameIndex =
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    format!("failed to parse legacy sidecar {}: {error}", path.display())
+                })?;
             let binary = capture_screen::encode_screen_segment_frame_index(
                 &capture_screen::ScreenSegmentFrameIndex {
                     version: legacy.version,
@@ -2556,9 +2610,14 @@ pub async fn get_frame_preview(
 
     if ttl.is_zero() {
         cache.lock().expect("frame preview cache poisoned").clear();
-        return get_frame_preview_inner_with_logging(&infra, &cache, Some(&app_handle), request.frame_id)
-            .await
-            .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
+        return get_frame_preview_inner_with_logging(
+            &infra,
+            &cache,
+            Some(&app_handle),
+            request.frame_id,
+        )
+        .await
+        .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
     }
 
     let now = Instant::now();
@@ -2576,9 +2635,14 @@ pub async fn get_frame_preview(
 
     let preview = match request_guard {
         Ok(()) => {
-            let result = get_frame_preview_inner_with_logging(&infra, &cache, Some(&app_handle), request.frame_id)
-                .await
-                .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
+            let result = get_frame_preview_inner_with_logging(
+                &infra,
+                &cache,
+                Some(&app_handle),
+                request.frame_id,
+            )
+            .await
+            .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
 
             let mut preview_state = cache.lock().expect("frame preview cache poisoned");
             if let Ok(Some(preview)) = result.as_ref() {
@@ -2664,7 +2728,10 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        sync::{Arc, atomic::{AtomicUsize, Ordering}},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
         thread,
         time::Duration,
         time::{SystemTime, UNIX_EPOCH},
@@ -2820,7 +2887,10 @@ mod tests {
         );
         let base_dir = layout.base_dir();
 
-        assert_eq!(base_dir.parent(), Some(Path::new("/tmp/mnema-recordings/session-output")));
+        assert_eq!(
+            base_dir.parent(),
+            Some(Path::new("/tmp/mnema-recordings/session-output"))
+        );
         assert_eq!(
             base_dir.file_name().and_then(|value| value.to_str()),
             Some("session-output")
@@ -2991,7 +3061,7 @@ mod tests {
             &index_path,
             capture_screen::encode_screen_segment_frame_index(&index),
         )
-            .expect("index file should be written");
+        .expect("index file should be written");
 
         let frame = ::app_infra::Frame {
             id: 2,
@@ -3269,7 +3339,8 @@ mod tests {
     }
 
     #[test]
-    fn get_frame_preview_inner_returns_error_immediately_when_visible_video_is_empty_and_no_segment_frame_exists() {
+    fn get_frame_preview_inner_returns_error_immediately_when_visible_video_is_empty_and_no_segment_frame_exists(
+    ) {
         run_async_test(async {
             let dir = TestDir::new("frame-preview-empty-video");
             let infra = ::app_infra::AppInfra::initialize(dir.path())
@@ -3325,8 +3396,7 @@ mod tests {
 
             let mut frame_ids = Vec::new();
             for index in 0..4 {
-                let frame_path =
-                    frames_dir.join(format!("frame-1744459201{index}00-{index}.png"));
+                let frame_path = frames_dir.join(format!("frame-1744459201{index}00-{index}.png"));
                 let captured_at = format!("2025-04-12T10:00:01.{index}00Z");
                 let frame = infra
                     .insert_frame(&::app_infra::NewFrame::new(
@@ -3388,7 +3458,10 @@ mod tests {
                     .expect("preview task should complete")
                     .expect("preview should load")
                     .expect("preview should exist");
-                assert_eq!(preview.source_kind, FramePreviewSourceKindDto::VideoFallback);
+                assert_eq!(
+                    preview.source_kind,
+                    FramePreviewSourceKindDto::VideoFallback
+                );
                 assert!(Path::new(&preview.file_path).is_file());
             }
 
@@ -3500,14 +3573,10 @@ mod tests {
         fs::write(&with_moov_path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  moov")
             .expect("mov fixture with moov should be written");
 
-        assert!(
-            !mov_file_appears_openable_for_preview(&missing_moov_path)
-                .expect("missing-moov fixture should read")
-        );
-        assert!(
-            mov_file_appears_openable_for_preview(&with_moov_path)
-                .expect("with-moov fixture should read")
-        );
+        assert!(!mov_file_appears_openable_for_preview(&missing_moov_path)
+            .expect("missing-moov fixture should read"));
+        assert!(mov_file_appears_openable_for_preview(&with_moov_path)
+            .expect("with-moov fixture should read"));
     }
 
     #[test]
@@ -3579,7 +3648,10 @@ mod tests {
             state.finish_request(42, Ok(preview.clone()));
 
             assert_eq!(state.in_flight_len(), 0);
-            assert_eq!(waiter.await.expect("waiter should receive result"), Ok(preview));
+            assert_eq!(
+                waiter.await.expect("waiter should receive result"),
+                Ok(preview)
+            );
         });
     }
 
@@ -3615,13 +3687,14 @@ mod tests {
                     captured_at_unix_ms: 1_744_539_600_123,
                     width: Some(1440),
                     height: Some(900),
-                    captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::Ready(
-                        capture_screen::CapturedFrameEquivalence {
-                            hint: "feedbeefhint0001".to_string(),
-                            proof: b"feedbeef-proof".to_vec(),
-                            version: capture_screen::CAPTURED_FRAME_EQUIVALENCE_VERSION,
-                        },
-                    ),
+                    captured_frame_equivalence:
+                        capture_screen::CapturedFrameEquivalenceOutcome::Ready(
+                            capture_screen::CapturedFrameEquivalence {
+                                hint: "feedbeefhint0001".to_string(),
+                                proof: b"feedbeef-proof".to_vec(),
+                                version: capture_screen::CAPTURED_FRAME_EQUIVALENCE_VERSION,
+                            },
+                        ),
                 },
             )
             .await
@@ -3685,7 +3758,10 @@ mod tests {
                 persisted.frame.equivalence.error.as_deref(),
                 Some("failed to derive captured frame equivalence from screen sample")
             );
-            assert!(persisted.job.is_some(), "quarantined frames must still enqueue OCR");
+            assert!(
+                persisted.job.is_some(),
+                "quarantined frames must still enqueue OCR"
+            );
         });
     }
 
@@ -3788,10 +3864,9 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-            let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
-                dir.path(),
-            )
-            .recordings_root();
+            let recordings_root =
+                crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(dir.path())
+                    .recordings_root();
             let day_dir = recordings_root.join("2026/04/12");
             let workspace_dir = day_dir.join(".session-repair-safe-segment-0001");
             fs::create_dir_all(workspace_dir.join("frames"))
@@ -3820,12 +3895,11 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-            let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
-                dir.path(),
-            )
-            .recordings_root();
-            let workspace_dir = recordings_root
-                .join("2026/04/12/.session-repair-preserve-segment-0001");
+            let recordings_root =
+                crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(dir.path())
+                    .recordings_root();
+            let workspace_dir =
+                recordings_root.join("2026/04/12/.session-repair-preserve-segment-0001");
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("workspace frames dir should be created");
             fs::write(frames_dir.join("frame-1.jpg"), b"fake frame")
@@ -3852,10 +3926,9 @@ mod tests {
             let infra = ::app_infra::AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
-            let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(
-                dir.path(),
-            )
-            .recordings_root();
+            let recordings_root =
+                crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(dir.path())
+                    .recordings_root();
             let day_dir = recordings_root.join("2026/04/12");
             let workspace_dir = day_dir.join(".active-screen-session-segment-0001");
             fs::create_dir_all(workspace_dir.join("frames"))

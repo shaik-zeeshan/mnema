@@ -42,10 +42,20 @@ mod tests {
 
     #[test]
     fn managed_storage_layout_keeps_database_out_of_segment_root() {
-        let layout = ManagedStorageLayout::from_save_directory("/tmp/mnema-recordings/session-output");
+        let layout =
+            ManagedStorageLayout::from_save_directory("/tmp/mnema-recordings/session-output");
 
-        assert_eq!(layout.base_dir().parent(), Some(Path::new("/tmp/mnema-recordings/session-output")));
-        assert_eq!(layout.base_dir().file_name().and_then(|value| value.to_str()), Some("session-output"));
+        assert_eq!(
+            layout.base_dir().parent(),
+            Some(Path::new("/tmp/mnema-recordings/session-output"))
+        );
+        assert_eq!(
+            layout
+                .base_dir()
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some("session-output")
+        );
     }
 
     #[test]
