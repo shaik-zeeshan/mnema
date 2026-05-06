@@ -9,6 +9,8 @@ unsafe extern "C" {
 #[cfg(target_os = "macos")]
 use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
+use cidre::objc::autorelease_pool::AutoreleasePoolPage;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
@@ -509,6 +511,8 @@ fn create_audio_asset_writer_with_format_internal(
 ) -> Result<AudioAssetWriterState, CaptureErrorResponse> {
     use cidre::{av, cat, ns};
 
+    let _autorelease_pool = AutoreleasePoolPage::push();
+
     let format_id = ns::Number::with_u32(cat::audio::Format::MPEG4_AAC.0);
     let sample_rate = ns::Number::with_f64(format.sample_rate_hz);
     let channel_count = ns::Number::with_i64(format.channel_count as i64);
@@ -693,6 +697,8 @@ fn create_video_asset_writer_with_source_hint(
     target_bitrate_bps: Option<u32>,
 ) -> Result<VideoAssetWriterState, CaptureErrorResponse> {
     use cidre::{av, ns};
+
+    let _autorelease_pool = AutoreleasePoolPage::push();
 
     let build_output_settings = |include_bitrate: bool| {
         source_format_hint.and_then(|format_desc| {
@@ -920,6 +926,8 @@ fn finish_audio_asset_writer_with_tail_policy(
     writer_state: &mut AudioAssetWriterState,
     flush_tail: bool,
 ) -> Result<(), CaptureErrorResponse> {
+    let _autorelease_pool = AutoreleasePoolPage::push();
+
     if flush_tail {
         flush_audio_tail_buffer(writer_state)?;
     } else {
@@ -965,6 +973,8 @@ fn finish_audio_asset_writer_with_tail_policy(
 pub fn finish_video_asset_writer(
     writer_state: &mut VideoAssetWriterState,
 ) -> Result<(), CaptureErrorResponse> {
+    let _autorelease_pool = AutoreleasePoolPage::push();
+
     if !writer_state.started || writer_state.appended_samples == 0 {
         return Err(no_video_samples_error(writer_state.label));
     }

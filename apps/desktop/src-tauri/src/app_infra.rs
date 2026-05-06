@@ -746,14 +746,19 @@ impl From<::app_infra::SegmentWorkspaceCleanupDebugInfo> for SegmentWorkspaceCle
 fn audio_file_duration_ms(file_path: &str) -> Option<u64> {
     use cidre::{av, ns};
 
-    let url = ns::Url::with_fs_path_str(file_path, false);
-    let asset = av::UrlAsset::with_url(&url, None)?;
-    let duration_seconds = asset.duration().as_secs();
-    if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
-        return None;
-    }
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    let result = {
+        let url = ns::Url::with_fs_path_str(file_path, false);
+        let asset = av::UrlAsset::with_url(&url, None)?;
+        let duration_seconds = asset.duration().as_secs();
+        if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+            return None;
+        }
 
-    Some((duration_seconds * 1_000.0).round() as u64)
+        Some((duration_seconds * 1_000.0).round() as u64)
+    };
+
+    result
 }
 
 #[cfg(target_os = "macos")]
