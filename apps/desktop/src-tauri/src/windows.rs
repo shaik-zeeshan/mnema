@@ -36,7 +36,7 @@ impl AppWindow {
             Self::Main => AppWindowConfig {
                 label: "main",
                 path: "/",
-                title: "Mnema",
+                title: "mnema",
                 inner_size: (800.0, 600.0),
                 min_inner_size: (640.0, 480.0),
                 gated_by_dev_options: false,
@@ -49,7 +49,7 @@ impl AppWindow {
             Self::Settings => AppWindowConfig {
                 label: "settings",
                 path: "settings",
-                title: "Mnema · Settings",
+                title: "mnema · Settings",
                 inner_size: (900.0, 820.0),
                 min_inner_size: (640.0, 480.0),
                 gated_by_dev_options: false,
@@ -62,7 +62,7 @@ impl AppWindow {
             Self::Debug => AppWindowConfig {
                 label: "debug",
                 path: "debug",
-                title: "Mnema · Debug",
+                title: "mnema · Debug",
                 inner_size: (980.0, 680.0),
                 min_inner_size: (800.0, 560.0),
                 gated_by_dev_options: true,

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Mnema",
+  "productName": "mnema",
   "version": "0.1.0",
   "identifier": "com.shaikzeeshan.mnema",
   "build": {
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "Mnema",
+        "title": "mnema",
         "width": 800,
         "height": 600,
         "decorations": true,
