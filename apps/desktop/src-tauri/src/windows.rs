@@ -207,14 +207,14 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
     }
 }
 
-pub fn handle_window_event(window: &WebviewWindow, event: &WindowEvent) {
+pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &WindowEvent) {
     if !matches!(event, WindowEvent::Destroyed) {
         return;
     }
 
-    match destroyed_window_action(window.label()) {
-        DestroyedWindowAction::FocusMainWindow => focus_main_window(window.app_handle()),
-        DestroyedWindowAction::ExitApp => window.app_handle().exit(0),
+    match destroyed_window_action(label) {
+        DestroyedWindowAction::FocusMainWindow => focus_main_window(app),
+        DestroyedWindowAction::ExitApp => app.exit(0),
         DestroyedWindowAction::None => {}
     }
 }

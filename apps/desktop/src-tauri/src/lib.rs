@@ -9,6 +9,13 @@ use tauri_plugin_log::{Target, TargetKind};
 
 pub(crate) const APP_LOG_FILE_NAME: &str = "rust";
 
+fn should_forward_window_event(
+    event: &tauri::WindowEvent,
+    webview_window_found: bool,
+) -> bool {
+    matches!(event, tauri::WindowEvent::Destroyed) || webview_window_found
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -34,11 +41,12 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
-            let Some(webview_window) = window.get_webview_window(window.label()) else {
+            let webview_window = window.get_webview_window(window.label());
+            if !should_forward_window_event(event, webview_window.is_some()) {
                 return;
-            };
+            }
 
-            windows::handle_window_event(&webview_window, event);
+            windows::handle_window_event(&window.app_handle(), window.label(), event);
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
@@ -92,4 +100,25 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_forward_window_event;
+
+    #[test]
+    fn destroyed_events_are_forwarded_even_when_manager_lookup_fails() {
+        assert!(should_forward_window_event(
+            &tauri::WindowEvent::Destroyed,
+            false,
+        ));
+    }
+
+    #[test]
+    fn non_destroyed_events_without_a_resolved_webview_window_are_ignored() {
+        assert!(!should_forward_window_event(
+            &tauri::WindowEvent::Focused(true),
+            false,
+        ));
+    }
 }
