@@ -1,9 +1,18 @@
+use serde::{Deserialize, Serialize};
+use std::{
+    path::PathBuf,
+    sync::{Mutex, MutexGuard},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::native_capture;
 
+const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AppWindow {
+    Onboarding,
     Main,
     Settings,
     Debug,
@@ -15,6 +24,40 @@ enum DestroyedWindowAction {
     ExitApp,
     None,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OnboardingState {
+    schema_version: u32,
+    completed_at_unix_ms: Option<u64>,
+}
+
+impl OnboardingState {
+    fn incomplete() -> Self {
+        Self {
+            schema_version: 1,
+            completed_at_unix_ms: None,
+        }
+    }
+
+    fn completed_now() -> Self {
+        Self {
+            schema_version: 1,
+            completed_at_unix_ms: Some(now_unix_ms()),
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.completed_at_unix_ms.is_some()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct OnboardingStateRuntime {
+    state: Option<OnboardingState>,
+}
+
+pub type OnboardingStateStore = Mutex<OnboardingStateRuntime>;
 
 struct AppWindowConfig {
     label: &'static str,
@@ -33,6 +76,19 @@ struct AppWindowConfig {
 impl AppWindow {
     const fn config(self) -> AppWindowConfig {
         match self {
+            Self::Onboarding => AppWindowConfig {
+                label: "onboarding",
+                path: "onboarding",
+                title: "mnema · Onboarding",
+                inner_size: (760.0, 620.0),
+                min_inner_size: (640.0, 520.0),
+                gated_by_dev_options: false,
+                decorations: false,
+                overlay_title_bar: false,
+                transparent: true,
+                shadow: true,
+                macos_corner_radius: Some(12.0),
+            },
             Self::Main => AppWindowConfig {
                 label: "main",
                 path: "/",
@@ -77,12 +133,76 @@ impl AppWindow {
 
     fn from_label(label: &str) -> Option<Self> {
         match label {
+            "onboarding" => Some(Self::Onboarding),
             "main" => Some(Self::Main),
             "settings" => Some(Self::Settings),
             "debug" => Some(Self::Debug),
             _ => None,
         }
     }
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn onboarding_state_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
+    if let Ok(config_dir) = app_handle.path().app_config_dir() {
+        return config_dir.join(ONBOARDING_STATE_FILE_NAME);
+    }
+
+    PathBuf::from(".mnema").join(ONBOARDING_STATE_FILE_NAME)
+}
+
+fn load_onboarding_state_from_path(path: PathBuf) -> OnboardingState {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<OnboardingState>(&raw).ok())
+        .filter(OnboardingState::is_complete)
+        .unwrap_or_else(OnboardingState::incomplete)
+}
+
+fn lock_onboarding_state(store: &OnboardingStateStore) -> MutexGuard<'_, OnboardingStateRuntime> {
+    store.lock().expect("onboarding state store poisoned")
+}
+
+fn current_onboarding_state(
+    app: &tauri::AppHandle,
+    store: &OnboardingStateStore,
+) -> OnboardingState {
+    let mut runtime = lock_onboarding_state(store);
+    if let Some(state) = runtime.state.clone() {
+        return state;
+    }
+
+    let state = load_onboarding_state_from_path(onboarding_state_file_path(app));
+    runtime.state = Some(state.clone());
+    state
+}
+
+fn persist_onboarding_state(
+    app: &tauri::AppHandle,
+    store: &OnboardingStateStore,
+    state: OnboardingState,
+) -> Result<OnboardingState, String> {
+    let file_path = onboarding_state_file_path(app);
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create onboarding state directory: {error}"))?;
+    }
+
+    let serialized = serde_json::to_string_pretty(&state)
+        .map_err(|error| format!("Failed to serialize onboarding state: {error}"))?;
+    std::fs::write(file_path, serialized)
+        .map_err(|error| format!("Failed to persist onboarding state: {error}"))?;
+
+    let mut runtime = lock_onboarding_state(store);
+    runtime.state = Some(state.clone());
+
+    Ok(state)
 }
 
 fn ensure_window_allowed(
@@ -191,6 +311,7 @@ fn focus_main_window(app: &tauri::AppHandle) {
 
 fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
+        Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
         Some(AppWindow::Settings | AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
         Some(AppWindow::Main) => DestroyedWindowAction::ExitApp,
         None => DestroyedWindowAction::None,
@@ -199,6 +320,7 @@ fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
 
 fn close_window(window: WebviewWindow) -> Result<(), String> {
     match AppWindow::from_label(window.label()) {
+        Some(AppWindow::Onboarding) => window.close().map_err(|err| err.to_string()),
         Some(AppWindow::Settings | AppWindow::Debug) => {
             focus_main_window(window.app_handle());
             window.close().map_err(|err| err.to_string())
@@ -213,10 +335,36 @@ pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &WindowEv
         return;
     }
 
-    match destroyed_window_action(label) {
+    let action = match AppWindow::from_label(label) {
+        Some(AppWindow::Onboarding) => {
+            let store = app.state::<OnboardingStateStore>();
+            if current_onboarding_state(app, store.inner()).is_complete() {
+                DestroyedWindowAction::None
+            } else {
+                DestroyedWindowAction::ExitApp
+            }
+        }
+        _ => destroyed_window_action(label),
+    };
+
+    match action {
         DestroyedWindowAction::FocusMainWindow => focus_main_window(app),
         DestroyedWindowAction::ExitApp => app.exit(0),
         DestroyedWindowAction::None => {}
+    }
+}
+
+pub fn open_startup_window(
+    app: &tauri::AppHandle,
+    store: &OnboardingStateStore,
+) -> Result<bool, String> {
+    let state = current_onboarding_state(app, store);
+    if state.is_complete() {
+        open_or_focus_window(app, AppWindow::Main, None)?;
+        Ok(true)
+    } else {
+        open_or_focus_window(app, AppWindow::Onboarding, None)?;
+        Ok(false)
     }
 }
 
@@ -238,9 +386,32 @@ pub fn close_current_window(window: WebviewWindow) -> Result<(), String> {
     close_window(window)
 }
 
+#[tauri::command]
+pub fn get_onboarding_state(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, OnboardingStateStore>,
+) -> OnboardingState {
+    current_onboarding_state(&app, state.inner())
+}
+
+#[tauri::command]
+pub fn complete_onboarding(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    state: tauri::State<'_, OnboardingStateStore>,
+) -> Result<(), String> {
+    if AppWindow::from_label(window.label()) != Some(AppWindow::Onboarding) {
+        return Err("onboarding can only be completed from the onboarding window".into());
+    }
+
+    persist_onboarding_state(&app, state.inner(), OnboardingState::completed_now())?;
+    open_or_focus_window(&app, AppWindow::Main, None)?;
+    window.close().map_err(|err| err.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{destroyed_window_action, DestroyedWindowAction};
+    use super::{destroyed_window_action, load_onboarding_state_from_path, DestroyedWindowAction};
 
     #[test]
     fn secondary_window_destruction_refocuses_main_window() {
@@ -263,10 +434,41 @@ mod tests {
     }
 
     #[test]
+    fn onboarding_window_destruction_exits_by_default() {
+        assert_eq!(
+            destroyed_window_action("onboarding"),
+            DestroyedWindowAction::ExitApp
+        );
+    }
+
+    #[test]
     fn unknown_window_destruction_has_no_side_effect() {
         assert_eq!(
             destroyed_window_action("other"),
             DestroyedWindowAction::None
         );
+    }
+
+    #[test]
+    fn missing_onboarding_state_is_incomplete() {
+        let path = std::env::temp_dir().join(format!(
+            "mnema-missing-onboarding-state-{}.json",
+            super::now_unix_ms()
+        ));
+
+        assert!(!load_onboarding_state_from_path(path).is_complete());
+    }
+
+    #[test]
+    fn invalid_onboarding_state_is_incomplete() {
+        let path = std::env::temp_dir().join(format!(
+            "mnema-invalid-onboarding-state-{}.json",
+            super::now_unix_ms()
+        ));
+        std::fs::write(&path, "{not-json").expect("invalid test state should write");
+
+        assert!(!load_onboarding_state_from_path(path.clone()).is_complete());
+
+        let _ = std::fs::remove_file(path);
     }
 }

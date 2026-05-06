@@ -1,0 +1,1443 @@
+<script lang="ts">
+  import { goto } from "$app/navigation";
+  import { invoke } from "@tauri-apps/api/core";
+  import Switch from "$lib/components/Switch.svelte";
+  import Slider from "$lib/components/Slider.svelte";
+  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import SelectMenu from "$lib/components/Select.svelte";
+  import type { ActivityMode, GetPermissionsResponse, PermissionStatus, RecordingSettings } from "$lib/types";
+
+  type OnboardingState = {
+    schemaVersion: number;
+    completedAtUnixMs: number | null;
+  };
+
+  type OnboardingStep = "about" | "permissions" | "sources" | "storage" | "inactivity" | "done";
+  type PermissionValue = PermissionStatus | "unsupported" | "unknown";
+
+  const steps: { id: OnboardingStep; label: string }[] = [
+    { id: "about", label: "About" },
+    { id: "permissions", label: "Access" },
+    { id: "sources", label: "Sources" },
+    { id: "storage", label: "Storage" },
+    { id: "inactivity", label: "Idle" },
+    { id: "done", label: "Ready" },
+  ];
+  const railSteps = steps.filter((step) => step.id !== "about" && step.id !== "done");
+
+  const activityModeOptions = [
+    { value: "system_input_only", label: "Input only", description: "Keyboard and pointer activity keep recording active." },
+    { value: "system_input_or_screen", label: "Input or screen change", description: "Input plus visible display changes keep recording active." },
+    { value: "system_input_or_screen_or_audio", label: "Input, screen, or audio", description: "Input, display, microphone, and system audio can keep recording active." },
+  ];
+
+  let activeStep = $state<OnboardingStep>("about");
+  let settings = $state<RecordingSettings | null>(null);
+  let permissions = $state<Record<"screen" | "microphone" | "systemAudio", PermissionValue> | null>(null);
+  let loading = $state(true);
+  let saving = $state(false);
+  let starting = $state(false);
+  let completing = $state(false);
+  let refreshingPerms = $state(false);
+  let error = $state<string | null>(null);
+
+  let draftCaptureScreen = $state(true);
+  let draftCaptureMicrophone = $state(false);
+  let draftCaptureSystemAudio = $state(false);
+  let draftFrameRate = $state(1);
+  let draftSegmentDuration = $state(60);
+  let draftSaveDirectory = $state("");
+  let draftPreviewCacheTtlSeconds = $state(3600);
+  let draftAutoStart = $state(false);
+  let draftPauseCaptureOnInactivity = $state(false);
+  let draftIdleTimeoutSeconds = $state(30);
+  let draftActivityMode = $state<ActivityMode>("system_input_only");
+  let draftMicrophoneActivitySensitivity = $state(50);
+  let draftSystemAudioActivitySensitivity = $state(50);
+
+  const activeIndex = $derived(steps.findIndex((step) => step.id === activeStep));
+  const railActiveIndex = $derived(railSteps.findIndex((step) => step.id === activeStep));
+  const isWelcome = $derived(activeStep === "about");
+  const isFinal = $derived(activeStep === "done");
+  const showChrome = $derived(!isWelcome && !isFinal);
+  const canGoBack = $derived(activeIndex > 0 && !saving && !starting && !completing);
+  const selectedSourceCount = $derived(
+    Number(draftCaptureScreen) + Number(draftCaptureMicrophone) + Number(draftCaptureSystemAudio)
+  );
+  const canGoNext = $derived(
+    !loading && !saving && !starting && !completing && settings !== null
+    && (activeStep !== "sources" || selectedSourceCount > 0)
+    && (activeStep !== "storage" || draftSaveDirectory.trim().length > 0)
+  );
+  const grantedCount = $derived(
+    permissions === null ? 0
+      : (["screen", "microphone", "systemAudio"] as const).filter((k) => permissions?.[k] === "granted").length
+  );
+
+  $effect(() => { void initialize(); });
+  $effect(() => {
+    if (!draftCaptureScreen && draftCaptureSystemAudio) draftCaptureSystemAudio = false;
+  });
+
+  async function initialize(): Promise<void> {
+    loading = true;
+    error = null;
+    try {
+      const state = await invoke<OnboardingState>("get_onboarding_state");
+      if (state.completedAtUnixMs !== null) {
+        await goto("/", { replaceState: true });
+        return;
+      }
+      const [loadedSettings, permissionResponse] = await Promise.all([
+        invoke<RecordingSettings>("get_recording_settings"),
+        invoke<GetPermissionsResponse>("get_capture_permissions"),
+      ]);
+      settings = loadedSettings;
+      permissions = permissionResponse.permissions as Record<"screen" | "microphone" | "systemAudio", PermissionValue>;
+      syncDrafts(loadedSettings);
+    } catch (err) {
+      error = serializeError(err);
+    } finally {
+      loading = false;
+    }
+  }
+
+  function serializeError(err: unknown): string {
+    return typeof err === "string" ? err : (JSON.stringify(err) ?? "Unknown error");
+  }
+
+  function syncDrafts(next: RecordingSettings): void {
+    draftCaptureScreen = next.captureScreen;
+    draftCaptureMicrophone = next.captureMicrophone;
+    draftCaptureSystemAudio = next.captureSystemAudio;
+    draftFrameRate = next.screenFrameRate;
+    draftSegmentDuration = next.segmentDurationSeconds;
+    draftSaveDirectory = next.saveDirectory;
+    draftPreviewCacheTtlSeconds = next.previewCacheTtlSeconds ?? 3600;
+    draftAutoStart = next.autoStart;
+    draftPauseCaptureOnInactivity = next.pauseCaptureOnInactivity;
+    draftIdleTimeoutSeconds = next.idleTimeoutSeconds;
+    draftActivityMode = next.activityMode ?? "system_input_only";
+    draftMicrophoneActivitySensitivity = next.microphoneActivitySensitivity ?? 50;
+    draftSystemAudioActivitySensitivity = next.systemAudioActivitySensitivity ?? 50;
+  }
+
+  function buildSettingsRequest(): RecordingSettings {
+    const base = settings;
+    if (base === null) throw new Error("Recording settings are not loaded.");
+    return {
+      ...base,
+      captureScreen: draftCaptureScreen,
+      captureMicrophone: draftCaptureMicrophone,
+      captureSystemAudio: draftCaptureScreen && draftCaptureSystemAudio,
+      screenFrameRate: draftFrameRate,
+      segmentDurationSeconds: draftSegmentDuration,
+      saveDirectory: draftSaveDirectory.trim(),
+      previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
+      autoStart: draftAutoStart,
+      pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
+      idleTimeoutSeconds: draftIdleTimeoutSeconds,
+      activityMode: draftActivityMode,
+      microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
+      systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
+    };
+  }
+
+  async function saveSettings(): Promise<void> {
+    saving = true;
+    error = null;
+    try {
+      const updated = await invoke<RecordingSettings>("update_recording_settings", { request: buildSettingsRequest() });
+      settings = updated;
+      syncDrafts(updated);
+    } catch (err) {
+      error = serializeError(err);
+      throw err;
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function refreshPermissions(): Promise<void> {
+    error = null;
+    refreshingPerms = true;
+    try {
+      const response = await invoke<GetPermissionsResponse>("get_capture_permissions");
+      permissions = response.permissions as Record<"screen" | "microphone" | "systemAudio", PermissionValue>;
+    } catch (err) {
+      error = serializeError(err);
+    } finally {
+      refreshingPerms = false;
+    }
+  }
+
+  async function nextStep(): Promise<void> {
+    if (!canGoNext) return;
+    if (activeStep === "sources" || activeStep === "storage" || activeStep === "inactivity") {
+      try { await saveSettings(); } catch { return; }
+    }
+    activeStep = steps[Math.min(activeIndex + 1, steps.length - 1)].id;
+  }
+
+  function previousStep(): void {
+    if (!canGoBack) return;
+    activeStep = steps[Math.max(activeIndex - 1, 0)].id;
+  }
+
+  async function finish(startRecording: boolean): Promise<void> {
+    if (!canGoNext || settings === null) return;
+    completing = true;
+    starting = startRecording;
+    error = null;
+    try {
+      await saveSettings();
+      if (startRecording) {
+        await invoke("start_native_capture", {
+          request: {
+            captureScreen: draftCaptureScreen,
+            captureMicrophone: draftCaptureMicrophone,
+            captureSystemAudio: draftCaptureScreen && draftCaptureSystemAudio,
+          },
+        });
+      }
+      await invoke("complete_onboarding");
+    } catch (err) {
+      error = serializeError(err);
+      completing = false;
+      starting = false;
+    }
+  }
+
+  function permissionLabel(value: PermissionValue | undefined): string {
+    switch (value) {
+      case "granted": return "Granted";
+      case "denied": return "Denied";
+      case "not_determined": return "Not requested";
+      case "restricted": return "Restricted";
+      case "unsupported": return "Unsupported";
+      default: return "Unknown";
+    }
+  }
+
+  function permissionTone(value: PermissionValue | undefined): "ok" | "pending" | "blocked" {
+    if (value === "granted") return "ok";
+    if (value === "not_determined") return "pending";
+    return "blocked";
+  }
+
+  function formatDuration(v: number): string {
+    if (v >= 60) {
+      const m = Math.floor(v / 60);
+      const s = v % 60;
+      return s ? `${m}m ${s}s` : `${m}m`;
+    }
+    return `${v}s`;
+  }
+
+  function handleKeydown(e: KeyboardEvent): void {
+    const target = e.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+    if (e.key === "Enter" && !e.shiftKey && activeStep !== "done" && canGoNext) {
+      e.preventDefault();
+      void nextStep();
+    }
+  }
+</script>
+
+<svelte:window onkeydown={handleKeydown} />
+
+<section class="ob" class:ob--welcome={isWelcome} class:ob--final={isFinal}>
+  {#if showChrome}
+    <header class="ob__head">
+      <div class="ob__title">
+        <span class="ob__index">{String(railActiveIndex + 1).padStart(2, "0")}/{String(railSteps.length).padStart(2, "0")}</span>
+        <h1>Set up mnema</h1>
+      </div>
+      <span class="ob__status" data-tone={canGoNext ? "ok" : "pending"}>
+        {loading ? "Loading" : saving ? "Saving" : starting ? "Starting" : "First run"}
+      </span>
+    </header>
+
+    <nav class="rail" aria-label="Onboarding steps">
+      {#each railSteps as step, railIndex}
+        {@const index = steps.findIndex((candidate) => candidate.id === step.id)}
+        {@const state = index < activeIndex ? "done" : index === activeIndex ? "active" : "future"}
+        <button
+          type="button"
+          class="rail__seg rail__seg--{state}"
+          disabled={loading || saving || starting || completing || index > activeIndex}
+          onclick={() => { if (index <= activeIndex) activeStep = step.id; }}
+          aria-current={index === activeIndex ? "step" : undefined}
+          title={step.label}
+        >
+          <span class="rail__num">{String(railIndex + 1).padStart(2, "0")}</span>
+          <span class="rail__lbl">{step.label}</span>
+        </button>
+      {/each}
+    </nav>
+  {/if}
+
+  <div class="ob__body">
+    {#if loading}
+      <div class="card card--loading">
+        <span class="loader" aria-hidden="true"></span>
+        <span class="loading-text">Loading settings…</span>
+      </div>
+    {:else if settings}
+      {#key activeStep}
+        <div class="step-anim">
+          {#if activeStep === "about"}
+            <section class="welcome" aria-labelledby="welcome-title">
+              <div class="welcome__bg" aria-hidden="true">
+                <div class="welcome__grid"></div>
+                <div class="welcome__halo"></div>
+              </div>
+              <div class="welcome__inner">
+                <span class="welcome__eyebrow">
+                  <span class="welcome__pulse"></span>
+                  Welcome
+                </span>
+                <h2 id="welcome-title" class="welcome__title">
+                  Your <em>memory</em>,
+                  <br />on rewind.
+                </h2>
+                <p class="welcome__tag">
+                  mnema quietly records your screen so you can scrub back to anything you've seen — searchable, local, and yours.
+                </p>
+                <ul class="welcome__loop" aria-hidden="true">
+                  <li><span></span>capture</li>
+                  <li><span></span>index</li>
+                  <li><span></span>recall</li>
+                </ul>
+                <div class="welcome__cta">
+                  <button type="button" class="btn btn--primary btn--lg" onclick={nextStep} disabled={!canGoNext}>
+                    Begin setup
+                    <span class="btn__arrow" aria-hidden="true">→</span>
+                  </button>
+                  <span class="welcome__meta">≈ 60 seconds · 4 quick steps</span>
+                </div>
+              </div>
+            </section>
+          {:else if activeStep === "permissions"}
+            <article class="card">
+              <header class="card__header">
+                <span class="card__index">01</span>
+                <div class="card__heading">
+                  <h2 class="card__title">Permissions</h2>
+                  <p class="card__subtitle">macOS access required for the sources you'll capture.</p>
+                </div>
+                <span class="badge" data-tone={grantedCount === 3 ? "ok" : grantedCount > 0 ? "pending" : "blocked"}>
+                  {grantedCount}/3
+                </span>
+              </header>
+
+              <ul class="perm-list">
+                {#each [
+                  { key: "screen", name: "Screen recording" },
+                  { key: "microphone", name: "Microphone" },
+                  { key: "systemAudio", name: "System audio" },
+                ] as p}
+                  {@const value = permissions?.[p.key as "screen" | "microphone" | "systemAudio"]}
+                  {@const tone = permissionTone(value)}
+                  <li class="perm perm--{tone}">
+                    <span class="perm__name">{p.name}</span>
+                    <span class="perm__pill">
+                      <span class="perm__dot"></span>{permissionLabel(value)}
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+
+              <p class="hint">Anything missing is requested by macOS when recording starts. If denied, enable manually under <em>System Settings › Privacy & Security</em>.</p>
+
+              <div class="row">
+                <button type="button" class="btn btn--ghost btn--sm" onclick={refreshPermissions} disabled={refreshingPerms}>
+                  {refreshingPerms ? "Checking…" : "Refresh"}
+                </button>
+              </div>
+            </article>
+          {:else if activeStep === "sources"}
+            <article class="card">
+              <header class="card__header">
+                <span class="card__index">02</span>
+                <div class="card__heading">
+                  <h2 class="card__title">Sources & cadence</h2>
+                  <p class="card__subtitle">What to capture, how often, how long per file.</p>
+                </div>
+                <span class="badge" data-tone={selectedSourceCount > 0 ? "ok" : "blocked"}>{selectedSourceCount} on</span>
+              </header>
+
+              <div class="settings-stack">
+                <Switch bind:checked={draftCaptureScreen} label="Screen" description="Capture the display" />
+                <div class="settings-divider"></div>
+                <Switch bind:checked={draftCaptureMicrophone} label="Microphone" description="Capture microphone audio" />
+                <div class="settings-divider"></div>
+                <Switch
+                  bind:checked={draftCaptureSystemAudio}
+                  disabled={!draftCaptureScreen}
+                  label="System audio"
+                  description="Capture Mac system audio when supported"
+                />
+              </div>
+              {#if !draftCaptureScreen}
+                <p class="hint hint--warn">System audio requires screen capture.</p>
+              {/if}
+
+              <div class="grid-2">
+                <div class="settings-group">
+                  <span class="group-label">Frame rate</span>
+                  <Slider bind:value={draftFrameRate} min={1} max={120} step={1} label="FPS" unit=" fps" />
+                </div>
+                <div class="settings-group">
+                  <span class="group-label">Segment</span>
+                  <Slider
+                    bind:value={draftSegmentDuration}
+                    min={10}
+                    max={600}
+                    step={10}
+                    label="Duration"
+                    formatValue={formatDuration}
+                  />
+                </div>
+              </div>
+
+              {#if selectedSourceCount === 0}
+                <p class="hint hint--err">Enable at least one source to continue.</p>
+              {/if}
+            </article>
+          {:else if activeStep === "storage"}
+            <article class="card">
+              <header class="card__header">
+                <span class="card__index">03</span>
+                <div class="card__heading">
+                  <h2 class="card__title">Storage</h2>
+                  <p class="card__subtitle">Where recordings and the SQLite app database live.</p>
+                </div>
+              </header>
+
+              <div class="settings-group">
+                <span class="group-label">Save directory</span>
+                <input
+                  type="text"
+                  class="text-input"
+                  class:text-input--empty={!draftSaveDirectory.trim()}
+                  bind:value={draftSaveDirectory}
+                  placeholder="/Users/you/mnema"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+                <p class="hint">Layout: <code>&lt;dir&gt;/db/app.sqlite3</code> · <code>&lt;dir&gt;/recordings/YYYY/MM/DD/</code></p>
+              </div>
+
+              <div class="grid-2">
+                <div class="settings-group">
+                  <SelectMenu
+                    value={String(draftPreviewCacheTtlSeconds)}
+                    onValueChange={(v) => { draftPreviewCacheTtlSeconds = parseInt(v, 10); }}
+                    label="Preview cache"
+                    options={[
+                      { value: "0", label: "Disabled" },
+                      { value: "300", label: "5 minutes" },
+                      { value: "900", label: "15 minutes" },
+                      { value: "3600", label: "1 hour" },
+                      { value: "21600", label: "6 hours" },
+                      { value: "86400", label: "24 hours" },
+                    ]}
+                  />
+                </div>
+                <div class="settings-stack settings-stack--center">
+                  <Switch
+                    bind:checked={draftAutoStart}
+                    label="Auto-start on launch"
+                    description="Begin recording when app opens"
+                  />
+                </div>
+              </div>
+            </article>
+          {:else if activeStep === "inactivity"}
+            <article class="card">
+              <header class="card__header">
+                <span class="card__index">04</span>
+                <div class="card__heading">
+                  <h2 class="card__title">Idle behavior</h2>
+                  <p class="card__subtitle">Optionally pause capture when nothing is happening.</p>
+                </div>
+              </header>
+
+              <div class="settings-stack">
+                <Switch
+                  bind:checked={draftPauseCaptureOnInactivity}
+                  label="Pause when idle"
+                  description="Resume automatically when activity returns"
+                />
+              </div>
+
+              {#if draftPauseCaptureOnInactivity}
+                <div class="reveal">
+                  <div class="settings-group">
+                    <span class="group-label">Idle timeout</span>
+                    <Slider
+                      bind:value={draftIdleTimeoutSeconds}
+                      min={5}
+                      max={300}
+                      step={5}
+                      label="Timeout"
+                      formatValue={formatDuration}
+                    />
+                  </div>
+                  <div class="settings-group">
+                    <span class="group-label">Activity mode</span>
+                    <RadioGroup bind:value={draftActivityMode} options={activityModeOptions} />
+                  </div>
+                  {#if draftActivityMode === "system_input_or_screen_or_audio"}
+                    <div class="grid-2">
+                      <div class="settings-group">
+                        <span class="group-label">Mic sensitivity</span>
+                        <Slider
+                          bind:value={draftMicrophoneActivitySensitivity}
+                          min={0} max={100} step={1} label="Mic" unit="%"
+                          disabled={!draftCaptureMicrophone}
+                        />
+                      </div>
+                      <div class="settings-group">
+                        <span class="group-label">System audio</span>
+                        <Slider
+                          bind:value={draftSystemAudioActivitySensitivity}
+                          min={0} max={100} step={1} label="System" unit="%"
+                          disabled={!draftCaptureSystemAudio}
+                        />
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              {:else}
+                <p class="hint">Capture runs continuously until stopped manually.</p>
+              {/if}
+            </article>
+          {:else}
+            <section class="finale" aria-labelledby="finale-title">
+              <div class="finale__bg" aria-hidden="true">
+                <div class="finale__rings"></div>
+                <div class="finale__rings finale__rings--alt"></div>
+              </div>
+              <div class="finale__inner">
+                <span class="finale__crest">
+                  <span class="finale__crest-dot"></span>
+                  All set
+                </span>
+                <h2 id="finale-title" class="finale__title">Press record.</h2>
+                <p class="finale__tag">
+                  Setup is complete. {selectedSourceCount > 0 ? `${selectedSourceCount} source${selectedSourceCount === 1 ? "" : "s"} armed` : "No sources armed"} · {draftFrameRate} fps · {formatDuration(draftSegmentDuration)} segments{draftPauseCaptureOnInactivity ? ` · idle pause @ ${formatDuration(draftIdleTimeoutSeconds)}` : ""}.
+                </p>
+
+                <div class="finale__chips">
+                  <span class="chip chip--lg" data-on={draftCaptureScreen}>Screen</span>
+                  <span class="chip chip--lg" data-on={draftCaptureMicrophone}>Mic</span>
+                  <span class="chip chip--lg" data-on={draftCaptureSystemAudio && draftCaptureScreen}>Sys audio</span>
+                </div>
+
+                <div class="finale__cta">
+                  <button
+                    type="button"
+                    class="btn btn--primary btn--cta"
+                    onclick={() => finish(true)}
+                    disabled={!canGoNext}
+                  >
+                    <span class="btn__rec btn__rec--lg" aria-hidden="true"></span>
+                    {starting ? "Starting…" : "Start recording"}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn--link"
+                    onclick={() => finish(false)}
+                    disabled={!canGoNext}
+                  >
+                    {completing && !starting ? "Opening…" : "Just open the dashboard →"}
+                  </button>
+                </div>
+
+                <p class="finale__foot">You can change anything later in <em>Settings</em>.</p>
+              </div>
+            </section>
+          {/if}
+        </div>
+      {/key}
+    {/if}
+  </div>
+
+  {#if !isWelcome}
+    <footer class="ob__foot" class:ob__foot--minimal={!showChrome}>
+      {#if error}
+        <p class="ob__error">{error}</p>
+      {:else if showChrome}
+        <p class="ob__hint" aria-hidden="true"><kbd>↵</kbd> next</p>
+      {:else}
+        <span class="ob__foot-spacer"></span>
+      {/if}
+      <button type="button" class="btn btn--ghost" onclick={previousStep} disabled={!canGoBack}>Back</button>
+      {#if showChrome}
+        <button type="button" class="btn btn--primary" onclick={nextStep} disabled={!canGoNext}>
+          {saving ? "Saving…" : "Continue"}
+        </button>
+      {/if}
+    </footer>
+  {:else if error}
+    <footer class="ob__foot ob__foot--minimal">
+      <p class="ob__error">{error}</p>
+    </footer>
+  {/if}
+</section>
+
+<style>
+  /* ── Layout shell — match settings page rhythm ─────────────── */
+  .ob {
+    height: 100%;
+    min-height: 100%;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+
+  /* ── Header (compact, like .page-header) ───────────────────── */
+  .ob__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed var(--app-border);
+  }
+  .ob__title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .ob__index {
+    padding: 2px 6px;
+    border: 1px solid var(--app-accent-border);
+    background: var(--app-accent-bg);
+    border-radius: 3px;
+    color: var(--app-accent);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    font-variant-numeric: tabular-nums;
+  }
+  .ob h1 {
+    margin: 0;
+    color: var(--app-text-strong);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1.1;
+  }
+  .ob__status {
+    position: relative;
+    padding-left: 12px;
+    color: var(--app-text-subtle);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .ob__status::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--app-text-subtle);
+  }
+  .ob__status[data-tone="ok"] { color: var(--app-accent); }
+  .ob__status[data-tone="ok"]::before { background: var(--app-accent); box-shadow: 0 0 6px var(--app-accent-glow); }
+  .ob__status[data-tone="pending"]::before { background: var(--app-warn); }
+
+  /* ── Stepper rail (single thin row, like .tab-nav__list) ───── */
+  .rail {
+    display: flex;
+    gap: 3px;
+    padding: 4px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+  }
+  .rail__seg {
+    flex: 1 1 0;
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 4px 6px;
+    height: 22px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .rail__seg:disabled { cursor: default; }
+  .rail__seg:not(:disabled):hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text);
+  }
+  .rail__seg--done {
+    color: var(--app-text);
+  }
+  .rail__seg--future {
+    color: var(--app-text-muted);
+  }
+  .rail__seg--active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent);
+  }
+  .rail__num {
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+  }
+  .rail__seg--active .rail__num { opacity: 1; }
+  .rail__lbl {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rail__seg:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+  :global([data-theme="light"]) .rail__seg--active {
+    color: var(--app-accent-strong);
+  }
+
+  /* ── Body / scroll ─────────────────────────────────────────── */
+  .ob__body {
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .step-anim {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    animation: step-in 0.22s ease-out;
+  }
+  .ob--welcome .step-anim > *,
+  .ob--final .step-anim > * { flex: 1 1 auto; min-height: 0; }
+  @keyframes step-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Card — matches settings .card exactly ─────────────────── */
+  .card {
+    position: relative;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px 16px 14px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface-raised);
+    overflow: hidden;
+  }
+  .card::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--app-accent-strong) 20%, var(--app-accent) 50%, var(--app-accent-strong) 80%, transparent);
+    opacity: 0.4;
+  }
+  .card--loading {
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 28px;
+  }
+  .loader {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1.5px solid var(--app-border);
+    border-top-color: var(--app-accent);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text {
+    color: var(--app-text-muted);
+    font-size: 11px;
+  }
+
+  .card__header {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .card__index {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 22px;
+    padding: 0 6px;
+    background: var(--app-accent-bg);
+    border: 1px solid var(--app-accent-border);
+    border-radius: 3px;
+    color: var(--app-accent);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .card__heading {
+    flex: 1;
+    min-width: 0;
+  }
+  .card__title {
+    margin: 0;
+    color: var(--app-text-strong);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+  }
+  .card__subtitle {
+    margin: 3px 0 0;
+    color: var(--app-text-muted);
+    font-size: 10px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+  }
+
+  /* ── Badges ────────────────────────────────────────────────── */
+  .badge {
+    align-self: flex-start;
+    margin-top: 2px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .badge[data-tone="ok"] {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+  }
+  .badge[data-tone="pending"] {
+    color: var(--app-warn);
+    border-color: var(--app-warn-border);
+    background: var(--app-warn-bg);
+  }
+  .badge[data-tone="blocked"] {
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
+    background: var(--app-danger-bg);
+  }
+
+
+
+  /* ── Permissions list (compact rows) ───────────────────────── */
+  .perm-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .perm {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface);
+  }
+  .perm__name {
+    color: var(--app-text-strong);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .perm__pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .perm__dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.6;
+  }
+  .perm--ok { border-color: var(--app-accent-border); }
+  .perm--ok .perm__pill { color: var(--app-accent); border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+  .perm--ok .perm__dot { opacity: 1; box-shadow: 0 0 4px var(--app-accent-glow); }
+  .perm--pending .perm__pill { color: var(--app-warn); border-color: var(--app-warn-border); background: var(--app-warn-bg); }
+  .perm--blocked .perm__pill { color: var(--app-danger); border-color: var(--app-danger-border); background: var(--app-danger-bg); }
+
+  /* ── Settings groups ───────────────────────────────────────── */
+  .settings-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .group-label {
+    color: var(--app-text-subtle);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .settings-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+  }
+  .settings-stack--center { justify-content: center; }
+  .settings-divider {
+    height: 1px;
+    background: var(--app-border);
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  /* ── Hints ─────────────────────────────────────────────────── */
+  .hint {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 10px;
+    line-height: 1.5;
+  }
+  .hint code {
+    padding: 0 4px;
+    border-radius: 2px;
+    background: var(--app-surface);
+    color: var(--app-text);
+    font-family: inherit;
+    font-size: 10px;
+  }
+  .hint em { font-style: normal; color: var(--app-text); }
+  .hint--warn { color: var(--app-warn); font-weight: 600; }
+  .hint--err { color: var(--app-danger); font-weight: 600; }
+
+  /* ── Inputs ────────────────────────────────────────────────── */
+  .text-input {
+    width: 100%;
+    padding: 7px 10px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
+    border-radius: 4px;
+    color: var(--app-text);
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.12s;
+  }
+  .text-input:focus { border-color: var(--app-accent); }
+  .text-input--empty { border-color: var(--app-warn-border); }
+  .text-input::placeholder { color: var(--app-text-faint); }
+
+  /* ── Inactivity reveal ─────────────────────────────────────── */
+  .reveal {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    animation: reveal 0.22s ease-out;
+  }
+  @keyframes reveal {
+    from { opacity: 0; transform: translateY(-3px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Chip (used in finale) ─────────────────────────────────── */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-faint);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .chip::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.5;
+  }
+  .chip[data-on="true"] {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+  }
+  .chip[data-on="true"]::before { opacity: 1; box-shadow: 0 0 4px var(--app-accent-glow); }
+
+  /* ── Rows / footer ─────────────────────────────────────────── */
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ob__foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--app-border);
+  }
+  .ob__hint {
+    flex: 1;
+    margin: 0;
+    color: var(--app-text-faint);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .ob__hint kbd {
+    display: inline-block;
+    padding: 0 5px;
+    margin-right: 4px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 3px;
+    background: var(--app-surface);
+    color: var(--app-text);
+    font-family: inherit;
+    font-size: 9px;
+  }
+  .ob__error {
+    flex: 1;
+    margin: 0;
+    padding: 5px 8px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 4px;
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+    font-size: 10.5px;
+    line-height: 1.35;
+  }
+
+  /* ── Buttons (match settings) ──────────────────────────────── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    outline: none;
+    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
+  }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn--ghost {
+    background: transparent;
+    color: var(--app-text-muted);
+    border-color: var(--app-border-strong);
+    font-size: 10px;
+  }
+  .btn--ghost:not(:disabled):hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text);
+    border-color: var(--app-border-hover);
+  }
+  .btn--primary {
+    background: var(--app-accent);
+    color: var(--app-bg);
+    border-color: var(--app-accent);
+  }
+  .btn--primary:not(:disabled):hover {
+    background: var(--app-accent-strong);
+    border-color: var(--app-accent-strong);
+  }
+  .btn--sm { padding: 4px 10px; font-size: 9px; }
+  .btn__rec {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--app-bg);
+    box-shadow: 0 0 0 1.5px var(--app-bg);
+    opacity: 0.7;
+  }
+  .btn:focus-visible {
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+
+  /* ── Welcome (first step) ──────────────────────────────────── */
+  .ob--welcome,
+  .ob--final {
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .ob--welcome .ob__body,
+  .ob--final .ob__body {
+    overflow: hidden;
+  }
+
+  .welcome,
+  .finale {
+    position: relative;
+    height: 100%;
+    min-height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--app-border);
+    border-radius: 10px;
+    background: var(--app-surface-raised);
+    overflow: hidden;
+  }
+  .welcome__bg,
+  .finale__bg {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .welcome__grid {
+    position: absolute;
+    inset: -2px;
+    background-image:
+      linear-gradient(var(--app-border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--app-border) 1px, transparent 1px);
+    background-size: 22px 22px;
+    opacity: 0.35;
+    mask-image: radial-gradient(ellipse at 30% 35%, black 0%, transparent 75%);
+  }
+  .welcome__halo {
+    position: absolute;
+    width: 360px;
+    height: 360px;
+    left: -80px;
+    top: -120px;
+    background: radial-gradient(circle, var(--app-accent-glow) 0%, transparent 65%);
+    filter: blur(8px);
+    opacity: 0.7;
+    animation: drift 14s ease-in-out infinite;
+  }
+  @keyframes drift {
+    0%, 100% { transform: translate(0, 0); }
+    50% { transform: translate(40px, 25px); }
+  }
+
+  .welcome__inner {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 32px 36px;
+    max-width: 520px;
+  }
+  .welcome__eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    align-self: flex-start;
+    padding: 3px 10px 3px 8px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 999px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .welcome__pulse {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--app-accent);
+    box-shadow: 0 0 0 0 var(--app-accent-glow);
+    animation: pulse 1.8s ease-out infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 var(--app-accent-glow); }
+    70% { box-shadow: 0 0 0 8px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  .welcome__title {
+    margin: 0;
+    color: var(--app-text-strong);
+    font-size: 38px;
+    font-weight: 700;
+    line-height: 1.02;
+    letter-spacing: -0.01em;
+  }
+  .welcome__title em {
+    font-style: normal;
+    color: var(--app-accent);
+    position: relative;
+  }
+  .welcome__title em::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 2px;
+    height: 6px;
+    background: var(--app-accent-glow);
+    opacity: 0.5;
+    z-index: -1;
+  }
+  .welcome__tag {
+    margin: 0;
+    color: var(--app-text);
+    font-size: 12.5px;
+    line-height: 1.55;
+    max-width: 44ch;
+  }
+  .welcome__loop {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 4px 0 0;
+    padding: 0;
+    list-style: none;
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .welcome__loop li {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .welcome__loop li:not(:last-child)::after {
+    content: "→";
+    margin: 0 8px;
+    color: var(--app-accent);
+    opacity: 0.6;
+  }
+  .welcome__loop li span {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--app-accent);
+    box-shadow: 0 0 4px var(--app-accent-glow);
+  }
+  .welcome__cta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 8px;
+  }
+  .welcome__meta {
+    color: var(--app-text-muted);
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  /* ── Finale (last step) ────────────────────────────────────── */
+  .finale__rings {
+    position: absolute;
+    width: 540px;
+    height: 540px;
+    border-radius: 50%;
+    border: 1px solid var(--app-accent-border);
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    opacity: 0.35;
+    animation: ring-pulse 4s ease-in-out infinite;
+  }
+  .finale__rings--alt {
+    width: 360px;
+    height: 360px;
+    border-color: var(--app-accent);
+    opacity: 0.18;
+    animation-delay: 1.6s;
+  }
+  @keyframes ring-pulse {
+    0%, 100% { transform: translate(-50%, -50%) scale(0.92); opacity: 0.15; }
+    50% { transform: translate(-50%, -50%) scale(1.05); opacity: 0.5; }
+  }
+
+  .finale__inner {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 14px;
+    padding: 32px 36px;
+    max-width: 520px;
+  }
+  .finale__crest {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .finale__crest-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--app-accent);
+    box-shadow: 0 0 6px var(--app-accent-glow);
+  }
+  .finale__title {
+    margin: 0;
+    color: var(--app-text-strong);
+    font-size: 42px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    line-height: 1;
+  }
+  .finale__tag {
+    margin: 0;
+    color: var(--app-text);
+    font-size: 12px;
+    line-height: 1.5;
+    max-width: 46ch;
+  }
+  .finale__chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    margin: 4px 0 8px;
+  }
+  .chip--lg {
+    padding: 4px 10px;
+    font-size: 10px;
+  }
+
+  .finale__cta {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+  }
+  .finale__foot {
+    margin: 6px 0 0;
+    color: var(--app-text-muted);
+    font-size: 10px;
+  }
+  .finale__foot em { font-style: normal; color: var(--app-text); }
+
+  .btn--lg {
+    padding: 10px 20px;
+    font-size: 12px;
+  }
+  .btn--cta {
+    padding: 12px 26px;
+    font-size: 13px;
+    letter-spacing: 0.12em;
+    box-shadow: 0 0 0 0 var(--app-accent-glow);
+    animation: cta-glow 2.4s ease-in-out infinite;
+  }
+  @keyframes cta-glow {
+    0%, 100% { box-shadow: 0 0 0 0 var(--app-accent-glow); }
+    50% { box-shadow: 0 0 0 6px transparent; }
+  }
+  .btn__arrow {
+    display: inline-block;
+    transition: transform 0.18s ease;
+  }
+  .btn--lg:not(:disabled):hover .btn__arrow { transform: translateX(3px); }
+  .btn__rec--lg { width: 9px; height: 9px; }
+  .btn--link {
+    background: transparent;
+    border-color: transparent;
+    color: var(--app-text-muted);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: none;
+    padding: 4px 8px;
+  }
+  .btn--link:not(:disabled):hover {
+    color: var(--app-accent);
+    background: transparent;
+  }
+
+  .ob__foot--minimal { border-top: 0; padding-top: 0; }
+  .ob__foot-spacer { flex: 1; }
+
+  /* ── Narrow widths (min window 640px) ──────────────────────── */
+  @media (max-width: 600px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    .rail__lbl { display: none; }
+    .welcome__inner,
+    .finale__inner { padding: 22px 20px; }
+    .welcome__title { font-size: 30px; }
+    .finale__title { font-size: 32px; }
+    .welcome__cta { flex-direction: column; align-items: flex-start; gap: 8px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .step-anim, .reveal, .loader,
+    .welcome__halo, .welcome__pulse,
+    .finale__rings, .btn--cta { animation: none; }
+  }
+</style>

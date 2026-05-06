@@ -43,6 +43,7 @@ pub fn run() {
         .manage(native_capture::SystemWakeNotifierState::default())
         .manage(native_capture::RecordingSettingsState::default())
         .manage(native_capture::AppNotificationsState::default())
+        .manage(windows::OnboardingStateStore::default())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)
@@ -111,6 +112,8 @@ pub fn run() {
             windows::open_settings_window,
             windows::open_debug_window,
             windows::close_current_window,
+            windows::get_onboarding_state,
+            windows::complete_onboarding,
         ])
         .setup(|app| {
             native_capture::initialize_recording_settings_from_disk(app.handle());
@@ -118,7 +121,13 @@ pub fn run() {
             app_infra::initialize(app).map_err(std::io::Error::other)?;
             native_capture::start_microphone_device_change_notifier(app.handle().clone());
             native_capture::start_system_wake_notifier(app.handle().clone());
-            native_capture::maybe_auto_start_native_capture(app.handle());
+            let onboarding_state = app.state::<windows::OnboardingStateStore>();
+            let onboarding_complete =
+                windows::open_startup_window(app.handle(), onboarding_state.inner())
+                    .map_err(std::io::Error::other)?;
+            if onboarding_complete {
+                native_capture::maybe_auto_start_native_capture(app.handle());
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

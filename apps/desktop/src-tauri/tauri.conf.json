@@ -11,16 +11,6 @@
   },
   "app": {
     "macOSPrivateApi": true,
-    "windows": [
-      {
-        "title": "mnema",
-        "width": 800,
-        "height": 600,
-        "decorations": true,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
-      }
-    ],
     "security": {
       "csp": null,
       "assetProtocol": {
