@@ -1211,8 +1211,6 @@ fn finalized_screen_segment_frame_index(
     screen_video_output_file: &str,
     entries: &[ScreenSegmentFrameIndexEntry],
 ) -> Result<ScreenSegmentFrameIndex, CaptureErrorResponse> {
-    use cidre::{av, cv, ns};
-
     if entries.is_empty() {
         return Ok(ScreenSegmentFrameIndex {
             version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
@@ -1220,164 +1218,173 @@ fn finalized_screen_segment_frame_index(
         });
     }
 
-    let video_url = ns::Url::with_fs_path_str(screen_video_output_file, false);
-    let asset = av::UrlAsset::with_url(&video_url, None).ok_or_else(|| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: format!(
-            "Failed to open finalized screen recording for frame index extraction: {screen_video_output_file}"
-        ),
-    })?;
-    let video_tracks = load_asset_tracks_with_timeout(
-        asset.as_ref(),
-        av::MediaType::video(),
-        "capture_output_processing_failed",
-        "Timed out while loading finalized screen recording video track",
-    )?;
-    let video_track = video_tracks.first().ok_or_else(|| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: format!(
-            "Finalized screen recording has no video track for frame index extraction: {screen_video_output_file}"
-        ),
-    })?;
+    let result = {
+        let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+        use cidre::{av, cv, ns};
 
-    let mut reader =
-        av::AssetReader::with_asset(asset.as_ref()).map_err(|_| CaptureErrorResponse {
+        let video_url = ns::Url::with_fs_path_str(screen_video_output_file, false);
+        let asset = av::UrlAsset::with_url(&video_url, None).ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
             message: format!(
-                "Failed to create asset reader for finalized screen frame index extraction: {screen_video_output_file}"
+                "Failed to open finalized screen recording for frame index extraction: {screen_video_output_file}"
             ),
         })?;
-    let output_settings = ns::Dictionary::with_keys_values(
-        &[cv::pixel_buffer::keys::pixel_format().as_ns()],
-        &[cv::PixelFormat::_32_BGRA.to_ns_number().as_id_ref()],
-    );
-    let mut reader_output = av::AssetReaderTrackOutput::with_track(video_track, Some(&output_settings))
-        .map_err(|_| CaptureErrorResponse {
+        let video_tracks = load_asset_tracks_with_timeout(
+            asset.as_ref(),
+            av::MediaType::video(),
+            "capture_output_processing_failed",
+            "Timed out while loading finalized screen recording video track",
+        )?;
+        let video_track = video_tracks.first().ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
             message: format!(
-                "Failed to create video track reader output for finalized frame index extraction: {screen_video_output_file}"
-            ),
-        })?;
-    reader_output.set_always_copies_sample_data(false);
-
-    let reader_output_ref: &av::AssetReaderOutput =
-        unsafe { &*(&*reader_output as *const _ as *const av::AssetReaderOutput) };
-    if !reader.can_add_output(reader_output_ref) {
-        return Err(CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: format!(
-                "Failed to add video reader output for finalized frame index extraction: {screen_video_output_file}"
-            ),
-        });
-    }
-    reader
-        .add_output(reader_output_ref)
-        .map_err(|_| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: format!(
-                "Failed to attach video reader output for finalized frame index extraction: {screen_video_output_file}"
+                "Finalized screen recording has no video track for frame index extraction: {screen_video_output_file}"
             ),
         })?;
 
-    let started = reader.start_reading().map_err(|_| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: format!(
-            "Failed to start reading finalized screen recording for frame index extraction: {screen_video_output_file}"
-        ),
-    })?;
-    if !started {
-        if let Some(error) = reader.error() {
-            return Err(error_with_ns_error(
-                "capture_output_processing_failed",
-                "Failed to start reading finalized screen recording for frame index extraction",
-                error.as_ref(),
-            ));
+        let mut reader =
+            av::AssetReader::with_asset(asset.as_ref()).map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to create asset reader for finalized screen frame index extraction: {screen_video_output_file}"
+                ),
+            })?;
+        let output_settings = ns::Dictionary::with_keys_values(
+            &[cv::pixel_buffer::keys::pixel_format().as_ns()],
+            &[cv::PixelFormat::_32_BGRA.to_ns_number().as_id_ref()],
+        );
+        let mut reader_output = av::AssetReaderTrackOutput::with_track(video_track, Some(&output_settings))
+            .map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to create video track reader output for finalized frame index extraction: {screen_video_output_file}"
+                ),
+            })?;
+        reader_output.set_always_copies_sample_data(false);
+
+        let reader_output_ref: &av::AssetReaderOutput =
+            unsafe { &*(&*reader_output as *const _ as *const av::AssetReaderOutput) };
+        if !reader.can_add_output(reader_output_ref) {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to add video reader output for finalized frame index extraction: {screen_video_output_file}"
+                ),
+            });
         }
-        return Err(CaptureErrorResponse {
+        reader
+            .add_output(reader_output_ref)
+            .map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to attach video reader output for finalized frame index extraction: {screen_video_output_file}"
+                ),
+            })?;
+
+        let started = reader.start_reading().map_err(|_| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
             message: format!(
                 "Failed to start reading finalized screen recording for frame index extraction: {screen_video_output_file}"
             ),
-        });
-    }
-
-    let mut finalized_entries = Vec::with_capacity(entries.len());
-    let mut entry_iter = entries.iter();
-    let mut next_entry = entry_iter.next();
-    let mut first_sample_offset_ms: Option<u64> = None;
-
-    while let Some(entry) = next_entry {
-        let sample_buf = reader_output
-            .next_sample_buf()
-            .map_err(|_| CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
-                message: format!(
-                    "Failed to read video sample while building finalized frame index: {screen_video_output_file}"
-                ),
-            })?;
-        let Some(sample_buf) = sample_buf else {
-            return Err(CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
-                message: format!(
-                    "Finalized screen recording ended before frame index extraction consumed all indexed frames: {screen_video_output_file}"
-                ),
-            });
-        };
-
-        let sample_offset_ms = sample_time_to_ms(sample_buf.pts()).ok_or_else(|| {
-            CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
-                message: format!(
-                    "Finalized screen recording sample had non-numeric PTS during frame index extraction: {screen_video_output_file}"
-                ),
-            }
         })?;
-        let first_sample_offset_ms = *first_sample_offset_ms.get_or_insert(sample_offset_ms);
-        finalized_entries.push(ScreenSegmentFrameIndexEntry {
-            captured_at_unix_ms: entry.captured_at_unix_ms,
-            frame_index: entry.frame_index,
-            video_offset_ms: sample_offset_ms.saturating_sub(first_sample_offset_ms),
-        });
-        next_entry = entry_iter.next();
-    }
-
-    match reader.status() {
-        cidre::av::asset::ReaderStatus::Completed | cidre::av::asset::ReaderStatus::Reading => {}
-        cidre::av::asset::ReaderStatus::Failed => {
+        if !started {
             if let Some(error) = reader.error() {
                 return Err(error_with_ns_error(
                     "capture_output_processing_failed",
-                    "Finalized screen frame index reader failed",
+                    "Failed to start reading finalized screen recording for frame index extraction",
                     error.as_ref(),
                 ));
             }
             return Err(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Finalized screen frame index reader failed".to_string(),
-            });
-        }
-        status => {
-            return Err(CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
                 message: format!(
-                    "Finalized screen frame index reader ended unexpectedly (status: {:?})",
-                    status
+                    "Failed to start reading finalized screen recording for frame index extraction: {screen_video_output_file}"
                 ),
             });
         }
-    }
 
-    if !screen_segment_frame_index_offsets_are_monotonic(&finalized_entries) {
-        capture_runtime::debug_log!(
-            "[capture-screen] finalized screen frame index offsets regressed for {}",
-            screen_video_output_file
-        );
-    }
+        let mut finalized_entries = Vec::with_capacity(entries.len());
+        let mut entry_iter = entries.iter();
+        let mut next_entry = entry_iter.next();
+        let mut first_sample_offset_ms: Option<u64> = None;
 
-    Ok(ScreenSegmentFrameIndex {
-        version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
-        entries: finalized_entries,
-    })
+        while let Some(entry) = next_entry {
+            let sample_buf = reader_output
+                .next_sample_buf()
+                .map_err(|_| CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Failed to read video sample while building finalized frame index: {screen_video_output_file}"
+                    ),
+                })?;
+            let Some(sample_buf) = sample_buf else {
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Finalized screen recording ended before frame index extraction consumed all indexed frames: {screen_video_output_file}"
+                    ),
+                });
+            };
+
+            let sample_offset_ms = sample_time_to_ms(sample_buf.pts()).ok_or_else(|| {
+                CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Finalized screen recording sample had non-numeric PTS during frame index extraction: {screen_video_output_file}"
+                    ),
+                }
+            })?;
+            let first_sample_offset_ms = *first_sample_offset_ms.get_or_insert(sample_offset_ms);
+            finalized_entries.push(ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: entry.captured_at_unix_ms,
+                frame_index: entry.frame_index,
+                video_offset_ms: sample_offset_ms.saturating_sub(first_sample_offset_ms),
+            });
+            next_entry = entry_iter.next();
+        }
+
+        match reader.status() {
+            cidre::av::asset::ReaderStatus::Completed | cidre::av::asset::ReaderStatus::Reading => {}
+            cidre::av::asset::ReaderStatus::Failed => {
+                if let Some(error) = reader.error() {
+                    return Err(error_with_ns_error(
+                        "capture_output_processing_failed",
+                        "Finalized screen frame index reader failed",
+                        error.as_ref(),
+                    ));
+                }
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Finalized screen frame index reader failed".to_string(),
+                });
+            }
+            status => {
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Finalized screen frame index reader ended unexpectedly (status: {:?})",
+                        status
+                    ),
+                });
+            }
+        }
+
+        if !screen_segment_frame_index_offsets_are_monotonic(&finalized_entries) {
+            capture_runtime::debug_log!(
+                "[capture-screen] finalized screen frame index offsets regressed for {}",
+                screen_video_output_file
+            );
+        }
+
+        let finalized_index = ScreenSegmentFrameIndex {
+            version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: finalized_entries,
+        };
+        reader.cancel_reading();
+        Ok(finalized_index)
+    };
+
+    result
 }
 
 pub fn screen_segment_frame_index_offsets_are_monotonic(entries: &[ScreenSegmentFrameIndexEntry]) -> bool {
@@ -1520,50 +1527,54 @@ fn save_screen_sample_as_jpeg(
     sample_buf: &cidre::cm::SampleBuf,
     output_path: &Path,
 ) -> Result<(), CaptureErrorResponse> {
-    use cidre::{cg, ut, vt};
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    {
+        use cidre::{cg, ut, vt};
 
-    let image_buf = sample_buf.image_buf().ok_or_else(|| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: "Screen frame sample did not contain an image buffer".to_string(),
-    })?;
-    let pixel_buf: &cidre::cv::PixelBuf = image_buf;
-    let cg_image =
-        vt::cg_image_from_cv_pixel_buf(pixel_buf, None).map_err(|status| CaptureErrorResponse {
+        let image_buf = sample_buf.image_buf().ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
-            message: format!(
-                "Failed to create CGImage from screen frame sample (status: {:?})",
-                status
-            ),
+            message: "Screen frame sample did not contain an image buffer".to_string(),
+        })?;
+        let pixel_buf: &cidre::cv::PixelBuf = image_buf;
+        let cg_image = vt::cg_image_from_cv_pixel_buf(pixel_buf, None).map_err(|status| {
+            CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to create CGImage from screen frame sample (status: {:?})",
+                    status
+                ),
+            }
         })?;
 
-    let output_url =
-        cidre::cf::Url::with_file_path(output_path).ok_or_else(|| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: format!(
-                "Failed to create output URL for screen frame artifact: {}",
-                output_path.display()
-            ),
-        })?;
+        let output_url =
+            cidre::cf::Url::with_file_path(output_path).ok_or_else(|| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to create output URL for screen frame artifact: {}",
+                    output_path.display()
+                ),
+            })?;
 
-    let jpeg_type_id = ut::Type::jpeg().id();
+        let jpeg_type_id = ut::Type::jpeg().id();
 
-    let mut destination = cg::ImageDst::with_url(output_url.as_ref(), jpeg_type_id.as_cf(), 1)
-        .ok_or_else(|| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: image_destination_creation_failure_message(output_path, "JPEG"),
-        })?;
-    destination.add_image(cg_image.as_ref(), None);
+        let mut destination = cg::ImageDst::with_url(output_url.as_ref(), jpeg_type_id.as_cf(), 1)
+            .ok_or_else(|| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: image_destination_creation_failure_message(output_path, "JPEG"),
+            })?;
+        destination.add_image(cg_image.as_ref(), None);
 
-    if destination.finalize() {
-        Ok(())
-    } else {
-        Err(CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: format!(
-                "Failed to finalize JPEG screen frame artifact: {}",
-                output_path.display()
-            ),
-        })
+        if destination.finalize() {
+            Ok(())
+        } else {
+            Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: format!(
+                    "Failed to finalize JPEG screen frame artifact: {}",
+                    output_path.display()
+                ),
+            })
+        }
     }
 }
 
@@ -1965,27 +1976,32 @@ fn validate_screen_video_file(path: &str) -> Result<(), CaptureErrorResponse> {
         });
     }
 
-    let output_url = ns::Url::with_fs_path_str(path, false);
-    let asset = av::UrlAsset::with_url(&output_url, None).ok_or_else(|| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: "Failed to open finalized screen recording for validation".to_string(),
-    })?;
-
-    let tracks = load_asset_tracks_with_timeout(
-        asset.as_ref(),
-        av::MediaType::video(),
-        "capture_output_processing_failed",
-        "Timed out while validating finalized screen recording video track",
-    )?;
-
-    if tracks.is_empty() {
-        return Err(CaptureErrorResponse {
+    let result = {
+        let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+        let output_url = ns::Url::with_fs_path_str(path, false);
+        let asset = av::UrlAsset::with_url(&output_url, None).ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
-            message: FINALIZED_SCREEN_RECORDING_NO_VIDEO_TRACK_ERROR_MESSAGE.to_string(),
-        });
-    }
+            message: "Failed to open finalized screen recording for validation".to_string(),
+        })?;
 
-    Ok(())
+        let tracks = load_asset_tracks_with_timeout(
+            asset.as_ref(),
+            av::MediaType::video(),
+            "capture_output_processing_failed",
+            "Timed out while validating finalized screen recording video track",
+        )?;
+
+        if tracks.is_empty() {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: FINALIZED_SCREEN_RECORDING_NO_VIDEO_TRACK_ERROR_MESSAGE.to_string(),
+            });
+        }
+
+        Ok(())
+    };
+
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -2375,12 +2391,14 @@ impl ScreenCaptureKitCaptureSession {
             return Ok(());
         }
 
+        let screen_video_output_file = ctx.screen_video_output_file.take();
+        let mut frame_export = ctx.frame_export.take();
         let mut failures = Vec::new();
 
         if let Some(mut writer) = ctx.screen_video_writer.take() {
             if let Err(error) = finish_video_asset_writer(&mut writer) {
                 if capture_writers::is_no_video_samples_error_message("screen", &error.message) {
-                    if let Some(path) = ctx.screen_video_output_file.as_deref() {
+                    if let Some(path) = screen_video_output_file.as_deref() {
                         maybe_remove_screen_video_file(path);
                     }
                 }
@@ -2389,14 +2407,11 @@ impl ScreenCaptureKitCaptureSession {
         }
 
         if let Err(error) = finalize_screen_frame_export(
-            ctx.screen_video_output_file.as_deref(),
-            ctx.frame_export.as_mut(),
+            screen_video_output_file.as_deref(),
+            frame_export.as_mut(),
         ) {
             failures.push(format!("screen frame export failed: {}", error.message));
         }
-
-        ctx.screen_video_output_file = None;
-        ctx.frame_export = None;
 
         capture_writers::aggregate_output_processing_failures(failures)
     }
@@ -2509,6 +2524,7 @@ impl ScreenCaptureKitCaptureSession {
         let mut previous_context =
             std::mem::replace(self.stream_output_delegate.inner_mut(), next_context);
         finalize_rotated_segment_context(&mut previous_context)?;
+        drop(previous_context);
 
         Ok(RotatedCaptureOutputs {
             recording_file,
@@ -3362,22 +3378,19 @@ where
 fn finalize_stream_output_context(
     context: &mut StreamOutputContext,
 ) -> Result<(), CaptureErrorResponse> {
-    finalize_stream_output_context_impl(
+    let mut screen_video_writer = context.screen_video_writer.take();
+    let mut system_audio_writer = context.system_audio_writer.take();
+    let result = finalize_stream_output_context_impl(
         context.screen_video_output_file.as_deref(),
-        context.screen_video_writer.is_some(),
+        screen_video_writer.is_some(),
         context.first_error.take(),
-        |first_error| {
-            writers_finalize_screen_video_output_context(
-                context.screen_video_writer.as_mut(),
-                first_error,
-            )
-        },
+        |first_error| writers_finalize_screen_video_output_context(screen_video_writer.as_mut(), first_error),
         validate_screen_video_file,
         || {
             finalize_secondary_stream_outputs(
                 context.screen_video_output_file.as_deref(),
                 context.system_audio_output_file.as_deref(),
-                context.system_audio_writer.as_mut(),
+                system_audio_writer.as_mut(),
                 context.system_audio_tail_trim_seconds,
                 context.frame_export.as_mut(),
             )
@@ -3389,7 +3402,12 @@ fn finalize_stream_output_context(
                 error,
             )
         },
-    )
+    );
+
+    drop(screen_video_writer);
+    drop(system_audio_writer);
+
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -5318,214 +5336,221 @@ pub fn strip_audio_from_recording_file(recording_file: &str) -> Result<(), Captu
     let input_url = ns::Url::with_fs_path_str(recording_file, false);
     let temp_url = ns::Url::with_fs_path_str(temp_path.to_string_lossy().as_ref(), false);
 
-    let asset = av::UrlAsset::with_url(&input_url, None).ok_or_else(|| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: "Failed to open recording for video-only conversion".to_string(),
-    })?;
-
-    let video_tracks = load_asset_tracks_with_timeout(
-        asset.as_ref(),
-        av::MediaType::video(),
-        "capture_output_processing_failed",
-        "Timed out while loading recording video track",
-    )?;
-    let video_track = video_tracks.first().ok_or_else(|| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: "Recording has no video track to preserve".to_string(),
-    })?;
-
-    let mut reader =
-        av::AssetReader::with_asset(asset.as_ref()).map_err(|_| CaptureErrorResponse {
+    let result = {
+        let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+        let asset = av::UrlAsset::with_url(&input_url, None).ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
-            message: "Failed to create asset reader for video-only conversion".to_string(),
+            message: "Failed to open recording for video-only conversion".to_string(),
         })?;
 
-    let mut reader_output =
-        av::AssetReaderTrackOutput::with_track(video_track, None).map_err(|_| {
-            CaptureErrorResponse {
+        let video_tracks = load_asset_tracks_with_timeout(
+            asset.as_ref(),
+            av::MediaType::video(),
+            "capture_output_processing_failed",
+            "Timed out while loading recording video track",
+        )?;
+        let video_track = video_tracks.first().ok_or_else(|| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: "Recording has no video track to preserve".to_string(),
+        })?;
+
+        let mut reader =
+            av::AssetReader::with_asset(asset.as_ref()).map_err(|_| CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Failed to create video track reader output".to_string(),
-            }
-        })?;
-    reader_output.set_always_copies_sample_data(false);
+                message: "Failed to create asset reader for video-only conversion".to_string(),
+            })?;
 
-    let reader_output_ref: &av::AssetReaderOutput =
-        unsafe { &*(&*reader_output as *const _ as *const av::AssetReaderOutput) };
-    if !reader.can_add_output(reader_output_ref) {
-        return Err(CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to add video track reader output".to_string(),
-        });
-    }
-    reader
-        .add_output(reader_output_ref)
-        .map_err(|_| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to attach video track reader output".to_string(),
-        })?;
+        let mut reader_output =
+            av::AssetReaderTrackOutput::with_track(video_track, None).map_err(|_| {
+                CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Failed to create video track reader output".to_string(),
+                }
+            })?;
+        reader_output.set_always_copies_sample_data(false);
 
-    let mut writer = av::AssetWriter::with_url_and_file_type(&temp_url, av::FileType::qt())
-        .map_err(|_| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to create video-only asset writer".to_string(),
-        })?;
-    let mut writer_input =
-        av::AssetWriterInput::with_media_type_and_output_settings(av::MediaType::video(), None)
+        let reader_output_ref: &av::AssetReaderOutput =
+            unsafe { &*(&*reader_output as *const _ as *const av::AssetReaderOutput) };
+        if !reader.can_add_output(reader_output_ref) {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to add video track reader output".to_string(),
+            });
+        }
+        reader
+            .add_output(reader_output_ref)
             .map_err(|_| CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Failed to create video-only writer input".to_string(),
+                message: "Failed to attach video track reader output".to_string(),
             })?;
-    writer_input.set_expects_media_data_in_real_time(false);
 
-    if !writer.can_add_input(&writer_input) {
-        return Err(CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to add video-only writer input".to_string(),
-        });
-    }
-    writer
-        .add_input(&writer_input)
-        .map_err(|_| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to attach video-only writer input".to_string(),
-        })?;
+        let mut writer = av::AssetWriter::with_url_and_file_type(&temp_url, av::FileType::qt())
+            .map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to create video-only asset writer".to_string(),
+            })?;
+        let mut writer_input =
+            av::AssetWriterInput::with_media_type_and_output_settings(av::MediaType::video(), None)
+                .map_err(|_| CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Failed to create video-only writer input".to_string(),
+                })?;
+        writer_input.set_expects_media_data_in_real_time(false);
 
-    let started_reading = reader.start_reading().map_err(|_| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: "Failed to start reading recording for video-only conversion".to_string(),
-    })?;
-    if !started_reading {
-        if let Some(error) = reader.error() {
-            return Err(error_with_ns_error(
-                "capture_output_processing_failed",
-                "Failed to start reading recording for video-only conversion",
-                error.as_ref(),
-            ));
+        if !writer.can_add_input(&writer_input) {
+            return Err(CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to add video-only writer input".to_string(),
+            });
         }
+        writer
+            .add_input(&writer_input)
+            .map_err(|_| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to attach video-only writer input".to_string(),
+            })?;
 
-        return Err(CaptureErrorResponse {
+        let started_reading = reader.start_reading().map_err(|_| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
             message: "Failed to start reading recording for video-only conversion".to_string(),
-        });
-    }
-
-    if !writer.start_writing() {
-        return Err(capture_writers::writer_error_response(
-            &writer,
-            "capture_output_processing_failed",
-            "Failed to start writing video-only recording",
-        ));
-    }
-    writer.start_session_at_src_time(cidre::cm::Time::zero());
-
-    loop {
-        let sample_buf = reader_output
-            .next_sample_buf()
-            .map_err(|_| CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
-                message: "Failed to read video sample during video-only conversion".to_string(),
-            })?;
-
-        let Some(sample_buf) = sample_buf else {
-            break;
-        };
-
-        while !writer_input.is_ready_for_more_media_data() {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-
-        let appended = writer_input
-            .append_sample_buf(sample_buf.as_ref())
-            .map_err(|_| CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
-                message: "Failed to append video sample during video-only conversion".to_string(),
-            })?;
-
-        if !appended {
-            return Err(capture_writers::writer_error_response(
-                &writer,
-                "capture_output_processing_failed",
-                "Failed to append video sample during video-only conversion",
-            ));
-        }
-    }
-
-    writer_input.mark_as_finished();
-    writer.finish_writing();
-
-    let wait_deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        match writer.status() {
-            cidre::av::asset::WriterStatus::Completed => break,
-            cidre::av::asset::WriterStatus::Failed => {
-                return Err(capture_writers::writer_error_response(
-                    &writer,
-                    "capture_output_processing_failed",
-                    "Failed to finalize video-only recording",
-                ));
-            }
-            status if std::time::Instant::now() >= wait_deadline => {
-                return Err(CaptureErrorResponse {
-                    code: "capture_output_processing_failed".to_string(),
-                    message: format!(
-                        "Timed out while finalizing video-only recording (status: {:?})",
-                        status
-                    ),
-                });
-            }
-            _ => std::thread::sleep(Duration::from_millis(10)),
-        }
-    }
-
-    match reader.status() {
-        cidre::av::asset::ReaderStatus::Completed => {}
-        cidre::av::asset::ReaderStatus::Failed => {
+        })?;
+        if !started_reading {
             if let Some(error) = reader.error() {
                 return Err(error_with_ns_error(
                     "capture_output_processing_failed",
-                    "Video-only conversion reader failed",
+                    "Failed to start reading recording for video-only conversion",
                     error.as_ref(),
                 ));
             }
 
             return Err(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: "Video-only conversion reader failed".to_string(),
+                message: "Failed to start reading recording for video-only conversion".to_string(),
             });
         }
-        status => {
+
+        if !writer.start_writing() {
+            return Err(capture_writers::writer_error_response(
+                &writer,
+                "capture_output_processing_failed",
+                "Failed to start writing video-only recording",
+            ));
+        }
+        writer.start_session_at_src_time(cidre::cm::Time::zero());
+
+        loop {
+            let sample_buf = reader_output
+                .next_sample_buf()
+                .map_err(|_| CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Failed to read video sample during video-only conversion".to_string(),
+                })?;
+
+            let Some(sample_buf) = sample_buf else {
+                break;
+            };
+
+            while !writer_input.is_ready_for_more_media_data() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            let appended = writer_input
+                .append_sample_buf(sample_buf.as_ref())
+                .map_err(|_| CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Failed to append video sample during video-only conversion".to_string(),
+                })?;
+
+            if !appended {
+                return Err(capture_writers::writer_error_response(
+                    &writer,
+                    "capture_output_processing_failed",
+                    "Failed to append video sample during video-only conversion",
+                ));
+            }
+        }
+
+        writer_input.mark_as_finished();
+        writer.finish_writing();
+
+        let wait_deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match writer.status() {
+                cidre::av::asset::WriterStatus::Completed => break,
+                cidre::av::asset::WriterStatus::Failed => {
+                    return Err(capture_writers::writer_error_response(
+                        &writer,
+                        "capture_output_processing_failed",
+                        "Failed to finalize video-only recording",
+                    ));
+                }
+                status if std::time::Instant::now() >= wait_deadline => {
+                    return Err(CaptureErrorResponse {
+                        code: "capture_output_processing_failed".to_string(),
+                        message: format!(
+                            "Timed out while finalizing video-only recording (status: {:?})",
+                            status
+                        ),
+                    });
+                }
+                _ => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+
+        match reader.status() {
+            cidre::av::asset::ReaderStatus::Completed => {}
+            cidre::av::asset::ReaderStatus::Failed => {
+                if let Some(error) = reader.error() {
+                    return Err(error_with_ns_error(
+                        "capture_output_processing_failed",
+                        "Video-only conversion reader failed",
+                        error.as_ref(),
+                    ));
+                }
+
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: "Video-only conversion reader failed".to_string(),
+                });
+            }
+            status => {
+                return Err(CaptureErrorResponse {
+                    code: "capture_output_processing_failed".to_string(),
+                    message: format!(
+                        "Video-only conversion reader ended unexpectedly (status: {:?})",
+                        status
+                    ),
+                });
+            }
+        }
+
+        reader.cancel_reading();
+
+        let video_only_asset =
+            av::UrlAsset::with_url(&temp_url, None).ok_or_else(|| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to verify video-only recording".to_string(),
+            })?;
+        let audio_tracks = load_asset_tracks_with_timeout(
+            video_only_asset.as_ref(),
+            av::MediaType::audio(),
+            "capture_output_processing_failed",
+            "Timed out while validating video-only recording audio tracks",
+        )?;
+        if !audio_tracks.is_empty() {
             return Err(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
-                message: format!(
-                    "Video-only conversion reader ended unexpectedly (status: {:?})",
-                    status
-                ),
+                message: "Video-only conversion produced an unexpected audio track".to_string(),
             });
         }
-    }
 
-    let video_only_asset =
-        av::UrlAsset::with_url(&temp_url, None).ok_or_else(|| CaptureErrorResponse {
+        std::fs::rename(&temp_path, input_path).map_err(|error| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
-            message: "Failed to verify video-only recording".to_string(),
-        })?;
-    let audio_tracks = load_asset_tracks_with_timeout(
-        video_only_asset.as_ref(),
-        av::MediaType::audio(),
-        "capture_output_processing_failed",
-        "Timed out while validating video-only recording audio tracks",
-    )?;
-    if !audio_tracks.is_empty() {
-        return Err(CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Video-only conversion produced an unexpected audio track".to_string(),
-        });
-    }
+            message: format!("Failed to replace recording with video-only mov: {error}"),
+        })
+    };
 
-    std::fs::rename(&temp_path, input_path).map_err(|error| CaptureErrorResponse {
-        code: "capture_output_processing_failed".to_string(),
-        message: format!("Failed to replace recording with video-only mov: {error}"),
-    })
+    result
 }
 
 #[cfg(not(target_os = "macos"))]
