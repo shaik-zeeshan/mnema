@@ -6,7 +6,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-export type SurfaceWindowLabel = "main" | "settings" | "debug";
+export type SurfaceWindowLabel = "main" | "onboarding" | "settings" | "debug";
 
 export async function openSettingsWindow(): Promise<void> {
   await invoke("open_settings_window");
@@ -31,7 +31,7 @@ export function currentWindowLabel(): SurfaceWindowLabel | string {
 
 export function isDedicatedSurfaceWindow(): boolean {
   const label = currentWindowLabel();
-  return label === "settings" || label === "debug";
+  return label === "onboarding" || label === "settings" || label === "debug";
 }
 
 export async function closeCurrentWindow(): Promise<void> {

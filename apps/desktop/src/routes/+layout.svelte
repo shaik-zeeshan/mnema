@@ -23,6 +23,7 @@
 
   const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
+  const isOnboarding = $derived(normalizedPathname.startsWith("/onboarding"));
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const showMainTitlebar = $derived(isMainRoute);
@@ -92,7 +93,7 @@
   const showChildren = $derived(!isDebug || (devLoaded && devEnabled));
 
   // Routes that want a centered, padded reading column.
-  const isNarrow = $derived(isSettings || isDebug);
+  const isNarrow = $derived(isOnboarding || isSettings || isDebug);
 
   // ── Recording status mirrored from the shared capture-controls seam ────
   const isCapturing = $derived(captureControls.running);
