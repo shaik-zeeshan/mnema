@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "z",
+  "productName": "Mnema",
   "version": "0.1.0",
-  "identifier": "com.shaikzeeshan.z",
+  "identifier": "com.shaikzeeshan.mnema",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "z",
+        "title": "Mnema",
         "width": 800,
         "height": 600,
         "decorations": true,
