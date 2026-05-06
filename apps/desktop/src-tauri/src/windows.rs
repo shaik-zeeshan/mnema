@@ -147,6 +147,7 @@ fn open_or_focus_window(
 }
 
 #[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
 fn apply_macos_rounded_content_view(window: &WebviewWindow, radius: f64) {
     use cocoa::base::{id, nil};
     use cocoa::foundation::NSString;

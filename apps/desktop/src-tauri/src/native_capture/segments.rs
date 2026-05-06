@@ -690,7 +690,7 @@ fn persist_committed_system_audio_segments(
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn pause_microphone_for_inactivity(
     runtime: &mut NativeCaptureRuntime,
 ) -> Result<(), CaptureErrorResponse> {
@@ -814,7 +814,7 @@ pub(super) fn process_inactivity_audio_transitions_for_snapshot(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn pause_system_audio_for_inactivity(
     runtime: &mut NativeCaptureRuntime,
 ) -> Result<(), CaptureErrorResponse> {

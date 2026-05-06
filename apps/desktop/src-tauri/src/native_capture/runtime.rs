@@ -568,6 +568,7 @@ pub(super) fn system_audio_writer_active_for_runtime(runtime: &NativeCaptureRunt
         && current_segment_sources_for_runtime(runtime).is_some_and(|sources| sources.system_audio)
 }
 
+#[cfg(test)]
 pub(super) fn should_rotate_segment(
     current_segment_index: u64,
     scheduled_segment_index: u64,
