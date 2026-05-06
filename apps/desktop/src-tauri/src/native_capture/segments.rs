@@ -394,9 +394,14 @@ fn rfc3339_from_unix_ms(unix_ms: u64) -> String {
 fn audio_file_duration_ms(file_path: &str) -> Option<u64> {
     use cidre::{av, ns};
 
-    let url = ns::Url::with_fs_path_str(file_path, false);
-    let asset = av::UrlAsset::with_url(&url, None)?;
-    audio_duration_time_to_ms(asset.duration())
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    let result = {
+        let url = ns::Url::with_fs_path_str(file_path, false);
+        let asset = av::UrlAsset::with_url(&url, None)?;
+        audio_duration_time_to_ms(asset.duration())
+    };
+
+    result
 }
 
 #[cfg(target_os = "macos")]

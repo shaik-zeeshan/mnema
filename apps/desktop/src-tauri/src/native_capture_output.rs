@@ -171,10 +171,15 @@ fn is_usable_audio_output_file_with_duration_validator(
 fn audio_file_has_positive_duration(path: &str) -> bool {
     use cidre::{av, ns};
 
-    let url = ns::Url::with_fs_path_str(path, false);
-    av::UrlAsset::with_url(&url, None)
-        .map(|asset| asset.duration())
-        .is_some_and(|duration| duration.is_numeric() && duration.value > 0 && duration.scale > 0)
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    let result = {
+        let url = ns::Url::with_fs_path_str(path, false);
+        av::UrlAsset::with_url(&url, None)
+            .map(|asset| asset.duration())
+            .is_some_and(|duration| duration.is_numeric() && duration.value > 0 && duration.scale > 0)
+    };
+
+    result
 }
 
 #[cfg(target_os = "macos")]
