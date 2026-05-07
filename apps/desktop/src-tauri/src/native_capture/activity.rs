@@ -7,8 +7,9 @@ use super::NativeCaptureState;
 use capture_microphone as microphone_capture;
 use capture_types::{
     AudioActivityDecision, AudioActivitySample, IdleDebugActivitySource, IdleDebugInfo,
-    RuntimeSourceStatus, RuntimeSourcesStatus,
+    MicrophoneVadStatus, RuntimeSourceStatus, RuntimeSourcesStatus,
 };
+use capture_vad::{configured_adapter_as_str, MicrophonePcmVadFrame};
 use std::sync::MutexGuard;
 
 #[cfg(target_os = "macos")]
@@ -32,7 +33,6 @@ enum AudioPeakReadMode {
 #[derive(Debug, Clone, Copy)]
 struct RawActivityReading {
     last_unix_ms: Option<u64>,
-    idle_ms: Option<u64>,
     level: Option<f32>,
 }
 
@@ -41,6 +41,7 @@ struct RawActivityReading {
 #[derive(Debug, Clone, Copy)]
 struct QualifiedAudioReading {
     enabled: bool,
+    idle_ms: Option<u64>,
     activity_threshold: Option<f32>,
 }
 
@@ -73,18 +74,49 @@ fn capture_source_requested(
     runtime.is_running && runtime.requested_sources.as_ref().is_some_and(selector)
 }
 
-pub(crate) fn current_activity_snapshot(runtime: &NativeCaptureRuntime) -> ActivitySnapshot {
+fn process_pending_microphone_vad_frames(runtime: &mut NativeCaptureRuntime) {
+    if !capture_source_requested(runtime, |sources| sources.microphone)
+        || !runtime.microphone_vad.uses_vad_adapter()
+    {
+        return;
+    }
+
+    for frame in microphone_capture::take_microphone_vad_pcm_frames(96) {
+        let vad_frame = MicrophonePcmVadFrame {
+            samples: &frame.samples,
+            sample_rate_hz: frame.sample_rate_hz,
+            captured_at_unix_ms: frame.captured_at_unix_ms,
+            normalized_peak_level: frame.normalized_peak_level,
+        };
+
+        match runtime.microphone_vad.process_pcm_frame(vad_frame) {
+            Ok(outcome) => {
+                if outcome.vad_speech_detected {
+                    microphone_capture::record_microphone_vad_tail_speech();
+                }
+            }
+            Err(error) => {
+                super::debug_log::log_warn(format!(
+                    "failed to process microphone VAD PCM frame: {error}"
+                ));
+                break;
+            }
+        }
+    }
+}
+
+pub(crate) fn current_activity_snapshot(runtime: &mut NativeCaptureRuntime) -> ActivitySnapshot {
     current_activity_snapshot_with_audio_peak_mode(runtime, AudioPeakReadMode::Take)
 }
 
 pub(super) fn current_activity_snapshot_for_debug(
-    runtime: &NativeCaptureRuntime,
+    runtime: &mut NativeCaptureRuntime,
 ) -> ActivitySnapshot {
     current_activity_snapshot_with_audio_peak_mode(runtime, AudioPeakReadMode::Peek)
 }
 
 fn current_activity_snapshot_with_audio_peak_mode(
-    runtime: &NativeCaptureRuntime,
+    runtime: &mut NativeCaptureRuntime,
     audio_peak_read_mode: AudioPeakReadMode,
 ) -> ActivitySnapshot {
     // Only poll screen activity via CGDisplayCreateImage when the capture
@@ -102,23 +134,35 @@ fn current_activity_snapshot_with_audio_peak_mode(
         capture_screen::poll_screen_activity();
     }
 
+    if matches!(audio_peak_read_mode, AudioPeakReadMode::Take) {
+        process_pending_microphone_vad_frames(runtime);
+    }
+
+    let microphone_peak_level = match audio_peak_read_mode {
+        AudioPeakReadMode::Take => microphone_capture::take_microphone_activity_window_peak_level(),
+        AudioPeakReadMode::Peek => microphone_capture::peek_microphone_activity_window_peak_level(),
+    };
+    let microphone_speech = match audio_peak_read_mode {
+        AudioPeakReadMode::Take => runtime.microphone_vad.decide_from_peak_level(
+            microphone_peak_level,
+            microphone_capture::microphone_activity_idle_ms(),
+            runtime.inactivity.microphone_activity_threshold(),
+        ),
+        AudioPeakReadMode::Peek => runtime.microphone_vad.peek_decision_from_peak_level(
+            microphone_peak_level,
+            microphone_capture::microphone_activity_idle_ms(),
+            runtime.inactivity.microphone_activity_threshold(),
+        ),
+    };
+
     ActivitySnapshot {
         system_input_idle_ms: current_system_idle_ms(),
         screen_activity_enabled: capture_source_requested(runtime, |sources| sources.screen),
         screen_activity_idle_ms: capture_screen::screen_activity_idle_ms(),
         microphone_activity: AudioActivitySourceState {
             enabled: capture_source_requested(runtime, |sources| sources.microphone),
-            idle_ms: microphone_capture::microphone_activity_idle_ms(),
-            // The inactivity loop polls at a coarse interval, so use the peak
-            // seen since the last poll rather than a single instantaneous sample.
-            latest_normalized_level: match audio_peak_read_mode {
-                AudioPeakReadMode::Take => {
-                    microphone_capture::take_microphone_activity_window_peak_level()
-                }
-                AudioPeakReadMode::Peek => {
-                    microphone_capture::peek_microphone_activity_window_peak_level()
-                }
-            },
+            idle_ms: microphone_speech.idle_ms,
+            latest_normalized_level: microphone_speech.latest_normalized_level,
         },
         system_audio_activity: AudioActivitySourceState {
             enabled: capture_source_requested(runtime, |sources| sources.system_audio),
@@ -158,15 +202,13 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
     let screen_activity_idle_ms = capture_screen::screen_activity_idle_ms();
     let microphone_raw_sample = RawActivityReading {
         last_unix_ms: microphone_capture::last_microphone_activity_unix_ms(),
-        idle_ms: microphone_capture::microphone_activity_idle_ms(),
         level: microphone_capture::microphone_activity_level(),
     };
     let system_audio_raw_sample = RawActivityReading {
         last_unix_ms: capture_screen::last_system_audio_activity_unix_ms(),
-        idle_ms: capture_screen::system_audio_activity_idle_ms(),
         level: capture_screen::system_audio_activity_level(),
     };
-    let activity_snapshot = current_activity_snapshot_for_debug(&runtime);
+    let activity_snapshot = current_activity_snapshot_for_debug(runtime);
     let combined_policy = runtime
         .inactivity
         .evaluate_policy_for_snapshot(now, activity_snapshot);
@@ -219,12 +261,19 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
         },
         microphone_activity_decision: AudioActivityDecision {
             enabled: audio_projection.microphone.qualified.enabled,
-            idle_ms: audio_projection.microphone.raw_sample.idle_ms,
+            idle_ms: audio_projection.microphone.qualified.idle_ms,
             activity_threshold: audio_projection
                 .microphone
                 .qualified
                 .activity_threshold
                 .or_else(|| Some(runtime.inactivity.microphone_activity_threshold())),
+            detector: Some(
+                runtime
+                    .microphone_vad
+                    .effective_adapter()
+                    .as_str()
+                    .to_string(),
+            ),
         },
         system_audio_activity_sample: AudioActivitySample {
             last_unix_ms: audio_projection.system_audio.raw_sample.last_unix_ms,
@@ -232,12 +281,25 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
         },
         system_audio_activity_decision: AudioActivityDecision {
             enabled: audio_projection.system_audio.qualified.enabled,
-            idle_ms: audio_projection.system_audio.raw_sample.idle_ms,
+            idle_ms: audio_projection.system_audio.qualified.idle_ms,
             activity_threshold: audio_projection
                 .system_audio
                 .qualified
                 .activity_threshold
                 .or_else(|| Some(runtime.inactivity.system_audio_activity_threshold())),
+            detector: Some("peak_level".to_string()),
+        },
+        microphone_vad: MicrophoneVadStatus {
+            configured_adapter: configured_adapter_as_str(
+                runtime.microphone_vad.configured_adapter(),
+            )
+            .to_string(),
+            effective_adapter: runtime
+                .microphone_vad
+                .effective_adapter()
+                .as_str()
+                .to_string(),
+            fallback_reason: runtime.microphone_vad.fallback_reason().map(str::to_string),
         },
         effective_idle_ms: effective_idle.idle_ms,
         effective_idle_source: effective_idle.source.as_str().to_string(),
@@ -270,6 +332,7 @@ fn qualified_audio_reading(
 
     QualifiedAudioReading {
         enabled: source.is_some_and(|source| source.enabled),
+        idle_ms: source.and_then(|source| source.idle_ms),
         activity_threshold: source.and_then(|source| source.activity_threshold),
     }
 }
@@ -439,8 +502,8 @@ pub(super) struct IdleDebugFamilyFields {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::inactivity::{ActivitySourceSample, EffectiveIdle};
+    use super::*;
 
     #[test]
     fn audio_projection_keeps_raw_samples_separate_from_qualified_policy_fields() {
@@ -471,29 +534,27 @@ mod tests {
             },
             RawActivityReading {
                 last_unix_ms: Some(10),
-                idle_ms: Some(900),
                 level: Some(0.9),
             },
             RawActivityReading {
                 last_unix_ms: Some(20),
-                idle_ms: Some(800),
                 level: Some(0.8),
             },
         );
 
         assert_eq!(projection.microphone.raw_sample.last_unix_ms, Some(10));
-        assert_eq!(projection.microphone.raw_sample.idle_ms, Some(900));
         assert_eq!(projection.microphone.raw_sample.level, Some(0.9));
         assert!(projection.microphone.qualified.enabled);
+        assert_eq!(projection.microphone.qualified.idle_ms, Some(250));
         assert_eq!(
             projection.microphone.qualified.activity_threshold,
             Some(0.3)
         );
 
         assert_eq!(projection.system_audio.raw_sample.last_unix_ms, Some(20));
-        assert_eq!(projection.system_audio.raw_sample.idle_ms, Some(800));
         assert_eq!(projection.system_audio.raw_sample.level, Some(0.8));
         assert!(!projection.system_audio.qualified.enabled);
+        assert_eq!(projection.system_audio.qualified.idle_ms, None);
         assert_eq!(
             projection.system_audio.qualified.activity_threshold,
             Some(0.2)

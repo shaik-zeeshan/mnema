@@ -212,14 +212,14 @@ fn normalized_tile_summary(
             + (((sample_row.saturating_mul(2)).saturating_add(1))
                 .saturating_mul(row_end - row_start)
                 / sample_rows.saturating_mul(2))
-                .min(row_end - row_start - 1);
+            .min(row_end - row_start - 1);
 
         for sample_col in 0..sample_cols {
             let col = col_start
                 + (((sample_col.saturating_mul(2)).saturating_add(1))
                     .saturating_mul(col_end - col_start)
                     / sample_cols.saturating_mul(2))
-                    .min(col_end - col_start - 1);
+                .min(col_end - col_start - 1);
             let pixel_offset = row
                 .checked_mul(bytes_per_row)?
                 .checked_add(col.checked_mul(4)?)?;
@@ -237,8 +237,7 @@ fn normalized_tile_summary(
     }
 
     Some(sum_channels.map(|sum| {
-        ((sum / sample_count) / EQUIVALENCE_TILE_QUANTIZATION_STEP)
-            .min(u8::MAX as u64) as u8
+        ((sum / sample_count) / EQUIVALENCE_TILE_QUANTIZATION_STEP).min(u8::MAX as u64) as u8
     }))
 }
 
@@ -285,8 +284,7 @@ fn finalize_equivalence_hash(mut hash: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        captured_frame_equivalence_from_interleaved_bytes,
-        captured_frame_equivalence_proofs_match,
+        captured_frame_equivalence_from_interleaved_bytes, captured_frame_equivalence_proofs_match,
     };
 
     fn test_rgba(width: usize, height: usize, fill: [u8; 4]) -> Vec<u8> {

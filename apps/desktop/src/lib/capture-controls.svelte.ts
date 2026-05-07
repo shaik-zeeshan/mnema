@@ -294,6 +294,7 @@ function buildUpdatePayload(
     activityMode: base.activityMode,
     microphoneActivitySensitivity: base.microphoneActivitySensitivity,
     systemAudioActivitySensitivity: base.systemAudioActivitySensitivity,
+    microphoneVadAdapter: base.microphoneVadAdapter,
     nativeCaptureDebugLoggingEnabled: base.nativeCaptureDebugLoggingEnabled,
     previewCacheTtlSeconds: base.previewCacheTtlSeconds,
     followTimelineLive: base.followTimelineLive,

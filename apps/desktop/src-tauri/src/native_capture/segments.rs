@@ -1,7 +1,6 @@
 use super::output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
-    finalize_capture_outputs,
-    set_current_microphone_output_file, set_current_screen_output_file,
+    finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file,
 };
 use super::settings::compute_effective_screen_bitrate_bps;
@@ -15,6 +14,7 @@ use capture_types::{
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, RecordingSettings, SourceSessionMeta,
     SourceSessions,
 };
+use capture_vad::MicrophoneVadRuntime;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -24,17 +24,16 @@ use tauri::Manager;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc;
 
+use super::emit_audio_segments_changed;
 use super::lifecycle::TickOutcome;
-use super::NativeCaptureState;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
     mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms,
-    refresh_runtime_planner_dates,
-    reset_runtime_after_start_error, screen_planner_for_runtime,
+    refresh_runtime_planner_dates, reset_runtime_after_start_error, screen_planner_for_runtime,
     should_recover_from_segment_finalize_error, NativeCaptureRuntime, SegmentLoopControl,
 };
-use super::emit_audio_segments_changed;
+use super::NativeCaptureState;
 
 // Keep frame artifact persistence off the capture callback thread while bounding
 // in-memory buffering. Backpressure is applied on a dedicated worker thread so
@@ -42,6 +41,24 @@ use super::emit_audio_segments_changed;
 // non-blocking.
 const FRAME_ARTIFACT_BUFFER_CAPACITY: usize = 64;
 const SEGMENT_LOOP_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+#[cfg(target_os = "macos")]
+fn microphone_tail_trim_activity_mode_for_vad(
+    vad: &MicrophoneVadRuntime,
+) -> microphone_capture::MicrophoneInactivityTailTrimActivityMode {
+    if vad.uses_vad_adapter() {
+        microphone_capture::MicrophoneInactivityTailTrimActivityMode::VadSpeech
+    } else {
+        microphone_capture::MicrophoneInactivityTailTrimActivityMode::PeakLevel
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_tail_trim_activity_mode_for_runtime(
+    runtime: &NativeCaptureRuntime,
+) -> microphone_capture::MicrophoneInactivityTailTrimActivityMode {
+    microphone_tail_trim_activity_mode_for_vad(&runtime.microphone_vad)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameArtifactForwardingResult {
@@ -361,7 +378,9 @@ fn spawn_frame_artifact_worker(
                 FrameArtifactMessage::Artifact(artifact) => {
                     if let Err(error) = crate::app_infra::persist_screen_frame_artifact(
                         infra.as_ref(),
-                        app_handle.state::<crate::native_capture::RecordingSettingsState>().inner(),
+                        app_handle
+                            .state::<crate::native_capture::RecordingSettingsState>()
+                            .inner(),
                         &session_id,
                         artifact,
                     )
@@ -591,9 +610,7 @@ pub(super) fn persist_committed_audio_segments(
     }));
 
     if persistence.is_err() {
-        super::debug_log::log(
-            "native audio segment persistence worker panicked".to_string(),
-        );
+        super::debug_log::log("native audio segment persistence worker panicked".to_string());
     }
 }
 
@@ -721,11 +738,13 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
     }
 
     let microphone_recording_file = runtime.microphone_recording_file.clone();
+    let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
     let mut finalized_microphone_outputs = None;
     if let Some(session) = runtime.active_microphone_session.as_mut() {
-        session.pause_output_file_for_inactivity(
+        session.pause_output_file_for_inactivity_with_tail_activity_mode(
             runtime.inactivity.idle_timeout_seconds,
             runtime.inactivity.microphone_activity_threshold(),
+            microphone_tail_activity_mode,
         )?;
 
         if let Some(output_files) = runtime.current_segment_output_files.as_ref() {
@@ -948,12 +967,14 @@ pub(super) fn resume_microphone_from_inactivity(
     if sources.microphone && runtime.microphone_planner.is_some() {
         let microphone_recording_file =
             super::microphone::next_microphone_output_file_for_runtime(runtime)?;
+        let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
 
         if let Some(session) = runtime.active_microphone_session.as_mut() {
-            session.resume_output_file_with_inactivity_tail_trim_seconds(
+            session.resume_output_file_with_inactivity_tail_trim_activity_mode(
                 &microphone_recording_file,
                 runtime.inactivity.idle_timeout_seconds,
                 runtime.inactivity.microphone_activity_threshold(),
+                microphone_tail_activity_mode,
             )?;
             runtime.microphone_recording_file = Some(microphone_recording_file.clone());
             if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
@@ -964,11 +985,12 @@ pub(super) fn resume_microphone_from_inactivity(
             }
         } else {
             let mic_start =
-                microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id_and_inactivity_tail_trim_seconds(
+                microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id_and_inactivity_tail_trim_activity_mode(
                     &microphone_recording_file,
                     runtime.microphone_device_id_for_capture.as_deref(),
                     runtime.inactivity.idle_timeout_seconds,
                     runtime.inactivity.microphone_activity_threshold(),
+                    microphone_tail_activity_mode,
                 );
 
             match mic_start {
@@ -1318,6 +1340,7 @@ pub(super) fn resume_screen_from_inactivity(
 ) -> Result<(), CaptureErrorResponse> {
     let tail_trim_seconds = runtime.inactivity.idle_timeout_seconds;
     let microphone_activity_threshold = runtime.inactivity.microphone_activity_threshold();
+    let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
     resume_screen_from_inactivity_with_start_segment(
         runtime,
         move |segment_dir,
@@ -1343,6 +1366,7 @@ pub(super) fn resume_screen_from_inactivity(
                 microphone_output_path,
                 tail_trim_seconds,
                 microphone_activity_threshold,
+                microphone_tail_activity_mode,
             )
         },
     )
@@ -1557,12 +1581,7 @@ pub(super) fn pause_runtime_for_inactivity_with_app_handle(
     }
 
     runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-        active_sources_for_inactivity_paused_state(
-            sources,
-            true,
-            true,
-            sources.system_audio,
-        )
+        active_sources_for_inactivity_paused_state(sources, true, true, sources.system_audio)
     });
     runtime.inactivity.is_paused = true;
 
@@ -1718,10 +1737,9 @@ where
                 outputs.microphone_files.clear();
                 outputs
             });
-    let recording_file = runtime
-        .recording_file
-        .clone()
-        .or_else(|| current_screen_output_file(previous_screen_outputs.as_ref()).map(str::to_owned));
+    let recording_file = runtime.recording_file.clone().or_else(|| {
+        current_screen_output_file(previous_screen_outputs.as_ref()).map(str::to_owned)
+    });
     let system_audio_recording_file = runtime.system_audio_recording_file.clone().or_else(|| {
         current_system_audio_output_file(previous_screen_outputs.as_ref()).map(str::to_owned)
     });
@@ -1919,6 +1937,7 @@ pub(super) fn resume_runtime_from_inactivity(
 ) -> Result<(), CaptureErrorResponse> {
     let tail_trim_seconds = runtime.inactivity.idle_timeout_seconds;
     let microphone_activity_threshold = runtime.inactivity.microphone_activity_threshold();
+    let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
     resume_runtime_from_inactivity_with_start_segment(
         runtime,
         move |segment_dir,
@@ -1944,6 +1963,7 @@ pub(super) fn resume_runtime_from_inactivity(
                 microphone_output_path,
                 tail_trim_seconds,
                 microphone_activity_threshold,
+                microphone_tail_activity_mode,
             )
         },
     )
@@ -2013,6 +2033,7 @@ pub(super) fn start_segment(
         microphone_output_path,
         0,
         0.0,
+        microphone_capture::MicrophoneInactivityTailTrimActivityMode::PeakLevel,
     )
 }
 
@@ -2030,6 +2051,7 @@ fn start_segment_with_inactivity_tail_trim_seconds(
     microphone_output_path: Option<&Path>,
     inactivity_tail_trim_seconds: u64,
     microphone_activity_threshold: f32,
+    microphone_tail_activity_mode: microphone_capture::MicrophoneInactivityTailTrimActivityMode,
 ) -> Result<
     (
         CaptureOutputFiles,
@@ -2102,11 +2124,12 @@ fn start_segment_with_inactivity_tail_trim_seconds(
             .unwrap_or_default();
 
         let mic_start =
-            microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id_and_inactivity_tail_trim_seconds(
+            microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id_and_inactivity_tail_trim_activity_mode(
                 &microphone_output_file,
                 microphone_device_id,
                 inactivity_tail_trim_seconds,
                 microphone_activity_threshold,
+                microphone_tail_activity_mode,
             );
 
         match mic_start {
@@ -2268,10 +2291,11 @@ pub(super) fn start_capture_runtime(
             } else {
                 None
             };
-            let recordings_root = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
-                &settings.save_directory,
-            )
-            .recordings_root();
+            let recordings_root =
+                crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+                    &settings.save_directory,
+                )
+                .recordings_root();
             let segment_planner = SegmentPlanner::new(
                 recordings_root.to_string_lossy().to_string(),
                 session_id.clone(),
@@ -2305,11 +2329,10 @@ pub(super) fn start_capture_runtime(
             let effective_screen_bitrate_bps = compute_effective_screen_bitrate_bps(settings);
             capture_screen::reset_last_screen_activity_unix_ms();
             microphone_capture::reset_last_microphone_activity_unix_ms();
-            let initial_inactivity =
-                super::inactivity::InactivityState::from_recording_settings(
-                    settings,
-                    started_monotonic,
-                );
+            let initial_inactivity = super::inactivity::InactivityState::from_recording_settings(
+                settings,
+                started_monotonic,
+            );
             let inactivity_tail_trim_seconds = settings
                 .pause_capture_on_inactivity
                 .then_some(settings.idle_timeout_seconds)
@@ -2318,6 +2341,9 @@ pub(super) fn start_capture_runtime(
                 .pause_capture_on_inactivity
                 .then(|| initial_inactivity.microphone_activity_threshold())
                 .unwrap_or(0.0);
+            let initial_microphone_vad = MicrophoneVadRuntime::new(settings.microphone_vad_adapter);
+            let microphone_tail_activity_mode =
+                microphone_tail_trim_activity_mode_for_vad(&initial_microphone_vad);
 
             let (
                 segment_outputs,
@@ -2339,6 +2365,7 @@ pub(super) fn start_capture_runtime(
                 first_microphone_output_path.as_deref(),
                 inactivity_tail_trim_seconds,
                 microphone_activity_threshold,
+                microphone_tail_activity_mode,
             )?;
 
             let output_files = empty_output_files();
@@ -2346,6 +2373,7 @@ pub(super) fn start_capture_runtime(
 
             runtime.is_running = true;
             runtime.inactivity = initial_inactivity;
+            runtime.microphone_vad = initial_microphone_vad;
             runtime.source_sessions = Some(SourceSessions {
                 screen: sources.screen.then(|| SourceSessionMeta {
                     session_id: session_id.clone(),
@@ -2420,14 +2448,15 @@ pub(super) fn stop_capture_runtime(
         }
 
         let mut current_segment_output_files = runtime.current_segment_output_files.clone();
-        let recording_file = runtime
-            .recording_file
-            .clone()
-            .or_else(|| current_screen_output_file(current_segment_output_files.as_ref()).map(str::to_owned));
-        let microphone_recording_file = runtime.microphone_recording_file.clone();
-        let system_audio_recording_file = runtime.system_audio_recording_file.clone().or_else(|| {
-            current_system_audio_output_file(current_segment_output_files.as_ref()).map(str::to_owned)
+        let recording_file = runtime.recording_file.clone().or_else(|| {
+            current_screen_output_file(current_segment_output_files.as_ref()).map(str::to_owned)
         });
+        let microphone_recording_file = runtime.microphone_recording_file.clone();
+        let system_audio_recording_file =
+            runtime.system_audio_recording_file.clone().or_else(|| {
+                current_system_audio_output_file(current_segment_output_files.as_ref())
+                    .map(str::to_owned)
+            });
         let requested_sources = runtime.requested_sources.clone();
 
         let mut first_error: Option<CaptureErrorResponse> = None;

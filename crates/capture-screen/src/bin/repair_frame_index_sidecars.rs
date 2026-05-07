@@ -33,7 +33,10 @@ fn run() -> Result<(), String> {
             .map_err(|error| format!("failed to read {}: {error}", dir.display()))?;
         for entry in entries {
             let entry = entry.map_err(|error| {
-                format!("failed to read directory entry under {}: {error}", dir.display())
+                format!(
+                    "failed to read directory entry under {}: {error}",
+                    dir.display()
+                )
             })?;
             let path = entry.path();
             let file_type = entry.file_type().map_err(|error| {
@@ -88,12 +91,18 @@ fn run() -> Result<(), String> {
                 ));
             }
 
-            fs::write(&path, capture_screen::encode_screen_segment_frame_index(&rebuilt))
-                .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+            fs::write(
+                &path,
+                capture_screen::encode_screen_segment_frame_index(&rebuilt),
+            )
+            .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
             repaired = repaired.saturating_add(1);
         }
     }
 
-    println!("scanned={} repaired={} skipped={}", scanned, repaired, skipped);
+    println!(
+        "scanned={} repaired={} skipped={}",
+        scanned, repaired, skipped
+    );
     Ok(())
 }

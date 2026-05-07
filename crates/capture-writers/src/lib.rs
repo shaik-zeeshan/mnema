@@ -7,9 +7,9 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "macos")]
-use std::collections::VecDeque;
-#[cfg(target_os = "macos")]
 use cidre::objc::autorelease_pool::AutoreleasePoolPage;
+#[cfg(target_os = "macos")]
+use std::collections::VecDeque;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 #[cfg(target_os = "macos")]
@@ -108,6 +108,24 @@ fn flush_audio_tail_buffer(
 }
 
 #[cfg(target_os = "macos")]
+pub fn record_audio_writer_tail_activity(
+    writer_state: &mut AudioAssetWriterState,
+) -> Result<bool, CaptureErrorResponse> {
+    if !writer_state.tail_buffer.mark_latest_sample_active() {
+        return Ok(false);
+    }
+
+    while let Some(sample) = writer_state
+        .tail_buffer
+        .pop_sample_before_tail(writer_state.tail_trim_seconds)
+    {
+        append_audio_sample_to_writer_untrimmed(writer_state, sample.as_ref())?;
+    }
+
+    Ok(true)
+}
+
+#[cfg(target_os = "macos")]
 fn sample_buf_start_secs(sample_buf: &cidre::cm::SampleBuf) -> Option<f64> {
     let pts = sample_buf.pts();
     pts.is_numeric()
@@ -184,6 +202,16 @@ impl<T> AudioTailSampleBuffer<T> {
         }
     }
 
+    fn mark_latest_sample_active(&mut self) -> bool {
+        let Some(sample) = self.samples.back_mut() else {
+            return false;
+        };
+
+        sample.active = true;
+        self.observed_active_sample = true;
+        true
+    }
+
     fn discard_tail(&mut self) {
         self.samples.clear();
         self.latest_sample_end_secs = None;
@@ -218,6 +246,14 @@ fn sample_buf_has_audio_activity(sample_buf: &cidre::cm::SampleBuf, threshold: f
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioSampleAppendDisposition {
+    Appended,
+    Deferred,
+    Dropped,
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Debug)]
 pub struct VideoAssetWriterState {
     writer: cidre::arc::R<cidre::av::AssetWriter>,
@@ -228,7 +264,7 @@ pub struct VideoAssetWriterState {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AudioWriterFormatSpec {
     sample_rate_hz: f64,
     channel_count: u32,
@@ -252,6 +288,15 @@ impl AudioSampleFormat {
     pub const fn to_writer_format(self) -> AudioWriterFormatSpec {
         AudioWriterFormatSpec::new(self.sample_rate_hz, self.channels_per_frame)
     }
+}
+
+#[cfg(target_os = "macos")]
+pub fn audio_sample_format_is_compatible_with_writer_format(
+    expected: AudioSampleFormat,
+    actual: AudioSampleFormat,
+) -> bool {
+    expected.format_id == actual.format_id
+        && expected.to_writer_format() == actual.to_writer_format()
 }
 
 #[cfg(target_os = "macos")]
@@ -580,14 +625,40 @@ pub fn append_audio_sample_to_writer(
     writer_state: &mut AudioAssetWriterState,
     sample_buf: &cidre::cm::SampleBuf,
 ) -> Result<(), CaptureErrorResponse> {
+    append_audio_sample_to_writer_with_activity_override(writer_state, sample_buf, None)
+}
+
+#[cfg(target_os = "macos")]
+pub fn append_audio_sample_to_writer_with_activity_override(
+    writer_state: &mut AudioAssetWriterState,
+    sample_buf: &cidre::cm::SampleBuf,
+    activity_override: Option<bool>,
+) -> Result<(), CaptureErrorResponse> {
+    try_append_audio_sample_to_writer_with_activity_override(
+        writer_state,
+        sample_buf,
+        activity_override,
+    )
+    .map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+pub fn try_append_audio_sample_to_writer_with_activity_override(
+    writer_state: &mut AudioAssetWriterState,
+    sample_buf: &cidre::cm::SampleBuf,
+    activity_override: Option<bool>,
+) -> Result<AudioSampleAppendDisposition, CaptureErrorResponse> {
     if writer_state.tail_trim_seconds > 0 {
+        let active = activity_override.unwrap_or_else(|| {
+            sample_buf_has_audio_activity(sample_buf, writer_state.activity_threshold)
+        });
         if !writer_state.tail_buffer.append_timed(
             sample_buf.retained(),
             sample_buf_end_secs(sample_buf),
             writer_state.tail_trim_seconds,
-            sample_buf_has_audio_activity(sample_buf, writer_state.activity_threshold),
+            active,
         ) {
-            return Ok(());
+            return Ok(AudioSampleAppendDisposition::Dropped);
         }
         while let Some(sample) = writer_state
             .tail_buffer
@@ -595,7 +666,7 @@ pub fn append_audio_sample_to_writer(
         {
             append_audio_sample_to_writer_untrimmed(writer_state, sample.as_ref())?;
         }
-        return Ok(());
+        return Ok(AudioSampleAppendDisposition::Appended);
     }
 
     append_audio_sample_to_writer_untrimmed(writer_state, sample_buf)
@@ -605,18 +676,18 @@ pub fn append_audio_sample_to_writer(
 fn append_audio_sample_to_writer_untrimmed(
     writer_state: &mut AudioAssetWriterState,
     sample_buf: &cidre::cm::SampleBuf,
-) -> Result<(), CaptureErrorResponse> {
+) -> Result<AudioSampleAppendDisposition, CaptureErrorResponse> {
     if !sample_buf.data_is_ready() {
-        return Ok(());
+        return Ok(AudioSampleAppendDisposition::Dropped);
     }
 
     if let Some(expected_format) = writer_state.expected_sample_format {
         let Some(actual_format) = derive_audio_sample_format_from_sample_buf(sample_buf) else {
-            return Ok(());
+            return Ok(AudioSampleAppendDisposition::Dropped);
         };
 
-        if actual_format != expected_format {
-            return Ok(());
+        if !audio_sample_format_is_compatible_with_writer_format(expected_format, actual_format) {
+            return Ok(AudioSampleAppendDisposition::Dropped);
         }
     }
 
@@ -636,7 +707,7 @@ fn append_audio_sample_to_writer_untrimmed(
     }
 
     if !writer_state.input.is_ready_for_more_media_data() {
-        return Ok(());
+        return Ok(AudioSampleAppendDisposition::Deferred);
     }
 
     let appended = writer_state
@@ -663,7 +734,7 @@ fn append_audio_sample_to_writer_untrimmed(
 
     writer_state.appended_samples += 1;
 
-    Ok(())
+    Ok(AudioSampleAppendDisposition::Appended)
 }
 
 #[cfg(target_os = "macos")]
@@ -1195,6 +1266,41 @@ mod tests {
         assert!(buffer.append_timed(sample, Some(sample_end_secs), 2, true));
     }
 
+    fn audio_sample_format(bits_per_channel: u32, bytes_per_frame: u32) -> AudioSampleFormat {
+        AudioSampleFormat {
+            sample_rate_hz: 48_000.0,
+            format_id: cidre::cat::AudioFormat::LINEAR_PCM.0,
+            format_flags: cidre::cat::AudioFormatFlags::IS_PACKED.0,
+            bytes_per_packet: bytes_per_frame,
+            frames_per_packet: 1,
+            bytes_per_frame,
+            channels_per_frame: 2,
+            bits_per_channel,
+        }
+    }
+
+    #[test]
+    fn audio_writer_format_compatibility_allows_startup_bit_depth_transition() {
+        let transient_startup_format = audio_sample_format(24, 6);
+        let stable_live_format = audio_sample_format(32, 8);
+
+        assert!(audio_sample_format_is_compatible_with_writer_format(
+            stable_live_format,
+            transient_startup_format
+        ));
+    }
+
+    #[test]
+    fn audio_writer_format_compatibility_rejects_different_encoded_format() {
+        let expected = audio_sample_format(32, 8);
+        let mut actual = audio_sample_format(32, 8);
+        actual.format_id = cidre::cat::AudioFormat::MPEG4_AAC.0;
+
+        assert!(!audio_sample_format_is_compatible_with_writer_format(
+            expected, actual
+        ));
+    }
+
     #[test]
     fn audio_tail_buffer_flushes_samples_that_age_out_of_active_tail() {
         let mut buffer = AudioTailSampleBuffer::default();
@@ -1297,6 +1403,22 @@ mod tests {
         assert!(buffer.append_timed("silent-tail", Some(0.25), 10, false));
 
         assert_eq!(buffer.pop_sample_before_tail(10), None);
+        buffer.discard_tail();
+
+        assert!(buffer.samples.is_empty());
+    }
+
+    #[test]
+    fn audio_tail_buffer_delayed_activity_marks_latest_buffered_sample() {
+        let mut buffer = AudioTailSampleBuffer::default();
+        assert!(buffer.append_timed("first-vad-speech-frame", Some(0.25), 10, false));
+
+        assert_eq!(buffer.pop_sample_before_tail(10), None);
+        assert!(buffer.mark_latest_sample_active());
+        assert_eq!(
+            buffer.pop_sample_before_tail(10),
+            Some("first-vad-speech-frame")
+        );
         buffer.discard_tail();
 
         assert!(buffer.samples.is_empty());

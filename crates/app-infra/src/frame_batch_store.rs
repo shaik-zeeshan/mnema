@@ -10,10 +10,8 @@ pub use crate::hidden_segment_workspace::{
 };
 
 use crate::{
+    hidden_segment_workspace::HiddenSegmentWorkspaceRepair,
     jobs::{BackgroundJob, BackgroundJobStatus, JobDescriptor, JobStore},
-    hidden_segment_workspace::{
-        HiddenSegmentWorkspaceRepair,
-    },
     processing::{Frame, ProcessingStore, FRAME_SUBJECT_TYPE, OCR_PROCESSOR},
     AppInfraError, Result,
 };
@@ -1027,8 +1025,7 @@ mod tests {
         }
 
         fn managed_recordings_day_path(&self, year: &str, month: &str, day: &str) -> PathBuf {
-            self.path
-                .join(format!("recordings/{year}/{month}/{day}"))
+            self.path.join(format!("recordings/{year}/{month}/{day}"))
         }
     }
 

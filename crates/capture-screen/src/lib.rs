@@ -8,8 +8,8 @@ use capture_writers::{
     create_video_asset_writer_for_sample_buf,
     finalize_screen_video_output_context as writers_finalize_screen_video_output_context,
     finish_audio_asset_writer, finish_audio_asset_writer_discarding_inactivity_tail,
-    finish_video_asset_writer,
-    set_audio_writer_inactivity_tail_trim_seconds, AudioAssetWriterState, VideoAssetWriterState,
+    finish_video_asset_writer, set_audio_writer_inactivity_tail_trim_seconds,
+    AudioAssetWriterState, VideoAssetWriterState,
 };
 
 #[cfg(target_os = "macos")]
@@ -62,10 +62,9 @@ pub struct ScreenFrameArtifact {
 }
 
 pub use equivalence::{
-    captured_frame_equivalence_from_image_path, captured_frame_equivalence_proofs_match,
-    captured_frame_equivalence_from_interleaved_bytes, CapturedFrameEquivalence,
-    CapturedFrameEquivalenceOutcome,
-    CAPTURED_FRAME_EQUIVALENCE_VERSION,
+    captured_frame_equivalence_from_image_path, captured_frame_equivalence_from_interleaved_bytes,
+    captured_frame_equivalence_proofs_match, CapturedFrameEquivalence,
+    CapturedFrameEquivalenceOutcome, CAPTURED_FRAME_EQUIVALENCE_VERSION,
 };
 
 pub type ScreenFrameArtifactHandler =
@@ -147,7 +146,10 @@ pub fn legacy_screen_segment_frame_index_path(video_path: &Path) -> PathBuf {
 pub fn encode_screen_segment_frame_index(index: &ScreenSegmentFrameIndex) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(
         SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN
-            + index.entries.len().saturating_mul(SCREEN_SEGMENT_FRAME_INDEX_ENTRY_LEN),
+            + index
+                .entries
+                .len()
+                .saturating_mul(SCREEN_SEGMENT_FRAME_INDEX_ENTRY_LEN),
     );
     bytes.extend_from_slice(SCREEN_SEGMENT_FRAME_INDEX_MAGIC);
     bytes.extend_from_slice(&index.version.to_le_bytes());
@@ -740,10 +742,7 @@ fn screen_activity_sample_captured_frame_equivalence(
     let pixel_format = pixel_buf.pixel_format();
     let lock_flags = cidre::cv::pixel_buffer::LockFlags::READ_ONLY;
 
-    if bytes_per_row == 0
-        || pixel_width == 0
-        || height == 0
-    {
+    if bytes_per_row == 0 || pixel_width == 0 || height == 0 {
         return None;
     }
 
@@ -945,14 +944,14 @@ fn screen_activity_bitmap_tile_summary(
             + (((sample_row.saturating_mul(2)).saturating_add(1))
                 .saturating_mul(row_end - row_start)
                 / sample_rows.saturating_mul(2))
-                .min(row_end - row_start - 1);
+            .min(row_end - row_start - 1);
 
         for sample_col in 0..sample_cols {
             let col = col_start
                 + (((sample_col.saturating_mul(2)).saturating_add(1))
                     .saturating_mul(col_end - col_start)
                     / sample_cols.saturating_mul(2))
-                    .min(col_end - col_start - 1);
+                .min(col_end - col_start - 1);
             let pixel_offset = row
                 .checked_mul(bytes_per_row)?
                 .checked_add(col.checked_mul(4)?)?;
@@ -1344,7 +1343,8 @@ fn finalized_screen_segment_frame_index(
         }
 
         match reader.status() {
-            cidre::av::asset::ReaderStatus::Completed | cidre::av::asset::ReaderStatus::Reading => {}
+            cidre::av::asset::ReaderStatus::Completed | cidre::av::asset::ReaderStatus::Reading => {
+            }
             cidre::av::asset::ReaderStatus::Failed => {
                 if let Some(error) = reader.error() {
                     return Err(error_with_ns_error(
@@ -1387,7 +1387,9 @@ fn finalized_screen_segment_frame_index(
     result
 }
 
-pub fn screen_segment_frame_index_offsets_are_monotonic(entries: &[ScreenSegmentFrameIndexEntry]) -> bool {
+pub fn screen_segment_frame_index_offsets_are_monotonic(
+    entries: &[ScreenSegmentFrameIndexEntry],
+) -> bool {
     entries
         .windows(2)
         .all(|pair| pair[0].video_offset_ms <= pair[1].video_offset_ms)
@@ -1601,11 +1603,8 @@ fn export_screen_frame_artifact(
     sample_buf: cidre::arc::R<cidre::cm::SampleBuf>,
     captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 ) -> Result<(), CaptureErrorResponse> {
-    let prepared = prepare_screen_frame_export(
-        runtime,
-        sample_buf.as_ref(),
-        captured_frame_equivalence,
-    );
+    let prepared =
+        prepare_screen_frame_export(runtime, sample_buf.as_ref(), captured_frame_equivalence);
     let callback_queue = runtime.callback_queue.retained();
     let on_frame_exported = runtime.on_frame_exported.clone();
     let first_error = runtime.first_error.clone();
@@ -1728,12 +1727,13 @@ mod stream_output_delegate {
                     super::screen_activity_sample_fingerprint(sample_buf);
                 let _ =
                     super::maybe_mark_screen_activity_for_fingerprint(screen_activity_fingerprint);
-                let captured_frame_equivalence = super::screen_activity_sample_captured_frame_equivalence(sample_buf)
-                .unwrap_or_else(|| {
-                    super::CapturedFrameEquivalenceOutcome::quarantined(
-                        "failed to derive captured frame equivalence from screen sample",
-                    )
-                });
+                let captured_frame_equivalence =
+                    super::screen_activity_sample_captured_frame_equivalence(sample_buf)
+                        .unwrap_or_else(|| {
+                            super::CapturedFrameEquivalenceOutcome::quarantined(
+                                "failed to derive captured frame equivalence from screen sample",
+                            )
+                        });
 
                 if ctx.screen_video_writer.is_none() {
                     let Some(output_file) = ctx.screen_video_output_file.as_deref() else {
@@ -1764,7 +1764,10 @@ mod stream_output_delegate {
                                         sample_buf.retained(),
                                         captured_frame_equivalence,
                                     ) {
-                                        store_first_stream_output_error(&mut ctx.first_error, error);
+                                        store_first_stream_output_error(
+                                            &mut ctx.first_error,
+                                            error,
+                                        );
                                     }
                                 }
                             }
@@ -1853,7 +1856,10 @@ mod stream_delegate {
                 "ScreenCaptureKit stream stopped unexpectedly",
                 error,
             );
-            log_capture_error("ScreenCaptureKit delegate reported stopped stream", &stop_error);
+            log_capture_error(
+                "ScreenCaptureKit delegate reported stopped stream",
+                &stop_error,
+            );
             let mut state = self
                 .inner_mut()
                 .lifecycle_state
@@ -1979,10 +1985,11 @@ fn validate_screen_video_file(path: &str) -> Result<(), CaptureErrorResponse> {
     let result = {
         let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
         let output_url = ns::Url::with_fs_path_str(path, false);
-        let asset = av::UrlAsset::with_url(&output_url, None).ok_or_else(|| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to open finalized screen recording for validation".to_string(),
-        })?;
+        let asset =
+            av::UrlAsset::with_url(&output_url, None).ok_or_else(|| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to open finalized screen recording for validation".to_string(),
+            })?;
 
         let tracks = load_asset_tracks_with_timeout(
             asset.as_ref(),
@@ -2406,10 +2413,9 @@ impl ScreenCaptureKitCaptureSession {
             }
         }
 
-        if let Err(error) = finalize_screen_frame_export(
-            screen_video_output_file.as_deref(),
-            frame_export.as_mut(),
-        ) {
+        if let Err(error) =
+            finalize_screen_frame_export(screen_video_output_file.as_deref(), frame_export.as_mut())
+        {
             failures.push(format!("screen frame export failed: {}", error.message));
         }
 
@@ -3273,7 +3279,8 @@ fn finalize_screen_frame_export(
     synchronize_stream_output_queue(Some(frame_export.callback_queue.as_ref()));
 
     if let Some(screen_video_output_file) = screen_video_output_file {
-        if let Err(error) = persist_screen_segment_frame_index(screen_video_output_file, frame_export)
+        if let Err(error) =
+            persist_screen_segment_frame_index(screen_video_output_file, frame_export)
         {
             log_capture_error("ScreenCaptureKit frame index finalization failed", &error);
         }
@@ -3384,7 +3391,9 @@ fn finalize_stream_output_context(
         context.screen_video_output_file.as_deref(),
         screen_video_writer.is_some(),
         context.first_error.take(),
-        |first_error| writers_finalize_screen_video_output_context(screen_video_writer.as_mut(), first_error),
+        |first_error| {
+            writers_finalize_screen_video_output_context(screen_video_writer.as_mut(), first_error)
+        },
         validate_screen_video_file,
         || {
             finalize_secondary_stream_outputs(
@@ -3945,11 +3954,7 @@ pub fn peek_system_audio_activity_window_peak_level() -> Option<f32> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn record_system_audio_activity_for_tests(
-    level: f32,
-    now_monotonic_ms: u64,
-    now_unix_ms: u64,
-) {
+pub fn record_system_audio_activity_for_tests(level: f32, now_monotonic_ms: u64, now_unix_ms: u64) {
     store_system_audio_activity(level, now_monotonic_ms, now_unix_ms);
 }
 
@@ -4021,7 +4026,8 @@ mod tests {
         };
 
         let bytes = encode_screen_segment_frame_index(&index);
-        let decoded = decode_screen_segment_frame_index(&bytes).expect("binary frame index should decode");
+        let decoded =
+            decode_screen_segment_frame_index(&bytes).expect("binary frame index should decode");
 
         assert_eq!(decoded, index);
     }
@@ -4092,13 +4098,14 @@ mod tests {
             return;
         }
 
-        let output = Command::new(std::env::current_exe().expect("current test binary should exist"))
-            .env(ENV_NAME, "1")
-            .arg("--exact")
-            .arg("tests::nested_objc_exception_inside_catch_unwind_does_not_abort_subprocess")
-            .arg("--nocapture")
-            .output()
-            .expect("child process should run nested exception harness");
+        let output =
+            Command::new(std::env::current_exe().expect("current test binary should exist"))
+                .env(ENV_NAME, "1")
+                .arg("--exact")
+                .arg("tests::nested_objc_exception_inside_catch_unwind_does_not_abort_subprocess")
+                .arg("--nocapture")
+                .output()
+                .expect("child process should run nested exception harness");
 
         assert!(
             output.status.success(),
@@ -4299,8 +4306,9 @@ mod tests {
         state.stream_live = false;
         state.stop_error = Some(CaptureErrorResponse {
             code: "capture_stream_system_stopped".to_string(),
-            message: "ScreenCaptureKit stream stopped unexpectedly: stopped by system (code: -3821)"
-                .to_string(),
+            message:
+                "ScreenCaptureKit stream stopped unexpectedly: stopped by system (code: -3821)"
+                    .to_string(),
         });
 
         assert!(!state.stream_live);
@@ -4690,9 +4698,9 @@ mod tests {
         .expect_err("rotated recovery must fail when invalid artifact cleanup fails");
 
         assert_eq!(error.code, "capture_output_processing_failed");
-        assert!(error.message.contains(
-            "failed to remove invalid screen artifact at /tmp/stale-invalid-screen.mov"
-        ));
+        assert!(error
+            .message
+            .contains("failed to remove invalid screen artifact at /tmp/stale-invalid-screen.mov"));
     }
 
     #[cfg(target_os = "macos")]
@@ -5169,7 +5177,10 @@ mod tests {
         );
 
         assert!(
-            matches!(live_equivalence, Some(CapturedFrameEquivalenceOutcome::Ready(_))),
+            matches!(
+                live_equivalence,
+                Some(CapturedFrameEquivalenceOutcome::Ready(_))
+            ),
             "live non-planar screen samples should derive equivalence from pixel dimensions"
         );
 
@@ -5251,12 +5262,8 @@ mod tests {
 
         let baseline_fingerprint =
             screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
-        let cursor_changed_fingerprint = screen_frame_content_bitmap_fingerprint(
-            &cursor_changed,
-            bytes_per_row,
-            width,
-            height,
-        );
+        let cursor_changed_fingerprint =
+            screen_frame_content_bitmap_fingerprint(&cursor_changed, bytes_per_row, width, height);
 
         assert_eq!(baseline_fingerprint, cursor_changed_fingerprint);
     }
@@ -5338,10 +5345,11 @@ pub fn strip_audio_from_recording_file(recording_file: &str) -> Result<(), Captu
 
     let result = {
         let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
-        let asset = av::UrlAsset::with_url(&input_url, None).ok_or_else(|| CaptureErrorResponse {
-            code: "capture_output_processing_failed".to_string(),
-            message: "Failed to open recording for video-only conversion".to_string(),
-        })?;
+        let asset =
+            av::UrlAsset::with_url(&input_url, None).ok_or_else(|| CaptureErrorResponse {
+                code: "capture_output_processing_failed".to_string(),
+                message: "Failed to open recording for video-only conversion".to_string(),
+            })?;
 
         let video_tracks = load_asset_tracks_with_timeout(
             asset.as_ref(),
@@ -5458,7 +5466,8 @@ pub fn strip_audio_from_recording_file(recording_file: &str) -> Result<(), Captu
                 .append_sample_buf(sample_buf.as_ref())
                 .map_err(|_| CaptureErrorResponse {
                     code: "capture_output_processing_failed".to_string(),
-                    message: "Failed to append video sample during video-only conversion".to_string(),
+                    message: "Failed to append video sample during video-only conversion"
+                        .to_string(),
                 })?;
 
             if !appended {

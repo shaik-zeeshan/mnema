@@ -126,9 +126,9 @@ fn sync_finalized_screen_output_file(
     output_files: &mut CaptureOutputFiles,
     recording_file: Option<&str>,
 ) -> bool {
-    let Some(recording_file) = recording_file.filter(|path| {
-        Path::new(path).is_file() && screen_output_appears_openable(path)
-    }) else {
+    let Some(recording_file) = recording_file
+        .filter(|path| Path::new(path).is_file() && screen_output_appears_openable(path))
+    else {
         clear_current_screen_output_file(output_files);
         return false;
     };
@@ -176,7 +176,9 @@ fn audio_file_has_positive_duration(path: &str) -> bool {
         let url = ns::Url::with_fs_path_str(path, false);
         av::UrlAsset::with_url(&url, None)
             .map(|asset| asset.duration())
-            .is_some_and(|duration| duration.is_numeric() && duration.value > 0 && duration.scale > 0)
+            .is_some_and(|duration| {
+                duration.is_numeric() && duration.value > 0 && duration.scale > 0
+            })
     };
 
     result
@@ -605,8 +607,11 @@ mod tests {
     fn finalize_capture_outputs_rejects_invalid_existing_screen_output() {
         let dir = TestDir::new("invalid-screen-output");
         let recording_file = dir.path.join("screen.mov");
-        fs::write(&recording_file, b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10mdatjunk")
-            .expect("invalid screen artifact should exist");
+        fs::write(
+            &recording_file,
+            b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10mdatjunk",
+        )
+        .expect("invalid screen artifact should exist");
         let recording_file = recording_file.to_string_lossy().to_string();
         let requested_sources = CaptureSources {
             screen: true,

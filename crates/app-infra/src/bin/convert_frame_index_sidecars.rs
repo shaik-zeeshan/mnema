@@ -46,7 +46,10 @@ fn run() -> Result<(), String> {
             .map_err(|error| format!("failed to read {}: {error}", dir.display()))?;
         for entry in entries {
             let entry = entry.map_err(|error| {
-                format!("failed to read directory entry under {}: {error}", dir.display())
+                format!(
+                    "failed to read directory entry under {}: {error}",
+                    dir.display()
+                )
             })?;
             let path = entry.path();
             let file_type = entry.file_type().map_err(|error| {
@@ -80,8 +83,10 @@ fn run() -> Result<(), String> {
 
             let bytes = fs::read(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-            let legacy: LegacyScreenSegmentFrameIndex = serde_json::from_slice(&bytes)
-                .map_err(|error| format!("failed to parse legacy sidecar {}: {error}", path.display()))?;
+            let legacy: LegacyScreenSegmentFrameIndex =
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    format!("failed to parse legacy sidecar {}: {error}", path.display())
+                })?;
             let binary = capture_screen::encode_screen_segment_frame_index(
                 &capture_screen::ScreenSegmentFrameIndex {
                     version: legacy.version,

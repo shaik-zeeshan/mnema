@@ -26,16 +26,16 @@ pub use captured_frame_pipeline::{
     CapturedFrameReprocessingResult, ClosedFrameBatchSummary,
 };
 pub use error::{AppInfraError, Result};
+pub use frame_batch_runtime::FrameBatchRuntime;
 pub use frame_batch_store::{
     FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchStatus,
     FrameBatchStore, FrameBatchWindow, SegmentWorkspaceBatchReference,
     FRAME_BATCH_DURATION_MINUTES, FRAME_BATCH_FINALIZE_JOB_KIND,
 };
-pub use frame_batch_runtime::FrameBatchRuntime;
 pub use hidden_segment_workspace::{
     HiddenSegmentWorkspacePaths, HiddenSegmentWorkspaceRepairContext,
-    HiddenSegmentWorkspaceRepairResult,
-    SegmentWorkspaceCleanupDebugInfo, SegmentWorkspaceCleanupDisposition,
+    HiddenSegmentWorkspaceRepairResult, SegmentWorkspaceCleanupDebugInfo,
+    SegmentWorkspaceCleanupDisposition,
 };
 pub use jobs::{
     default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
@@ -79,8 +79,7 @@ impl AppInfra {
         let audio_segments = AudioSegmentStore::new(database.pool().clone());
         let frame_batches = FrameBatchStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
-        let captured_frame_equivalence =
-            CapturedFrameEquivalenceResolver::new(processing.clone());
+        let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
         processing.backfill_frame_equivalence().await?;
@@ -573,16 +572,20 @@ mod tests {
         height: u32,
     ) -> NewFrame {
         let file_path = write_test_png_rgba(dir, file_name, width, height, pixels);
-        let equivalence = match capture_screen::captured_frame_equivalence_from_image_path(
-            Path::new(&file_path),
-        ) {
-            capture_screen::CapturedFrameEquivalenceOutcome::Ready(equivalence) => {
-                FrameEquivalence::ready(equivalence.hint, equivalence.proof, equivalence.version)
-            }
-            capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
-                panic!("test image equivalence should compute: {error}");
-            }
-        };
+        let equivalence =
+            match capture_screen::captured_frame_equivalence_from_image_path(Path::new(&file_path))
+            {
+                capture_screen::CapturedFrameEquivalenceOutcome::Ready(equivalence) => {
+                    FrameEquivalence::ready(
+                        equivalence.hint,
+                        equivalence.proof,
+                        equivalence.version,
+                    )
+                }
+                capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
+                    panic!("test image equivalence should compute: {error}");
+                }
+            };
 
         NewFrame::new(session_id, file_path, captured_at)
             .with_dimensions(width as i64, height as i64)
@@ -603,7 +606,8 @@ mod tests {
             "2026/04/12/.{session_id}-segment-{segment_index:04}/frames"
         ));
         fs::create_dir_all(&frames_dir).expect("segment frames dir should exist");
-        let relative_name = format!("2026/04/12/.{session_id}-segment-{segment_index:04}/frames/{file_name}");
+        let relative_name =
+            format!("2026/04/12/.{session_id}-segment-{segment_index:04}/frames/{file_name}");
         test_frame_with_equivalent_image(
             dir,
             session_id,

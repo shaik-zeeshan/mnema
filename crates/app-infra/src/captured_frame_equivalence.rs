@@ -35,8 +35,12 @@ impl CapturedFrameEquivalenceResolver {
         frame: &Frame,
         scope: &CapturedFrameEquivalenceScope,
     ) -> Result<Option<Frame>> {
-        self.find_equivalent_frame(frame, scope, CapturedFrameEquivalenceMatchKind::NearestEarlier)
-            .await
+        self.find_equivalent_frame(
+            frame,
+            scope,
+            CapturedFrameEquivalenceMatchKind::NearestEarlier,
+        )
+        .await
     }
 
     pub async fn find_earliest_earlier_equivalent_frame(
@@ -44,8 +48,12 @@ impl CapturedFrameEquivalenceResolver {
         frame: &Frame,
         scope: &CapturedFrameEquivalenceScope,
     ) -> Result<Option<Frame>> {
-        self.find_equivalent_frame(frame, scope, CapturedFrameEquivalenceMatchKind::EarliestEarlier)
-            .await
+        self.find_equivalent_frame(
+            frame,
+            scope,
+            CapturedFrameEquivalenceMatchKind::EarliestEarlier,
+        )
+        .await
     }
 
     async fn find_equivalent_frame(
@@ -111,7 +119,8 @@ impl CapturedFrameEquivalenceResolver {
                 continue;
             }
 
-            let Some((_hint, earlier_proof, earlier_version)) = earlier_frame.equivalence.ready_parts()
+            let Some((_hint, earlier_proof, earlier_version)) =
+                earlier_frame.equivalence.ready_parts()
             else {
                 continue;
             };

@@ -5,7 +5,7 @@ use crate::{AppInfraError, Result};
 use cidre::{cg, cv, ns, objc, vn};
 
 #[cfg(target_os = "macos")]
-use image::{DynamicImage, GenericImageView, imageops::FilterType};
+use image::{imageops::FilterType, DynamicImage, GenericImageView};
 
 #[cfg(target_os = "macos")]
 use std::{cell::OnceCell, ffi::c_void};
@@ -193,9 +193,7 @@ extern "C" fn release_grayscale_pixel_buffer_bytes(
     if !release_ref_con.is_null() {
         // CoreVideo invokes this once it no longer needs the backing grayscale bytes.
         unsafe {
-            drop(Box::from_raw(
-                release_ref_con as *mut Box<[u8]>,
-            ));
+            drop(Box::from_raw(release_ref_con as *mut Box<[u8]>));
         }
     }
 }
@@ -217,7 +215,9 @@ fn resize_for_ocr(image: DynamicImage) -> DynamicImage {
 }
 
 #[cfg(target_os = "macos")]
-fn cached_recognition_langs(payload_json: Option<&str>) -> Result<cidre::arc::R<ns::Array<ns::String>>> {
+fn cached_recognition_langs(
+    payload_json: Option<&str>,
+) -> Result<cidre::arc::R<ns::Array<ns::String>>> {
     let Some(language) = requested_language(payload_json)? else {
         return Ok(default_recognition_langs());
     };
@@ -295,7 +295,9 @@ fn default_recognition_langs() -> cidre::arc::R<ns::Array<ns::String>> {
 
 #[cfg(target_os = "macos")]
 fn pixel_buffer_error_to_app_error(error: cidre::os::Error) -> AppInfraError {
-    AppInfraError::OcrEngine(format!("Apple Vision OCR pixel buffer setup failed: {error}"))
+    AppInfraError::OcrEngine(format!(
+        "Apple Vision OCR pixel buffer setup failed: {error}"
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -322,12 +324,13 @@ fn recognize_impl(request: OcrRequest) -> Result<OcrOutput> {
     vision_request.set_recognition_langs(recognition_langs.as_ref());
 
     let requests = ns::Array::<vn::Request>::from_slice(&[&vision_request]);
-    let handler = vn::ImageRequestHandler::with_cv_pixel_buf(prepared_image.pixel_buf.as_ref(), None)
-        .ok_or_else(|| {
-            AppInfraError::OcrEngine(
-                "Apple Vision OCR failed to create image request handler".to_string(),
-            )
-        })?;
+    let handler =
+        vn::ImageRequestHandler::with_cv_pixel_buf(prepared_image.pixel_buf.as_ref(), None)
+            .ok_or_else(|| {
+                AppInfraError::OcrEngine(
+                    "Apple Vision OCR failed to create image request handler".to_string(),
+                )
+            })?;
 
     handler
         .perform(&requests)
@@ -462,21 +465,21 @@ mod tests {
     #[test]
     fn requested_language_extracts_optional_language_hint() {
         assert_eq!(
-            requested_language(Some("{\"language\":\"eng\"}"))
-                .expect("payload should parse"),
+            requested_language(Some("{\"language\":\"eng\"}")).expect("payload should parse"),
             Some("en-US".to_string())
         );
         assert_eq!(
-            requested_language(Some("{\"language\":\"fra\"}"))
-                .expect("payload should parse"),
+            requested_language(Some("{\"language\":\"fra\"}")).expect("payload should parse"),
             Some("fr-FR".to_string())
         );
         assert_eq!(
-            requested_language(Some("{\"language\":\"   \"}"))
-                .expect("payload should parse"),
+            requested_language(Some("{\"language\":\"   \"}")).expect("payload should parse"),
             None
         );
-        assert_eq!(requested_language(None).expect("missing payload should succeed"), None);
+        assert_eq!(
+            requested_language(None).expect("missing payload should succeed"),
+            None
+        );
     }
 
     #[test]
@@ -494,9 +497,7 @@ mod tests {
 
     #[test]
     fn requested_language_correction_defaults_to_false() {
-        assert!(
-            !requested_language_correction(None).expect("missing payload should succeed")
-        );
+        assert!(!requested_language_correction(None).expect("missing payload should succeed"));
         assert!(
             requested_language_correction(Some("{\"languageCorrection\":true}"))
                 .expect("payload should parse")

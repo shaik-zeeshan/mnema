@@ -1424,6 +1424,15 @@
           <span class="kv-val kv-val--mono">{idleDebug.microphoneActivitySensitivity}%</span>
         </li>
       {/if}
+      <li>
+        <span class="kv-key kv-key--wide">mic VAD</span>
+        <span class="kv-val kv-val--mono">
+          {idleDebug.microphoneVad.configuredAdapter} -> {idleDebug.microphoneVad.effectiveAdapter}
+        </span>
+        {#if idleDebug.microphoneVad.fallbackReason}
+          <span class="idle-note">{idleDebug.microphoneVad.fallbackReason}</span>
+        {/if}
+      </li>
       {#if idleDebug.systemAudioActivitySensitivity != null}
         <li>
           <span class="kv-key kv-key--wide">sys audio sensitivity</span>

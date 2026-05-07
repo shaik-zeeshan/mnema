@@ -84,6 +84,18 @@ pub fn default_system_audio_activity_sensitivity() -> u8 {
     50
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum MicrophoneVadAdapter {
+    Silero,
+    Webrtc,
+    Off,
+}
+
+pub fn default_microphone_vad_adapter() -> MicrophoneVadAdapter {
+    MicrophoneVadAdapter::Silero
+}
+
 pub fn default_native_capture_debug_logging_enabled() -> bool {
     false
 }
@@ -189,6 +201,8 @@ pub struct RecordingSettings {
     pub microphone_activity_sensitivity: u8,
     #[serde(default = "default_system_audio_activity_sensitivity")]
     pub system_audio_activity_sensitivity: u8,
+    #[serde(default = "default_microphone_vad_adapter")]
+    pub microphone_vad_adapter: MicrophoneVadAdapter,
     #[serde(
         default = "crate::default_inactivity_activity_mode",
         rename = "activityMode",
@@ -231,6 +245,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub microphone_activity_sensitivity: u8,
     #[serde(default = "default_system_audio_activity_sensitivity")]
     pub system_audio_activity_sensitivity: u8,
+    #[serde(default = "default_microphone_vad_adapter")]
+    pub microphone_vad_adapter: MicrophoneVadAdapter,
     #[serde(
         default = "crate::default_inactivity_activity_mode",
         rename = "activityMode",

@@ -9,4 +9,4 @@ capture-types = { path = "../capture-types" }
 capture-writers = { path = "../capture-writers" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-cidre = { version = "0.15", default-features = false, features = ["av", "async", "blocks", "cm", "core_audio", "dispatch"] }
+cidre = { version = "0.15", default-features = false, features = ["av", "async", "blocks", "cat", "cm", "dispatch"] }

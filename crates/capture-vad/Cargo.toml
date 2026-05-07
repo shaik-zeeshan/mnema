@@ -1,0 +1,9 @@
+[package]
+name = "capture-vad"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+capture-types = { path = "../capture-types" }
+silero = "0.3"
+webrtc-vad = "0.4"

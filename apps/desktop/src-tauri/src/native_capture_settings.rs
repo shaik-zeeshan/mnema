@@ -1,14 +1,11 @@
 use capture_types::{
-    default_appearance,
-    default_developer_options_enabled, default_idle_timeout_seconds,
-    default_follow_timeline_live, default_inactivity_activity_mode,
-    default_microphone_activity_sensitivity,
-    default_native_capture_debug_logging_enabled, default_pause_capture_on_inactivity,
-    default_preview_cache_ttl_seconds, default_system_audio_activity_sensitivity,
-    default_ocr_settings,
-    default_video_bitrate, CaptureErrorResponse, RecordingSettings, ScreenResolution,
-    ScreenResolutionPreset, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
-    VideoBitrateSettings,
+    default_appearance, default_developer_options_enabled, default_follow_timeline_live,
+    default_idle_timeout_seconds, default_inactivity_activity_mode,
+    default_microphone_activity_sensitivity, default_native_capture_debug_logging_enabled,
+    default_ocr_settings, default_pause_capture_on_inactivity, default_preview_cache_ttl_seconds,
+    default_system_audio_activity_sensitivity, default_video_bitrate, CaptureErrorResponse,
+    RecordingSettings, ScreenResolution, ScreenResolutionPreset, UpdateRecordingSettingsRequest,
+    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -85,6 +82,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
         system_audio_activity_sensitivity: default_system_audio_activity_sensitivity(),
+        microphone_vad_adapter: capture_types::default_microphone_vad_adapter(),
         inactivity_activity_mode: default_inactivity_activity_mode(),
     }
 }
@@ -347,6 +345,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
         system_audio_activity_sensitivity,
+        microphone_vad_adapter: request.microphone_vad_adapter,
         inactivity_activity_mode: request.inactivity_activity_mode,
     })
 }
@@ -387,6 +386,7 @@ fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
         idle_timeout_seconds: parsed.idle_timeout_seconds,
         microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
         system_audio_activity_sensitivity: parsed.system_audio_activity_sensitivity,
+        microphone_vad_adapter: parsed.microphone_vad_adapter,
         inactivity_activity_mode: parsed.inactivity_activity_mode,
     })
     .ok()
@@ -469,9 +469,7 @@ pub(crate) fn current_auto_start(state: &RecordingSettingsState) -> bool {
         .auto_start
 }
 
-pub(crate) fn current_native_capture_debug_logging_enabled(
-    state: &RecordingSettingsState,
-) -> bool {
+pub(crate) fn current_native_capture_debug_logging_enabled(state: &RecordingSettingsState) -> bool {
     state
         .lock()
         .expect("recording settings state poisoned")
@@ -616,6 +614,14 @@ mod tests {
     }
 
     #[test]
+    fn default_recording_settings_use_default_microphone_vad_adapter() {
+        assert_eq!(
+            default_recording_settings().microphone_vad_adapter,
+            capture_types::default_microphone_vad_adapter()
+        );
+    }
+
+    #[test]
     fn load_recording_settings_from_path_preserves_native_capture_debug_logging_flag() {
         let dir = TestDir::new("debug-log-enabled");
         let path = dir.path().join("recording-settings.json");
@@ -651,6 +657,66 @@ mod tests {
             load_recording_settings_from_path(&path).expect("settings should load from disk");
 
         assert!(loaded.developer_options_enabled);
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_preserves_microphone_vad_adapter() {
+        let dir = TestDir::new("microphone-vad-adapter");
+        let path = dir.path().join("recording-settings.json");
+        let mut settings = default_recording_settings();
+        settings.microphone_vad_adapter = capture_types::MicrophoneVadAdapter::Webrtc;
+
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&settings).expect("settings should serialize"),
+        )
+        .expect("settings file should write");
+
+        let loaded =
+            load_recording_settings_from_path(&path).expect("settings should load from disk");
+
+        assert_eq!(
+            loaded.microphone_vad_adapter,
+            capture_types::MicrophoneVadAdapter::Webrtc
+        );
+    }
+
+    #[test]
+    fn validate_recording_settings_preserves_microphone_vad_adapter_update() {
+        let settings = validate_recording_settings_with_resolution_support(
+            UpdateRecordingSettingsRequest {
+                capture_screen: true,
+                capture_microphone: true,
+                capture_system_audio: false,
+                segment_duration_seconds: 60,
+                screen_frame_rate: 1,
+                screen_resolution: ScreenResolution::Preset {
+                    preset: ScreenResolutionPreset::Original,
+                },
+                video_bitrate: default_video_bitrate(),
+                save_directory: "/tmp".to_string(),
+                auto_start: false,
+                native_capture_debug_logging_enabled: false,
+                developer_options_enabled: false,
+                preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+                follow_timeline_live: false,
+                appearance: default_appearance(),
+                ocr: default_ocr_settings(),
+                pause_capture_on_inactivity: true,
+                idle_timeout_seconds: 10,
+                microphone_activity_sensitivity: 50,
+                system_audio_activity_sensitivity: 50,
+                microphone_vad_adapter: capture_types::MicrophoneVadAdapter::Off,
+                inactivity_activity_mode: default_inactivity_activity_mode(),
+            },
+            true,
+        )
+        .expect("settings should validate");
+
+        assert_eq!(
+            settings.microphone_vad_adapter,
+            capture_types::MicrophoneVadAdapter::Off
+        );
     }
 
     #[test]
@@ -724,6 +790,7 @@ mod tests {
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
             system_audio_activity_sensitivity: 50,
+            microphone_vad_adapter: capture_types::default_microphone_vad_adapter(),
             inactivity_activity_mode: default_inactivity_activity_mode(),
         })
         .expect_err("preview cache ttl above max must be rejected");

@@ -1,8 +1,11 @@
 use super::activity::{
-    current_activity_snapshot, current_activity_snapshot_for_debug, idle_debug_activity_sources, idle_debug_family_fields,
-    lock_runtime_for_idle_debug,
+    current_activity_snapshot, current_activity_snapshot_for_debug, idle_debug_activity_sources,
+    idle_debug_family_fields, lock_runtime_for_idle_debug,
 };
 use super::describe_recording_settings_changes;
+use super::inactivity::{
+    ActivityPolicyEvaluation, ActivitySnapshot, AudioActivitySourceState, InactivityState,
+};
 use super::lifecycle::RecordingLifecycle;
 use super::microphone::microphone_auto_disconnect_transition_failed_event;
 #[cfg(target_os = "macos")]
@@ -10,6 +13,7 @@ use super::microphone::{
     next_microphone_output_file_for_runtime, should_move_microphone_capture_to_waiting_state,
     should_reconnect_waiting_microphone_session,
 };
+use super::output::set_current_microphone_output_file;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, current_segment_sources_for_runtime,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
@@ -23,10 +27,9 @@ use super::runtime::{
 use super::segments::{
     audio_duration_time_to_ms, audio_segment_started_at_unix_ms_for_file,
     audio_segment_window_from_duration_ms, cleanup_failed_segment_dirs,
-    committed_audio_segments_for_output_files,
-    pause_microphone_for_inactivity, pause_runtime_for_inactivity, pause_screen_for_inactivity,
-    pause_system_audio_for_inactivity, plan_live_rotation_segment,
-    process_inactivity_audio_transitions_for_snapshot,
+    committed_audio_segments_for_output_files, pause_microphone_for_inactivity,
+    pause_runtime_for_inactivity, pause_screen_for_inactivity, pause_system_audio_for_inactivity,
+    plan_live_rotation_segment, process_inactivity_audio_transitions_for_snapshot,
     recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity_with_start_segment, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
@@ -36,28 +39,27 @@ use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
     FrameArtifactForwardingResult, FrameArtifactMessage,
 };
-use super::inactivity::{
-    ActivityPolicyEvaluation, ActivitySnapshot, AudioActivitySourceState, InactivityState,
-};
-use super::output::set_current_microphone_output_file;
 use super::settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
     validate_recording_settings_with_resolution_support,
 };
+use super::{AppNotification, AppNotificationsRuntime};
 #[cfg(target_os = "macos")]
-use capture_runtime::{current_date_prefix, CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule};
+use capture_runtime::{
+    current_date_prefix, CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule,
+};
 use capture_runtime::{RuntimeController, RuntimeState};
 use capture_types::{
-    default_appearance, default_inactivity_activity_mode, default_ocr_settings,
-    default_preview_cache_ttl_seconds,
-    default_video_bitrate,
-    AppearanceSetting,
-    CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
-    InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
-    MicrophonePreference, MicrophonePreferenceMode, RecordingSettings, ScreenResolution,
-    ScreenResolutionPreset, SourceSessionMeta, SourceSessions, StartNativeCaptureRequest,
-    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    default_appearance, default_inactivity_activity_mode, default_microphone_vad_adapter,
+    default_ocr_settings, default_preview_cache_ttl_seconds, default_video_bitrate,
+    AppearanceSetting, CaptureErrorResponse, CaptureOutputFiles, CaptureSources,
+    CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
+    MicrophoneDisconnectPolicy, MicrophonePreference, MicrophonePreferenceMode, RecordingSettings,
+    ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
+    StartNativeCaptureRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
+    VideoBitratePreset, VideoBitrateSettings,
 };
+use capture_vad::{MicrophonePcmVadFrame, MicrophoneVadRuntime};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -102,6 +104,16 @@ fn run_async_test(test: impl std::future::Future<Output = ()>) {
         .block_on(test);
 }
 
+fn app_notification_fixture(id: &str, title: &str, created_at_unix_ms: u64) -> AppNotification {
+    AppNotification {
+        id: id.to_string(),
+        severity: "warning".to_string(),
+        title: title.to_string(),
+        message: format!("{title} message"),
+        created_at_unix_ms,
+    }
+}
+
 fn recording_settings_fixture() -> RecordingSettings {
     RecordingSettings {
         capture_screen: true,
@@ -125,6 +137,7 @@ fn recording_settings_fixture() -> RecordingSettings {
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
         system_audio_activity_sensitivity: 50,
+        microphone_vad_adapter: default_microphone_vad_adapter(),
         inactivity_activity_mode: default_inactivity_activity_mode(),
     }
 }
@@ -151,8 +164,70 @@ fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
         system_audio_activity_sensitivity: settings.system_audio_activity_sensitivity,
+        microphone_vad_adapter: settings.microphone_vad_adapter,
         inactivity_activity_mode: settings.inactivity_activity_mode,
     }
+}
+
+#[test]
+fn app_notifications_runtime_lists_session_notifications() {
+    let mut runtime = AppNotificationsRuntime::default();
+
+    runtime.push_session_notification(app_notification_fixture("one", "One", 1));
+    runtime.push_session_notification(app_notification_fixture("two", "Two", 2));
+
+    let notifications = runtime.list();
+
+    assert_eq!(notifications.len(), 2);
+    assert_eq!(notifications[0].id, "one");
+    assert_eq!(notifications[1].id, "two");
+}
+
+#[test]
+fn app_notifications_runtime_replaces_existing_notification_id_once() {
+    let mut runtime = AppNotificationsRuntime::default();
+
+    runtime.push_session_notification(app_notification_fixture("vad-fallback", "Old", 1));
+    let notifications =
+        runtime.push_session_notification(app_notification_fixture("vad-fallback", "Updated", 2));
+
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].id, "vad-fallback");
+    assert_eq!(notifications[0].title, "Updated");
+    assert_eq!(notifications[0].created_at_unix_ms, 2);
+}
+
+#[test]
+fn app_notifications_runtime_clears_one_notification_by_id() {
+    let mut runtime = AppNotificationsRuntime::default();
+    runtime.push_session_notification(app_notification_fixture("one", "One", 1));
+    runtime.push_session_notification(app_notification_fixture("two", "Two", 2));
+
+    let notifications = runtime.clear_one("one");
+
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].id, "two");
+}
+
+#[test]
+fn app_notifications_runtime_clear_one_is_noop_for_missing_id() {
+    let mut runtime = AppNotificationsRuntime::default();
+    runtime.push_session_notification(app_notification_fixture("one", "One", 1));
+
+    let notifications = runtime.clear_one("missing");
+
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].id, "one");
+}
+
+#[test]
+fn app_notifications_runtime_clears_all_session_notifications() {
+    let mut runtime = AppNotificationsRuntime::default();
+    runtime.push_session_notification(app_notification_fixture("one", "One", 1));
+    runtime.push_session_notification(app_notification_fixture("two", "Two", 2));
+
+    assert!(runtime.clear_all().is_empty());
+    assert!(runtime.list().is_empty());
 }
 
 #[cfg(target_os = "macos")]
@@ -785,6 +860,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
         system_audio_activity_sensitivity: 50,
+        microphone_vad_adapter: default_microphone_vad_adapter(),
         inactivity_activity_mode: default_inactivity_activity_mode(),
     };
 
@@ -822,6 +898,7 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
         system_audio_activity_sensitivity: 50,
+        microphone_vad_adapter: default_microphone_vad_adapter(),
         inactivity_activity_mode: default_inactivity_activity_mode(),
     };
 
@@ -855,6 +932,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
         system_audio_activity_sensitivity: 50,
+        microphone_vad_adapter: default_microphone_vad_adapter(),
         inactivity_activity_mode: default_inactivity_activity_mode(),
     };
 
@@ -907,6 +985,7 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
+        microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
             screen: Some(SourceSessionMeta {
                 session_id: "session-1".to_string(),
@@ -984,6 +1063,7 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
+        microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
             screen: Some(SourceSessionMeta {
                 session_id: "session-1".to_string(),
@@ -1307,7 +1387,7 @@ fn system_audio_planner_for_runtime_does_not_fall_back_to_screen_planner() {
 
 #[test]
 fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources() {
-    let runtime = NativeCaptureRuntime {
+    let mut runtime = NativeCaptureRuntime {
         is_running: true,
         requested_sources: Some(CaptureSources {
             screen: true,
@@ -1317,10 +1397,67 @@ fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources(
         ..Default::default()
     };
 
-    let snapshot = current_activity_snapshot(&runtime);
+    let snapshot = current_activity_snapshot(&mut runtime);
 
     assert!(snapshot.microphone_activity.enabled);
     assert!(snapshot.system_audio_activity.enabled);
+}
+
+#[test]
+fn current_activity_snapshot_for_debug_does_not_consume_microphone_vad_speech_pulse() {
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        microphone_vad: MicrophoneVadRuntime::new(capture_types::MicrophoneVadAdapter::Webrtc),
+        ..Default::default()
+    };
+    let samples = voiced_like_frame_16khz_30ms();
+    runtime
+        .microphone_vad
+        .process_pcm_frame(MicrophonePcmVadFrame {
+            samples: &samples,
+            sample_rate_hz: 16_000,
+            captured_at_unix_ms: 1_000,
+            normalized_peak_level: 0.7,
+        })
+        .expect("voiced-like frame should produce a VAD decision");
+
+    let debug_snapshot = current_activity_snapshot_for_debug(&mut runtime);
+    assert_eq!(
+        debug_snapshot.microphone_activity.latest_normalized_level,
+        Some(1.0)
+    );
+
+    let policy_snapshot = current_activity_snapshot(&mut runtime);
+    assert_eq!(
+        policy_snapshot.microphone_activity.latest_normalized_level,
+        Some(1.0),
+        "debug polling must not consume the one-shot VAD speech pulse before policy evaluation"
+    );
+
+    let next_policy_snapshot = current_activity_snapshot(&mut runtime);
+    assert_eq!(
+        next_policy_snapshot
+            .microphone_activity
+            .latest_normalized_level,
+        None,
+        "policy evaluation still consumes the one-shot pulse after observing it"
+    );
+}
+
+fn voiced_like_frame_16khz_30ms() -> Vec<i16> {
+    (0..480)
+        .map(|sample_index| {
+            let phase = sample_index % 160;
+            let envelope = if phase < 80 { phase } else { 160 - phase };
+            let carrier = if sample_index % 32 < 16 { 1 } else { -1 };
+            (carrier * envelope as i32 * 220) as i16
+        })
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -1332,7 +1469,7 @@ fn current_activity_snapshot_for_debug_does_not_drain_system_audio_peak() {
     capture_screen::reset_last_screen_activity_unix_ms();
     capture_screen::record_system_audio_activity_for_tests(0.20, 10_000, 20_000);
 
-    let runtime = NativeCaptureRuntime {
+    let mut runtime = NativeCaptureRuntime {
         is_running: true,
         requested_sources: Some(CaptureSources {
             screen: true,
@@ -1342,9 +1479,12 @@ fn current_activity_snapshot_for_debug_does_not_drain_system_audio_peak() {
         ..Default::default()
     };
 
-    let debug_snapshot = current_activity_snapshot_for_debug(&runtime);
+    let debug_snapshot = current_activity_snapshot_for_debug(&mut runtime);
 
-    assert_eq!(debug_snapshot.system_audio_activity.latest_normalized_level, Some(0.20));
+    assert_eq!(
+        debug_snapshot.system_audio_activity.latest_normalized_level,
+        Some(0.20)
+    );
     assert_eq!(
         capture_screen::take_system_audio_activity_window_peak_level(),
         Some(0.20)
@@ -1459,6 +1599,7 @@ fn should_reconnect_waiting_microphone_session_when_device_returns() {
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
+        microphone_vad: Default::default(),
         source_sessions: None,
     };
     let state = MicrophoneControllerState {
@@ -1526,6 +1667,7 @@ fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
+        microphone_vad: Default::default(),
         source_sessions: None,
     };
     let state = MicrophoneControllerState {
@@ -1629,6 +1771,7 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
+        microphone_vad: Default::default(),
         source_sessions: None,
     };
 
@@ -1879,9 +2022,27 @@ fn segment_planner_date_refresh_updates_all_runtime_planners() {
 
     let refreshed = super::runtime::refresh_runtime_planner_dates(&mut runtime);
 
-    assert_eq!(runtime.segment_planner.as_ref().map(|planner| planner.date_prefix()), Some(refreshed.as_str()));
-    assert_eq!(runtime.microphone_planner.as_ref().map(|planner| planner.date_prefix()), Some(refreshed.as_str()));
-    assert_eq!(runtime.system_audio_planner.as_ref().map(|planner| planner.date_prefix()), Some(refreshed.as_str()));
+    assert_eq!(
+        runtime
+            .segment_planner
+            .as_ref()
+            .map(|planner| planner.date_prefix()),
+        Some(refreshed.as_str())
+    );
+    assert_eq!(
+        runtime
+            .microphone_planner
+            .as_ref()
+            .map(|planner| planner.date_prefix()),
+        Some(refreshed.as_str())
+    );
+    assert_eq!(
+        runtime
+            .system_audio_planner
+            .as_ref()
+            .map(|planner| planner.date_prefix()),
+        Some(refreshed.as_str())
+    );
     assert_eq!(refreshed.split('/').count(), 3);
 }
 
@@ -2202,7 +2363,8 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_at_unix_ms: 1,
             width: None,
             height: None,
-            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
+            captured_frame_equivalence:
+                capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
     let second = try_forward_frame_artifact(
@@ -2212,7 +2374,8 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_at_unix_ms: 2,
             width: None,
             height: None,
-            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
+            captured_frame_equivalence:
+                capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
 
@@ -2242,7 +2405,8 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
             captured_at_unix_ms: 1,
             width: None,
             height: None,
-            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
+            captured_frame_equivalence:
+                capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
 
@@ -2256,7 +2420,8 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
                 captured_at_unix_ms: 2,
                 width: None,
                 height: None,
-                captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
+                captured_frame_equivalence:
+                    capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
         )
     });
@@ -2301,7 +2466,8 @@ fn try_forward_frame_artifact_reports_closed_receiver() {
             captured_at_unix_ms: 1,
             width: None,
             height: None,
-            captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
+            captured_frame_equivalence:
+                capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
     );
 
@@ -2320,7 +2486,8 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
                 captured_at_unix_ms: i,
                 width: None,
                 height: None,
-                captured_frame_equivalence: capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
+                captured_frame_equivalence:
+                    capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
         ))
         .expect("channel should have capacity");
@@ -2386,9 +2553,14 @@ fn flush_frame_artifacts_is_noop_when_channel_closed() {
 fn inactivity_resume_soft_pause_is_noop_without_family_pause_state() {
     let mut runtime = paused_runtime_fixture();
 
-    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
-        panic!("legacy soft-resume should not restart segments when no per-family pause is active")
-    })
+    resume_runtime_from_inactivity_with_start_segment(
+        &mut runtime,
+        |_, _, _, _, _, _, _, _, _, _| {
+            panic!(
+                "legacy soft-resume should not restart segments when no per-family pause is active"
+            )
+        },
+    )
     .expect("soft-resume should tolerate legacy paused state without restart");
 
     assert!(runtime.is_running);
@@ -2403,9 +2575,10 @@ fn inactivity_resume_soft_pause_is_noop_without_family_pause_state() {
 #[test]
 fn inactivity_resume_soft_pause_clears_paused_state_without_restarting_outputs() {
     let mut runtime = paused_runtime_fixture();
-    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
-        panic!("soft-resume should not restart outputs")
-    })
+    resume_runtime_from_inactivity_with_start_segment(
+        &mut runtime,
+        |_, _, _, _, _, _, _, _, _, _| panic!("soft-resume should not restart outputs"),
+    )
     .expect("legacy soft-resume should succeed");
 
     assert!(runtime.is_running);
@@ -2517,7 +2690,10 @@ fn system_sleep_clears_live_screen_state_but_preserves_microphone_continuation()
     assert!(runtime.active_screen_session.is_none());
     assert!(runtime.recording_file.is_none());
     assert!(runtime.system_audio_recording_file.is_none());
-    assert_eq!(runtime.microphone_recording_file.as_deref(), Some("/tmp/mic.m4a"));
+    assert_eq!(
+        runtime.microphone_recording_file.as_deref(),
+        Some("/tmp/mic.m4a")
+    );
     let outputs = runtime
         .current_segment_output_files
         .as_ref()
@@ -2829,9 +3005,8 @@ fn wake_recovery_finalizes_stale_screen_output_after_sleep_even_when_recording_f
     *lifecycle.runtime_mut() = runtime;
     assert!(lifecycle.handle_system_will_sleep());
 
-    let expected_screen_file = format!(
-        "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
-    );
+    let expected_screen_file =
+        format!("/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov");
 
     let recovered = recover_screen_capture_after_wake_with_start_segment(
         lifecycle.runtime_mut(),
@@ -2851,7 +3026,9 @@ fn wake_recovery_finalizes_stale_screen_output_after_sleep_even_when_recording_f
                 "/tmp/native-capture-tests/2026/04/23/.native-session-wake-screen-segment-0002"
             );
             assert_eq!(
-                screen_output_file.expect("screen output should be planned").to_string_lossy(),
+                screen_output_file
+                    .expect("screen output should be planned")
+                    .to_string_lossy(),
                 expected_screen_file
             );
             assert!(system_audio_output_path.is_none());
@@ -2897,9 +3074,12 @@ fn inactivity_resume_no_longer_requires_planner_for_legacy_soft_resume() {
     let mut runtime = paused_runtime_fixture();
     runtime.segment_planner = None;
 
-    resume_runtime_from_inactivity_with_start_segment(&mut runtime, |_, _, _, _, _, _, _, _, _, _| {
-        panic!("legacy soft-resume should not need planner restart machinery")
-    })
+    resume_runtime_from_inactivity_with_start_segment(
+        &mut runtime,
+        |_, _, _, _, _, _, _, _, _, _| {
+            panic!("legacy soft-resume should not need planner restart machinery")
+        },
+    )
     .expect("legacy soft-resume should succeed without planner");
 
     assert!(runtime.is_running);
@@ -4532,6 +4712,7 @@ fn idle_debug_info_serialization_includes_separate_family_fields() {
             enabled: true,
             idle_ms: None,
             activity_threshold: Some(0.08),
+            detector: Some("webrtc".to_string()),
         },
         system_audio_activity_sample: AudioActivitySample {
             last_unix_ms: None,
@@ -4541,6 +4722,12 @@ fn idle_debug_info_serialization_includes_separate_family_fields() {
             enabled: false,
             idle_ms: None,
             activity_threshold: Some(0.08),
+            detector: Some("peak_level".to_string()),
+        },
+        microphone_vad: capture_types::MicrophoneVadStatus {
+            configured_adapter: "silero".to_string(),
+            effective_adapter: "webrtc".to_string(),
+            fallback_reason: Some("Silero VAD runtime unavailable in test".to_string()),
         },
         effective_idle_ms: 250,
         effective_idle_source: "microphone_capture".to_string(),
@@ -4606,6 +4793,14 @@ fn idle_debug_info_serialization_includes_separate_family_fields() {
         "system_audio_capture"
     );
     assert_eq!(json["systemAudioPaused"], true);
+
+    // VAD adapter state fields
+    assert_eq!(json["microphoneVad"]["configuredAdapter"], "silero");
+    assert_eq!(json["microphoneVad"]["effectiveAdapter"], "webrtc");
+    assert_eq!(
+        json["microphoneVad"]["fallbackReason"],
+        "Silero VAD runtime unavailable in test"
+    );
 
     // Runtime source status fields
     assert_eq!(json["runtimeSources"]["screen"]["requested"], true);
@@ -5344,9 +5539,7 @@ fn inactivity_resume_soft_resume_preserves_segment_index_when_schedule_has_advan
 
     resume_runtime_from_inactivity_with_start_segment(
         &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("legacy soft-resume should not create a new segment")
-        },
+        |_, _, _, _, _, _, _, _, _, _| panic!("legacy soft-resume should not create a new segment"),
     )
     .expect("soft-resume should preserve current segment numbering");
 

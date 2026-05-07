@@ -78,7 +78,8 @@ mod tests {
     }
 
     #[test]
-    fn recording_settings_deserialize_defaults_audio_sensitivity_and_supports_alias_mode_field() {
+    fn recording_settings_deserialize_defaults_audio_sensitivity_vad_and_supports_alias_mode_field()
+    {
         let settings: RecordingSettings = serde_json::from_str(
             r#"{
                 "captureScreen": true,
@@ -106,6 +107,10 @@ mod tests {
             default_system_audio_activity_sensitivity()
         );
         assert_eq!(
+            settings.microphone_vad_adapter,
+            default_microphone_vad_adapter()
+        );
+        assert_eq!(
             settings.native_capture_debug_logging_enabled,
             default_native_capture_debug_logging_enabled()
         );
@@ -117,13 +122,75 @@ mod tests {
             settings.preview_cache_ttl_seconds,
             default_preview_cache_ttl_seconds()
         );
-        assert_eq!(settings.follow_timeline_live, default_follow_timeline_live());
+        assert_eq!(
+            settings.follow_timeline_live,
+            default_follow_timeline_live()
+        );
         assert_eq!(settings.appearance, default_appearance());
         assert_eq!(settings.ocr, default_ocr_settings());
         assert_eq!(
             settings.inactivity_activity_mode,
             InactivityActivityMode::SystemInputOrScreenOrAudio
         );
+    }
+
+    #[test]
+    fn recording_settings_serializes_microphone_vad_adapter_as_camel_case_field() {
+        let settings = RecordingSettings {
+            capture_screen: true,
+            capture_microphone: true,
+            capture_system_audio: false,
+            segment_duration_seconds: 60,
+            screen_frame_rate: 30,
+            screen_resolution: ScreenResolution::Preset {
+                preset: ScreenResolutionPreset::Original,
+            },
+            video_bitrate: default_video_bitrate(),
+            save_directory: "/tmp".to_string(),
+            auto_start: false,
+            native_capture_debug_logging_enabled: false,
+            developer_options_enabled: false,
+            preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+            follow_timeline_live: false,
+            appearance: default_appearance(),
+            ocr: default_ocr_settings(),
+            pause_capture_on_inactivity: true,
+            idle_timeout_seconds: 10,
+            microphone_activity_sensitivity: 50,
+            system_audio_activity_sensitivity: 50,
+            microphone_vad_adapter: MicrophoneVadAdapter::Webrtc,
+            inactivity_activity_mode: InactivityActivityMode::SystemInputOrScreen,
+        };
+
+        let json = serde_json::to_value(&settings).expect("settings should serialize");
+
+        assert_eq!(json["microphoneVadAdapter"], "webrtc");
+    }
+
+    #[test]
+    fn update_recording_settings_request_deserializes_explicit_microphone_vad_adapter() {
+        let request: UpdateRecordingSettingsRequest = serde_json::from_str(
+            r#"{
+                "captureScreen": true,
+                "captureMicrophone": true,
+                "captureSystemAudio": false,
+                "segmentDurationSeconds": 60,
+                "screenFrameRate": 30,
+                "screenResolution": { "mode": "preset", "preset": "original" },
+                "videoBitrate": { "mode": "preset", "preset": "medium" },
+                "saveDirectory": "/tmp",
+                "autoStart": false,
+                "pauseCaptureOnInactivity": true,
+                "idleTimeoutSeconds": 10,
+                "microphoneActivitySensitivity": 50,
+                "systemAudioActivitySensitivity": 50,
+                "microphoneVadAdapter": "off",
+                "activityMode": "system_input_or_screen"
+            }"#,
+        )
+        .expect("request should deserialize");
+
+        assert_eq!(request.microphone_vad_adapter, MicrophoneVadAdapter::Off);
     }
 
     #[test]
@@ -163,5 +230,9 @@ mod tests {
         assert_eq!(request.follow_timeline_live, default_follow_timeline_live());
         assert_eq!(request.appearance, default_appearance());
         assert_eq!(request.ocr, default_ocr_settings());
+        assert_eq!(
+            request.microphone_vad_adapter,
+            default_microphone_vad_adapter()
+        );
     }
 }

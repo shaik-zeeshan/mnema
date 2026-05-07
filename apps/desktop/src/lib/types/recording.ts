@@ -4,6 +4,7 @@ export type ActivityMode =
 	| "system_input_or_screen_or_audio";
 
 export type AppearanceSetting = "system" | "light" | "dark";
+export type MicrophoneVadAdapter = "silero" | "webrtc" | "off";
 
 export interface RecordingSettings {
 	captureScreen: boolean;
@@ -21,6 +22,7 @@ export interface RecordingSettings {
 	activityMode: ActivityMode;
 	microphoneActivitySensitivity: number;
 	systemAudioActivitySensitivity: number;
+	microphoneVadAdapter: MicrophoneVadAdapter;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
 	appearance: AppearanceSetting;
