@@ -1108,6 +1108,50 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn sleep_cleared_screen_state_is_eligible_for_possible_wake_recovery_resync() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
+
+    assert!(!lifecycle.should_attempt_recovery_after_possible_wake());
+
+    assert!(lifecycle.handle_system_will_sleep());
+
+    assert!(lifecycle.should_attempt_recovery_after_possible_wake());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn paused_screen_state_is_not_eligible_for_possible_wake_recovery_resync() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = screen_paused_runtime_fixture();
+
+    assert!(!lifecycle.should_attempt_recovery_after_possible_wake());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_retry_policy_treats_screen_capture_kit_display_loss_as_transient() {
+    let error = CaptureErrorResponse {
+        code: "capture_stream_start_failed".to_string(),
+        message: "Failed to start ScreenCaptureKit capture: Failed to find any displays or windows to capture (code: -3815)".to_string(),
+    };
+
+    assert!(super::is_recover_after_wake_retryable_error(&error));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_retry_policy_does_not_retry_invalid_runtime_state() {
+    let error = CaptureErrorResponse {
+        code: "invalid_runtime_state".to_string(),
+        message: "Capture screen planner missing while recovering after system wake".to_string(),
+    };
+
+    assert!(!super::is_recover_after_wake_retryable_error(&error));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn session_from_runtime_reports_not_running_when_screen_capture_is_broken_after_wake_failure() {
     let mut runtime = running_screen_capture_runtime_fixture();
 

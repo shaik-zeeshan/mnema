@@ -31,7 +31,11 @@ use settings::{
     current_native_capture_debug_logging_enabled, current_recording_settings,
     initialize_recording_settings_state_from_disk,
 };
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 use tauri::{Emitter, Manager};
 
 pub use capture_types::IdleDebugInfo;
@@ -60,6 +64,8 @@ pub type SystemWakeNotifierState = std::sync::Mutex<Vec<cidre::ns::NotificationG
 pub type SystemWakeNotifierState = std::sync::Mutex<Vec<()>>;
 
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
+#[cfg(target_os = "macos")]
+const SYSTEM_WAKE_RECOVERY_RETRY_DELAYS_MS: &[u64] = &[500, 1_500, 3_000];
 pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
 pub const RECORDING_SETTINGS_CHANGED_EVENT: &str = "recording_settings_changed";
 pub const APP_NOTIFICATIONS_CHANGED_EVENT: &str = "app_notifications_changed";
@@ -153,16 +159,22 @@ fn handle_system_will_sleep(app_handle: &tauri::AppHandle) {
 }
 
 #[cfg(target_os = "macos")]
-fn recover_screen_capture_after_system_wake(app_handle: &tauri::AppHandle) {
+fn recover_screen_capture_after_system_wake_once(
+    app_handle: &tauri::AppHandle,
+) -> Result<bool, CaptureErrorResponse> {
     let state = app_handle.state::<NativeCaptureState>();
-    let mut runtime = match state.lock() {
-        Ok(runtime) => runtime,
-        Err(_) => return,
-    };
+    let mut runtime = state
+        .lock()
+        .map_err(|_| CaptureErrorResponse {
+            code: "native_capture_state_poisoned".to_string(),
+            message: "Native capture state is unavailable while recovering after system wake"
+                .to_string(),
+        })?;
 
-    match runtime.recover_after_wake(Some(app_handle)) {
+    let outcome = runtime.recover_after_wake(Some(app_handle));
+    let runtime_state = runtime.runtime();
+    match &outcome {
         Ok(true) => {
-            let runtime_state = runtime.runtime();
             debug_log::log_info(format!(
                 "recovered screen capture after system wake (session_id='{}', requested_sources={})",
                 runtime_log_session_id(runtime_state),
@@ -171,7 +183,6 @@ fn recover_screen_capture_after_system_wake(app_handle: &tauri::AppHandle) {
         }
         Ok(false) => {}
         Err(error) => {
-            let runtime_state = runtime.runtime();
             debug_log::log_error(format!(
                 "failed to recover screen capture after system wake (session_id='{}', requested_sources={}): [{}] {}",
                 runtime_log_session_id(runtime_state),
@@ -181,6 +192,120 @@ fn recover_screen_capture_after_system_wake(app_handle: &tauri::AppHandle) {
             ));
         }
     }
+
+    outcome
+}
+
+#[cfg(target_os = "macos")]
+fn is_recover_after_wake_retryable_error(error: &CaptureErrorResponse) -> bool {
+    matches!(
+        error.code.as_str(),
+        "capture_stream_start_failed"
+            | "capture_stream_start_timeout"
+            | "capture_shareable_content_failed"
+            | "capture_shareable_content_timeout"
+            | "capture_shareable_content_unavailable"
+            | "capture_display_unavailable"
+    ) || error.message.contains("Failed to find any displays or windows")
+        || error.message.contains("code: -3815")
+}
+
+#[cfg(target_os = "macos")]
+fn log_scheduled_system_wake_recovery_retry(error: &CaptureErrorResponse, delay_ms: u64) {
+    debug_log::log_warn(format!(
+        "screen capture wake recovery hit a transient ScreenCaptureKit error; retrying in {}ms: [{}] {}",
+        delay_ms, error.code, error.message
+    ));
+}
+
+#[cfg(target_os = "macos")]
+fn system_wake_recovery_in_progress() -> &'static AtomicBool {
+    static IN_PROGRESS: OnceLock<AtomicBool> = OnceLock::new();
+    IN_PROGRESS.get_or_init(|| AtomicBool::new(false))
+}
+
+#[cfg(target_os = "macos")]
+fn begin_system_wake_recovery() -> bool {
+    system_wake_recovery_in_progress()
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+#[cfg(target_os = "macos")]
+fn finish_system_wake_recovery() {
+    system_wake_recovery_in_progress().store(false, Ordering::Release);
+}
+
+#[cfg(target_os = "macos")]
+fn retry_screen_capture_recovery_after_system_wake(
+    app_handle: tauri::AppHandle,
+    mut last_error: CaptureErrorResponse,
+) {
+    std::thread::spawn(move || {
+        for delay_ms in SYSTEM_WAKE_RECOVERY_RETRY_DELAYS_MS {
+            log_scheduled_system_wake_recovery_retry(&last_error, *delay_ms);
+            std::thread::sleep(Duration::from_millis(*delay_ms));
+
+            match recover_screen_capture_after_system_wake_once(&app_handle) {
+                Ok(_) => {
+                    finish_system_wake_recovery();
+                    emit_system_did_wake(&app_handle);
+                    return;
+                }
+                Err(error) if is_recover_after_wake_retryable_error(&error) => {
+                    last_error = error;
+                }
+                Err(_) => {
+                    finish_system_wake_recovery();
+                    emit_system_did_wake(&app_handle);
+                    return;
+                }
+            }
+        }
+
+        finish_system_wake_recovery();
+        emit_system_did_wake(&app_handle);
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn recover_screen_capture_after_system_wake(app_handle: tauri::AppHandle) {
+    if !begin_system_wake_recovery() {
+        return;
+    }
+
+    match recover_screen_capture_after_system_wake_once(&app_handle) {
+        Ok(_) => {
+            finish_system_wake_recovery();
+            emit_system_did_wake(&app_handle);
+        }
+        Err(error) if is_recover_after_wake_retryable_error(&error) => {
+            retry_screen_capture_recovery_after_system_wake(app_handle, error);
+        }
+        Err(_) => {
+            finish_system_wake_recovery();
+            emit_system_did_wake(&app_handle);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn recover_screen_capture_after_possible_missed_wake(app_handle: tauri::AppHandle) {
+    let state = app_handle.state::<NativeCaptureState>();
+    let should_recover = state
+        .lock()
+        .map(|runtime| runtime.should_attempt_recovery_after_possible_wake())
+        .unwrap_or(false);
+
+    if !should_recover {
+        return;
+    }
+
+    debug_log::log_info(
+        "attempting screen capture recovery during session resync after possible missed system wake notification"
+            .to_string(),
+    );
+    recover_screen_capture_after_system_wake(app_handle);
 }
 
 #[cfg(target_os = "macos")]
@@ -199,8 +324,7 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
         center.add_observer_guard(ns::workspace::notification::did_wake(), None, None, {
             let app_handle = app_handle.clone();
             move |_notification| {
-                emit_system_did_wake(&app_handle);
-                recover_screen_capture_after_system_wake(&app_handle);
+                recover_screen_capture_after_system_wake(app_handle.clone());
             }
         });
 
@@ -771,8 +895,12 @@ pub fn get_capture_support() -> CaptureSupportResponse {
 
 #[tauri::command]
 pub fn get_capture_permissions(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, NativeCaptureState>,
 ) -> CapturePermissionsResponse {
+    #[cfg(target_os = "macos")]
+    recover_screen_capture_after_possible_missed_wake(app_handle);
+
     let runtime = state.lock().expect("native capture state poisoned");
     let permissions = CapturePermissions {
         screen: capture_screen::screen_permission_state(),

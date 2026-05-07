@@ -150,6 +150,28 @@ impl RecordingLifecycle {
     }
 
     #[cfg(target_os = "macos")]
+    pub(crate) fn should_attempt_recovery_after_possible_wake(&self) -> bool {
+        if !self.runtime.is_running {
+            return false;
+        }
+
+        if !self
+            .runtime
+            .requested_sources
+            .as_ref()
+            .is_some_and(|sources| sources.screen)
+        {
+            return false;
+        }
+
+        !self.runtime.inactivity.is_screen_paused()
+            && self.runtime.recording_file.is_none()
+            && !capture_screen::screen_capture_session_is_live(
+                self.runtime.active_screen_session.as_ref(),
+            )
+    }
+
+    #[cfg(target_os = "macos")]
     pub(crate) fn handle_system_will_sleep(&mut self) -> bool {
         self.clear_screen_state_for_sleep_or_stop()
     }
