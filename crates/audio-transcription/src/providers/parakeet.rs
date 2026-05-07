@@ -425,7 +425,7 @@ struct ParakeetOnnxRuntime {
 #[cfg(feature = "parakeet-onnx")]
 fn run_parakeet_onnx_blocking(
     request: TranscriptionRequest,
-    _selection: ParakeetModelSelection,
+    selection: ParakeetModelSelection,
     layout: ParakeetOnnxBundleLayout,
 ) -> TranscriptionResult<TranscriptionOutput> {
     let runtime_options = ParakeetOnnxRuntimeOptions::from_request_options(&request.options)?;
@@ -469,7 +469,12 @@ fn run_parakeet_onnx_blocking(
     }
 
     Ok(TranscriptionOutput::new(decoded.text, metadata)
-        .with_provider_version(format!("onnxruntime/{PARAKEET_TDT_0_6B_V3_ONNX_MODEL_ID}")))
+        .with_provider_version(parakeet_provider_version(&selection.model_id)))
+}
+
+#[cfg(any(feature = "parakeet-onnx", test))]
+fn parakeet_provider_version(model_id: &str) -> String {
+    format!("onnxruntime/{model_id}")
 }
 
 #[cfg(feature = "parakeet-onnx")]
@@ -817,6 +822,7 @@ impl ParakeetOnnxRuntime {
 struct CachedParakeetRuntime {
     runtime: Arc<ParakeetOnnxRuntime>,
     last_used: Instant,
+    unload_worker_running: bool,
 }
 
 #[cfg(feature = "parakeet-onnx")]
@@ -849,11 +855,12 @@ fn cached_onnx_runtime(
         CachedParakeetRuntime {
             runtime: Arc::clone(&runtime),
             last_used: now,
+            unload_worker_running: false,
         },
     );
     drop(cache_guard);
     if let Some(idle_unload) = memory_mode.idle_unload() {
-        schedule_cached_runtime_unload(runtime.bundle_dir.clone(), idle_unload, now);
+        schedule_cached_runtime_unload(runtime.bundle_dir.clone(), idle_unload);
     }
     Ok(runtime)
 }
@@ -865,16 +872,22 @@ fn release_cached_runtime_after_use(bundle_dir: &Path, memory_mode: ParakeetOnnx
             cache.remove(bundle_dir);
         }
     } else if let Some(idle_unload) = memory_mode.idle_unload() {
-        schedule_cached_runtime_unload(bundle_dir.to_path_buf(), idle_unload, Instant::now());
+        touch_cached_runtime(bundle_dir, Instant::now());
+        schedule_cached_runtime_unload(bundle_dir.to_path_buf(), idle_unload);
     }
 }
 
 #[cfg(feature = "parakeet-onnx")]
-fn schedule_cached_runtime_unload(
-    bundle_dir: PathBuf,
-    idle_unload: Duration,
-    scheduled_at: Instant,
-) {
+fn touch_cached_runtime(bundle_dir: &Path, used_at: Instant) {
+    if let Ok(mut cache) = parakeet_runtime_cache().lock() {
+        if let Some(entry) = cache.get_mut(bundle_dir) {
+            entry.last_used = used_at;
+        }
+    }
+}
+
+#[cfg(feature = "parakeet-onnx")]
+fn schedule_cached_runtime_unload(bundle_dir: PathBuf, idle_unload: Duration) {
     if idle_unload.is_zero() {
         if let Ok(mut cache) = parakeet_runtime_cache().lock() {
             cache.remove(&bundle_dir);
@@ -882,25 +895,75 @@ fn schedule_cached_runtime_unload(
         return;
     }
 
+    let should_spawn = {
+        let Ok(mut cache) = parakeet_runtime_cache().lock() else {
+            return;
+        };
+        let Some(entry) = cache.get_mut(&bundle_dir) else {
+            return;
+        };
+        if entry.unload_worker_running {
+            false
+        } else {
+            entry.unload_worker_running = true;
+            true
+        }
+    };
+    if !should_spawn {
+        return;
+    }
+
     let cache = Arc::clone(parakeet_runtime_cache());
-    std::thread::Builder::new()
+    if std::thread::Builder::new()
         .name("parakeet-onnx-idle-unload".to_string())
-        .spawn(move || {
-            std::thread::sleep(idle_unload);
-            let Ok(mut cache) = cache.lock() else {
-                return;
-            };
-            let should_remove = cache
-                .get(&bundle_dir)
-                .map(|entry| {
-                    entry.last_used <= scheduled_at && Arc::strong_count(&entry.runtime) == 1
-                })
-                .unwrap_or(false);
-            if should_remove {
-                cache.remove(&bundle_dir);
+        .spawn({
+            let bundle_dir = bundle_dir.clone();
+            move || {
+                loop {
+                    enum NextStep {
+                        Sleep(Duration),
+                        Exit,
+                    }
+
+                    let next = {
+                        let Ok(mut cache) = cache.lock() else {
+                            return;
+                        };
+                        let Some(entry) = cache.get_mut(&bundle_dir) else {
+                            return;
+                        };
+                        let idle_elapsed = entry.last_used.elapsed();
+                        if idle_elapsed < idle_unload {
+                            NextStep::Sleep(idle_unload - idle_elapsed)
+                        } else if Arc::strong_count(&entry.runtime) == 1 {
+                            cache.remove(&bundle_dir);
+                            NextStep::Exit
+                        } else {
+                            NextStep::Sleep(idle_unload)
+                        }
+                    };
+
+                    match next {
+                        NextStep::Sleep(duration) => std::thread::sleep(duration),
+                        NextStep::Exit => break,
+                    }
+                }
+
+                if let Ok(mut cache) = cache.lock() {
+                    if let Some(entry) = cache.get_mut(&bundle_dir) {
+                        entry.unload_worker_running = false;
+                    }
+                }
             }
         })
-        .ok();
+        .is_err()
+    {
+        if let Ok(mut cache) = parakeet_runtime_cache().lock() {
+            if let Some(entry) = cache.get_mut(&bundle_dir) {
+                entry.unload_worker_running = false;
+            }
+        }
+    }
 }
 
 #[cfg(feature = "parakeet-onnx")]
@@ -1394,6 +1457,18 @@ mod tests {
         );
         let error = validate_request(&request).expect_err("unsupported model");
         assert!(matches!(error, TranscriptionError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn provider_version_uses_selected_model_id() {
+        assert_eq!(
+            parakeet_provider_version(PARAKEET_TDT_0_6B_V3_ONNX_MODEL_ID),
+            "onnxruntime/parakeet-tdt-0.6b-v3-onnx"
+        );
+        assert_eq!(
+            parakeet_provider_version(PARAKEET_TDT_0_6B_V3_ONNX_INT8_MODEL_ID),
+            "onnxruntime/parakeet-tdt-0.6b-v3-onnx-int8"
+        );
     }
 
     #[test]
