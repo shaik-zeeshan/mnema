@@ -5,12 +5,14 @@ use capture_types::{
 
 #[cfg(target_os = "macos")]
 use capture_writers::{
-    append_audio_sample_to_writer_with_activity_override,
+    audio_sample_format_is_compatible_with_writer_format,
     create_audio_asset_writer_for_sample_format, derive_audio_activity_level_from_sample_buf,
-    derive_audio_sample_format_from_sample_buf, record_audio_writer_tail_activity,
+    derive_audio_sample_format_from_sample_buf,
     finalize_microphone_output_context as writers_finalize_microphone_output_context,
-    finish_audio_asset_writer_discarding_inactivity_tail, set_audio_writer_activity_threshold,
-    set_audio_writer_inactivity_tail_trim_seconds, AudioAssetWriterState, AudioSampleFormat,
+    finish_audio_asset_writer_discarding_inactivity_tail, record_audio_writer_tail_activity,
+    set_audio_writer_activity_threshold, set_audio_writer_inactivity_tail_trim_seconds,
+    try_append_audio_sample_to_writer_with_activity_override, AudioAssetWriterState,
+    AudioSampleAppendDisposition, AudioSampleFormat,
 };
 
 #[cfg(target_os = "macos")]
@@ -403,18 +405,18 @@ fn fallback_microphone_format(context: &MicrophoneOutputContext) -> Option<Audio
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
-        feed_microphone_vad_pcm_samples, last_microphone_activity_unix_ms,
-        microphone_activity_idle_ms, microphone_activity_level,
+        feed_microphone_vad_pcm_samples, flush_pending_microphone_sample_queue,
+        last_microphone_activity_unix_ms, microphone_activity_idle_ms, microphone_activity_level,
         microphone_output_callback_objc_exception_error, microphone_output_callback_panic_error,
         microphone_tail_activity_override, mono_pcm_samples_from_audio_buffers,
         observe_microphone_format, peek_microphone_activity_window_peak_level,
         record_microphone_vad_tail_speech, reset_last_microphone_activity_unix_ms,
         reset_microphone_vad_tail_activity, resolve_microphone_finalize_format,
         resolve_microphone_live_format, store_microphone_activity,
-        take_microphone_activity_window_peak_level, AudioSampleFormat, MicFormatStabilityState,
-        MicrophoneInactivityTailTrimActivityMode, MicrophoneOutputContext,
-        MicrophoneVadPcmFeedState, OnceLock, MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT,
-        MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ,
+        take_microphone_activity_window_peak_level, AudioSampleAppendDisposition,
+        AudioSampleFormat, MicFormatStabilityState, MicrophoneInactivityTailTrimActivityMode,
+        MicrophoneOutputContext, MicrophoneVadPcmFeedState, OnceLock,
+        MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT, MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ,
     };
 
     fn microphone_activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -508,16 +510,12 @@ mod tests {
     }
 
     #[test]
-    fn live_format_waits_until_stable_threshold_met() {
+    fn live_format_is_available_after_first_sample_to_preserve_startup_audio() {
         let mut state = MicFormatStabilityState::default();
         let fmt = format(32, 8);
 
-        for _ in 0..4 {
-            observe_microphone_format(&mut state, fmt);
-            assert_eq!(resolve_microphone_live_format(&state), None);
-        }
-
         observe_microphone_format(&mut state, fmt);
+
         assert_eq!(resolve_microphone_live_format(&state), Some(fmt));
     }
 
@@ -528,12 +526,16 @@ mod tests {
         let fmt32 = format(32, 8);
 
         observe_microphone_format(&mut state, fmt24);
+        assert_eq!(resolve_microphone_live_format(&state), Some(fmt24));
         observe_microphone_format(&mut state, fmt24);
+        assert_eq!(resolve_microphone_live_format(&state), Some(fmt24));
         observe_microphone_format(&mut state, fmt32);
+        assert_eq!(resolve_microphone_live_format(&state), Some(fmt32));
         observe_microphone_format(&mut state, fmt32);
-        assert_eq!(resolve_microphone_live_format(&state), None);
+        assert_eq!(resolve_microphone_live_format(&state), Some(fmt32));
 
         observe_microphone_format(&mut state, fmt32);
+        assert_eq!(state.stable_format, Some(fmt32));
         assert_eq!(resolve_microphone_live_format(&state), Some(fmt32));
     }
 
@@ -545,8 +547,43 @@ mod tests {
         observe_microphone_format(&mut state, fmt);
         observe_microphone_format(&mut state, fmt);
 
-        assert_eq!(resolve_microphone_live_format(&state), None);
+        assert_eq!(resolve_microphone_live_format(&state), Some(fmt));
         assert_eq!(resolve_microphone_finalize_format(&state), Some(fmt));
+    }
+
+    #[test]
+    fn pending_microphone_samples_preserve_startup_sample_when_writer_defers() {
+        let fmt = format(32, 8);
+        let mut pending = std::collections::VecDeque::from(["hello", "one"]);
+        let mut attempts = 0;
+
+        flush_pending_microphone_sample_queue(
+            &mut pending,
+            Some(fmt),
+            |_| fmt,
+            |sample| {
+                attempts += 1;
+                if *sample == "hello" {
+                    Ok::<_, ()>(AudioSampleAppendDisposition::Deferred)
+                } else {
+                    Ok(AudioSampleAppendDisposition::Appended)
+                }
+            },
+        )
+        .expect("flush should not fail");
+
+        assert_eq!(attempts, 1);
+        assert_eq!(pending, std::collections::VecDeque::from(["hello", "one"]));
+
+        flush_pending_microphone_sample_queue(
+            &mut pending,
+            Some(fmt),
+            |_| fmt,
+            |_| Ok::<_, ()>(AudioSampleAppendDisposition::Appended),
+        )
+        .expect("flush should retry deferred sample");
+
+        assert!(pending.is_empty());
     }
 
     #[test]
@@ -833,7 +870,7 @@ fn observe_microphone_format(
 
 #[cfg(target_os = "macos")]
 fn resolve_microphone_live_format(state: &MicFormatStabilityState) -> Option<AudioSampleFormat> {
-    state.stable_format
+    state.stable_format.or(state.candidate_format)
 }
 
 #[cfg(target_os = "macos")]
@@ -1177,19 +1214,46 @@ fn microphone_tail_activity_override(context: &mut MicrophoneOutputContext) -> O
 fn append_microphone_sample_to_writer(
     context: &mut MicrophoneOutputContext,
     sample_buf: &cidre::cm::SampleBuf,
-) -> Result<(), CaptureErrorResponse> {
+) -> Result<AudioSampleAppendDisposition, CaptureErrorResponse> {
     let activity_override = microphone_tail_activity_override(context);
     let Some(writer) = context.writer.as_mut() else {
-        return Ok(());
+        return Ok(AudioSampleAppendDisposition::Dropped);
     };
 
-    let activity_override = if activity_override == Some(true) && record_audio_writer_tail_activity(writer)? {
-        Some(false)
-    } else {
-        activity_override
-    };
+    let activity_override =
+        if activity_override == Some(true) && record_audio_writer_tail_activity(writer)? {
+            Some(false)
+        } else {
+            activity_override
+        };
 
-    append_audio_sample_to_writer_with_activity_override(writer, sample_buf, activity_override)
+    try_append_audio_sample_to_writer_with_activity_override(writer, sample_buf, activity_override)
+}
+
+#[cfg(target_os = "macos")]
+fn flush_pending_microphone_sample_queue<T, E>(
+    pending_samples: &mut VecDeque<T>,
+    selected_format: Option<AudioSampleFormat>,
+    mut sample_format: impl FnMut(&T) -> AudioSampleFormat,
+    mut append_sample: impl FnMut(&T) -> Result<AudioSampleAppendDisposition, E>,
+) -> Result<(), E> {
+    while let Some(sample) = pending_samples.pop_front() {
+        if selected_format.is_some_and(|format| {
+            !audio_sample_format_is_compatible_with_writer_format(format, sample_format(&sample))
+        }) {
+            continue;
+        }
+
+        match append_sample(&sample)? {
+            AudioSampleAppendDisposition::Appended | AudioSampleAppendDisposition::Dropped => {}
+            AudioSampleAppendDisposition::Deferred => {
+                pending_samples.push_front(sample);
+                break;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1201,15 +1265,16 @@ fn flush_pending_microphone_samples(
         return Ok(());
     }
 
-    while let Some(sample) = context.pending_samples.pop_front() {
-        if selected_format.is_some() && Some(sample.format) != selected_format {
-            continue;
-        }
+    let mut pending_samples = std::mem::take(&mut context.pending_samples);
+    let result = flush_pending_microphone_sample_queue(
+        &mut pending_samples,
+        selected_format,
+        |sample| sample.format,
+        |sample| append_microphone_sample_to_writer(context, sample.sample_buf.as_ref()),
+    );
+    context.pending_samples = pending_samples;
 
-        append_microphone_sample_to_writer(context, sample.sample_buf.as_ref())?;
-    }
-
-    Ok(())
+    result.map(|_| ())
 }
 
 #[cfg(target_os = "macos")]
@@ -1262,12 +1327,12 @@ mod microphone_delegate {
     #![allow(clippy::useless_transmute)]
 
     use super::{
-        append_microphone_sample_to_writer, create_audio_asset_writer_for_sample_format,
-        derive_audio_sample_format_from_sample_buf, flush_pending_microphone_samples,
-        maybe_feed_microphone_vad_pcm, maybe_track_microphone_activity,
-        microphone_output_callback_objc_exception_error, microphone_output_callback_panic_error,
-        ns, objc, record_observed_audio_format, resolve_microphone_live_format, BufferedMicSample,
-        MicrophoneOutputContext, MAX_PENDING_MIC_SAMPLES,
+        create_audio_asset_writer_for_sample_format, derive_audio_sample_format_from_sample_buf,
+        flush_pending_microphone_samples, maybe_feed_microphone_vad_pcm,
+        maybe_track_microphone_activity, microphone_output_callback_objc_exception_error,
+        microphone_output_callback_panic_error, ns, objc, record_observed_audio_format,
+        resolve_microphone_live_format, BufferedMicSample, MicrophoneOutputContext,
+        MAX_PENDING_MIC_SAMPLES,
     };
     use cidre::av::capture::AudioDataOutputSampleBufDelegate;
 
@@ -1304,7 +1369,21 @@ mod microphone_delegate {
                     }
 
                     if ctx.writer.is_some() {
-                        if let Err(error) = append_microphone_sample_to_writer(ctx, sample_buf) {
+                        let Some(sample_format) =
+                            derive_audio_sample_format_from_sample_buf(sample_buf)
+                        else {
+                            return;
+                        };
+
+                        ctx.pending_samples.push_back(BufferedMicSample {
+                            sample_buf: sample_buf.retained(),
+                            format: sample_format,
+                        });
+                        while ctx.pending_samples.len() > MAX_PENDING_MIC_SAMPLES {
+                            let _ = ctx.pending_samples.pop_front();
+                        }
+
+                        if let Err(error) = flush_pending_microphone_samples(ctx) {
                             ctx.first_error = Some(error);
                         }
                         return;
@@ -1579,7 +1658,8 @@ fn finalize_microphone_output_context(
         let pending_vad_tail_activity = matches!(
             context.tail_activity_mode,
             MicrophoneInactivityTailTrimActivityMode::VadSpeech
-        ) && microphone_tail_activity_override(context) == Some(true);
+        ) && microphone_tail_activity_override(context)
+            == Some(true);
 
         if let Some(writer) = context.writer.as_mut() {
             if pending_vad_tail_activity {
