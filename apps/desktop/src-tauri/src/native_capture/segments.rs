@@ -14,6 +14,7 @@ use capture_types::{
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, RecordingSettings, SourceSessionMeta,
     SourceSessions,
 };
+use capture_vad::MicrophoneVadRuntime;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -43,7 +44,7 @@ const SEGMENT_LOOP_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[cfg(target_os = "macos")]
 fn microphone_tail_trim_activity_mode_for_vad(
-    vad: &super::vad::MicrophoneVadRuntime,
+    vad: &MicrophoneVadRuntime,
 ) -> microphone_capture::MicrophoneInactivityTailTrimActivityMode {
     if vad.uses_vad_adapter() {
         microphone_capture::MicrophoneInactivityTailTrimActivityMode::VadSpeech
@@ -2340,8 +2341,7 @@ pub(super) fn start_capture_runtime(
                 .pause_capture_on_inactivity
                 .then(|| initial_inactivity.microphone_activity_threshold())
                 .unwrap_or(0.0);
-            let initial_microphone_vad =
-                super::vad::MicrophoneVadRuntime::new(settings.microphone_vad_adapter);
+            let initial_microphone_vad = MicrophoneVadRuntime::new(settings.microphone_vad_adapter);
             let microphone_tail_activity_mode =
                 microphone_tail_trim_activity_mode_for_vad(&initial_microphone_vad);
 

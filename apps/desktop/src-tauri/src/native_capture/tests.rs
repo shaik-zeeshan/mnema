@@ -43,7 +43,6 @@ use super::settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
     validate_recording_settings_with_resolution_support,
 };
-use super::vad::{MicrophonePcmVadFrame, MicrophoneVadRuntime};
 use super::{AppNotification, AppNotificationsRuntime};
 #[cfg(target_os = "macos")]
 use capture_runtime::{
@@ -60,6 +59,7 @@ use capture_types::{
     StartNativeCaptureRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
     VideoBitratePreset, VideoBitrateSettings,
 };
+use capture_vad::{MicrophonePcmVadFrame, MicrophoneVadRuntime};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -1441,7 +1441,9 @@ fn current_activity_snapshot_for_debug_does_not_consume_microphone_vad_speech_pu
 
     let next_policy_snapshot = current_activity_snapshot(&mut runtime);
     assert_eq!(
-        next_policy_snapshot.microphone_activity.latest_normalized_level,
+        next_policy_snapshot
+            .microphone_activity
+            .latest_normalized_level,
         None,
         "policy evaluation still consumes the one-shot pulse after observing it"
     );

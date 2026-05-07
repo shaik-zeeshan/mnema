@@ -11,12 +11,10 @@ mod runtime;
 mod segments;
 #[path = "native_capture_settings.rs"]
 pub(crate) mod settings;
-mod silero_vad;
 #[path = "native_capture_system_idle.rs"]
 pub(crate) mod system_idle;
 #[cfg(test)]
 mod tests;
-mod vad;
 
 use capture_microphone as microphone_capture;
 use capture_types::{
@@ -27,6 +25,7 @@ use capture_types::{
     UpdateMicrophoneControllerRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
     VideoBitratePreset, VideoBitrateSettings,
 };
+use capture_vad::configured_adapter_as_str;
 use settings::{
     apply_recording_settings_update, current_auto_start,
     current_native_capture_debug_logging_enabled, current_recording_settings,
@@ -718,12 +717,12 @@ fn start_native_capture_inner(
     if let Some(notice) = runtime.take_microphone_vad_fallback_notification() {
         let message = format!(
             "Configured microphone VAD '{}' could not run. Using '{}' for this recording session.",
-            vad::configured_adapter_as_str(notice.configured_adapter),
+            configured_adapter_as_str(notice.configured_adapter),
             notice.effective_adapter.as_str(),
         );
         debug_log::log_warn(format!(
             "microphone VAD fallback active: configured_adapter={}, effective_adapter={}, reason={}",
-            vad::configured_adapter_as_str(notice.configured_adapter),
+            configured_adapter_as_str(notice.configured_adapter),
             notice.effective_adapter.as_str(),
             notice.reason
         ));
@@ -733,7 +732,7 @@ fn start_native_capture_inner(
             AppNotification {
                 id: format!(
                     "microphone-vad-fallback-{}",
-                    vad::configured_adapter_as_str(notice.configured_adapter)
+                    configured_adapter_as_str(notice.configured_adapter)
                 ),
                 severity: "warning".to_string(),
                 title: "Microphone VAD fallback".to_string(),

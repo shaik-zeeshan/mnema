@@ -9,6 +9,7 @@ use capture_types::{
     AudioActivityDecision, AudioActivitySample, IdleDebugActivitySource, IdleDebugInfo,
     MicrophoneVadStatus, RuntimeSourceStatus, RuntimeSourcesStatus,
 };
+use capture_vad::{configured_adapter_as_str, MicrophonePcmVadFrame};
 use std::sync::MutexGuard;
 
 #[cfg(target_os = "macos")]
@@ -81,18 +82,25 @@ fn process_pending_microphone_vad_frames(runtime: &mut NativeCaptureRuntime) {
     }
 
     for frame in microphone_capture::take_microphone_vad_pcm_frames(96) {
-        let vad_frame = super::vad::MicrophonePcmVadFrame {
+        let vad_frame = MicrophonePcmVadFrame {
             samples: &frame.samples,
             sample_rate_hz: frame.sample_rate_hz,
             captured_at_unix_ms: frame.captured_at_unix_ms,
             normalized_peak_level: frame.normalized_peak_level,
         };
 
-        if let Err(error) = runtime.microphone_vad.process_pcm_frame(vad_frame) {
-            super::debug_log::log_warn(format!(
-                "failed to process microphone VAD PCM frame: {error}"
-            ));
-            break;
+        match runtime.microphone_vad.process_pcm_frame(vad_frame) {
+            Ok(outcome) => {
+                if outcome.vad_speech_detected {
+                    microphone_capture::record_microphone_vad_tail_speech();
+                }
+            }
+            Err(error) => {
+                super::debug_log::log_warn(format!(
+                    "failed to process microphone VAD PCM frame: {error}"
+                ));
+                break;
+            }
         }
     }
 }
@@ -282,7 +290,7 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
             detector: Some("peak_level".to_string()),
         },
         microphone_vad: MicrophoneVadStatus {
-            configured_adapter: super::vad::configured_adapter_as_str(
+            configured_adapter: configured_adapter_as_str(
                 runtime.microphone_vad.configured_adapter(),
             )
             .to_string(),

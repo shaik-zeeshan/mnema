@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use super::inactivity::InactivityState;
 use super::segments::FrameArtifactMessage;
-use super::vad::MicrophoneVadRuntime;
+use capture_vad::MicrophoneVadRuntime;
 
 #[derive(Debug, Default)]
 pub struct NativeCaptureRuntime {

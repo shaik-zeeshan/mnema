@@ -25,11 +25,11 @@ use super::segments::{
     resume_system_audio_from_inactivity, start_capture_runtime, start_segment,
     stop_active_sessions_after_failure, stop_capture_runtime,
 };
-use super::vad::MicrophoneVadFallbackNotice;
 use capture_runtime::RuntimeSignal;
 use capture_types::{
     CaptureErrorResponse, CaptureSources, NativeCaptureSession, RecordingSettings,
 };
+use capture_vad::MicrophoneVadFallbackNotice;
 
 #[derive(Debug, Default)]
 pub(crate) struct RecordingLifecycle {
