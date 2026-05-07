@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
-  import type { Snippet } from "svelte";
+  import { tick, type Snippet } from "svelte";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
   import { closeCurrentWindow, isDedicatedSurfaceWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
@@ -15,6 +15,7 @@
     toggleSourceSelected,
   } from "$lib/capture-controls.svelte";
   import { initTheme } from "$lib/theme.svelte";
+  import { getGlobalShortcutAction } from "$lib/global-shortcuts";
   interface Props {
     children: Snippet;
   }
@@ -28,7 +29,11 @@
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const showMainTitlebar = $derived(isMainRoute);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
+  const canShowShortcutsHelp = !showDedicatedTitlebar;
   let windowPlatform = $state<"macos" | "windows" | "other">("other");
+  let shortcutsHelpOpen = $state(false);
+  let shortcutsHelpCloseEl = $state<HTMLButtonElement | null>(null);
+  let shortcutsHelpReturnFocusEl: HTMLElement | null = null;
 
   $effect(() => {
     if (typeof navigator === "undefined") return;
@@ -161,8 +166,113 @@
       ? `${lane.label}: enabled — click to skip on next recording`
       : `${lane.label}: disabled — click to include in next recording`;
   }
+
+  const primaryShortcutLabel = $derived(windowPlatform === "macos" ? "⌘" : "Ctrl");
+
+  function sourceShortcutFor(key: SourceLane["key"]): string {
+    if (key === "screen") return "1";
+    if (key === "microphone") return "2";
+    return "3";
+  }
+
+  function isShortcutSuppressedTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.closest(
+        'input, textarea, select, button, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="spinbutton"], [role="slider"], [role="combobox"], [role="switch"], [role="menuitem"], [data-shortcuts-ignore]',
+      ),
+    );
+  }
+
+  async function toggleRecordingShortcut(): Promise<void> {
+    if (captureControls.loadingStart || captureControls.loadingStop) return;
+    if (isCapturing) {
+      await stopCapture();
+      return;
+    }
+    if (captureControls.loadingSettings) return;
+    await startCapture();
+  }
+
+  async function toggleSourceShortcut(key: SourceLane["key"]): Promise<void> {
+    if (isCapturing || captureControls.loadingSettings) return;
+    await toggleSourceSelected(key);
+  }
+
+  function closeShortcutsHelp(): void {
+    shortcutsHelpOpen = false;
+  }
+
+  function onShortcutsHelpPointerDown(event: PointerEvent): void {
+    if (event.target === event.currentTarget) closeShortcutsHelp();
+  }
+
+  function toggleShortcutsHelp(): void {
+    if (!canShowShortcutsHelp) return;
+    shortcutsHelpOpen = !shortcutsHelpOpen;
+  }
+
+  function handleGlobalShortcutKeydown(event: KeyboardEvent): void {
+    const action = getGlobalShortcutAction(event, {
+      devEnabled,
+      isShortcutSuppressedTarget: isShortcutSuppressedTarget(event.target),
+      shortcutsHelpOpen,
+    });
+    if (!action) return;
+
+    event.preventDefault();
+
+    if (action.type === "closeShortcutsHelp") {
+      event.stopPropagation();
+      closeShortcutsHelp();
+      return;
+    }
+
+    if (action.type === "toggleRecording") {
+      void toggleRecordingShortcut();
+      return;
+    }
+
+    if (action.type === "openSettings") {
+      void openSettingsWindow();
+      return;
+    }
+
+    if (action.type === "openDebug") {
+      void openDebugWindow();
+      return;
+    }
+
+    if (action.type === "toggleSource") {
+      void toggleSourceShortcut(action.source);
+      return;
+    }
+
+    toggleShortcutsHelp();
+  }
+
+  $effect(() => {
+    if (!shortcutsHelpOpen || !canShowShortcutsHelp) return;
+    shortcutsHelpReturnFocusEl = document.activeElement as HTMLElement | null;
+    let cancelled = false;
+    void tick().then(() => {
+      if (!cancelled) shortcutsHelpCloseEl?.focus({ preventScroll: true });
+    });
+    return () => {
+      cancelled = true;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        !active ||
+        active === document.body ||
+        active.closest(".shortcut-help")
+      ) {
+        shortcutsHelpReturnFocusEl?.focus({ preventScroll: true });
+      }
+    };
+  });
 </script>
 
+<svelte:window onkeydown={handleGlobalShortcutKeydown} />
 <svelte:body class:dedicated-surface-window={showDedicatedTitlebar} />
 
 <div
@@ -197,7 +307,7 @@
             class="titlebar__record titlebar__record--stop"
             onclick={stopCapture}
             disabled={captureLoadingStop}
-            title="Stop recording"
+            title={`Stop recording (${primaryShortcutLabel}R)`}
             aria-label="Stop recording"
           >
             <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
@@ -209,7 +319,7 @@
             class="titlebar__record titlebar__record--start"
             onclick={startCapture}
             disabled={captureLoadingStart || captureLoadingSettings}
-            title="Start recording"
+            title={`Start recording (${primaryShortcutLabel}R)`}
             aria-label="Start recording"
           >
             <span class="titlebar__record-glyph" aria-hidden="true">●</span>
@@ -301,7 +411,7 @@
             <button
               type="button"
               class="titlebar__source titlebar__source--toggle titlebar__source--{lane.key} titlebar__source--{state}"
-              title={selectTitleFor(lane, state)}
+              title={`${selectTitleFor(lane, state)} (${sourceShortcutFor(lane.key)})`}
               aria-label={selectTitleFor(lane, state)}
               aria-pressed={state === "selected"}
               disabled={sourceSelection.isSaving(lane.key) || captureControls.loadingSettings}
@@ -340,7 +450,7 @@
           type="button"
           class="titlebar__settings"
           aria-label="Open settings"
-          title="Settings"
+          title={`Settings (${primaryShortcutLabel},)`}
           onclick={() => void openSettingsWindow()}
         >
           <svg
@@ -364,7 +474,7 @@
             type="button"
             class="titlebar__settings"
             aria-label="Open debug"
-            title="Debug"
+            title={`Debug (${primaryShortcutLabel}D)`}
             onclick={() => void openDebugWindow()}
           >
             <svg
@@ -422,6 +532,72 @@
       {@render children()}
     {/if}
   </main>
+
+  {#if shortcutsHelpOpen && canShowShortcutsHelp}
+    <div class="shortcut-help" role="presentation" onpointerdown={onShortcutsHelpPointerDown}>
+      <div
+        class="shortcut-help__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="shortcut-help-title"
+      >
+        <header class="shortcut-help__header">
+          <div>
+            <p class="shortcut-help__eyebrow">focused window</p>
+            <h2 id="shortcut-help-title">Keyboard shortcuts</h2>
+          </div>
+          <button
+            bind:this={shortcutsHelpCloseEl}
+            type="button"
+            class="shortcut-help__close"
+            aria-label="Close keyboard shortcuts"
+            onclick={closeShortcutsHelp}
+          >×</button>
+        </header>
+
+        <dl class="shortcut-help__list">
+          <div class="shortcut-help__row">
+            <dt><kbd>{primaryShortcutLabel}</kbd><kbd>R</kbd></dt>
+            <dd>{isCapturing ? "Stop recording" : "Start recording"}</dd>
+          </div>
+          <div class="shortcut-help__row">
+            <dt><kbd>{primaryShortcutLabel}</kbd><kbd>,</kbd></dt>
+            <dd>Open settings</dd>
+          </div>
+          {#if devEnabled}
+            <div class="shortcut-help__row">
+              <dt><kbd>{primaryShortcutLabel}</kbd><kbd>D</kbd></dt>
+              <dd>Open debug</dd>
+            </div>
+          {/if}
+          <div class="shortcut-help__row">
+            <dt><kbd>1</kbd></dt>
+            <dd>Toggle screen for the next recording</dd>
+          </div>
+          <div class="shortcut-help__row">
+            <dt><kbd>2</kbd></dt>
+            <dd>Toggle microphone for the next recording</dd>
+          </div>
+          <div class="shortcut-help__row">
+            <dt><kbd>3</kbd></dt>
+            <dd>Toggle system audio for the next recording</dd>
+          </div>
+          <div class="shortcut-help__row">
+            <dt><kbd>?</kbd></dt>
+            <dd>Show or hide this panel</dd>
+          </div>
+          <div class="shortcut-help__row">
+            <dt><kbd>Esc</kbd></dt>
+            <dd>Close this panel</dd>
+          </div>
+        </dl>
+
+        <p class="shortcut-help__note">
+          Shortcuts pause while focus is inside inputs, sliders, selects, text areas, or buttons.
+        </p>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -1141,5 +1317,124 @@
     margin: 0;
     padding: 16px 20px 28px;
     gap: 14px;
+  }
+
+  /* ── Keyboard shortcuts help ──────────────────────────────── */
+  .shortcut-help {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.42);
+    backdrop-filter: blur(10px);
+  }
+
+  .shortcut-help__panel {
+    width: min(460px, 100%);
+    border: 1px solid var(--app-border-strong);
+    border-radius: 18px;
+    background: var(--app-surface);
+    color: var(--app-text);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+    padding: 18px;
+  }
+
+  .shortcut-help__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 16px;
+  }
+
+  .shortcut-help__eyebrow {
+    color: var(--app-text-muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    line-height: 1;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+  }
+
+  .shortcut-help h2 {
+    color: var(--app-text-strong);
+    font-size: 18px;
+    line-height: 1.15;
+  }
+
+  .shortcut-help__close {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 20px;
+    line-height: 1;
+  }
+
+  .shortcut-help__close:hover,
+  .shortcut-help__close:focus-visible {
+    border-color: var(--app-border-hover);
+    color: var(--app-text-strong);
+    outline: none;
+  }
+
+  .shortcut-help__list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .shortcut-help__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 9px 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 12px;
+    background: var(--app-surface-raised);
+  }
+
+  .shortcut-help__row dt {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 72px;
+  }
+
+  .shortcut-help__row dd {
+    color: var(--app-text);
+    font-size: 12px;
+    line-height: 1.3;
+    text-align: right;
+  }
+
+  .shortcut-help kbd {
+    min-width: 24px;
+    padding: 3px 7px 4px;
+    border: 1px solid var(--app-border-strong);
+    border-bottom-color: var(--app-text-subtle);
+    border-radius: 7px;
+    background: var(--app-bg);
+    color: var(--app-text-strong);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    text-align: center;
+    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .shortcut-help__note {
+    margin-top: 14px;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.45;
   }
 </style>
