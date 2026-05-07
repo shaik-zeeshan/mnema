@@ -268,15 +268,21 @@ fn audio_transcription_start_warning_requires_enabled_microphone_transcription()
 }
 
 #[test]
-fn audio_transcription_startup_warning_requires_enabled_transcription() {
+fn audio_transcription_startup_warning_requires_enabled_microphone_transcription() {
     let mut settings = recording_settings_fixture();
-    settings.capture_microphone = false;
+    settings.capture_microphone = true;
     settings.transcription.enabled = true;
 
     assert!(should_warn_audio_transcription_unavailable_at_startup(
         &settings
     ));
 
+    settings.capture_microphone = false;
+    assert!(!should_warn_audio_transcription_unavailable_at_startup(
+        &settings
+    ));
+
+    settings.capture_microphone = true;
     settings.transcription.enabled = false;
     assert!(!should_warn_audio_transcription_unavailable_at_startup(
         &settings

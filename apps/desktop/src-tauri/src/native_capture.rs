@@ -150,7 +150,7 @@ fn should_warn_audio_transcription_unavailable_at_start(settings: &RecordingSett
 }
 
 fn should_warn_audio_transcription_unavailable_at_startup(settings: &RecordingSettings) -> bool {
-    settings.transcription.enabled
+    should_warn_audio_transcription_unavailable_at_start(settings)
 }
 
 fn audio_transcription_provider_label(provider: AudioTranscriptionProvider) -> &'static str {
