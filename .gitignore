@@ -12,3 +12,6 @@ vite.config.ts.timestamp-*
 
 .feature-details
 target
+
+# AI coding agents
+.pi
