@@ -586,6 +586,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "capture-vad"
+version = "0.1.0"
+dependencies = [
+ "capture-types",
+ "silero",
+ "webrtc-vad",
+]
+
+[[package]]
 name = "capture-writers"
 version = "0.1.0"
 dependencies = [
@@ -2763,6 +2772,7 @@ dependencies = [
  "capture-runtime",
  "capture-screen",
  "capture-types",
+ "capture-vad",
  "capture-writers",
  "cidre",
  "cocoa",
@@ -2771,7 +2781,6 @@ dependencies = [
  "objc",
  "serde",
  "serde_json",
- "silero",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
@@ -2781,7 +2790,6 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
- "webrtc-vad",
 ]
 
 [[package]]

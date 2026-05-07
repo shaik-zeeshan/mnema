@@ -35,12 +35,11 @@ capture-types = { path = "../../../crates/capture-types" }
 capture-runtime = { path = "../../../crates/capture-runtime" }
 capture-screen = { path = "../../../crates/capture-screen" }
 capture-microphone = { path = "../../../crates/capture-microphone" }
+capture-vad = { path = "../../../crates/capture-vad" }
 capture-writers = { path = "../../../crates/capture-writers" }
 tokio = { version = "1", features = ["sync", "time"] }
 time = { version = "0.3", features = ["formatting", "parsing"] }
 tempfile = "3"
-silero = "0.3"
-webrtc-vad = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

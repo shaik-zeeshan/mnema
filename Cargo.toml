@@ -6,6 +6,7 @@ members = [
     "crates/capture-microphone",
     "crates/capture-screen",
     "crates/capture-types",
+    "crates/capture-vad",
     "crates/capture-writers",
 ]
 resolver = "2"
