@@ -28,6 +28,36 @@ impl ProcessingRuntime {
         self.process_claimed_job(job).await.map(Some)
     }
 
+    pub async fn process_next_queued_job_for_processor(
+        &self,
+        processor: &str,
+    ) -> Result<Option<ProcessingJobRunOutcome>> {
+        let Some(job) = self
+            .store
+            .claim_next_queued_job_for_processor(processor)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        self.process_claimed_job(job).await.map(Some)
+    }
+
+    pub async fn process_next_queued_job_excluding_processor(
+        &self,
+        excluded_processor: &str,
+    ) -> Result<Option<ProcessingJobRunOutcome>> {
+        let Some(job) = self
+            .store
+            .claim_next_queued_job_excluding_processor(excluded_processor)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        self.process_claimed_job(job).await.map(Some)
+    }
+
     pub async fn process_job(&self, job_id: i64) -> Result<ProcessingJobRunOutcome> {
         let job = self
             .store
@@ -330,6 +360,62 @@ mod tests {
                 .await
                 .expect("subject results should be readable");
             assert_eq!(subject_results, vec![completion.result]);
+        });
+    }
+
+    #[test]
+    fn runtime_can_skip_excluded_processors_without_starving_later_work() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-runtime-exclude");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(database.pool().clone());
+            let blocked = Arc::new(RecordingBackend::successful("blocked", "blocked result"));
+            let allowed = Arc::new(RecordingBackend::successful("allowed", "allowed result"));
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new()
+                    .register_arc(blocked.clone())
+                    .register_arc(allowed.clone()),
+            );
+
+            let blocked_job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    "blocked",
+                ))
+                .await
+                .expect("blocked job should enqueue");
+            let allowed_job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 2),
+                    "allowed",
+                ))
+                .await
+                .expect("allowed job should enqueue");
+
+            let outcome = runtime
+                .process_next_queued_job_excluding_processor("blocked")
+                .await
+                .expect("runtime should process non-excluded job")
+                .expect("non-excluded job should exist");
+
+            let ProcessingJobRunOutcome::Completed(completion) = outcome else {
+                panic!("expected completed outcome");
+            };
+            assert_eq!(completion.job.id, allowed_job.id);
+            assert!(blocked.processed_job_ids().is_empty());
+            assert_eq!(allowed.processed_job_ids(), vec![allowed_job.id]);
+            assert_eq!(
+                store
+                    .get_job(blocked_job.id)
+                    .await
+                    .expect("blocked job should be readable")
+                    .expect("blocked job should exist")
+                    .status,
+                ProcessingJobStatus::Queued
+            );
         });
     }
 

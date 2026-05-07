@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 pub const FRAME_SUBJECT_TYPE: &str = "frame";
+pub const AUDIO_SEGMENT_SUBJECT_TYPE: &str = "audio_segment";
 pub const OCR_PROCESSOR: &str = "ocr";
+pub const AUDIO_TRANSCRIPTION_PROCESSOR: &str = "audio_transcription";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +22,10 @@ impl ProcessingSubject {
 
     pub fn frame(frame_id: i64) -> Self {
         Self::new(FRAME_SUBJECT_TYPE, frame_id)
+    }
+
+    pub fn audio_segment(audio_segment_id: i64) -> Self {
+        Self::new(AUDIO_SEGMENT_SUBJECT_TYPE, audio_segment_id)
     }
 
     pub fn subject_type(&self) -> &str {
@@ -95,6 +101,13 @@ impl ProcessingJobDraft {
 
     pub fn for_frame_ocr(frame_id: i64) -> Self {
         Self::new(ProcessingSubject::frame(frame_id), OCR_PROCESSOR)
+    }
+
+    pub fn for_audio_segment_transcription(audio_segment_id: i64) -> Self {
+        Self::new(
+            ProcessingSubject::audio_segment(audio_segment_id),
+            AUDIO_TRANSCRIPTION_PROCESSOR,
+        )
     }
 
     pub fn with_payload_json(mut self, payload_json: impl Into<String>) -> Self {

@@ -154,6 +154,7 @@ mod tests {
             follow_timeline_live: false,
             appearance: default_appearance(),
             ocr: default_ocr_settings(),
+            transcription: default_audio_transcription_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -165,6 +166,74 @@ mod tests {
         let json = serde_json::to_value(&settings).expect("settings should serialize");
 
         assert_eq!(json["microphoneVadAdapter"], "webrtc");
+    }
+
+    #[test]
+    fn recording_settings_deserializes_default_transcription_settings_when_missing() {
+        let settings: RecordingSettings = serde_json::from_str(
+            r#"{
+                "captureScreen": true,
+                "captureMicrophone": true,
+                "captureSystemAudio": false,
+                "segmentDurationSeconds": 60,
+                "screenFrameRate": 30,
+                "screenResolution": { "mode": "preset", "preset": "original" },
+                "videoBitrate": { "mode": "preset", "preset": "medium" },
+                "saveDirectory": "/tmp",
+                "autoStart": false,
+                "pauseCaptureOnInactivity": true,
+                "idleTimeoutSeconds": 10,
+                "microphoneActivitySensitivity": 50,
+                "systemAudioActivitySensitivity": 50,
+                "activityMode": "system_input_or_screen"
+            }"#,
+        )
+        .expect("settings should deserialize");
+
+        assert_eq!(
+            settings.transcription,
+            default_audio_transcription_settings()
+        );
+    }
+
+    #[test]
+    fn update_recording_settings_request_deserializes_explicit_transcription_settings() {
+        let request: UpdateRecordingSettingsRequest = serde_json::from_str(
+            r#"{
+                "captureScreen": true,
+                "captureMicrophone": true,
+                "captureSystemAudio": false,
+                "segmentDurationSeconds": 60,
+                "screenFrameRate": 30,
+                "screenResolution": { "mode": "preset", "preset": "original" },
+                "videoBitrate": { "mode": "preset", "preset": "medium" },
+                "saveDirectory": "/tmp",
+                "autoStart": false,
+                "pauseCaptureOnInactivity": true,
+                "idleTimeoutSeconds": 10,
+                "microphoneActivitySensitivity": 50,
+                "systemAudioActivitySensitivity": 50,
+                "transcription": {
+                    "enabled": true,
+                    "provider": "parakeet",
+                    "modelId": "parakeet-tdt-0.6b-v3-onnx",
+                    "language": "en"
+                },
+                "activityMode": "system_input_or_screen"
+            }"#,
+        )
+        .expect("request should deserialize");
+
+        assert!(request.transcription.enabled);
+        assert_eq!(
+            request.transcription.provider,
+            AudioTranscriptionProvider::Parakeet
+        );
+        assert_eq!(
+            request.transcription.model_id.as_deref(),
+            Some("parakeet-tdt-0.6b-v3-onnx")
+        );
+        assert_eq!(request.transcription.language, "en");
     }
 
     #[test]
@@ -230,6 +299,10 @@ mod tests {
         assert_eq!(request.follow_timeline_live, default_follow_timeline_live());
         assert_eq!(request.appearance, default_appearance());
         assert_eq!(request.ocr, default_ocr_settings());
+        assert_eq!(
+            request.transcription,
+            default_audio_transcription_settings()
+        );
         assert_eq!(
             request.microphone_vad_adapter,
             default_microphone_vad_adapter()

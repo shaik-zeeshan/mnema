@@ -1,4 +1,5 @@
 mod apple_vision;
+mod audio_transcription;
 mod backend;
 mod engine;
 mod frame;
@@ -8,12 +9,13 @@ mod result;
 mod runtime;
 mod store;
 
+pub use audio_transcription::{AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend};
 pub use backend::{ProcessorBackend, ProcessorRegistry};
 pub use engine::{AppleVisionOcrEngine, OcrEngine, OcrOutput, OcrProvider, OcrRequest};
 pub use frame::{Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary, NewFrame};
 pub use job::{
-    ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingSubject, FRAME_SUBJECT_TYPE,
-    OCR_PROCESSOR,
+    ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingSubject,
+    AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
 pub use ocr::OcrProcessorBackend;
 pub use result::{ProcessingResult, ProcessingResultDraft};

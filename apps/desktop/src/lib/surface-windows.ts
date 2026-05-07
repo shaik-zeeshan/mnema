@@ -8,7 +8,21 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type SurfaceWindowLabel = "main" | "onboarding" | "settings" | "debug";
 
-export async function openSettingsWindow(): Promise<void> {
+export type SettingsWindowTab =
+  | "capture"
+  | "video"
+  | "storage"
+  | "behavior"
+  | "microphone"
+  | "ocr"
+  | "transcription"
+  | "developer";
+
+export async function openSettingsWindow(tab?: SettingsWindowTab): Promise<void> {
+  if (tab) {
+    await invoke("open_settings_window_to_tab", { tab });
+    return;
+  }
   await invoke("open_settings_window");
 }
 

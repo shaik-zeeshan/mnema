@@ -1,14 +1,24 @@
 use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
-    sync::{Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, MutexGuard,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::native_capture;
 
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
+const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct OpenSettingsTabPayload {
+    tab: String,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AppWindow {
@@ -58,6 +68,17 @@ pub struct OnboardingStateRuntime {
 }
 
 pub type OnboardingStateStore = Mutex<OnboardingStateRuntime>;
+
+#[derive(Default)]
+pub struct AppExitCoordinatorState {
+    exit_requested: AtomicBool,
+}
+
+impl AppExitCoordinatorState {
+    fn begin_exit(&self) -> bool {
+        !self.exit_requested.swap(true, Ordering::SeqCst)
+    }
+}
 
 struct AppWindowConfig {
     label: &'static str,
@@ -267,6 +288,64 @@ fn open_or_focus_window(
     Ok(())
 }
 
+fn is_known_settings_tab(tab: &str) -> bool {
+    matches!(
+        tab,
+        "capture"
+            | "video"
+            | "storage"
+            | "behavior"
+            | "microphone"
+            | "ocr"
+            | "transcription"
+            | "developer"
+    )
+}
+
+fn settings_tab_path(tab: &str) -> Result<String, String> {
+    if is_known_settings_tab(tab) {
+        Ok(format!("/settings?tab={tab}"))
+    } else {
+        Err(format!("unknown settings tab: {tab}"))
+    }
+}
+
+fn open_or_focus_settings_window_to_tab(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
+    let path = settings_tab_path(tab)?;
+    let config = AppWindow::Settings.config();
+    let payload = OpenSettingsTabPayload {
+        tab: tab.to_string(),
+    };
+
+    if let Some(existing) = app.get_webview_window(config.label) {
+        let _ = existing.show();
+        let _ = existing.unminimize();
+        let _ = existing.set_focus();
+        existing
+            .emit(OPEN_SETTINGS_TAB_EVENT, payload)
+            .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+
+    let mut builder = WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(path.into()));
+    builder = builder
+        .title(config.title)
+        .inner_size(config.inner_size.0, config.inner_size.1)
+        .min_inner_size(config.min_inner_size.0, config.min_inner_size.1)
+        .decorations(config.decorations)
+        .transparent(config.transparent)
+        .shadow(config.shadow);
+
+    let built = builder.build().map_err(|err| err.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    if let Some(radius) = config.macos_corner_radius {
+        apply_macos_rounded_content_view(&built, radius);
+    }
+
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 #[allow(deprecated, unexpected_cfgs)]
 fn apply_macos_rounded_content_view(window: &WebviewWindow, radius: f64) {
@@ -309,6 +388,40 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn request_graceful_exit(app: &tauri::AppHandle) {
+    let exit_state = app.state::<AppExitCoordinatorState>();
+    if !exit_state.begin_exit() {
+        return;
+    }
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::native_capture::debug_log::log_info(
+            "starting graceful app exit; unloading cached Local Whisper contexts before stopping background workers",
+        );
+
+        match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
+            Ok(unloaded) => {
+                crate::native_capture::debug_log::log_info(format!(
+                    "unloaded {unloaded} cached Local Whisper context(s) before background worker shutdown"
+                ));
+            }
+            Err(error) => {
+                crate::native_capture::debug_log::log_warn(format!(
+                    "failed to unload cached Local Whisper contexts before background worker shutdown: {error}"
+                ));
+            }
+        }
+
+        crate::native_capture::debug_log::log_info(
+            "stopping background workers before terminating",
+        );
+        crate::app_infra::shutdown_background_workers_for_app_exit(&app_handle).await;
+
+        app_handle.exit(0);
+    });
+}
+
 fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
@@ -349,7 +462,7 @@ pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &WindowEv
 
     match action {
         DestroyedWindowAction::FocusMainWindow => focus_main_window(app),
-        DestroyedWindowAction::ExitApp => app.exit(0),
+        DestroyedWindowAction::ExitApp => request_graceful_exit(app),
         DestroyedWindowAction::None => {}
     }
 }
@@ -371,6 +484,11 @@ pub fn open_startup_window(
 #[tauri::command]
 pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     open_or_focus_window(&app, AppWindow::Settings, None)
+}
+
+#[tauri::command]
+pub fn open_settings_window_to_tab(app: tauri::AppHandle, tab: String) -> Result<(), String> {
+    open_or_focus_settings_window_to_tab(&app, &tab)
 }
 
 #[tauri::command]
@@ -411,7 +529,10 @@ pub fn complete_onboarding(
 
 #[cfg(test)]
 mod tests {
-    use super::{destroyed_window_action, load_onboarding_state_from_path, DestroyedWindowAction};
+    use super::{
+        destroyed_window_action, is_known_settings_tab, load_onboarding_state_from_path,
+        settings_tab_path, DestroyedWindowAction,
+    };
 
     #[test]
     fn secondary_window_destruction_refocuses_main_window() {
@@ -447,6 +568,23 @@ mod tests {
             destroyed_window_action("other"),
             DestroyedWindowAction::None
         );
+    }
+
+    #[test]
+    fn settings_tab_deeplink_accepts_known_tabs_only() {
+        assert!(is_known_settings_tab("transcription"));
+        assert!(is_known_settings_tab("capture"));
+        assert!(!is_known_settings_tab("transcripts"));
+        assert!(!is_known_settings_tab("../developer"));
+    }
+
+    #[test]
+    fn settings_tab_deeplink_path_targets_requested_tab() {
+        assert_eq!(
+            settings_tab_path("transcription").as_deref(),
+            Ok("/settings?tab=transcription")
+        );
+        assert!(settings_tab_path("../developer").is_err());
     }
 
     #[test]

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1"
+audio-transcription = { path = "../audio-transcription" }
 capture-screen = { path = "../capture-screen" }
 capture-runtime = { path = "../capture-runtime" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

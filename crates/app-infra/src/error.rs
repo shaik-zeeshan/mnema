@@ -30,6 +30,8 @@ pub enum AppInfraError {
     },
     #[error("frame {0} was not found")]
     FrameNotFound(i64),
+    #[error("audio segment {0} was not found")]
+    AudioSegmentNotFound(i64),
     #[error("invalid frame equivalence status: {0}")]
     InvalidFrameEquivalenceStatus(String),
     #[error("frame batch {0} was not found")]
@@ -57,6 +59,8 @@ pub enum AppInfraError {
     ProcessingJobNotRunnable { job_id: i64, status: String },
     #[error("ocr engine error: {0}")]
     OcrEngine(String),
+    #[error("audio transcription error: {0}")]
+    AudioTranscriptionEngine(String),
     #[error("invalid frame batch status: {0}")]
     InvalidFrameBatchStatus(String),
     #[error("frame batch {batch_id} cannot transition from '{from}' to '{to}'")]

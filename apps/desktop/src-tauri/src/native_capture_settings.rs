@@ -1,11 +1,12 @@
 use capture_types::{
-    default_appearance, default_developer_options_enabled, default_follow_timeline_live,
-    default_idle_timeout_seconds, default_inactivity_activity_mode,
+    default_appearance, default_audio_transcription_settings, default_developer_options_enabled,
+    default_follow_timeline_live, default_idle_timeout_seconds, default_inactivity_activity_mode,
     default_microphone_activity_sensitivity, default_native_capture_debug_logging_enabled,
     default_ocr_settings, default_pause_capture_on_inactivity, default_preview_cache_ttl_seconds,
-    default_system_audio_activity_sensitivity, default_video_bitrate, CaptureErrorResponse,
-    RecordingSettings, ScreenResolution, ScreenResolutionPreset, UpdateRecordingSettingsRequest,
-    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    default_system_audio_activity_sensitivity, default_video_bitrate, AudioTranscriptionProvider,
+    AudioTranscriptionSettings, CaptureErrorResponse, RecordingSettings, ScreenResolution,
+    ScreenResolutionPreset, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
+    VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -78,6 +79,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         follow_timeline_live: default_follow_timeline_live(),
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
+        transcription: default_audio_transcription_settings(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -146,6 +148,76 @@ fn validate_video_bitrate(
             })
         }
     }
+}
+
+fn validate_audio_transcription_settings(
+    value: AudioTranscriptionSettings,
+) -> Result<AudioTranscriptionSettings, CaptureErrorResponse> {
+    let language = {
+        let trimmed = value.language.trim();
+        if trimmed.is_empty() {
+            "auto".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
+
+    let model_id = value
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty());
+
+    let model_id = match value.provider {
+        AudioTranscriptionProvider::LocalWhisper => {
+            let model_id = model_id.unwrap_or("base");
+            if !matches!(model_id, "tiny" | "base" | "small" | "medium") {
+                return Err(CaptureErrorResponse {
+                    code: "invalid_recording_settings".to_string(),
+                    message: "transcription.modelId must be one of tiny, base, small, or medium for local_whisper".to_string(),
+                });
+            }
+            Some(model_id.to_string())
+        }
+        AudioTranscriptionProvider::Parakeet => {
+            let model_id = model_id.unwrap_or("parakeet-tdt-0.6b-v3-onnx-int8");
+            if !matches!(
+                model_id,
+                "parakeet-tdt-0.6b-v3-onnx" | "parakeet-tdt-0.6b-v3-onnx-int8"
+            ) {
+                return Err(CaptureErrorResponse {
+                    code: "invalid_recording_settings".to_string(),
+                    message: "transcription.modelId must be parakeet-tdt-0.6b-v3-onnx or parakeet-tdt-0.6b-v3-onnx-int8 for parakeet"
+                        .to_string(),
+                });
+            }
+            Some(model_id.to_string())
+        }
+        AudioTranscriptionProvider::AppleSpeechOnDevice => None,
+    };
+
+    if value.idle_unload_seconds > 24 * 60 * 60 {
+        return Err(CaptureErrorResponse {
+            code: "invalid_recording_settings".to_string(),
+            message: "transcription.idleUnloadSeconds must be <= 86400".to_string(),
+        });
+    }
+    if value.chunk_seconds > 60 * 60 {
+        return Err(CaptureErrorResponse {
+            code: "invalid_recording_settings".to_string(),
+            message: "transcription.chunkSeconds must be <= 3600".to_string(),
+        });
+    }
+
+    Ok(AudioTranscriptionSettings {
+        enabled: value.enabled,
+        provider: value.provider,
+        model_id,
+        language,
+        memory_mode: value.memory_mode,
+        idle_unload_seconds: value.idle_unload_seconds,
+        chunk_seconds: value.chunk_seconds,
+    })
 }
 
 fn validate_audio_activity_sensitivity(
@@ -306,6 +378,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
 
     let screen_resolution = validate_screen_resolution(request.screen_resolution)?;
     let video_bitrate = validate_video_bitrate(request.video_bitrate)?;
+    let transcription = validate_audio_transcription_settings(request.transcription)?;
     let microphone_activity_sensitivity = validate_audio_activity_sensitivity(
         "microphoneActivitySensitivity",
         request.microphone_activity_sensitivity,
@@ -341,6 +414,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         follow_timeline_live: request.follow_timeline_live,
         appearance: request.appearance,
         ocr: request.ocr,
+        transcription,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -382,6 +456,7 @@ fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
         follow_timeline_live: parsed.follow_timeline_live,
         appearance: parsed.appearance,
         ocr: parsed.ocr,
+        transcription: parsed.transcription,
         pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
         idle_timeout_seconds: parsed.idle_timeout_seconds,
         microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -702,6 +777,7 @@ mod tests {
                 follow_timeline_live: false,
                 appearance: default_appearance(),
                 ocr: default_ocr_settings(),
+                transcription: default_audio_transcription_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -717,6 +793,55 @@ mod tests {
             settings.microphone_vad_adapter,
             capture_types::MicrophoneVadAdapter::Off
         );
+    }
+
+    #[test]
+    fn validate_recording_settings_preserves_transcription_update() {
+        let mut transcription = default_audio_transcription_settings();
+        transcription.provider = capture_types::AudioTranscriptionProvider::Parakeet;
+        transcription.model_id = Some("parakeet-tdt-0.6b-v3-onnx".to_string());
+        transcription.language = " en ".to_string();
+
+        let settings = validate_recording_settings_with_resolution_support(
+            UpdateRecordingSettingsRequest {
+                capture_screen: true,
+                capture_microphone: true,
+                capture_system_audio: false,
+                segment_duration_seconds: 60,
+                screen_frame_rate: 1,
+                screen_resolution: ScreenResolution::Preset {
+                    preset: ScreenResolutionPreset::Original,
+                },
+                video_bitrate: default_video_bitrate(),
+                save_directory: "/tmp".to_string(),
+                auto_start: false,
+                native_capture_debug_logging_enabled: false,
+                developer_options_enabled: false,
+                preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+                follow_timeline_live: false,
+                appearance: default_appearance(),
+                ocr: default_ocr_settings(),
+                transcription,
+                pause_capture_on_inactivity: true,
+                idle_timeout_seconds: 10,
+                microphone_activity_sensitivity: 50,
+                system_audio_activity_sensitivity: 50,
+                microphone_vad_adapter: capture_types::default_microphone_vad_adapter(),
+                inactivity_activity_mode: default_inactivity_activity_mode(),
+            },
+            true,
+        )
+        .expect("settings should validate");
+
+        assert_eq!(
+            settings.transcription.provider,
+            capture_types::AudioTranscriptionProvider::Parakeet
+        );
+        assert_eq!(
+            settings.transcription.model_id.as_deref(),
+            Some("parakeet-tdt-0.6b-v3-onnx")
+        );
+        assert_eq!(settings.transcription.language, "en");
     }
 
     #[test]
@@ -764,6 +889,7 @@ mod tests {
         assert_eq!(loaded.follow_timeline_live, default_follow_timeline_live());
         assert_eq!(loaded.appearance, default_appearance());
         assert_eq!(loaded.ocr, default_ocr_settings());
+        assert_eq!(loaded.transcription, default_audio_transcription_settings());
     }
 
     #[test]
@@ -786,6 +912,7 @@ mod tests {
             follow_timeline_live: false,
             appearance: default_appearance(),
             ocr: default_ocr_settings(),
+            transcription: default_audio_transcription_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

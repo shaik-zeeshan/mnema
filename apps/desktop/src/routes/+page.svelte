@@ -20,12 +20,14 @@
   import type {
     AudioSegmentDto,
     AudioSegmentMediaDto,
+    AudioSegmentTranscriptionReprocessingResultDto,
     FrameDto,
     FramePreviewDto,
     FrameRangeRequest,
     FrameSummaryDto,
     FocusedFrameWindowDto,
     GetEarliestEarlierEquivalentFrameRequest,
+    GetProcessingJobRequest,
     GetProcessingResultRequest,
     GetTimelineWindowAroundFrameRequest,
     ListAudioSegmentsRequest,
@@ -34,6 +36,10 @@
     OcrStructuredPayload,
     ProcessingJobDto,
     ProcessingResultDto,
+    ReprocessAudioSegmentTranscriptionRequest,
+    TranscriptionSegment,
+    TranscriptionStructuredPayload,
+    TranscriptionWord,
   } from "$lib/types";
 
   // ─── Timeline browser ─────────────────────────────────────────────────────
@@ -86,6 +92,7 @@
   // edges instead of being filtered out by an overly tight range query.
   const AUDIO_SEGMENT_RANGE_PADDING_MS = 60_000;
   const AUDIO_SEGMENT_REFRESH_DEBOUNCE_MS = 100;
+  const AUDIO_TRANSCRIPT_POLL_INTERVAL_MS = 1000;
   const ACTIVE_PREVIEW_FETCH_FAST_SCRUB_DEBOUNCE_MS = 40;
   const ACTIVE_PREVIEW_PREFETCH_RADIUS = 8;
   const ACTIVE_PREVIEW_FAST_SCRUB_RADIUS = 2;
@@ -136,6 +143,14 @@
     endUnixMs: number;
     durationSeconds: number;
   };
+  type AudioTranscriptStatus =
+    | "idle"
+    | "loading"
+    | "success"
+    | "empty"
+    | "missing"
+    | "running"
+    | "error";
 
   let timelineFrames = $state<FrameDto[]>([]);
   let timelineActiveIndex = $state(0);
@@ -304,14 +319,26 @@
   let selectedAudioMediaLoading = $state(false);
   let selectedAudioMediaError = $state<string | null>(null);
   let selectedAudioMediaGeneration = 0;
+  let selectedAudioTranscriptStatus = $state<AudioTranscriptStatus>("idle");
+  let selectedAudioTranscriptText = $state<string | null>(null);
+  let selectedAudioTranscriptSegments = $state<TranscriptionSegment[]>([]);
+  let selectedAudioTranscriptModelLabel = $state<string | null>(null);
+  let selectedAudioTranscriptError = $state<string | null>(null);
+  let selectedAudioTranscriptRerunLoading = $state(false);
+  let selectedAudioTranscriptRerunError = $state<string | null>(null);
+  let selectedAudioTranscriptGeneration = 0;
+  let selectedAudioTranscriptPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let selectedAudioTranscriptPollJobId: number | null = null;
   // Latest webview-side load error from the <audio> element, if any. Lets us
   // show an inline error instead of a silent broken player when decoded bytes
   // were returned but the webview still couldn't load/play them.
   let selectedAudioLoadError = $state<string | null>(null);
   $effect(() => {
-    // Clear the prior error whenever the selected segment changes.
+    // Clear the prior errors whenever the selected segment changes.
     void selectedAudioSegmentId;
     selectedAudioLoadError = null;
+    selectedAudioTranscriptRerunError = null;
+    selectedAudioTranscriptRerunLoading = false;
   });
 
   $effect(() => {
@@ -349,6 +376,339 @@
     }
   }
 
+  $effect(() => {
+    const id = selectedAudioSegmentId;
+    selectedAudioTranscriptGeneration += 1;
+    const gen = selectedAudioTranscriptGeneration;
+    clearSelectedAudioTranscriptPoll();
+    selectedAudioTranscriptText = null;
+    selectedAudioTranscriptSegments = [];
+    selectedAudioTranscriptModelLabel = null;
+    selectedAudioTranscriptError = null;
+
+    if (id == null) {
+      selectedAudioTranscriptStatus = "idle";
+      return () => clearSelectedAudioTranscriptPoll();
+    }
+
+    selectedAudioTranscriptStatus = "loading";
+    void loadSelectedAudioSegmentTranscript(id, gen);
+
+    return () => {
+      if (gen === selectedAudioTranscriptGeneration) {
+        clearSelectedAudioTranscriptPoll();
+      }
+    };
+  });
+
+  function selectedAudioTranscriptIsCurrent(id: number, gen: number): boolean {
+    return gen === selectedAudioTranscriptGeneration && selectedAudioSegmentId === id;
+  }
+
+  function clearSelectedAudioTranscriptPoll(): void {
+    if (selectedAudioTranscriptPollTimer) {
+      clearTimeout(selectedAudioTranscriptPollTimer);
+      selectedAudioTranscriptPollTimer = null;
+    }
+    selectedAudioTranscriptPollJobId = null;
+  }
+
+  function scheduleSelectedAudioTranscriptPoll(id: number, jobId: number, gen: number): void {
+    if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+    if (selectedAudioTranscriptPollTimer && selectedAudioTranscriptPollJobId === jobId) return;
+    clearSelectedAudioTranscriptPoll();
+    selectedAudioTranscriptPollJobId = jobId;
+    selectedAudioTranscriptPollTimer = setTimeout(() => {
+      selectedAudioTranscriptPollTimer = null;
+      selectedAudioTranscriptPollJobId = null;
+      void pollSelectedAudioSegmentTranscriptJob(id, jobId, gen);
+    }, AUDIO_TRANSCRIPT_POLL_INTERVAL_MS);
+  }
+
+  async function pollSelectedAudioSegmentTranscriptJob(
+    id: number,
+    jobId: number,
+    gen: number,
+  ): Promise<void> {
+    if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+    try {
+      const job = await invoke<ProcessingJobDto | null>("get_processing_job", {
+        request: { jobId } satisfies GetProcessingJobRequest,
+      });
+      if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+      if (!job) {
+        selectedAudioTranscriptStatus = "error";
+        selectedAudioTranscriptText = null;
+        selectedAudioTranscriptSegments = [];
+        selectedAudioTranscriptError = "Transcription job not found";
+        return;
+      }
+      await applySelectedAudioTranscriptJob(id, gen, job);
+    } catch (err) {
+      if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+      selectedAudioTranscriptStatus = "error";
+      selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
+      selectedAudioTranscriptError = typeof err === "string" ? err : JSON.stringify(err);
+    }
+  }
+
+  type AudioTranscriptionJobPayloadShape = {
+    provider?: string;
+    modelId?: string | null;
+    language?: string;
+  };
+
+  function parseTranscriptionStructuredPayload(
+    json: string | null | undefined,
+  ): Partial<TranscriptionStructuredPayload> | null {
+    if (!json) return null;
+    try {
+      return JSON.parse(json) as Partial<TranscriptionStructuredPayload>;
+    } catch {
+      return null;
+    }
+  }
+
+  function parseAudioTranscriptionJobPayload(
+    json: string | null | undefined,
+  ): AudioTranscriptionJobPayloadShape | null {
+    if (!json) return null;
+    try {
+      return JSON.parse(json) as AudioTranscriptionJobPayloadShape;
+    } catch {
+      return null;
+    }
+  }
+
+  function formatAudioTranscriptionProviderLabel(provider: string): string {
+    switch (provider) {
+      case "local_whisper":
+        return "Local Whisper";
+      case "apple_speech_on_device":
+        return "Apple Speech (on-device)";
+      case "parakeet":
+        return "Parakeet";
+      default:
+        return provider;
+    }
+  }
+
+  function resolveAudioTranscriptionModelLabel(
+    jobPayloadJson: string | null | undefined,
+    resultPayloadJson: string | null | undefined,
+  ): string | null {
+    const jobPayload = parseAudioTranscriptionJobPayload(jobPayloadJson);
+    const resultPayload = parseTranscriptionStructuredPayload(resultPayloadJson);
+    const provider =
+      typeof resultPayload?.provider === "string"
+        ? resultPayload.provider
+        : typeof jobPayload?.provider === "string"
+          ? jobPayload.provider
+          : null;
+    if (!provider) return null;
+    const providerLabel = formatAudioTranscriptionProviderLabel(provider);
+    const modelId =
+      typeof resultPayload?.modelId === "string"
+        ? resultPayload.modelId
+        : typeof jobPayload?.modelId === "string"
+          ? jobPayload.modelId
+          : null;
+    return modelId ? `${providerLabel} · ${modelId}` : providerLabel;
+  }
+
+  function normalizeTranscriptionTimedRuns(
+    runs: Array<Partial<TranscriptionSegment> | Partial<TranscriptionWord>>,
+  ): TranscriptionSegment[] {
+    const normalized: TranscriptionSegment[] = [];
+    for (const run of runs) {
+      if (
+        !run ||
+        typeof run.startMs !== "number" ||
+        typeof run.endMs !== "number" ||
+        typeof run.text !== "string"
+      ) {
+        continue;
+      }
+      const text = run.text.trim();
+      if (!text) continue;
+      const startMs = Math.max(0, Math.round(run.startMs));
+      const endMs = Math.max(startMs, Math.round(run.endMs));
+      normalized.push({
+        startMs,
+        endMs,
+        text,
+        confidence:
+          typeof run.confidence === "number"
+            ? Math.min(1, Math.max(0, run.confidence))
+            : null,
+      });
+    }
+    normalized.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+    return normalized;
+  }
+
+  function parseTranscriptionSegments(
+    json: string | null | undefined,
+  ): TranscriptionSegment[] {
+    const parsed = parseTranscriptionStructuredPayload(json);
+    const segments = normalizeTranscriptionTimedRuns(
+      Array.isArray(parsed?.segments) ? parsed.segments : [],
+    );
+    if (segments.length > 0) return segments;
+    return normalizeTranscriptionTimedRuns(
+      Array.isArray(parsed?.words) ? parsed.words : [],
+    );
+  }
+
+  async function applySelectedAudioTranscriptJob(
+    id: number,
+    gen: number,
+    job: ProcessingJobDto,
+  ): Promise<void> {
+    if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+
+    selectedAudioTranscriptModelLabel = resolveAudioTranscriptionModelLabel(
+      job.payloadJson,
+      null,
+    );
+
+    if (job.status === "queued" || job.status === "running") {
+      selectedAudioTranscriptStatus = "running";
+      selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
+      selectedAudioTranscriptError = null;
+      scheduleSelectedAudioTranscriptPoll(id, job.id, gen);
+      return;
+    }
+
+    clearSelectedAudioTranscriptPoll();
+
+    if (job.status === "failed") {
+      selectedAudioTranscriptStatus = "error";
+      selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
+      selectedAudioTranscriptError = job.lastError ?? "Transcription job failed";
+      return;
+    }
+
+    const result = await invoke<ProcessingResultDto | null>("get_processing_result", {
+      request: { jobId: job.id } satisfies GetProcessingResultRequest,
+    });
+    if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+
+    if (!result) {
+      selectedAudioTranscriptStatus = "error";
+      selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
+      selectedAudioTranscriptError = "Transcription result not available";
+      return;
+    }
+
+    const segments = parseTranscriptionSegments(result.structuredPayloadJson);
+    const transcript = result.resultText?.trim().length
+      ? result.resultText
+      : segments.map((segment) => segment.text).join(" ");
+    selectedAudioTranscriptText = transcript;
+    selectedAudioTranscriptSegments = segments;
+    selectedAudioTranscriptModelLabel = resolveAudioTranscriptionModelLabel(
+      job.payloadJson,
+      result.structuredPayloadJson,
+    );
+    selectedAudioTranscriptError = null;
+    selectedAudioTranscriptStatus = transcript.trim().length === 0 ? "empty" : "success";
+  }
+
+  async function loadSelectedAudioSegmentTranscript(id: number, gen: number): Promise<void> {
+    try {
+      const jobs = await invoke<ProcessingJobDto[]>("list_processing_jobs", {
+        request: { subjectType: AUDIO_SEGMENT_SUBJECT_TYPE, subjectId: id },
+      });
+      if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+
+      const transcriptionJobs = jobs.filter(
+        (job) => job.processor === AUDIO_TRANSCRIPTION_PROCESSOR,
+      );
+      if (transcriptionJobs.length === 0) {
+        clearSelectedAudioTranscriptPoll();
+        selectedAudioTranscriptStatus = "missing";
+        selectedAudioTranscriptText = null;
+        selectedAudioTranscriptSegments = [];
+        selectedAudioTranscriptError = null;
+        return;
+      }
+
+      const completed = transcriptionJobs
+        .filter((job) => job.status === "completed")
+        .sort((a, b) => b.id - a.id);
+      const job = completed[0] ?? transcriptionJobs.sort((a, b) => b.id - a.id)[0];
+      await applySelectedAudioTranscriptJob(id, gen, job);
+    } catch (err) {
+      if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+      clearSelectedAudioTranscriptPoll();
+      selectedAudioTranscriptStatus = "error";
+      selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
+      selectedAudioTranscriptError = typeof err === "string" ? err : JSON.stringify(err);
+    }
+  }
+
+  const selectedAudioTranscriptActionLabel = $derived(
+    selectedAudioTranscriptStatus === "missing" ? "Run" : "Rerun",
+  );
+  const selectedAudioTranscriptActionDisabled = $derived(
+    !selectedAudioSegment ||
+      selectedAudioSegment.source !== "microphone" ||
+      selectedAudioTranscriptRerunLoading ||
+      selectedAudioTranscriptStatus === "loading" ||
+      selectedAudioTranscriptStatus === "running",
+  );
+  const selectedAudioTranscriptActionTitle = $derived(
+    selectedAudioSegment?.source !== "microphone"
+      ? "Only microphone segments can be transcribed"
+      : selectedAudioTranscriptStatus === "loading"
+        ? "Transcript is still loading"
+        : selectedAudioTranscriptStatus === "running"
+          ? "Transcription is queued or still processing"
+          : `${selectedAudioTranscriptActionLabel} transcription with current settings`,
+  );
+
+  async function reprocessSelectedAudioSegmentTranscript(): Promise<void> {
+    const segment = selectedAudioSegment;
+    if (!segment || selectedAudioTranscriptActionDisabled) return;
+    const id = segment.id;
+
+    selectedAudioTranscriptRerunLoading = true;
+    selectedAudioTranscriptRerunError = null;
+    try {
+      const result = await invoke<AudioSegmentTranscriptionReprocessingResultDto>(
+        "reprocess_audio_segment_transcription",
+        {
+          request: {
+            audioSegmentId: id,
+          } satisfies ReprocessAudioSegmentTranscriptionRequest,
+        },
+      );
+      if (selectedAudioSegmentId !== id) return;
+      selectedAudioTranscriptGeneration += 1;
+      const gen = selectedAudioTranscriptGeneration;
+      clearSelectedAudioTranscriptPoll();
+      selectedAudioTranscriptStatus = "running";
+      selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
+      selectedAudioTranscriptError = null;
+      selectedAudioTranscriptRerunError = null;
+      await applySelectedAudioTranscriptJob(id, gen, result.job);
+    } catch (err) {
+      if (selectedAudioSegmentId !== id) return;
+      selectedAudioTranscriptRerunError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      if (selectedAudioSegmentId === id) {
+        selectedAudioTranscriptRerunLoading = false;
+      }
+    }
+  }
+
   function onSelectedAudioError() {
     selectedAudioLoadError =
       "Failed to play audio. The media bytes were loaded, but the browser could not decode this segment.";
@@ -366,9 +726,40 @@
   let audioIsPlaying = $state(false);
   let audioCurrentTime = $state(0);
   let audioDuration = $state(0);
+  let selectedAudioTranscriptContainerEl = $state<HTMLDivElement | null>(null);
   // While the user drags the scrub thumb we hold UI updates from `timeupdate`
   // events so the indicator doesn't fight the drag. Commit on release.
   let audioScrubbing = $state(false);
+
+  function findActiveTranscriptSegmentIndex(
+    segments: TranscriptionSegment[],
+    currentTimeSeconds: number,
+  ): number | null {
+    if (!Number.isFinite(currentTimeSeconds) || currentTimeSeconds < 0) return null;
+    const currentMs = Math.round(currentTimeSeconds * 1000);
+    for (let index = segments.length - 1; index >= 0; index -= 1) {
+      if (currentMs >= segments[index].startMs) return index;
+    }
+    return null;
+  }
+
+  const selectedAudioTranscriptActiveSegmentIndex = $derived(
+    selectedAudioTranscriptSegments.length === 0 || (!audioIsPlaying && audioCurrentTime <= 0)
+      ? null
+      : findActiveTranscriptSegmentIndex(selectedAudioTranscriptSegments, audioCurrentTime),
+  );
+
+  $effect(() => {
+    const activeIndex = selectedAudioTranscriptActiveSegmentIndex;
+    const container = selectedAudioTranscriptContainerEl;
+    if (activeIndex == null || !container) return;
+    void tick().then(() => {
+      const activeSegment = container.querySelector<HTMLElement>(
+        `[data-transcript-segment-index="${activeIndex}"]`,
+      );
+      activeSegment?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+  });
 
   $effect(() => {
     // Reset transport readouts whenever the selection (and therefore the
@@ -426,6 +817,18 @@
     }
   }
 
+  function seekAudioToTimeMs(startMs: number): void {
+    const el = audioEl;
+    if (!el) return;
+    const nextTime = Math.max(
+      0,
+      Math.min(Number.isFinite(audioDuration) && audioDuration > 0 ? audioDuration : Infinity, startMs / 1000),
+    );
+    if (!Number.isFinite(nextTime)) return;
+    el.currentTime = nextTime;
+    audioCurrentTime = nextTime;
+  }
+
   /** `M:SS` for the player transport. Distinct from the segment-duration
    *  helper above because the transport ticks per second and a leading dash
    *  while metadata is still loading reads better as `0:00`. */
@@ -435,6 +838,12 @@
     const m = Math.floor(total / 60);
     const s = total % 60;
     return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  function formatTranscriptSegmentTitle(segment: TranscriptionSegment): string {
+    const start = formatPlayerTime(segment.startMs / 1000);
+    if (segment.endMs <= segment.startMs) return start;
+    return `${start}–${formatPlayerTime(segment.endMs / 1000)}`;
   }
 
   // ─── Outside-click dismissal ─────────────────────────────────────────────
@@ -2069,7 +2478,9 @@
   // late response for an old frame from writing into the new frame's state.
   type OcrStatus = "idle" | "running" | "success" | "empty" | "missing" | "error";
   const FRAME_SUBJECT_TYPE = "frame";
+  const AUDIO_SEGMENT_SUBJECT_TYPE = "audio_segment";
   const OCR_PROCESSOR = "ocr";
+  const AUDIO_TRANSCRIPTION_PROCESSOR = "audio_transcription";
 
   let ocrStatus = $state<OcrStatus>("idle");
   let ocrError = $state<string | null>(null);
@@ -3722,6 +4133,83 @@
         <span class="audio-drawer__error-msg">{selectedAudioLoadError}</span>
       </div>
     {/if}
+    <section class="audio-drawer__transcript" aria-label="Audio transcription">
+      <div class="audio-drawer__transcript-header">
+        <div class="audio-drawer__transcript-heading">
+          <span class="audio-drawer__transcript-title">Transcript</span>
+          {#if selectedAudioTranscriptModelLabel}
+            <span class="audio-drawer__transcript-model" title={selectedAudioTranscriptModelLabel}>
+              · {selectedAudioTranscriptModelLabel}
+            </span>
+          {/if}
+        </div>
+        <div class="audio-drawer__transcript-actions">
+          <button
+            type="button"
+            class="audio-drawer__transcript-action"
+            onclick={reprocessSelectedAudioSegmentTranscript}
+            disabled={selectedAudioTranscriptActionDisabled}
+            title={selectedAudioTranscriptActionTitle}
+          >
+            {selectedAudioTranscriptRerunLoading
+              ? "Starting…"
+              : selectedAudioTranscriptActionLabel}
+          </button>
+          <span class="audio-drawer__transcript-state audio-drawer__transcript-state--{selectedAudioTranscriptStatus}">
+            {#if selectedAudioTranscriptStatus === "loading"}
+              loading
+            {:else if selectedAudioTranscriptStatus === "running"}
+              processing
+            {:else if selectedAudioTranscriptStatus === "success"}
+              completed
+            {:else if selectedAudioTranscriptStatus === "empty"}
+              no speech
+            {:else if selectedAudioTranscriptStatus === "error"}
+              error
+            {:else}
+              unavailable
+            {/if}
+          </span>
+        </div>
+      </div>
+      {#if selectedAudioTranscriptRerunError}
+        <p class="audio-drawer__transcript-error">{selectedAudioTranscriptRerunError}</p>
+      {/if}
+      {#if selectedAudioTranscriptStatus === "success"}
+        {#if selectedAudioTranscriptSegments.length > 0}
+          <div
+            class="audio-drawer__transcript-text audio-drawer__transcript-text--segmented"
+            bind:this={selectedAudioTranscriptContainerEl}
+          >
+            {#each selectedAudioTranscriptSegments as segment, index}
+              <button
+                type="button"
+                class="audio-drawer__transcript-segment"
+                class:audio-drawer__transcript-segment--active={selectedAudioTranscriptActiveSegmentIndex === index}
+                data-transcript-segment-index={index}
+                title={`Jump to ${formatTranscriptSegmentTitle(segment)}`}
+                aria-label={`Jump to transcript segment at ${formatTranscriptSegmentTitle(segment)}`}
+                onclick={() => seekAudioToTimeMs(segment.startMs)}
+              >
+                {segment.text}
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <p class="audio-drawer__transcript-text">{selectedAudioTranscriptText}</p>
+        {/if}
+      {:else if selectedAudioTranscriptStatus === "empty"}
+        <p class="audio-drawer__transcript-empty">No speech detected in this segment.</p>
+      {:else if selectedAudioTranscriptStatus === "loading"}
+        <p class="audio-drawer__transcript-empty">Loading transcript…</p>
+      {:else if selectedAudioTranscriptStatus === "running"}
+        <p class="audio-drawer__transcript-empty">Transcription is queued or still processing.</p>
+      {:else if selectedAudioTranscriptStatus === "error"}
+        <p class="audio-drawer__transcript-error">{selectedAudioTranscriptError}</p>
+      {:else}
+        <p class="audio-drawer__transcript-empty">No transcript has been recorded for this segment.</p>
+      {/if}
+    </section>
   </div>
 {/if}
 
@@ -4149,6 +4637,175 @@
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     word-break: break-word;
     line-height: 1.4;
+  }
+
+  .audio-drawer__transcript {
+    display: grid;
+    gap: 6px;
+    margin-top: 2px;
+    padding: 8px 10px;
+    background: color-mix(in srgb, var(--app-surface-hover) 58%, transparent);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+  }
+
+  .audio-drawer__transcript-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .audio-drawer__transcript-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .audio-drawer__transcript-title,
+  .audio-drawer__transcript-state {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .audio-drawer__transcript-title {
+    color: var(--app-text-muted);
+  }
+
+  .audio-drawer__transcript-model {
+    color: var(--app-text);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: 0.02em;
+    word-break: break-word;
+    opacity: 0.9;
+  }
+
+  .audio-drawer__transcript-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .audio-drawer__transcript-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 52px;
+    padding: 4px 8px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--app-surface-raised) 72%, transparent);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+      border-color 0.12s,
+      color 0.12s,
+      background 0.12s,
+      opacity 0.12s;
+  }
+
+  .audio-drawer__transcript-action:hover:not(:disabled),
+  .audio-drawer__transcript-action:focus-visible:not(:disabled) {
+    border-color: var(--app-accent);
+    background: color-mix(in srgb, var(--app-accent) 12%, var(--app-surface-raised));
+    color: var(--app-text);
+    outline: none;
+  }
+
+  .audio-drawer__transcript-action:disabled {
+    opacity: 0.38;
+    cursor: not-allowed;
+  }
+
+  .audio-drawer__transcript-state {
+    color: var(--app-text-faint);
+  }
+
+  .audio-drawer__transcript-state--success,
+  .audio-drawer__transcript-state--empty {
+    color: var(--app-accent);
+  }
+
+  .audio-drawer__transcript-state--running,
+  .audio-drawer__transcript-state--loading {
+    color: var(--app-warn);
+  }
+
+  .audio-drawer__transcript-state--error {
+    color: var(--app-danger);
+  }
+
+  .audio-drawer__transcript-text,
+  .audio-drawer__transcript-empty,
+  .audio-drawer__transcript-error {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .audio-drawer__transcript-text {
+    max-height: 7.5em;
+    overflow: auto;
+    color: var(--app-text);
+    white-space: pre-wrap;
+  }
+
+  .audio-drawer__transcript-text--segmented {
+    white-space: normal;
+  }
+
+  .audio-drawer__transcript-segment {
+    display: inline;
+    margin-right: 0.28em;
+    padding: 1px 3px;
+    border: 0;
+    border-radius: 4px;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    scroll-margin-block: 10px;
+    transition:
+      background 0.12s,
+      color 0.12s;
+  }
+
+  .audio-drawer__transcript-segment:hover,
+  .audio-drawer__transcript-segment:focus-visible {
+    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
+    color: var(--app-text);
+    outline: none;
+  }
+
+  .audio-drawer__transcript-segment--active {
+    background: color-mix(in srgb, var(--app-accent) 18%, transparent);
+    color: var(--app-text);
+  }
+
+  .audio-drawer__transcript-empty {
+    color: var(--app-text-muted);
+    font-style: italic;
+  }
+
+  .audio-drawer__transcript-error {
+    color: var(--app-danger-text);
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    word-break: break-word;
   }
 
   /* ── Buttons (subset used by the timeline) ─────────────────── */

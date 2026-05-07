@@ -355,7 +355,10 @@ const FORMAT_STABILITY_MIN_OBSERVED: u32 = 5;
 #[cfg(target_os = "macos")]
 const FORMAT_LOG_SAMPLE_LIMIT: u32 = 8;
 #[cfg(target_os = "macos")]
-const MAX_PENDING_MIC_SAMPLES: usize = 64;
+// Keep enough queued microphone samples to bridge the ~1s inactivity poll
+// interval plus writer startup backpressure, without carrying several seconds
+// of probe-only silence into the resumed file.
+const MAX_PENDING_MIC_SAMPLES: usize = 128;
 
 #[cfg(target_os = "macos")]
 fn record_observed_audio_format(
@@ -405,17 +408,20 @@ fn fallback_microphone_format(context: &MicrophoneOutputContext) -> Option<Audio
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
-        feed_microphone_vad_pcm_samples, flush_pending_microphone_sample_queue,
-        last_microphone_activity_unix_ms, microphone_activity_idle_ms, microphone_activity_level,
+        carry_probe_only_microphone_context, feed_microphone_vad_pcm_samples,
+        flush_pending_microphone_sample_queue, last_microphone_activity_unix_ms,
+        microphone_activity_idle_ms, microphone_activity_level,
         microphone_output_callback_objc_exception_error, microphone_output_callback_panic_error,
-        microphone_tail_activity_override, mono_pcm_samples_from_audio_buffers,
-        observe_microphone_format, peek_microphone_activity_window_peak_level,
+        microphone_output_context_for_output_url, microphone_tail_activity_override,
+        mono_pcm_samples_from_audio_buffers, observe_microphone_format,
+        peek_microphone_activity_window_peak_level, push_bounded_pending_microphone_sample,
         record_microphone_vad_tail_speech, reset_last_microphone_activity_unix_ms,
         reset_microphone_vad_tail_activity, resolve_microphone_finalize_format,
         resolve_microphone_live_format, store_microphone_activity,
-        take_microphone_activity_window_peak_level, AudioSampleAppendDisposition,
-        AudioSampleFormat, MicFormatStabilityState, MicrophoneInactivityTailTrimActivityMode,
-        MicrophoneOutputContext, MicrophoneVadPcmFeedState, OnceLock,
+        take_microphone_activity_window_peak_level, transfer_pending_microphone_samples,
+        AudioSampleAppendDisposition, AudioSampleFormat, MicFormatStabilityState,
+        MicrophoneInactivityTailTrimActivityMode, MicrophoneOutputContext,
+        MicrophoneVadPcmFeedState, OnceLock, MAX_PENDING_MIC_SAMPLES,
         MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT, MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ,
     };
 
@@ -584,6 +590,65 @@ mod tests {
         .expect("flush should retry deferred sample");
 
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn bounded_pending_microphone_samples_keep_recent_probe_audio() {
+        let mut pending = std::collections::VecDeque::new();
+        for index in 0..=MAX_PENDING_MIC_SAMPLES {
+            push_bounded_pending_microphone_sample(&mut pending, index);
+        }
+
+        assert_eq!(pending.len(), MAX_PENDING_MIC_SAMPLES);
+        assert_eq!(pending.front(), Some(&1));
+        assert_eq!(pending.back(), Some(&MAX_PENDING_MIC_SAMPLES));
+    }
+
+    #[test]
+    fn transfer_pending_microphone_samples_keeps_recent_items() {
+        let mut pending =
+            std::collections::VecDeque::from(["hello".to_string(), "world".to_string()]);
+        let mut resumed = std::collections::VecDeque::new();
+        for index in 0..MAX_PENDING_MIC_SAMPLES {
+            resumed.push_back(index.to_string());
+        }
+
+        transfer_pending_microphone_samples(&mut pending, &mut resumed);
+
+        assert!(pending.is_empty());
+        assert_eq!(resumed.len(), MAX_PENDING_MIC_SAMPLES);
+        assert_eq!(resumed.front().map(String::as_str), Some("2"));
+        assert_eq!(
+            resumed.get(MAX_PENDING_MIC_SAMPLES - 2).map(String::as_str),
+            Some("hello")
+        );
+        assert_eq!(resumed.back().map(String::as_str), Some("world"));
+    }
+
+    #[test]
+    fn carry_probe_only_microphone_context_preserves_format_state_for_resume() {
+        let output_url = cidre::ns::Url::with_fs_path_str("/tmp/test-microphone-resume.m4a", false);
+        let fmt = format(32, 8);
+        let mut previous =
+            tail_activity_context(MicrophoneInactivityTailTrimActivityMode::PeakLevel, 10);
+        observe_microphone_format(&mut previous.format_state, fmt);
+        previous.logged_format_samples = 1;
+
+        let mut resumed = microphone_output_context_for_output_url(
+            &output_url,
+            Some("/tmp/test-microphone-resume.m4a".to_string()),
+            10,
+            0.0,
+            MicrophoneInactivityTailTrimActivityMode::PeakLevel,
+        );
+
+        carry_probe_only_microphone_context(&mut previous, &mut resumed);
+
+        assert_eq!(
+            resolve_microphone_live_format(&resumed.format_state),
+            Some(fmt)
+        );
+        assert_eq!(resumed.logged_format_samples, 1);
     }
 
     #[test]
@@ -1231,6 +1296,45 @@ fn append_microphone_sample_to_writer(
 }
 
 #[cfg(target_os = "macos")]
+fn push_bounded_pending_microphone_sample<T>(pending_samples: &mut VecDeque<T>, sample: T) {
+    pending_samples.push_back(sample);
+    while pending_samples.len() > MAX_PENDING_MIC_SAMPLES {
+        let _ = pending_samples.pop_front();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn transfer_pending_microphone_samples<T>(
+    from_pending_samples: &mut VecDeque<T>,
+    into_pending_samples: &mut VecDeque<T>,
+) {
+    into_pending_samples.extend(from_pending_samples.drain(..));
+    while into_pending_samples.len() > MAX_PENDING_MIC_SAMPLES {
+        let _ = into_pending_samples.pop_front();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn carry_probe_only_microphone_context(
+    previous_context: &mut MicrophoneOutputContext,
+    next_context: &mut MicrophoneOutputContext,
+) {
+    if previous_context.output_url.is_some() || previous_context.writer.is_some() {
+        return;
+    }
+
+    if next_context.format_state.observed_format_count == 0 {
+        next_context.format_state = previous_context.format_state;
+        next_context.logged_format_samples = previous_context.logged_format_samples;
+    }
+
+    transfer_pending_microphone_samples(
+        &mut previous_context.pending_samples,
+        &mut next_context.pending_samples,
+    );
+}
+
+#[cfg(target_os = "macos")]
 fn flush_pending_microphone_sample_queue<T, E>(
     pending_samples: &mut VecDeque<T>,
     selected_format: Option<AudioSampleFormat>,
@@ -1330,9 +1434,9 @@ mod microphone_delegate {
         create_audio_asset_writer_for_sample_format, derive_audio_sample_format_from_sample_buf,
         flush_pending_microphone_samples, maybe_feed_microphone_vad_pcm,
         maybe_track_microphone_activity, microphone_output_callback_objc_exception_error,
-        microphone_output_callback_panic_error, ns, objc, record_observed_audio_format,
-        resolve_microphone_live_format, BufferedMicSample, MicrophoneOutputContext,
-        MAX_PENDING_MIC_SAMPLES,
+        microphone_output_callback_panic_error, ns, objc, push_bounded_pending_microphone_sample,
+        record_observed_audio_format, resolve_microphone_live_format, BufferedMicSample,
+        MicrophoneOutputContext,
     };
     use cidre::av::capture::AudioDataOutputSampleBufDelegate;
 
@@ -1364,45 +1468,26 @@ mod microphone_delegate {
                     maybe_track_microphone_activity(sample_buf);
                     maybe_feed_microphone_vad_pcm(sample_buf);
 
-                    if ctx.output_url.is_none() {
-                        return;
-                    }
-
-                    if ctx.writer.is_some() {
-                        let Some(sample_format) =
-                            derive_audio_sample_format_from_sample_buf(sample_buf)
-                        else {
-                            return;
-                        };
-
-                        ctx.pending_samples.push_back(BufferedMicSample {
-                            sample_buf: sample_buf.retained(),
-                            format: sample_format,
-                        });
-                        while ctx.pending_samples.len() > MAX_PENDING_MIC_SAMPLES {
-                            let _ = ctx.pending_samples.pop_front();
-                        }
-
-                        if let Err(error) = flush_pending_microphone_samples(ctx) {
-                            ctx.first_error = Some(error);
-                        }
-                        return;
-                    }
-
                     let Some(sample_format) =
                         derive_audio_sample_format_from_sample_buf(sample_buf)
                     else {
                         return;
                     };
 
-                    record_observed_audio_format(ctx, sample_format);
+                    if ctx.writer.is_none() {
+                        record_observed_audio_format(ctx, sample_format);
+                    }
 
-                    ctx.pending_samples.push_back(BufferedMicSample {
-                        sample_buf: sample_buf.retained(),
-                        format: sample_format,
-                    });
-                    while ctx.pending_samples.len() > MAX_PENDING_MIC_SAMPLES {
-                        let _ = ctx.pending_samples.pop_front();
+                    push_bounded_pending_microphone_sample(
+                        &mut ctx.pending_samples,
+                        BufferedMicSample {
+                            sample_buf: sample_buf.retained(),
+                            format: sample_format,
+                        },
+                    );
+
+                    if ctx.output_url.is_none() {
+                        return;
                     }
 
                     if ctx.writer.is_none() {
@@ -1593,17 +1678,19 @@ impl AvFoundationMicrophoneCaptureSession {
         tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
     ) -> Result<(), CaptureErrorResponse> {
         let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
-        let next_context = microphone_output_context_for_output_url(
+
+        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
+        let current_context = self.output_delegate.inner_mut();
+        let mut next_context = microphone_output_context_for_output_url(
             &output_url,
             Some(output_file.to_string()),
             tail_trim_seconds,
             activity_threshold,
             tail_activity_mode,
         );
+        carry_probe_only_microphone_context(current_context, &mut next_context);
 
-        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
-        let mut previous_context =
-            std::mem::replace(self.output_delegate.inner_mut(), next_context);
+        let mut previous_context = std::mem::replace(current_context, next_context);
         finalize_microphone_output_context(&mut previous_context)?;
 
         Ok(())
