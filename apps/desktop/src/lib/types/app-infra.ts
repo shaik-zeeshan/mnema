@@ -174,6 +174,29 @@ export interface ProcessingResultDto {
 	createdAt: string;
 }
 
+export interface TranscriptionSegment {
+	startMs: number;
+	endMs: number;
+	text: string;
+	confidence?: number | null;
+}
+
+export interface TranscriptionWord {
+	startMs: number;
+	endMs: number;
+	text: string;
+	confidence?: number | null;
+}
+
+export interface TranscriptionStructuredPayload {
+	provider: string;
+	modelId?: string | null;
+	language: string;
+	segments: TranscriptionSegment[];
+	words: TranscriptionWord[];
+	provenance?: Record<string, unknown>;
+}
+
 export type CapturedFrameReprocessingOutcome = "created" | "ignored" | "requeued";
 
 export interface CapturedFrameReprocessingResultDto {
