@@ -18,12 +18,12 @@ mod tests;
 
 use capture_microphone as microphone_capture;
 use capture_types::{
-    CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, CapturePermissions,
-    CapturePermissionsResponse, CaptureSources, CaptureSupportResponse, InactivityActivityMode,
-    MicrophoneControllerState, NativeCaptureDebugLogStatus, NativeCaptureSessionResponse,
-    RecordingSettings, ScreenResolution, ScreenResolutionPreset, StartNativeCaptureRequest,
-    UpdateMicrophoneControllerRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
-    VideoBitratePreset, VideoBitrateSettings,
+    AudioTranscriptionProvider, AudioTranscriptionSettings, CaptureErrorResponse,
+    CaptureOutputFiles, CapturePermissionState, CapturePermissions, CapturePermissionsResponse,
+    CaptureSources, CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
+    NativeCaptureDebugLogStatus, NativeCaptureSessionResponse, RecordingSettings, ScreenResolution,
+    ScreenResolutionPreset, StartNativeCaptureRequest, UpdateMicrophoneControllerRequest,
+    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use capture_vad::configured_adapter_as_str;
 use settings::{
@@ -63,6 +63,15 @@ pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
 pub const RECORDING_SETTINGS_CHANGED_EVENT: &str = "recording_settings_changed";
 pub const APP_NOTIFICATIONS_CHANGED_EVENT: &str = "app_notifications_changed";
+const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcription-unavailable";
+const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[allow(dead_code)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AppNotificationAction {
+    OpenSettingsTab { tab: String },
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +81,8 @@ pub struct AppNotification {
     pub title: String,
     pub message: String,
     pub created_at_unix_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<AppNotificationAction>,
 }
 
 #[derive(Debug, Default)]
@@ -132,6 +143,127 @@ fn push_app_notification(
         runtime.push_session_notification(notification)
     };
     emit_app_notifications_changed(app_handle, &notifications);
+}
+
+fn should_warn_audio_transcription_unavailable_at_start(settings: &RecordingSettings) -> bool {
+    settings.capture_microphone && settings.transcription.enabled
+}
+
+fn should_warn_audio_transcription_unavailable_at_startup(settings: &RecordingSettings) -> bool {
+    settings.transcription.enabled
+}
+
+fn audio_transcription_provider_label(provider: AudioTranscriptionProvider) -> &'static str {
+    match provider {
+        AudioTranscriptionProvider::LocalWhisper => "Local Whisper",
+        AudioTranscriptionProvider::AppleSpeechOnDevice => "Apple Speech on-device recognition",
+        AudioTranscriptionProvider::Parakeet => "Parakeet",
+    }
+}
+
+fn audio_transcription_selection_label(settings: &AudioTranscriptionSettings) -> String {
+    let provider = audio_transcription_provider_label(settings.provider);
+    match settings.model_id.as_deref() {
+        Some(model_id) if !model_id.is_empty() => format!("{provider} `{model_id}`"),
+        _ => provider.to_string(),
+    }
+}
+
+fn audio_transcription_unavailable_notification(
+    settings: &RecordingSettings,
+    created_at_unix_ms: u64,
+) -> AppNotification {
+    let selection = audio_transcription_selection_label(&settings.transcription);
+    AppNotification {
+        id: AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID.to_string(),
+        severity: "warning".to_string(),
+        title: "Transcription model unavailable".to_string(),
+        message: format!(
+            "{selection} is not available. Microphone audio will not be transcribed until you install or choose an available model."
+        ),
+        created_at_unix_ms,
+        action: Some(AppNotificationAction::OpenSettingsTab {
+            tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),
+        }),
+    }
+}
+
+fn maybe_push_audio_transcription_unavailable_warning(
+    app_handle: &tauri::AppHandle,
+    app_notifications_state: &AppNotificationsState,
+    settings: &RecordingSettings,
+    context: &str,
+) {
+    let app_data_dir = match app_handle.path().app_data_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            debug_log::log_warn(format!(
+                "failed to resolve app data directory for {context} audio transcription warning: {error}"
+            ));
+            return;
+        }
+    };
+
+    match crate::audio_transcription_models::selected_audio_transcription_model_available(
+        &app_data_dir,
+        &settings.transcription,
+    ) {
+        Ok(true) => {}
+        Ok(false) => {
+            let selection = audio_transcription_selection_label(&settings.transcription);
+            debug_log::log_warn(format!(
+                "audio transcription unavailable at {context} (selection={selection})"
+            ));
+            push_app_notification(
+                app_handle,
+                app_notifications_state,
+                audio_transcription_unavailable_notification(settings, runtime::now_unix_ms()),
+            );
+        }
+        Err(error) => {
+            let selection = audio_transcription_selection_label(&settings.transcription);
+            debug_log::log_warn(format!(
+                "failed to inspect selected audio transcription model at {context} (selection={selection}): {error}"
+            ));
+            push_app_notification(
+                app_handle,
+                app_notifications_state,
+                audio_transcription_unavailable_notification(settings, runtime::now_unix_ms()),
+            );
+        }
+    }
+}
+
+fn maybe_push_audio_transcription_unavailable_start_warning(
+    app_handle: &tauri::AppHandle,
+    app_notifications_state: &AppNotificationsState,
+    settings: &RecordingSettings,
+) {
+    if !should_warn_audio_transcription_unavailable_at_start(settings) {
+        return;
+    }
+
+    maybe_push_audio_transcription_unavailable_warning(
+        app_handle,
+        app_notifications_state,
+        settings,
+        "recording start",
+    );
+}
+
+pub fn maybe_push_audio_transcription_unavailable_startup_warning(app_handle: &tauri::AppHandle) {
+    let settings_state = app_handle.state::<RecordingSettingsState>();
+    let settings = current_recording_settings(settings_state.inner());
+    if !should_warn_audio_transcription_unavailable_at_startup(&settings) {
+        return;
+    }
+
+    maybe_push_audio_transcription_unavailable_warning(
+        app_handle,
+        app_handle.state::<AppNotificationsState>().inner(),
+        &settings,
+        "app startup",
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -714,6 +846,12 @@ fn start_native_capture_inner(
         settings.save_directory
     ));
 
+    maybe_push_audio_transcription_unavailable_start_warning(
+        &app_handle,
+        app_notifications_state.inner(),
+        &settings,
+    );
+
     if let Some(notice) = runtime.take_microphone_vad_fallback_notification() {
         let message = format!(
             "Configured microphone VAD '{}' could not run. Using '{}' for this recording session.",
@@ -738,6 +876,7 @@ fn start_native_capture_inner(
                 title: "Microphone VAD fallback".to_string(),
                 message,
                 created_at_unix_ms: runtime::now_unix_ms(),
+                action: None,
             },
         );
     }

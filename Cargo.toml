@@ -2,6 +2,7 @@
 members = [
     "apps/desktop/src-tauri",
     "crates/app-infra",
+    "crates/audio-transcription",
     "crates/capture-runtime",
     "crates/capture-microphone",
     "crates/capture-screen",

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
-use crate::{AppInfraError, Result};
+use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
 
 use super::{
     Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary, NewFrame, ProcessingJob,
@@ -62,6 +62,15 @@ impl ProcessingStore {
         self.get_required_frame(frame_id).await
     }
 
+    pub async fn upsert_audio_segment(&self, segment: &NewAudioSegment) -> Result<AudioSegment> {
+        upsert_audio_segment_record(&self.pool, segment).await?;
+        get_audio_segment_by_unique_key(&self.pool, segment).await
+    }
+
+    pub async fn get_audio_segment(&self, audio_segment_id: i64) -> Result<Option<AudioSegment>> {
+        get_audio_segment_optional(&self.pool, audio_segment_id).await
+    }
+
     pub(crate) async fn insert_frame_in_transaction(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,
@@ -101,8 +110,19 @@ impl ProcessingStore {
         payload_json: Option<&str>,
     ) -> Result<ProcessingJob> {
         let subject = ProcessingSubject::frame(frame_id);
+        self.enqueue_job_in_transaction(transaction, &subject, processor, payload_json)
+            .await
+    }
+
+    pub(crate) async fn enqueue_job_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        subject: &ProcessingSubject,
+        processor: &str,
+        payload_json: Option<&str>,
+    ) -> Result<ProcessingJob> {
         let job_id =
-            insert_processing_job_record(&mut **transaction, &subject, processor, payload_json)
+            insert_processing_job_record(&mut **transaction, subject, processor, payload_json)
                 .await?;
 
         get_processing_job_optional(&mut **transaction, job_id)
@@ -553,14 +573,55 @@ impl ProcessingStore {
     }
 
     pub async fn claim_next_queued_job(&self) -> Result<Option<ProcessingJob>> {
+        self.claim_next_queued_job_matching_processor(None, None)
+            .await
+    }
+
+    pub async fn claim_next_queued_job_for_processor(
+        &self,
+        processor: &str,
+    ) -> Result<Option<ProcessingJob>> {
+        self.claim_next_queued_job_matching_processor(Some(processor), None)
+            .await
+    }
+
+    pub async fn claim_next_queued_job_excluding_processor(
+        &self,
+        excluded_processor: &str,
+    ) -> Result<Option<ProcessingJob>> {
+        self.claim_next_queued_job_matching_processor(None, Some(excluded_processor))
+            .await
+    }
+
+    async fn claim_next_queued_job_matching_processor(
+        &self,
+        processor: Option<&str>,
+        excluded_processor: Option<&str>,
+    ) -> Result<Option<ProcessingJob>> {
         loop {
             let mut transaction = self.pool.begin().await?;
-            let job_id = sqlx::query(
-                "SELECT id FROM processing_jobs WHERE status = 'queued' ORDER BY id ASC LIMIT 1",
-            )
-            .fetch_optional(&mut *transaction)
-            .await?
-            .map(|row| row.get::<i64, _>("id"));
+            let job_id = match (processor, excluded_processor) {
+                (Some(processor), _) => sqlx::query(
+                    "SELECT id FROM processing_jobs WHERE status = 'queued' AND processor = ?1 ORDER BY id ASC LIMIT 1",
+                )
+                .bind(processor)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .map(|row| row.get::<i64, _>("id")),
+                (None, Some(excluded_processor)) => sqlx::query(
+                    "SELECT id FROM processing_jobs WHERE status = 'queued' AND processor != ?1 ORDER BY id ASC LIMIT 1",
+                )
+                .bind(excluded_processor)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .map(|row| row.get::<i64, _>("id")),
+                (None, None) => sqlx::query(
+                    "SELECT id FROM processing_jobs WHERE status = 'queued' ORDER BY id ASC LIMIT 1",
+                )
+                .fetch_optional(&mut *transaction)
+                .await?
+                .map(|row| row.get::<i64, _>("id")),
+            };
 
             let Some(job_id) = job_id else {
                 transaction.commit().await?;
@@ -994,6 +1055,72 @@ where
     Ok(result.last_insert_rowid())
 }
 
+async fn upsert_audio_segment_record<'e, E>(executor: E, segment: &NewAudioSegment) -> Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO audio_segments \
+            (source_kind, source_session_id, segment_index, file_path, started_at, ended_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT(source_kind, source_session_id, file_path) DO UPDATE SET \
+            segment_index = excluded.segment_index, \
+            started_at = excluded.started_at, \
+            ended_at = excluded.ended_at, \
+            updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(segment.source_kind.as_str())
+    .bind(&segment.source_session_id)
+    .bind(segment.segment_index)
+    .bind(&segment.file_path)
+    .bind(&segment.started_at)
+    .bind(&segment.ended_at)
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
+async fn get_audio_segment_by_unique_key<'e, E>(
+    executor: E,
+    segment: &NewAudioSegment,
+) -> Result<AudioSegment>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+         FROM audio_segments \
+         WHERE source_kind = ?1 AND source_session_id = ?2 AND file_path = ?3",
+    )
+    .bind(segment.source_kind.as_str())
+    .bind(&segment.source_session_id)
+    .bind(&segment.file_path)
+    .fetch_one(executor)
+    .await?;
+
+    map_audio_segment(row)
+}
+
+async fn get_audio_segment_optional<'e, E>(
+    executor: E,
+    audio_segment_id: i64,
+) -> Result<Option<AudioSegment>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+         FROM audio_segments \
+         WHERE id = ?1",
+    )
+    .bind(audio_segment_id)
+    .fetch_optional(executor)
+    .await?;
+
+    row.map(map_audio_segment).transpose()
+}
+
 async fn get_frame_optional<'e, E>(executor: E, frame_id: i64) -> Result<Option<Frame>>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -1063,6 +1190,20 @@ where
         .execute(executor)
         .await?;
     Ok(())
+}
+
+fn map_audio_segment(row: SqliteRow) -> Result<AudioSegment> {
+    Ok(AudioSegment {
+        id: row.get("id"),
+        source_kind: AudioSegmentSourceKind::from_str(row.get("source_kind")),
+        source_session_id: row.get("source_session_id"),
+        segment_index: row.get("segment_index"),
+        file_path: row.get("file_path"),
+        started_at: row.get("started_at"),
+        ended_at: row.get("ended_at"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
 }
 
 fn map_frame(row: SqliteRow) -> Result<Frame> {

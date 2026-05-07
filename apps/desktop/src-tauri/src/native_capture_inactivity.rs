@@ -655,9 +655,9 @@ impl InactivityState {
 mod tests {
     use super::*;
     use capture_types::{
-        default_appearance, default_inactivity_activity_mode, default_microphone_vad_adapter,
-        default_video_bitrate, InactivityActivityMode, RecordingSettings, ScreenResolution,
-        ScreenResolutionPreset,
+        default_appearance, default_audio_transcription_settings, default_inactivity_activity_mode,
+        default_microphone_vad_adapter, default_video_bitrate, InactivityActivityMode,
+        RecordingSettings, ScreenResolution, ScreenResolutionPreset,
     };
 
     fn empty_audio_activity() -> AudioActivitySourceState {
@@ -717,6 +717,7 @@ mod tests {
             follow_timeline_live: false,
             appearance: default_appearance(),
             ocr: capture_types::default_ocr_settings(),
+            transcription: default_audio_transcription_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

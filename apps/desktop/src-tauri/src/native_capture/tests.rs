@@ -43,16 +43,22 @@ use super::settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
     validate_recording_settings_with_resolution_support,
 };
-use super::{AppNotification, AppNotificationsRuntime};
+use super::{
+    audio_transcription_unavailable_notification,
+    should_warn_audio_transcription_unavailable_at_start,
+    should_warn_audio_transcription_unavailable_at_startup, AppNotification, AppNotificationAction,
+    AppNotificationsRuntime,
+};
 #[cfg(target_os = "macos")]
 use capture_runtime::{
     current_date_prefix, CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule,
 };
 use capture_runtime::{RuntimeController, RuntimeState};
 use capture_types::{
-    default_appearance, default_inactivity_activity_mode, default_microphone_vad_adapter,
-    default_ocr_settings, default_preview_cache_ttl_seconds, default_video_bitrate,
-    AppearanceSetting, CaptureErrorResponse, CaptureOutputFiles, CaptureSources,
+    default_appearance, default_audio_transcription_settings, default_inactivity_activity_mode,
+    default_microphone_vad_adapter, default_ocr_settings, default_preview_cache_ttl_seconds,
+    default_video_bitrate, AppearanceSetting, AudioTranscriptionProvider,
+    AudioTranscriptionSettings, CaptureErrorResponse, CaptureOutputFiles, CaptureSources,
     CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
     MicrophoneDisconnectPolicy, MicrophonePreference, MicrophonePreferenceMode, RecordingSettings,
     ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
@@ -104,6 +110,12 @@ fn run_async_test(test: impl std::future::Future<Output = ()>) {
         .block_on(test);
 }
 
+#[cfg(target_os = "macos")]
+fn write_openable_screen_file(path: &Path) {
+    fs::write(path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10moovtrak")
+        .expect("screen artifact should exist");
+}
+
 fn app_notification_fixture(id: &str, title: &str, created_at_unix_ms: u64) -> AppNotification {
     AppNotification {
         id: id.to_string(),
@@ -111,6 +123,7 @@ fn app_notification_fixture(id: &str, title: &str, created_at_unix_ms: u64) -> A
         title: title.to_string(),
         message: format!("{title} message"),
         created_at_unix_ms,
+        action: None,
     }
 }
 
@@ -133,6 +146,7 @@ fn recording_settings_fixture() -> RecordingSettings {
         follow_timeline_live: false,
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
+        transcription: default_audio_transcription_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -160,6 +174,7 @@ fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest
         follow_timeline_live: settings.follow_timeline_live,
         appearance: settings.appearance,
         ocr: settings.ocr,
+        transcription: settings.transcription,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -228,6 +243,102 @@ fn app_notifications_runtime_clears_all_session_notifications() {
 
     assert!(runtime.clear_all().is_empty());
     assert!(runtime.list().is_empty());
+}
+
+#[test]
+fn audio_transcription_start_warning_requires_enabled_microphone_transcription() {
+    let mut settings = recording_settings_fixture();
+    settings.capture_microphone = true;
+    settings.transcription.enabled = true;
+
+    assert!(should_warn_audio_transcription_unavailable_at_start(
+        &settings
+    ));
+
+    settings.capture_microphone = false;
+    assert!(!should_warn_audio_transcription_unavailable_at_start(
+        &settings
+    ));
+
+    settings.capture_microphone = true;
+    settings.transcription.enabled = false;
+    assert!(!should_warn_audio_transcription_unavailable_at_start(
+        &settings
+    ));
+}
+
+#[test]
+fn audio_transcription_startup_warning_requires_enabled_transcription() {
+    let mut settings = recording_settings_fixture();
+    settings.capture_microphone = false;
+    settings.transcription.enabled = true;
+
+    assert!(should_warn_audio_transcription_unavailable_at_startup(
+        &settings
+    ));
+
+    settings.transcription.enabled = false;
+    assert!(!should_warn_audio_transcription_unavailable_at_startup(
+        &settings
+    ));
+}
+
+#[test]
+fn audio_transcription_unavailable_notification_opens_transcription_settings_tab() {
+    let settings = RecordingSettings {
+        capture_microphone: true,
+        transcription: AudioTranscriptionSettings {
+            provider: AudioTranscriptionProvider::LocalWhisper,
+            model_id: Some("base".to_string()),
+            language: "auto".to_string(),
+            enabled: true,
+            ..capture_types::default_audio_transcription_settings()
+        },
+        ..recording_settings_fixture()
+    };
+
+    let notification = audio_transcription_unavailable_notification(&settings, 1234);
+
+    assert_eq!(notification.id, "audio-transcription-unavailable");
+    assert_eq!(notification.severity, "warning");
+    assert_eq!(notification.title, "Transcription model unavailable");
+    assert!(notification.message.contains("Local Whisper `base`"));
+    assert_eq!(notification.created_at_unix_ms, 1234);
+
+    let payload = serde_json::to_value(&notification).expect("notification should serialize");
+    assert_eq!(payload["action"]["type"], "open_settings_tab");
+    assert_eq!(payload["action"]["tab"], "transcription");
+
+    match notification.action {
+        Some(AppNotificationAction::OpenSettingsTab { tab }) => {
+            assert_eq!(tab, "transcription");
+        }
+        None => panic!("transcription warning should include settings CTA"),
+    }
+}
+
+#[test]
+fn audio_transcription_start_warning_reuses_one_notification_id() {
+    let settings = RecordingSettings {
+        capture_microphone: true,
+        transcription: AudioTranscriptionSettings {
+            provider: AudioTranscriptionProvider::Parakeet,
+            model_id: Some("parakeet-tdt-0.6b-v3-onnx".to_string()),
+            language: "auto".to_string(),
+            enabled: true,
+            ..capture_types::default_audio_transcription_settings()
+        },
+        ..recording_settings_fixture()
+    };
+    let mut runtime = AppNotificationsRuntime::default();
+
+    runtime.push_session_notification(audio_transcription_unavailable_notification(&settings, 1));
+    let notifications = runtime
+        .push_session_notification(audio_transcription_unavailable_notification(&settings, 2));
+
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].id, "audio-transcription-unavailable");
+    assert_eq!(notifications[0].created_at_unix_ms, 2);
 }
 
 #[cfg(target_os = "macos")]
@@ -856,6 +967,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         follow_timeline_live: false,
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
+        transcription: default_audio_transcription_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -894,6 +1006,7 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         follow_timeline_live: false,
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
+        transcription: default_audio_transcription_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -928,6 +1041,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         follow_timeline_live: false,
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
+        transcription: default_audio_transcription_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1156,26 +1270,12 @@ fn close_frame_batches_for_stopped_screen_session_id_closes_stale_open_batch() {
         );
         let session_id = "native-session-stop-close";
 
-        infra
-            .capture_frame(
-                &::app_infra::NewFrame::new(
-                    session_id,
-                    "/tmp/native-session-stop-close-segment-0001/frames/frame-1.png",
-                    "2026-05-02T13:40:00Z",
-                ),
-                None,
-            )
-            .await
-            .expect("first frame should persist");
-
-        let open_before = infra
-            .list_frame_batches(Some(session_id))
-            .await
-            .expect("frame batches should list")
-            .into_iter()
-            .find(|batch| batch.batch_started_at == "2026-05-02T13:40:00Z")
-            .expect("first batch should exist");
-        assert_eq!(open_before.status, ::app_infra::FrameBatchStatus::Open);
+        insert_open_frame_batch_fixture(
+            infra.as_ref(),
+            session_id,
+            "/tmp/native-session-stop-close-segment-0001/frames/frame-1.png",
+        )
+        .await;
 
         super::segments::close_frame_batches_for_stopped_screen_session_id_async(
             &infra, session_id,
@@ -1183,18 +1283,73 @@ fn close_frame_batches_for_stopped_screen_session_id_closes_stale_open_batch() {
         .await
         .expect("stop cleanup should close frame batches");
 
-        let batches = infra
-            .list_frame_batches(Some(session_id))
-            .await
-            .expect("frame batches should list after stop cleanup");
-        assert!(batches
-            .iter()
-            .all(|batch| batch.status != ::app_infra::FrameBatchStatus::Open));
-        assert!(batches
-            .iter()
-            .any(|batch| batch.status == ::app_infra::FrameBatchStatus::Closed));
-        assert!(batches.iter().all(|batch| batch.finalize_job_id.is_some()));
+        assert_frame_batches_closed(infra.as_ref(), session_id).await;
     });
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn close_frame_batches_for_stopped_screen_session_id_closes_inside_runtime() {
+    run_async_test(async {
+        let dir = TestDir::new("close-frame-batches-stop-inside-runtime");
+        let infra = Arc::new(
+            ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize"),
+        );
+        let session_id = "native-session-stop-close-inside-runtime";
+
+        insert_open_frame_batch_fixture(
+            infra.as_ref(),
+            session_id,
+            "/tmp/native-session-stop-close-inside-runtime-segment-0001/frames/frame-1.png",
+        )
+        .await;
+
+        super::segments::close_frame_batches_for_stopped_screen_session_id(&infra, session_id)
+            .expect("sync stop cleanup should close frame batches inside an existing runtime");
+
+        assert_frame_batches_closed(infra.as_ref(), session_id).await;
+    });
+}
+
+#[cfg(target_os = "macos")]
+async fn insert_open_frame_batch_fixture(
+    infra: &::app_infra::AppInfra,
+    session_id: &str,
+    frame_path: &str,
+) {
+    infra
+        .capture_frame(
+            &::app_infra::NewFrame::new(session_id, frame_path, "2026-05-02T13:40:00Z"),
+            None,
+        )
+        .await
+        .expect("first frame should persist");
+
+    let open_before = infra
+        .list_frame_batches(Some(session_id))
+        .await
+        .expect("frame batches should list")
+        .into_iter()
+        .find(|batch| batch.batch_started_at == "2026-05-02T13:40:00Z")
+        .expect("first batch should exist");
+    assert_eq!(open_before.status, ::app_infra::FrameBatchStatus::Open);
+}
+
+#[cfg(target_os = "macos")]
+async fn assert_frame_batches_closed(infra: &::app_infra::AppInfra, session_id: &str) {
+    let batches = infra
+        .list_frame_batches(Some(session_id))
+        .await
+        .expect("frame batches should list after stop cleanup");
+    assert!(batches
+        .iter()
+        .all(|batch| batch.status != ::app_infra::FrameBatchStatus::Open));
+    assert!(batches
+        .iter()
+        .any(|batch| batch.status == ::app_infra::FrameBatchStatus::Closed));
+    assert!(batches.iter().all(|batch| batch.finalize_job_id.is_some()));
 }
 
 #[test]
@@ -2976,7 +3131,7 @@ fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
 fn wake_recovery_finalizes_stale_screen_output_after_sleep_even_when_recording_file_was_cleared() {
     let dir = TestDir::new("wake-recovery-sleep-stale-screen");
     let stale_screen_file = dir.path().join("stale-sleep-screen.mov");
-    fs::write(&stale_screen_file, b"stale-screen-bytes").expect("stale screen file should exist");
+    write_openable_screen_file(&stale_screen_file);
 
     let mut runtime = running_screen_capture_runtime_fixture();
     runtime.requested_sources = Some(CaptureSources {
@@ -5024,24 +5179,23 @@ fn resume_screen_uses_contiguous_segment_index_when_schedule_has_advanced() {
 
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/22/native-session-screen-pause-segment-0005.mov"
-            .to_string();
+    let expected_date_prefix = current_date_prefix();
+    let expected_screen_file = format!(
+        "/tmp/native-capture-tests/{expected_date_prefix}/native-session-screen-pause-segment-0005.mov"
+    );
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         |segment_dir, screen_output, _, _, _, _, _, _, _, _| {
             assert_eq!(
-                segment_dir,
-                std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/.native-session-screen-pause-segment-0005"
+                segment_dir.to_string_lossy(),
+                format!(
+                    "/tmp/native-capture-tests/{expected_date_prefix}/.native-session-screen-pause-segment-0005"
                 )
             );
             assert_eq!(
-                screen_output,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/22/native-session-screen-pause-segment-0005.mov"
-                ))
+                screen_output.map(|path| path.to_string_lossy().to_string()),
+                Some(expected_screen_file.clone())
             );
 
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))

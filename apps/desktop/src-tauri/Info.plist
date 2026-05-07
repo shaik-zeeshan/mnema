@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Microphone access is required to capture audio input during recording.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Speech recognition access is required to transcribe microphone audio with Apple Speech.</string>
 </dict>
 </plist>

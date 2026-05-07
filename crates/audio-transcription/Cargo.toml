@@ -1,0 +1,37 @@
+[package]
+name = "audio-transcription"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+local-whisper = ["dep:cidre", "dep:tokio", "dep:whisper-rs"]
+parakeet-onnx = ["dep:cidre", "dep:ndarray", "dep:ort", "dep:tokio"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+async-trait = "0.1"
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+ndarray = { version = "0.17", optional = true }
+ort = { version = "2.0.0-rc.12", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block = "0.1"
+block2 = { version = "0.6", features = ["alloc"] }
+cidre = { version = "0.15", default-features = false, features = ["av", "async", "blocks", "cm", "dispatch", "macos_15_0"], optional = true }
+objc = "0.2"
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSError", "NSLocale", "NSEnumerator", "NSString", "NSURL", "alloc", "std"] }
+objc2-speech = { version = "0.3.2", default-features = false, features = ["block2", "std", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFSpeechRecognizer", "SFTranscription", "SFTranscriptionSegment"] }
+whisper-rs = { version = "0.16", optional = true, features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+whisper-rs = { version = "0.16", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt"] }

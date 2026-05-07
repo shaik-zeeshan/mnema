@@ -155,6 +155,87 @@ pub fn default_ocr_settings() -> OcrSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioTranscriptionProvider {
+    LocalWhisper,
+    AppleSpeechOnDevice,
+    Parakeet,
+}
+
+pub fn default_audio_transcription_enabled() -> bool {
+    true
+}
+
+pub fn default_audio_transcription_provider() -> AudioTranscriptionProvider {
+    AudioTranscriptionProvider::LocalWhisper
+}
+
+pub fn default_audio_transcription_model_id() -> Option<String> {
+    Some("base".to_string())
+}
+
+pub fn default_audio_transcription_language() -> String {
+    "auto".to_string()
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioTranscriptionMemoryMode {
+    Balanced,
+    LowMemory,
+    Performance,
+}
+
+pub fn default_audio_transcription_memory_mode() -> AudioTranscriptionMemoryMode {
+    AudioTranscriptionMemoryMode::Balanced
+}
+
+pub fn default_audio_transcription_idle_unload_seconds() -> u64 {
+    300
+}
+
+pub fn default_audio_transcription_chunk_seconds() -> u64 {
+    30
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioTranscriptionSettings {
+    #[serde(default = "default_audio_transcription_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_audio_transcription_provider")]
+    pub provider: AudioTranscriptionProvider,
+    #[serde(default = "default_audio_transcription_model_id")]
+    pub model_id: Option<String>,
+    #[serde(default = "default_audio_transcription_language")]
+    pub language: String,
+    #[serde(default = "default_audio_transcription_memory_mode")]
+    pub memory_mode: AudioTranscriptionMemoryMode,
+    #[serde(default = "default_audio_transcription_idle_unload_seconds")]
+    pub idle_unload_seconds: u64,
+    #[serde(default = "default_audio_transcription_chunk_seconds")]
+    pub chunk_seconds: u64,
+}
+
+pub fn default_audio_transcription_settings() -> AudioTranscriptionSettings {
+    AudioTranscriptionSettings {
+        enabled: default_audio_transcription_enabled(),
+        provider: default_audio_transcription_provider(),
+        model_id: default_audio_transcription_model_id(),
+        language: default_audio_transcription_language(),
+        memory_mode: default_audio_transcription_memory_mode(),
+        idle_unload_seconds: default_audio_transcription_idle_unload_seconds(),
+        chunk_seconds: default_audio_transcription_chunk_seconds(),
+    }
+}
+
+impl Default for AudioTranscriptionSettings {
+    fn default() -> Self {
+        default_audio_transcription_settings()
+    }
+}
+
 impl Default for VideoBitrateSettings {
     fn default() -> Self {
         default_video_bitrate()
@@ -193,6 +274,8 @@ pub struct RecordingSettings {
     pub appearance: AppearanceSetting,
     #[serde(default = "default_ocr_settings")]
     pub ocr: OcrSettings,
+    #[serde(default = "default_audio_transcription_settings")]
+    pub transcription: AudioTranscriptionSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -237,6 +320,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub appearance: AppearanceSetting,
     #[serde(default = "default_ocr_settings")]
     pub ocr: OcrSettings,
+    #[serde(default = "default_audio_transcription_settings")]
+    pub transcription: AudioTranscriptionSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]

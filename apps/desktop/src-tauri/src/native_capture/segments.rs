@@ -43,6 +43,38 @@ const FRAME_ARTIFACT_BUFFER_CAPACITY: usize = 64;
 const SEGMENT_LOOP_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[cfg(target_os = "macos")]
+fn run_native_capture_async<F, R>(context: &'static str, future: F) -> Result<R, String>
+where
+    F: std::future::Future<Output = R> + Send + 'static,
+    R: Send + 'static,
+{
+    let run_future = move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                format!("failed to initialize native capture {context} runtime: {error}")
+            })?;
+
+        Ok(runtime.block_on(future))
+    };
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let worker = thread::Builder::new()
+            .name(format!("mnema-native-capture-{context}"))
+            .spawn(run_future)
+            .map_err(|error| format!("failed to spawn native capture {context} worker: {error}"))?;
+
+        worker
+            .join()
+            .map_err(|_| format!("native capture {context} worker panicked"))?
+    } else {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(run_future))
+            .map_err(|_| format!("native capture {context} worker panicked"))?
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn microphone_tail_trim_activity_mode_for_vad(
     vad: &MicrophoneVadRuntime,
 ) -> microphone_capture::MicrophoneInactivityTailTrimActivityMode {
@@ -548,6 +580,78 @@ pub(super) fn committed_audio_segments_for_output_files(
 }
 
 #[cfg(target_os = "macos")]
+fn transcription_admission_for_app_handle(
+    app_handle: &tauri::AppHandle,
+) -> ::app_infra::AudioSegmentTranscriptionAdmission {
+    let transcription_settings = match app_handle
+        .state::<crate::native_capture::RecordingSettingsState>()
+        .lock()
+    {
+        Ok(settings) => settings.settings.transcription.clone(),
+        Err(_) => {
+            super::debug_log::log(
+                "failed to read recording settings for audio transcription admission".to_string(),
+            );
+            return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
+        }
+    };
+
+    if !transcription_settings.enabled {
+        return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
+    }
+
+    let available = match app_handle.path().app_data_dir() {
+        Ok(app_data_dir) => {
+            crate::audio_transcription_models::selected_audio_transcription_model_available(
+                &app_data_dir,
+                &transcription_settings,
+            )
+        }
+        Err(error) => {
+            super::debug_log::log(format!(
+                "failed to resolve app data directory for audio transcription admission: {error}"
+            ));
+            return ::app_infra::AudioSegmentTranscriptionAdmission::unavailable();
+        }
+    };
+
+    match available {
+        Ok(true) => {
+            let provider = crate::audio_transcription_models::provider_id_for_settings(
+                transcription_settings.provider,
+            );
+            let mut payload = ::app_infra::AudioTranscriptionJobPayload::new(
+                provider,
+                transcription_settings.model_id.clone(),
+                transcription_settings.language.clone(),
+            );
+            payload.options =
+                crate::audio_transcription_models::transcription_request_options_for_settings(
+                    &transcription_settings,
+                );
+            match serde_json::to_string(&payload) {
+                Ok(payload_json) => {
+                    ::app_infra::AudioSegmentTranscriptionAdmission::available(payload_json)
+                }
+                Err(error) => {
+                    super::debug_log::log(format!(
+                        "failed to serialize audio transcription admission payload: {error}"
+                    ));
+                    ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
+                }
+            }
+        }
+        Ok(false) => ::app_infra::AudioSegmentTranscriptionAdmission::unavailable(),
+        Err(error) => {
+            super::debug_log::log(format!(
+                "failed to inspect selected audio transcription model: {error}"
+            ));
+            ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn persist_committed_audio_segments(
     app_handle: Option<&tauri::AppHandle>,
     source_sessions: Option<&SourceSessions>,
@@ -573,44 +677,36 @@ pub(super) fn persist_committed_audio_segments(
 
     let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
     let app_handle = app_handle.clone();
-    let persistence = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                super::debug_log::log(format!(
-                    "failed to initialize native audio segment persistence runtime: {error}"
-                ));
-                return;
-            }
-        };
-
-        runtime.block_on(async move {
-            let mut persisted_any = false;
-            for segment in segments {
-                match infra.upsert_audio_segment(&segment).await {
-                    Ok(_) => {
-                        persisted_any = true;
-                    }
-                    Err(error) => {
-                        super::debug_log::log(format!(
-                            "failed to persist native audio segment {}: {}",
-                            segment.file_path, error
-                        ));
-                    }
+    let persistence = run_native_capture_async("audio-segment-persistence", async move {
+        let mut persisted_any = false;
+        let transcription_admission = transcription_admission_for_app_handle(&app_handle);
+        for segment in segments {
+            match infra
+                .upsert_audio_segment_and_maybe_enqueue_transcription(
+                    &segment,
+                    &transcription_admission,
+                )
+                .await
+            {
+                Ok(_) => {
+                    persisted_any = true;
+                }
+                Err(error) => {
+                    super::debug_log::log(format!(
+                        "failed to persist native audio segment {}: {}",
+                        segment.file_path, error
+                    ));
                 }
             }
+        }
 
-            if persisted_any {
-                emit_audio_segments_changed(&app_handle);
-            }
-        });
-    }));
+        if persisted_any {
+            emit_audio_segments_changed(&app_handle);
+        }
+    });
 
-    if persistence.is_err() {
-        super::debug_log::log("native audio segment persistence worker panicked".to_string());
+    if let Err(error) = persistence {
+        super::debug_log::log(format!("native audio segment persistence failed: {error}"));
     }
 }
 
@@ -644,9 +740,18 @@ pub(super) fn close_frame_batches_for_stopped_screen_session_id(
     infra: &crate::app_infra::AppInfraState,
     session_id: &str,
 ) -> Result<(), CaptureErrorResponse> {
-    tauri::async_runtime::block_on(close_frame_batches_for_stopped_screen_session_id_async(
-        infra, session_id,
-    ))
+    let infra = Arc::clone(infra);
+    let session_id = session_id.to_string();
+
+    match run_native_capture_async("frame-batch-close", async move {
+        close_frame_batches_for_stopped_screen_session_id_async(&infra, &session_id).await
+    }) {
+        Ok(result) => result,
+        Err(error) => Err(CaptureErrorResponse {
+            code: "frame_batch_close_failed".to_string(),
+            message: format!("Failed to close frame batches for stopped screen session: {error}"),
+        }),
+    }
 }
 
 #[cfg(target_os = "macos")]

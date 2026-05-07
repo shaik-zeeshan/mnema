@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
+use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
 use crate::Result;
 
@@ -18,7 +18,7 @@ impl AudioSegmentSourceKind {
         }
     }
 
-    fn from_str(value: &str) -> Self {
+    pub(crate) fn from_str(value: &str) -> Self {
         match value {
             "system_audio" => Self::SystemAudio,
             _ => Self::Microphone,
@@ -82,37 +82,17 @@ impl AudioSegmentStore {
     }
 
     pub async fn upsert(&self, segment: &NewAudioSegment) -> Result<AudioSegment> {
-        sqlx::query(
-            "INSERT INTO audio_segments \
-                (source_kind, source_session_id, segment_index, file_path, started_at, ended_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-             ON CONFLICT(source_kind, source_session_id, file_path) DO UPDATE SET \
-                segment_index = excluded.segment_index, \
-                started_at = excluded.started_at, \
-                ended_at = excluded.ended_at, \
-                updated_at = CURRENT_TIMESTAMP",
-        )
-        .bind(segment.source_kind.as_str())
-        .bind(&segment.source_session_id)
-        .bind(segment.segment_index)
-        .bind(&segment.file_path)
-        .bind(&segment.started_at)
-        .bind(&segment.ended_at)
-        .execute(&self.pool)
-        .await?;
+        upsert_audio_segment_record(&self.pool, segment).await?;
+        get_audio_segment_by_unique_key(&self.pool, segment).await
+    }
 
-        let row = sqlx::query(
-            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
-             FROM audio_segments \
-             WHERE source_kind = ?1 AND source_session_id = ?2 AND file_path = ?3",
-        )
-        .bind(segment.source_kind.as_str())
-        .bind(&segment.source_session_id)
-        .bind(&segment.file_path)
-        .fetch_one(&self.pool)
-        .await?;
-
-        map_audio_segment(row)
+    pub(crate) async fn upsert_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        segment: &NewAudioSegment,
+    ) -> Result<AudioSegment> {
+        upsert_audio_segment_record(&mut **transaction, segment).await?;
+        get_audio_segment_by_unique_key(&mut **transaction, segment).await
     }
 
     pub async fn get(&self, audio_segment_id: i64) -> Result<Option<AudioSegment>> {
@@ -126,6 +106,31 @@ impl AudioSegmentStore {
         .await?;
 
         row.map(map_audio_segment).transpose()
+    }
+
+    pub(crate) async fn list_microphone_without_audio_transcription_job_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+    ) -> Result<Vec<AudioSegment>> {
+        let rows = sqlx::query(
+            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+             FROM audio_segments \
+             WHERE source_kind = ?1 \
+               AND NOT EXISTS (\
+                    SELECT 1 FROM processing_jobs \
+                    WHERE processing_jobs.subject_type = ?2 \
+                      AND processing_jobs.subject_id = audio_segments.id \
+                      AND processing_jobs.processor = ?3\
+               ) \
+             ORDER BY id ASC",
+        )
+        .bind(AudioSegmentSourceKind::Microphone.as_str())
+        .bind(crate::processing::AUDIO_SEGMENT_SUBJECT_TYPE)
+        .bind(crate::processing::AUDIO_TRANSCRIPTION_PROCESSOR)
+        .fetch_all(&mut **transaction)
+        .await?;
+
+        rows.into_iter().map(map_audio_segment).collect()
     }
 
     pub async fn list_overlapping_range(
@@ -157,6 +162,53 @@ impl AudioSegmentStore {
         let rows = query.build().fetch_all(&self.pool).await?;
         rows.into_iter().map(map_audio_segment).collect()
     }
+}
+
+async fn upsert_audio_segment_record<'e, E>(executor: E, segment: &NewAudioSegment) -> Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO audio_segments \
+            (source_kind, source_session_id, segment_index, file_path, started_at, ended_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT(source_kind, source_session_id, file_path) DO UPDATE SET \
+            segment_index = excluded.segment_index, \
+            started_at = excluded.started_at, \
+            ended_at = excluded.ended_at, \
+            updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(segment.source_kind.as_str())
+    .bind(&segment.source_session_id)
+    .bind(segment.segment_index)
+    .bind(&segment.file_path)
+    .bind(&segment.started_at)
+    .bind(&segment.ended_at)
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
+async fn get_audio_segment_by_unique_key<'e, E>(
+    executor: E,
+    segment: &NewAudioSegment,
+) -> Result<AudioSegment>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+         FROM audio_segments \
+         WHERE source_kind = ?1 AND source_session_id = ?2 AND file_path = ?3",
+    )
+    .bind(segment.source_kind.as_str())
+    .bind(&segment.source_session_id)
+    .bind(&segment.file_path)
+    .fetch_one(executor)
+    .await?;
+
+    map_audio_segment(row)
 }
 
 fn map_audio_segment(row: SqliteRow) -> Result<AudioSegment> {

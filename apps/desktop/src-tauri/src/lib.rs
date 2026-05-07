@@ -1,4 +1,5 @@
 mod app_infra;
+mod audio_transcription_models;
 mod general_app_log;
 mod managed_storage_layout;
 mod native_capture;
@@ -13,6 +14,7 @@ const APP_LOG_TARGET_PREFIXES: &[&str] = &[
     "mnema",
     "mnema_lib",
     "app_infra",
+    "audio_transcription",
     "capture_runtime",
     "capture_screen",
     "capture_microphone",
@@ -43,6 +45,7 @@ pub fn run() {
         .manage(native_capture::SystemWakeNotifierState::default())
         .manage(native_capture::RecordingSettingsState::default())
         .manage(native_capture::AppNotificationsState::default())
+        .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -71,12 +74,18 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
+            audio_transcription_models::get_audio_transcription_model_status,
+            audio_transcription_models::start_audio_transcription_model_download,
+            audio_transcription_models::cancel_audio_transcription_model_download,
+            audio_transcription_models::request_apple_speech_recognition_permission,
+            audio_transcription_models::open_apple_speech_recognition_privacy_settings,
             app_infra::submit_debug_cpu_job,
             app_infra::list_app_jobs,
             app_infra::get_app_job,
             app_infra::debug_insert_frame_and_enqueue_processing_job,
             app_infra::debug_insert_frame_and_enqueue_ocr,
             app_infra::reprocess_captured_frame_ocr,
+            app_infra::reprocess_audio_segment_transcription,
             app_infra::classify_hidden_segment_workspace,
             app_infra::list_frames,
             app_infra::list_frame_summaries_in_range,
@@ -110,6 +119,7 @@ pub fn run() {
             native_capture::start_native_capture,
             native_capture::stop_native_capture,
             windows::open_settings_window,
+            windows::open_settings_window_to_tab,
             windows::open_debug_window,
             windows::close_current_window,
             windows::get_onboarding_state,
@@ -119,6 +129,9 @@ pub fn run() {
             native_capture::initialize_recording_settings_from_disk(app.handle());
             native_capture::install_panic_hook();
             app_infra::initialize(app).map_err(std::io::Error::other)?;
+            native_capture::maybe_push_audio_transcription_unavailable_startup_warning(
+                app.handle(),
+            );
             native_capture::start_microphone_device_change_notifier(app.handle().clone());
             native_capture::start_system_wake_notifier(app.handle().clone());
             let onboarding_state = app.state::<windows::OnboardingStateStore>();

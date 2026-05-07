@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
-use capture_types::{OcrRecognitionMode, OcrSettings};
+use capture_types::{AudioTranscriptionSettings, OcrRecognitionMode, OcrSettings};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use tauri::{path::BaseDirectory, Manager};
@@ -312,6 +312,12 @@ pub struct ReprocessCapturedFrameOcrRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReprocessAudioSegmentTranscriptionRequest {
+    pub audio_segment_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetFrameRequest {
     pub frame_id: i64,
 }
@@ -560,6 +566,13 @@ pub struct CapturedFrameReprocessingResultDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AudioSegmentTranscriptionReprocessingResultDto {
+    pub outcome: ::app_infra::AudioSegmentTranscriptionReprocessingOutcome,
+    pub job: ProcessingJobDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioSegmentDto {
     pub id: i64,
     pub source_kind: ::app_infra::AudioSegmentSourceKind,
@@ -672,6 +685,17 @@ impl From<::app_infra::FrameProcessingJob> for FrameProcessingJobDto {
 
 impl From<::app_infra::CapturedFrameReprocessingResult> for CapturedFrameReprocessingResultDto {
     fn from(value: ::app_infra::CapturedFrameReprocessingResult) -> Self {
+        Self {
+            outcome: value.outcome,
+            job: value.job.into(),
+        }
+    }
+}
+
+impl From<::app_infra::AudioSegmentTranscriptionReprocessingResult>
+    for AudioSegmentTranscriptionReprocessingResultDto
+{
+    fn from(value: ::app_infra::AudioSegmentTranscriptionReprocessingResult) -> Self {
         Self {
             outcome: value.outcome,
             job: value.job.into(),
@@ -1291,6 +1315,35 @@ fn run_test_video_preview_extractor(
 }
 
 #[cfg(target_os = "macos")]
+fn block_on_waker_driven_future<F>(future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    struct ThreadWaker(std::thread::Thread);
+
+    impl std::task::Wake for ThreadWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let waker = std::task::Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+
+    loop {
+        match future.as_mut().poll(&mut context) {
+            std::task::Poll::Ready(output) => return output,
+            std::task::Poll::Pending => std::thread::park(),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn image_bytes_from_cg_image(
     image: &cidre::cg::Image,
     ut_type: &cidre::ut::Type,
@@ -1430,15 +1483,15 @@ fn extract_preview_image_from_video_blocking(
             image_generator.set_requested_time_tolerance_after(cm::Time::zero());
         }
 
-        let (cg_image, actual_time) = tokio::runtime::Handle::current()
-            .block_on(async { image_generator.cg_image_for_time(requested_time).await })
-            .map_err(|error| {
-                format!(
-                    "failed to generate preview image from video {} at {}s: {error}",
-                    video_path.display(),
-                    clamped_offset_seconds,
-                )
-            })?;
+        let (cg_image, actual_time) =
+            block_on_waker_driven_future(image_generator.cg_image_for_time(requested_time))
+                .map_err(|error| {
+                    format!(
+                        "failed to generate preview image from video {} at {}s: {error}",
+                        video_path.display(),
+                        clamped_offset_seconds,
+                    )
+                })?;
 
         if requested_time.is_valid() && actual_time.is_valid() && requested_time != actual_time {
             log_video_preview_exact_miss(
@@ -1882,6 +1935,33 @@ impl Drop for AppInfraDirectoryLock {
     }
 }
 
+fn desktop_processing_registry(
+    app_handle: &tauri::AppHandle,
+) -> Result<::app_infra::ProcessorRegistry, String> {
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|error| {
+        format!("failed to resolve app data directory for processing registry: {error}")
+    })?;
+    let models_dir = audio_transcription::audio_transcription_models_dir(app_data_dir);
+
+    Ok(::app_infra::ProcessorRegistry::new()
+        .register(::app_infra::OcrProcessorBackend::new(
+            ::app_infra::AppleVisionOcrEngine::new(),
+        ))
+        .register(
+            ::app_infra::AudioTranscriptionProcessorBackend::from_provider_arcs([
+                Arc::new(
+                    audio_transcription::providers::LocalWhisperProvider::with_models_dir(
+                        models_dir.clone(),
+                    ),
+                ) as Arc<dyn audio_transcription::TranscriptionProvider>,
+                Arc::new(audio_transcription::providers::AppleSpeechOnDeviceProvider),
+                Arc::new(
+                    audio_transcription::providers::ParakeetProvider::with_models_dir(models_dir),
+                ),
+            ]),
+        ))
+}
+
 pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
     let app_handle = app.handle().clone();
     let resolved_base_dir = resolve_base_dir(app.handle())?;
@@ -1902,21 +1982,24 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
         },
     )?;
 
-    let infra = tauri::async_runtime::block_on(::app_infra::AppInfra::initialize(
-        &resolved_base_dir.base_dir,
-    ))
-    .map_err(|error| {
-        crate::native_capture::debug_log::log_error(format!(
+    let processing_registry = desktop_processing_registry(&app_handle)?;
+    let infra =
+        tauri::async_runtime::block_on(::app_infra::AppInfra::initialize_with_processing_registry(
+            &resolved_base_dir.base_dir,
+            processing_registry,
+        ))
+        .map_err(|error| {
+            crate::native_capture::debug_log::log_error(format!(
             "failed to initialize app infrastructure (save_directory='{}', base_dir='{}'): {error}",
             resolved_base_dir.save_directory,
             resolved_base_dir.base_dir.display()
         ));
 
-        format!(
-            "failed to initialize app infrastructure at {}: {error}",
-            resolved_base_dir.base_dir.display()
-        )
-    })?;
+            format!(
+                "failed to initialize app infrastructure at {}: {error}",
+                resolved_base_dir.base_dir.display()
+            )
+        })?;
     let infra = Arc::new(infra);
     let frame_preview_cache = FramePreviewCacheState::default();
 
@@ -1949,10 +2032,139 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
     run_generated_frame_preview_cache_startup_pass(&app_handle);
     run_frame_index_sidecar_conversion_startup_pass(&resolved_base_dir.base_dir);
     run_hidden_segment_workspace_repair_startup_pass(&infra, &resolved_base_dir.base_dir);
+    run_audio_transcription_backfill_startup_pass(&infra, &app_handle);
 
     spawn_processing_worker(infra, resolved_base_dir.base_dir, app_handle);
 
     Ok(())
+}
+
+pub(crate) async fn run_audio_transcription_backfill_after_model_install(
+    infra: &::app_infra::AppInfra,
+    app_handle: &tauri::AppHandle,
+) {
+    run_audio_transcription_backfill_pass(infra, app_handle, "post-download").await;
+}
+
+fn run_audio_transcription_backfill_startup_pass(
+    infra: &::app_infra::AppInfra,
+    app_handle: &tauri::AppHandle,
+) {
+    tauri::async_runtime::block_on(run_audio_transcription_backfill_pass(
+        infra, app_handle, "startup",
+    ));
+}
+
+async fn run_audio_transcription_backfill_pass(
+    infra: &::app_infra::AppInfra,
+    app_handle: &tauri::AppHandle,
+    reason: &str,
+) {
+    let admission = audio_transcription_admission_for_current_settings(app_handle);
+    if !admission.enabled || !admission.provider_available || admission.payload_json.is_none() {
+        crate::native_capture::debug_log::log_info(
+            format!(
+                "{reason} audio transcription backfill skipped because transcription is disabled or the selected model is unavailable"
+            ),
+        );
+        return;
+    }
+
+    match infra
+        .backfill_missing_audio_transcription_jobs(&admission)
+        .await
+    {
+        Ok(enqueued_count) => {
+            crate::native_capture::debug_log::log_info(format!(
+                "{reason} audio transcription backfill completed (enqueued={enqueued_count})"
+            ));
+        }
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "{reason} audio transcription backfill failed: {error}"
+            ));
+        }
+    }
+}
+
+fn audio_transcription_admission_for_current_settings(
+    app_handle: &tauri::AppHandle,
+) -> ::app_infra::AudioSegmentTranscriptionAdmission {
+    let transcription_settings = match app_handle
+        .state::<crate::native_capture::RecordingSettingsState>()
+        .lock()
+    {
+        Ok(settings) => settings.settings.transcription.clone(),
+        Err(_) => {
+            crate::native_capture::debug_log::log_error(
+                "failed to read recording settings for audio transcription backfill admission",
+            );
+            return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
+        }
+    };
+
+    if !transcription_settings.enabled {
+        return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
+    }
+
+    let app_data_dir = match app_handle.path().app_data_dir() {
+        Ok(app_data_dir) => app_data_dir,
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to resolve app data directory for audio transcription backfill admission: {error}"
+            ));
+            return ::app_infra::AudioSegmentTranscriptionAdmission::unavailable();
+        }
+    };
+
+    audio_transcription_admission_for_settings(&app_data_dir, &transcription_settings)
+}
+
+fn audio_transcription_admission_for_settings(
+    app_data_dir: &Path,
+    transcription_settings: &AudioTranscriptionSettings,
+) -> ::app_infra::AudioSegmentTranscriptionAdmission {
+    if !transcription_settings.enabled {
+        return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
+    }
+
+    match crate::audio_transcription_models::selected_audio_transcription_model_available(
+        app_data_dir,
+        transcription_settings,
+    ) {
+        Ok(true) => {
+            let provider = crate::audio_transcription_models::provider_id_for_settings(
+                transcription_settings.provider,
+            );
+            let mut payload = ::app_infra::AudioTranscriptionJobPayload::new(
+                provider,
+                transcription_settings.model_id.clone(),
+                transcription_settings.language.clone(),
+            );
+            payload.options =
+                crate::audio_transcription_models::transcription_request_options_for_settings(
+                    transcription_settings,
+                );
+            match serde_json::to_string(&payload) {
+                Ok(payload_json) => {
+                    ::app_infra::AudioSegmentTranscriptionAdmission::available(payload_json)
+                }
+                Err(error) => {
+                    crate::native_capture::debug_log::log_error(format!(
+                        "failed to serialize audio transcription backfill payload: {error}"
+                    ));
+                    ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
+                }
+            }
+        }
+        Ok(false) => ::app_infra::AudioSegmentTranscriptionAdmission::unavailable(),
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to inspect selected audio transcription model for backfill: {error}"
+            ));
+            ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
+        }
+    }
 }
 
 fn run_hidden_segment_workspace_repair_startup_pass(
@@ -2011,25 +2223,66 @@ fn run_frame_index_sidecar_conversion_startup_pass(base_dir: &Path) {
 
 fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: tauri::AppHandle) {
     let base_dir_display = base_dir.display().to_string();
-    let processing_worker_infra = Arc::clone(&infra);
+
+    spawn_processing_worker_loop(
+        Arc::clone(&infra),
+        base_dir_display.clone(),
+        ProcessingWorkerKind::NonTranscriptionAndFrameBatch,
+    );
+    spawn_processing_worker_loop(
+        Arc::clone(&infra),
+        base_dir_display,
+        ProcessingWorkerKind::AudioTranscription,
+    );
+
+    spawn_hidden_segment_workspace_repair_worker(infra, base_dir, app_handle);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProcessingWorkerKind {
+    NonTranscriptionAndFrameBatch,
+    AudioTranscription,
+}
+
+impl ProcessingWorkerKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::NonTranscriptionAndFrameBatch => "non-transcription processing/frame-batch",
+            Self::AudioTranscription => "audio transcription",
+        }
+    }
+
+    async fn process_once(self, infra: &::app_infra::AppInfra) -> ::app_infra::Result<Option<()>> {
+        match self {
+            Self::NonTranscriptionAndFrameBatch => process_pending_jobs_once(infra).await,
+            Self::AudioTranscription => process_pending_audio_transcription_jobs_once(infra).await,
+        }
+    }
+}
+
+fn spawn_processing_worker_loop(
+    infra: AppInfraState,
+    base_dir_display: String,
+    worker_kind: ProcessingWorkerKind,
+) {
+    let worker_name = worker_kind.name();
     crate::native_capture::debug_log::log_info(format!(
-        "starting app infrastructure processing worker (base_dir='{}', idle_poll_ms={}, error_retry_ms={})",
+        "starting app infrastructure {worker_name} worker (base_dir='{}', idle_poll_ms={}, error_retry_ms={})",
         base_dir_display,
         PROCESSING_WORKER_IDLE_POLL_INTERVAL.as_millis(),
         PROCESSING_WORKER_ERROR_RETRY_INTERVAL.as_millis()
     ));
 
-    let processing_worker_base_dir_display = base_dir_display.clone();
     tauri::async_runtime::spawn(async move {
         let mut consecutive_failures = 0u64;
 
         loop {
-            match process_pending_jobs_once(&processing_worker_infra).await {
+            match worker_kind.process_once(&infra).await {
                 Ok(Some(_)) => {
                     if consecutive_failures > 0 {
                         crate::native_capture::debug_log::log_info(format!(
-                            "app infrastructure processing worker recovered after {} failed iteration(s) (base_dir='{}')",
-                            consecutive_failures, processing_worker_base_dir_display
+                            "app infrastructure {worker_name} worker recovered after {} failed iteration(s) (base_dir='{}')",
+                            consecutive_failures, base_dir_display
                         ));
                         consecutive_failures = 0;
                     }
@@ -2039,8 +2292,8 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: 
                 Ok(None) => {
                     if consecutive_failures > 0 {
                         crate::native_capture::debug_log::log_info(format!(
-                            "app infrastructure processing worker recovered after {} failed iteration(s) (base_dir='{}')",
-                            consecutive_failures, processing_worker_base_dir_display
+                            "app infrastructure {worker_name} worker recovered after {} failed iteration(s) (base_dir='{}')",
+                            consecutive_failures, base_dir_display
                         ));
                         consecutive_failures = 0;
                     }
@@ -2050,8 +2303,8 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: 
                 Err(error) => {
                     consecutive_failures += 1;
                     crate::native_capture::debug_log::log_error(format!(
-                        "app infrastructure processing worker iteration failed (base_dir='{}', consecutive_failures={}, retry_in_ms={}): {error}",
-                        processing_worker_base_dir_display,
+                        "app infrastructure {worker_name} worker iteration failed (base_dir='{}', consecutive_failures={}, retry_in_ms={}): {error}",
+                        base_dir_display,
                         consecutive_failures,
                         PROCESSING_WORKER_ERROR_RETRY_INTERVAL.as_millis()
                     ));
@@ -2060,8 +2313,6 @@ fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: 
             }
         }
     });
-
-    spawn_hidden_segment_workspace_repair_worker(infra, base_dir, app_handle);
 }
 
 fn spawn_hidden_segment_workspace_repair_worker(
@@ -2237,7 +2488,10 @@ fn active_screen_session_id_for_hidden_workspace_repair(
 async fn process_pending_jobs_once(
     infra: &::app_infra::AppInfra,
 ) -> ::app_infra::Result<Option<()>> {
-    let did_processing = infra.process_next_processing_job().await?.is_some();
+    let did_processing = infra
+        .process_next_processing_job_excluding_processor(::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR)
+        .await?
+        .is_some();
 
     let did_finalize = match infra.process_next_frame_batch_job().await {
         Ok(result) => result.is_some(),
@@ -2250,6 +2504,20 @@ async fn process_pending_jobs_once(
     };
 
     if did_processing || did_finalize {
+        Ok(Some(()))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn process_pending_audio_transcription_jobs_once(
+    infra: &::app_infra::AppInfra,
+) -> ::app_infra::Result<Option<()>> {
+    if infra
+        .process_next_processing_job_for_processor(::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR)
+        .await?
+        .is_some()
+    {
         Ok(Some(()))
     } else {
         Ok(None)
@@ -2313,6 +2581,19 @@ async fn reprocess_captured_frame_ocr_inner(
         .reprocess_captured_frame_ocr(request.frame_id, payload_json.as_deref())
         .await
         .map(CapturedFrameReprocessingResultDto::from)
+}
+
+async fn reprocess_audio_segment_transcription_inner(
+    infra: &::app_infra::AppInfra,
+    request: ReprocessAudioSegmentTranscriptionRequest,
+    app_handle: &tauri::AppHandle,
+) -> ::app_infra::Result<AudioSegmentTranscriptionReprocessingResultDto> {
+    let admission = audio_transcription_admission_for_current_settings(app_handle);
+
+    infra
+        .reprocess_audio_segment_transcription(request.audio_segment_id, &admission)
+        .await
+        .map(AudioSegmentTranscriptionReprocessingResultDto::from)
 }
 
 async fn classify_hidden_segment_workspace_inner(
@@ -2416,6 +2697,24 @@ pub async fn reprocess_captured_frame_ocr(
             format!(
                 "failed to reprocess captured frame OCR for frame {}: {error}",
                 request.frame_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn reprocess_audio_segment_transcription(
+    request: ReprocessAudioSegmentTranscriptionRequest,
+    state: tauri::State<'_, AppInfraState>,
+    app_handle: tauri::AppHandle,
+) -> Result<AudioSegmentTranscriptionReprocessingResultDto, String> {
+    let infra = Arc::clone(&*state);
+
+    reprocess_audio_segment_transcription_inner(&infra, request.clone(), &app_handle)
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to reprocess audio segment transcription for segment {}: {error}",
+                request.audio_segment_id
             )
         })
 }
@@ -2847,6 +3146,51 @@ mod tests {
         assert_eq!(request.0.height, None);
         assert_eq!(request.1, "custom-processor");
         assert_eq!(request.2, None);
+    }
+
+    #[test]
+    fn audio_transcription_admission_for_settings_reflects_selected_model_availability() {
+        let dir = TestDir::new("audio-transcription-backfill-admission");
+        let settings = AudioTranscriptionSettings::default();
+
+        let missing = audio_transcription_admission_for_settings(dir.path(), &settings);
+        assert!(missing.enabled);
+        assert!(!missing.provider_available);
+        assert_eq!(missing.payload_json, None);
+
+        let models_dir = audio_transcription::audio_transcription_models_dir(dir.path());
+        let install_dir = audio_transcription::model_install_dir(
+            &models_dir,
+            audio_transcription::LOCAL_WHISPER_PROVIDER_ID,
+            "base",
+        )
+        .expect("model install directory");
+        fs::create_dir_all(&install_dir).expect("model install directory should be created");
+        fs::write(install_dir.join("ggml-base.bin"), b"model")
+            .expect("model artifact should be written");
+        audio_transcription::write_installed_marker(
+            &models_dir,
+            audio_transcription::LOCAL_WHISPER_PROVIDER_ID,
+            "base",
+        )
+        .expect("installed marker should be written");
+
+        let available = audio_transcription_admission_for_settings(dir.path(), &settings);
+        assert!(available.enabled);
+        assert!(available.provider_available);
+        let payload: ::app_infra::AudioTranscriptionJobPayload = serde_json::from_str(
+            available
+                .payload_json
+                .as_deref()
+                .expect("available model should freeze payload"),
+        )
+        .expect("payload should deserialize");
+        assert_eq!(
+            payload.provider,
+            audio_transcription::LOCAL_WHISPER_PROVIDER_ID
+        );
+        assert_eq!(payload.model_id.as_deref(), Some("base"));
+        assert_eq!(payload.language, "auto");
     }
 
     #[test]
@@ -3801,6 +4145,52 @@ mod tests {
             assert_eq!(
                 job.last_error.as_deref(),
                 Some("processor backend is not registered for 'missing-processor'")
+            );
+        });
+    }
+
+    #[test]
+    fn processing_workers_keep_audio_transcription_claiming_separate() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-worker-transcription-separate");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let job = infra
+                .enqueue_processing_job(
+                    &::app_infra::ProcessingJobDraft::for_audio_segment_transcription(123),
+                )
+                .await
+                .expect("transcription job should enqueue");
+
+            let processed = process_pending_jobs_once(&infra)
+                .await
+                .expect("non-transcription worker should succeed");
+            assert_eq!(processed, None);
+            let still_queued = infra
+                .get_processing_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(
+                still_queued.status,
+                ::app_infra::ProcessingJobStatus::Queued
+            );
+
+            let processed = process_pending_audio_transcription_jobs_once(&infra)
+                .await
+                .expect("transcription worker should succeed");
+            assert_eq!(processed, Some(()));
+            let failed = infra
+                .get_processing_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(failed.status, ::app_infra::ProcessingJobStatus::Failed);
+            assert_eq!(failed.attempt_count, 1);
+            assert_eq!(
+                failed.last_error.as_deref(),
+                Some("audio segment 123 was not found")
             );
         });
     }
