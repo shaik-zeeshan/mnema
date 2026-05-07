@@ -1840,7 +1840,7 @@ const AUDIO_HARDWARE_PROPERTY_DEFAULT_INPUT_DEVICE: AudioObjectPropertySelector 
 #[cfg(target_os = "macos")]
 const AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: AudioObjectPropertyScope = four_char_code(b"glob");
 #[cfg(target_os = "macos")]
-const AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: AudioObjectPropertyElement = four_char_code(b"main");
+const AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: AudioObjectPropertyElement = 0;
 
 #[cfg(target_os = "macos")]
 const DEFAULT_INPUT_DEVICE_ADDRESS: AudioObjectPropertyAddress = AudioObjectPropertyAddress {
