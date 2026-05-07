@@ -37,6 +37,9 @@
     ProcessingJobDto,
     ProcessingResultDto,
     ReprocessAudioSegmentTranscriptionRequest,
+    TranscriptionSegment,
+    TranscriptionStructuredPayload,
+    TranscriptionWord,
   } from "$lib/types";
 
   // ─── Timeline browser ─────────────────────────────────────────────────────
@@ -318,6 +321,8 @@
   let selectedAudioMediaGeneration = 0;
   let selectedAudioTranscriptStatus = $state<AudioTranscriptStatus>("idle");
   let selectedAudioTranscriptText = $state<string | null>(null);
+  let selectedAudioTranscriptSegments = $state<TranscriptionSegment[]>([]);
+  let selectedAudioTranscriptModelLabel = $state<string | null>(null);
   let selectedAudioTranscriptError = $state<string | null>(null);
   let selectedAudioTranscriptRerunLoading = $state(false);
   let selectedAudioTranscriptRerunError = $state<string | null>(null);
@@ -377,6 +382,8 @@
     const gen = selectedAudioTranscriptGeneration;
     clearSelectedAudioTranscriptPoll();
     selectedAudioTranscriptText = null;
+    selectedAudioTranscriptSegments = [];
+    selectedAudioTranscriptModelLabel = null;
     selectedAudioTranscriptError = null;
 
     if (id == null) {
@@ -432,6 +439,7 @@
       if (!job) {
         selectedAudioTranscriptStatus = "error";
         selectedAudioTranscriptText = null;
+        selectedAudioTranscriptSegments = [];
         selectedAudioTranscriptError = "Transcription job not found";
         return;
       }
@@ -440,8 +448,117 @@
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
       selectedAudioTranscriptStatus = "error";
       selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
       selectedAudioTranscriptError = typeof err === "string" ? err : JSON.stringify(err);
     }
+  }
+
+  type AudioTranscriptionJobPayloadShape = {
+    provider?: string;
+    modelId?: string | null;
+    language?: string;
+  };
+
+  function parseTranscriptionStructuredPayload(
+    json: string | null | undefined,
+  ): Partial<TranscriptionStructuredPayload> | null {
+    if (!json) return null;
+    try {
+      return JSON.parse(json) as Partial<TranscriptionStructuredPayload>;
+    } catch {
+      return null;
+    }
+  }
+
+  function parseAudioTranscriptionJobPayload(
+    json: string | null | undefined,
+  ): AudioTranscriptionJobPayloadShape | null {
+    if (!json) return null;
+    try {
+      return JSON.parse(json) as AudioTranscriptionJobPayloadShape;
+    } catch {
+      return null;
+    }
+  }
+
+  function formatAudioTranscriptionProviderLabel(provider: string): string {
+    switch (provider) {
+      case "local_whisper":
+        return "Local Whisper";
+      case "apple_speech_on_device":
+        return "Apple Speech (on-device)";
+      case "parakeet":
+        return "Parakeet";
+      default:
+        return provider;
+    }
+  }
+
+  function resolveAudioTranscriptionModelLabel(
+    jobPayloadJson: string | null | undefined,
+    resultPayloadJson: string | null | undefined,
+  ): string | null {
+    const jobPayload = parseAudioTranscriptionJobPayload(jobPayloadJson);
+    const resultPayload = parseTranscriptionStructuredPayload(resultPayloadJson);
+    const provider =
+      typeof resultPayload?.provider === "string"
+        ? resultPayload.provider
+        : typeof jobPayload?.provider === "string"
+          ? jobPayload.provider
+          : null;
+    if (!provider) return null;
+    const providerLabel = formatAudioTranscriptionProviderLabel(provider);
+    const modelId =
+      typeof resultPayload?.modelId === "string"
+        ? resultPayload.modelId
+        : typeof jobPayload?.modelId === "string"
+          ? jobPayload.modelId
+          : null;
+    return modelId ? `${providerLabel} · ${modelId}` : providerLabel;
+  }
+
+  function normalizeTranscriptionTimedRuns(
+    runs: Array<Partial<TranscriptionSegment> | Partial<TranscriptionWord>>,
+  ): TranscriptionSegment[] {
+    const normalized: TranscriptionSegment[] = [];
+    for (const run of runs) {
+      if (
+        !run ||
+        typeof run.startMs !== "number" ||
+        typeof run.endMs !== "number" ||
+        typeof run.text !== "string"
+      ) {
+        continue;
+      }
+      const text = run.text.trim();
+      if (!text) continue;
+      const startMs = Math.max(0, Math.round(run.startMs));
+      const endMs = Math.max(startMs, Math.round(run.endMs));
+      normalized.push({
+        startMs,
+        endMs,
+        text,
+        confidence:
+          typeof run.confidence === "number"
+            ? Math.min(1, Math.max(0, run.confidence))
+            : null,
+      });
+    }
+    normalized.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+    return normalized;
+  }
+
+  function parseTranscriptionSegments(
+    json: string | null | undefined,
+  ): TranscriptionSegment[] {
+    const parsed = parseTranscriptionStructuredPayload(json);
+    const segments = normalizeTranscriptionTimedRuns(
+      Array.isArray(parsed?.segments) ? parsed.segments : [],
+    );
+    if (segments.length > 0) return segments;
+    return normalizeTranscriptionTimedRuns(
+      Array.isArray(parsed?.words) ? parsed.words : [],
+    );
   }
 
   async function applySelectedAudioTranscriptJob(
@@ -451,9 +568,15 @@
   ): Promise<void> {
     if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
 
+    selectedAudioTranscriptModelLabel = resolveAudioTranscriptionModelLabel(
+      job.payloadJson,
+      null,
+    );
+
     if (job.status === "queued" || job.status === "running") {
       selectedAudioTranscriptStatus = "running";
       selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
       selectedAudioTranscriptError = null;
       scheduleSelectedAudioTranscriptPoll(id, job.id, gen);
       return;
@@ -464,6 +587,7 @@
     if (job.status === "failed") {
       selectedAudioTranscriptStatus = "error";
       selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
       selectedAudioTranscriptError = job.lastError ?? "Transcription job failed";
       return;
     }
@@ -476,12 +600,21 @@
     if (!result) {
       selectedAudioTranscriptStatus = "error";
       selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
       selectedAudioTranscriptError = "Transcription result not available";
       return;
     }
 
-    const transcript = result.resultText ?? "";
+    const segments = parseTranscriptionSegments(result.structuredPayloadJson);
+    const transcript = result.resultText?.trim().length
+      ? result.resultText
+      : segments.map((segment) => segment.text).join(" ");
     selectedAudioTranscriptText = transcript;
+    selectedAudioTranscriptSegments = segments;
+    selectedAudioTranscriptModelLabel = resolveAudioTranscriptionModelLabel(
+      job.payloadJson,
+      result.structuredPayloadJson,
+    );
     selectedAudioTranscriptError = null;
     selectedAudioTranscriptStatus = transcript.trim().length === 0 ? "empty" : "success";
   }
@@ -500,6 +633,7 @@
         clearSelectedAudioTranscriptPoll();
         selectedAudioTranscriptStatus = "missing";
         selectedAudioTranscriptText = null;
+        selectedAudioTranscriptSegments = [];
         selectedAudioTranscriptError = null;
         return;
       }
@@ -514,6 +648,7 @@
       clearSelectedAudioTranscriptPoll();
       selectedAudioTranscriptStatus = "error";
       selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
       selectedAudioTranscriptError = typeof err === "string" ? err : JSON.stringify(err);
     }
   }
@@ -560,6 +695,7 @@
       clearSelectedAudioTranscriptPoll();
       selectedAudioTranscriptStatus = "running";
       selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
       selectedAudioTranscriptError = null;
       selectedAudioTranscriptRerunError = null;
       await applySelectedAudioTranscriptJob(id, gen, result.job);
@@ -590,9 +726,40 @@
   let audioIsPlaying = $state(false);
   let audioCurrentTime = $state(0);
   let audioDuration = $state(0);
+  let selectedAudioTranscriptContainerEl = $state<HTMLDivElement | null>(null);
   // While the user drags the scrub thumb we hold UI updates from `timeupdate`
   // events so the indicator doesn't fight the drag. Commit on release.
   let audioScrubbing = $state(false);
+
+  function findActiveTranscriptSegmentIndex(
+    segments: TranscriptionSegment[],
+    currentTimeSeconds: number,
+  ): number | null {
+    if (!Number.isFinite(currentTimeSeconds) || currentTimeSeconds < 0) return null;
+    const currentMs = Math.round(currentTimeSeconds * 1000);
+    for (let index = segments.length - 1; index >= 0; index -= 1) {
+      if (currentMs >= segments[index].startMs) return index;
+    }
+    return null;
+  }
+
+  const selectedAudioTranscriptActiveSegmentIndex = $derived(
+    selectedAudioTranscriptSegments.length === 0 || (!audioIsPlaying && audioCurrentTime <= 0)
+      ? null
+      : findActiveTranscriptSegmentIndex(selectedAudioTranscriptSegments, audioCurrentTime),
+  );
+
+  $effect(() => {
+    const activeIndex = selectedAudioTranscriptActiveSegmentIndex;
+    const container = selectedAudioTranscriptContainerEl;
+    if (activeIndex == null || !container) return;
+    void tick().then(() => {
+      const activeSegment = container.querySelector<HTMLElement>(
+        `[data-transcript-segment-index="${activeIndex}"]`,
+      );
+      activeSegment?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+  });
 
   $effect(() => {
     // Reset transport readouts whenever the selection (and therefore the
@@ -650,6 +817,18 @@
     }
   }
 
+  function seekAudioToTimeMs(startMs: number): void {
+    const el = audioEl;
+    if (!el) return;
+    const nextTime = Math.max(
+      0,
+      Math.min(Number.isFinite(audioDuration) && audioDuration > 0 ? audioDuration : Infinity, startMs / 1000),
+    );
+    if (!Number.isFinite(nextTime)) return;
+    el.currentTime = nextTime;
+    audioCurrentTime = nextTime;
+  }
+
   /** `M:SS` for the player transport. Distinct from the segment-duration
    *  helper above because the transport ticks per second and a leading dash
    *  while metadata is still loading reads better as `0:00`. */
@@ -659,6 +838,12 @@
     const m = Math.floor(total / 60);
     const s = total % 60;
     return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  function formatTranscriptSegmentTitle(segment: TranscriptionSegment): string {
+    const start = formatPlayerTime(segment.startMs / 1000);
+    if (segment.endMs <= segment.startMs) return start;
+    return `${start}–${formatPlayerTime(segment.endMs / 1000)}`;
   }
 
   // ─── Outside-click dismissal ─────────────────────────────────────────────
@@ -3950,7 +4135,14 @@
     {/if}
     <section class="audio-drawer__transcript" aria-label="Audio transcription">
       <div class="audio-drawer__transcript-header">
-        <span class="audio-drawer__transcript-title">Transcript</span>
+        <div class="audio-drawer__transcript-heading">
+          <span class="audio-drawer__transcript-title">Transcript</span>
+          {#if selectedAudioTranscriptModelLabel}
+            <span class="audio-drawer__transcript-model" title={selectedAudioTranscriptModelLabel}>
+              · {selectedAudioTranscriptModelLabel}
+            </span>
+          {/if}
+        </div>
         <div class="audio-drawer__transcript-actions">
           <button
             type="button"
@@ -3984,7 +4176,28 @@
         <p class="audio-drawer__transcript-error">{selectedAudioTranscriptRerunError}</p>
       {/if}
       {#if selectedAudioTranscriptStatus === "success"}
-        <p class="audio-drawer__transcript-text">{selectedAudioTranscriptText}</p>
+        {#if selectedAudioTranscriptSegments.length > 0}
+          <div
+            class="audio-drawer__transcript-text audio-drawer__transcript-text--segmented"
+            bind:this={selectedAudioTranscriptContainerEl}
+          >
+            {#each selectedAudioTranscriptSegments as segment, index}
+              <button
+                type="button"
+                class="audio-drawer__transcript-segment"
+                class:audio-drawer__transcript-segment--active={selectedAudioTranscriptActiveSegmentIndex === index}
+                data-transcript-segment-index={index}
+                title={`Jump to ${formatTranscriptSegmentTitle(segment)}`}
+                aria-label={`Jump to transcript segment at ${formatTranscriptSegmentTitle(segment)}`}
+                onclick={() => seekAudioToTimeMs(segment.startMs)}
+              >
+                {segment.text}
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <p class="audio-drawer__transcript-text">{selectedAudioTranscriptText}</p>
+        {/if}
       {:else if selectedAudioTranscriptStatus === "empty"}
         <p class="audio-drawer__transcript-empty">No speech detected in this segment.</p>
       {:else if selectedAudioTranscriptStatus === "loading"}
@@ -4438,9 +4651,17 @@
 
   .audio-drawer__transcript-header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 10px;
+  }
+
+  .audio-drawer__transcript-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    flex-wrap: wrap;
   }
 
   .audio-drawer__transcript-title,
@@ -4453,6 +4674,16 @@
 
   .audio-drawer__transcript-title {
     color: var(--app-text-muted);
+  }
+
+  .audio-drawer__transcript-model {
+    color: var(--app-text);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: 0.02em;
+    word-break: break-word;
+    opacity: 0.9;
   }
 
   .audio-drawer__transcript-actions {
@@ -4529,6 +4760,41 @@
     overflow: auto;
     color: var(--app-text);
     white-space: pre-wrap;
+  }
+
+  .audio-drawer__transcript-text--segmented {
+    white-space: normal;
+  }
+
+  .audio-drawer__transcript-segment {
+    display: inline;
+    margin-right: 0.28em;
+    padding: 1px 3px;
+    border: 0;
+    border-radius: 4px;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    scroll-margin-block: 10px;
+    transition:
+      background 0.12s,
+      color 0.12s;
+  }
+
+  .audio-drawer__transcript-segment:hover,
+  .audio-drawer__transcript-segment:focus-visible {
+    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
+    color: var(--app-text);
+    outline: none;
+  }
+
+  .audio-drawer__transcript-segment--active {
+    background: color-mix(in srgb, var(--app-accent) 18%, transparent);
+    color: var(--app-text);
   }
 
   .audio-drawer__transcript-empty {
