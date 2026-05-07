@@ -1847,6 +1847,27 @@
     if (handled) event.preventDefault();
   }
 
+  function isTimelineShortcutSuppressedTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.closest(
+        'input, textarea, select, button, audio, video, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="spinbutton"], [role="slider"], [role="combobox"], [role="switch"], [role="menuitem"], [data-shortcuts-ignore], .timeline__picker, .audio-drawer',
+      ),
+    );
+  }
+
+  // Page-level timeline shortcuts: ArrowLeft/ArrowRight move the active frame
+  // even when the thin rail itself does not have focus. Interactive surfaces
+  // keep their own keyboard behavior (calendar navigation, buttons, audio
+  // scrubbing, text selection, etc.).
+  function onTimelineWindowKeyDown(event: KeyboardEvent) {
+    if (event.defaultPrevented) return;
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (isTimelineShortcutSuppressedTarget(event.target)) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    onTimelineKeyDown(event);
+  }
+
   function timelineJump(delta: number) {
     if (!timelineRail || timelineFrames.length === 0) return;
     const target = Math.max(
@@ -3016,7 +3037,7 @@
 </script>
 
 <!-- ── Timeline browser ──────────────────────────────────────────────────── -->
-<svelte:window onpointerdown={onPickerPointerDownOutside} />
+<svelte:window onpointerdown={onPickerPointerDownOutside} onkeydown={onTimelineWindowKeyDown} />
 <section class="timeline" onwheel={onTimelineWheel}>
   <header class="timeline__bar">
     <div class="timeline__bar-group timeline__bar-group--primary">
