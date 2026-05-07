@@ -15,6 +15,7 @@
     toggleSourceSelected,
   } from "$lib/capture-controls.svelte";
   import { initTheme } from "$lib/theme.svelte";
+  import { getGlobalShortcutAction } from "$lib/global-shortcuts";
   interface Props {
     children: Snippet;
   }
@@ -212,66 +213,42 @@
   }
 
   function handleGlobalShortcutKeydown(event: KeyboardEvent): void {
-    if (event.repeat) return;
+    const action = getGlobalShortcutAction(event, {
+      devEnabled,
+      isShortcutSuppressedTarget: isShortcutSuppressedTarget(event.target),
+      shortcutsHelpOpen,
+    });
+    if (!action) return;
 
-    if (shortcutsHelpOpen && event.key === "Escape") {
-      event.preventDefault();
+    event.preventDefault();
+
+    if (action.type === "closeShortcutsHelp") {
       event.stopPropagation();
       closeShortcutsHelp();
       return;
     }
 
-    if (isShortcutSuppressedTarget(event.target)) return;
-
-    const key = event.key.toLowerCase();
-    const primary = event.metaKey || event.ctrlKey;
-
-    if (primary && !event.altKey && !event.shiftKey && key === "r") {
-      event.preventDefault();
+    if (action.type === "toggleRecording") {
       void toggleRecordingShortcut();
       return;
     }
 
-    if (primary && !event.altKey && !event.shiftKey && event.key === ",") {
-      event.preventDefault();
+    if (action.type === "openSettings") {
       void openSettingsWindow();
       return;
     }
 
-    if (primary && !event.altKey && !event.shiftKey && key === "d") {
-      if (!devEnabled) return;
-      event.preventDefault();
+    if (action.type === "openDebug") {
       void openDebugWindow();
       return;
     }
 
-    if (!primary && !event.altKey && !event.shiftKey) {
-      if (event.key === "1") {
-        event.preventDefault();
-        void toggleSourceShortcut("screen");
-        return;
-      }
-      if (event.key === "2") {
-        event.preventDefault();
-        void toggleSourceShortcut("microphone");
-        return;
-      }
-      if (event.key === "3") {
-        event.preventDefault();
-        void toggleSourceShortcut("systemAudio");
-        return;
-      }
-      if (event.key === "/") {
-        event.preventDefault();
-        toggleShortcutsHelp();
-        return;
-      }
+    if (action.type === "toggleSource") {
+      void toggleSourceShortcut(action.source);
+      return;
     }
 
-    if (!primary && !event.altKey && event.shiftKey && event.key === "?") {
-      event.preventDefault();
-      toggleShortcutsHelp();
-    }
+    toggleShortcutsHelp();
   }
 
   $effect(() => {
