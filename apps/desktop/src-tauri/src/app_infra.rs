@@ -4,7 +4,10 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -16,12 +19,13 @@ use capture_screen::ScreenFrameArtifact;
 use capture_types::{AudioTranscriptionSettings, OcrRecognitionMode, OcrSettings};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use tauri::{path::BaseDirectory, Manager};
+use tauri::{async_runtime::JoinHandle, path::BaseDirectory, Manager};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
 pub type FramePreviewCacheState = Mutex<FramePreviewState>;
+pub type BackgroundWorkersState = BackgroundWorkersControl;
 
 const APP_INFRA_LOCK_FILE_NAME: &str = ".app-infra.lock";
 const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
@@ -33,6 +37,105 @@ const GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 *
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Clone)]
+pub struct BackgroundWorkersControl {
+    inner: Arc<BackgroundWorkersControlInner>,
+}
+
+struct BackgroundWorkersControlInner {
+    shutdown_requested: AtomicBool,
+    shutdown_tx: watch::Sender<bool>,
+    tasks: Mutex<Vec<JoinHandle<()>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BackgroundWorkerShutdownSummary {
+    tracked_tasks: usize,
+    timed_out_tasks: usize,
+}
+
+impl Default for BackgroundWorkersControl {
+    fn default() -> Self {
+        let (shutdown_tx, _) = watch::channel(false);
+        Self {
+            inner: Arc::new(BackgroundWorkersControlInner {
+                shutdown_requested: AtomicBool::new(false),
+                shutdown_tx,
+                tasks: Mutex::new(Vec::new()),
+            }),
+        }
+    }
+}
+
+impl BackgroundWorkersControl {
+    fn subscribe(&self) -> watch::Receiver<bool> {
+        self.inner.shutdown_tx.subscribe()
+    }
+
+    fn track(&self, handle: JoinHandle<()>) {
+        if self.inner.shutdown_requested.load(Ordering::SeqCst) {
+            handle.abort();
+            return;
+        }
+
+        let mut tasks = self
+            .inner
+            .tasks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        tasks.push(handle);
+    }
+
+    fn begin_shutdown(&self) {
+        if self.inner.shutdown_requested.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let _ = self.inner.shutdown_tx.send(true);
+    }
+
+    async fn shutdown(&self, timeout: Duration) -> BackgroundWorkerShutdownSummary {
+        self.begin_shutdown();
+
+        let mut tasks = {
+            let mut tasks = self
+                .inner
+                .tasks
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            std::mem::take(&mut *tasks)
+        };
+        let tracked_tasks = tasks.len();
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut timed_out_tasks = 0usize;
+
+        for mut handle in tasks.drain(..) {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                timed_out_tasks = timed_out_tasks.saturating_add(1);
+                handle.abort();
+                let _ = handle.await;
+                continue;
+            }
+
+            match tokio::time::timeout(remaining, &mut handle).await {
+                Ok(_) => {}
+                Err(_) => {
+                    timed_out_tasks = timed_out_tasks.saturating_add(1);
+                    handle.abort();
+                    let _ = handle.await;
+                }
+            }
+        }
+
+        BackgroundWorkerShutdownSummary {
+            tracked_tasks,
+            timed_out_tasks,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FrameIndexSidecarConversionResult {
@@ -2002,6 +2105,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
         })?;
     let infra = Arc::new(infra);
     let frame_preview_cache = FramePreviewCacheState::default();
+    let background_workers = BackgroundWorkersState::default();
 
     if !app.manage(Arc::clone(&infra)) {
         crate::native_capture::debug_log::log_error(
@@ -2024,6 +2128,13 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
         return Err("frame preview cache state was already initialized".to_string());
     }
 
+    if !app.manage(background_workers.clone()) {
+        crate::native_capture::debug_log::log_error(
+            "background workers state was already initialized; refusing duplicate setup",
+        );
+        return Err("background workers state was already initialized".to_string());
+    }
+
     crate::native_capture::debug_log::log_info(format!(
         "initialized app infrastructure successfully (base_dir='{}')",
         resolved_base_dir.base_dir.display()
@@ -2034,9 +2145,38 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
     run_hidden_segment_workspace_repair_startup_pass(&infra, &resolved_base_dir.base_dir);
     run_audio_transcription_backfill_startup_pass(&infra, &app_handle);
 
-    spawn_processing_worker(infra, resolved_base_dir.base_dir, app_handle);
+    spawn_processing_worker(
+        infra,
+        resolved_base_dir.base_dir,
+        app_handle,
+        background_workers,
+    );
 
     Ok(())
+}
+
+pub(crate) async fn shutdown_background_workers_for_app_exit(app_handle: &tauri::AppHandle) {
+    let Some(background_workers) = app_handle.try_state::<BackgroundWorkersState>() else {
+        crate::native_capture::debug_log::log_warn(
+            "background workers state was not initialized during app exit; skipping shutdown",
+        );
+        return;
+    };
+    let background_workers = background_workers.inner().clone();
+
+    crate::native_capture::debug_log::log_info(format!(
+        "requesting app infrastructure background worker shutdown (timeout_ms={})",
+        BACKGROUND_WORKER_SHUTDOWN_TIMEOUT.as_millis()
+    ));
+
+    let summary = background_workers
+        .shutdown(BACKGROUND_WORKER_SHUTDOWN_TIMEOUT)
+        .await;
+
+    crate::native_capture::debug_log::log_info(format!(
+        "app infrastructure background worker shutdown completed (tracked_tasks={}, timed_out_tasks={})",
+        summary.tracked_tasks, summary.timed_out_tasks
+    ));
 }
 
 pub(crate) async fn run_audio_transcription_backfill_after_model_install(
@@ -2221,21 +2361,28 @@ fn run_frame_index_sidecar_conversion_startup_pass(base_dir: &Path) {
     }
 }
 
-fn spawn_processing_worker(infra: AppInfraState, base_dir: PathBuf, app_handle: tauri::AppHandle) {
+fn spawn_processing_worker(
+    infra: AppInfraState,
+    base_dir: PathBuf,
+    app_handle: tauri::AppHandle,
+    background_workers: BackgroundWorkersState,
+) {
     let base_dir_display = base_dir.display().to_string();
 
     spawn_processing_worker_loop(
         Arc::clone(&infra),
         base_dir_display.clone(),
         ProcessingWorkerKind::NonTranscriptionAndFrameBatch,
+        background_workers.clone(),
     );
     spawn_processing_worker_loop(
         Arc::clone(&infra),
         base_dir_display,
         ProcessingWorkerKind::AudioTranscription,
+        background_workers.clone(),
     );
 
-    spawn_hidden_segment_workspace_repair_worker(infra, base_dir, app_handle);
+    spawn_hidden_segment_workspace_repair_worker(infra, base_dir, app_handle, background_workers);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2260,10 +2407,23 @@ impl ProcessingWorkerKind {
     }
 }
 
+async fn shutdown_aware_sleep(shutdown_rx: &mut watch::Receiver<bool>, duration: Duration) -> bool {
+    if *shutdown_rx.borrow() {
+        return true;
+    }
+
+    match tokio::time::timeout(duration, shutdown_rx.changed()).await {
+        Ok(Ok(())) => *shutdown_rx.borrow(),
+        Ok(Err(_)) => true,
+        Err(_) => false,
+    }
+}
+
 fn spawn_processing_worker_loop(
     infra: AppInfraState,
     base_dir_display: String,
     worker_kind: ProcessingWorkerKind,
+    background_workers: BackgroundWorkersState,
 ) {
     let worker_name = worker_kind.name();
     crate::native_capture::debug_log::log_info(format!(
@@ -2273,10 +2433,15 @@ fn spawn_processing_worker_loop(
         PROCESSING_WORKER_ERROR_RETRY_INTERVAL.as_millis()
     ));
 
-    tauri::async_runtime::spawn(async move {
+    let mut shutdown_rx = background_workers.subscribe();
+    let handle = tauri::async_runtime::spawn(async move {
         let mut consecutive_failures = 0u64;
 
         loop {
+            if *shutdown_rx.borrow() {
+                break;
+            }
+
             match worker_kind.process_once(&infra).await {
                 Ok(Some(_)) => {
                     if consecutive_failures > 0 {
@@ -2298,7 +2463,11 @@ fn spawn_processing_worker_loop(
                         consecutive_failures = 0;
                     }
 
-                    tokio::time::sleep(PROCESSING_WORKER_IDLE_POLL_INTERVAL).await;
+                    if shutdown_aware_sleep(&mut shutdown_rx, PROCESSING_WORKER_IDLE_POLL_INTERVAL)
+                        .await
+                    {
+                        break;
+                    }
                 }
                 Err(error) => {
                     consecutive_failures += 1;
@@ -2308,17 +2477,31 @@ fn spawn_processing_worker_loop(
                         consecutive_failures,
                         PROCESSING_WORKER_ERROR_RETRY_INTERVAL.as_millis()
                     ));
-                    tokio::time::sleep(PROCESSING_WORKER_ERROR_RETRY_INTERVAL).await;
+                    if shutdown_aware_sleep(
+                        &mut shutdown_rx,
+                        PROCESSING_WORKER_ERROR_RETRY_INTERVAL,
+                    )
+                    .await
+                    {
+                        break;
+                    }
                 }
             }
         }
+
+        crate::native_capture::debug_log::log_info(format!(
+            "stopped app infrastructure {worker_name} worker (base_dir='{}')",
+            base_dir_display
+        ));
     });
+    background_workers.track(handle);
 }
 
 fn spawn_hidden_segment_workspace_repair_worker(
     infra: AppInfraState,
     base_dir: PathBuf,
     app_handle: tauri::AppHandle,
+    background_workers: BackgroundWorkersState,
 ) {
     let recordings_root =
         crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir)
@@ -2331,9 +2514,14 @@ fn spawn_hidden_segment_workspace_repair_worker(
         HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL.as_millis()
     ));
 
-    tauri::async_runtime::spawn(async move {
+    let mut shutdown_rx = background_workers.subscribe();
+    let handle = tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL).await;
+            if shutdown_aware_sleep(&mut shutdown_rx, HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL)
+                .await
+            {
+                break;
+            }
 
             let active_screen_session_id =
                 active_screen_session_id_for_hidden_workspace_repair(&app_handle);
@@ -2362,7 +2550,13 @@ fn spawn_hidden_segment_workspace_repair_worker(
                 }
             }
         }
+
+        crate::native_capture::debug_log::log_info(format!(
+            "stopped hidden segment workspace repair worker (recordings_root='{}')",
+            recordings_root_display
+        ));
     });
+    background_workers.track(handle);
 }
 
 fn convert_frame_index_sidecars_once(

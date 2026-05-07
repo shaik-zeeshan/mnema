@@ -47,6 +47,7 @@ pub fn run() {
         .manage(native_capture::AppNotificationsState::default())
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
+        .manage(windows::AppExitCoordinatorState::default())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)

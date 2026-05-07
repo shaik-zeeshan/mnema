@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
-    sync::{Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, MutexGuard,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
@@ -65,6 +68,17 @@ pub struct OnboardingStateRuntime {
 }
 
 pub type OnboardingStateStore = Mutex<OnboardingStateRuntime>;
+
+#[derive(Default)]
+pub struct AppExitCoordinatorState {
+    exit_requested: AtomicBool,
+}
+
+impl AppExitCoordinatorState {
+    fn begin_exit(&self) -> bool {
+        !self.exit_requested.swap(true, Ordering::SeqCst)
+    }
+}
 
 struct AppWindowConfig {
     label: &'static str,
@@ -374,6 +388,36 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn request_graceful_exit(app: &tauri::AppHandle) {
+    let exit_state = app.state::<AppExitCoordinatorState>();
+    if !exit_state.begin_exit() {
+        return;
+    }
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::native_capture::debug_log::log_info(
+            "starting graceful app exit; stopping background workers before terminating",
+        );
+        crate::app_infra::shutdown_background_workers_for_app_exit(&app_handle).await;
+
+        match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
+            Ok(unloaded) => {
+                crate::native_capture::debug_log::log_info(format!(
+                    "unloaded {unloaded} cached Local Whisper context(s) before exit"
+                ));
+            }
+            Err(error) => {
+                crate::native_capture::debug_log::log_warn(format!(
+                    "failed to unload cached Local Whisper contexts before exit: {error}"
+                ));
+            }
+        }
+
+        app_handle.exit(0);
+    });
+}
+
 fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
@@ -414,7 +458,7 @@ pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &WindowEv
 
     match action {
         DestroyedWindowAction::FocusMainWindow => focus_main_window(app),
-        DestroyedWindowAction::ExitApp => app.exit(0),
+        DestroyedWindowAction::ExitApp => request_graceful_exit(app),
         DestroyedWindowAction::None => {}
     }
 }
