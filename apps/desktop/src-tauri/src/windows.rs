@@ -397,22 +397,26 @@ fn request_graceful_exit(app: &tauri::AppHandle) {
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         crate::native_capture::debug_log::log_info(
-            "starting graceful app exit; stopping background workers before terminating",
+            "starting graceful app exit; unloading cached Local Whisper contexts before stopping background workers",
         );
-        crate::app_infra::shutdown_background_workers_for_app_exit(&app_handle).await;
 
         match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
             Ok(unloaded) => {
                 crate::native_capture::debug_log::log_info(format!(
-                    "unloaded {unloaded} cached Local Whisper context(s) before exit"
+                    "unloaded {unloaded} cached Local Whisper context(s) before background worker shutdown"
                 ));
             }
             Err(error) => {
                 crate::native_capture::debug_log::log_warn(format!(
-                    "failed to unload cached Local Whisper contexts before exit: {error}"
+                    "failed to unload cached Local Whisper contexts before background worker shutdown: {error}"
                 ));
             }
         }
+
+        crate::native_capture::debug_log::log_info(
+            "stopping background workers before terminating",
+        );
+        crate::app_infra::shutdown_background_workers_for_app_exit(&app_handle).await;
 
         app_handle.exit(0);
     });
