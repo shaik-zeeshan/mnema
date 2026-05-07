@@ -43,6 +43,7 @@ use super::settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
     validate_recording_settings_with_resolution_support,
 };
+use super::vad::{MicrophonePcmVadFrame, MicrophoneVadRuntime};
 use super::{AppNotification, AppNotificationsRuntime};
 #[cfg(target_os = "macos")]
 use capture_runtime::{
@@ -1400,6 +1401,61 @@ fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources(
 
     assert!(snapshot.microphone_activity.enabled);
     assert!(snapshot.system_audio_activity.enabled);
+}
+
+#[test]
+fn current_activity_snapshot_for_debug_does_not_consume_microphone_vad_speech_pulse() {
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        microphone_vad: MicrophoneVadRuntime::new(capture_types::MicrophoneVadAdapter::Webrtc),
+        ..Default::default()
+    };
+    let samples = voiced_like_frame_16khz_30ms();
+    runtime
+        .microphone_vad
+        .process_pcm_frame(MicrophonePcmVadFrame {
+            samples: &samples,
+            sample_rate_hz: 16_000,
+            captured_at_unix_ms: 1_000,
+            normalized_peak_level: 0.7,
+        })
+        .expect("voiced-like frame should produce a VAD decision");
+
+    let debug_snapshot = current_activity_snapshot_for_debug(&mut runtime);
+    assert_eq!(
+        debug_snapshot.microphone_activity.latest_normalized_level,
+        Some(1.0)
+    );
+
+    let policy_snapshot = current_activity_snapshot(&mut runtime);
+    assert_eq!(
+        policy_snapshot.microphone_activity.latest_normalized_level,
+        Some(1.0),
+        "debug polling must not consume the one-shot VAD speech pulse before policy evaluation"
+    );
+
+    let next_policy_snapshot = current_activity_snapshot(&mut runtime);
+    assert_eq!(
+        next_policy_snapshot.microphone_activity.latest_normalized_level,
+        None,
+        "policy evaluation still consumes the one-shot pulse after observing it"
+    );
+}
+
+fn voiced_like_frame_16khz_30ms() -> Vec<i16> {
+    (0..480)
+        .map(|sample_index| {
+            let phase = sample_index % 160;
+            let envelope = if phase < 80 { phase } else { 160 - phase };
+            let carrier = if sample_index % 32 < 16 { 1 } else { -1 };
+            (carrier * envelope as i32 * 220) as i16
+        })
+        .collect()
 }
 
 #[cfg(target_os = "macos")]

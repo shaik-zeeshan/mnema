@@ -212,32 +212,43 @@ impl MicrophoneVadRuntime {
         &mut self,
         peak_level: Option<f32>,
         peak_idle_ms: Option<u64>,
+        peak_threshold: f32,
+    ) -> MicrophoneSpeechDecision {
+        let decision = self.peek_decision_from_peak_level(peak_level, peak_idle_ms, peak_threshold);
+
+        if matches!(
+            self.effective_adapter,
+            EffectiveMicrophoneVadAdapter::Webrtc | EffectiveMicrophoneVadAdapter::Silero
+        ) && decision.latest_normalized_level.is_some()
+        {
+            self.latest_vad_speech = Some(MicrophoneSpeechDecision {
+                idle_ms: decision.idle_ms,
+                latest_normalized_level: None,
+            });
+        }
+
+        decision
+    }
+
+    pub(crate) fn peek_decision_from_peak_level(
+        &self,
+        peak_level: Option<f32>,
+        peak_idle_ms: Option<u64>,
         _peak_threshold: f32,
     ) -> MicrophoneSpeechDecision {
         match self.effective_adapter {
-            EffectiveMicrophoneVadAdapter::Off => MicrophoneSpeechDecision {
-                idle_ms: peak_idle_ms,
-                latest_normalized_level: peak_level,
-            },
-            EffectiveMicrophoneVadAdapter::PeakLevel => MicrophoneSpeechDecision {
-                idle_ms: peak_idle_ms,
-                latest_normalized_level: peak_level,
-            },
-            EffectiveMicrophoneVadAdapter::Webrtc | EffectiveMicrophoneVadAdapter::Silero => {
-                let decision = self.latest_vad_speech.unwrap_or(MicrophoneSpeechDecision {
+            EffectiveMicrophoneVadAdapter::Off | EffectiveMicrophoneVadAdapter::PeakLevel => {
+                MicrophoneSpeechDecision {
+                    idle_ms: peak_idle_ms,
+                    latest_normalized_level: peak_level,
+                }
+            }
+            EffectiveMicrophoneVadAdapter::Webrtc | EffectiveMicrophoneVadAdapter::Silero => self
+                .latest_vad_speech
+                .unwrap_or(MicrophoneSpeechDecision {
                     idle_ms: None,
                     latest_normalized_level: None,
-                });
-
-                if decision.latest_normalized_level.is_some() {
-                    self.latest_vad_speech = Some(MicrophoneSpeechDecision {
-                        idle_ms: decision.idle_ms,
-                        latest_normalized_level: None,
-                    });
-                }
-
-                decision
-            }
+                }),
         }
     }
 }

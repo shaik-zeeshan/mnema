@@ -134,11 +134,18 @@ fn current_activity_snapshot_with_audio_peak_mode(
         AudioPeakReadMode::Take => microphone_capture::take_microphone_activity_window_peak_level(),
         AudioPeakReadMode::Peek => microphone_capture::peek_microphone_activity_window_peak_level(),
     };
-    let microphone_speech = runtime.microphone_vad.decide_from_peak_level(
-        microphone_peak_level,
-        microphone_capture::microphone_activity_idle_ms(),
-        runtime.inactivity.microphone_activity_threshold(),
-    );
+    let microphone_speech = match audio_peak_read_mode {
+        AudioPeakReadMode::Take => runtime.microphone_vad.decide_from_peak_level(
+            microphone_peak_level,
+            microphone_capture::microphone_activity_idle_ms(),
+            runtime.inactivity.microphone_activity_threshold(),
+        ),
+        AudioPeakReadMode::Peek => runtime.microphone_vad.peek_decision_from_peak_level(
+            microphone_peak_level,
+            microphone_capture::microphone_activity_idle_ms(),
+            runtime.inactivity.microphone_activity_threshold(),
+        ),
+    };
 
     ActivitySnapshot {
         system_input_idle_ms: current_system_idle_ms(),
