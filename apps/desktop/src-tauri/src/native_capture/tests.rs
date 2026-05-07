@@ -4237,6 +4237,7 @@ fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_fl
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |_, screen_output, system_audio_output_path, sources, _, _, _, _, _, _| {
             assert!(sources.screen);
             assert!(sources.system_audio);
@@ -4511,7 +4512,7 @@ fn resume_screen_from_inactivity_requires_requested_sources() {
     runtime.requested_sources = None;
 
     let error =
-        resume_screen_from_inactivity(&mut runtime).expect_err("missing sources should fail");
+        resume_screen_from_inactivity(&mut runtime, None).expect_err("missing sources should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
 }
@@ -4540,7 +4541,7 @@ fn resume_screen_from_inactivity_is_noop_when_not_paused() {
     };
 
     // Not paused, so should be a no-op
-    resume_screen_from_inactivity(&mut runtime).expect("noop resume should succeed");
+    resume_screen_from_inactivity(&mut runtime, None).expect("noop resume should succeed");
     assert!(!runtime.inactivity.is_screen_paused());
 }
 
@@ -4609,7 +4610,7 @@ fn resume_screen_preserves_audio_paused_state() {
         .inactivity
         .set_family_paused_states(false, true, true);
 
-    resume_screen_from_inactivity(&mut runtime).expect("noop resume should succeed");
+    resume_screen_from_inactivity(&mut runtime, None).expect("noop resume should succeed");
 
     assert!(!runtime.inactivity.is_screen_paused());
     assert!(runtime.inactivity.is_any_audio_paused());
@@ -4623,7 +4624,7 @@ fn resume_screen_from_inactivity_requires_segment_planner() {
     runtime.segment_planner = None;
 
     let error =
-        resume_screen_from_inactivity(&mut runtime).expect_err("missing planner should fail");
+        resume_screen_from_inactivity(&mut runtime, None).expect_err("missing planner should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
 }
@@ -4635,7 +4636,7 @@ fn resume_screen_from_inactivity_requires_segment_schedule() {
     runtime.segment_schedule = None;
 
     let error =
-        resume_screen_from_inactivity(&mut runtime).expect_err("missing schedule should fail");
+        resume_screen_from_inactivity(&mut runtime, None).expect_err("missing schedule should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
 }
@@ -4646,7 +4647,7 @@ fn resume_screen_from_inactivity_requires_capture_clock() {
     let mut runtime = screen_paused_runtime_fixture();
     runtime.capture_clock = None;
 
-    let error = resume_screen_from_inactivity(&mut runtime).expect_err("missing clock should fail");
+    let error = resume_screen_from_inactivity(&mut runtime, None).expect_err("missing clock should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
 }
@@ -5024,6 +5025,7 @@ fn resume_screen_suppresses_system_audio_when_audio_paused() {
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |_segment_dir,
          _screen_output,
          system_audio_output_path,
@@ -5069,6 +5071,7 @@ fn resume_screen_from_inactivity_does_not_require_system_audio_metadata_when_aud
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |_, _, system_audio_output_path, sources, _, _, _, _, _, _| {
             assert!(sources.screen);
             assert!(!sources.microphone);
@@ -5107,6 +5110,7 @@ fn resume_screen_includes_system_audio_when_audio_not_paused() {
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |_segment_dir, _screen_output, system_audio_output_path, sources, _fr, _res, _br, _mic, _tx, _mic_path| {
             // system_audio should flow through because audio is not paused
             assert!(
@@ -5149,6 +5153,7 @@ fn resume_screen_while_audio_paused_preserves_audio_paused_state() {
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |_, _, _, _, _, _, _, _, _, _| {
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
@@ -5186,6 +5191,7 @@ fn resume_screen_uses_contiguous_segment_index_when_schedule_has_advanced() {
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |segment_dir, screen_output, _, _, _, _, _, _, _, _| {
             assert_eq!(
                 segment_dir.to_string_lossy(),
@@ -5226,6 +5232,7 @@ fn resume_screen_reanchors_segment_boundary_timing() {
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |_, _, _, _, _, _, _, _, _, _| {
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
@@ -5521,6 +5528,7 @@ fn resume_screen_from_inactivity_sets_current_segment_sources_reflecting_audio_p
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |_, _, _, _, _, _, _, _, _, _| {
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
@@ -5554,6 +5562,7 @@ fn resume_screen_from_inactivity_sets_current_segment_sources_with_all_when_audi
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |_, _, _, _, _, _, _, _, _, _| {
             let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
             state.3 = Some("/tmp/system-audio.m4a".to_string());
@@ -7862,6 +7871,7 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |segment_dir, screen_output, system_audio_output_path, _sources, _fr, _res, _br, _mic, _tx, _mic_path| {
             assert_eq!(
                 segment_dir,
@@ -7943,6 +7953,7 @@ fn resume_screen_from_inactivity_skips_dated_system_audio_path_when_audio_paused
 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
+        None,
         |segment_dir, screen_output, system_audio_output_path, sources, _fr, _res, _br, _mic, _tx, _mic_path| {
             assert_eq!(
                 segment_dir,

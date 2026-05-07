@@ -284,7 +284,7 @@ impl RecordingLifecycle {
             .inactivity
             .should_resume_screen_from_inactivity(now, activity_snapshot)
         {
-            if let Err(error) = resume_screen_from_inactivity(&mut self.runtime) {
+            if let Err(error) = resume_screen_from_inactivity(&mut self.runtime, Some(app_handle)) {
                 if handle_inactivity_resume_error(&mut self.runtime, error) {
                     return TickOutcome::StopLoop;
                 }
