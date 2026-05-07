@@ -53,6 +53,7 @@
 - Tauri wiring or cross-crate Rust changes: run `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
 - Cross-stack or settings/storage changes: run both `bun run check` and `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
 - Focused tests in `apps/desktop/src-tauri/src/lib.rs` may need `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib <test-filter>`; without `--lib`, filtered Tauri tests may not run as expected.
+- Verifying the `audio-transcription` crate's `local-whisper` feature requires `cmake` in `PATH`, because `whisper-rs-sys` builds bundled `whisper.cpp`/GGML artifacts.
 
 ## Workflow
 - When new repo-specific behavior, commands, structure, or gotchas are discovered during a change, ask the user whether that context should also be added to `AGENTS.md`.
