@@ -18,6 +18,8 @@ const MODEL_PATH_OPTION: &str = "modelPath";
 const SAMPLE_RATE_OPTION: &str = "sampleRate";
 #[cfg(feature = "local-whisper")]
 const WHISPER_SAMPLE_RATE_HZ: u32 = 16_000;
+#[cfg(feature = "local-whisper")]
+type WhisperContextCache = Mutex<HashMap<PathBuf, Arc<whisper_rs::WhisperContext>>>;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalWhisperProvider;
@@ -194,7 +196,10 @@ fn run_whisper_blocking(
     params.set_split_on_word(true);
     params.set_no_context(true);
     if request.language == "auto" || request.language.trim().is_empty() {
-        params.set_detect_language(true);
+        // `set_detect_language(true)` looks equivalent to `set_language(None)` in
+        // whisper-rs docs, but against real Mnema microphone captures it causes
+        // whisper.cpp to auto-detect the language and then emit zero segments.
+        // Leaving language unset still auto-detects correctly and returns text.
         params.set_language(None);
     } else {
         params.set_language(Some(&request.language));
@@ -245,15 +250,32 @@ fn run_whisper_blocking(
 }
 
 #[cfg(feature = "local-whisper")]
+fn whisper_context_cache() -> &'static WhisperContextCache {
+    static CACHE: OnceLock<WhisperContextCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "local-whisper")]
+pub fn unload_all_cached_contexts() -> TranscriptionResult<usize> {
+    let mut cache = whisper_context_cache().lock().map_err(|_| {
+        TranscriptionError::Transcription("local Whisper model cache is poisoned".to_string())
+    })?;
+    let unloaded = cache.len();
+    cache.clear();
+    Ok(unloaded)
+}
+
+#[cfg(not(feature = "local-whisper"))]
+pub fn unload_all_cached_contexts() -> TranscriptionResult<usize> {
+    Ok(0)
+}
+
+#[cfg(feature = "local-whisper")]
 fn cached_whisper_context(
     model_path: &Path,
 ) -> TranscriptionResult<Arc<whisper_rs::WhisperContext>> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<whisper_rs::WhisperContext>>>> =
-        OnceLock::new();
-
     let model_path = model_path.to_path_buf();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache.lock().map_err(|_| {
+    let mut cache = whisper_context_cache().lock().map_err(|_| {
         TranscriptionError::Transcription("local Whisper model cache is poisoned".to_string())
     })?;
     if let Some(context) = cache.get(&model_path) {

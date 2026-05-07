@@ -419,6 +419,7 @@ struct ParakeetOnnxRuntime {
     max_tokens_per_step: usize,
     subsampling_factor: u64,
     bundle_dir: PathBuf,
+    encoder_execution_provider: &'static str,
 }
 
 #[cfg(feature = "parakeet-onnx")]
@@ -449,6 +450,10 @@ fn run_parakeet_onnx_blocking(
     metadata.provenance.insert(
         "memoryMode".to_string(),
         Value::String(runtime_options.memory.mode_label().to_string()),
+    );
+    metadata.provenance.insert(
+        "encoderExecutionProvider".to_string(),
+        Value::String(runtime.encoder_execution_provider.to_string()),
     );
     metadata.provenance.insert(
         "chunkSeconds".to_string(),
@@ -533,21 +538,27 @@ impl ParakeetOnnxRuntimeOptions {
 }
 
 #[cfg(feature = "parakeet-onnx")]
+fn cpu_onnx_session(model_path: &Path) -> TranscriptionResult<Session> {
+    Session::builder()
+        .map_err(ort_error)?
+        .commit_from_file(model_path)
+        .map_err(ort_error)
+}
+
+#[cfg(feature = "parakeet-onnx")]
+fn encoder_onnx_session(
+    layout: &ParakeetOnnxBundleLayout,
+) -> TranscriptionResult<(Session, &'static str)> {
+    Ok((cpu_onnx_session(&layout.encoder)?, "cpu"))
+}
+
+#[cfg(feature = "parakeet-onnx")]
 impl ParakeetOnnxRuntime {
     fn load(layout: ParakeetOnnxBundleLayout) -> TranscriptionResult<Self> {
         let config = read_parakeet_config(&layout.config)?;
-        let preprocessor = Session::builder()
-            .map_err(ort_error)?
-            .commit_from_file(&layout.preprocessor)
-            .map_err(ort_error)?;
-        let encoder = Session::builder()
-            .map_err(ort_error)?
-            .commit_from_file(&layout.encoder)
-            .map_err(ort_error)?;
-        let decoder_joint = Session::builder()
-            .map_err(ort_error)?
-            .commit_from_file(&layout.decoder_joint)
-            .map_err(ort_error)?;
+        let preprocessor = cpu_onnx_session(&layout.preprocessor)?;
+        let (encoder, encoder_execution_provider) = encoder_onnx_session(&layout)?;
+        let decoder_joint = cpu_onnx_session(&layout.decoder_joint)?;
         let vocab = read_vocab(&layout.vocab)?;
         let blank_idx = vocab
             .iter()
@@ -567,6 +578,7 @@ impl ParakeetOnnxRuntime {
                 .subsampling_factor
                 .unwrap_or(DEFAULT_SUBSAMPLING_FACTOR),
             bundle_dir: layout.bundle_dir(),
+            encoder_execution_provider,
         })
     }
 

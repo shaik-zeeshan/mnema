@@ -1273,13 +1273,11 @@ mod tests {
         assert_eq!(files.len(), 5);
         assert!(files.iter().any(|file| {
             file.relative_path == "encoder-model.int8.onnx"
-                && file.sha256
-                    == "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09"
+                && file.sha256 == "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09"
         }));
         assert!(files.iter().any(|file| {
             file.relative_path == "decoder_joint-model.int8.onnx"
-                && file.sha256
-                    == "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70"
+                && file.sha256 == "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70"
         }));
     }
 
