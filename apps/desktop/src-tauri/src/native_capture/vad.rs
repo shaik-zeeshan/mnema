@@ -116,24 +116,26 @@ impl MicrophoneVadRuntime {
         &mut self,
         frame: MicrophonePcmVadFrame<'_>,
     ) -> Result<MicrophoneSpeechDecision, MicrophoneVadError> {
-        let speech_detected = match self.effective_adapter {
-            EffectiveMicrophoneVadAdapter::Webrtc => Some(self.webrtc_adapter.is_speech(&frame)?),
-            EffectiveMicrophoneVadAdapter::Silero => {
-                let adapter = self.silero_adapter.as_mut().ok_or_else(|| {
-                    MicrophoneVadError::AdapterUnavailable {
-                        adapter: EffectiveMicrophoneVadAdapter::Silero,
-                        reason: self.fallback_reason.clone().unwrap_or_else(|| {
-                            "Silero VAD adapter was not initialized".to_string()
-                        }),
-                    }
-                })?;
-                adapter
+        let active_adapter = self.effective_adapter;
+        let speech_detected = match active_adapter {
+            EffectiveMicrophoneVadAdapter::Webrtc => {
+                self.webrtc_adapter.is_speech(&frame).map(Some)
+            }
+            EffectiveMicrophoneVadAdapter::Silero => match self.silero_adapter.as_mut() {
+                Some(adapter) => adapter
                     .process_pcm_frame(frame.samples, frame.sample_rate_hz)
                     .map_err(|error| MicrophoneVadError::AdapterUnavailable {
                         adapter: EffectiveMicrophoneVadAdapter::Silero,
                         reason: error.to_string(),
-                    })?
-            }
+                    }),
+                None => Err(MicrophoneVadError::AdapterUnavailable {
+                    adapter: EffectiveMicrophoneVadAdapter::Silero,
+                    reason: self
+                        .fallback_reason
+                        .clone()
+                        .unwrap_or_else(|| "Silero VAD adapter was not initialized".to_string()),
+                }),
+            },
             EffectiveMicrophoneVadAdapter::PeakLevel => {
                 return Err(MicrophoneVadError::AdapterUnavailable {
                     adapter: EffectiveMicrophoneVadAdapter::PeakLevel,
@@ -148,6 +150,13 @@ impl MicrophoneVadRuntime {
                     adapter: EffectiveMicrophoneVadAdapter::Off,
                     reason: "microphone VAD is disabled".to_string(),
                 });
+            }
+        };
+        let speech_detected = match speech_detected {
+            Ok(speech_detected) => speech_detected,
+            Err(error) => {
+                self.fall_back_to_peak_level_after_processing_error(active_adapter, &error);
+                return Err(error);
             }
         };
 
@@ -176,6 +185,27 @@ impl MicrophoneVadRuntime {
         self.latest_vad_speech = Some(decision);
 
         Ok(decision)
+    }
+
+    fn fall_back_to_peak_level_after_processing_error(
+        &mut self,
+        failed_adapter: EffectiveMicrophoneVadAdapter,
+        error: &MicrophoneVadError,
+    ) {
+        if !matches!(
+            failed_adapter,
+            EffectiveMicrophoneVadAdapter::Silero | EffectiveMicrophoneVadAdapter::Webrtc
+        ) {
+            return;
+        }
+
+        self.effective_adapter = EffectiveMicrophoneVadAdapter::PeakLevel;
+        self.fallback_reason = Some(format!(
+            "{} VAD processing failed: {error}; using peak-level microphone activity",
+            failed_adapter.as_str()
+        ));
+        self.latest_vad_speech = None;
+        self.last_vad_speech_unix_ms = None;
     }
 
     pub(crate) fn decide_from_peak_level(
@@ -639,6 +669,35 @@ mod tests {
 
         assert_eq!(decision.idle_ms, Some(0));
         assert_eq!(decision.latest_normalized_level, Some(1.0));
+    }
+
+    #[test]
+    fn webrtc_processing_error_degrades_to_peak_level_decisions() {
+        let mut runtime = MicrophoneVadRuntime::new(MicrophoneVadAdapter::Webrtc);
+        let frame = MicrophonePcmVadFrame {
+            samples: &[0; 160],
+            sample_rate_hz: 44_100,
+            captured_at_unix_ms: 1_000,
+            normalized_peak_level: 0.0,
+        };
+
+        assert_eq!(
+            runtime.process_pcm_frame(frame),
+            Err(MicrophoneVadError::InvalidSampleRate(44_100))
+        );
+        assert_eq!(
+            runtime.effective_adapter(),
+            EffectiveMicrophoneVadAdapter::PeakLevel
+        );
+        assert!(runtime
+            .fallback_reason()
+            .expect("fallback reason")
+            .contains("using peak-level microphone activity"));
+
+        let decision = runtime.decide_from_peak_level(Some(0.8), Some(0), 0.1);
+
+        assert_eq!(decision.idle_ms, Some(0));
+        assert_eq!(decision.latest_normalized_level, Some(0.8));
     }
 
     #[test]

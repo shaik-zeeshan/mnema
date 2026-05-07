@@ -74,7 +74,9 @@ fn capture_source_requested(
 }
 
 fn process_pending_microphone_vad_frames(runtime: &mut NativeCaptureRuntime) {
-    if !capture_source_requested(runtime, |sources| sources.microphone) {
+    if !capture_source_requested(runtime, |sources| sources.microphone)
+        || !runtime.microphone_vad.uses_vad_adapter()
+    {
         return;
     }
 
