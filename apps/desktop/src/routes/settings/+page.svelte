@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from "$app/stores";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import Switch from "$lib/components/Switch.svelte";
@@ -15,6 +16,12 @@
     NativeCaptureDebugLogStatus,
     OcrRecognitionMode,
     RecordingSettings,
+    AudioTranscriptionModelDownloadProgress,
+    AudioTranscriptionModelStatus,
+    AudioTranscriptionModelStatusResponse,
+    AudioTranscriptionProvider,
+    AudioTranscriptionMemoryMode,
+    AppleSpeechOnDeviceAvailabilityStatus,
     MicrophoneVadAdapter,
     ResolutionMode,
     ResolutionPreset,
@@ -27,6 +34,7 @@
   } from "$lib/types";
 
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
+  const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
 
   // ─── State ────────────────────────────────────────────────────────────────
 
@@ -90,6 +98,24 @@
   let draftOcrRecognitionMode = $state<OcrRecognitionMode>("fast");
   let draftOcrLanguageCorrection = $state(false);
 
+  // Transcription drafts/status
+  let draftTranscriptionEnabled = $state(true);
+  let draftTranscriptionProvider = $state<AudioTranscriptionProvider>("local_whisper");
+  let draftTranscriptionModelId = $state<string | null>("base");
+  let draftTranscriptionLanguage = $state("auto");
+  let draftTranscriptionMemoryMode = $state<AudioTranscriptionMemoryMode>("balanced");
+  let draftTranscriptionIdleUnloadSeconds = $state(300);
+  let draftTranscriptionChunkSeconds = $state(30);
+  let transcriptionModelStatus = $state<AudioTranscriptionModelStatusResponse | null>(null);
+  let loadingTranscriptionModelStatus = $state(false);
+  let transcriptionModelError = $state<string | null>(null);
+  let transcriptionDownloadProgress = $state<AudioTranscriptionModelDownloadProgress | null>(null);
+  let startingTranscriptionDownload = $state(false);
+  let cancellingTranscriptionDownload = $state(false);
+  let transcriptionDownloadError = $state<string | null>(null);
+  let requestingAppleSpeechPermission = $state(false);
+  let appleSpeechPermissionError = $state<string | null>(null);
+
   // Debug log status
   let debugLogStatus = $state<NativeCaptureDebugLogStatus | null>(null);
   let loadingDebugLogStatus = $state(false);
@@ -125,6 +151,7 @@
     | "behavior"
     | "microphone"
     | "ocr"
+    | "transcription"
     | "developer";
 
   let activeTab = $state<SettingsTab>("capture");
@@ -142,6 +169,13 @@
     scrollRegion?.scrollTo({ top: 0, behavior: "auto" });
   });
 
+  $effect(() => {
+    const requestedTab = $page.url.searchParams.get("tab");
+    if (isSettingsTab(requestedTab)) {
+      activeTab = requestedTab;
+    }
+  });
+
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
     { id: "capture",    label: "Capture",     description: "Sources & segments" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
@@ -149,8 +183,20 @@
     { id: "behavior",   label: "Behavior",    description: "Inactivity, timeline" },
     { id: "microphone", label: "Microphone",  description: "Devices & disconnect policy" },
     { id: "ocr",        label: "OCR & Cache", description: "Recognition & previews" },
+    { id: "transcription", label: "Transcription", description: "Local speech-to-text models" },
     { id: "developer",  label: "Developer",   description: "Debug toggles & logs" },
   ];
+
+  function isSettingsTab(value: string | null | undefined): value is SettingsTab {
+    return value === "capture"
+      || value === "video"
+      || value === "storage"
+      || value === "behavior"
+      || value === "microphone"
+      || value === "ocr"
+      || value === "transcription"
+      || value === "developer";
+  }
 
   // Keyboard navigation for the tablist follows the WAI-ARIA Authoring
   // Practices "Tabs (Manual Activation)" pattern: ←/→ move focus and
@@ -264,6 +310,13 @@
     draftAppearance = s.appearance ?? "system";
     draftOcrRecognitionMode = s.ocr?.recognitionMode ?? "fast";
     draftOcrLanguageCorrection = s.ocr?.languageCorrection ?? false;
+    draftTranscriptionEnabled = s.transcription?.enabled ?? true;
+    draftTranscriptionProvider = s.transcription?.provider ?? "local_whisper";
+    draftTranscriptionModelId = s.transcription?.modelId ?? (draftTranscriptionProvider === "apple_speech_on_device" ? null : "base");
+    draftTranscriptionLanguage = s.transcription?.language ?? "auto";
+    draftTranscriptionMemoryMode = s.transcription?.memoryMode ?? "balanced";
+    draftTranscriptionIdleUnloadSeconds = s.transcription?.idleUnloadSeconds ?? 300;
+    draftTranscriptionChunkSeconds = s.transcription?.chunkSeconds ?? 30;
     if (s.screenResolution.mode === "custom") {
       draftResolutionMode = "custom";
       draftCustomWidth = s.screenResolution.width;
@@ -332,6 +385,15 @@
       ocr: {
         recognitionMode: draftOcrRecognitionMode,
         languageCorrection: draftOcrLanguageCorrection,
+      },
+      transcription: {
+        enabled: draftTranscriptionEnabled,
+        provider: draftTranscriptionProvider,
+        modelId: draftTranscriptionModelId,
+        language: draftTranscriptionLanguage.trim() || "auto",
+        memoryMode: draftTranscriptionMemoryMode,
+        idleUnloadSeconds: Math.max(0, Math.trunc(Number(draftTranscriptionIdleUnloadSeconds) || 0)),
+        chunkSeconds: Math.max(0, Math.trunc(Number(draftTranscriptionChunkSeconds) || 0)),
       },
       screenResolution: draftResolutionMode === "custom"
         ? {
@@ -472,6 +534,82 @@
       recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
       loadingRecSettings = false;
+    }
+  }
+
+  async function loadTranscriptionModelStatus() {
+    loadingTranscriptionModelStatus = true;
+    transcriptionModelError = null;
+    try {
+      transcriptionModelStatus = await invoke<AudioTranscriptionModelStatusResponse>("get_audio_transcription_model_status");
+    } catch (err) {
+      transcriptionModelError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      loadingTranscriptionModelStatus = false;
+    }
+  }
+
+  async function requestAppleSpeechPermission() {
+    requestingAppleSpeechPermission = true;
+    appleSpeechPermissionError = null;
+    try {
+      transcriptionModelStatus = await invoke<AudioTranscriptionModelStatusResponse>(
+        "request_apple_speech_recognition_permission"
+      );
+    } catch (err) {
+      appleSpeechPermissionError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      await loadTranscriptionModelStatus();
+    } finally {
+      requestingAppleSpeechPermission = false;
+    }
+  }
+
+  async function openAppleSpeechPrivacySettings() {
+    appleSpeechPermissionError = null;
+    try {
+      await invoke("open_apple_speech_recognition_privacy_settings");
+    } catch (err) {
+      appleSpeechPermissionError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    }
+  }
+
+  async function startSelectedTranscriptionModelDownload() {
+    if (!selectedTranscriptionModel?.modelId) return;
+    startingTranscriptionDownload = true;
+    transcriptionDownloadError = null;
+    try {
+      transcriptionDownloadProgress = await invoke<AudioTranscriptionModelDownloadProgress>(
+        "start_audio_transcription_model_download",
+        {
+          request: {
+            provider: selectedTranscriptionModel.provider,
+            modelId: selectedTranscriptionModel.modelId,
+          },
+        }
+      );
+    } catch (err) {
+      transcriptionDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      startingTranscriptionDownload = false;
+    }
+  }
+
+  async function cancelSelectedTranscriptionModelDownload() {
+    cancellingTranscriptionDownload = true;
+    transcriptionDownloadError = null;
+    try {
+      await invoke("cancel_audio_transcription_model_download");
+    } catch (err) {
+      transcriptionDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      cancellingTranscriptionDownload = false;
+    }
+  }
+
+  async function handleTranscriptionDownloadProgress(progress: AudioTranscriptionModelDownloadProgress) {
+    transcriptionDownloadProgress = progress;
+    if (["completed", "failed", "cancelled"].includes(progress.status)) {
+      await loadTranscriptionModelStatus();
     }
   }
 
@@ -698,18 +836,163 @@
     }))
   );
 
+  const transcriptionProviderOptions = $derived(
+    (transcriptionModelStatus?.providers ?? []).map((provider) => ({
+      value: provider.provider,
+      label: provider.displayName,
+      description: provider.models.some((model) => model.available)
+        ? "At least one model is available"
+        : "No available model detected",
+    }))
+  );
+
+  const selectedTranscriptionProviderStatus = $derived(
+    transcriptionModelStatus?.providers.find((provider) => provider.provider === draftTranscriptionProvider) ?? null
+  );
+
+  const selectedTranscriptionModels = $derived(
+    selectedTranscriptionProviderStatus?.models ?? []
+  );
+
+  const transcriptionModelOptions = $derived(
+    selectedTranscriptionModels.map((model) => ({
+      value: model.modelId ?? "__os_managed__",
+      label: `${model.displayName} · ${transcriptionStatusLabel(model)}`,
+    }))
+  );
+
+  const selectedTranscriptionModel = $derived(
+    selectedTranscriptionModels.find((model) => model.modelId === draftTranscriptionModelId) ?? selectedTranscriptionModels[0] ?? null
+  );
+
+  const selectedAppleSpeechPermissionStatus = $derived(
+    selectedTranscriptionModel?.provider === "apple_speech_on_device"
+      ? selectedTranscriptionModel.availabilityStatus
+      : null
+  );
+
+  const selectedAppleSpeechNeedsPermission = $derived(
+    selectedAppleSpeechPermissionStatus === "permission_not_determined"
+      || selectedAppleSpeechPermissionStatus === "permission_denied"
+      || selectedAppleSpeechPermissionStatus === "permission_restricted"
+  );
+
+  const selectedTranscriptionDownloadProgress = $derived(
+    transcriptionDownloadProgress
+      && transcriptionDownloadProgress.provider === draftTranscriptionProvider
+      && transcriptionDownloadProgress.modelId === draftTranscriptionModelId
+      ? transcriptionDownloadProgress
+      : null
+  );
+
+  const selectedTranscriptionDownloadRunning = $derived(
+    selectedTranscriptionDownloadProgress !== null
+      && ["starting", "downloading", "installing"].includes(selectedTranscriptionDownloadProgress.status)
+  );
+
+  const selectedTranscriptionDownloadPercent = $derived((() => {
+    const progress = selectedTranscriptionDownloadProgress;
+    if (!progress?.totalBytes || progress.totalBytes <= 0) return null;
+    return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
+  })());
+
+  function transcriptionStatusLabel(model: AudioTranscriptionModelStatus): string {
+    if (model.provider === "apple_speech_on_device" && model.availabilityStatus) {
+      return appleSpeechPermissionLabel(model.availabilityStatus);
+    }
+    if (model.status === "os_managed") return "OS managed";
+    if (model.status === "installed") return "Installed";
+    if (model.status === "downloading") return "Downloading";
+    if (model.status === "failed") return "Failed";
+    return "Missing";
+  }
+
+  function appleSpeechPermissionLabel(status: AppleSpeechOnDeviceAvailabilityStatus): string {
+    switch (status) {
+      case "available":
+        return "Permission granted";
+      case "permission_not_determined":
+        return "Permission not requested";
+      case "permission_denied":
+        return "Permission denied";
+      case "permission_restricted":
+        return "Permission restricted";
+      case "unsupported_platform":
+        return "Unsupported platform";
+      case "framework_unavailable":
+        return "Speech framework unavailable";
+      case "recognizer_unavailable":
+        return "Recognizer unavailable";
+      case "on_device_recognition_unavailable":
+        return "On-device recognition unavailable";
+    }
+  }
+
+  function appleSpeechPermissionHint(status: AppleSpeechOnDeviceAvailabilityStatus): string {
+    switch (status) {
+      case "available":
+        return "macOS has granted Speech Recognition permission for Mnema.";
+      case "permission_not_determined":
+        return "Mnema has not asked macOS for Speech Recognition permission yet. Request it before recording with Apple Speech selected.";
+      case "permission_denied":
+        return "macOS denied Speech Recognition permission. Enable it in System Settings → Privacy & Security → Speech Recognition, then refresh.";
+      case "permission_restricted":
+        return "macOS reports Speech Recognition permission is restricted by policy or parental controls.";
+      default:
+        return "Apple Speech cannot be used until this macOS availability check passes.";
+    }
+  }
+
+  function formatBytes(value: number): string {
+    if (!Number.isFinite(value) || value <= 0) return "unknown size";
+    const units = ["B", "KB", "MB", "GB"];
+    let size = value;
+    let unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit += 1;
+    }
+    return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+  }
+
+  function defaultTranscriptionModelIdForProvider(provider: AudioTranscriptionProvider): string | null {
+    if (provider === "local_whisper") return "base";
+    if (provider === "parakeet") return "parakeet-tdt-0.6b-v3-onnx-int8";
+    return null;
+  }
+
+  function preferredTranscriptionModelIdForProvider(provider: AudioTranscriptionProvider): string | null {
+    const providerStatus = transcriptionModelStatus?.providers.find((status) => status.provider === provider);
+    const defaultModelId = defaultTranscriptionModelIdForProvider(provider);
+    if (!providerStatus) return defaultModelId;
+    const defaultModel = providerStatus.models.find((model) => model.modelId === defaultModelId);
+    return defaultModel?.modelId ?? providerStatus.models[0]?.modelId ?? defaultModelId;
+  }
+
+  function chooseTranscriptionProvider(provider: string) {
+    draftTranscriptionProvider = provider as AudioTranscriptionProvider;
+    draftTranscriptionModelId = preferredTranscriptionModelIdForProvider(draftTranscriptionProvider);
+  }
+
+  function chooseTranscriptionModel(value: string) {
+    draftTranscriptionModelId = value === "__os_managed__" ? null : value;
+  }
+
   // ─── Init ─────────────────────────────────────────────────────────────────
 
   $effect(() => {
     loadCaptureSupport();
     loadRecordingSettings();
     loadMicState();
+    loadTranscriptionModelStatus();
     loadDebugLogStatus();
     loadGeneralLogStatus();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
     let unlistenRecordingSettingsChanged: (() => void) | undefined;
+    let unlistenOpenSettingsTab: (() => void) | undefined;
+    let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
     let destroyed = false;
 
     listen<MicrophoneControllerState>("microphone_controller_changed", (event) => {
@@ -741,11 +1024,32 @@
       else unlistenRecordingSettingsChanged = fn;
     });
 
+    listen<{ tab: string }>("open_settings_tab", (event) => {
+      if (isSettingsTab(event.payload.tab)) {
+        activeTab = event.payload.tab;
+      }
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenOpenSettingsTab = fn;
+    });
+
+    listen<AudioTranscriptionModelDownloadProgress>(
+      AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
+      (event) => {
+        void handleTranscriptionDownloadProgress(event.payload);
+      }
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenTranscriptionDownloadProgress = fn;
+    });
+
     return () => {
       destroyed = true;
       unlistenControllerChanged?.();
       unlistenAutoDisconnectFailure?.();
       unlistenRecordingSettingsChanged?.();
+      unlistenOpenSettingsTab?.();
+      unlistenTranscriptionDownloadProgress?.();
     };
   });
 </script>
@@ -1534,13 +1838,207 @@
     </div>
   {/if}
 
+  {#if activeTab === "transcription"}
+    <div role="tabpanel" id="settings-panel-transcription" aria-labelledby="settings-tab-transcription" tabindex="0">
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">07</span>
+          <div>
+            <h2 class="card__title">Transcription</h2>
+            <p class="card__subtitle">Local speech-to-text provider and model setup for microphone audio.</p>
+          </div>
+        </div>
+        <button class="btn btn--ghost btn--sm" onclick={loadTranscriptionModelStatus} disabled={loadingTranscriptionModelStatus}>
+          {loadingTranscriptionModelStatus ? "Checking" : "Refresh"}
+        </button>
+      </div>
+
+      <div class="settings-group">
+        <span class="group-label">Engine</span>
+        <Switch
+          bind:checked={draftTranscriptionEnabled}
+          label="Enable audio transcription"
+          description="Automatically queue local transcription for committed microphone audio segments when the selected model is available"
+        />
+        <div class="settings-divider"></div>
+        <RadioGroup
+          value={draftTranscriptionProvider}
+          onValueChange={chooseTranscriptionProvider}
+          label="Provider"
+          options={transcriptionProviderOptions.length > 0 ? transcriptionProviderOptions : [
+            { value: "local_whisper", label: "Local Whisper", description: "Model status is loading" },
+            { value: "apple_speech_on_device", label: "Apple Speech (on-device)", description: "Model status is loading" },
+            { value: "parakeet", label: "Parakeet", description: "Model status is loading" },
+          ]}
+        />
+        <div class="settings-divider"></div>
+        <SelectMenu
+          value={draftTranscriptionModelId ?? "__os_managed__"}
+          onValueChange={chooseTranscriptionModel}
+          label="Model"
+          options={transcriptionModelOptions.length > 0 ? transcriptionModelOptions : [
+            { value: draftTranscriptionModelId ?? "__os_managed__", label: "Loading model options" },
+          ]}
+        />
+        <label class="field-label" for="transcription-language">Language</label>
+        <input
+          id="transcription-language"
+          class="text-input"
+          bind:value={draftTranscriptionLanguage}
+          placeholder="auto"
+        />
+        {#if draftTranscriptionProvider === "parakeet"}
+          <div class="settings-divider"></div>
+          <RadioGroup
+            value={draftTranscriptionMemoryMode}
+            onValueChange={(value) => draftTranscriptionMemoryMode = value as AudioTranscriptionMemoryMode}
+            label="Parakeet memory mode"
+            options={[
+              { value: "balanced", label: "Balanced", description: "Unload ONNX sessions after idle timeout" },
+              { value: "low_memory", label: "Low memory", description: "Unload ONNX sessions after every transcription" },
+              { value: "performance", label: "Performance", description: "Keep ONNX sessions loaded for fastest repeat jobs" },
+            ]}
+          />
+          {#if draftTranscriptionMemoryMode === "balanced"}
+            <label class="field-label" for="transcription-idle-unload">Idle unload seconds</label>
+            <input
+              id="transcription-idle-unload"
+              class="text-input"
+              type="number"
+              min="0"
+              max="86400"
+              step="1"
+              bind:value={draftTranscriptionIdleUnloadSeconds}
+            />
+          {/if}
+          <label class="field-label" for="transcription-chunk-seconds">Chunk seconds</label>
+          <input
+            id="transcription-chunk-seconds"
+            class="text-input"
+            type="number"
+            min="0"
+            max="3600"
+            step="1"
+            bind:value={draftTranscriptionChunkSeconds}
+          />
+          <p class="group-hint">
+            Choose the int8 Parakeet model for lower disk and runtime weight memory. Chunking limits peak activation memory; set chunk seconds to 0 to disable chunking.
+          </p>
+        {/if}
+        <p class="group-hint">
+          Use <strong>auto</strong> for automatic language detection, or enter a language hint such as <strong>en</strong>.
+          Settings changes affect future audio segments; already-queued jobs keep their admitted provider/model payload.
+        </p>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Selected model status</span>
+        {#if transcriptionModelError}
+          <p class="group-hint group-hint--warn">Failed to load model status: {transcriptionModelError}</p>
+        {:else if selectedTranscriptionModel}
+          <div class="model-status" class:model-status--available={selectedTranscriptionModel.available}>
+            <div>
+              <div class="model-status__title">{selectedTranscriptionModel.displayName}</div>
+              <div class="model-status__meta">{transcriptionStatusLabel(selectedTranscriptionModel)}</div>
+            </div>
+            <span class="model-status__pill">{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
+          </div>
+          <p class="group-hint">{selectedTranscriptionModel.description}</p>
+          {#if selectedAppleSpeechPermissionStatus}
+            <div class="permission-callout" class:permission-callout--ok={selectedAppleSpeechPermissionStatus === "available"}>
+              <div class="permission-callout__copy">
+                <span class="permission-callout__eyebrow">Apple Speech status</span>
+                <strong>{appleSpeechPermissionLabel(selectedAppleSpeechPermissionStatus)}</strong>
+                <p>{appleSpeechPermissionHint(selectedAppleSpeechPermissionStatus)}</p>
+              </div>
+              {#if selectedAppleSpeechNeedsPermission}
+                {#if selectedAppleSpeechPermissionStatus === "permission_not_determined"}
+                  <button
+                    class="btn btn--ghost"
+                    onclick={requestAppleSpeechPermission}
+                    disabled={requestingAppleSpeechPermission}
+                  >
+                    {requestingAppleSpeechPermission ? "Requesting" : "Get permission"}
+                  </button>
+                {:else}
+                  <button class="btn btn--ghost" onclick={openAppleSpeechPrivacySettings}>
+                    Open System Settings
+                  </button>
+                {/if}
+              {/if}
+            </div>
+            {#if appleSpeechPermissionError}
+              <p class="group-hint group-hint--warn">Permission request failed: {appleSpeechPermissionError}</p>
+            {/if}
+          {/if}
+          {#if selectedTranscriptionModel.installPath}
+            <p class="group-hint"><strong>Install path:</strong> {selectedTranscriptionModel.installPath}</p>
+          {/if}
+          {#if selectedTranscriptionModel.missingFiles.length > 0}
+            <p class="group-hint group-hint--warn"><strong>Missing files:</strong> {selectedTranscriptionModel.missingFiles.join(", ")}</p>
+          {/if}
+          {#if selectedTranscriptionModel.failureMessage}
+            <p class="group-hint group-hint--warn"><strong>Failure:</strong> {selectedTranscriptionModel.failureMessage}</p>
+          {/if}
+          {#if selectedTranscriptionModel.licenseLabel || selectedTranscriptionModel.sourceUrl}
+            <p class="group-hint">
+              {#if selectedTranscriptionModel.licenseLabel}<strong>License:</strong> {selectedTranscriptionModel.licenseLabel}. {/if}
+              {#if selectedTranscriptionModel.sourceUrl}<strong>Source:</strong> {selectedTranscriptionModel.sourceUrl}{/if}
+            </p>
+          {/if}
+          {#if selectedTranscriptionModel.management === "app_managed"}
+            {#if selectedTranscriptionModel.download}
+              {#if selectedTranscriptionDownloadRunning}
+                <div class="download-progress" aria-live="polite">
+                  <div class="download-progress__bar">
+                    <span style={`width: ${selectedTranscriptionDownloadPercent ?? 8}%`}></span>
+                  </div>
+                  <p class="group-hint">
+                    {selectedTranscriptionDownloadProgress?.status ?? "downloading"}
+                    {#if selectedTranscriptionDownloadPercent !== null} · {selectedTranscriptionDownloadPercent}%{/if}
+                    {#if selectedTranscriptionDownloadProgress?.message} · {selectedTranscriptionDownloadProgress.message}{/if}
+                  </p>
+                  <button class="btn btn--ghost" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload}>
+                    {cancellingTranscriptionDownload ? "Cancelling" : "Cancel download"}
+                  </button>
+                </div>
+              {:else}
+                <button class="btn btn--ghost" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available}>
+                  {startingTranscriptionDownload ? "Starting" : `Download (${formatBytes(selectedTranscriptionModel.download.byteSize)})`}
+                </button>
+              {/if}
+              <p class="group-hint">Download support validates sha256 before marking this model installed.</p>
+            {:else if !selectedTranscriptionModel.available}
+              <p class="group-hint group-hint--warn">
+                This app-managed model is missing, but no packaged download artifact is available in the current manifest.
+              </p>
+            {/if}
+            {#if transcriptionDownloadError}
+              <p class="group-hint group-hint--warn">Download failed: {transcriptionDownloadError}</p>
+            {/if}
+          {:else}
+            <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
+          {/if}
+        {:else if loadingTranscriptionModelStatus}
+          <p class="group-hint">Checking installed transcription models…</p>
+        {:else}
+          <p class="group-hint group-hint--warn">No model status is available for the selected provider.</p>
+        {/if}
+      </div>
+    </section>
+    </div>
+  {/if}
+
   {#if activeTab === "developer"}
     <div role="tabpanel" id="settings-panel-developer" aria-labelledby="settings-tab-developer" tabindex="0">
     <!-- ── Card: Developer & Logs ─────────────────────── -->
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          <span class="card__index">07</span>
+          <span class="card__index">08</span>
           <div>
             <h2 class="card__title">Developer &amp; Logs</h2>
             <p class="card__subtitle">Debug surfaces, native capture diagnostics, and log files.</p>
@@ -1913,7 +2411,7 @@
   }
 
   .tab-nav__label {
-    font-size: 12px;
+    font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.04em;
     color: var(--app-text-strong);
@@ -2205,6 +2703,118 @@
   .group-hint--warn {
     color: var(--app-warn);
     font-weight: 600;
+  }
+
+  .field-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
+
+  .model-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--app-warn-border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-warn) 8%, transparent);
+  }
+
+  .model-status--available {
+    border-color: color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
+    background: color-mix(in srgb, var(--app-accent) 8%, transparent);
+  }
+
+  .model-status__title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--app-text);
+  }
+
+  .model-status__meta {
+    margin-top: 2px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
+
+  .model-status__pill {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
+
+  .permission-callout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 12px;
+    border: 1px dashed var(--app-warn-border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-warn) 6%, transparent);
+  }
+
+  .permission-callout--ok {
+    border-color: color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
+    background: color-mix(in srgb, var(--app-accent) 6%, transparent);
+  }
+
+  .permission-callout__copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .permission-callout__eyebrow {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
+
+  .permission-callout strong {
+    font-size: 12px;
+    color: var(--app-text);
+  }
+
+  .permission-callout p {
+    margin: 0;
+    font-size: 10px;
+    line-height: 1.45;
+    color: var(--app-text-faint);
+  }
+
+  .download-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .download-progress__bar {
+    height: 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--app-surface-hover);
+    border: 1px solid var(--app-border);
+  }
+
+  .download-progress__bar span {
+    display: block;
+    height: 100%;
+    min-width: 8%;
+    border-radius: inherit;
+    background: var(--app-accent);
+    transition: width 0.15s ease;
   }
 
   /* ── Text input ────────────────────────────────────────────── */

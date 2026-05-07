@@ -181,9 +181,20 @@ export interface CapturedFrameReprocessingResultDto {
 	job: ProcessingJobDto;
 }
 
+export type AudioSegmentTranscriptionReprocessingOutcome = "created" | "ignored" | "requeued";
+
+export interface AudioSegmentTranscriptionReprocessingResultDto {
+	outcome: AudioSegmentTranscriptionReprocessingOutcome;
+	job: ProcessingJobDto;
+}
+
 export interface ReprocessCapturedFrameOcrRequest {
 	frameId: number;
 	payloadJson?: string | null;
+}
+
+export interface ReprocessAudioSegmentTranscriptionRequest {
+	audioSegmentId: number;
 }
 
 export interface GetProcessingJobRequest {

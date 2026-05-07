@@ -20,6 +20,7 @@
     clearAppNotification,
     clearAppNotifications,
     initAppNotifications,
+    type AppNotification,
   } from "$lib/notifications.svelte";
   import { getGlobalShortcutAction } from "$lib/global-shortcuts";
   interface Props {
@@ -113,6 +114,14 @@
   $effect(() => {
     if (!hasNotifications) notificationsOpen = false;
   });
+
+  async function runNotificationAction(notification: AppNotification): Promise<void> {
+    if (notification.action?.type === "open_settings_tab") {
+      await openSettingsWindow(notification.action.tab);
+      await clearAppNotification(notification.id);
+      notificationsOpen = false;
+    }
+  }
 
   // ── Recording status mirrored from the shared capture-controls seam ────
   const isCapturing = $derived(captureControls.running);
@@ -501,6 +510,15 @@
                       <div class="notification-item__body">
                         <span class="notification-item__title">{notification.title}</span>
                         <span class="notification-item__message">{notification.message}</span>
+                        {#if notification.action?.type === "open_settings_tab"}
+                          <button
+                            type="button"
+                            class="notification-item__action"
+                            onclick={() => void runNotificationAction(notification)}
+                          >
+                            Open transcription settings
+                          </button>
+                        {/if}
                       </div>
                       <button
                         type="button"
@@ -1432,6 +1450,23 @@
     color: var(--app-text-muted);
     font-size: 11px;
     line-height: 1.35;
+  }
+  .notification-item__action {
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 4px 7px;
+    border-radius: 4px;
+    border: 1px solid var(--app-border-strong);
+    background: var(--app-surface);
+    color: var(--app-text);
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .notification-item__action:hover {
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
   }
   .notification-item__clear {
     align-self: start;

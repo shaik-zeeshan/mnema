@@ -301,6 +301,7 @@ function buildUpdatePayload(
     appearance: base.appearance,
     developerOptionsEnabled: base.developerOptionsEnabled,
     ocr: base.ocr,
+    transcription: base.transcription,
     screenResolution: base.screenResolution,
     videoBitrate: base.videoBitrate,
   };

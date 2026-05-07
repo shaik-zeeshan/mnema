@@ -1,12 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+export type AppNotificationAction = {
+	type: "open_settings_tab";
+	tab: "transcription";
+};
+
 export interface AppNotification {
 	id: string;
 	severity: "info" | "warning" | "error";
 	title: string;
 	message: string;
 	createdAtUnixMs: number;
+	action?: AppNotificationAction | null;
 }
 
 const APP_NOTIFICATIONS_CHANGED_EVENT = "app_notifications_changed";
