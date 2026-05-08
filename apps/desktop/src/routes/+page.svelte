@@ -2870,8 +2870,12 @@
         : "rerun OCR",
   );
 
+  const ocrEnabled = $derived(captureControls.recordingSettings?.ocr?.enabled ?? true);
+  const ocrReadOnlyTooltip = "OCR is off. Saved OCR text can still be viewed.";
+  const ocrRunDisabledTooltip = "OCR is off. Turn it on in Settings to run OCR again.";
+
   const ocrRerunDisabled = $derived(
-    !timelineActive || ocrRerunLoading || ocrStatus === "running",
+    !timelineActive || !ocrEnabled || ocrRerunLoading || ocrStatus === "running",
   );
 
   async function reprocessOcrForActiveFrame(): Promise<void> {
@@ -3831,7 +3835,7 @@
         class:timeline__ocr-btn--success={ocrStatus === "success"}
         onclick={toggleOcrForActiveFrame}
         disabled={!timelineActive}
-        title={ocrError ??
+        title={!ocrEnabled && !ocrVisible ? ocrReadOnlyTooltip : ocrError ??
           (ocrVisible
             ? "Hide OCR data for the active frame"
             : ocrStatus === "success"
@@ -3863,7 +3867,9 @@
           class="btn btn--ghost btn--sm timeline__ocr-rerun-btn"
           onclick={reprocessOcrForActiveFrame}
           disabled={ocrRerunDisabled}
-          title={ocrStatus === "running"
+          title={!ocrEnabled
+            ? ocrRunDisabledTooltip
+            : ocrStatus === "running"
             ? "OCR is queued or still processing"
             : ocrStatus === "missing"
               ? "Run OCR for the active frame with current settings"

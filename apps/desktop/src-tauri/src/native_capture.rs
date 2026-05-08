@@ -261,7 +261,7 @@ fn maybe_push_audio_transcription_unavailable_start_warning(
 }
 
 fn should_warn_ocr_unavailable_at_start(settings: &RecordingSettings) -> bool {
-    settings.capture_screen
+    settings.capture_screen && settings.ocr.enabled
 }
 
 fn should_warn_ocr_unavailable_at_startup(settings: &RecordingSettings) -> bool {
@@ -991,7 +991,7 @@ fn start_native_capture_inner(
         }
     };
 
-    if resolved_request.capture_screen {
+    if resolved_request.capture_screen && settings.ocr.enabled {
         let app_data_dir =
             app_handle
                 .path()
@@ -1415,6 +1415,23 @@ pub fn update_recording_settings(
             "recording save directory changed from '{}' to '{}'; app infrastructure database location will update on next app start",
             previous_save_directory, settings.save_directory
         ));
+    }
+
+    if previous_settings.ocr.enabled && !settings.ocr.enabled {
+        if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
+            match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled()) {
+                Ok(failed_count) => debug_log::log_info(format!(
+                    "marked queued OCR jobs failed because OCR was disabled (count={failed_count})"
+                )),
+                Err(error) => debug_log::log_error(format!(
+                    "failed to mark queued OCR jobs failed after disabling OCR: {error}"
+                )),
+            }
+        } else {
+            debug_log::log_warn(
+                "app infrastructure state unavailable while disabling OCR; queued OCR jobs were not updated",
+            );
+        }
     }
 
     emit_recording_settings_changed(&app_handle, &settings);

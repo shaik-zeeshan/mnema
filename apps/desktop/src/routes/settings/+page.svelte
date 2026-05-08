@@ -105,6 +105,7 @@
   let draftAppearance = $state<AppearanceSetting>("system");
 
   // OCR drafts/status
+  let draftOcrEnabled = $state(true);
   let draftOcrProvider = $state<OcrProvider>("apple_vision");
   let draftOcrModelId = $state<string | null>(null);
   let draftOcrLanguage = $state("");
@@ -346,6 +347,7 @@
     draftFollowTimelineLive = s.followTimelineLive ?? false;
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
     draftAppearance = s.appearance ?? "system";
+    draftOcrEnabled = s.ocr?.enabled ?? true;
     const loadedOcrProvider = s.ocr?.provider;
     const loadedOcrProviderSelectable = isSelectableOcrProvider(loadedOcrProvider);
     draftOcrProvider = loadedOcrProviderSelectable ? loadedOcrProvider : "apple_vision";
@@ -430,6 +432,7 @@
       appearance: draftAppearance,
       developerOptionsEnabled: draftDeveloperOptionsEnabled,
       ocr: {
+        enabled: draftOcrEnabled,
         provider: draftOcrProvider,
         modelId: draftOcrModelId,
         language: draftOcrLanguage.trim() || null,
@@ -2056,9 +2059,16 @@
 
     <div class="settings-group">
       <span class="group-label">OCR engine</span>
+      <Switch
+        bind:checked={draftOcrEnabled}
+        label="Enable OCR"
+        description="Automatically queue OCR for captured screen frames when the selected engine is available"
+      />
+      <div class="settings-divider"></div>
       <RadioGroup
         value={draftOcrProvider}
         onValueChange={chooseOcrProvider}
+        disabled={!draftOcrEnabled}
         label="Provider"
         options={ocrProviderOptions.length > 0 ? ocrProviderOptions : [
           { value: "apple_vision", label: "Apple Vision", description: "Model status is loading" },
@@ -2069,6 +2079,7 @@
       <SelectMenu
         value={draftOcrModelId ?? "__os_managed__"}
         onValueChange={chooseOcrModel}
+        disabled={!draftOcrEnabled}
         label="Model"
         options={ocrModelOptions.length > 0 ? ocrModelOptions : [
           { value: draftOcrModelId ?? "__os_managed__", label: "Loading model options" },
@@ -2080,6 +2091,7 @@
           id="ocr-language"
           class="text-input"
           bind:value={draftOcrLanguage}
+          disabled={!draftOcrEnabled}
           placeholder="eng"
         />
       {/if}
@@ -2087,6 +2099,7 @@
         <div class="settings-divider"></div>
         <RadioGroup
           bind:value={draftOcrRecognitionMode}
+          disabled={!draftOcrEnabled}
           label="Recognition mode"
           options={[
             { value: "fast", label: "Fast", description: "Lower CPU usage; default for continuous capture." },
@@ -2096,6 +2109,7 @@
         <div class="settings-divider"></div>
         <Switch
           bind:checked={draftOcrLanguageCorrection}
+          disabled={!draftOcrEnabled}
           label="Language correction"
           description="Let Apple Vision spend extra work correcting recognized text using language models"
         />
@@ -2104,6 +2118,7 @@
         <SelectMenu
           value={draftOcrTesseractPageSegmentationMode}
           onValueChange={(value) => { draftOcrTesseractPageSegmentationMode = value as OcrTesseractPageSegmentationMode; }}
+          disabled={!draftOcrEnabled}
           label="Page segmentation"
           options={[
             { value: "auto", label: "Auto" },
@@ -2118,6 +2133,7 @@
         <SelectMenu
           value={draftOcrTesseractPreprocessMode}
           onValueChange={(value) => { draftOcrTesseractPreprocessMode = value as OcrTesseractPreprocessMode; }}
+          disabled={!draftOcrEnabled}
           label="Image preprocessing"
           options={[
             { value: "grayscale", label: "Grayscale" },
@@ -2129,6 +2145,7 @@
         <SelectMenu
           value={String(draftOcrTesseractUpscaleFactor)}
           onValueChange={(value) => { draftOcrTesseractUpscaleFactor = parseInt(value, 10) || 1; }}
+          disabled={!draftOcrEnabled}
           label="Upscale before OCR"
           options={[
             { value: "1", label: "1×" },
@@ -2144,6 +2161,7 @@
           id="ocr-tesseract-whitelist"
           class="text-input"
           bind:value={draftOcrTesseractCharWhitelist}
+          disabled={!draftOcrEnabled}
           placeholder="Optional, e.g. ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
         />
         <p class="group-hint">
@@ -2151,7 +2169,9 @@
         </p>
       {/if}
       <p class="group-hint">
-        If screen capture is enabled, recording start is blocked until the selected OCR provider is available.
+        {draftOcrEnabled
+          ? "If screen capture is enabled, recording start is blocked until the selected OCR provider is available."
+          : "Screen recording can start without OCR while this is disabled."}
         Existing OCR results remain visible after switching engines.
       </p>
     </div>

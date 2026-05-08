@@ -254,6 +254,15 @@ impl AppInfra {
             .await
     }
 
+    pub async fn capture_frame_without_ocr(
+        &self,
+        frame: &NewFrame,
+    ) -> Result<CapturedFramePipelineResult> {
+        self.captured_frame_pipeline
+            .capture_frame_without_ocr(frame)
+            .await
+    }
+
     pub async fn reprocess_captured_frame_ocr(
         &self,
         frame_id: i64,
@@ -619,6 +628,12 @@ impl AppInfra {
         }
 
         Ok(keys)
+    }
+
+    pub async fn fail_queued_ocr_jobs_because_disabled(&self) -> Result<u64> {
+        self.processing
+            .mark_queued_jobs_failed_for_processor(OCR_PROCESSOR, "OCR is disabled")
+            .await
     }
 
     pub async fn list_running_audio_transcription_model_keys(&self) -> Result<BTreeSet<String>> {

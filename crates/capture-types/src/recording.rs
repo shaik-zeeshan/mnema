@@ -136,6 +136,10 @@ pub fn default_ocr_provider() -> OcrProvider {
     OcrProvider::AppleVision
 }
 
+pub fn default_ocr_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OcrRecognitionMode {
@@ -195,6 +199,8 @@ pub fn default_ocr_tesseract_char_whitelist() -> Option<String> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OcrSettings {
+    #[serde(default = "default_ocr_enabled")]
+    pub enabled: bool,
     #[serde(default = "default_ocr_provider")]
     pub provider: OcrProvider,
     #[serde(default = "default_ocr_model_id")]
@@ -217,6 +223,7 @@ pub struct OcrSettings {
 
 pub fn default_ocr_settings() -> OcrSettings {
     OcrSettings {
+        enabled: default_ocr_enabled(),
         provider: default_ocr_provider(),
         model_id: default_ocr_model_id(),
         language: default_ocr_language(),

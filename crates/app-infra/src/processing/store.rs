@@ -610,6 +610,27 @@ impl ProcessingStore {
         rows.into_iter().map(map_processing_job).collect()
     }
 
+    pub async fn mark_queued_jobs_failed_for_processor(
+        &self,
+        processor: &str,
+        last_error: &str,
+    ) -> Result<u64> {
+        let update = sqlx::query(
+            "UPDATE processing_jobs \
+             SET status = 'failed', \
+                 last_error = ?2, \
+                 finished_at = CURRENT_TIMESTAMP, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE processor = ?1 AND status = 'queued'",
+        )
+        .bind(processor)
+        .bind(last_error)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(update.rows_affected())
+    }
+
     pub async fn update_retargetable_job_payload(
         &self,
         job_id: i64,

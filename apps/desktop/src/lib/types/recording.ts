@@ -66,6 +66,7 @@ export type OcrTesseractPageSegmentationMode =
 export type OcrTesseractPreprocessMode = "grayscale" | "thresholded";
 
 export interface OcrSettings {
+	enabled: boolean;
 	provider: OcrProvider;
 	modelId: string | null;
 	language: string | null;

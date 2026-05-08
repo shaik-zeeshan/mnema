@@ -2055,6 +2055,15 @@ fn ocr_payload_json_from_settings(
     merged_ocr_payload_json(payload_json, &ocr_settings)
 }
 
+fn ocr_enabled_for_settings(settings: &crate::native_capture::RecordingSettingsState) -> bool {
+    settings
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .ocr
+        .enabled
+}
+
 pub async fn persist_screen_frame_artifact(
     infra: &::app_infra::AppInfra,
     settings: &crate::native_capture::RecordingSettingsState,
@@ -2093,6 +2102,10 @@ pub async fn persist_screen_frame_artifact(
             frame.with_equivalence(::app_infra::FrameEquivalence::quarantined(error))
         }
     };
+
+    if !ocr_enabled_for_settings(settings) {
+        return infra.capture_frame_without_ocr(&frame).await;
+    }
 
     let payload_json = ocr_payload_json_from_settings(settings, None)
         .map_err(::app_infra::AppInfraError::OcrEngine)?;
@@ -2254,6 +2267,25 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
     run_generated_frame_preview_cache_startup_pass(&app_handle);
     run_frame_index_sidecar_conversion_startup_pass(&resolved_base_dir.base_dir);
     run_hidden_segment_workspace_repair_startup_pass(&infra, &resolved_base_dir.base_dir);
+    if let Ok(settings) = app_handle
+        .state::<crate::native_capture::RecordingSettingsState>()
+        .lock()
+    {
+        if !settings.settings.ocr.enabled {
+            match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled()) {
+                Ok(failed_count) => crate::native_capture::debug_log::log_info(format!(
+                    "startup marked queued OCR jobs failed because OCR is disabled (count={failed_count})"
+                )),
+                Err(error) => crate::native_capture::debug_log::log_error(format!(
+                    "startup failed to mark queued OCR jobs failed while OCR is disabled: {error}"
+                )),
+            }
+        }
+    } else {
+        crate::native_capture::debug_log::log_error(
+            "failed to read recording settings during OCR disabled startup reconciliation",
+        );
+    }
     run_audio_transcription_backfill_startup_pass(&infra, &app_handle);
 
     spawn_processing_worker(
@@ -2859,6 +2891,11 @@ async fn debug_insert_frame_and_enqueue_processing_job_inner(
 ) -> ::app_infra::Result<FrameProcessingJobDto> {
     let (frame, processor, payload_json) = request.into_parts();
     let payload_json = if processor == ::app_infra::OCR_PROCESSOR {
+        if settings.is_some_and(|settings| !ocr_enabled_for_settings(settings)) {
+            return Err(::app_infra::AppInfraError::OcrEngine(
+                "OCR is disabled".to_string(),
+            ));
+        }
         settings
             .map(|settings| ocr_payload_json_from_settings(settings, payload_json.as_deref()))
             .transpose()
@@ -2879,6 +2916,12 @@ async fn reprocess_captured_frame_ocr_inner(
     request: ReprocessCapturedFrameOcrRequest,
     settings: &crate::native_capture::RecordingSettingsState,
 ) -> ::app_infra::Result<CapturedFrameReprocessingResultDto> {
+    if !ocr_enabled_for_settings(settings) {
+        return Err(::app_infra::AppInfraError::OcrEngine(
+            "OCR is disabled".to_string(),
+        ));
+    }
+
     let payload_json = ocr_payload_json_from_settings(settings, request.payload_json.as_deref())
         .map_err(::app_infra::AppInfraError::OcrEngine)?;
 

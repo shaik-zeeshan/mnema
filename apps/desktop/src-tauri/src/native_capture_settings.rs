@@ -249,6 +249,7 @@ fn validate_ocr_settings(value: OcrSettings) -> Result<OcrSettings, CaptureError
     }
 
     let (
+        enabled,
         model_id,
         language,
         recognition_mode,
@@ -259,6 +260,7 @@ fn validate_ocr_settings(value: OcrSettings) -> Result<OcrSettings, CaptureError
         tesseract_char_whitelist,
     ) = match value.provider {
         OcrProvider::AppleVision => (
+            value.enabled,
             None,
             language.map(ToOwned::to_owned),
             value.recognition_mode,
@@ -290,6 +292,7 @@ fn validate_ocr_settings(value: OcrSettings) -> Result<OcrSettings, CaptureError
                 });
             }
             (
+                value.enabled,
                 Some(model_id.to_string()),
                 Some(language.to_string()),
                 OcrRecognitionMode::Fast,
@@ -304,11 +307,14 @@ fn validate_ocr_settings(value: OcrSettings) -> Result<OcrSettings, CaptureError
             // PaddleOCR remains available in the OCR crate for existing queued jobs and
             // direct provider tests, but it is no longer a user-selectable recording
             // setting. Normalize legacy persisted settings back to the supported default.
-            return Ok(default_ocr_settings());
+            let mut settings = default_ocr_settings();
+            settings.enabled = value.enabled;
+            return Ok(settings);
         }
     };
 
     Ok(OcrSettings {
+        enabled,
         provider: value.provider,
         model_id,
         language,
