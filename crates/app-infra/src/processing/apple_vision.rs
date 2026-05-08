@@ -26,7 +26,7 @@ const APPLE_VISION_COORDINATE_SPACE: &str = "normalized";
 const APPLE_VISION_COORDINATE_ORIGIN: &str = "lower_left";
 
 #[cfg(target_os = "macos")]
-const APPLE_VISION_MAX_IMAGE_DIMENSION: u32 = 1200;
+const APPLE_VISION_MAX_IMAGE_DIMENSION: u32 = 1800;
 
 #[cfg(target_os = "macos")]
 const APPLE_VISION_DEFAULT_LANGUAGE: &str = "en-US";

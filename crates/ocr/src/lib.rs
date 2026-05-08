@@ -386,7 +386,7 @@ impl OcrProvider for PaddleOcrProvider {
 }
 
 #[cfg(any(target_os = "macos", test))]
-const APPLE_VISION_MAX_IMAGE_DIMENSION: u32 = 1200;
+const APPLE_VISION_MAX_IMAGE_DIMENSION: u32 = 1800;
 #[cfg(target_os = "macos")]
 const APPLE_VISION_DEFAULT_LANGUAGE: &str = "en-US";
 
@@ -401,6 +401,9 @@ thread_local! {
 struct AppleVisionRequestOptions {
     recognition_mode: Option<OcrRecognitionMode>,
     language_correction: Option<bool>,
+    max_image_dimension: Option<u32>,
+    tile_rows: Option<u32>,
+    tile_columns: Option<u32>,
 }
 
 #[cfg(target_os = "macos")]
@@ -410,11 +413,7 @@ struct PreparedVisionImage {
 
 #[cfg(target_os = "macos")]
 impl PreparedVisionImage {
-    fn from_path(image_path: &Path) -> OcrResult<Self> {
-        let decoded = image::open(image_path).map_err(|error| {
-            OcrError::Provider(format!("Apple Vision OCR image decode failed: {error}"))
-        })?;
-        let grayscale = resize_for_ocr(decoded).to_luma8();
+    fn from_grayscale(grayscale: image::GrayImage) -> OcrResult<Self> {
         let width = grayscale.width() as usize;
         let height = grayscale.height() as usize;
         let bytes_per_row = width;
@@ -455,13 +454,13 @@ extern "C" fn release_grayscale_pixel_buffer_bytes(
 }
 
 #[cfg(target_os = "macos")]
-fn resize_for_ocr(image: DynamicImage) -> DynamicImage {
+fn resize_for_ocr(image: DynamicImage, max_image_dimension: u32) -> DynamicImage {
     let (width, height) = image.dimensions();
     let longest_dimension = width.max(height);
-    if longest_dimension <= APPLE_VISION_MAX_IMAGE_DIMENSION {
+    if longest_dimension <= max_image_dimension {
         return image;
     }
-    let scale = APPLE_VISION_MAX_IMAGE_DIMENSION as f64 / longest_dimension as f64;
+    let scale = max_image_dimension as f64 / longest_dimension as f64;
     let resized_width = ((width as f64 * scale).round() as u32).max(1);
     let resized_height = ((height as f64 * scale).round() as u32).max(1);
     image.resize_exact(resized_width, resized_height, FilterType::Triangle)
@@ -481,6 +480,9 @@ fn recognize_apple_vision_impl(request: OcrRequest) -> OcrResult<OcrOutput> {
     .unwrap_or(AppleVisionRequestOptions {
         recognition_mode: None,
         language_correction: None,
+        max_image_dimension: None,
+        tile_rows: None,
+        tile_columns: None,
     });
 
     let recognition_level = match options.recognition_mode.unwrap_or(OcrRecognitionMode::Fast) {
@@ -489,12 +491,97 @@ fn recognize_apple_vision_impl(request: OcrRequest) -> OcrResult<OcrOutput> {
     };
     let language_correction = options.language_correction.unwrap_or(false);
     let recognition_langs = cached_recognition_langs(request.language.as_deref())?;
-    let prepared_image = PreparedVisionImage::from_path(&request.image_path)?;
+    let max_image_dimension = options
+        .max_image_dimension
+        .unwrap_or(APPLE_VISION_MAX_IMAGE_DIMENSION)
+        .max(1);
+    let decoded = image::open(&request.image_path).map_err(|error| {
+        OcrError::Provider(format!("Apple Vision OCR image decode failed: {error}"))
+    })?;
+    let grayscale = resize_for_ocr(decoded, max_image_dimension).to_luma8();
+    let observations = recognize_apple_vision_with_options(
+        &grayscale,
+        recognition_level,
+        language_correction,
+        recognition_langs.as_ref(),
+        options.tile_rows.unwrap_or(1),
+        options.tile_columns.unwrap_or(1),
+    )?;
+    let text = join_observation_text(&observations);
+    let structured_payload =
+        OcrStructuredPayload::new(APPLE_VISION_PROVIDER_ID, None, observations);
 
+    Ok(OcrOutput::new(text, structured_payload)
+        .with_provider_version(ns::ProcessInfo::current().os_version_string().to_string()))
+}
+
+#[cfg(target_os = "macos")]
+fn recognize_apple_vision_with_options(
+    grayscale: &image::GrayImage,
+    recognition_level: vn::RequestTextRecognitionLevel,
+    language_correction: bool,
+    recognition_langs: &ns::Array<ns::String>,
+    tile_rows: u32,
+    tile_columns: u32,
+) -> OcrResult<Vec<OcrObservation>> {
+    let tile_rows = tile_rows.max(1);
+    let tile_columns = tile_columns.max(1);
+    if tile_rows == 1 && tile_columns == 1 {
+        return perform_apple_vision_request(grayscale, recognition_level, language_correction, recognition_langs);
+    }
+
+    let full_width = grayscale.width();
+    let full_height = grayscale.height();
+    let tile_width = full_width.div_ceil(tile_columns).max(1);
+    let tile_height = full_height.div_ceil(tile_rows).max(1);
+    let mut observations = Vec::new();
+
+    for row in 0..tile_rows {
+        for column in 0..tile_columns {
+            let origin_x = column.saturating_mul(tile_width);
+            let origin_y = row.saturating_mul(tile_height);
+            if origin_x >= full_width || origin_y >= full_height {
+                continue;
+            }
+            let width = (full_width - origin_x).min(tile_width);
+            let height = (full_height - origin_y).min(tile_height);
+            let tile = image::imageops::crop_imm(grayscale, origin_x, origin_y, width, height).to_image();
+            let tile_observations =
+                perform_apple_vision_request(&tile, recognition_level, language_correction, recognition_langs)?;
+            observations.extend(tile_observations.into_iter().map(|observation| {
+                remap_tiled_observation(observation, origin_x, origin_y, width, height, full_width, full_height)
+            }));
+        }
+    }
+
+    observations.sort_by(|left, right| {
+        let left_top = left.bounding_box.y + left.bounding_box.height;
+        let right_top = right.bounding_box.y + right.bounding_box.height;
+        right_top
+            .partial_cmp(&left_top)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                left.bounding_box
+                    .x
+                    .partial_cmp(&right.bounding_box.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    Ok(observations)
+}
+
+#[cfg(target_os = "macos")]
+fn perform_apple_vision_request(
+    grayscale: &image::GrayImage,
+    recognition_level: vn::RequestTextRecognitionLevel,
+    language_correction: bool,
+    recognition_langs: &ns::Array<ns::String>,
+) -> OcrResult<Vec<OcrObservation>> {
+    let prepared_image = PreparedVisionImage::from_grayscale(grayscale.clone())?;
     let mut vision_request = vn::RecognizeTextRequest::new();
     vision_request.set_recognition_level(recognition_level);
     vision_request.set_uses_lang_correction(language_correction);
-    vision_request.set_recognition_langs(recognition_langs.as_ref());
+    vision_request.set_recognition_langs(recognition_langs);
 
     let requests = ns::Array::<vn::Request>::from_slice(&[&vision_request]);
     let handler =
@@ -509,16 +596,38 @@ fn recognize_apple_vision_impl(request: OcrRequest) -> OcrResult<OcrOutput> {
         .perform(&requests)
         .map_err(|error| OcrError::Provider(format!("Apple Vision OCR failed: {error}")))?;
 
-    let observations = vision_request
+    Ok(vision_request
         .results()
         .map(|results| recognized_observations(&results))
-        .unwrap_or_default();
-    let text = join_observation_text(&observations);
-    let structured_payload =
-        OcrStructuredPayload::new(APPLE_VISION_PROVIDER_ID, None, observations);
+        .unwrap_or_default())
+}
 
-    Ok(OcrOutput::new(text, structured_payload)
-        .with_provider_version(ns::ProcessInfo::current().os_version_string().to_string()))
+#[cfg(target_os = "macos")]
+fn remap_tiled_observation(
+    mut observation: OcrObservation,
+    origin_x: u32,
+    origin_y: u32,
+    tile_width: u32,
+    tile_height: u32,
+    full_width: u32,
+    full_height: u32,
+) -> OcrObservation {
+    let tile_width_f = tile_width as f64;
+    let tile_height_f = tile_height as f64;
+    let full_width_f = full_width as f64;
+    let full_height_f = full_height as f64;
+    let x_pixels = observation.bounding_box.x * tile_width_f + origin_x as f64;
+    let y_pixels = observation.bounding_box.y * tile_height_f
+        + (full_height - origin_y - tile_height) as f64;
+    let width_pixels = observation.bounding_box.width * tile_width_f;
+    let height_pixels = observation.bounding_box.height * tile_height_f;
+    observation.bounding_box = OcrBoundingBox::new(
+        x_pixels / full_width_f,
+        y_pixels / full_height_f,
+        width_pixels / full_width_f,
+        height_pixels / full_height_f,
+    );
+    observation
 }
 
 #[cfg(target_os = "macos")]
@@ -1503,5 +1612,39 @@ mod tests {
         .expect("installed marker");
         let status = detect_model_status(temp.path(), &descriptor).expect("status");
         assert_eq!(status.status, ModelStatusKind::Installed);
+    }
+
+    #[test]
+    fn apple_vision_options_accept_benchmark_tuning_fields() {
+        let options: AppleVisionRequestOptions = serde_json::from_value(serde_json::json!({
+            "recognitionMode": "fast",
+            "languageCorrection": false,
+            "maxImageDimension": 1600,
+            "tileRows": 2,
+            "tileColumns": 2,
+        }))
+        .expect("options should deserialize");
+        assert_eq!(options.max_image_dimension, Some(1600));
+        assert_eq!(options.tile_rows, Some(2));
+        assert_eq!(options.tile_columns, Some(2));
+    }
+
+    #[test]
+    fn remap_tiled_observation_offsets_into_full_image_coordinates() {
+        let remapped = remap_tiled_observation(
+            OcrObservation::new("hello", 0.9, OcrBoundingBox::new(0.25, 0.5, 0.5, 0.25)),
+            50,
+            20,
+            100,
+            40,
+            200,
+            100,
+        );
+
+        assert_eq!(remapped.text, "hello");
+        assert!((remapped.bounding_box.x - 0.375).abs() < f64::EPSILON);
+        assert!((remapped.bounding_box.y - 0.6).abs() < f64::EPSILON);
+        assert!((remapped.bounding_box.width - 0.25).abs() < f64::EPSILON);
+        assert!((remapped.bounding_box.height - 0.1).abs() < f64::EPSILON);
     }
 }
