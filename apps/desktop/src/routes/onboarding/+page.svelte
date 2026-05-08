@@ -1,18 +1,40 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
-  import type { ActivityMode, GetPermissionsResponse, PermissionStatus, RecordingSettings } from "$lib/types";
+  import type {
+    ActivityMode,
+    AudioTranscriptionMemoryMode,
+    AudioTranscriptionModelDownloadProgress,
+    AudioTranscriptionModelStatus,
+    AudioTranscriptionModelStatusResponse,
+    AudioTranscriptionProvider,
+    GetPermissionsResponse,
+    OcrModelDownloadProgress,
+    OcrModelStatus,
+    OcrModelStatusResponse,
+    OcrProvider,
+    OcrRecognitionMode,
+    OcrTesseractPageSegmentationMode,
+    OcrTesseractPreprocessMode,
+    PermissionStatus,
+    RecordingSettings,
+  } from "$lib/types";
 
   type OnboardingState = {
     schemaVersion: number;
     completedAtUnixMs: number | null;
   };
+  const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
+  const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
+  const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
 
-  type OnboardingStep = "about" | "permissions" | "sources" | "storage" | "inactivity" | "done";
+  type OnboardingStep = "about" | "permissions" | "sources" | "storage" | "processing" | "inactivity" | "done";
+  type ProcessingPanel = "ocr" | "transcription";
   type PermissionValue = PermissionStatus | "unsupported" | "unknown";
 
   const steps: { id: OnboardingStep; label: string }[] = [
@@ -20,6 +42,7 @@
     { id: "permissions", label: "Access" },
     { id: "sources", label: "Sources" },
     { id: "storage", label: "Storage" },
+    { id: "processing", label: "Processing" },
     { id: "inactivity", label: "Idle" },
     { id: "done", label: "Ready" },
   ];
@@ -30,8 +53,18 @@
     { value: "system_input_or_screen", label: "Input or screen change", description: "Input plus visible display changes keep recording active." },
     { value: "system_input_or_screen_or_audio", label: "Input, screen, or audio", description: "Input, display, microphone, and system audio can keep recording active." },
   ];
+  const fallbackTranscriptionProviderOptions = [
+    { value: "local_whisper", label: "Local Whisper", description: "Whisper models managed by mnema." },
+    { value: "apple_speech_on_device", label: "Apple Speech", description: "On-device speech recognition managed by macOS." },
+    { value: "parakeet", label: "Parakeet", description: "NVIDIA Parakeet ONNX models managed by mnema." },
+  ];
+  const fallbackOcrProviderOptions = [
+    { value: "apple_vision", label: "Apple Vision", description: "Model status is loading." },
+    { value: "tesseract", label: "Tesseract", description: "Model status is loading." },
+  ];
 
   let activeStep = $state<OnboardingStep>("about");
+  let activeProcessingPanel = $state<ProcessingPanel>("ocr");
   let settings = $state<RecordingSettings | null>(null);
   let permissions = $state<Record<"screen" | "microphone" | "systemAudio", PermissionValue> | null>(null);
   let loading = $state(true);
@@ -54,6 +87,36 @@
   let draftActivityMode = $state<ActivityMode>("system_input_only");
   let draftMicrophoneActivitySensitivity = $state(50);
   let draftSystemAudioActivitySensitivity = $state(50);
+  let draftOcrEnabled = $state(true);
+  let draftOcrProvider = $state<OcrProvider>("apple_vision");
+  let draftOcrModelId = $state<string | null>(null);
+  let draftOcrLanguage = $state("");
+  let draftOcrRecognitionMode = $state<OcrRecognitionMode>("fast");
+  let draftOcrLanguageCorrection = $state(false);
+  let draftOcrTesseractPageSegmentationMode = $state<OcrTesseractPageSegmentationMode>("single_block");
+  let draftOcrTesseractPreprocessMode = $state<OcrTesseractPreprocessMode>("grayscale");
+  let draftOcrTesseractUpscaleFactor = $state(1);
+  let ocrModelStatus = $state<OcrModelStatusResponse | null>(null);
+  let loadingOcrModelStatus = $state(false);
+  let ocrModelError = $state<string | null>(null);
+  let ocrDownloadProgress = $state<OcrModelDownloadProgress | null>(null);
+  let startingOcrDownload = $state(false);
+  let cancellingOcrDownload = $state(false);
+  let ocrDownloadError = $state<string | null>(null);
+  let draftTranscriptionEnabled = $state(true);
+  let draftTranscriptionProvider = $state<AudioTranscriptionProvider>("local_whisper");
+  let draftTranscriptionModelId = $state<string | null>("base");
+  let draftTranscriptionLanguage = $state("auto");
+  let draftTranscriptionMemoryMode = $state<AudioTranscriptionMemoryMode>("balanced");
+  let draftTranscriptionIdleUnloadSeconds = $state(300);
+  let draftTranscriptionChunkSeconds = $state(30);
+  let transcriptionModelStatus = $state<AudioTranscriptionModelStatusResponse | null>(null);
+  let loadingTranscriptionModelStatus = $state(false);
+  let transcriptionModelError = $state<string | null>(null);
+  let transcriptionDownloadProgress = $state<AudioTranscriptionModelDownloadProgress | null>(null);
+  let startingTranscriptionDownload = $state(false);
+  let cancellingTranscriptionDownload = $state(false);
+  let transcriptionDownloadError = $state<string | null>(null);
 
   const activeIndex = $derived(steps.findIndex((step) => step.id === activeStep));
   const railActiveIndex = $derived(railSteps.findIndex((step) => step.id === activeStep));
@@ -64,10 +127,13 @@
   const selectedSourceCount = $derived(
     Number(draftCaptureScreen) + Number(draftCaptureMicrophone) + Number(draftCaptureSystemAudio)
   );
+  const requiresOcrAvailability = $derived(draftOcrEnabled);
+  const requiresTranscriptionAvailability = $derived(draftTranscriptionEnabled);
   const canGoNext = $derived(
     !loading && !saving && !starting && !completing && settings !== null
     && (activeStep !== "sources" || selectedSourceCount > 0)
     && (activeStep !== "storage" || draftSaveDirectory.trim().length > 0)
+    && canProceedFromActiveStep()
   );
   const grantedCount = $derived(
     permissions === null ? 0
@@ -75,6 +141,36 @@
   );
 
   $effect(() => { void initialize(); });
+  $effect(() => {
+    void loadOcrModelStatus();
+    void loadTranscriptionModelStatus();
+
+    let unlistenOcrDownloadProgress: (() => void) | undefined;
+    let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
+    let destroyed = false;
+
+    listen<OcrModelDownloadProgress>(
+      OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
+      (event) => { void handleOcrDownloadProgress(event.payload); }
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenOcrDownloadProgress = fn;
+    });
+
+    listen<AudioTranscriptionModelDownloadProgress>(
+      AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
+      (event) => { void handleTranscriptionDownloadProgress(event.payload); }
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenTranscriptionDownloadProgress = fn;
+    });
+
+    return () => {
+      destroyed = true;
+      unlistenOcrDownloadProgress?.();
+      unlistenTranscriptionDownloadProgress?.();
+    };
+  });
   $effect(() => {
     if (!draftCaptureScreen && draftCaptureSystemAudio) draftCaptureSystemAudio = false;
   });
@@ -120,6 +216,28 @@
     draftActivityMode = next.activityMode ?? "system_input_only";
     draftMicrophoneActivitySensitivity = next.microphoneActivitySensitivity ?? 50;
     draftSystemAudioActivitySensitivity = next.systemAudioActivitySensitivity ?? 50;
+    draftOcrEnabled = next.ocr?.enabled ?? true;
+    const loadedOcrProvider = next.ocr?.provider;
+    const loadedOcrProviderSelectable = isSelectableOcrProvider(loadedOcrProvider);
+    draftOcrProvider = loadedOcrProviderSelectable ? loadedOcrProvider : "apple_vision";
+    draftOcrModelId = loadedOcrProviderSelectable
+      ? (next.ocr?.modelId ?? defaultOcrModelIdForProvider(draftOcrProvider))
+      : defaultOcrModelIdForProvider(draftOcrProvider);
+    draftOcrLanguage = loadedOcrProviderSelectable
+      ? (next.ocr?.language ?? defaultOcrLanguageForProvider(draftOcrProvider) ?? "")
+      : defaultOcrLanguageForProvider(draftOcrProvider) ?? "";
+    draftOcrRecognitionMode = next.ocr?.recognitionMode ?? "fast";
+    draftOcrLanguageCorrection = next.ocr?.languageCorrection ?? false;
+    draftOcrTesseractPageSegmentationMode = next.ocr?.tesseractPageSegmentationMode ?? "single_block";
+    draftOcrTesseractPreprocessMode = next.ocr?.tesseractPreprocessMode ?? "grayscale";
+    draftOcrTesseractUpscaleFactor = next.ocr?.tesseractUpscaleFactor ?? 1;
+    draftTranscriptionEnabled = next.transcription?.enabled ?? true;
+    draftTranscriptionProvider = next.transcription?.provider ?? "local_whisper";
+    draftTranscriptionModelId = next.transcription?.modelId ?? defaultTranscriptionModelIdForProvider(draftTranscriptionProvider);
+    draftTranscriptionLanguage = next.transcription?.language ?? "auto";
+    draftTranscriptionMemoryMode = next.transcription?.memoryMode ?? "balanced";
+    draftTranscriptionIdleUnloadSeconds = next.transcription?.idleUnloadSeconds ?? 300;
+    draftTranscriptionChunkSeconds = next.transcription?.chunkSeconds ?? 30;
   }
 
   function buildSettingsRequest(): RecordingSettings {
@@ -140,6 +258,27 @@
       activityMode: draftActivityMode,
       microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
       systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
+      ocr: {
+        enabled: draftOcrEnabled,
+        provider: draftOcrProvider,
+        modelId: draftOcrModelId,
+        language: draftOcrLanguage.trim() || null,
+        recognitionMode: draftOcrRecognitionMode,
+        languageCorrection: draftOcrLanguageCorrection,
+        tesseractPageSegmentationMode: draftOcrTesseractPageSegmentationMode,
+        tesseractPreprocessMode: draftOcrTesseractPreprocessMode,
+        tesseractUpscaleFactor: Math.max(1, Math.min(4, Math.trunc(Number(draftOcrTesseractUpscaleFactor) || 1))),
+        tesseractCharWhitelist: null,
+      },
+      transcription: {
+        enabled: draftTranscriptionEnabled,
+        provider: draftTranscriptionProvider,
+        modelId: draftTranscriptionModelId,
+        language: draftTranscriptionLanguage.trim() || "auto",
+        memoryMode: draftTranscriptionMemoryMode,
+        idleUnloadSeconds: Math.max(0, Math.trunc(Number(draftTranscriptionIdleUnloadSeconds) || 0)),
+        chunkSeconds: Math.max(0, Math.trunc(Number(draftTranscriptionChunkSeconds) || 0)),
+      },
     };
   }
 
@@ -171,9 +310,110 @@
     }
   }
 
+  async function loadOcrModelStatus(): Promise<void> {
+    loadingOcrModelStatus = true;
+    ocrModelError = null;
+    try {
+      ocrModelStatus = await invoke<OcrModelStatusResponse>("get_ocr_model_status");
+    } catch (err) {
+      ocrModelError = serializeError(err);
+    } finally {
+      loadingOcrModelStatus = false;
+    }
+  }
+
+  async function startSelectedOcrModelDownload(): Promise<void> {
+    if (!selectedOcrModel?.modelId) return;
+    startingOcrDownload = true;
+    ocrDownloadError = null;
+    try {
+      ocrDownloadProgress = await invoke<OcrModelDownloadProgress>("start_ocr_model_download", {
+        request: {
+          provider: selectedOcrModel.provider,
+          modelId: selectedOcrModel.modelId,
+        },
+      });
+    } catch (err) {
+      ocrDownloadError = serializeError(err);
+    } finally {
+      startingOcrDownload = false;
+    }
+  }
+
+  async function cancelSelectedOcrModelDownload(): Promise<void> {
+    cancellingOcrDownload = true;
+    ocrDownloadError = null;
+    try {
+      await invoke("cancel_ocr_model_download");
+    } catch (err) {
+      ocrDownloadError = serializeError(err);
+    } finally {
+      cancellingOcrDownload = false;
+    }
+  }
+
+  async function handleOcrDownloadProgress(progress: OcrModelDownloadProgress): Promise<void> {
+    ocrDownloadProgress = progress;
+    if (["completed", "failed", "cancelled"].includes(progress.status)) {
+      await loadOcrModelStatus();
+    }
+  }
+
+  async function loadTranscriptionModelStatus(): Promise<void> {
+    loadingTranscriptionModelStatus = true;
+    transcriptionModelError = null;
+    try {
+      transcriptionModelStatus = await invoke<AudioTranscriptionModelStatusResponse>("get_audio_transcription_model_status");
+    } catch (err) {
+      transcriptionModelError = serializeError(err);
+    } finally {
+      loadingTranscriptionModelStatus = false;
+    }
+  }
+
+  async function startSelectedTranscriptionModelDownload(): Promise<void> {
+    if (!selectedTranscriptionModel?.modelId) return;
+    startingTranscriptionDownload = true;
+    transcriptionDownloadError = null;
+    try {
+      transcriptionDownloadProgress = await invoke<AudioTranscriptionModelDownloadProgress>(
+        "start_audio_transcription_model_download",
+        {
+          request: {
+            provider: selectedTranscriptionModel.provider,
+            modelId: selectedTranscriptionModel.modelId,
+          },
+        }
+      );
+    } catch (err) {
+      transcriptionDownloadError = serializeError(err);
+    } finally {
+      startingTranscriptionDownload = false;
+    }
+  }
+
+  async function cancelSelectedTranscriptionModelDownload(): Promise<void> {
+    cancellingTranscriptionDownload = true;
+    transcriptionDownloadError = null;
+    try {
+      await invoke("cancel_audio_transcription_model_download");
+    } catch (err) {
+      transcriptionDownloadError = serializeError(err);
+    } finally {
+      cancellingTranscriptionDownload = false;
+    }
+  }
+
+  async function handleTranscriptionDownloadProgress(progress: AudioTranscriptionModelDownloadProgress): Promise<void> {
+    transcriptionDownloadProgress = progress;
+    if (["completed", "failed", "cancelled"].includes(progress.status)) {
+      await loadTranscriptionModelStatus();
+    }
+  }
+
   async function nextStep(): Promise<void> {
     if (!canGoNext) return;
-    if (activeStep === "sources" || activeStep === "storage" || activeStep === "inactivity") {
+    if (activeStep === "sources" || activeStep === "storage" || activeStep === "processing" || activeStep === "inactivity") {
       try { await saveSettings(); } catch { return; }
     }
     activeStep = steps[Math.min(activeIndex + 1, steps.length - 1)].id;
@@ -232,6 +472,197 @@
       return s ? `${m}m ${s}s` : `${m}m`;
     }
     return `${v}s`;
+  }
+
+  const ocrProviderOptions = $derived(
+    (ocrModelStatus?.providers ?? [])
+      .filter((provider) => isSelectableOcrProvider(provider.provider))
+      .map((provider) => ({
+        value: provider.provider,
+        label: provider.displayName,
+        description: provider.models.some((model) => model.available)
+          ? "At least one model is available"
+          : "No available model detected",
+      }))
+  );
+
+  const selectedOcrProviderStatus = $derived(
+    ocrModelStatus?.providers.find((provider) => provider.provider === draftOcrProvider) ?? null
+  );
+
+  const selectedOcrModels = $derived(selectedOcrProviderStatus?.models ?? []);
+
+  const ocrModelOptions = $derived(
+    selectedOcrModels.map((model) => ({
+      value: model.modelId ?? "__os_managed__",
+      label: `${model.displayName} · ${ocrStatusLabel(model)}`,
+    }))
+  );
+
+  const selectedOcrModel = $derived(
+    selectedOcrModels.find((model) => model.modelId === draftOcrModelId) ?? selectedOcrModels[0] ?? null
+  );
+
+  const selectedOcrDownloadProgress = $derived(
+    ocrDownloadProgress
+      && ocrDownloadProgress.provider === draftOcrProvider
+      && ocrDownloadProgress.modelId === draftOcrModelId
+      ? ocrDownloadProgress
+      : null
+  );
+
+  const selectedOcrDownloadRunning = $derived(
+    selectedOcrDownloadProgress !== null
+      && ["starting", "downloading", "installing"].includes(selectedOcrDownloadProgress.status)
+  );
+
+  const selectedOcrDownloadPercent = $derived((() => {
+    const progress = selectedOcrDownloadProgress;
+    if (!progress?.totalBytes || progress.totalBytes <= 0) return null;
+    return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
+  })());
+
+  const transcriptionProviderOptions = $derived(
+    (transcriptionModelStatus?.providers ?? []).map((provider) => ({
+      value: provider.provider,
+      label: provider.displayName,
+      description: provider.models.some((model) => model.available)
+        ? "At least one model is available"
+        : "No available model detected",
+    }))
+  );
+
+  const selectedTranscriptionProviderStatus = $derived(
+    transcriptionModelStatus?.providers.find((provider) => provider.provider === draftTranscriptionProvider) ?? null
+  );
+
+  const selectedTranscriptionModels = $derived(selectedTranscriptionProviderStatus?.models ?? []);
+
+  const transcriptionModelOptions = $derived(
+    selectedTranscriptionModels.map((model) => ({
+      value: model.modelId ?? "__os_managed__",
+      label: `${model.displayName} · ${transcriptionStatusLabel(model)}`,
+    }))
+  );
+
+  const selectedTranscriptionModel = $derived(
+    selectedTranscriptionModels.find((model) => model.modelId === draftTranscriptionModelId) ?? selectedTranscriptionModels[0] ?? null
+  );
+
+  const selectedTranscriptionDownloadProgress = $derived(
+    transcriptionDownloadProgress
+      && transcriptionDownloadProgress.provider === draftTranscriptionProvider
+      && transcriptionDownloadProgress.modelId === draftTranscriptionModelId
+      ? transcriptionDownloadProgress
+      : null
+  );
+
+  const selectedTranscriptionDownloadRunning = $derived(
+    selectedTranscriptionDownloadProgress !== null
+      && ["starting", "downloading", "installing"].includes(selectedTranscriptionDownloadProgress.status)
+  );
+
+  const selectedTranscriptionDownloadPercent = $derived((() => {
+    const progress = selectedTranscriptionDownloadProgress;
+    if (!progress?.totalBytes || progress.totalBytes <= 0) return null;
+    return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
+  })());
+
+  const processingReady = $derived(
+    (!requiresOcrAvailability || (!!selectedOcrModel && selectedOcrModel.available && !selectedOcrDownloadRunning))
+    && (!requiresTranscriptionAvailability || (!!selectedTranscriptionModel && selectedTranscriptionModel.available && !selectedTranscriptionDownloadRunning))
+  );
+
+  function canProceedFromActiveStep(): boolean {
+    if (activeStep === "processing" || activeStep === "done") {
+      return processingReady;
+    }
+    return true;
+  }
+
+  function ocrStatusLabel(model: OcrModelStatus): string {
+    if (model.available) return "Available";
+    if (model.status === "os_managed") return "OS managed";
+    if (model.status === "installed") return "Installed";
+    if (model.status === "downloading") return "Downloading";
+    if (model.status === "failed") return "Failed";
+    return "Missing";
+  }
+
+  function transcriptionStatusLabel(model: AudioTranscriptionModelStatus): string {
+    if (model.status === "os_managed") return "OS managed";
+    if (model.status === "installed") return "Installed";
+    if (model.status === "downloading") return "Downloading";
+    if (model.status === "failed") return "Failed";
+    return "Missing";
+  }
+
+  function isSelectableOcrProvider(value: string | null | undefined): value is OcrProvider {
+    return SELECTABLE_OCR_PROVIDERS.includes(value as OcrProvider);
+  }
+
+  function defaultOcrModelIdForProvider(provider: OcrProvider): string | null {
+    if (provider === "tesseract") return "tesseract-5.5.2";
+    return null;
+  }
+
+  function defaultOcrLanguageForProvider(provider: OcrProvider): string | null {
+    if (provider === "tesseract") return "eng";
+    return null;
+  }
+
+  function preferredOcrModelIdForProvider(provider: OcrProvider): string | null {
+    const providerStatus = ocrModelStatus?.providers.find((status) => status.provider === provider);
+    const defaultModelId = defaultOcrModelIdForProvider(provider);
+    if (!providerStatus) return defaultModelId;
+    const defaultModel = providerStatus.models.find((model) => model.modelId === defaultModelId);
+    return defaultModel?.modelId ?? providerStatus.models[0]?.modelId ?? defaultModelId;
+  }
+
+  function chooseOcrProvider(value: string): void {
+    if (!isSelectableOcrProvider(value)) return;
+    draftOcrProvider = value;
+    draftOcrModelId = preferredOcrModelIdForProvider(draftOcrProvider);
+    draftOcrLanguage = defaultOcrLanguageForProvider(draftOcrProvider) ?? "";
+  }
+
+  function chooseOcrModel(value: string): void {
+    draftOcrModelId = value === "__os_managed__" ? null : value;
+  }
+
+  function defaultTranscriptionModelIdForProvider(provider: AudioTranscriptionProvider): string | null {
+    if (provider === "local_whisper") return "base";
+    if (provider === "parakeet") return "parakeet-tdt-0.6b-v3-onnx-int8";
+    return null;
+  }
+
+  function preferredTranscriptionModelIdForProvider(provider: AudioTranscriptionProvider): string | null {
+    const providerStatus = transcriptionModelStatus?.providers.find((status) => status.provider === provider);
+    const defaultModelId = defaultTranscriptionModelIdForProvider(provider);
+    if (!providerStatus) return defaultModelId;
+    const defaultModel = providerStatus.models.find((model) => model.modelId === defaultModelId);
+    return defaultModel?.modelId ?? providerStatus.models[0]?.modelId ?? defaultModelId;
+  }
+
+  function chooseTranscriptionProvider(value: string): void {
+    draftTranscriptionProvider = value as AudioTranscriptionProvider;
+    draftTranscriptionModelId = preferredTranscriptionModelIdForProvider(draftTranscriptionProvider);
+  }
+
+  function chooseTranscriptionModel(value: string): void {
+    draftTranscriptionModelId = value === "__os_managed__" ? null : value;
+  }
+
+  function formatBytes(value: number): string {
+    if (!Number.isFinite(value) || value <= 0) return "unknown size";
+    const units = ["B", "KB", "MB", "GB"];
+    let size = value;
+    let unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit += 1;
+    }
+    return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
   }
 
   function handleKeydown(e: KeyboardEvent): void {
@@ -315,7 +746,7 @@
                     Begin setup
                     <span class="btn__arrow" aria-hidden="true">→</span>
                   </button>
-                  <span class="welcome__meta">≈ 60 seconds · 4 quick steps</span>
+                  <span class="welcome__meta">≈ 60 seconds · 5 quick steps</span>
                 </div>
               </div>
             </section>
@@ -455,10 +886,346 @@
                 </div>
               </div>
             </article>
-          {:else if activeStep === "inactivity"}
+          {:else if activeStep === "processing"}
             <article class="card">
               <header class="card__header">
                 <span class="card__index">04</span>
+                <div class="card__heading">
+                  <h2 class="card__title">OCR &amp; transcription</h2>
+                  <p class="card__subtitle">How mnema indexes captured frames and microphone audio.</p>
+                </div>
+              </header>
+
+              <div class="process-tabs" role="tablist" aria-label="Processing settings">
+                <button
+                  type="button"
+                  class="process-tab"
+                  class:process-tab--active={activeProcessingPanel === "ocr"}
+                  role="tab"
+                  aria-selected={activeProcessingPanel === "ocr"}
+                  aria-controls="processing-panel-ocr"
+                  onclick={() => { activeProcessingPanel = "ocr"; }}
+                >
+                  OCR
+                </button>
+                <button
+                  type="button"
+                  class="process-tab"
+                  class:process-tab--active={activeProcessingPanel === "transcription"}
+                  role="tab"
+                  aria-selected={activeProcessingPanel === "transcription"}
+                  aria-controls="processing-panel-transcription"
+                  onclick={() => { activeProcessingPanel = "transcription"; }}
+                >
+                  Transcription
+                </button>
+              </div>
+
+              {#if requiresOcrAvailability && selectedOcrDownloadRunning}
+                <p class="hint hint--warn">Finish is blocked until the selected OCR model download completes.</p>
+              {:else if requiresTranscriptionAvailability && selectedTranscriptionDownloadRunning}
+                <p class="hint hint--warn">Finish is blocked until the selected transcription model download completes.</p>
+              {:else if requiresOcrAvailability && !selectedOcrModel?.available}
+                <p class="hint hint--warn">Finish is blocked until the selected OCR model is available.</p>
+              {:else if requiresTranscriptionAvailability && !selectedTranscriptionModel?.available}
+                <p class="hint hint--warn">Finish is blocked until the selected transcription model is available.</p>
+              {/if}
+
+              <div class="processing-grid">
+                {#if activeProcessingPanel === "ocr"}
+                <div class="settings-group" id="processing-panel-ocr" role="tabpanel" aria-label="OCR settings">
+                  <span class="group-label">OCR</span>
+                  <div class="settings-stack">
+                    <Switch
+                      bind:checked={draftOcrEnabled}
+                      label="Enable OCR"
+                      description="Queue OCR for captured screen frames."
+                    />
+                  </div>
+                  <RadioGroup
+                    value={draftOcrProvider}
+                    onValueChange={chooseOcrProvider}
+                    disabled={!draftOcrEnabled}
+                    label="Provider"
+                    options={ocrProviderOptions.length > 0 ? ocrProviderOptions : fallbackOcrProviderOptions}
+                  />
+                  <SelectMenu
+                    value={draftOcrModelId ?? "__os_managed__"}
+                    onValueChange={chooseOcrModel}
+                    disabled={!draftOcrEnabled}
+                    label="Model"
+                    options={ocrModelOptions.length > 0 ? ocrModelOptions : [
+                      { value: draftOcrModelId ?? "__os_managed__", label: "Loading model options" },
+                    ]}
+                  />
+                  {#if draftOcrProvider === "tesseract"}
+                    <label class="field-label" for="onboarding-ocr-language">Language</label>
+                    <input
+                      id="onboarding-ocr-language"
+                      class="text-input"
+                      bind:value={draftOcrLanguage}
+                      disabled={!draftOcrEnabled}
+                      placeholder="eng"
+                      spellcheck="false"
+                      autocomplete="off"
+                    />
+                  {/if}
+                  {#if draftOcrProvider === "apple_vision"}
+                    <div class="settings-divider"></div>
+                    <RadioGroup
+                      bind:value={draftOcrRecognitionMode}
+                      disabled={!draftOcrEnabled}
+                      label="Recognition mode"
+                      options={[
+                        {
+                          value: "fast",
+                          label: "Fast",
+                          description: "Lower CPU usage for continuous capture.",
+                        },
+                        {
+                          value: "accurate",
+                          label: "Accurate",
+                          description: "Higher recognition quality with more processing cost.",
+                        },
+                      ]}
+                    />
+                    <div class="settings-stack">
+                      <Switch
+                        bind:checked={draftOcrLanguageCorrection}
+                        disabled={!draftOcrEnabled}
+                        label="Language correction"
+                        description="Spend extra OCR work correcting recognized text."
+                      />
+                    </div>
+                  {:else if draftOcrProvider === "tesseract"}
+                    <div class="settings-divider"></div>
+                    <SelectMenu
+                      value={draftOcrTesseractPageSegmentationMode}
+                      onValueChange={(value) => { draftOcrTesseractPageSegmentationMode = value as OcrTesseractPageSegmentationMode; }}
+                      disabled={!draftOcrEnabled}
+                      label="Page segmentation"
+                      options={[
+                        { value: "auto", label: "Auto" },
+                        { value: "single_block", label: "Single block" },
+                        { value: "single_line", label: "Single line" },
+                        { value: "single_word", label: "Single word" },
+                        { value: "sparse_text", label: "Sparse text" },
+                      ]}
+                    />
+                    <SelectMenu
+                      value={draftOcrTesseractPreprocessMode}
+                      onValueChange={(value) => { draftOcrTesseractPreprocessMode = value as OcrTesseractPreprocessMode; }}
+                      disabled={!draftOcrEnabled}
+                      label="Image preprocessing"
+                      options={[
+                        { value: "grayscale", label: "Grayscale" },
+                        { value: "thresholded", label: "Thresholded" },
+                      ]}
+                    />
+                    <SelectMenu
+                      value={String(draftOcrTesseractUpscaleFactor)}
+                      onValueChange={(value) => { draftOcrTesseractUpscaleFactor = parseInt(value, 10) || 1; }}
+                      disabled={!draftOcrEnabled}
+                      label="Upscale before OCR"
+                      options={[
+                        { value: "1", label: "1x" },
+                        { value: "2", label: "2x" },
+                        { value: "3", label: "3x" },
+                        { value: "4", label: "4x" },
+                      ]}
+                    />
+                  {/if}
+                  {#if draftOcrEnabled}
+                    <div class="mini-status">
+                      {#if ocrModelError}
+                        <p class="hint hint--warn">Failed to load OCR model status: {ocrModelError}</p>
+                      {:else if selectedOcrModel}
+                        <div class="model-status" class:model-status--available={selectedOcrModel.available}>
+                          <div>
+                            <div class="model-status__title">{selectedOcrModel.displayName}</div>
+                            <div class="model-status__meta">{ocrStatusLabel(selectedOcrModel)}</div>
+                          </div>
+                          <span class="model-status__pill">{selectedOcrModel.available ? "available" : "unavailable"}</span>
+                        </div>
+                        {#if selectedOcrModel.management === "app_managed"}
+                          {#if selectedOcrModel.download}
+                            {#if selectedOcrDownloadRunning}
+                              <div class="download-progress" aria-live="polite">
+                                <div class="download-progress__bar">
+                                  <span style={`width: ${selectedOcrDownloadPercent ?? 8}%`}></span>
+                                </div>
+                                <p class="hint">
+                                  {selectedOcrDownloadProgress?.status ?? "downloading"}
+                                  {#if selectedOcrDownloadPercent !== null} · {selectedOcrDownloadPercent}%{/if}
+                                  {#if selectedOcrDownloadProgress?.message} · {selectedOcrDownloadProgress.message}{/if}
+                                </p>
+                                <button type="button" class="btn btn--ghost btn--sm" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload}>
+                                  {cancellingOcrDownload ? "Cancelling" : "Cancel download"}
+                                </button>
+                              </div>
+                            {:else}
+                              <button type="button" class="btn btn--ghost btn--sm" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available}>
+                                {startingOcrDownload ? "Starting" : `Download OCR model (${formatBytes(selectedOcrModel.download.byteSize)})`}
+                              </button>
+                            {/if}
+                          {:else if !selectedOcrModel.available}
+                            <p class="hint hint--warn">
+                              {selectedOcrModel.provider === "tesseract"
+                                ? "Tesseract still needs a published self-contained runtime bundle before in-app download can work."
+                                : "No downloadable OCR artifact is available for this model."}
+                            </p>
+                          {/if}
+                          {#if ocrDownloadError}
+                            <p class="hint hint--warn">Download failed: {ocrDownloadError}</p>
+                          {/if}
+                        {:else}
+                          <p class="hint">This OCR provider is managed by macOS.</p>
+                        {/if}
+                      {:else if loadingOcrModelStatus}
+                        <p class="hint">Checking OCR models…</p>
+                      {:else}
+                        <p class="hint hint--warn">No OCR model status is available.</p>
+                      {/if}
+                    </div>
+                  {:else}
+                    <p class="hint">Screen recording can start without OCR while this is disabled. Existing OCR results remain visible.</p>
+                  {/if}
+                </div>
+                {/if}
+
+                {#if activeProcessingPanel === "transcription"}
+                <div class="settings-group" id="processing-panel-transcription" role="tabpanel" aria-label="Transcription settings">
+                  <span class="group-label">Audio transcription</span>
+                  <div class="settings-stack">
+                    <Switch
+                      bind:checked={draftTranscriptionEnabled}
+                      label="Enable transcription"
+                      description="Queue local speech-to-text for committed microphone audio."
+                    />
+                  </div>
+                  <RadioGroup
+                    value={draftTranscriptionProvider}
+                    onValueChange={chooseTranscriptionProvider}
+                    disabled={!draftTranscriptionEnabled}
+                    label="Provider"
+                    options={transcriptionProviderOptions.length > 0 ? transcriptionProviderOptions : fallbackTranscriptionProviderOptions}
+                  />
+                  <SelectMenu
+                    value={draftTranscriptionModelId ?? "__os_managed__"}
+                    onValueChange={chooseTranscriptionModel}
+                    disabled={!draftTranscriptionEnabled}
+                    label="Model"
+                    options={transcriptionModelOptions.length > 0 ? transcriptionModelOptions : [
+                      { value: draftTranscriptionModelId ?? "__os_managed__", label: "Loading model options" },
+                    ]}
+                  />
+                  <label class="field-label" for="onboarding-transcription-language">Language</label>
+                  <input
+                    id="onboarding-transcription-language"
+                    class="text-input"
+                    bind:value={draftTranscriptionLanguage}
+                    disabled={!draftTranscriptionEnabled}
+                    placeholder="auto"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+
+                  {#if draftTranscriptionProvider === "parakeet" && draftTranscriptionEnabled}
+                    <div class="reveal">
+                      <RadioGroup
+                        value={draftTranscriptionMemoryMode}
+                        onValueChange={(value) => draftTranscriptionMemoryMode = value as AudioTranscriptionMemoryMode}
+                        label="Memory mode"
+                        options={[
+                          { value: "balanced", label: "Balanced", description: "Unload ONNX sessions after idle timeout." },
+                          { value: "low_memory", label: "Low memory", description: "Unload sessions after every transcription." },
+                          { value: "performance", label: "Performance", description: "Keep sessions loaded for repeat jobs." },
+                        ]}
+                      />
+                      {#if draftTranscriptionMemoryMode === "balanced"}
+                        <label class="field-label" for="onboarding-transcription-idle-unload">Idle unload seconds</label>
+                        <input
+                          id="onboarding-transcription-idle-unload"
+                          class="text-input"
+                          type="number"
+                          min="0"
+                          max="86400"
+                          step="1"
+                          bind:value={draftTranscriptionIdleUnloadSeconds}
+                        />
+                      {/if}
+                      <label class="field-label" for="onboarding-transcription-chunk-seconds">Chunk seconds</label>
+                      <input
+                        id="onboarding-transcription-chunk-seconds"
+                        class="text-input"
+                        type="number"
+                        min="0"
+                        max="3600"
+                        step="1"
+                        bind:value={draftTranscriptionChunkSeconds}
+                      />
+                    </div>
+                  {/if}
+
+                  {#if draftTranscriptionEnabled}
+                    <div class="mini-status">
+                      {#if transcriptionModelError}
+                        <p class="hint hint--warn">Failed to load transcription model status: {transcriptionModelError}</p>
+                      {:else if selectedTranscriptionModel}
+                        <div class="model-status" class:model-status--available={selectedTranscriptionModel.available}>
+                          <div>
+                            <div class="model-status__title">{selectedTranscriptionModel.displayName}</div>
+                            <div class="model-status__meta">{transcriptionStatusLabel(selectedTranscriptionModel)}</div>
+                          </div>
+                          <span class="model-status__pill">{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
+                        </div>
+                        {#if selectedTranscriptionModel.management === "app_managed"}
+                          {#if selectedTranscriptionModel.download}
+                            {#if selectedTranscriptionDownloadRunning}
+                              <div class="download-progress" aria-live="polite">
+                                <div class="download-progress__bar">
+                                  <span style={`width: ${selectedTranscriptionDownloadPercent ?? 8}%`}></span>
+                                </div>
+                                <p class="hint">
+                                  {selectedTranscriptionDownloadProgress?.status ?? "downloading"}
+                                  {#if selectedTranscriptionDownloadPercent !== null} · {selectedTranscriptionDownloadPercent}%{/if}
+                                  {#if selectedTranscriptionDownloadProgress?.message} · {selectedTranscriptionDownloadProgress.message}{/if}
+                                </p>
+                                <button type="button" class="btn btn--ghost btn--sm" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload}>
+                                  {cancellingTranscriptionDownload ? "Cancelling" : "Cancel download"}
+                                </button>
+                              </div>
+                            {:else}
+                              <button type="button" class="btn btn--ghost btn--sm" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available}>
+                                {startingTranscriptionDownload ? "Starting" : `Download transcription model (${formatBytes(selectedTranscriptionModel.download.byteSize)})`}
+                              </button>
+                            {/if}
+                          {:else if !selectedTranscriptionModel.available}
+                            <p class="hint hint--warn">No downloadable artifact is available for this model.</p>
+                          {/if}
+                          {#if transcriptionDownloadError}
+                            <p class="hint hint--warn">Download failed: {transcriptionDownloadError}</p>
+                          {/if}
+                        {:else}
+                          <p class="hint">This provider is managed by macOS.</p>
+                        {/if}
+                      {:else if loadingTranscriptionModelStatus}
+                        <p class="hint">Checking transcription models…</p>
+                      {:else}
+                        <p class="hint hint--warn">No transcription model status is available.</p>
+                      {/if}
+                    </div>
+                  {:else}
+                    <p class="hint">Microphone audio can be captured without transcription while this is disabled.</p>
+                  {/if}
+                </div>
+                {/if}
+              </div>
+            </article>
+          {:else if activeStep === "inactivity"}
+            <article class="card">
+              <header class="card__header">
+                <span class="card__index">05</span>
                 <div class="card__heading">
                   <h2 class="card__title">Idle behavior</h2>
                   <p class="card__subtitle">Optionally pause capture when nothing is happening.</p>
@@ -530,11 +1297,16 @@
                 <p class="finale__tag">
                   Setup is complete. {selectedSourceCount > 0 ? `${selectedSourceCount} source${selectedSourceCount === 1 ? "" : "s"} armed` : "No sources armed"} · {draftFrameRate} fps · {formatDuration(draftSegmentDuration)} segments{draftPauseCaptureOnInactivity ? ` · idle pause @ ${formatDuration(draftIdleTimeoutSeconds)}` : ""}.
                 </p>
+                {#if !processingReady}
+                  <p class="hint hint--warn">A selected OCR or transcription model still needs to finish installing before setup can complete.</p>
+                {/if}
 
                 <div class="finale__chips">
                   <span class="chip chip--lg" data-on={draftCaptureScreen}>Screen</span>
                   <span class="chip chip--lg" data-on={draftCaptureMicrophone}>Mic</span>
                   <span class="chip chip--lg" data-on={draftCaptureSystemAudio && draftCaptureScreen}>Sys audio</span>
+                  <span class="chip chip--lg" data-on={draftOcrEnabled}>OCR</span>
+                  <span class="chip chip--lg" data-on={draftTranscriptionEnabled}>Transcript</span>
                 </div>
 
                 <div class="finale__cta">
@@ -940,10 +1712,58 @@
     height: 1px;
     background: var(--app-border);
   }
+  .process-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+  }
+  .process-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .process-tab:not(.process-tab--active):hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text);
+  }
+  .process-tab--active {
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+  }
+  .process-tab:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
   .grid-2 {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
+  }
+  .processing-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
   }
 
   /* ── Hints ─────────────────────────────────────────────────── */
@@ -981,6 +1801,74 @@
   .text-input:focus { border-color: var(--app-accent); }
   .text-input--empty { border-color: var(--app-warn-border); }
   .text-input::placeholder { color: var(--app-text-faint); }
+  .field-label {
+    color: var(--app-text-subtle);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .mini-status {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 2px;
+  }
+  .model-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--app-warn-border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-warn) 8%, transparent);
+  }
+  .model-status--available {
+    border-color: color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
+    background: color-mix(in srgb, var(--app-accent) 8%, transparent);
+  }
+  .model-status__title {
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .model-status__meta {
+    margin-top: 2px;
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .model-status__pill {
+    flex-shrink: 0;
+    color: var(--app-text-muted);
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .download-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .download-progress__bar {
+    height: 6px;
+    overflow: hidden;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    background: var(--app-surface-hover);
+  }
+  .download-progress__bar span {
+    display: block;
+    height: 100%;
+    min-width: 8%;
+    border-radius: inherit;
+    background: var(--app-accent);
+    transition: width 0.15s ease;
+  }
 
   /* ── Inactivity reveal ─────────────────────────────────────── */
   .reveal {
