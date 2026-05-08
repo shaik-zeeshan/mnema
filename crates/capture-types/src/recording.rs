@@ -124,6 +124,22 @@ pub fn default_appearance() -> AppearanceSetting {
     AppearanceSetting::System
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OcrProvider {
+    AppleVision,
+    Tesseract,
+    PaddleOcr,
+}
+
+pub fn default_ocr_provider() -> OcrProvider {
+    OcrProvider::AppleVision
+}
+
+pub fn default_ocr_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OcrRecognitionMode {
@@ -139,19 +155,84 @@ pub fn default_ocr_language_correction() -> bool {
     false
 }
 
+pub fn default_ocr_model_id() -> Option<String> {
+    None
+}
+
+pub fn default_ocr_language() -> Option<String> {
+    None
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OcrTesseractPageSegmentationMode {
+    Auto,
+    SingleBlock,
+    SingleLine,
+    SingleWord,
+    SparseText,
+}
+
+pub fn default_ocr_tesseract_page_segmentation_mode() -> OcrTesseractPageSegmentationMode {
+    OcrTesseractPageSegmentationMode::SingleBlock
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OcrTesseractPreprocessMode {
+    Grayscale,
+    Thresholded,
+}
+
+pub fn default_ocr_tesseract_preprocess_mode() -> OcrTesseractPreprocessMode {
+    OcrTesseractPreprocessMode::Grayscale
+}
+
+pub fn default_ocr_tesseract_upscale_factor() -> u8 {
+    1
+}
+
+pub fn default_ocr_tesseract_char_whitelist() -> Option<String> {
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OcrSettings {
+    #[serde(default = "default_ocr_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_ocr_provider")]
+    pub provider: OcrProvider,
+    #[serde(default = "default_ocr_model_id")]
+    pub model_id: Option<String>,
+    #[serde(default = "default_ocr_language")]
+    pub language: Option<String>,
     #[serde(default = "default_ocr_recognition_mode")]
     pub recognition_mode: OcrRecognitionMode,
     #[serde(default = "default_ocr_language_correction")]
     pub language_correction: bool,
+    #[serde(default = "default_ocr_tesseract_page_segmentation_mode")]
+    pub tesseract_page_segmentation_mode: OcrTesseractPageSegmentationMode,
+    #[serde(default = "default_ocr_tesseract_preprocess_mode")]
+    pub tesseract_preprocess_mode: OcrTesseractPreprocessMode,
+    #[serde(default = "default_ocr_tesseract_upscale_factor")]
+    pub tesseract_upscale_factor: u8,
+    #[serde(default = "default_ocr_tesseract_char_whitelist")]
+    pub tesseract_char_whitelist: Option<String>,
 }
 
 pub fn default_ocr_settings() -> OcrSettings {
     OcrSettings {
+        enabled: default_ocr_enabled(),
+        provider: default_ocr_provider(),
+        model_id: default_ocr_model_id(),
+        language: default_ocr_language(),
         recognition_mode: default_ocr_recognition_mode(),
         language_correction: default_ocr_language_correction(),
+        tesseract_page_segmentation_mode: default_ocr_tesseract_page_segmentation_mode(),
+        tesseract_preprocess_mode: default_ocr_tesseract_preprocess_mode(),
+        tesseract_upscale_factor: default_ocr_tesseract_upscale_factor(),
+        tesseract_char_whitelist: default_ocr_tesseract_char_whitelist(),
     }
 }
 

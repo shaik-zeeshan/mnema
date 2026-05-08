@@ -11,7 +11,8 @@ pub mod jobs;
 pub mod processing;
 pub mod status;
 
-use std::{path::Path, sync::Arc};
+use std::{collections::BTreeSet, path::Path, sync::Arc};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlx::SqlitePool;
 
@@ -41,15 +42,19 @@ pub use jobs::{
     default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
     CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
+pub use ocr::{
+    AppleVisionProvider, FrozenOcrPayload, OcrBoundingBox, OcrObservation, OcrOutput, OcrProvider,
+    OcrProviderKind, OcrRecognitionMode, OcrRequest, OcrStructuredPayload, PaddleOcrProvider,
+    TesseractProvider,
+};
 pub use processing::{
-    AppleVisionOcrEngine, AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend,
-    FocusedFrameWindow, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameProcessingJob,
-    FrameSummary, NewFrame, OcrEngine, OcrOutput, OcrProcessorBackend, OcrProvider, OcrRequest,
-    ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft, ProcessingJobRunOutcome,
-    ProcessingJobStatus, ProcessingResult, ProcessingResultDraft, ProcessingRuntime,
-    ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
-    SegmentWorkspaceOcrReference, AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR,
-    FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
+    AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend, FocusedFrameWindow, Frame,
+    FrameEquivalence, FrameEquivalenceStatus, FrameProcessingJob, FrameSummary, NewFrame,
+    OcrProcessorBackend, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
+    ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingModelCleanupLock, ProcessingResult,
+    ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend,
+    ProcessorRegistry, SegmentWorkspaceOcrReference, AUDIO_SEGMENT_SUBJECT_TYPE,
+    AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
@@ -144,6 +149,7 @@ impl AppInfra {
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
+        processing.clear_model_cleanup_locks().await?;
         processing.backfill_frame_equivalence().await?;
         jobs.reconcile_orphaned_running_jobs().await?;
         processing.reconcile_orphaned_running_jobs().await?;
@@ -247,6 +253,15 @@ impl AppInfra {
     ) -> Result<CapturedFramePipelineResult> {
         self.captured_frame_pipeline
             .capture_frame(frame, payload_json)
+            .await
+    }
+
+    pub async fn capture_frame_without_ocr(
+        &self,
+        frame: &NewFrame,
+    ) -> Result<CapturedFramePipelineResult> {
+        self.captured_frame_pipeline
+            .capture_frame_without_ocr(frame)
             .await
     }
 
@@ -601,6 +616,143 @@ impl AppInfra {
         self.processing.list_jobs_for_subject(subject).await
     }
 
+    pub async fn list_running_ocr_model_keys(&self) -> Result<BTreeSet<String>> {
+        let jobs = self
+            .processing
+            .list_running_jobs_for_processor(OCR_PROCESSOR)
+            .await?;
+        let mut keys = BTreeSet::new();
+
+        for job in jobs {
+            if let Some(key) = ocr_model_key_for_job(&job)? {
+                keys.insert(key);
+            }
+        }
+
+        Ok(keys)
+    }
+
+    pub async fn fail_queued_ocr_jobs_because_disabled(&self) -> Result<u64> {
+        self.processing
+            .mark_queued_jobs_failed_for_processor(OCR_PROCESSOR, "OCR is disabled")
+            .await
+    }
+
+    pub async fn acquire_ocr_model_cleanup_locks(
+        &self,
+        model_keys: &BTreeSet<String>,
+    ) -> Result<ProcessingModelCleanupLock> {
+        self.acquire_processing_model_cleanup_locks(OCR_PROCESSOR, model_keys)
+            .await
+    }
+
+    pub async fn list_running_audio_transcription_model_keys(&self) -> Result<BTreeSet<String>> {
+        let jobs = self
+            .processing
+            .list_running_jobs_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+            .await?;
+        let mut keys = BTreeSet::new();
+
+        for job in jobs {
+            if let Some(key) = audio_transcription_model_key_for_job(&job)? {
+                keys.insert(key);
+            }
+        }
+
+        Ok(keys)
+    }
+
+    pub async fn acquire_audio_transcription_model_cleanup_locks(
+        &self,
+        model_keys: &BTreeSet<String>,
+    ) -> Result<ProcessingModelCleanupLock> {
+        self.acquire_processing_model_cleanup_locks(AUDIO_TRANSCRIPTION_PROCESSOR, model_keys)
+            .await
+    }
+
+    pub async fn retarget_ocr_jobs_referencing_model_keys(
+        &self,
+        model_keys: &BTreeSet<String>,
+        provider: &str,
+        model_id: Option<&str>,
+    ) -> Result<u64> {
+        let jobs = self
+            .processing
+            .list_retargetable_jobs_for_processor(OCR_PROCESSOR)
+            .await?;
+        let mut updated = 0_u64;
+
+        for job in jobs {
+            let Some(key) = ocr_model_key_for_job(&job)? else {
+                continue;
+            };
+            if !model_keys.contains(&key) {
+                continue;
+            }
+            let mut payload = FrozenOcrPayload::from_payload_json(job.payload_json.as_deref())
+                .map_err(|error| AppInfraError::OcrEngine(error.to_string()))?;
+            payload.provider = provider.to_string();
+            payload.model_id = model_id.map(str::to_string);
+            let payload_json = serde_json::to_string(&payload)?;
+            if self
+                .processing
+                .update_retargetable_job_payload(job.id, &payload_json)
+                .await?
+                .is_some()
+            {
+                updated = updated.saturating_add(1);
+            }
+        }
+
+        Ok(updated)
+    }
+
+    pub async fn retarget_audio_transcription_jobs_referencing_model_keys(
+        &self,
+        model_keys: &BTreeSet<String>,
+        provider: &str,
+        model_id: Option<&str>,
+    ) -> Result<u64> {
+        let jobs = self
+            .processing
+            .list_retargetable_jobs_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+            .await?;
+        let mut updated = 0_u64;
+
+        for job in jobs {
+            let Some(key) = audio_transcription_model_key_for_job(&job)? else {
+                continue;
+            };
+            if !model_keys.contains(&key) {
+                continue;
+            }
+            let Some(payload_json) = job.payload_json.as_deref() else {
+                continue;
+            };
+            let mut payload: AudioTranscriptionJobPayload = serde_json::from_str(payload_json)?;
+            payload.provider = provider.to_string();
+            payload.model_id = model_id.map(str::to_string);
+            let payload_json = serde_json::to_string(&payload)?;
+            if self
+                .processing
+                .update_retargetable_job_payload(job.id, &payload_json)
+                .await?
+                .is_some()
+            {
+                updated = updated.saturating_add(1);
+            }
+        }
+
+        Ok(updated)
+    }
+
+    pub async fn release_processing_model_cleanup_locks(
+        &self,
+        lock: &ProcessingModelCleanupLock,
+    ) -> Result<u64> {
+        self.processing.release_model_cleanup_locks(lock).await
+    }
+
     pub async fn claim_queued_processing_job(&self, job_id: i64) -> Result<Option<ProcessingJob>> {
         self.processing.claim_queued_job(job_id).await
     }
@@ -713,15 +865,68 @@ impl AppInfra {
     }
 }
 
+impl AppInfra {
+    async fn acquire_processing_model_cleanup_locks(
+        &self,
+        processor: &str,
+        model_keys: &BTreeSet<String>,
+    ) -> Result<ProcessingModelCleanupLock> {
+        let lock_token = processing_model_cleanup_lock_token(processor);
+        self.processing
+            .acquire_model_cleanup_locks(processor, model_keys, &lock_token)
+            .await
+    }
+}
+
 fn default_processing_registry() -> ProcessorRegistry {
     ProcessorRegistry::new()
-        .register(OcrProcessorBackend::new(AppleVisionOcrEngine::new()))
+        .register(OcrProcessorBackend::from_provider_arcs([
+            Arc::new(AppleVisionProvider::new()) as Arc<dyn ocr::OcrProvider>,
+            Arc::new(TesseractProvider::with_models_dir(std::env::temp_dir())),
+            Arc::new(PaddleOcrProvider::with_models_dir(std::env::temp_dir())),
+        ]))
         .register(AudioTranscriptionProcessorBackend::from_provider_arcs([
             Arc::new(audio_transcription::providers::LocalWhisperProvider)
                 as Arc<dyn audio_transcription::TranscriptionProvider>,
             Arc::new(audio_transcription::providers::AppleSpeechOnDeviceProvider),
             Arc::new(audio_transcription::providers::ParakeetProvider),
         ]))
+}
+
+fn model_key(provider: &str, model_id: &str) -> String {
+    format!("{provider}/{model_id}")
+}
+
+fn processing_model_cleanup_lock_token(processor: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("model-cleanup:{processor}:{}:{nanos}", std::process::id())
+}
+
+fn ocr_model_key_for_job(job: &ProcessingJob) -> Result<Option<String>> {
+    let payload = FrozenOcrPayload::from_payload_json(job.payload_json.as_deref())
+        .map_err(|error| AppInfraError::OcrEngine(error.to_string()))?;
+    Ok(payload
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+        .map(|model_id| model_key(&payload.provider, model_id)))
+}
+
+fn audio_transcription_model_key_for_job(job: &ProcessingJob) -> Result<Option<String>> {
+    let Some(payload_json) = job.payload_json.as_deref() else {
+        return Ok(None);
+    };
+    let payload: AudioTranscriptionJobPayload = serde_json::from_str(payload_json)?;
+    Ok(payload
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+        .map(|model_id| model_key(&payload.provider, model_id)))
 }
 
 #[cfg(test)]
@@ -1612,6 +1817,663 @@ mod tests {
             assert_eq!(jobs[0].subject_type, AUDIO_SEGMENT_SUBJECT_TYPE);
             assert_eq!(jobs[0].processor, AUDIO_TRANSCRIPTION_PROCESSOR);
             assert_eq!(jobs[0].payload_json.as_deref(), Some(payload.as_str()));
+        });
+    }
+
+    #[test]
+    fn running_ocr_model_keys_include_only_running_jobs() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-model-keys");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let queued_frame = infra
+                .insert_frame(&test_frame("ocr-model-keys", "queued.png"))
+                .await
+                .expect("queued frame should insert");
+            let running_frame = infra
+                .insert_frame(&test_frame("ocr-model-keys", "running.png"))
+                .await
+                .expect("running frame should insert");
+            let completed_frame = infra
+                .insert_frame(&test_frame("ocr-model-keys", "completed.png"))
+                .await
+                .expect("completed frame should insert");
+
+            infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(queued_frame.id).with_payload_json(
+                        "{\"provider\":\"tesseract\",\"modelId\":\"tesseract-5.5.2\"}",
+                    ),
+                )
+                .await
+                .expect("queued ocr job should insert");
+            let running = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(running_frame.id).with_payload_json(
+                        "{\"provider\":\"paddleocr\",\"modelId\":\"paddleocr-en-v5\"}",
+                    ),
+                )
+                .await
+                .expect("running ocr job should insert");
+            infra
+                .claim_queued_processing_job(running.id)
+                .await
+                .expect("running ocr job should claim")
+                .expect("running ocr job should exist");
+            let completed = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(completed_frame.id).with_payload_json(
+                        "{\"provider\":\"tesseract\",\"modelId\":\"completed-model\"}",
+                    ),
+                )
+                .await
+                .expect("completed ocr job should insert");
+            infra
+                .claim_queued_processing_job(completed.id)
+                .await
+                .expect("completed ocr job should claim")
+                .expect("completed ocr job should exist");
+            infra
+                .complete_processing_job(completed.id, &ProcessingResultDraft::new())
+                .await
+                .expect("completed ocr job should complete");
+
+            let keys = infra
+                .list_running_ocr_model_keys()
+                .await
+                .expect("ocr model keys should list");
+
+            assert!(!keys.contains("tesseract/tesseract-5.5.2"));
+            assert!(keys.contains("paddleocr/paddleocr-en-v5"));
+            assert!(!keys.contains("tesseract/completed-model"));
+        });
+    }
+
+    #[test]
+    fn retarget_ocr_jobs_updates_queued_and_failed_but_not_running_jobs() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-retarget-model-keys");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let queued_frame = infra
+                .insert_frame(&test_frame("ocr-retarget-model-keys", "queued.png"))
+                .await
+                .expect("queued frame should insert");
+            let failed_frame = infra
+                .insert_frame(&test_frame("ocr-retarget-model-keys", "failed.png"))
+                .await
+                .expect("failed frame should insert");
+            let running_frame = infra
+                .insert_frame(&test_frame("ocr-retarget-model-keys", "running.png"))
+                .await
+                .expect("running frame should insert");
+            let old_payload = "{\"provider\":\"tesseract\",\"modelId\":\"tesseract-5.5.2\",\"language\":\"eng\"}";
+
+            let queued = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(queued_frame.id)
+                        .with_payload_json(old_payload),
+                )
+                .await
+                .expect("queued ocr job should insert");
+            let failed = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(failed_frame.id)
+                        .with_payload_json(old_payload),
+                )
+                .await
+                .expect("failed ocr job should insert");
+            infra
+                .claim_queued_processing_job(failed.id)
+                .await
+                .expect("failed ocr job should claim")
+                .expect("failed ocr job should exist");
+            infra
+                .mark_processing_job_failed(failed.id, Some("old failure"))
+                .await
+                .expect("failed ocr job should fail");
+            let running = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(running_frame.id)
+                        .with_payload_json(old_payload),
+                )
+                .await
+                .expect("running ocr job should insert");
+            infra
+                .claim_queued_processing_job(running.id)
+                .await
+                .expect("running ocr job should claim")
+                .expect("running ocr job should exist");
+
+            let updated = infra
+                .retarget_ocr_jobs_referencing_model_keys(
+                    &BTreeSet::from(["tesseract/tesseract-5.5.2".to_string()]),
+                    "apple_vision",
+                    None,
+                )
+                .await
+                .expect("ocr jobs should retarget");
+
+            assert_eq!(updated, 2);
+            for job_id in [queued.id, failed.id] {
+                let job = infra
+                    .get_processing_job(job_id)
+                    .await
+                    .expect("job should load")
+                    .expect("job should exist");
+                let payload = FrozenOcrPayload::from_payload_json(job.payload_json.as_deref())
+                    .expect("payload should parse");
+                assert_eq!(payload.provider, "apple_vision");
+                assert_eq!(payload.model_id, None);
+                assert_eq!(payload.language.as_deref(), Some("eng"));
+            }
+            let running = infra
+                .get_processing_job(running.id)
+                .await
+                .expect("running job should load")
+                .expect("running job should exist");
+            let running_payload = FrozenOcrPayload::from_payload_json(running.payload_json.as_deref())
+                .expect("running payload should parse");
+            assert_eq!(running_payload.provider, "tesseract");
+            assert_eq!(
+                running_payload.model_id.as_deref(),
+                Some("tesseract-5.5.2")
+            );
+        });
+    }
+
+    #[test]
+    fn ocr_model_cleanup_lock_blocks_direct_queued_job_claim_until_released() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-cleanup-lock-direct-claim");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let frame = infra
+                .insert_frame(&test_frame("ocr-cleanup-lock-direct-claim", "queued.png"))
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(frame.id).with_payload_json(
+                        "{\"provider\":\"tesseract\",\"modelId\":\"tesseract-5.5.2\"}",
+                    ),
+                )
+                .await
+                .expect("ocr job should insert");
+            let lock = infra
+                .acquire_ocr_model_cleanup_locks(&BTreeSet::from([
+                    "tesseract/tesseract-5.5.2".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire");
+
+            let blocked = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("claim should not fail");
+            assert!(blocked.is_none());
+            let queued = infra
+                .get_processing_job(job.id)
+                .await
+                .expect("job should load")
+                .expect("job should exist");
+            assert_eq!(queued.status, ProcessingJobStatus::Queued);
+
+            infra
+                .release_processing_model_cleanup_locks(&lock)
+                .await
+                .expect("cleanup lock should release");
+            let claimed = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("claim should succeed after release")
+                .expect("job should claim");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    #[test]
+    fn ocr_model_cleanup_lock_makes_next_claim_skip_locked_model_jobs() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-cleanup-lock-next-claim");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let locked_frame = infra
+                .insert_frame(&test_frame("ocr-cleanup-lock-next-claim", "locked.png"))
+                .await
+                .expect("locked frame should insert");
+            let unlocked_frame = infra
+                .insert_frame(&test_frame("ocr-cleanup-lock-next-claim", "unlocked.png"))
+                .await
+                .expect("unlocked frame should insert");
+            let locked_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(locked_frame.id).with_payload_json(
+                        "{\"provider\":\"tesseract\",\"modelId\":\"tesseract-5.5.2\"}",
+                    ),
+                )
+                .await
+                .expect("locked ocr job should insert");
+            let unlocked_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(unlocked_frame.id).with_payload_json(
+                        "{\"provider\":\"paddleocr\",\"modelId\":\"paddleocr-en-v5\"}",
+                    ),
+                )
+                .await
+                .expect("unlocked ocr job should insert");
+            let lock = infra
+                .acquire_ocr_model_cleanup_locks(&BTreeSet::from([
+                    "tesseract/tesseract-5.5.2".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire");
+
+            let claimed = infra
+                .process_next_processing_job_for_processor(OCR_PROCESSOR)
+                .await
+                .expect("next job should process")
+                .expect("unlocked job should be claimable");
+            let claimed_job_id = match claimed {
+                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+                ProcessingJobRunOutcome::Failed(job) => job.id,
+            };
+            assert_eq!(claimed_job_id, unlocked_job.id);
+            let locked = infra
+                .get_processing_job(locked_job.id)
+                .await
+                .expect("locked job should load")
+                .expect("locked job should exist");
+            assert_eq!(locked.status, ProcessingJobStatus::Queued);
+
+            infra
+                .release_processing_model_cleanup_locks(&lock)
+                .await
+                .expect("cleanup lock should release");
+        });
+    }
+
+    #[test]
+    fn malformed_ocr_payload_is_isolated_to_that_job_during_next_claim() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-malformed-payload-next-claim");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let malformed_frame = infra
+                .insert_frame(&test_frame(
+                    "ocr-malformed-payload-next-claim",
+                    "malformed.png",
+                ))
+                .await
+                .expect("malformed frame should insert");
+            let valid_frame = infra
+                .insert_frame(&test_frame("ocr-malformed-payload-next-claim", "valid.png"))
+                .await
+                .expect("valid frame should insert");
+            let malformed_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(malformed_frame.id)
+                        .with_payload_json("{not valid json"),
+                )
+                .await
+                .expect("malformed ocr job should insert");
+            let valid_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(valid_frame.id).with_payload_json(
+                        "{\"provider\":\"tesseract\",\"modelId\":\"tesseract-5.5.2\"}",
+                    ),
+                )
+                .await
+                .expect("valid ocr job should insert");
+
+            let first = infra
+                .process_next_processing_job_for_processor(OCR_PROCESSOR)
+                .await
+                .expect("malformed payload should be claimed and failed by the processor")
+                .expect("malformed job should run");
+            let first_job_id = match first {
+                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+                ProcessingJobRunOutcome::Failed(job) => job.id,
+            };
+            assert_eq!(first_job_id, malformed_job.id);
+
+            let second = infra
+                .process_next_processing_job_for_processor(OCR_PROCESSOR)
+                .await
+                .expect("later queued jobs should keep draining")
+                .expect("valid job should run next");
+            let second_job_id = match second {
+                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+                ProcessingJobRunOutcome::Failed(job) => job.id,
+            };
+            assert_eq!(second_job_id, valid_job.id);
+        });
+    }
+
+    #[test]
+    fn running_audio_transcription_model_keys_include_only_running_jobs() {
+        run_async_test(async {
+            let dir = TestDir::new("audio-transcription-model-keys");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let queued_segment = NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "audio-model-keys",
+                1,
+                "/tmp/audio-model-keys-queued.m4a",
+                "2026-04-12T10:00:00Z",
+                "2026-04-12T10:01:00Z",
+            );
+            let running_segment = NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "audio-model-keys",
+                2,
+                "/tmp/audio-model-keys-running.m4a",
+                "2026-04-12T10:01:00Z",
+                "2026-04-12T10:02:00Z",
+            );
+            let completed_segment = NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "audio-model-keys",
+                3,
+                "/tmp/audio-model-keys-completed.m4a",
+                "2026-04-12T10:02:00Z",
+                "2026-04-12T10:03:00Z",
+            );
+            let queued_segment = infra
+                .upsert_audio_segment(&queued_segment)
+                .await
+                .expect("queued segment should insert");
+            let running_segment = infra
+                .upsert_audio_segment(&running_segment)
+                .await
+                .expect("running segment should insert");
+            let completed_segment = infra
+                .upsert_audio_segment(&completed_segment)
+                .await
+                .expect("completed segment should insert");
+
+            let queued_payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                "local_whisper",
+                Some("base".to_string()),
+                "auto",
+            ))
+            .expect("queued payload should serialize");
+            let running_payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                "parakeet",
+                Some("parakeet-tdt-0.6b-v3-onnx".to_string()),
+                "auto",
+            ))
+            .expect("running payload should serialize");
+            let completed_payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                "local_whisper",
+                Some("completed-model".to_string()),
+                "auto",
+            ))
+            .expect("completed payload should serialize");
+
+            infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(queued_segment.id)
+                        .with_payload_json(queued_payload),
+                )
+                .await
+                .expect("queued transcription job should insert");
+            let running = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(running_segment.id)
+                        .with_payload_json(running_payload),
+                )
+                .await
+                .expect("running transcription job should insert");
+            infra
+                .claim_queued_processing_job(running.id)
+                .await
+                .expect("running transcription job should claim")
+                .expect("running transcription job should exist");
+            let completed = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(completed_segment.id)
+                        .with_payload_json(completed_payload),
+                )
+                .await
+                .expect("completed transcription job should insert");
+            infra
+                .claim_queued_processing_job(completed.id)
+                .await
+                .expect("completed transcription job should claim")
+                .expect("completed transcription job should exist");
+            infra
+                .complete_processing_job(completed.id, &ProcessingResultDraft::new())
+                .await
+                .expect("completed transcription job should complete");
+
+            let keys = infra
+                .list_running_audio_transcription_model_keys()
+                .await
+                .expect("transcription model keys should list");
+
+            assert!(!keys.contains("local_whisper/base"));
+            assert!(keys.contains("parakeet/parakeet-tdt-0.6b-v3-onnx"));
+            assert!(!keys.contains("local_whisper/completed-model"));
+        });
+    }
+
+    #[test]
+    fn audio_transcription_model_cleanup_lock_blocks_direct_queued_job_claim_until_released() {
+        run_async_test(async {
+            let dir = TestDir::new("audio-cleanup-lock-direct-claim");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "audio-cleanup-lock-direct-claim",
+                    1,
+                    "/tmp/audio-cleanup-lock-direct-claim.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                "local_whisper",
+                Some("base".to_string()),
+                "auto",
+            ))
+            .expect("payload should serialize");
+            let job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(segment.id)
+                        .with_payload_json(payload),
+                )
+                .await
+                .expect("transcription job should insert");
+            let lock = infra
+                .acquire_audio_transcription_model_cleanup_locks(&BTreeSet::from([
+                    "local_whisper/base".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire");
+
+            let blocked = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("claim should not fail");
+            assert!(blocked.is_none());
+            let queued = infra
+                .get_processing_job(job.id)
+                .await
+                .expect("job should load")
+                .expect("job should exist");
+            assert_eq!(queued.status, ProcessingJobStatus::Queued);
+
+            infra
+                .release_processing_model_cleanup_locks(&lock)
+                .await
+                .expect("cleanup lock should release");
+            let claimed = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("claim should succeed after release")
+                .expect("job should claim");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    #[test]
+    fn startup_clears_stale_processing_model_cleanup_locks() {
+        run_async_test(async {
+            let dir = TestDir::new("stale-processing-model-cleanup-locks");
+            let initial = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let lock = initial
+                .acquire_ocr_model_cleanup_locks(&BTreeSet::from([
+                    "tesseract/tesseract-5.5.2".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire");
+            assert_eq!(lock.acquired_model_keys.len(), 1);
+            drop(initial);
+
+            let recovered = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should reinitialize");
+            let lock = recovered
+                .acquire_ocr_model_cleanup_locks(&BTreeSet::from([
+                    "tesseract/tesseract-5.5.2".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire after restart");
+
+            assert_eq!(lock.acquired_model_keys.len(), 1);
+        });
+    }
+
+    #[test]
+    fn retarget_audio_transcription_jobs_updates_queued_and_failed_but_not_running_jobs() {
+        run_async_test(async {
+            let dir = TestDir::new("audio-retarget-model-keys");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let queued_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "audio-retarget-model-keys",
+                    1,
+                    "/tmp/audio-retarget-queued.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("queued segment should insert");
+            let failed_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "audio-retarget-model-keys",
+                    2,
+                    "/tmp/audio-retarget-failed.m4a",
+                    "2026-04-12T10:01:00Z",
+                    "2026-04-12T10:02:00Z",
+                ))
+                .await
+                .expect("failed segment should insert");
+            let running_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "audio-retarget-model-keys",
+                    3,
+                    "/tmp/audio-retarget-running.m4a",
+                    "2026-04-12T10:02:00Z",
+                    "2026-04-12T10:03:00Z",
+                ))
+                .await
+                .expect("running segment should insert");
+            let old_payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                "local_whisper",
+                Some("base".to_string()),
+                "auto",
+            ))
+            .expect("old payload should serialize");
+
+            let queued = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(queued_segment.id)
+                        .with_payload_json(old_payload.clone()),
+                )
+                .await
+                .expect("queued transcription job should insert");
+            let failed = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(failed_segment.id)
+                        .with_payload_json(old_payload.clone()),
+                )
+                .await
+                .expect("failed transcription job should insert");
+            infra
+                .claim_queued_processing_job(failed.id)
+                .await
+                .expect("failed transcription job should claim")
+                .expect("failed transcription job should exist");
+            infra
+                .mark_processing_job_failed(failed.id, Some("old failure"))
+                .await
+                .expect("failed transcription job should fail");
+            let running = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(running_segment.id)
+                        .with_payload_json(old_payload),
+                )
+                .await
+                .expect("running transcription job should insert");
+            infra
+                .claim_queued_processing_job(running.id)
+                .await
+                .expect("running transcription job should claim")
+                .expect("running transcription job should exist");
+
+            let updated = infra
+                .retarget_audio_transcription_jobs_referencing_model_keys(
+                    &BTreeSet::from(["local_whisper/base".to_string()]),
+                    "apple_speech_on_device",
+                    None,
+                )
+                .await
+                .expect("transcription jobs should retarget");
+
+            assert_eq!(updated, 2);
+            for job_id in [queued.id, failed.id] {
+                let job = infra
+                    .get_processing_job(job_id)
+                    .await
+                    .expect("job should load")
+                    .expect("job should exist");
+                let payload: AudioTranscriptionJobPayload =
+                    serde_json::from_str(job.payload_json.as_deref().expect("payload"))
+                        .expect("payload should parse");
+                assert_eq!(payload.provider, "apple_speech_on_device");
+                assert_eq!(payload.model_id, None);
+                assert_eq!(payload.language, "auto");
+            }
+            let running = infra
+                .get_processing_job(running.id)
+                .await
+                .expect("running job should load")
+                .expect("running job should exist");
+            let running_payload: AudioTranscriptionJobPayload =
+                serde_json::from_str(running.payload_json.as_deref().expect("payload"))
+                    .expect("running payload should parse");
+            assert_eq!(running_payload.provider, "local_whisper");
+            assert_eq!(running_payload.model_id.as_deref(), Some("base"));
         });
     }
 

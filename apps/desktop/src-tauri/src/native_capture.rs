@@ -21,9 +21,10 @@ use capture_types::{
     AudioTranscriptionProvider, AudioTranscriptionSettings, CaptureErrorResponse,
     CaptureOutputFiles, CapturePermissionState, CapturePermissions, CapturePermissionsResponse,
     CaptureSources, CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
-    NativeCaptureDebugLogStatus, NativeCaptureSessionResponse, RecordingSettings, ScreenResolution,
-    ScreenResolutionPreset, StartNativeCaptureRequest, UpdateMicrophoneControllerRequest,
-    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    NativeCaptureDebugLogStatus, NativeCaptureSessionResponse, OcrProvider, OcrSettings,
+    RecordingSettings, ScreenResolution, ScreenResolutionPreset, StartNativeCaptureRequest,
+    UpdateMicrophoneControllerRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
+    VideoBitratePreset, VideoBitrateSettings,
 };
 use capture_vad::configured_adapter_as_str;
 use settings::{
@@ -70,7 +71,9 @@ pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
 pub const RECORDING_SETTINGS_CHANGED_EVENT: &str = "recording_settings_changed";
 pub const APP_NOTIFICATIONS_CHANGED_EVENT: &str = "app_notifications_changed";
 const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcription-unavailable";
+const OCR_UNAVAILABLE_NOTIFICATION_ID: &str = "ocr-unavailable";
 const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
+const OCR_SETTINGS_TAB_ID: &str = "ocr";
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[allow(dead_code)]
@@ -257,6 +260,114 @@ fn maybe_push_audio_transcription_unavailable_start_warning(
     );
 }
 
+fn should_warn_ocr_unavailable_at_start(settings: &RecordingSettings) -> bool {
+    settings.capture_screen && settings.ocr.enabled
+}
+
+fn should_warn_ocr_unavailable_at_startup(settings: &RecordingSettings) -> bool {
+    should_warn_ocr_unavailable_at_start(settings)
+}
+
+fn ocr_provider_label(provider: OcrProvider) -> &'static str {
+    match provider {
+        OcrProvider::AppleVision => "Apple Vision",
+        OcrProvider::Tesseract => "Tesseract",
+        OcrProvider::PaddleOcr => "PaddleOCR",
+    }
+}
+
+fn ocr_selection_label(settings: &OcrSettings) -> String {
+    let provider = ocr_provider_label(settings.provider);
+    match settings
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(model_id) => format!("{provider} `{model_id}`"),
+        None => provider.to_string(),
+    }
+}
+
+fn ocr_unavailable_notification(
+    settings: &RecordingSettings,
+    created_at_unix_ms: u64,
+) -> AppNotification {
+    let selection = ocr_selection_label(&settings.ocr);
+    AppNotification {
+        id: OCR_UNAVAILABLE_NOTIFICATION_ID.to_string(),
+        severity: "warning".to_string(),
+        title: "OCR engine unavailable".to_string(),
+        message: format!(
+            "{selection} is not available. Screen recording is blocked until you install or choose an available OCR engine."
+        ),
+        created_at_unix_ms,
+        action: Some(AppNotificationAction::OpenSettingsTab {
+            tab: OCR_SETTINGS_TAB_ID.to_string(),
+        }),
+    }
+}
+
+fn maybe_push_ocr_unavailable_warning(
+    app_handle: &tauri::AppHandle,
+    app_notifications_state: &AppNotificationsState,
+    settings: &RecordingSettings,
+    context: &str,
+) {
+    let app_data_dir = match app_handle.path().app_data_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            debug_log::log_warn(format!(
+                "failed to resolve app data directory for {context} OCR warning: {error}"
+            ));
+            return;
+        }
+    };
+
+    match crate::ocr_models::selected_ocr_model_available(&app_data_dir, &settings.ocr) {
+        Ok(true) => {}
+        Ok(false) => {
+            let selection = ocr_selection_label(&settings.ocr);
+            debug_log::log_warn(format!(
+                "ocr unavailable at {context} (selection={selection})"
+            ));
+            push_app_notification(
+                app_handle,
+                app_notifications_state,
+                ocr_unavailable_notification(settings, runtime::now_unix_ms()),
+            );
+        }
+        Err(error) => {
+            let selection = ocr_selection_label(&settings.ocr);
+            debug_log::log_warn(format!(
+                "failed to inspect selected OCR model at {context} (selection={selection}): {error}"
+            ));
+            push_app_notification(
+                app_handle,
+                app_notifications_state,
+                ocr_unavailable_notification(settings, runtime::now_unix_ms()),
+            );
+        }
+    }
+}
+
+fn maybe_push_ocr_unavailable_start_warning(
+    app_handle: &tauri::AppHandle,
+    app_notifications_state: &AppNotificationsState,
+    settings: &RecordingSettings,
+) {
+    if !should_warn_ocr_unavailable_at_start(settings) {
+        return;
+    }
+
+    maybe_push_ocr_unavailable_warning(
+        app_handle,
+        app_notifications_state,
+        settings,
+        "recording start",
+    );
+}
+
 pub fn maybe_push_audio_transcription_unavailable_startup_warning(app_handle: &tauri::AppHandle) {
     let settings_state = app_handle.state::<RecordingSettingsState>();
     let settings = current_recording_settings(settings_state.inner());
@@ -265,6 +376,21 @@ pub fn maybe_push_audio_transcription_unavailable_startup_warning(app_handle: &t
     }
 
     maybe_push_audio_transcription_unavailable_warning(
+        app_handle,
+        app_handle.state::<AppNotificationsState>().inner(),
+        &settings,
+        "app startup",
+    );
+}
+
+pub fn maybe_push_ocr_unavailable_startup_warning(app_handle: &tauri::AppHandle) {
+    let settings_state = app_handle.state::<RecordingSettingsState>();
+    let settings = current_recording_settings(settings_state.inner());
+    if !should_warn_ocr_unavailable_at_startup(&settings) {
+        return;
+    }
+
+    maybe_push_ocr_unavailable_warning(
         app_handle,
         app_handle.state::<AppNotificationsState>().inner(),
         &settings,
@@ -295,13 +421,11 @@ fn recover_screen_capture_after_system_wake_once(
     app_handle: &tauri::AppHandle,
 ) -> Result<bool, CaptureErrorResponse> {
     let state = app_handle.state::<NativeCaptureState>();
-    let mut runtime = state
-        .lock()
-        .map_err(|_| CaptureErrorResponse {
-            code: "native_capture_state_poisoned".to_string(),
-            message: "Native capture state is unavailable while recovering after system wake"
-                .to_string(),
-        })?;
+    let mut runtime = state.lock().map_err(|_| CaptureErrorResponse {
+        code: "native_capture_state_poisoned".to_string(),
+        message: "Native capture state is unavailable while recovering after system wake"
+            .to_string(),
+    })?;
 
     let outcome = runtime.recover_after_wake(Some(app_handle));
     let runtime_state = runtime.runtime();
@@ -338,7 +462,9 @@ fn is_recover_after_wake_retryable_error(error: &CaptureErrorResponse) -> bool {
             | "capture_shareable_content_timeout"
             | "capture_shareable_content_unavailable"
             | "capture_display_unavailable"
-    ) || error.message.contains("Failed to find any displays or windows")
+    ) || error
+        .message
+        .contains("Failed to find any displays or windows")
         || error.message.contains("code: -3815")
 }
 
@@ -865,6 +991,60 @@ fn start_native_capture_inner(
         }
     };
 
+    if resolved_request.capture_screen && settings.ocr.enabled {
+        let app_data_dir =
+            app_handle
+                .path()
+                .app_data_dir()
+                .map_err(|error| CaptureErrorResponse {
+                    code: "ocr_model_unavailable".to_string(),
+                    message: format!(
+                        "failed to resolve app data directory for OCR preflight: {error}"
+                    ),
+                })?;
+        match crate::ocr_models::selected_ocr_model_available(&app_data_dir, &settings.ocr) {
+            Ok(true) => {}
+            Ok(false) => {
+                maybe_push_ocr_unavailable_start_warning(
+                    &app_handle,
+                    app_notifications_state.inner(),
+                    &settings,
+                );
+                let error = CaptureErrorResponse {
+                    code: "ocr_model_unavailable".to_string(),
+                    message: format!(
+                        "{} is unavailable. Install or choose an available OCR engine before recording screen capture.",
+                        ocr_selection_label(&settings.ocr)
+                    ),
+                };
+                debug_log::log_warn(format!(
+                    "rejected native capture {origin} start because OCR is unavailable: [{}] {}",
+                    error.code, error.message
+                ));
+                return Err(error);
+            }
+            Err(status_error) => {
+                maybe_push_ocr_unavailable_start_warning(
+                    &app_handle,
+                    app_notifications_state.inner(),
+                    &settings,
+                );
+                let error = CaptureErrorResponse {
+                    code: "ocr_model_unavailable".to_string(),
+                    message: format!(
+                        "failed to verify OCR availability for {}: {status_error}",
+                        ocr_selection_label(&settings.ocr)
+                    ),
+                };
+                debug_log::log_warn(format!(
+                    "rejected native capture {origin} start because OCR availability check failed: [{}] {}",
+                    error.code, error.message
+                ));
+                return Err(error);
+            }
+        }
+    }
+
     let microphone_device_id_for_capture = if resolved_request.capture_microphone {
         let preferences_runtime = microphone_controller_preferences_state
             .lock()
@@ -1235,6 +1415,23 @@ pub fn update_recording_settings(
             "recording save directory changed from '{}' to '{}'; app infrastructure database location will update on next app start",
             previous_save_directory, settings.save_directory
         ));
+    }
+
+    if previous_settings.ocr.enabled && !settings.ocr.enabled {
+        if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
+            match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled()) {
+                Ok(failed_count) => debug_log::log_info(format!(
+                    "marked queued OCR jobs failed because OCR was disabled (count={failed_count})"
+                )),
+                Err(error) => debug_log::log_error(format!(
+                    "failed to mark queued OCR jobs failed after disabling OCR: {error}"
+                )),
+            }
+        } else {
+            debug_log::log_warn(
+                "app infrastructure state unavailable while disabling OCR; queued OCR jobs were not updated",
+            );
+        }
     }
 
     emit_recording_settings_changed(&app_handle, &settings);

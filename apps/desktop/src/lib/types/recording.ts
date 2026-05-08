@@ -55,11 +55,27 @@ export type ScreenResolution =
 export type ResolutionMode = "original" | "preset" | "custom";
 export type ResolutionPreset = Exclude<ScreenResolutionPreset, "original">;
 
+export type OcrProvider = "apple_vision" | "tesseract";
 export type OcrRecognitionMode = "fast" | "accurate";
+export type OcrTesseractPageSegmentationMode =
+	| "auto"
+	| "single_block"
+	| "single_line"
+	| "single_word"
+	| "sparse_text";
+export type OcrTesseractPreprocessMode = "grayscale" | "thresholded";
 
 export interface OcrSettings {
+	enabled: boolean;
+	provider: OcrProvider;
+	modelId: string | null;
+	language: string | null;
 	recognitionMode: OcrRecognitionMode;
 	languageCorrection: boolean;
+	tesseractPageSegmentationMode: OcrTesseractPageSegmentationMode;
+	tesseractPreprocessMode: OcrTesseractPreprocessMode;
+	tesseractUpscaleFactor: number;
+	tesseractCharWhitelist: string | null;
 }
 
 export type AudioTranscriptionProvider =
@@ -148,4 +164,93 @@ export interface AudioTranscriptionModelDownloadProgress {
 	downloadedBytes: number;
 	totalBytes: number | null;
 	message: string | null;
+}
+
+export interface DeletedAudioTranscriptionModel {
+	provider: AudioTranscriptionProvider;
+	modelId: string;
+	displayName: string;
+	installPath: string;
+}
+
+export interface DeleteUnusedAudioTranscriptionModelsResponse {
+	deleted: DeletedAudioTranscriptionModel[];
+	skippedActiveDownloads: DeletedAudioTranscriptionModel[];
+	skippedProcessingJobs: DeletedAudioTranscriptionModel[];
+	retargetedProcessingJobs: number;
+}
+
+export type OcrModelStatusKind =
+	| "installed"
+	| "missing"
+	| "downloading"
+	| "failed"
+	| "os_managed";
+
+export type OcrModelManagement = "app_managed" | "os_managed";
+
+export interface OcrModelStatusResponse {
+	modelsDirectory: string;
+	providers: OcrProviderStatus[];
+}
+
+export interface OcrProviderStatus {
+	provider: OcrProvider;
+	displayName: string;
+	models: OcrModelStatus[];
+}
+
+export interface OcrModelStatus {
+	provider: OcrProvider;
+	modelId: string | null;
+	displayName: string;
+	description: string;
+	management: OcrModelManagement;
+	status: OcrModelStatusKind;
+	available: boolean;
+	installPath: string | null;
+	missingFiles: string[];
+	failureMessage: string | null;
+	licenseLabel: string | null;
+	sourceUrl: string | null;
+	download: OcrModelDownload | null;
+	runtimeMessage: string | null;
+}
+
+export interface OcrModelDownload {
+	url: string;
+	byteSize: number;
+	sha256: string;
+	shape: unknown;
+}
+
+export type OcrModelDownloadStatus =
+	| "starting"
+	| "downloading"
+	| "installing"
+	| "completed"
+	| "failed"
+	| "cancelled";
+
+export interface OcrModelDownloadProgress {
+	provider: OcrProvider;
+	modelId: string;
+	status: OcrModelDownloadStatus;
+	downloadedBytes: number;
+	totalBytes: number | null;
+	message: string | null;
+}
+
+export interface DeletedOcrModel {
+	provider: OcrProvider;
+	modelId: string;
+	displayName: string;
+	installPath: string;
+}
+
+export interface DeleteUnusedOcrModelsResponse {
+	deleted: DeletedOcrModel[];
+	skippedActiveDownloads: DeletedOcrModel[];
+	skippedProcessingJobs: DeletedOcrModel[];
+	retargetedProcessingJobs: number;
 }

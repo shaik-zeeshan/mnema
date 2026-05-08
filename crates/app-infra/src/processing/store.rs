@@ -1,12 +1,14 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
 use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
 
 use super::{
-    Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary, NewFrame, ProcessingJob,
-    ProcessingJobDraft, ProcessingJobStatus, ProcessingResult, ProcessingResultDraft,
-    ProcessingSubject,
+    AudioTranscriptionJobPayload, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary,
+    NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingResult,
+    ProcessingResultDraft, ProcessingSubject, AUDIO_TRANSCRIPTION_PROCESSOR, OCR_PROCESSOR,
 };
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
@@ -32,6 +34,13 @@ pub struct SegmentWorkspaceOcrReference {
     pub frame_id: i64,
     pub job_id: i64,
     pub status: ProcessingJobStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessingModelCleanupLock {
+    pub processor: String,
+    pub lock_token: String,
+    pub acquired_model_keys: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -572,6 +581,146 @@ impl ProcessingStore {
         rows.into_iter().map(map_processing_job).collect()
     }
 
+    pub async fn list_running_jobs_for_processor(
+        &self,
+        processor: &str,
+    ) -> Result<Vec<ProcessingJob>> {
+        let rows = sqlx::query(
+            "SELECT \
+                id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+                created_at, updated_at, started_at, finished_at \
+             FROM processing_jobs \
+             WHERE processor = ?1 AND status = 'running' \
+             ORDER BY id ASC",
+        )
+        .bind(processor)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(map_processing_job).collect()
+    }
+
+    pub async fn list_retargetable_jobs_for_processor(
+        &self,
+        processor: &str,
+    ) -> Result<Vec<ProcessingJob>> {
+        let rows = sqlx::query(
+            "SELECT \
+                id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+                created_at, updated_at, started_at, finished_at \
+             FROM processing_jobs \
+             WHERE processor = ?1 AND status IN ('queued', 'failed') \
+             ORDER BY id ASC",
+        )
+        .bind(processor)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(map_processing_job).collect()
+    }
+
+    pub async fn mark_queued_jobs_failed_for_processor(
+        &self,
+        processor: &str,
+        last_error: &str,
+    ) -> Result<u64> {
+        let update = sqlx::query(
+            "UPDATE processing_jobs \
+             SET status = 'failed', \
+                 last_error = ?2, \
+                 finished_at = CURRENT_TIMESTAMP, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE processor = ?1 AND status = 'queued'",
+        )
+        .bind(processor)
+        .bind(last_error)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(update.rows_affected())
+    }
+
+    pub async fn update_retargetable_job_payload(
+        &self,
+        job_id: i64,
+        payload_json: &str,
+    ) -> Result<Option<ProcessingJob>> {
+        let update = sqlx::query(
+            "UPDATE processing_jobs \
+             SET payload_json = ?2, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status IN ('queued', 'failed')",
+        )
+        .bind(job_id)
+        .bind(payload_json)
+        .execute(&self.pool)
+        .await?;
+
+        if update.rows_affected() == 0 {
+            return Ok(None);
+        }
+
+        self.get_job(job_id).await
+    }
+
+    pub async fn acquire_model_cleanup_locks(
+        &self,
+        processor: &str,
+        model_keys: &BTreeSet<String>,
+        lock_token: &str,
+    ) -> Result<ProcessingModelCleanupLock> {
+        let mut transaction = self.pool.begin().await?;
+        let mut acquired_model_keys = BTreeSet::new();
+
+        for model_key in model_keys {
+            let insert = sqlx::query(
+                "INSERT OR IGNORE INTO processing_model_cleanup_locks \
+                    (processor, model_key, lock_token) \
+                 VALUES (?1, ?2, ?3)",
+            )
+            .bind(processor)
+            .bind(model_key)
+            .bind(lock_token)
+            .execute(&mut *transaction)
+            .await?;
+
+            if insert.rows_affected() > 0 {
+                acquired_model_keys.insert(model_key.clone());
+            }
+        }
+
+        transaction.commit().await?;
+
+        Ok(ProcessingModelCleanupLock {
+            processor: processor.to_string(),
+            lock_token: lock_token.to_string(),
+            acquired_model_keys,
+        })
+    }
+
+    pub async fn release_model_cleanup_locks(
+        &self,
+        lock: &ProcessingModelCleanupLock,
+    ) -> Result<u64> {
+        let delete = sqlx::query(
+            "DELETE FROM processing_model_cleanup_locks \
+             WHERE processor = ?1 AND lock_token = ?2",
+        )
+        .bind(&lock.processor)
+        .bind(&lock.lock_token)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(delete.rows_affected())
+    }
+
+    pub async fn clear_model_cleanup_locks(&self) -> Result<u64> {
+        let delete = sqlx::query("DELETE FROM processing_model_cleanup_locks")
+            .execute(&self.pool)
+            .await?;
+
+        Ok(delete.rows_affected())
+    }
+
     pub async fn claim_next_queued_job(&self) -> Result<Option<ProcessingJob>> {
         self.claim_next_queued_job_matching_processor(None, None)
             .await
@@ -600,29 +749,104 @@ impl ProcessingStore {
     ) -> Result<Option<ProcessingJob>> {
         loop {
             let mut transaction = self.pool.begin().await?;
-            let job_id = match (processor, excluded_processor) {
+            let row = match (processor, excluded_processor) {
                 (Some(processor), _) => sqlx::query(
-                    "SELECT id FROM processing_jobs WHERE status = 'queued' AND processor = ?1 ORDER BY id ASC LIMIT 1",
+                    "SELECT \
+                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
+                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                        pj.finished_at \
+                     FROM processing_jobs AS pj \
+                     WHERE pj.status = 'queued' \
+                       AND pj.processor = ?1 \
+                       AND NOT EXISTS ( \
+                         SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                         WHERE lock.processor = pj.processor \
+                           AND lock.model_key = CASE \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                              AND pj.payload_json IS NOT NULL \
+                              AND json_valid(pj.payload_json) \
+                             THEN CASE \
+                               WHEN json_type(pj.payload_json, '$.provider') = 'text' \
+                                AND json_type(pj.payload_json, '$.modelId') = 'text' \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.provider')), '') IS NOT NULL \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.modelId')), '') IS NOT NULL \
+                               THEN TRIM(json_extract(pj.payload_json, '$.provider')) || '/' || TRIM(json_extract(pj.payload_json, '$.modelId')) \
+                               ELSE NULL \
+                             END \
+                             ELSE NULL \
+                           END \
+                       ) \
+                     ORDER BY pj.id ASC \
+                     LIMIT 1",
                 )
                 .bind(processor)
                 .fetch_optional(&mut *transaction)
-                .await?
-                .map(|row| row.get::<i64, _>("id")),
+                .await?,
                 (None, Some(excluded_processor)) => sqlx::query(
-                    "SELECT id FROM processing_jobs WHERE status = 'queued' AND processor != ?1 ORDER BY id ASC LIMIT 1",
+                    "SELECT \
+                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
+                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                        pj.finished_at \
+                     FROM processing_jobs AS pj \
+                     WHERE pj.status = 'queued' \
+                       AND pj.processor != ?1 \
+                       AND NOT EXISTS ( \
+                         SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                         WHERE lock.processor = pj.processor \
+                           AND lock.model_key = CASE \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                              AND pj.payload_json IS NOT NULL \
+                              AND json_valid(pj.payload_json) \
+                             THEN CASE \
+                               WHEN json_type(pj.payload_json, '$.provider') = 'text' \
+                                AND json_type(pj.payload_json, '$.modelId') = 'text' \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.provider')), '') IS NOT NULL \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.modelId')), '') IS NOT NULL \
+                               THEN TRIM(json_extract(pj.payload_json, '$.provider')) || '/' || TRIM(json_extract(pj.payload_json, '$.modelId')) \
+                               ELSE NULL \
+                             END \
+                             ELSE NULL \
+                           END \
+                       ) \
+                     ORDER BY pj.id ASC \
+                     LIMIT 1",
                 )
                 .bind(excluded_processor)
                 .fetch_optional(&mut *transaction)
-                .await?
-                .map(|row| row.get::<i64, _>("id")),
+                .await?,
                 (None, None) => sqlx::query(
-                    "SELECT id FROM processing_jobs WHERE status = 'queued' ORDER BY id ASC LIMIT 1",
+                    "SELECT \
+                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
+                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                        pj.finished_at \
+                     FROM processing_jobs AS pj \
+                     WHERE pj.status = 'queued' \
+                       AND NOT EXISTS ( \
+                         SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                         WHERE lock.processor = pj.processor \
+                           AND lock.model_key = CASE \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                              AND pj.payload_json IS NOT NULL \
+                              AND json_valid(pj.payload_json) \
+                             THEN CASE \
+                               WHEN json_type(pj.payload_json, '$.provider') = 'text' \
+                                AND json_type(pj.payload_json, '$.modelId') = 'text' \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.provider')), '') IS NOT NULL \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.modelId')), '') IS NOT NULL \
+                               THEN TRIM(json_extract(pj.payload_json, '$.provider')) || '/' || TRIM(json_extract(pj.payload_json, '$.modelId')) \
+                               ELSE NULL \
+                             END \
+                             ELSE NULL \
+                           END \
+                       ) \
+                     ORDER BY pj.id ASC \
+                     LIMIT 1",
                 )
                 .fetch_optional(&mut *transaction)
-                .await?
-                .map(|row| row.get::<i64, _>("id")),
+                .await?,
             };
 
+            let job_id = row.map(map_processing_job).transpose()?.map(|job| job.id);
             let Some(job_id) = job_id else {
                 transaction.commit().await?;
                 return Ok(None);
@@ -659,6 +883,18 @@ impl ProcessingStore {
 
     pub async fn claim_queued_job(&self, job_id: i64) -> Result<Option<ProcessingJob>> {
         let mut transaction = self.pool.begin().await?;
+        let Some(job) = get_processing_job_optional(&mut *transaction, job_id).await? else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        if job.status != ProcessingJobStatus::Queued {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        if processing_job_model_cleanup_locked(&mut transaction, &job).await? {
+            transaction.commit().await?;
+            return Ok(None);
+        }
 
         let update = sqlx::query(
             "UPDATE processing_jobs \
@@ -699,6 +935,14 @@ impl ProcessingStore {
             job.status,
             ProcessingJobStatus::Completed | ProcessingJobStatus::Failed
         ) {
+            return Err(processing_job_invalid_transition(
+                job_id,
+                &job.status,
+                ProcessingJobStatus::Running.as_str(),
+            ));
+        }
+        if processing_job_model_cleanup_locked(&mut transaction, &job).await? {
+            transaction.commit().await?;
             return Err(processing_job_invalid_transition(
                 job_id,
                 &job.status,
@@ -1256,6 +1500,64 @@ fn map_processing_job(row: SqliteRow) -> Result<ProcessingJob> {
         started_at: row.get("started_at"),
         finished_at: row.get("finished_at"),
     })
+}
+
+async fn processing_job_model_cleanup_locked(
+    transaction: &mut Transaction<'_, Sqlite>,
+    job: &ProcessingJob,
+) -> Result<bool> {
+    let model_key = match processing_model_key_for_job(job) {
+        Ok(Some(model_key)) => model_key,
+        Ok(None) | Err(_) => return Ok(false),
+    };
+
+    let row = sqlx::query(
+        "SELECT 1 FROM processing_model_cleanup_locks \
+         WHERE processor = ?1 AND model_key = ?2 \
+         LIMIT 1",
+    )
+    .bind(&job.processor)
+    .bind(model_key)
+    .fetch_optional(&mut **transaction)
+    .await?;
+
+    Ok(row.is_some())
+}
+
+fn processing_model_key_for_job(job: &ProcessingJob) -> Result<Option<String>> {
+    match job.processor.as_str() {
+        OCR_PROCESSOR => ocr_model_key_for_job(job),
+        AUDIO_TRANSCRIPTION_PROCESSOR => audio_transcription_model_key_for_job(job),
+        _ => Ok(None),
+    }
+}
+
+fn model_key(provider: &str, model_id: &str) -> String {
+    format!("{provider}/{model_id}")
+}
+
+fn ocr_model_key_for_job(job: &ProcessingJob) -> Result<Option<String>> {
+    let payload = ocr::FrozenOcrPayload::from_payload_json(job.payload_json.as_deref())
+        .map_err(|error| AppInfraError::OcrEngine(error.to_string()))?;
+    Ok(payload
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+        .map(|model_id| model_key(&payload.provider, model_id)))
+}
+
+fn audio_transcription_model_key_for_job(job: &ProcessingJob) -> Result<Option<String>> {
+    let Some(payload_json) = job.payload_json.as_deref() else {
+        return Ok(None);
+    };
+    let payload: AudioTranscriptionJobPayload = serde_json::from_str(payload_json)?;
+    Ok(payload
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+        .map(|model_id| model_key(&payload.provider, model_id)))
 }
 
 fn map_processing_result(row: SqliteRow) -> Result<ProcessingResult> {

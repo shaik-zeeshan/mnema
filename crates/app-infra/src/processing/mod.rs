@@ -1,7 +1,5 @@
-mod apple_vision;
 mod audio_transcription;
 mod backend;
-mod engine;
 mod frame;
 mod job;
 mod ocr;
@@ -11,7 +9,6 @@ mod store;
 
 pub use audio_transcription::{AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend};
 pub use backend::{ProcessorBackend, ProcessorRegistry};
-pub use engine::{AppleVisionOcrEngine, OcrEngine, OcrOutput, OcrProvider, OcrRequest};
 pub use frame::{Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary, NewFrame};
 pub use job::{
     ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingSubject,
@@ -21,6 +18,6 @@ pub use ocr::OcrProcessorBackend;
 pub use result::{ProcessingResult, ProcessingResultDraft};
 pub use runtime::{ProcessingJobRunOutcome, ProcessingRuntime};
 pub use store::{
-    FocusedFrameWindow, FrameProcessingJob, ProcessingJobCompletion, ProcessingStore,
-    SegmentWorkspaceOcrReference,
+    FocusedFrameWindow, FrameProcessingJob, ProcessingJobCompletion, ProcessingModelCleanupLock,
+    ProcessingStore, SegmentWorkspaceOcrReference,
 };

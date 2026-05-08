@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
-use capture_types::{AudioTranscriptionSettings, OcrRecognitionMode, OcrSettings};
+use capture_types::{AudioTranscriptionSettings, OcrProvider, OcrSettings};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime::JoinHandle, path::BaseDirectory, Manager};
@@ -141,17 +141,6 @@ impl BackgroundWorkersControl {
 struct FrameIndexSidecarConversionResult {
     converted_count: u64,
     skipped_count: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct OcrJobPayload {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    language: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recognition_mode: Option<OcrRecognitionMode>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    language_correction: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1920,18 +1909,132 @@ fn run_generated_frame_preview_cache_startup_pass(app_handle: &tauri::AppHandle)
     }
 }
 
+fn normalized_ocr_language_for_settings(settings: &OcrSettings) -> Option<String> {
+    let language = settings
+        .language
+        .as_deref()
+        .map(str::trim)
+        .filter(|language| !language.is_empty());
+
+    match settings.provider {
+        OcrProvider::AppleVision => language.map(ToOwned::to_owned),
+        OcrProvider::Tesseract => Some(
+            language
+                .unwrap_or(ocr::DEFAULT_TESSERACT_LANGUAGE)
+                .to_string(),
+        ),
+        OcrProvider::PaddleOcr => Some(
+            language
+                .unwrap_or(ocr::DEFAULT_PADDLE_OCR_LANGUAGE)
+                .to_string(),
+        ),
+    }
+}
+
+fn normalized_ocr_model_id_for_settings(settings: &OcrSettings) -> Option<String> {
+    let model_id = settings
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty());
+
+    match settings.provider {
+        OcrProvider::AppleVision => None,
+        OcrProvider::Tesseract => Some(
+            model_id
+                .unwrap_or(ocr::DEFAULT_TESSERACT_MODEL_ID)
+                .to_string(),
+        ),
+        OcrProvider::PaddleOcr => Some(
+            model_id
+                .unwrap_or(ocr::DEFAULT_PADDLE_OCR_MODEL_ID)
+                .to_string(),
+        ),
+    }
+}
+
+fn provider_id_for_ocr_settings(provider: OcrProvider) -> &'static str {
+    match provider {
+        OcrProvider::AppleVision => ocr::APPLE_VISION_PROVIDER_ID,
+        OcrProvider::Tesseract => ocr::TESSERACT_PROVIDER_ID,
+        OcrProvider::PaddleOcr => ocr::PADDLE_OCR_PROVIDER_ID,
+    }
+}
+
 fn merged_ocr_payload_json(
     payload_json: Option<&str>,
     ocr_settings: &OcrSettings,
 ) -> Result<Option<String>, String> {
-    let mut payload = match payload_json {
-        Some(payload_json) => serde_json::from_str::<OcrJobPayload>(payload_json)
-            .map_err(|error| format!("failed to parse OCR payload JSON: {error}"))?,
-        None => OcrJobPayload::default(),
-    };
+    let mut payload = ocr::FrozenOcrPayload::from_payload_json(payload_json)
+        .map_err(|error| format!("failed to parse OCR payload JSON: {error}"))?;
 
-    payload.recognition_mode = Some(ocr_settings.recognition_mode.clone());
-    payload.language_correction = Some(ocr_settings.language_correction);
+    payload.provider = provider_id_for_ocr_settings(ocr_settings.provider).to_string();
+    payload.model_id = normalized_ocr_model_id_for_settings(ocr_settings);
+    payload.language = normalized_ocr_language_for_settings(ocr_settings);
+
+    match ocr_settings.provider {
+        OcrProvider::AppleVision => {
+            payload.options.insert(
+                "recognitionMode".to_string(),
+                serde_json::to_value(ocr_settings.recognition_mode.clone()).map_err(|error| {
+                    format!("failed to serialize OCR recognition mode: {error}")
+                })?,
+            );
+            payload.options.insert(
+                "languageCorrection".to_string(),
+                serde_json::Value::Bool(ocr_settings.language_correction),
+            );
+            payload.options.remove("pageSegmentationMode");
+            payload.options.remove("preprocessMode");
+            payload.options.remove("upscaleFactor");
+            payload.options.remove("charWhitelist");
+        }
+        OcrProvider::Tesseract => {
+            payload.options.remove("recognitionMode");
+            payload.options.remove("languageCorrection");
+            payload.options.insert(
+                "pageSegmentationMode".to_string(),
+                serde_json::to_value(ocr_settings.tesseract_page_segmentation_mode).map_err(
+                    |error| {
+                        format!("failed to serialize Tesseract page segmentation mode: {error}")
+                    },
+                )?,
+            );
+            payload.options.insert(
+                "preprocessMode".to_string(),
+                serde_json::to_value(ocr_settings.tesseract_preprocess_mode).map_err(|error| {
+                    format!("failed to serialize Tesseract preprocess mode: {error}")
+                })?,
+            );
+            payload.options.insert(
+                "upscaleFactor".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(
+                    ocr_settings.tesseract_upscale_factor,
+                )),
+            );
+            if let Some(whitelist) = ocr_settings
+                .tesseract_char_whitelist
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                payload.options.insert(
+                    "charWhitelist".to_string(),
+                    serde_json::Value::String(whitelist.to_string()),
+                );
+            } else {
+                payload.options.remove("charWhitelist");
+            }
+        }
+        OcrProvider::PaddleOcr => {
+            payload.options.remove("recognitionMode");
+            payload.options.remove("languageCorrection");
+            payload.options.remove("pageSegmentationMode");
+            payload.options.remove("preprocessMode");
+            payload.options.remove("upscaleFactor");
+            payload.options.remove("charWhitelist");
+        }
+    }
 
     serde_json::to_string(&payload)
         .map(Some)
@@ -1950,6 +2053,15 @@ fn ocr_payload_json_from_settings(
         .clone();
 
     merged_ocr_payload_json(payload_json, &ocr_settings)
+}
+
+fn ocr_enabled_for_settings(settings: &crate::native_capture::RecordingSettingsState) -> bool {
+    settings
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .ocr
+        .enabled
 }
 
 pub async fn persist_screen_frame_artifact(
@@ -1990,6 +2102,10 @@ pub async fn persist_screen_frame_artifact(
             frame.with_equivalence(::app_infra::FrameEquivalence::quarantined(error))
         }
     };
+
+    if !ocr_enabled_for_settings(settings) {
+        return infra.capture_frame_without_ocr(&frame).await;
+    }
 
     let payload_json = ocr_payload_json_from_settings(settings, None)
         .map_err(::app_infra::AppInfraError::OcrEngine)?;
@@ -2044,12 +2160,20 @@ fn desktop_processing_registry(
     let app_data_dir = app_handle.path().app_data_dir().map_err(|error| {
         format!("failed to resolve app data directory for processing registry: {error}")
     })?;
-    let models_dir = audio_transcription::audio_transcription_models_dir(app_data_dir);
+    let models_dir = audio_transcription::audio_transcription_models_dir(&app_data_dir);
+
+    let ocr_models_dir = ocr::ocr_models_dir(&app_data_dir);
 
     Ok(::app_infra::ProcessorRegistry::new()
-        .register(::app_infra::OcrProcessorBackend::new(
-            ::app_infra::AppleVisionOcrEngine::new(),
-        ))
+        .register(::app_infra::OcrProcessorBackend::from_provider_arcs([
+            Arc::new(::app_infra::AppleVisionProvider::new()) as Arc<dyn ocr::OcrProvider>,
+            Arc::new(::app_infra::TesseractProvider::with_models_dir(
+                ocr_models_dir.clone(),
+            )),
+            Arc::new(::app_infra::PaddleOcrProvider::with_models_dir(
+                ocr_models_dir,
+            )),
+        ]))
         .register(
             ::app_infra::AudioTranscriptionProcessorBackend::from_provider_arcs([
                 Arc::new(
@@ -2143,6 +2267,25 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
     run_generated_frame_preview_cache_startup_pass(&app_handle);
     run_frame_index_sidecar_conversion_startup_pass(&resolved_base_dir.base_dir);
     run_hidden_segment_workspace_repair_startup_pass(&infra, &resolved_base_dir.base_dir);
+    if let Ok(settings) = app_handle
+        .state::<crate::native_capture::RecordingSettingsState>()
+        .lock()
+    {
+        if !settings.settings.ocr.enabled {
+            match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled()) {
+                Ok(failed_count) => crate::native_capture::debug_log::log_info(format!(
+                    "startup marked queued OCR jobs failed because OCR is disabled (count={failed_count})"
+                )),
+                Err(error) => crate::native_capture::debug_log::log_error(format!(
+                    "startup failed to mark queued OCR jobs failed while OCR is disabled: {error}"
+                )),
+            }
+        }
+    } else {
+        crate::native_capture::debug_log::log_error(
+            "failed to read recording settings during OCR disabled startup reconciliation",
+        );
+    }
     run_audio_transcription_backfill_startup_pass(&infra, &app_handle);
 
     spawn_processing_worker(
@@ -2748,6 +2891,11 @@ async fn debug_insert_frame_and_enqueue_processing_job_inner(
 ) -> ::app_infra::Result<FrameProcessingJobDto> {
     let (frame, processor, payload_json) = request.into_parts();
     let payload_json = if processor == ::app_infra::OCR_PROCESSOR {
+        if settings.is_some_and(|settings| !ocr_enabled_for_settings(settings)) {
+            return Err(::app_infra::AppInfraError::OcrEngine(
+                "OCR is disabled".to_string(),
+            ));
+        }
         settings
             .map(|settings| ocr_payload_json_from_settings(settings, payload_json.as_deref()))
             .transpose()
@@ -2768,6 +2916,12 @@ async fn reprocess_captured_frame_ocr_inner(
     request: ReprocessCapturedFrameOcrRequest,
     settings: &crate::native_capture::RecordingSettingsState,
 ) -> ::app_infra::Result<CapturedFrameReprocessingResultDto> {
+    if !ocr_enabled_for_settings(settings) {
+        return Err(::app_infra::AppInfraError::OcrEngine(
+            "OCR is disabled".to_string(),
+        ));
+    }
+
     let payload_json = ocr_payload_json_from_settings(settings, request.payload_json.as_deref())
         .map_err(::app_infra::AppInfraError::OcrEngine)?;
 

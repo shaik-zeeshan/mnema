@@ -75,6 +75,7 @@ enum PipelineJobMode<'a> {
     AdmitOcrJob {
         ocr_payload_json: Option<&'a str>,
     },
+    SkipOcrJob,
     EnqueueProcessorJob {
         processor: &'a str,
         payload_json: Option<&'a str>,
@@ -100,6 +101,25 @@ impl CapturedFramePipeline {
 
         let result = self
             .capture_frame_in_transaction(&mut transaction, frame, ocr_payload_json)
+            .await?;
+
+        transaction.commit().await?;
+
+        Ok(result)
+    }
+
+    pub async fn capture_frame_without_ocr(
+        &self,
+        frame: &NewFrame,
+    ) -> Result<CapturedFramePipelineResult> {
+        let mut transaction = self.processing.begin_transaction().await?;
+
+        let result = self
+            .capture_frame_with_mode_in_transaction(
+                &mut transaction,
+                frame,
+                PipelineJobMode::SkipOcrJob,
+            )
             .await?;
 
         transaction.commit().await?;
@@ -248,6 +268,7 @@ impl CapturedFramePipeline {
         job_mode: PipelineJobMode<'_>,
     ) -> Result<Option<ProcessingJob>> {
         match job_mode {
+            PipelineJobMode::SkipOcrJob => Ok(None),
             PipelineJobMode::AdmitOcrJob { ocr_payload_json } => {
                 let equivalence_scope = CapturedFrameEquivalenceScope::from_frame(frame);
                 if self

@@ -14,11 +14,19 @@
     CaptureSupport,
     GeneralAppLogStatus,
     NativeCaptureDebugLogStatus,
+    OcrModelDownloadProgress,
+    OcrModelStatus,
+    OcrModelStatusResponse,
+    OcrProvider,
     OcrRecognitionMode,
+    OcrTesseractPageSegmentationMode,
+    OcrTesseractPreprocessMode,
     RecordingSettings,
     AudioTranscriptionModelDownloadProgress,
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
+    DeleteUnusedAudioTranscriptionModelsResponse,
+    DeleteUnusedOcrModelsResponse,
     AudioTranscriptionProvider,
     AudioTranscriptionMemoryMode,
     AppleSpeechOnDeviceAvailabilityStatus,
@@ -35,6 +43,8 @@
 
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
+  const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
+  const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
 
   // ─── State ────────────────────────────────────────────────────────────────
 
@@ -94,9 +104,31 @@
   // runtime in `$lib/theme.svelte` and is persisted via recording settings.
   let draftAppearance = $state<AppearanceSetting>("system");
 
-  // OCR drafts
+  // OCR drafts/status
+  let draftOcrEnabled = $state(true);
+  let draftOcrProvider = $state<OcrProvider>("apple_vision");
+  let draftOcrModelId = $state<string | null>(null);
+  let draftOcrLanguage = $state("");
   let draftOcrRecognitionMode = $state<OcrRecognitionMode>("fast");
   let draftOcrLanguageCorrection = $state(false);
+  let draftOcrTesseractPageSegmentationMode = $state<OcrTesseractPageSegmentationMode>("single_block");
+  let draftOcrTesseractPreprocessMode = $state<OcrTesseractPreprocessMode>("grayscale");
+  let draftOcrTesseractUpscaleFactor = $state(1);
+  let draftOcrTesseractCharWhitelist = $state("");
+  let ocrModelStatus = $state<OcrModelStatusResponse | null>(null);
+  let loadingOcrModelStatus = $state(false);
+  let ocrModelError = $state<string | null>(null);
+  let ocrDownloadProgress = $state<OcrModelDownloadProgress | null>(null);
+  let startingOcrDownload = $state(false);
+  let cancellingOcrDownload = $state(false);
+  let ocrDownloadError = $state<string | null>(null);
+  let deletingUnusedOcrModels = $state(false);
+  let confirmingDeleteUnusedOcrModels = $state(false);
+  let deleteUnusedOcrModelsMessage = $state<string | null>(null);
+  let deletedUnusedOcrModelLabels = $state<string[]>([]);
+  let skippedUnusedOcrModelLabels = $state<string[]>([]);
+  let skippedOcrProcessingJobModelLabels = $state<string[]>([]);
+  let deleteUnusedOcrModelsError = $state<string | null>(null);
 
   // Transcription drafts/status
   let draftTranscriptionEnabled = $state(true);
@@ -113,6 +145,13 @@
   let startingTranscriptionDownload = $state(false);
   let cancellingTranscriptionDownload = $state(false);
   let transcriptionDownloadError = $state<string | null>(null);
+  let deletingUnusedTranscriptionModels = $state(false);
+  let confirmingDeleteUnusedTranscriptionModels = $state(false);
+  let deleteUnusedTranscriptionModelsMessage = $state<string | null>(null);
+  let deletedUnusedTranscriptionModelLabels = $state<string[]>([]);
+  let skippedUnusedTranscriptionModelLabels = $state<string[]>([]);
+  let skippedTranscriptionProcessingJobModelLabels = $state<string[]>([]);
+  let deleteUnusedTranscriptionModelsError = $state<string | null>(null);
   let requestingAppleSpeechPermission = $state(false);
   let appleSpeechPermissionError = $state<string | null>(null);
 
@@ -308,8 +347,18 @@
     draftFollowTimelineLive = s.followTimelineLive ?? false;
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
     draftAppearance = s.appearance ?? "system";
+    draftOcrEnabled = s.ocr?.enabled ?? true;
+    const loadedOcrProvider = s.ocr?.provider;
+    const loadedOcrProviderSelectable = isSelectableOcrProvider(loadedOcrProvider);
+    draftOcrProvider = loadedOcrProviderSelectable ? loadedOcrProvider : "apple_vision";
+    draftOcrModelId = loadedOcrProviderSelectable ? (s.ocr?.modelId ?? defaultOcrModelIdForProvider(draftOcrProvider)) : defaultOcrModelIdForProvider(draftOcrProvider);
+    draftOcrLanguage = loadedOcrProviderSelectable ? (s.ocr?.language ?? defaultOcrLanguageForProvider(draftOcrProvider) ?? "") : defaultOcrLanguageForProvider(draftOcrProvider) ?? "";
     draftOcrRecognitionMode = s.ocr?.recognitionMode ?? "fast";
     draftOcrLanguageCorrection = s.ocr?.languageCorrection ?? false;
+    draftOcrTesseractPageSegmentationMode = s.ocr?.tesseractPageSegmentationMode ?? "single_block";
+    draftOcrTesseractPreprocessMode = s.ocr?.tesseractPreprocessMode ?? "grayscale";
+    draftOcrTesseractUpscaleFactor = s.ocr?.tesseractUpscaleFactor ?? 1;
+    draftOcrTesseractCharWhitelist = s.ocr?.tesseractCharWhitelist ?? "";
     draftTranscriptionEnabled = s.transcription?.enabled ?? true;
     draftTranscriptionProvider = s.transcription?.provider ?? "local_whisper";
     draftTranscriptionModelId = s.transcription?.modelId ?? (draftTranscriptionProvider === "apple_speech_on_device" ? null : "base");
@@ -383,8 +432,16 @@
       appearance: draftAppearance,
       developerOptionsEnabled: draftDeveloperOptionsEnabled,
       ocr: {
+        enabled: draftOcrEnabled,
+        provider: draftOcrProvider,
+        modelId: draftOcrModelId,
+        language: draftOcrLanguage.trim() || null,
         recognitionMode: draftOcrRecognitionMode,
         languageCorrection: draftOcrLanguageCorrection,
+        tesseractPageSegmentationMode: draftOcrTesseractPageSegmentationMode,
+        tesseractPreprocessMode: draftOcrTesseractPreprocessMode,
+        tesseractUpscaleFactor: Math.max(1, Math.min(4, Math.trunc(Number(draftOcrTesseractUpscaleFactor) || 1))),
+        tesseractCharWhitelist: draftOcrTesseractCharWhitelist.trim() || null,
       },
       transcription: {
         enabled: draftTranscriptionEnabled,
@@ -537,6 +594,91 @@
     }
   }
 
+  async function loadOcrModelStatus() {
+    loadingOcrModelStatus = true;
+    ocrModelError = null;
+    try {
+      ocrModelStatus = await invoke<OcrModelStatusResponse>("get_ocr_model_status");
+    } catch (err) {
+      ocrModelError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      loadingOcrModelStatus = false;
+    }
+  }
+
+  async function startSelectedOcrModelDownload() {
+    if (!selectedOcrModel?.modelId) return;
+    startingOcrDownload = true;
+    ocrDownloadError = null;
+    try {
+      ocrDownloadProgress = await invoke<OcrModelDownloadProgress>("start_ocr_model_download", {
+        request: {
+          provider: selectedOcrModel.provider,
+          modelId: selectedOcrModel.modelId,
+        },
+      });
+    } catch (err) {
+      ocrDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      startingOcrDownload = false;
+    }
+  }
+
+  async function cancelSelectedOcrModelDownload() {
+    cancellingOcrDownload = true;
+    ocrDownloadError = null;
+    try {
+      await invoke("cancel_ocr_model_download");
+    } catch (err) {
+      ocrDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      cancellingOcrDownload = false;
+    }
+  }
+
+  async function handleOcrDownloadProgress(progress: OcrModelDownloadProgress) {
+    ocrDownloadProgress = progress;
+    if (["completed", "failed", "cancelled"].includes(progress.status)) {
+      await loadOcrModelStatus();
+    }
+  }
+
+  function requestDeleteUnusedOcrModels() {
+    confirmingDeleteUnusedOcrModels = true;
+    deleteUnusedOcrModelsMessage = null;
+    deleteUnusedOcrModelsError = null;
+    deletedUnusedOcrModelLabels = [];
+    skippedUnusedOcrModelLabels = [];
+  }
+
+  async function deleteUnusedOcrModels() {
+    deletingUnusedOcrModels = true;
+    deleteUnusedOcrModelsMessage = null;
+    deletedUnusedOcrModelLabels = [];
+    skippedUnusedOcrModelLabels = [];
+    skippedOcrProcessingJobModelLabels = [];
+    deleteUnusedOcrModelsError = null;
+    try {
+      const result = await invoke<DeleteUnusedOcrModelsResponse>("delete_unused_ocr_models");
+      const skipped = result.skippedActiveDownloads.length + result.skippedProcessingJobs.length;
+      deletedUnusedOcrModelLabels = result.deleted.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      skippedUnusedOcrModelLabels = result.skippedActiveDownloads.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      skippedOcrProcessingJobModelLabels = result.skippedProcessingJobs.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      deleteUnusedOcrModelsMessage =
+        result.deleted.length === 0
+          ? skipped > 0
+            ? `No unused OCR models deleted. ${skipped} running model${skipped === 1 ? "" : "s"} skipped.${result.retargetedProcessingJobs > 0 ? ` Retargeted ${result.retargetedProcessingJobs} queued/failed OCR job${result.retargetedProcessingJobs === 1 ? "" : "s"}.` : ""}`
+            : "No unused OCR models found."
+          : `Deleted ${result.deleted.length} unused OCR model${result.deleted.length === 1 ? "" : "s"}.${result.retargetedProcessingJobs > 0 ? ` Retargeted ${result.retargetedProcessingJobs} queued/failed OCR job${result.retargetedProcessingJobs === 1 ? "" : "s"}.` : ""}`;
+      await loadOcrModelStatus();
+    } catch (err) {
+      deleteUnusedOcrModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      deletingUnusedOcrModels = false;
+      confirmingDeleteUnusedOcrModels = false;
+    }
+  }
+
   async function loadTranscriptionModelStatus() {
     loadingTranscriptionModelStatus = true;
     transcriptionModelError = null;
@@ -610,6 +752,44 @@
     transcriptionDownloadProgress = progress;
     if (["completed", "failed", "cancelled"].includes(progress.status)) {
       await loadTranscriptionModelStatus();
+    }
+  }
+
+  function requestDeleteUnusedTranscriptionModels() {
+    confirmingDeleteUnusedTranscriptionModels = true;
+    deleteUnusedTranscriptionModelsMessage = null;
+    deleteUnusedTranscriptionModelsError = null;
+    deletedUnusedTranscriptionModelLabels = [];
+    skippedUnusedTranscriptionModelLabels = [];
+  }
+
+  async function deleteUnusedTranscriptionModels() {
+    deletingUnusedTranscriptionModels = true;
+    deleteUnusedTranscriptionModelsMessage = null;
+    deletedUnusedTranscriptionModelLabels = [];
+    skippedUnusedTranscriptionModelLabels = [];
+    skippedTranscriptionProcessingJobModelLabels = [];
+    deleteUnusedTranscriptionModelsError = null;
+    try {
+      const result = await invoke<DeleteUnusedAudioTranscriptionModelsResponse>(
+        "delete_unused_audio_transcription_models"
+      );
+      const skipped = result.skippedActiveDownloads.length + result.skippedProcessingJobs.length;
+      deletedUnusedTranscriptionModelLabels = result.deleted.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      skippedUnusedTranscriptionModelLabels = result.skippedActiveDownloads.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      skippedTranscriptionProcessingJobModelLabels = result.skippedProcessingJobs.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      deleteUnusedTranscriptionModelsMessage =
+        result.deleted.length === 0
+          ? skipped > 0
+            ? `No unused transcription models deleted. ${skipped} running model${skipped === 1 ? "" : "s"} skipped.${result.retargetedProcessingJobs > 0 ? ` Retargeted ${result.retargetedProcessingJobs} queued/failed transcription job${result.retargetedProcessingJobs === 1 ? "" : "s"}.` : ""}`
+            : "No unused transcription models found."
+          : `Deleted ${result.deleted.length} unused transcription model${result.deleted.length === 1 ? "" : "s"}.${result.retargetedProcessingJobs > 0 ? ` Retargeted ${result.retargetedProcessingJobs} queued/failed transcription job${result.retargetedProcessingJobs === 1 ? "" : "s"}.` : ""}`;
+      await loadTranscriptionModelStatus();
+    } catch (err) {
+      deleteUnusedTranscriptionModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      deletingUnusedTranscriptionModels = false;
+      confirmingDeleteUnusedTranscriptionModels = false;
     }
   }
 
@@ -836,6 +1016,54 @@
     }))
   );
 
+  const ocrProviderOptions = $derived(
+    (ocrModelStatus?.providers ?? [])
+      .filter((provider) => isSelectableOcrProvider(provider.provider))
+      .map((provider) => ({
+        value: provider.provider,
+        label: provider.displayName,
+        description: provider.models.some((model) => model.available)
+          ? "Available now"
+          : "Unavailable or missing",
+      }))
+  );
+
+  const selectedOcrProviderStatus = $derived(
+    ocrModelStatus?.providers.find((provider) => provider.provider === draftOcrProvider) ?? null
+  );
+
+  const selectedOcrModels = $derived(selectedOcrProviderStatus?.models ?? []);
+
+  const ocrModelOptions = $derived(
+    selectedOcrModels.map((model) => ({
+      value: model.modelId ?? "__os_managed__",
+      label: `${model.displayName} · ${ocrStatusLabel(model)}`,
+    }))
+  );
+
+  const selectedOcrModel = $derived(
+    selectedOcrModels.find((model) => model.modelId === draftOcrModelId) ?? selectedOcrModels[0] ?? null
+  );
+
+  const selectedOcrDownloadProgress = $derived(
+    ocrDownloadProgress
+      && ocrDownloadProgress.provider === draftOcrProvider
+      && ocrDownloadProgress.modelId === draftOcrModelId
+      ? ocrDownloadProgress
+      : null
+  );
+
+  const selectedOcrDownloadRunning = $derived(
+    selectedOcrDownloadProgress !== null
+      && ["starting", "downloading", "installing"].includes(selectedOcrDownloadProgress.status)
+  );
+
+  const selectedOcrDownloadPercent = $derived((() => {
+    const progress = selectedOcrDownloadProgress;
+    if (!progress?.totalBytes || progress.totalBytes <= 0) return null;
+    return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
+  })());
+
   const transcriptionProviderOptions = $derived(
     (transcriptionModelStatus?.providers ?? []).map((provider) => ({
       value: provider.provider,
@@ -943,6 +1171,48 @@
     }
   }
 
+  function ocrStatusLabel(model: OcrModelStatus): string {
+    if (model.available) return "Available";
+    if (model.status === "os_managed") return "OS managed";
+    if (model.status === "installed") return "Installed";
+    if (model.status === "downloading") return "Downloading";
+    if (model.status === "failed") return "Failed";
+    return "Missing";
+  }
+
+  function isSelectableOcrProvider(value: string | null | undefined): value is OcrProvider {
+    return SELECTABLE_OCR_PROVIDERS.includes(value as OcrProvider);
+  }
+
+  function defaultOcrModelIdForProvider(provider: OcrProvider): string | null {
+    if (provider === "tesseract") return "tesseract-5.5.2";
+    return null;
+  }
+
+  function defaultOcrLanguageForProvider(provider: OcrProvider): string | null {
+    if (provider === "tesseract") return "eng";
+    return null;
+  }
+
+  function preferredOcrModelIdForProvider(provider: OcrProvider): string | null {
+    const providerStatus = ocrModelStatus?.providers.find((status) => status.provider === provider);
+    const defaultModelId = defaultOcrModelIdForProvider(provider);
+    if (!providerStatus) return defaultModelId;
+    const defaultModel = providerStatus.models.find((model) => model.modelId === defaultModelId);
+    return defaultModel?.modelId ?? providerStatus.models[0]?.modelId ?? defaultModelId;
+  }
+
+  function chooseOcrProvider(provider: string) {
+    if (!isSelectableOcrProvider(provider)) return;
+    draftOcrProvider = provider;
+    draftOcrModelId = preferredOcrModelIdForProvider(draftOcrProvider);
+    draftOcrLanguage = defaultOcrLanguageForProvider(draftOcrProvider) ?? "";
+  }
+
+  function chooseOcrModel(value: string) {
+    draftOcrModelId = value === "__os_managed__" ? null : value;
+  }
+
   function formatBytes(value: number): string {
     if (!Number.isFinite(value) || value <= 0) return "unknown size";
     const units = ["B", "KB", "MB", "GB"];
@@ -984,6 +1254,7 @@
     loadCaptureSupport();
     loadRecordingSettings();
     loadMicState();
+    loadOcrModelStatus();
     loadTranscriptionModelStatus();
     loadDebugLogStatus();
     loadGeneralLogStatus();
@@ -992,6 +1263,7 @@
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
     let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let unlistenOpenSettingsTab: (() => void) | undefined;
+    let unlistenOcrDownloadProgress: (() => void) | undefined;
     let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
     let destroyed = false;
 
@@ -1033,6 +1305,16 @@
       else unlistenOpenSettingsTab = fn;
     });
 
+    listen<OcrModelDownloadProgress>(
+      OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
+      (event) => {
+        void handleOcrDownloadProgress(event.payload);
+      }
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenOcrDownloadProgress = fn;
+    });
+
     listen<AudioTranscriptionModelDownloadProgress>(
       AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
       (event) => {
@@ -1049,6 +1331,7 @@
       unlistenAutoDisconnectFailure?.();
       unlistenRecordingSettingsChanged?.();
       unlistenOpenSettingsTab?.();
+      unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
     };
   });
@@ -1760,57 +2043,269 @@
 
   {#if activeTab === "ocr"}
     <div role="tabpanel" id="settings-panel-ocr" aria-labelledby="settings-tab-ocr" tabindex="0">
-    <!-- ── Card: OCR & Cache ─────────────────────── -->
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
           <span class="card__index">06</span>
           <div>
             <h2 class="card__title">OCR &amp; Previews</h2>
-            <p class="card__subtitle">Recognition behavior and preview-cache lifetime.</p>
+            <p class="card__subtitle">Choose the OCR engine, inspect model availability, and tune preview caching.</p>
           </div>
         </div>
+        <button class="btn btn--ghost btn--sm" onclick={loadOcrModelStatus} disabled={loadingOcrModelStatus}>
+          {loadingOcrModelStatus ? "Checking" : "Refresh"}
+        </button>
       </div>
 
     <div class="settings-group">
-      <span class="group-label">OCR</span>
+      <span class="group-label">OCR engine</span>
+      <Switch
+        bind:checked={draftOcrEnabled}
+        label="Enable OCR"
+        description="Automatically queue OCR for captured screen frames when the selected engine is available"
+      />
+      <div class="settings-divider"></div>
       <RadioGroup
-        bind:value={draftOcrRecognitionMode}
-        label="Recognition Mode"
-        options={[
-          {
-            value: "fast",
-            label: "Fast",
-            description: "Lower CPU usage and smoother background OCR; recommended for continuous capture.",
-          },
-          {
-            value: "accurate",
-            label: "Accurate",
-            description: "Higher OCR accuracy at the cost of more CPU usage and heavier processing.",
-          },
+        value={draftOcrProvider}
+        onValueChange={chooseOcrProvider}
+        disabled={!draftOcrEnabled}
+        label="Provider"
+        options={ocrProviderOptions.length > 0 ? ocrProviderOptions : [
+          { value: "apple_vision", label: "Apple Vision", description: "Model status is loading" },
+          { value: "tesseract", label: "Tesseract", description: "Model status is loading" },
         ]}
       />
       <div class="settings-divider"></div>
-      <Switch
-        bind:checked={draftOcrLanguageCorrection}
-        label="Language correction"
-        description="Let Apple Vision spend extra work correcting recognized text using language models"
+      <SelectMenu
+        value={draftOcrModelId ?? "__os_managed__"}
+        onValueChange={chooseOcrModel}
+        disabled={!draftOcrEnabled}
+        label="Model"
+        options={ocrModelOptions.length > 0 ? ocrModelOptions : [
+          { value: draftOcrModelId ?? "__os_managed__", label: "Loading model options" },
+        ]}
       />
+      {#if draftOcrProvider === "tesseract"}
+        <label class="field-label" for="ocr-language">Language</label>
+        <input
+          id="ocr-language"
+          class="text-input"
+          bind:value={draftOcrLanguage}
+          disabled={!draftOcrEnabled}
+          placeholder="eng"
+        />
+      {/if}
+      {#if draftOcrProvider === "apple_vision"}
+        <div class="settings-divider"></div>
+        <RadioGroup
+          bind:value={draftOcrRecognitionMode}
+          disabled={!draftOcrEnabled}
+          label="Recognition mode"
+          options={[
+            { value: "fast", label: "Fast", description: "Lower CPU usage; default for continuous capture." },
+            { value: "accurate", label: "Accurate", description: "Higher OCR cost with better Apple Vision accuracy." },
+          ]}
+        />
+        <div class="settings-divider"></div>
+        <Switch
+          bind:checked={draftOcrLanguageCorrection}
+          disabled={!draftOcrEnabled}
+          label="Language correction"
+          description="Let Apple Vision spend extra work correcting recognized text using language models"
+        />
+      {:else if draftOcrProvider === "tesseract"}
+        <div class="settings-divider"></div>
+        <SelectMenu
+          value={draftOcrTesseractPageSegmentationMode}
+          onValueChange={(value) => { draftOcrTesseractPageSegmentationMode = value as OcrTesseractPageSegmentationMode; }}
+          disabled={!draftOcrEnabled}
+          label="Page segmentation"
+          options={[
+            { value: "auto", label: "Auto" },
+            { value: "single_block", label: "Single block" },
+            { value: "single_line", label: "Single line" },
+            { value: "single_word", label: "Single word" },
+            { value: "sparse_text", label: "Sparse text" },
+          ]}
+        />
+        <p class="group-hint">Use Auto for mixed layouts, Single block for paragraph regions, Single line for titles/labels, Single word for isolated tokens, and Sparse text for screenshots with scattered text.</p>
+        <div class="settings-divider"></div>
+        <SelectMenu
+          value={draftOcrTesseractPreprocessMode}
+          onValueChange={(value) => { draftOcrTesseractPreprocessMode = value as OcrTesseractPreprocessMode; }}
+          disabled={!draftOcrEnabled}
+          label="Image preprocessing"
+          options={[
+            { value: "grayscale", label: "Grayscale" },
+            { value: "thresholded", label: "Thresholded" },
+          ]}
+        />
+        <p class="group-hint">Grayscale usually works best for clean UI text. Thresholded black/white can help when edges are muddy or contrast is weak.</p>
+        <div class="settings-divider"></div>
+        <SelectMenu
+          value={String(draftOcrTesseractUpscaleFactor)}
+          onValueChange={(value) => { draftOcrTesseractUpscaleFactor = parseInt(value, 10) || 1; }}
+          disabled={!draftOcrEnabled}
+          label="Upscale before OCR"
+          options={[
+            { value: "1", label: "1×" },
+            { value: "2", label: "2×" },
+            { value: "3", label: "3×" },
+            { value: "4", label: "4×" },
+          ]}
+        />
+        <p class="group-hint">Tesseract works best around 300 DPI. For tiny screenshots, 2× upscaling is a good first step before trying 3× or 4×.</p>
+        <div class="settings-divider"></div>
+        <label class="field-label" for="ocr-tesseract-whitelist">Character whitelist</label>
+        <input
+          id="ocr-tesseract-whitelist"
+          class="text-input"
+          bind:value={draftOcrTesseractCharWhitelist}
+          disabled={!draftOcrEnabled}
+          placeholder="Optional, e.g. ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+        />
+        <p class="group-hint">
+          Tesseract works best with dark, high-contrast text on a light background. For tiny screenshots, try 2× upscaling first; if edges are muddy, try thresholded preprocessing or a narrow whitelist.
+        </p>
+      {/if}
       <p class="group-hint">
-        OCR settings are stored separately from capture settings so more OCR controls can be added here later.
-        {#if draftOcrRecognitionMode === "fast" && !draftOcrLanguageCorrection}
-          <strong>Current profile:</strong> lower CPU usage.
-        {:else if draftOcrRecognitionMode === "accurate" && draftOcrLanguageCorrection}
-          <strong>Current profile:</strong> highest OCR cost.
-        {:else}
-          <strong>Current profile:</strong> mixed CPU/accuracy tradeoff.
-        {/if}
+        {draftOcrEnabled
+          ? "If screen capture is enabled, recording start is blocked until the selected OCR provider is available."
+          : "Screen recording can start without OCR while this is disabled."}
+        Existing OCR results remain visible after switching engines.
       </p>
     </div>
 
     <div class="settings-divider"></div>
 
-    <!-- ── Preview Cache ─────────────────────────────────────── -->
+    <div class="settings-group">
+      <span class="group-label">Selected model status</span>
+      {#if ocrModelError}
+        <p class="group-hint group-hint--warn">Failed to load OCR model status: {ocrModelError}</p>
+      {:else if selectedOcrModel}
+        <div class="model-status" class:model-status--available={selectedOcrModel.available}>
+          <div>
+            <div class="model-status__title">{selectedOcrModel.displayName}</div>
+            <div class="model-status__meta">{ocrStatusLabel(selectedOcrModel)}</div>
+          </div>
+          <span class="model-status__pill">{selectedOcrModel.available ? "available" : "unavailable"}</span>
+        </div>
+        <p class="group-hint">{selectedOcrModel.description}</p>
+        {#if selectedOcrModel.runtimeMessage}
+          <p class="group-hint group-hint--warn"><strong>Runtime:</strong> {selectedOcrModel.runtimeMessage}</p>
+        {/if}
+        {#if selectedOcrModel.installPath}
+          <p class="group-hint"><strong>Install path:</strong> {selectedOcrModel.installPath}</p>
+        {/if}
+        {#if selectedOcrModel.missingFiles.length > 0}
+          <p class="group-hint group-hint--warn"><strong>Missing files:</strong> {selectedOcrModel.missingFiles.join(", ")}</p>
+        {/if}
+        {#if selectedOcrModel.failureMessage}
+          <p class="group-hint group-hint--warn"><strong>Failure:</strong> {selectedOcrModel.failureMessage}</p>
+        {/if}
+        {#if selectedOcrModel.licenseLabel || selectedOcrModel.sourceUrl}
+          <p class="group-hint">
+            {#if selectedOcrModel.licenseLabel}<strong>License:</strong> {selectedOcrModel.licenseLabel}. {/if}
+            {#if selectedOcrModel.sourceUrl}<strong>Source:</strong> {selectedOcrModel.sourceUrl}{/if}
+          </p>
+        {/if}
+        {#if selectedOcrModel.management === "app_managed"}
+          {#if selectedOcrModel.download}
+            {#if selectedOcrDownloadRunning}
+              <div class="download-progress" aria-live="polite">
+                <div class="download-progress__bar">
+                  <span style={`width: ${selectedOcrDownloadPercent ?? 8}%`}></span>
+                </div>
+                <p class="group-hint">
+                  {selectedOcrDownloadProgress?.status ?? "downloading"}
+                  {#if selectedOcrDownloadPercent !== null} · {selectedOcrDownloadPercent}%{/if}
+                  {#if selectedOcrDownloadProgress?.message} · {selectedOcrDownloadProgress.message}{/if}
+                </p>
+                <button class="btn btn--ghost" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload}>
+                  {cancellingOcrDownload ? "Cancelling" : "Cancel download"}
+                </button>
+              </div>
+            {:else}
+              <button class="btn btn--ghost" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available}>
+                {startingOcrDownload ? "Starting" : `Download (${formatBytes(selectedOcrModel.download.byteSize)})`}
+              </button>
+            {/if}
+          {:else if !selectedOcrModel.available}
+            <p class="group-hint group-hint--warn">
+              {#if selectedOcrModel.provider === "tesseract"}
+                This provider still needs a Mnema-published self-contained runtime bundle before in-app download can work.
+              {:else}
+                This app-managed OCR bundle is missing, and the current manifest does not ship a downloadable artifact yet.
+              {/if}
+            </p>
+          {/if}
+          {#if ocrDownloadError}
+            <p class="group-hint group-hint--warn">Download failed: {ocrDownloadError}</p>
+          {/if}
+        {:else}
+          <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
+        {/if}
+        <div class="debug-log-actions">
+          <button class="btn btn--danger" onclick={requestDeleteUnusedOcrModels} disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning}>
+            Delete unused OCR models
+          </button>
+        </div>
+        <p class="group-hint">Removes app-managed OCR model files except the model selected above.</p>
+        {#if confirmingDeleteUnusedOcrModels}
+          <div class="delete-confirmation" role="alert">
+            <strong>Delete unused OCR models?</strong>
+            <p>This removes app-managed OCR model directories that are not currently selected. The selected model, active downloads, and running OCR jobs are kept. Queued and failed OCR jobs using deleted models are moved to the current OCR selection.</p>
+            <div class="debug-log-actions">
+              <button class="btn btn--danger" onclick={deleteUnusedOcrModels} disabled={deletingUnusedOcrModels}>
+                {deletingUnusedOcrModels ? "Deleting" : "Confirm delete"}
+              </button>
+              <button class="btn btn--ghost" onclick={() => { confirmingDeleteUnusedOcrModels = false; }} disabled={deletingUnusedOcrModels}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        {/if}
+        {#if deleteUnusedOcrModelsMessage}
+          <div class="cleanup-result" aria-live="polite">
+            <strong>{deleteUnusedOcrModelsMessage}</strong>
+            {#if deletedUnusedOcrModelLabels.length > 0}
+              <p>Deleted:</p>
+              <ul>
+                {#each deletedUnusedOcrModelLabels as model}
+                  <li>{model}</li>
+                {/each}
+              </ul>
+            {/if}
+            {#if skippedUnusedOcrModelLabels.length > 0}
+              <p>Skipped active downloads:</p>
+              <ul>
+                {#each skippedUnusedOcrModelLabels as model}
+                  <li>{model}</li>
+                {/each}
+              </ul>
+            {/if}
+            {#if skippedOcrProcessingJobModelLabels.length > 0}
+              <p>Skipped running jobs:</p>
+              <ul>
+                {#each skippedOcrProcessingJobModelLabels as model}
+                  <li>{model}</li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+        {#if deleteUnusedOcrModelsError}
+          <p class="group-hint group-hint--warn">Delete failed: {deleteUnusedOcrModelsError}</p>
+        {/if}
+      {:else if loadingOcrModelStatus}
+        <p class="group-hint">Checking installed OCR models…</p>
+      {:else}
+        <p class="group-hint group-hint--warn">No OCR model status is available for the selected provider.</p>
+      {/if}
+    </div>
+
+    <div class="settings-divider"></div>
+
     <div class="settings-group">
       <span class="group-label">Preview Cache</span>
       <SelectMenu
@@ -1827,8 +2322,7 @@
         ]}
       />
       <p class="group-hint">
-        In-memory cache for frame and image previews. Cached entries expire
-        automatically after the selected duration.
+        In-memory cache for frame and image previews. Cached entries expire automatically after the selected duration.
         {#if draftPreviewCacheTtlSeconds === 0}
           <strong>Disabled</strong> — previews are fetched fresh every time.
         {/if}
@@ -2021,6 +2515,58 @@
             {/if}
           {:else}
             <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
+          {/if}
+          <div class="debug-log-actions">
+            <button class="btn btn--danger" onclick={requestDeleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning}>
+              Delete unused transcription models
+            </button>
+          </div>
+          <p class="group-hint">Removes app-managed transcription model files except the model selected above.</p>
+          {#if confirmingDeleteUnusedTranscriptionModels}
+            <div class="delete-confirmation" role="alert">
+              <strong>Delete unused transcription models?</strong>
+              <p>This removes app-managed transcription model directories that are not currently selected. The selected model, active downloads, and running transcription jobs are kept. Queued and failed transcription jobs using deleted models are moved to the current transcription selection.</p>
+              <div class="debug-log-actions">
+                <button class="btn btn--danger" onclick={deleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels}>
+                  {deletingUnusedTranscriptionModels ? "Deleting" : "Confirm delete"}
+                </button>
+                <button class="btn btn--ghost" onclick={() => { confirmingDeleteUnusedTranscriptionModels = false; }} disabled={deletingUnusedTranscriptionModels}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          {/if}
+          {#if deleteUnusedTranscriptionModelsMessage}
+            <div class="cleanup-result" aria-live="polite">
+              <strong>{deleteUnusedTranscriptionModelsMessage}</strong>
+              {#if deletedUnusedTranscriptionModelLabels.length > 0}
+                <p>Deleted:</p>
+                <ul>
+                  {#each deletedUnusedTranscriptionModelLabels as model}
+                    <li>{model}</li>
+                  {/each}
+                </ul>
+              {/if}
+              {#if skippedUnusedTranscriptionModelLabels.length > 0}
+                <p>Skipped active downloads:</p>
+                <ul>
+                  {#each skippedUnusedTranscriptionModelLabels as model}
+                    <li>{model}</li>
+                  {/each}
+                </ul>
+              {/if}
+              {#if skippedTranscriptionProcessingJobModelLabels.length > 0}
+                <p>Skipped running jobs:</p>
+                <ul>
+                  {#each skippedTranscriptionProcessingJobModelLabels as model}
+                    <li>{model}</li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+          {/if}
+          {#if deleteUnusedTranscriptionModelsError}
+            <p class="group-hint group-hint--warn">Delete failed: {deleteUnusedTranscriptionModelsError}</p>
           {/if}
         {:else if loadingTranscriptionModelStatus}
           <p class="group-hint">Checking installed transcription models…</p>
@@ -2815,6 +3361,57 @@
     border-radius: inherit;
     background: var(--app-accent);
     transition: width 0.15s ease;
+  }
+
+  .cleanup-result {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-accent) 7%, transparent);
+    color: var(--app-text);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .cleanup-result strong {
+    font-size: 12px;
+  }
+
+  .cleanup-result p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-weight: 700;
+  }
+
+  .cleanup-result ul {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--app-text-muted);
+  }
+
+  .delete-confirmation {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 4px;
+    background: var(--app-danger-bg-soft);
+    color: var(--app-text);
+  }
+
+  .delete-confirmation strong {
+    font-size: 12px;
+  }
+
+  .delete-confirmation p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.45;
   }
 
   /* ── Text input ────────────────────────────────────────────── */

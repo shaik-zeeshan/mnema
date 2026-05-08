@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -40,6 +40,24 @@ pub struct ActiveAudioTranscriptionModelDownload {
 pub struct AudioTranscriptionModelDownloadRequestDto {
     pub provider: String,
     pub model_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedAudioTranscriptionModelDto {
+    pub provider: String,
+    pub model_id: String,
+    pub display_name: String,
+    pub install_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteUnusedAudioTranscriptionModelsResponseDto {
+    pub deleted: Vec<DeletedAudioTranscriptionModelDto>,
+    pub skipped_active_downloads: Vec<DeletedAudioTranscriptionModelDto>,
+    pub skipped_processing_jobs: Vec<DeletedAudioTranscriptionModelDto>,
+    pub retargeted_processing_jobs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -228,6 +246,86 @@ pub fn cancel_audio_transcription_model_download(
 }
 
 #[tauri::command]
+pub async fn delete_unused_audio_transcription_models(
+    app_handle: tauri::AppHandle,
+    download_state: tauri::State<'_, AudioTranscriptionModelDownloadState>,
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+    infra: tauri::State<'_, crate::app_infra::AppInfraState>,
+) -> Result<DeleteUnusedAudioTranscriptionModelsResponseDto, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+    let settings = crate::native_capture::read_recording_settings(settings.inner());
+    let selected_provider = provider_id_for_settings(settings.transcription.provider);
+    let selected_model_id = settings.transcription.model_id.as_deref();
+    let active_download = active_download_key(download_state.inner())?;
+    let deletion_candidate_model_keys = unused_installed_audio_transcription_model_keys(
+        &app_data_dir,
+        selected_provider,
+        selected_model_id,
+        active_download.as_deref(),
+    )
+    .map_err(|error| format!("failed to inspect unused transcription models: {error}"))?;
+    let running_job_model_keys = infra
+        .list_running_audio_transcription_model_keys()
+        .await
+        .map_err(|error| format!("failed to inspect running transcription jobs: {error}"))?;
+    let retarget_candidate_model_keys =
+        retargetable_deletion_model_keys(&deletion_candidate_model_keys, &running_job_model_keys);
+    let cleanup_lock = infra
+        .acquire_audio_transcription_model_cleanup_locks(&retarget_candidate_model_keys)
+        .await
+        .map_err(|error| format!("failed to reserve transcription models for cleanup: {error}"))?;
+    let result = async {
+        let retargeted_processing_jobs = infra
+            .retarget_audio_transcription_jobs_referencing_model_keys(
+                &cleanup_lock.acquired_model_keys,
+                selected_provider,
+                selected_model_id,
+            )
+            .await
+            .map_err(|error| format!("failed to retarget queued transcription jobs: {error}"))?;
+        let mut protected_model_keys = infra
+            .list_running_audio_transcription_model_keys()
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to re-check running transcription jobs before deleting models: {error}"
+                )
+            })?;
+        protected_model_keys.extend(
+            deletion_candidate_model_keys
+                .difference(&cleanup_lock.acquired_model_keys)
+                .cloned(),
+        );
+
+        delete_unused_audio_transcription_models_inner(
+            &app_data_dir,
+            selected_provider,
+            selected_model_id,
+            active_download.as_deref(),
+            &protected_model_keys,
+            retargeted_processing_jobs,
+        )
+        .map_err(|error| format!("failed to delete unused audio transcription models: {error}"))
+    }
+    .await;
+    let release_result = infra
+        .release_processing_model_cleanup_locks(&cleanup_lock)
+        .await
+        .map_err(|error| {
+            format!("failed to release transcription model cleanup reservation: {error}")
+        });
+
+    match (result, release_result) {
+        (Ok(response), Ok(_)) => Ok(response),
+        (Err(error), Ok(_)) => Err(error),
+        (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
+    }
+}
+
+#[tauri::command]
 pub fn request_apple_speech_recognition_permission(
     app_handle: tauri::AppHandle,
 ) -> Result<AudioTranscriptionModelStatusResponseDto, String> {
@@ -349,6 +447,131 @@ fn claim_model_download(
         cancel_requested,
     });
     Ok(())
+}
+
+fn active_download_key(
+    download_state: &AudioTranscriptionModelDownloadState,
+) -> Result<Option<String>, String> {
+    let active = download_state
+        .lock()
+        .map_err(|_| "audio transcription model download state poisoned".to_string())?;
+    Ok(active
+        .as_ref()
+        .map(|download| model_key(&download.provider, &download.model_id)))
+}
+
+fn model_key(provider: &str, model_id: &str) -> String {
+    format!("{provider}/{model_id}")
+}
+
+#[derive(Debug, thiserror::Error)]
+enum DeleteUnusedAudioTranscriptionModelsError {
+    #[error(transparent)]
+    Status(#[from] ModelStatusError),
+    #[error(transparent)]
+    Install(#[from] audio_transcription::ModelInstallError),
+}
+
+fn delete_unused_audio_transcription_models_inner(
+    app_data_dir: &Path,
+    selected_provider: &str,
+    selected_model_id: Option<&str>,
+    active_download: Option<&str>,
+    running_job_model_keys: &BTreeSet<String>,
+    retargeted_processing_jobs: u64,
+) -> Result<
+    DeleteUnusedAudioTranscriptionModelsResponseDto,
+    DeleteUnusedAudioTranscriptionModelsError,
+> {
+    let models_dir = audio_transcription_models_dir(app_data_dir);
+    let manifest = builtin_model_manifest();
+    let mut deleted = Vec::new();
+    let mut skipped_active_downloads = Vec::new();
+    let mut skipped_processing_jobs = Vec::new();
+
+    for descriptor in &manifest.models {
+        let ModelManagement::AppManaged { .. } = &descriptor.management else {
+            continue;
+        };
+        let Some(model_id) = descriptor.model_id.as_deref() else {
+            continue;
+        };
+        if descriptor.provider == selected_provider && Some(model_id) == selected_model_id {
+            continue;
+        }
+        let install_dir = model_install_dir(&models_dir, &descriptor.provider, model_id)?;
+        if !install_dir.exists() {
+            continue;
+        }
+
+        let candidate = DeletedAudioTranscriptionModelDto {
+            provider: descriptor.provider.clone(),
+            model_id: model_id.to_string(),
+            display_name: descriptor.display_name.clone(),
+            install_path: install_dir.display().to_string(),
+        };
+        if active_download == Some(model_key(&descriptor.provider, model_id).as_str()) {
+            skipped_active_downloads.push(candidate);
+            continue;
+        }
+        if running_job_model_keys.contains(&model_key(&descriptor.provider, model_id)) {
+            skipped_processing_jobs.push(candidate);
+            continue;
+        }
+
+        remove_model_dir_if_exists(&install_dir)?;
+        deleted.push(candidate);
+    }
+
+    Ok(DeleteUnusedAudioTranscriptionModelsResponseDto {
+        deleted,
+        skipped_active_downloads,
+        skipped_processing_jobs,
+        retargeted_processing_jobs,
+    })
+}
+
+fn unused_installed_audio_transcription_model_keys(
+    app_data_dir: &Path,
+    selected_provider: &str,
+    selected_model_id: Option<&str>,
+    active_download: Option<&str>,
+) -> Result<BTreeSet<String>, DeleteUnusedAudioTranscriptionModelsError> {
+    let models_dir = audio_transcription_models_dir(app_data_dir);
+    let manifest = builtin_model_manifest();
+    let mut keys = BTreeSet::new();
+
+    for descriptor in &manifest.models {
+        let ModelManagement::AppManaged { .. } = &descriptor.management else {
+            continue;
+        };
+        let Some(model_id) = descriptor.model_id.as_deref() else {
+            continue;
+        };
+        if descriptor.provider == selected_provider && Some(model_id) == selected_model_id {
+            continue;
+        }
+        let key = model_key(&descriptor.provider, model_id);
+        if active_download == Some(key.as_str()) {
+            continue;
+        }
+        let install_dir = model_install_dir(&models_dir, &descriptor.provider, model_id)?;
+        if install_dir.exists() {
+            keys.insert(key);
+        }
+    }
+
+    Ok(keys)
+}
+
+fn retargetable_deletion_model_keys(
+    deletion_candidate_model_keys: &BTreeSet<String>,
+    running_job_model_keys: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    deletion_candidate_model_keys
+        .difference(running_job_model_keys)
+        .cloned()
+        .collect()
 }
 
 impl AudioTranscriptionModelDownloadProgressDto {
@@ -544,6 +767,16 @@ async fn download_and_install_model(
     Ok(())
 }
 
+fn staged_download_temp_path(install_dir: &Path, relative_path: &Path, index: usize) -> PathBuf {
+    let label = relative_path.to_string_lossy().replace(['/', '\\'], "__");
+    install_dir.join(format!(
+        ".download-{}-{}-{}",
+        std::process::id(),
+        index,
+        if label.is_empty() { "file" } else { &label }
+    ))
+}
+
 async fn download_and_install_multi_file_artifact(
     app_handle: &tauri::AppHandle,
     plan: &DownloadPlan,
@@ -554,19 +787,12 @@ async fn download_and_install_multi_file_artifact(
     let mut downloaded_total = 0_u64;
     let mut staged_files = Vec::new();
 
-    for file in files {
+    for (index, file) in files.iter().enumerate() {
         if cancel_requested.load(Ordering::SeqCst) {
             return Err(ModelDownloadTaskError::Cancelled);
         }
         let relative_path = safe_relative_model_file_path(&file.relative_path)?;
-        let temp_path = plan.install_dir.join(format!(
-            ".download-{}-{}",
-            std::process::id(),
-            relative_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("file")
-        ));
+        let temp_path = staged_download_temp_path(&plan.install_dir, &relative_path, index);
         let downloaded = download_model_file_to_temp(
             app_handle,
             plan,
@@ -1070,6 +1296,18 @@ mod tests {
     }
 
     #[test]
+    fn staged_download_temp_paths_are_unique_for_same_file_names() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let encoder = safe_relative_model_file_path("encoder/model.onnx").expect("encoder path");
+        let decoder = safe_relative_model_file_path("decoder/model.onnx").expect("decoder path");
+
+        let encoder_temp = staged_download_temp_path(temp.path(), &encoder, 0);
+        let decoder_temp = staged_download_temp_path(temp.path(), &decoder, 1);
+
+        assert_ne!(encoder_temp, decoder_temp);
+    }
+
+    #[test]
     fn status_response_marks_installed_parakeet_int8_model_available() {
         let temp = tempfile::tempdir().expect("tempdir");
         let app_data_dir = temp.path();
@@ -1160,6 +1398,54 @@ mod tests {
         assert_eq!(
             find_model(&response, LOCAL_WHISPER_PROVIDER_ID, Some("medium")).status,
             ModelStatusKind::Missing
+        );
+    }
+
+    #[test]
+    fn delete_unused_audio_transcription_models_preserves_models_referenced_by_processing_jobs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app_data_dir = temp.path();
+        let models_dir = audio_transcription_models_dir(app_data_dir);
+        let install_dir =
+            model_install_dir(&models_dir, LOCAL_WHISPER_PROVIDER_ID, "base").expect("base dir");
+        std::fs::create_dir_all(&install_dir).expect("install dir should be created");
+        std::fs::write(install_dir.join("ggml-base.bin"), b"model").expect("model file");
+        let protected_models = BTreeSet::from([model_key(LOCAL_WHISPER_PROVIDER_ID, "base")]);
+
+        let response = delete_unused_audio_transcription_models_inner(
+            app_data_dir,
+            audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID,
+            None,
+            None,
+            &protected_models,
+            0,
+        )
+        .expect("unused model deletion should succeed");
+
+        assert!(install_dir.exists());
+        assert!(response.deleted.is_empty());
+        assert_eq!(response.skipped_processing_jobs.len(), 1);
+        assert_eq!(
+            response.skipped_processing_jobs[0].provider,
+            LOCAL_WHISPER_PROVIDER_ID
+        );
+        assert_eq!(response.skipped_processing_jobs[0].model_id, "base");
+    }
+
+    #[test]
+    fn retargetable_audio_transcription_deletion_model_keys_exclude_running_job_models() {
+        let deletion_candidates = BTreeSet::from([
+            model_key(LOCAL_WHISPER_PROVIDER_ID, "base"),
+            model_key(LOCAL_WHISPER_PROVIDER_ID, "small"),
+        ]);
+        let running_job_models = BTreeSet::from([model_key(LOCAL_WHISPER_PROVIDER_ID, "base")]);
+
+        let retargetable =
+            retargetable_deletion_model_keys(&deletion_candidates, &running_job_models);
+
+        assert_eq!(
+            retargetable,
+            BTreeSet::from([model_key(LOCAL_WHISPER_PROVIDER_ID, "small")])
         );
     }
 }

@@ -2,11 +2,14 @@ use capture_types::{
     default_appearance, default_audio_transcription_settings, default_developer_options_enabled,
     default_follow_timeline_live, default_idle_timeout_seconds, default_inactivity_activity_mode,
     default_microphone_activity_sensitivity, default_native_capture_debug_logging_enabled,
-    default_ocr_settings, default_pause_capture_on_inactivity, default_preview_cache_ttl_seconds,
-    default_system_audio_activity_sensitivity, default_video_bitrate, AudioTranscriptionProvider,
-    AudioTranscriptionSettings, CaptureErrorResponse, RecordingSettings, ScreenResolution,
-    ScreenResolutionPreset, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
-    VideoBitrateSettings,
+    default_ocr_settings, default_ocr_tesseract_char_whitelist,
+    default_ocr_tesseract_page_segmentation_mode, default_ocr_tesseract_preprocess_mode,
+    default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
+    default_preview_cache_ttl_seconds, default_system_audio_activity_sensitivity,
+    default_video_bitrate, AudioTranscriptionProvider, AudioTranscriptionSettings,
+    CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
+    ScreenResolution, ScreenResolutionPreset, UpdateRecordingSettingsRequest, VideoBitrateMode,
+    VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -220,6 +223,110 @@ fn validate_audio_transcription_settings(
     })
 }
 
+fn validate_ocr_settings(value: OcrSettings) -> Result<OcrSettings, CaptureErrorResponse> {
+    let model_id = value
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty());
+    let language = value
+        .language
+        .as_deref()
+        .map(str::trim)
+        .filter(|language| !language.is_empty());
+    let tesseract_char_whitelist = value
+        .tesseract_char_whitelist
+        .as_deref()
+        .map(str::trim)
+        .filter(|whitelist| !whitelist.is_empty())
+        .map(ToOwned::to_owned);
+
+    if !(1..=4).contains(&value.tesseract_upscale_factor) {
+        return Err(CaptureErrorResponse {
+            code: "invalid_recording_settings".to_string(),
+            message: "ocr.tesseractUpscaleFactor must be between 1 and 4".to_string(),
+        });
+    }
+
+    let (
+        enabled,
+        model_id,
+        language,
+        recognition_mode,
+        language_correction,
+        tesseract_page_segmentation_mode,
+        tesseract_preprocess_mode,
+        tesseract_upscale_factor,
+        tesseract_char_whitelist,
+    ) = match value.provider {
+        OcrProvider::AppleVision => (
+            value.enabled,
+            None,
+            language.map(ToOwned::to_owned),
+            value.recognition_mode,
+            value.language_correction,
+            default_ocr_tesseract_page_segmentation_mode(),
+            default_ocr_tesseract_preprocess_mode(),
+            default_ocr_tesseract_upscale_factor(),
+            default_ocr_tesseract_char_whitelist(),
+        ),
+        OcrProvider::Tesseract => {
+            let model_id = model_id.unwrap_or(ocr::DEFAULT_TESSERACT_MODEL_ID);
+            if model_id != ocr::DEFAULT_TESSERACT_MODEL_ID {
+                return Err(CaptureErrorResponse {
+                    code: "invalid_recording_settings".to_string(),
+                    message: format!(
+                        "ocr.modelId must be {} for tesseract",
+                        ocr::DEFAULT_TESSERACT_MODEL_ID
+                    ),
+                });
+            }
+            let language = language.unwrap_or(ocr::DEFAULT_TESSERACT_LANGUAGE);
+            if language != ocr::DEFAULT_TESSERACT_LANGUAGE {
+                return Err(CaptureErrorResponse {
+                    code: "invalid_recording_settings".to_string(),
+                    message: format!(
+                        "ocr.language must be {} for tesseract in this build",
+                        ocr::DEFAULT_TESSERACT_LANGUAGE
+                    ),
+                });
+            }
+            (
+                value.enabled,
+                Some(model_id.to_string()),
+                Some(language.to_string()),
+                OcrRecognitionMode::Fast,
+                false,
+                value.tesseract_page_segmentation_mode,
+                value.tesseract_preprocess_mode,
+                value.tesseract_upscale_factor,
+                tesseract_char_whitelist,
+            )
+        }
+        OcrProvider::PaddleOcr => {
+            // PaddleOCR remains available in the OCR crate for existing queued jobs and
+            // direct provider tests, but it is no longer a user-selectable recording
+            // setting. Normalize legacy persisted settings back to the supported default.
+            let mut settings = default_ocr_settings();
+            settings.enabled = value.enabled;
+            return Ok(settings);
+        }
+    };
+
+    Ok(OcrSettings {
+        enabled,
+        provider: value.provider,
+        model_id,
+        language,
+        recognition_mode,
+        language_correction,
+        tesseract_page_segmentation_mode,
+        tesseract_preprocess_mode,
+        tesseract_upscale_factor,
+        tesseract_char_whitelist,
+    })
+}
+
 fn validate_audio_activity_sensitivity(
     field_name: &str,
     value: u8,
@@ -378,6 +485,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
 
     let screen_resolution = validate_screen_resolution(request.screen_resolution)?;
     let video_bitrate = validate_video_bitrate(request.video_bitrate)?;
+    let ocr = validate_ocr_settings(request.ocr)?;
     let transcription = validate_audio_transcription_settings(request.transcription)?;
     let microphone_activity_sensitivity = validate_audio_activity_sensitivity(
         "microphoneActivitySensitivity",
@@ -413,7 +521,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         preview_cache_ttl_seconds: request.preview_cache_ttl_seconds,
         follow_timeline_live: request.follow_timeline_live,
         appearance: request.appearance,
-        ocr: request.ocr,
+        ocr,
         transcription,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
@@ -433,6 +541,13 @@ fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
 }
 
 fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
+    load_recording_settings_from_path_with_resolution_support(path, true)
+}
+
+fn load_recording_settings_from_path_with_resolution_support(
+    path: &Path,
+    non_original_resolution_supported: bool,
+) -> Option<RecordingSettings> {
     let raw = std::fs::read_to_string(path).ok()?;
 
     // Backward compatibility: if the old single `audioActivitySensitivity` field is present
@@ -440,30 +555,33 @@ fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
     let raw = migrate_legacy_audio_sensitivity(&raw);
 
     let parsed = serde_json::from_str::<RecordingSettings>(&raw).ok()?;
-    validate_recording_settings(UpdateRecordingSettingsRequest {
-        capture_screen: parsed.capture_screen,
-        capture_microphone: parsed.capture_microphone,
-        capture_system_audio: parsed.capture_system_audio,
-        segment_duration_seconds: parsed.segment_duration_seconds,
-        screen_frame_rate: parsed.screen_frame_rate,
-        screen_resolution: parsed.screen_resolution,
-        video_bitrate: parsed.video_bitrate,
-        save_directory: parsed.save_directory,
-        auto_start: parsed.auto_start,
-        native_capture_debug_logging_enabled: parsed.native_capture_debug_logging_enabled,
-        developer_options_enabled: parsed.developer_options_enabled,
-        preview_cache_ttl_seconds: parsed.preview_cache_ttl_seconds,
-        follow_timeline_live: parsed.follow_timeline_live,
-        appearance: parsed.appearance,
-        ocr: parsed.ocr,
-        transcription: parsed.transcription,
-        pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
-        idle_timeout_seconds: parsed.idle_timeout_seconds,
-        microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
-        system_audio_activity_sensitivity: parsed.system_audio_activity_sensitivity,
-        microphone_vad_adapter: parsed.microphone_vad_adapter,
-        inactivity_activity_mode: parsed.inactivity_activity_mode,
-    })
+    validate_recording_settings_with_resolution_support(
+        UpdateRecordingSettingsRequest {
+            capture_screen: parsed.capture_screen,
+            capture_microphone: parsed.capture_microphone,
+            capture_system_audio: parsed.capture_system_audio,
+            segment_duration_seconds: parsed.segment_duration_seconds,
+            screen_frame_rate: parsed.screen_frame_rate,
+            screen_resolution: parsed.screen_resolution,
+            video_bitrate: parsed.video_bitrate,
+            save_directory: parsed.save_directory,
+            auto_start: parsed.auto_start,
+            native_capture_debug_logging_enabled: parsed.native_capture_debug_logging_enabled,
+            developer_options_enabled: parsed.developer_options_enabled,
+            preview_cache_ttl_seconds: parsed.preview_cache_ttl_seconds,
+            follow_timeline_live: parsed.follow_timeline_live,
+            appearance: parsed.appearance,
+            ocr: parsed.ocr,
+            transcription: parsed.transcription,
+            pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
+            idle_timeout_seconds: parsed.idle_timeout_seconds,
+            microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
+            system_audio_activity_sensitivity: parsed.system_audio_activity_sensitivity,
+            microphone_vad_adapter: parsed.microphone_vad_adapter,
+            inactivity_activity_mode: parsed.inactivity_activity_mode,
+        },
+        non_original_resolution_supported,
+    )
     .ok()
 }
 
@@ -757,6 +875,36 @@ mod tests {
     }
 
     #[test]
+    fn load_recording_settings_from_path_preserves_saved_resolution_when_backend_unsupported() {
+        let dir = TestDir::new("non-original-resolution");
+        let path = dir.path().join("recording-settings.json");
+        let mut settings = default_recording_settings();
+        settings.save_directory = "/tmp/custom-mnema".to_string();
+        settings.auto_start = true;
+        settings.screen_resolution = ScreenResolution::Preset {
+            preset: ScreenResolutionPreset::P720,
+        };
+
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&settings).expect("settings should serialize"),
+        )
+        .expect("settings file should write");
+
+        let loaded =
+            load_recording_settings_from_path(&path).expect("settings should load from disk");
+
+        assert_eq!(loaded.save_directory, "/tmp/custom-mnema");
+        assert!(loaded.auto_start);
+        assert_eq!(
+            loaded.screen_resolution,
+            ScreenResolution::Preset {
+                preset: ScreenResolutionPreset::P720
+            }
+        );
+    }
+
+    #[test]
     fn validate_recording_settings_preserves_microphone_vad_adapter_update() {
         let settings = validate_recording_settings_with_resolution_support(
             UpdateRecordingSettingsRequest {
@@ -793,6 +941,121 @@ mod tests {
             settings.microphone_vad_adapter,
             capture_types::MicrophoneVadAdapter::Off
         );
+    }
+
+    #[test]
+    fn validate_recording_settings_preserves_ocr_provider_specific_defaults() {
+        let mut ocr = default_ocr_settings();
+        ocr.provider = capture_types::OcrProvider::Tesseract;
+        ocr.model_id = None;
+        ocr.language = Some(" eng ".to_string());
+        ocr.recognition_mode = capture_types::OcrRecognitionMode::Accurate;
+        ocr.language_correction = true;
+        ocr.tesseract_upscale_factor = 2;
+        ocr.tesseract_char_whitelist = Some(" 0123456789 ".to_string());
+        ocr.tesseract_page_segmentation_mode =
+            capture_types::OcrTesseractPageSegmentationMode::SparseText;
+        ocr.tesseract_preprocess_mode = capture_types::OcrTesseractPreprocessMode::Thresholded;
+
+        let settings = validate_recording_settings_with_resolution_support(
+            UpdateRecordingSettingsRequest {
+                capture_screen: true,
+                capture_microphone: false,
+                capture_system_audio: false,
+                segment_duration_seconds: 60,
+                screen_frame_rate: 1,
+                screen_resolution: ScreenResolution::Preset {
+                    preset: ScreenResolutionPreset::Original,
+                },
+                video_bitrate: default_video_bitrate(),
+                save_directory: "/tmp".to_string(),
+                auto_start: false,
+                native_capture_debug_logging_enabled: false,
+                developer_options_enabled: false,
+                preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+                follow_timeline_live: false,
+                appearance: default_appearance(),
+                ocr,
+                transcription: default_audio_transcription_settings(),
+                pause_capture_on_inactivity: true,
+                idle_timeout_seconds: 10,
+                microphone_activity_sensitivity: 50,
+                system_audio_activity_sensitivity: 50,
+                microphone_vad_adapter: capture_types::default_microphone_vad_adapter(),
+                inactivity_activity_mode: default_inactivity_activity_mode(),
+            },
+            true,
+        )
+        .expect("settings should validate");
+
+        assert_eq!(settings.ocr.provider, capture_types::OcrProvider::Tesseract);
+        assert_eq!(
+            settings.ocr.model_id.as_deref(),
+            Some(ocr::DEFAULT_TESSERACT_MODEL_ID)
+        );
+        assert_eq!(
+            settings.ocr.language.as_deref(),
+            Some(ocr::DEFAULT_TESSERACT_LANGUAGE)
+        );
+        assert_eq!(
+            settings.ocr.recognition_mode,
+            capture_types::OcrRecognitionMode::Fast
+        );
+        assert!(!settings.ocr.language_correction);
+        assert_eq!(
+            settings.ocr.tesseract_page_segmentation_mode,
+            capture_types::OcrTesseractPageSegmentationMode::SparseText
+        );
+        assert_eq!(
+            settings.ocr.tesseract_preprocess_mode,
+            capture_types::OcrTesseractPreprocessMode::Thresholded
+        );
+        assert_eq!(settings.ocr.tesseract_upscale_factor, 2);
+        assert_eq!(
+            settings.ocr.tesseract_char_whitelist.as_deref(),
+            Some("0123456789")
+        );
+    }
+
+    #[test]
+    fn validate_recording_settings_normalizes_legacy_paddle_ocr_to_default_provider() {
+        let mut ocr_settings = default_ocr_settings();
+        ocr_settings.provider = capture_types::OcrProvider::PaddleOcr;
+        ocr_settings.model_id = Some(ocr::DEFAULT_PADDLE_OCR_MODEL_ID.to_string());
+        ocr_settings.language = Some(ocr::DEFAULT_PADDLE_OCR_LANGUAGE.to_string());
+
+        let settings = validate_recording_settings_with_resolution_support(
+            UpdateRecordingSettingsRequest {
+                capture_screen: true,
+                capture_microphone: false,
+                capture_system_audio: false,
+                segment_duration_seconds: 60,
+                screen_frame_rate: 1,
+                screen_resolution: ScreenResolution::Preset {
+                    preset: ScreenResolutionPreset::Original,
+                },
+                video_bitrate: default_video_bitrate(),
+                save_directory: "/tmp".to_string(),
+                auto_start: false,
+                native_capture_debug_logging_enabled: false,
+                developer_options_enabled: false,
+                preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+                follow_timeline_live: false,
+                appearance: default_appearance(),
+                ocr: ocr_settings,
+                transcription: default_audio_transcription_settings(),
+                pause_capture_on_inactivity: true,
+                idle_timeout_seconds: 10,
+                microphone_activity_sensitivity: 50,
+                system_audio_activity_sensitivity: 50,
+                microphone_vad_adapter: capture_types::default_microphone_vad_adapter(),
+                inactivity_activity_mode: default_inactivity_activity_mode(),
+            },
+            true,
+        )
+        .expect("legacy PaddleOCR settings should normalize");
+
+        assert_eq!(settings.ocr, default_ocr_settings());
     }
 
     #[test]

@@ -241,11 +241,19 @@ export interface OcrObservation {
 	boundingBox: OcrBoundingBox;
 }
 
+export interface OcrProvenance {
+	provider: string;
+	modelId?: string | null;
+}
+
 export interface OcrStructuredPayload {
 	schemaVersion: number;
 	coordinateSpace: "normalized" | string;
 	coordinateOrigin: "lower_left" | string;
+	provider?: string;
+	modelId?: string | null;
 	observations: OcrObservation[];
+	provenance?: OcrProvenance | null;
 }
 
 export interface AppJobDto {
