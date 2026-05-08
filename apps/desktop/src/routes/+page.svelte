@@ -889,6 +889,13 @@
     closeAudioDrawer();
   }
 
+  function onAudioDrawerOutsideScroll(event: Event) {
+    if (selectedAudioSegmentId == null) return;
+    const target = event.target;
+    if (target instanceof Node && audioDrawerEl?.contains(target)) return;
+    closeAudioDrawer();
+  }
+
   $effect(() => {
     if (selectedAudioSegmentId == null) return;
     // Bind in capture phase so the dismissal beats any in-tree handlers
@@ -899,12 +906,16 @@
       onAudioDrawerOutsidePointerDown,
       true,
     );
+    // `scroll` does not bubble, so listen in capture phase and treat any
+    // scroll outside the drawer as an intent to get back to the page.
+    document.addEventListener("scroll", onAudioDrawerOutsideScroll, true);
     return () => {
       document.removeEventListener(
         "pointerdown",
         onAudioDrawerOutsidePointerDown,
         true,
       );
+      document.removeEventListener("scroll", onAudioDrawerOutsideScroll, true);
     };
   });
 
