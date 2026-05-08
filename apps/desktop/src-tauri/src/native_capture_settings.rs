@@ -535,6 +535,13 @@ fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
 }
 
 fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
+    load_recording_settings_from_path_with_resolution_support(path, true)
+}
+
+fn load_recording_settings_from_path_with_resolution_support(
+    path: &Path,
+    non_original_resolution_supported: bool,
+) -> Option<RecordingSettings> {
     let raw = std::fs::read_to_string(path).ok()?;
 
     // Backward compatibility: if the old single `audioActivitySensitivity` field is present
@@ -542,30 +549,33 @@ fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
     let raw = migrate_legacy_audio_sensitivity(&raw);
 
     let parsed = serde_json::from_str::<RecordingSettings>(&raw).ok()?;
-    validate_recording_settings(UpdateRecordingSettingsRequest {
-        capture_screen: parsed.capture_screen,
-        capture_microphone: parsed.capture_microphone,
-        capture_system_audio: parsed.capture_system_audio,
-        segment_duration_seconds: parsed.segment_duration_seconds,
-        screen_frame_rate: parsed.screen_frame_rate,
-        screen_resolution: parsed.screen_resolution,
-        video_bitrate: parsed.video_bitrate,
-        save_directory: parsed.save_directory,
-        auto_start: parsed.auto_start,
-        native_capture_debug_logging_enabled: parsed.native_capture_debug_logging_enabled,
-        developer_options_enabled: parsed.developer_options_enabled,
-        preview_cache_ttl_seconds: parsed.preview_cache_ttl_seconds,
-        follow_timeline_live: parsed.follow_timeline_live,
-        appearance: parsed.appearance,
-        ocr: parsed.ocr,
-        transcription: parsed.transcription,
-        pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
-        idle_timeout_seconds: parsed.idle_timeout_seconds,
-        microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
-        system_audio_activity_sensitivity: parsed.system_audio_activity_sensitivity,
-        microphone_vad_adapter: parsed.microphone_vad_adapter,
-        inactivity_activity_mode: parsed.inactivity_activity_mode,
-    })
+    validate_recording_settings_with_resolution_support(
+        UpdateRecordingSettingsRequest {
+            capture_screen: parsed.capture_screen,
+            capture_microphone: parsed.capture_microphone,
+            capture_system_audio: parsed.capture_system_audio,
+            segment_duration_seconds: parsed.segment_duration_seconds,
+            screen_frame_rate: parsed.screen_frame_rate,
+            screen_resolution: parsed.screen_resolution,
+            video_bitrate: parsed.video_bitrate,
+            save_directory: parsed.save_directory,
+            auto_start: parsed.auto_start,
+            native_capture_debug_logging_enabled: parsed.native_capture_debug_logging_enabled,
+            developer_options_enabled: parsed.developer_options_enabled,
+            preview_cache_ttl_seconds: parsed.preview_cache_ttl_seconds,
+            follow_timeline_live: parsed.follow_timeline_live,
+            appearance: parsed.appearance,
+            ocr: parsed.ocr,
+            transcription: parsed.transcription,
+            pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
+            idle_timeout_seconds: parsed.idle_timeout_seconds,
+            microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
+            system_audio_activity_sensitivity: parsed.system_audio_activity_sensitivity,
+            microphone_vad_adapter: parsed.microphone_vad_adapter,
+            inactivity_activity_mode: parsed.inactivity_activity_mode,
+        },
+        non_original_resolution_supported,
+    )
     .ok()
 }
 
@@ -855,6 +865,36 @@ mod tests {
         assert_eq!(
             loaded.microphone_vad_adapter,
             capture_types::MicrophoneVadAdapter::Webrtc
+        );
+    }
+
+    #[test]
+    fn load_recording_settings_from_path_preserves_saved_resolution_when_backend_unsupported() {
+        let dir = TestDir::new("non-original-resolution");
+        let path = dir.path().join("recording-settings.json");
+        let mut settings = default_recording_settings();
+        settings.save_directory = "/tmp/custom-mnema".to_string();
+        settings.auto_start = true;
+        settings.screen_resolution = ScreenResolution::Preset {
+            preset: ScreenResolutionPreset::P720,
+        };
+
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&settings).expect("settings should serialize"),
+        )
+        .expect("settings file should write");
+
+        let loaded =
+            load_recording_settings_from_path(&path).expect("settings should load from disk");
+
+        assert_eq!(loaded.save_directory, "/tmp/custom-mnema");
+        assert!(loaded.auto_start);
+        assert_eq!(
+            loaded.screen_resolution,
+            ScreenResolution::Preset {
+                preset: ScreenResolutionPreset::P720
+            }
         );
     }
 
