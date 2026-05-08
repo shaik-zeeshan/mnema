@@ -544,6 +544,16 @@ async fn download_and_install_model(
     Ok(())
 }
 
+fn staged_download_temp_path(install_dir: &Path, relative_path: &Path, index: usize) -> PathBuf {
+    let label = relative_path.to_string_lossy().replace(['/', '\\'], "__");
+    install_dir.join(format!(
+        ".download-{}-{}-{}",
+        std::process::id(),
+        index,
+        if label.is_empty() { "file" } else { &label }
+    ))
+}
+
 async fn download_and_install_multi_file_artifact(
     app_handle: &tauri::AppHandle,
     plan: &DownloadPlan,
@@ -554,19 +564,12 @@ async fn download_and_install_multi_file_artifact(
     let mut downloaded_total = 0_u64;
     let mut staged_files = Vec::new();
 
-    for file in files {
+    for (index, file) in files.iter().enumerate() {
         if cancel_requested.load(Ordering::SeqCst) {
             return Err(ModelDownloadTaskError::Cancelled);
         }
         let relative_path = safe_relative_model_file_path(&file.relative_path)?;
-        let temp_path = plan.install_dir.join(format!(
-            ".download-{}-{}",
-            std::process::id(),
-            relative_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("file")
-        ));
+        let temp_path = staged_download_temp_path(&plan.install_dir, &relative_path, index);
         let downloaded = download_model_file_to_temp(
             app_handle,
             plan,
@@ -1067,6 +1070,18 @@ mod tests {
         assert!(matches!(second, ModelDownloadError::AlreadyRunning { .. }));
         let active = state.lock().expect("state");
         assert_eq!(active.as_ref().expect("active").model_id, "base");
+    }
+
+    #[test]
+    fn staged_download_temp_paths_are_unique_for_same_file_names() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let encoder = safe_relative_model_file_path("encoder/model.onnx").expect("encoder path");
+        let decoder = safe_relative_model_file_path("decoder/model.onnx").expect("decoder path");
+
+        let encoder_temp = staged_download_temp_path(temp.path(), &encoder, 0);
+        let decoder_temp = staged_download_temp_path(temp.path(), &decoder, 1);
+
+        assert_ne!(encoder_temp, decoder_temp);
     }
 
     #[test]
