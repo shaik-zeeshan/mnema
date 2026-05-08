@@ -25,4 +25,6 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 cidre = { version = "0.15", default-features = false, features = ["vn", "blocks", "cm", "cv", "macos_15_0"] }
 
 [dev-dependencies]
+libc = "0.2"
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
