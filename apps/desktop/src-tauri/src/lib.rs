@@ -3,6 +3,7 @@ mod audio_transcription_models;
 mod general_app_log;
 mod managed_storage_layout;
 mod native_capture;
+mod ocr_models;
 mod windows;
 
 use tauri::Manager;
@@ -15,6 +16,7 @@ const APP_LOG_TARGET_PREFIXES: &[&str] = &[
     "mnema_lib",
     "app_infra",
     "audio_transcription",
+    "ocr",
     "capture_runtime",
     "capture_screen",
     "capture_microphone",
@@ -46,6 +48,7 @@ pub fn run() {
         .manage(native_capture::RecordingSettingsState::default())
         .manage(native_capture::AppNotificationsState::default())
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
+        .manage(ocr_models::OcrModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
         .plugin(
@@ -80,6 +83,9 @@ pub fn run() {
             audio_transcription_models::cancel_audio_transcription_model_download,
             audio_transcription_models::request_apple_speech_recognition_permission,
             audio_transcription_models::open_apple_speech_recognition_privacy_settings,
+            ocr_models::get_ocr_model_status,
+            ocr_models::start_ocr_model_download,
+            ocr_models::cancel_ocr_model_download,
             app_infra::submit_debug_cpu_job,
             app_infra::list_app_jobs,
             app_infra::get_app_job,
@@ -133,6 +139,7 @@ pub fn run() {
             native_capture::maybe_push_audio_transcription_unavailable_startup_warning(
                 app.handle(),
             );
+            native_capture::maybe_push_ocr_unavailable_startup_warning(app.handle());
             native_capture::start_microphone_device_change_notifier(app.handle().clone());
             native_capture::start_system_wake_notifier(app.handle().clone());
             let onboarding_state = app.state::<windows::OnboardingStateStore>();

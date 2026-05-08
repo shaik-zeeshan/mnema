@@ -1662,13 +1662,15 @@ where
         let screen_output_file = screen_planner.segment_screen_output(next_index);
         let previous_microphone_outputs = audio_only_output_files(
             runtime.current_segment_output_files.as_ref(),
-            runtime.active_microphone_session.is_some() && !runtime.inactivity.is_microphone_paused(),
+            runtime.active_microphone_session.is_some()
+                && !runtime.inactivity.is_microphone_paused(),
             false,
         );
         let previous_system_audio_outputs = audio_only_output_files(
             runtime.current_segment_output_files.as_ref(),
             false,
-            runtime.system_audio_recording_file.is_some() && !runtime.inactivity.is_system_audio_paused(),
+            runtime.system_audio_recording_file.is_some()
+                && !runtime.inactivity.is_system_audio_paused(),
         );
 
         capture_screen::resume_screen_outputs(
@@ -1677,12 +1679,11 @@ where
             screen_output_file.to_string_lossy().as_ref(),
         )?;
 
-        let next_system_audio_recording_file =
-            next_reanchored_system_audio_output_file(
-                runtime,
-                next_index,
-                "resuming screen outputs from inactivity",
-            )?;
+        let next_system_audio_recording_file = next_reanchored_system_audio_output_file(
+            runtime,
+            next_index,
+            "resuming screen outputs from inactivity",
+        )?;
         if let Some(system_audio_output_file) = next_system_audio_recording_file.as_deref() {
             capture_screen::pause_system_audio_writer_for_inactivity(
                 &mut runtime.active_screen_session,
@@ -1699,12 +1700,11 @@ where
             );
         }
 
-        let next_microphone_recording_file =
-            next_reanchored_microphone_output_file(
-                runtime,
-                next_index,
-                "resuming screen outputs from inactivity",
-            )?;
+        let next_microphone_recording_file = next_reanchored_microphone_output_file(
+            runtime,
+            next_index,
+            "resuming screen outputs from inactivity",
+        )?;
         if let Some(microphone_output_file) = next_microphone_recording_file.as_deref() {
             if let Some(session) = runtime.active_microphone_session.as_mut() {
                 session.rotate_output_file(microphone_output_file)?;
@@ -1829,12 +1829,11 @@ where
         _active_microphone_session,
     ) = started_segment;
 
-    let next_microphone_recording_file =
-        next_reanchored_microphone_output_file(
-            runtime,
-            next_index,
-            "resuming screen from inactivity",
-        )?;
+    let next_microphone_recording_file = next_reanchored_microphone_output_file(
+        runtime,
+        next_index,
+        "resuming screen from inactivity",
+    )?;
     if let Some(microphone_output_file) = next_microphone_recording_file.as_deref() {
         if let Some(session) = runtime.active_microphone_session.as_mut() {
             if let Err(error) = session.rotate_output_file(microphone_output_file) {
@@ -2214,8 +2213,11 @@ where
         _active_microphone_session,
     ) = started_segment;
 
-    let next_microphone_recording_file =
-        next_reanchored_microphone_output_file(runtime, next_index, "recovering after system wake")?;
+    let next_microphone_recording_file = next_reanchored_microphone_output_file(
+        runtime,
+        next_index,
+        "recovering after system wake",
+    )?;
     if let Some(microphone_output_file) = next_microphone_recording_file.as_deref() {
         if let Some(session) = runtime.active_microphone_session.as_mut() {
             if let Err(error) = session.rotate_output_file(microphone_output_file) {

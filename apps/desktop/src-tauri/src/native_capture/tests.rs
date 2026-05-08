@@ -44,9 +44,10 @@ use super::settings::{
     validate_recording_settings_with_resolution_support,
 };
 use super::{
-    audio_transcription_unavailable_notification,
+    audio_transcription_unavailable_notification, ocr_unavailable_notification,
     should_warn_audio_transcription_unavailable_at_start,
-    should_warn_audio_transcription_unavailable_at_startup, AppNotification, AppNotificationAction,
+    should_warn_audio_transcription_unavailable_at_startup, should_warn_ocr_unavailable_at_start,
+    should_warn_ocr_unavailable_at_startup, AppNotification, AppNotificationAction,
     AppNotificationsRuntime,
 };
 #[cfg(target_os = "macos")]
@@ -60,8 +61,8 @@ use capture_types::{
     default_video_bitrate, AppearanceSetting, AudioTranscriptionProvider,
     AudioTranscriptionSettings, CaptureErrorResponse, CaptureOutputFiles, CaptureSources,
     CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
-    MicrophoneDisconnectPolicy, MicrophonePreference, MicrophonePreferenceMode, RecordingSettings,
-    ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
+    MicrophoneDisconnectPolicy, MicrophonePreference, MicrophonePreferenceMode, OcrProvider,
+    RecordingSettings, ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
     StartNativeCaptureRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
     VideoBitratePreset, VideoBitrateSettings,
 };
@@ -287,6 +288,50 @@ fn audio_transcription_startup_warning_requires_enabled_microphone_transcription
     assert!(!should_warn_audio_transcription_unavailable_at_startup(
         &settings
     ));
+}
+
+#[test]
+fn ocr_start_warning_requires_screen_capture() {
+    let mut settings = recording_settings_fixture();
+    assert!(should_warn_ocr_unavailable_at_start(&settings));
+    assert!(should_warn_ocr_unavailable_at_startup(&settings));
+
+    settings.capture_screen = false;
+    assert!(!should_warn_ocr_unavailable_at_start(&settings));
+    assert!(!should_warn_ocr_unavailable_at_startup(&settings));
+}
+
+#[test]
+fn ocr_unavailable_notification_opens_ocr_settings_tab() {
+    let settings = RecordingSettings {
+        capture_screen: true,
+        ocr: capture_types::OcrSettings {
+            provider: OcrProvider::Tesseract,
+            model_id: Some("tesseract-5.5.2".to_string()),
+            language: Some("eng".to_string()),
+            ..capture_types::default_ocr_settings()
+        },
+        ..recording_settings_fixture()
+    };
+
+    let notification = ocr_unavailable_notification(&settings, 1234);
+
+    assert_eq!(notification.id, "ocr-unavailable");
+    assert_eq!(notification.severity, "warning");
+    assert_eq!(notification.title, "OCR engine unavailable");
+    assert!(notification.message.contains("Tesseract `tesseract-5.5.2`"));
+    assert_eq!(notification.created_at_unix_ms, 1234);
+
+    let payload = serde_json::to_value(&notification).expect("notification should serialize");
+    assert_eq!(payload["action"]["type"], "open_settings_tab");
+    assert_eq!(payload["action"]["tab"], "ocr");
+
+    match notification.action {
+        Some(AppNotificationAction::OpenSettingsTab { tab }) => {
+            assert_eq!(tab, "ocr");
+        }
+        None => panic!("OCR warning should include settings CTA"),
+    }
 }
 
 #[test]
@@ -4685,8 +4730,8 @@ fn resume_screen_from_inactivity_requires_segment_schedule() {
     let mut runtime = screen_paused_runtime_fixture();
     runtime.segment_schedule = None;
 
-    let error =
-        resume_screen_from_inactivity(&mut runtime, None).expect_err("missing schedule should fail");
+    let error = resume_screen_from_inactivity(&mut runtime, None)
+        .expect_err("missing schedule should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
 }
@@ -4697,7 +4742,8 @@ fn resume_screen_from_inactivity_requires_capture_clock() {
     let mut runtime = screen_paused_runtime_fixture();
     runtime.capture_clock = None;
 
-    let error = resume_screen_from_inactivity(&mut runtime, None).expect_err("missing clock should fail");
+    let error =
+        resume_screen_from_inactivity(&mut runtime, None).expect_err("missing clock should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
 }

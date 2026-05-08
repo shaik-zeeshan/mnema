@@ -21,6 +21,7 @@
     AudioSegmentDto,
     AudioSegmentMediaDto,
     AudioSegmentTranscriptionReprocessingResultDto,
+    CapturedFrameReprocessingResultDto,
     FrameDto,
     FramePreviewDto,
     FrameRangeRequest,
@@ -37,6 +38,7 @@
     ProcessingJobDto,
     ProcessingResultDto,
     ReprocessAudioSegmentTranscriptionRequest,
+    ReprocessCapturedFrameOcrRequest,
     TranscriptionSegment,
     TranscriptionStructuredPayload,
     TranscriptionWord,
@@ -93,6 +95,7 @@
   const AUDIO_SEGMENT_RANGE_PADDING_MS = 60_000;
   const AUDIO_SEGMENT_REFRESH_DEBOUNCE_MS = 100;
   const AUDIO_TRANSCRIPT_POLL_INTERVAL_MS = 1000;
+  const OCR_POLL_INTERVAL_MS = 1000;
   const ACTIVE_PREVIEW_FETCH_FAST_SCRUB_DEBOUNCE_MS = 40;
   const ACTIVE_PREVIEW_PREFETCH_RADIUS = 8;
   const ACTIVE_PREVIEW_FAST_SCRUB_RADIUS = 2;
@@ -2454,9 +2457,10 @@
   });
 
   // ─── On-demand OCR for the active frame ──────────────────────────────────
-  // The "Run OCR" header button reprocesses the active frame and polls the
-  // resulting processing job until it reaches a terminal state. On success we
-  // parse the structured payload (Apple Vision: normalised coords with
+  // The "show OCR" header button loads existing OCR for the active frame,
+  // and the inline rerun button reprocesses it with current settings. Queued
+  // or running jobs are polled until they reach a terminal state. On success
+  // we parse the structured payload (Apple Vision: normalised coords with
   // lower-left origin) and overlay each observation as a translucent box +
   // text label on the preview. The overlay is positioned against the
   // *rendered* image bounds inside the stage (object-fit: contain), not the
@@ -2465,8 +2469,8 @@
   // State machine:
   //   "idle"     — no fetch requested for the current frame
   //   "running"  — an OCR job exists for this frame but has not yet
-  //                terminated on the backend (queued or running). We do NOT
-  //                poll; the user can click again to re-check.
+  //                terminated on the backend (queued or running). We poll
+  //                until the job reaches a terminal state.
   //   "success"  — completed job with at least one observation.
   //   "empty"    — completed job with zero observations.
   //   "missing"  — no OCR job/result has ever been recorded for this frame.
@@ -2480,14 +2484,19 @@
   const FRAME_SUBJECT_TYPE = "frame";
   const AUDIO_SEGMENT_SUBJECT_TYPE = "audio_segment";
   const OCR_PROCESSOR = "ocr";
+  const OCR_SOURCE_IMAGE_PATH_OPTION = "mnemaSourceImagePath";
   const AUDIO_TRANSCRIPTION_PROCESSOR = "audio_transcription";
 
   let ocrStatus = $state<OcrStatus>("idle");
   let ocrError = $state<string | null>(null);
   let ocrObservations = $state<OcrObservation[]>([]);
+  let ocrProviderLabel = $state<string | null>(null);
   let ocrFrameId = $state<number | null>(null);
   let ocrSourceFrame = $state<FrameDto | null>(null);
   let ocrGeneration = 0;
+  let ocrPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let ocrPollJobId: number | null = null;
+  let ocrRerunLoading = $state(false);
   // Whether the OCR overlay/status surface is currently shown for the active
   // frame. Tracked separately from `ocrStatus` so the button can hide a
   // loaded result without discarding it (re-show is a no-op fetch) and so
@@ -2502,22 +2511,83 @@
       ocrGeneration += 1;
       ocrStatus = "idle";
       ocrError = null;
+      clearOcrPoll();
       ocrObservations = [];
+      ocrProviderLabel = null;
       ocrFrameId = null;
       ocrSourceFrame = null;
       ocrVisible = false;
+      ocrRerunLoading = false;
     }
   });
 
-  function parseOcrPayload(json: string | null | undefined): OcrObservation[] | null {
+  type OcrPayloadShape = {
+    provider?: string;
+    modelId?: string | null;
+    observations?: OcrObservation[];
+    provenance?: {
+      provider?: string;
+      modelId?: string | null;
+    } | null;
+  };
+
+  type OcrJobPayloadShape = {
+    provider?: string;
+    modelId?: string | null;
+  };
+
+  function formatOcrProviderLabel(provider: string): string {
+    switch (provider) {
+      case "apple_vision": return "Apple Vision";
+      case "tesseract": return "Tesseract";
+      case "paddle_ocr": return "PaddleOCR";
+      default: return provider;
+    }
+  }
+
+  function resolveOcrProviderLabel(
+    jobPayloadJson: string | null | undefined,
+    resultPayloadJson: string | null | undefined,
+    processorVersion: string | null | undefined,
+  ): string | null {
+    let jobPayload: OcrJobPayloadShape | null = null;
+    let resultPayload: OcrPayloadShape | null = null;
+    try {
+      if (jobPayloadJson) jobPayload = JSON.parse(jobPayloadJson) as OcrJobPayloadShape;
+    } catch {}
+    try {
+      if (resultPayloadJson) resultPayload = JSON.parse(resultPayloadJson) as OcrPayloadShape;
+    } catch {}
+
+    const provider =
+      typeof resultPayload?.provider === "string"
+        ? resultPayload.provider
+        : typeof resultPayload?.provenance?.provider === "string"
+          ? resultPayload.provenance.provider
+          : typeof jobPayload?.provider === "string"
+            ? jobPayload.provider
+            : typeof processorVersion === "string" && processorVersion.includes(":")
+              ? processorVersion.split(":", 1)[0]
+              : processorVersion;
+    if (!provider) return null;
+    const modelId =
+      typeof resultPayload?.modelId === "string"
+        ? resultPayload.modelId
+        : typeof resultPayload?.provenance?.modelId === "string"
+          ? resultPayload.provenance.modelId
+          : typeof jobPayload?.modelId === "string"
+            ? jobPayload.modelId
+            : null;
+    const providerLabel = formatOcrProviderLabel(provider);
+    return modelId ? `${providerLabel} · ${modelId}` : providerLabel;
+  }
+
+  function parseOcrPayload(json: string | null | undefined): { observations: OcrObservation[]; providerLabel: string | null } | null {
     if (!json) return null;
     try {
       const parsed = JSON.parse(json) as Partial<OcrStructuredPayload>;
       const obs = Array.isArray(parsed?.observations) ? parsed.observations : null;
       if (!obs) return null;
-      // Defensive normalisation: keep only entries whose bounding box is a
-      // sane numeric rectangle so a malformed observation can't crash the
-      // overlay render.
       const out: OcrObservation[] = [];
       for (const o of obs) {
         const bb = o?.boundingBox;
@@ -2540,39 +2610,52 @@
           },
         });
       }
-      return out;
+      const provider =
+        typeof parsed?.provider === "string"
+          ? parsed.provider
+          : typeof parsed?.provenance?.provider === "string"
+            ? parsed.provenance.provider
+            : null;
+      const modelId =
+        typeof parsed?.modelId === "string"
+          ? parsed.modelId
+          : typeof parsed?.provenance?.modelId === "string"
+            ? parsed.provenance.modelId
+            : null;
+      return {
+        observations: out,
+        providerLabel: provider ? (modelId ? `${formatOcrProviderLabel(provider)} · ${modelId}` : formatOcrProviderLabel(provider)) : null,
+      };
     } catch {
       return null;
     }
   }
 
-  async function loadOcrForFrame(sourceFrame: FrameDto): Promise<{
+  type OcrLoadResult = {
     status: OcrStatus;
     observations: OcrObservation[];
+    providerLabel: string | null;
     error: string | null;
-  }> {
-    const jobs = await invoke<ProcessingJobDto[]>("list_processing_jobs", {
-      request: { subjectType: FRAME_SUBJECT_TYPE, subjectId: sourceFrame.id },
-    });
+    job: ProcessingJobDto | null;
+  };
 
-    const ocrJobs = jobs.filter((j) => j.processor === OCR_PROCESSOR);
-    if (ocrJobs.length === 0) {
-      return { status: "missing", observations: [], error: null };
-    }
-
-    const completed = ocrJobs
-      .filter((j) => j.status === "completed")
-      .sort((a, b) => b.id - a.id);
-    const job = completed[0] ?? ocrJobs.sort((a, b) => b.id - a.id)[0];
-
+  async function loadOcrFromJob(job: ProcessingJobDto): Promise<OcrLoadResult> {
     if (job.status === "queued" || job.status === "running") {
-      return { status: "running", observations: [], error: null };
+      return {
+        status: "running",
+        observations: [],
+        providerLabel: resolveOcrProviderLabel(job.payloadJson, null, null),
+        error: null,
+        job,
+      };
     }
     if (job.status === "failed") {
       return {
         status: "error",
         observations: [],
+        providerLabel: resolveOcrProviderLabel(job.payloadJson, null, null),
         error: job.lastError ?? "OCR job failed",
+        job,
       };
     }
 
@@ -2580,20 +2663,121 @@
       request: { jobId: job.id } satisfies GetProcessingResultRequest,
     });
 
-    const observations = parseOcrPayload(result?.structuredPayloadJson);
-    if (observations === null) {
+    const parsedPayload = parseOcrPayload(result?.structuredPayloadJson);
+    if (parsedPayload === null) {
       return {
         status: "error",
         observations: [],
+        providerLabel: resolveOcrProviderLabel(job.payloadJson, result?.structuredPayloadJson, result?.processorVersion),
         error: result ? "OCR result payload is missing or invalid" : "OCR result not available",
+        job,
       };
     }
 
     return {
-      status: observations.length === 0 ? "empty" : "success",
-      observations,
+      status: parsedPayload.observations.length === 0 ? "empty" : "success",
+      observations: parsedPayload.observations,
+      providerLabel: parsedPayload.providerLabel ?? resolveOcrProviderLabel(job.payloadJson, result?.structuredPayloadJson, result?.processorVersion),
       error: null,
+      job,
     };
+  }
+
+  async function loadOcrForFrame(sourceFrame: FrameDto): Promise<OcrLoadResult> {
+    const jobs = await invoke<ProcessingJobDto[]>("list_processing_jobs", {
+      request: { subjectType: FRAME_SUBJECT_TYPE, subjectId: sourceFrame.id },
+    });
+
+    const ocrJobs = jobs.filter((j) => j.processor === OCR_PROCESSOR);
+    if (ocrJobs.length === 0) {
+      return { status: "missing", observations: [], providerLabel: null, error: null, job: null };
+    }
+
+    const completed = ocrJobs
+      .filter((j) => j.status === "completed")
+      .sort((a, b) => b.id - a.id);
+    const job = completed[0] ?? ocrJobs.sort((a, b) => b.id - a.id)[0];
+    return loadOcrFromJob(job);
+  }
+
+  function ocrIsCurrent(activeFrameId: number, gen: number): boolean {
+    return gen === ocrGeneration && timelineActive?.id === activeFrameId && ocrFrameId === activeFrameId;
+  }
+
+  function clearOcrPoll(): void {
+    if (ocrPollTimer) {
+      clearTimeout(ocrPollTimer);
+      ocrPollTimer = null;
+    }
+    ocrPollJobId = null;
+  }
+
+  function scheduleOcrPoll(activeFrameId: number, sourceFrame: FrameDto, jobId: number, gen: number): void {
+    if (!ocrIsCurrent(activeFrameId, gen)) return;
+    if (ocrPollTimer && ocrPollJobId === jobId) return;
+    clearOcrPoll();
+    ocrPollJobId = jobId;
+    ocrPollTimer = setTimeout(() => {
+      ocrPollTimer = null;
+      ocrPollJobId = null;
+      void pollOcrJob(activeFrameId, sourceFrame, jobId, gen);
+    }, OCR_POLL_INTERVAL_MS);
+  }
+
+  function applyLoadedOcrData(
+    activeFrameId: number,
+    sourceFrame: FrameDto,
+    gen: number,
+    ocrData: OcrLoadResult,
+  ): void {
+    if (!ocrIsCurrent(activeFrameId, gen)) return;
+    ocrSourceFrame = sourceFrame;
+    ocrStatus = ocrData.status;
+    ocrError = ocrData.error;
+    ocrObservations = ocrData.observations;
+    ocrProviderLabel = ocrData.providerLabel;
+    if (ocrData.status === "running" && ocrData.job) {
+      scheduleOcrPoll(activeFrameId, sourceFrame, ocrData.job.id, gen);
+    } else {
+      clearOcrPoll();
+      ocrRerunLoading = false;
+    }
+  }
+
+  async function pollOcrJob(
+    activeFrameId: number,
+    sourceFrame: FrameDto,
+    jobId: number,
+    gen: number,
+  ): Promise<void> {
+    if (!ocrIsCurrent(activeFrameId, gen)) return;
+    try {
+      const job = await invoke<ProcessingJobDto | null>("get_processing_job", {
+        request: { jobId } satisfies GetProcessingJobRequest,
+      });
+      if (!ocrIsCurrent(activeFrameId, gen)) return;
+      if (!job) {
+        applyLoadedOcrData(activeFrameId, sourceFrame, gen, {
+          status: "error",
+          observations: [],
+          providerLabel: null,
+          error: "OCR job not found",
+          job: null,
+        });
+        return;
+      }
+      const ocrData = await loadOcrFromJob(job);
+      applyLoadedOcrData(activeFrameId, sourceFrame, gen, ocrData);
+    } catch (err) {
+      if (!ocrIsCurrent(activeFrameId, gen)) return;
+      applyLoadedOcrData(activeFrameId, sourceFrame, gen, {
+        status: "error",
+        observations: [],
+        providerLabel: null,
+        error: typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err),
+        job: null,
+      });
+    }
   }
 
   async function loadOcrForActiveFrame(): Promise<void> {
@@ -2604,19 +2788,22 @@
     ocrGeneration += 1;
     const gen = ocrGeneration;
     const frameId = frame.id;
+    clearOcrPoll();
     ocrFrameId = frameId;
     ocrStatus = "running";
     ocrError = null;
     ocrObservations = [];
+    ocrProviderLabel = null;
     ocrSourceFrame = frame;
     ocrVisible = true;
+    ocrRerunLoading = false;
 
     try {
-      if (gen !== ocrGeneration) return;
+      if (!ocrIsCurrent(frameId, gen)) return;
 
       let sourceFrame = frame;
       let ocrData = await loadOcrForFrame(sourceFrame);
-      if (gen !== ocrGeneration) return;
+      if (!ocrIsCurrent(frameId, gen)) return;
 
       if (ocrData.status === "missing") {
         const fallbackFrame = await invoke<FrameDto | null>(
@@ -2627,24 +2814,25 @@
             } satisfies GetEarliestEarlierEquivalentFrameRequest,
           },
         );
-        if (gen !== ocrGeneration) return;
+        if (!ocrIsCurrent(frameId, gen)) return;
 
         if (fallbackFrame) {
           sourceFrame = fallbackFrame;
           ocrData = await loadOcrForFrame(sourceFrame);
-          if (gen !== ocrGeneration) return;
+          if (!ocrIsCurrent(frameId, gen)) return;
         }
       }
 
-      ocrSourceFrame = sourceFrame;
-      ocrStatus = ocrData.status;
-      ocrError = ocrData.error;
-      ocrObservations = ocrData.observations;
+      applyLoadedOcrData(frameId, sourceFrame, gen, ocrData);
     } catch (err) {
-      if (gen !== ocrGeneration) return;
-      ocrStatus = "error";
-      ocrError = typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err);
-      ocrSourceFrame = frame;
+      if (!ocrIsCurrent(frameId, gen)) return;
+      applyLoadedOcrData(frameId, frame, gen, {
+        status: "error",
+        observations: [],
+        providerLabel: null,
+        error: typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err),
+        job: null,
+      });
     }
   }
 
@@ -2672,6 +2860,73 @@
       return;
     }
     void loadOcrForActiveFrame();
+  }
+
+  const ocrRerunButtonLabel = $derived(
+    ocrRerunLoading
+      ? "rerunning…"
+      : ocrStatus === "missing"
+        ? "run OCR"
+        : "rerun OCR",
+  );
+
+  const ocrRerunDisabled = $derived(
+    !timelineActive || ocrRerunLoading || ocrStatus === "running",
+  );
+
+  async function reprocessOcrForActiveFrame(): Promise<void> {
+    const frame = timelineActive;
+    if (!frame || ocrRerunDisabled) return;
+
+    ocrGeneration += 1;
+    const gen = ocrGeneration;
+    const frameId = frame.id;
+    clearOcrPoll();
+    ocrFrameId = frameId;
+    ocrStatus = "running";
+    ocrError = null;
+    ocrObservations = [];
+    ocrProviderLabel = null;
+    ocrSourceFrame = frame;
+    ocrVisible = true;
+    ocrRerunLoading = true;
+
+    try {
+      let sourceImagePath = previewCache.get(frameId) ?? null;
+      if (!sourceImagePath) {
+        await ensurePreview(frameId);
+        sourceImagePath = previewCache.get(frameId) ?? null;
+      }
+      const payloadJson = sourceImagePath
+        ? JSON.stringify({
+            provider: "apple_vision",
+            options: {
+              [OCR_SOURCE_IMAGE_PATH_OPTION]: sourceImagePath,
+            },
+          })
+        : null;
+      const result = await invoke<CapturedFrameReprocessingResultDto>(
+        "reprocess_captured_frame_ocr",
+        {
+          request: {
+            frameId,
+            payloadJson,
+          } satisfies ReprocessCapturedFrameOcrRequest,
+        },
+      );
+      if (!ocrIsCurrent(frameId, gen)) return;
+      const ocrData = await loadOcrFromJob(result.job);
+      applyLoadedOcrData(frameId, frame, gen, ocrData);
+    } catch (err) {
+      if (!ocrIsCurrent(frameId, gen)) return;
+      applyLoadedOcrData(frameId, frame, gen, {
+        status: "error",
+        observations: [],
+        providerLabel: null,
+        error: typeof err === "string" ? err : (err as Error)?.message ?? JSON.stringify(err),
+        job: null,
+      });
+    }
   }
 
   // ─── OCR overlay geometry ────────────────────────────────────────────────
@@ -3580,7 +3835,7 @@
           (ocrVisible
             ? "Hide OCR data for the active frame"
             : ocrStatus === "success"
-              ? `${ocrObservations.length} text region${ocrObservations.length === 1 ? "" : "s"} detected${ocrUsingEarlierFrame ? ` (reused from frame ${ocrSourceFrame?.id})` : ""}`
+              ? `${ocrObservations.length} text region${ocrObservations.length === 1 ? "" : "s"} detected${ocrUsingEarlierFrame ? ` (reused from frame ${ocrSourceFrame?.id})` : ""}${ocrProviderLabel ? ` · ${ocrProviderLabel}` : ""}`
               : ocrStatus === "empty"
                 ? ocrUsingEarlierFrame
                   ? `no text detected (reused from frame ${ocrSourceFrame?.id})`
@@ -3599,6 +3854,22 @@
           <span class="timeline__ocr-count">{ocrObservations.length}</span>
         {/if}
       </button>
+      {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
+        {#if ocrProviderLabel}
+          <span class="timeline__ocr-provider-chip" title={ocrProviderLabel}>{ocrProviderLabel}</span>
+        {/if}
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm timeline__ocr-rerun-btn"
+          onclick={reprocessOcrForActiveFrame}
+          disabled={ocrRerunDisabled}
+          title={ocrStatus === "running"
+            ? "OCR is queued or still processing"
+            : ocrStatus === "missing"
+              ? "Run OCR for the active frame with current settings"
+              : "Rerun OCR for the active frame with current settings"}
+        >{ocrRerunButtonLabel}</button>
+      {/if}
       <button
         class="btn btn--ghost btn--sm"
         onclick={refreshTimelineAndDashboard}
@@ -5430,6 +5701,31 @@
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.04em;
+  }
+
+  .timeline__ocr-provider-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    max-width: 240px;
+    padding: 0 8px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 999px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .timeline__ocr-rerun-btn {
+    color: var(--app-text-muted);
+  }
+
+  .timeline__ocr-rerun-btn:not(:disabled):hover {
+    color: var(--app-text);
   }
 
   .timeline__ocr-btn--running {

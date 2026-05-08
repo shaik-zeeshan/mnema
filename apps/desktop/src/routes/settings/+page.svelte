@@ -14,7 +14,13 @@
     CaptureSupport,
     GeneralAppLogStatus,
     NativeCaptureDebugLogStatus,
+    OcrModelDownloadProgress,
+    OcrModelStatus,
+    OcrModelStatusResponse,
+    OcrProvider,
     OcrRecognitionMode,
+    OcrTesseractPageSegmentationMode,
+    OcrTesseractPreprocessMode,
     RecordingSettings,
     AudioTranscriptionModelDownloadProgress,
     AudioTranscriptionModelStatus,
@@ -35,6 +41,8 @@
 
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
+  const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
+  const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
 
   // ─── State ────────────────────────────────────────────────────────────────
 
@@ -94,9 +102,23 @@
   // runtime in `$lib/theme.svelte` and is persisted via recording settings.
   let draftAppearance = $state<AppearanceSetting>("system");
 
-  // OCR drafts
+  // OCR drafts/status
+  let draftOcrProvider = $state<OcrProvider>("apple_vision");
+  let draftOcrModelId = $state<string | null>(null);
+  let draftOcrLanguage = $state("");
   let draftOcrRecognitionMode = $state<OcrRecognitionMode>("fast");
   let draftOcrLanguageCorrection = $state(false);
+  let draftOcrTesseractPageSegmentationMode = $state<OcrTesseractPageSegmentationMode>("single_block");
+  let draftOcrTesseractPreprocessMode = $state<OcrTesseractPreprocessMode>("grayscale");
+  let draftOcrTesseractUpscaleFactor = $state(1);
+  let draftOcrTesseractCharWhitelist = $state("");
+  let ocrModelStatus = $state<OcrModelStatusResponse | null>(null);
+  let loadingOcrModelStatus = $state(false);
+  let ocrModelError = $state<string | null>(null);
+  let ocrDownloadProgress = $state<OcrModelDownloadProgress | null>(null);
+  let startingOcrDownload = $state(false);
+  let cancellingOcrDownload = $state(false);
+  let ocrDownloadError = $state<string | null>(null);
 
   // Transcription drafts/status
   let draftTranscriptionEnabled = $state(true);
@@ -308,8 +330,17 @@
     draftFollowTimelineLive = s.followTimelineLive ?? false;
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
     draftAppearance = s.appearance ?? "system";
+    const loadedOcrProvider = s.ocr?.provider;
+    const loadedOcrProviderSelectable = isSelectableOcrProvider(loadedOcrProvider);
+    draftOcrProvider = loadedOcrProviderSelectable ? loadedOcrProvider : "apple_vision";
+    draftOcrModelId = loadedOcrProviderSelectable ? (s.ocr?.modelId ?? defaultOcrModelIdForProvider(draftOcrProvider)) : defaultOcrModelIdForProvider(draftOcrProvider);
+    draftOcrLanguage = loadedOcrProviderSelectable ? (s.ocr?.language ?? defaultOcrLanguageForProvider(draftOcrProvider) ?? "") : defaultOcrLanguageForProvider(draftOcrProvider) ?? "";
     draftOcrRecognitionMode = s.ocr?.recognitionMode ?? "fast";
     draftOcrLanguageCorrection = s.ocr?.languageCorrection ?? false;
+    draftOcrTesseractPageSegmentationMode = s.ocr?.tesseractPageSegmentationMode ?? "single_block";
+    draftOcrTesseractPreprocessMode = s.ocr?.tesseractPreprocessMode ?? "grayscale";
+    draftOcrTesseractUpscaleFactor = s.ocr?.tesseractUpscaleFactor ?? 1;
+    draftOcrTesseractCharWhitelist = s.ocr?.tesseractCharWhitelist ?? "";
     draftTranscriptionEnabled = s.transcription?.enabled ?? true;
     draftTranscriptionProvider = s.transcription?.provider ?? "local_whisper";
     draftTranscriptionModelId = s.transcription?.modelId ?? (draftTranscriptionProvider === "apple_speech_on_device" ? null : "base");
@@ -383,8 +414,15 @@
       appearance: draftAppearance,
       developerOptionsEnabled: draftDeveloperOptionsEnabled,
       ocr: {
+        provider: draftOcrProvider,
+        modelId: draftOcrModelId,
+        language: draftOcrLanguage.trim() || null,
         recognitionMode: draftOcrRecognitionMode,
         languageCorrection: draftOcrLanguageCorrection,
+        tesseractPageSegmentationMode: draftOcrTesseractPageSegmentationMode,
+        tesseractPreprocessMode: draftOcrTesseractPreprocessMode,
+        tesseractUpscaleFactor: Math.max(1, Math.min(4, Math.trunc(Number(draftOcrTesseractUpscaleFactor) || 1))),
+        tesseractCharWhitelist: draftOcrTesseractCharWhitelist.trim() || null,
       },
       transcription: {
         enabled: draftTranscriptionEnabled,
@@ -534,6 +572,55 @@
       recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
       loadingRecSettings = false;
+    }
+  }
+
+  async function loadOcrModelStatus() {
+    loadingOcrModelStatus = true;
+    ocrModelError = null;
+    try {
+      ocrModelStatus = await invoke<OcrModelStatusResponse>("get_ocr_model_status");
+    } catch (err) {
+      ocrModelError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      loadingOcrModelStatus = false;
+    }
+  }
+
+  async function startSelectedOcrModelDownload() {
+    if (!selectedOcrModel?.modelId) return;
+    startingOcrDownload = true;
+    ocrDownloadError = null;
+    try {
+      ocrDownloadProgress = await invoke<OcrModelDownloadProgress>("start_ocr_model_download", {
+        request: {
+          provider: selectedOcrModel.provider,
+          modelId: selectedOcrModel.modelId,
+        },
+      });
+    } catch (err) {
+      ocrDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      startingOcrDownload = false;
+    }
+  }
+
+  async function cancelSelectedOcrModelDownload() {
+    cancellingOcrDownload = true;
+    ocrDownloadError = null;
+    try {
+      await invoke("cancel_ocr_model_download");
+    } catch (err) {
+      ocrDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      cancellingOcrDownload = false;
+    }
+  }
+
+  async function handleOcrDownloadProgress(progress: OcrModelDownloadProgress) {
+    ocrDownloadProgress = progress;
+    if (["completed", "failed", "cancelled"].includes(progress.status)) {
+      await loadOcrModelStatus();
     }
   }
 
@@ -836,6 +923,54 @@
     }))
   );
 
+  const ocrProviderOptions = $derived(
+    (ocrModelStatus?.providers ?? [])
+      .filter((provider) => isSelectableOcrProvider(provider.provider))
+      .map((provider) => ({
+        value: provider.provider,
+        label: provider.displayName,
+        description: provider.models.some((model) => model.available)
+          ? "Available now"
+          : "Unavailable or missing",
+      }))
+  );
+
+  const selectedOcrProviderStatus = $derived(
+    ocrModelStatus?.providers.find((provider) => provider.provider === draftOcrProvider) ?? null
+  );
+
+  const selectedOcrModels = $derived(selectedOcrProviderStatus?.models ?? []);
+
+  const ocrModelOptions = $derived(
+    selectedOcrModels.map((model) => ({
+      value: model.modelId ?? "__os_managed__",
+      label: `${model.displayName} · ${ocrStatusLabel(model)}`,
+    }))
+  );
+
+  const selectedOcrModel = $derived(
+    selectedOcrModels.find((model) => model.modelId === draftOcrModelId) ?? selectedOcrModels[0] ?? null
+  );
+
+  const selectedOcrDownloadProgress = $derived(
+    ocrDownloadProgress
+      && ocrDownloadProgress.provider === draftOcrProvider
+      && ocrDownloadProgress.modelId === draftOcrModelId
+      ? ocrDownloadProgress
+      : null
+  );
+
+  const selectedOcrDownloadRunning = $derived(
+    selectedOcrDownloadProgress !== null
+      && ["starting", "downloading", "installing"].includes(selectedOcrDownloadProgress.status)
+  );
+
+  const selectedOcrDownloadPercent = $derived((() => {
+    const progress = selectedOcrDownloadProgress;
+    if (!progress?.totalBytes || progress.totalBytes <= 0) return null;
+    return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
+  })());
+
   const transcriptionProviderOptions = $derived(
     (transcriptionModelStatus?.providers ?? []).map((provider) => ({
       value: provider.provider,
@@ -943,6 +1078,48 @@
     }
   }
 
+  function ocrStatusLabel(model: OcrModelStatus): string {
+    if (model.available) return "Available";
+    if (model.status === "os_managed") return "OS managed";
+    if (model.status === "installed") return "Installed";
+    if (model.status === "downloading") return "Downloading";
+    if (model.status === "failed") return "Failed";
+    return "Missing";
+  }
+
+  function isSelectableOcrProvider(value: string | null | undefined): value is OcrProvider {
+    return SELECTABLE_OCR_PROVIDERS.includes(value as OcrProvider);
+  }
+
+  function defaultOcrModelIdForProvider(provider: OcrProvider): string | null {
+    if (provider === "tesseract") return "tesseract-5.5.2";
+    return null;
+  }
+
+  function defaultOcrLanguageForProvider(provider: OcrProvider): string | null {
+    if (provider === "tesseract") return "eng";
+    return null;
+  }
+
+  function preferredOcrModelIdForProvider(provider: OcrProvider): string | null {
+    const providerStatus = ocrModelStatus?.providers.find((status) => status.provider === provider);
+    const defaultModelId = defaultOcrModelIdForProvider(provider);
+    if (!providerStatus) return defaultModelId;
+    const defaultModel = providerStatus.models.find((model) => model.modelId === defaultModelId);
+    return defaultModel?.modelId ?? providerStatus.models[0]?.modelId ?? defaultModelId;
+  }
+
+  function chooseOcrProvider(provider: string) {
+    if (!isSelectableOcrProvider(provider)) return;
+    draftOcrProvider = provider;
+    draftOcrModelId = preferredOcrModelIdForProvider(draftOcrProvider);
+    draftOcrLanguage = defaultOcrLanguageForProvider(draftOcrProvider) ?? "";
+  }
+
+  function chooseOcrModel(value: string) {
+    draftOcrModelId = value === "__os_managed__" ? null : value;
+  }
+
   function formatBytes(value: number): string {
     if (!Number.isFinite(value) || value <= 0) return "unknown size";
     const units = ["B", "KB", "MB", "GB"];
@@ -984,6 +1161,7 @@
     loadCaptureSupport();
     loadRecordingSettings();
     loadMicState();
+    loadOcrModelStatus();
     loadTranscriptionModelStatus();
     loadDebugLogStatus();
     loadGeneralLogStatus();
@@ -992,6 +1170,7 @@
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
     let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let unlistenOpenSettingsTab: (() => void) | undefined;
+    let unlistenOcrDownloadProgress: (() => void) | undefined;
     let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
     let destroyed = false;
 
@@ -1033,6 +1212,16 @@
       else unlistenOpenSettingsTab = fn;
     });
 
+    listen<OcrModelDownloadProgress>(
+      OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
+      (event) => {
+        void handleOcrDownloadProgress(event.payload);
+      }
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenOcrDownloadProgress = fn;
+    });
+
     listen<AudioTranscriptionModelDownloadProgress>(
       AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
       (event) => {
@@ -1049,6 +1238,7 @@
       unlistenAutoDisconnectFailure?.();
       unlistenRecordingSettingsChanged?.();
       unlistenOpenSettingsTab?.();
+      unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
     };
   });
@@ -1760,57 +1950,200 @@
 
   {#if activeTab === "ocr"}
     <div role="tabpanel" id="settings-panel-ocr" aria-labelledby="settings-tab-ocr" tabindex="0">
-    <!-- ── Card: OCR & Cache ─────────────────────── -->
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
           <span class="card__index">06</span>
           <div>
             <h2 class="card__title">OCR &amp; Previews</h2>
-            <p class="card__subtitle">Recognition behavior and preview-cache lifetime.</p>
+            <p class="card__subtitle">Choose the OCR engine, inspect model availability, and tune preview caching.</p>
           </div>
         </div>
+        <button class="btn btn--ghost btn--sm" onclick={loadOcrModelStatus} disabled={loadingOcrModelStatus}>
+          {loadingOcrModelStatus ? "Checking" : "Refresh"}
+        </button>
       </div>
 
     <div class="settings-group">
-      <span class="group-label">OCR</span>
+      <span class="group-label">OCR engine</span>
       <RadioGroup
-        bind:value={draftOcrRecognitionMode}
-        label="Recognition Mode"
-        options={[
-          {
-            value: "fast",
-            label: "Fast",
-            description: "Lower CPU usage and smoother background OCR; recommended for continuous capture.",
-          },
-          {
-            value: "accurate",
-            label: "Accurate",
-            description: "Higher OCR accuracy at the cost of more CPU usage and heavier processing.",
-          },
+        value={draftOcrProvider}
+        onValueChange={chooseOcrProvider}
+        label="Provider"
+        options={ocrProviderOptions.length > 0 ? ocrProviderOptions : [
+          { value: "apple_vision", label: "Apple Vision", description: "Model status is loading" },
+          { value: "tesseract", label: "Tesseract", description: "Model status is loading" },
         ]}
       />
       <div class="settings-divider"></div>
-      <Switch
-        bind:checked={draftOcrLanguageCorrection}
-        label="Language correction"
-        description="Let Apple Vision spend extra work correcting recognized text using language models"
+      <SelectMenu
+        value={draftOcrModelId ?? "__os_managed__"}
+        onValueChange={chooseOcrModel}
+        label="Model"
+        options={ocrModelOptions.length > 0 ? ocrModelOptions : [
+          { value: draftOcrModelId ?? "__os_managed__", label: "Loading model options" },
+        ]}
       />
+      {#if draftOcrProvider !== "apple_vision"}
+        <label class="field-label" for="ocr-language">Language</label>
+        <input
+          id="ocr-language"
+          class="text-input"
+          bind:value={draftOcrLanguage}
+          placeholder="eng"
+        />
+      {/if}
+      {#if draftOcrProvider === "apple_vision"}
+        <div class="settings-divider"></div>
+        <RadioGroup
+          bind:value={draftOcrRecognitionMode}
+          label="Recognition mode"
+          options={[
+            { value: "fast", label: "Fast", description: "Lower CPU usage; default for continuous capture." },
+            { value: "accurate", label: "Accurate", description: "Higher OCR cost with better Apple Vision accuracy." },
+          ]}
+        />
+        <div class="settings-divider"></div>
+        <Switch
+          bind:checked={draftOcrLanguageCorrection}
+          label="Language correction"
+          description="Let Apple Vision spend extra work correcting recognized text using language models"
+        />
+      {:else if draftOcrProvider === "tesseract"}
+        <div class="settings-divider"></div>
+        <SelectMenu
+          value={draftOcrTesseractPageSegmentationMode}
+          onValueChange={(value) => { draftOcrTesseractPageSegmentationMode = value as OcrTesseractPageSegmentationMode; }}
+          label="Page segmentation"
+          options={[
+            { value: "auto", label: "Auto" },
+            { value: "single_block", label: "Single block" },
+            { value: "single_line", label: "Single line" },
+            { value: "single_word", label: "Single word" },
+            { value: "sparse_text", label: "Sparse text" },
+          ]}
+        />
+        <p class="group-hint">Use Auto for mixed layouts, Single block for paragraph regions, Single line for titles/labels, Single word for isolated tokens, and Sparse text for screenshots with scattered text.</p>
+        <div class="settings-divider"></div>
+        <SelectMenu
+          value={draftOcrTesseractPreprocessMode}
+          onValueChange={(value) => { draftOcrTesseractPreprocessMode = value as OcrTesseractPreprocessMode; }}
+          label="Image preprocessing"
+          options={[
+            { value: "grayscale", label: "Grayscale" },
+            { value: "thresholded", label: "Thresholded" },
+          ]}
+        />
+        <p class="group-hint">Grayscale usually works best for clean UI text. Thresholded black/white can help when edges are muddy or contrast is weak.</p>
+        <div class="settings-divider"></div>
+        <SelectMenu
+          value={String(draftOcrTesseractUpscaleFactor)}
+          onValueChange={(value) => { draftOcrTesseractUpscaleFactor = parseInt(value, 10) || 1; }}
+          label="Upscale before OCR"
+          options={[
+            { value: "1", label: "1×" },
+            { value: "2", label: "2×" },
+            { value: "3", label: "3×" },
+            { value: "4", label: "4×" },
+          ]}
+        />
+        <p class="group-hint">Tesseract works best around 300 DPI. For tiny screenshots, 2× upscaling is a good first step before trying 3× or 4×.</p>
+        <div class="settings-divider"></div>
+        <label class="field-label" for="ocr-tesseract-whitelist">Character whitelist</label>
+        <input
+          id="ocr-tesseract-whitelist"
+          class="text-input"
+          bind:value={draftOcrTesseractCharWhitelist}
+          placeholder="Optional, e.g. ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+        />
+        <p class="group-hint">
+          Tesseract works best with dark, high-contrast text on a light background. For tiny screenshots, try 2× upscaling first; if edges are muddy, try thresholded preprocessing or a narrow whitelist.
+        </p>
+      {/if}
       <p class="group-hint">
-        OCR settings are stored separately from capture settings so more OCR controls can be added here later.
-        {#if draftOcrRecognitionMode === "fast" && !draftOcrLanguageCorrection}
-          <strong>Current profile:</strong> lower CPU usage.
-        {:else if draftOcrRecognitionMode === "accurate" && draftOcrLanguageCorrection}
-          <strong>Current profile:</strong> highest OCR cost.
-        {:else}
-          <strong>Current profile:</strong> mixed CPU/accuracy tradeoff.
-        {/if}
+        If screen capture is enabled, recording start is blocked until the selected OCR provider is available.
+        Existing OCR results remain visible after switching engines.
       </p>
     </div>
 
     <div class="settings-divider"></div>
 
-    <!-- ── Preview Cache ─────────────────────────────────────── -->
+    <div class="settings-group">
+      <span class="group-label">Selected model status</span>
+      {#if ocrModelError}
+        <p class="group-hint group-hint--warn">Failed to load OCR model status: {ocrModelError}</p>
+      {:else if selectedOcrModel}
+        <div class="model-status" class:model-status--available={selectedOcrModel.available}>
+          <div>
+            <div class="model-status__title">{selectedOcrModel.displayName}</div>
+            <div class="model-status__meta">{ocrStatusLabel(selectedOcrModel)}</div>
+          </div>
+          <span class="model-status__pill">{selectedOcrModel.available ? "available" : "unavailable"}</span>
+        </div>
+        <p class="group-hint">{selectedOcrModel.description}</p>
+        {#if selectedOcrModel.runtimeMessage}
+          <p class="group-hint group-hint--warn"><strong>Runtime:</strong> {selectedOcrModel.runtimeMessage}</p>
+        {/if}
+        {#if selectedOcrModel.installPath}
+          <p class="group-hint"><strong>Install path:</strong> {selectedOcrModel.installPath}</p>
+        {/if}
+        {#if selectedOcrModel.missingFiles.length > 0}
+          <p class="group-hint group-hint--warn"><strong>Missing files:</strong> {selectedOcrModel.missingFiles.join(", ")}</p>
+        {/if}
+        {#if selectedOcrModel.failureMessage}
+          <p class="group-hint group-hint--warn"><strong>Failure:</strong> {selectedOcrModel.failureMessage}</p>
+        {/if}
+        {#if selectedOcrModel.licenseLabel || selectedOcrModel.sourceUrl}
+          <p class="group-hint">
+            {#if selectedOcrModel.licenseLabel}<strong>License:</strong> {selectedOcrModel.licenseLabel}. {/if}
+            {#if selectedOcrModel.sourceUrl}<strong>Source:</strong> {selectedOcrModel.sourceUrl}{/if}
+          </p>
+        {/if}
+        {#if selectedOcrModel.management === "app_managed"}
+          {#if selectedOcrModel.download}
+            {#if selectedOcrDownloadRunning}
+              <div class="download-progress" aria-live="polite">
+                <div class="download-progress__bar">
+                  <span style={`width: ${selectedOcrDownloadPercent ?? 8}%`}></span>
+                </div>
+                <p class="group-hint">
+                  {selectedOcrDownloadProgress?.status ?? "downloading"}
+                  {#if selectedOcrDownloadPercent !== null} · {selectedOcrDownloadPercent}%{/if}
+                  {#if selectedOcrDownloadProgress?.message} · {selectedOcrDownloadProgress.message}{/if}
+                </p>
+                <button class="btn btn--ghost" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload}>
+                  {cancellingOcrDownload ? "Cancelling" : "Cancel download"}
+                </button>
+              </div>
+            {:else}
+              <button class="btn btn--ghost" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available}>
+                {startingOcrDownload ? "Starting" : `Download (${formatBytes(selectedOcrModel.download.byteSize)})`}
+              </button>
+            {/if}
+          {:else if !selectedOcrModel.available}
+            <p class="group-hint group-hint--warn">
+              {#if selectedOcrModel.provider === "tesseract"}
+                This provider still needs a Mnema-published self-contained runtime bundle before in-app download can work.
+              {:else}
+                This app-managed OCR bundle is missing, and the current manifest does not ship a downloadable artifact yet.
+              {/if}
+            </p>
+          {/if}
+          {#if ocrDownloadError}
+            <p class="group-hint group-hint--warn">Download failed: {ocrDownloadError}</p>
+          {/if}
+        {:else}
+          <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
+        {/if}
+      {:else if loadingOcrModelStatus}
+        <p class="group-hint">Checking installed OCR models…</p>
+      {:else}
+        <p class="group-hint group-hint--warn">No OCR model status is available for the selected provider.</p>
+      {/if}
+    </div>
+
+    <div class="settings-divider"></div>
+
     <div class="settings-group">
       <span class="group-label">Preview Cache</span>
       <SelectMenu
@@ -1827,8 +2160,7 @@
         ]}
       />
       <p class="group-hint">
-        In-memory cache for frame and image previews. Cached entries expire
-        automatically after the selected duration.
+        In-memory cache for frame and image previews. Cached entries expire automatically after the selected duration.
         {#if draftPreviewCacheTtlSeconds === 0}
           <strong>Disabled</strong> — previews are fetched fresh every time.
         {/if}
