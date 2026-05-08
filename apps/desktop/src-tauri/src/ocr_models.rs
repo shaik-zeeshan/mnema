@@ -280,18 +280,20 @@ pub async fn delete_unused_ocr_models(
         active_download.as_deref(),
     )
     .map_err(|error| format!("failed to inspect unused OCR models: {error}"))?;
+    let running_job_model_keys = infra
+        .list_running_ocr_model_keys()
+        .await
+        .map_err(|error| format!("failed to inspect running OCR jobs: {error}"))?;
+    let retarget_candidate_model_keys =
+        retargetable_deletion_model_keys(&deletion_candidate_model_keys, &running_job_model_keys);
     let retargeted_processing_jobs = infra
         .retarget_ocr_jobs_referencing_model_keys(
-            &deletion_candidate_model_keys,
+            &retarget_candidate_model_keys,
             selected_provider,
             selected_model_id.as_deref(),
         )
         .await
         .map_err(|error| format!("failed to retarget queued OCR jobs: {error}"))?;
-    let running_job_model_keys = infra
-        .list_running_ocr_model_keys()
-        .await
-        .map_err(|error| format!("failed to inspect running OCR jobs: {error}"))?;
 
     delete_unused_ocr_models_inner(
         &app_data_dir,
@@ -585,6 +587,16 @@ fn unused_installed_ocr_model_keys(
     }
 
     Ok(keys)
+}
+
+fn retargetable_deletion_model_keys(
+    deletion_candidate_model_keys: &BTreeSet<String>,
+    running_job_model_keys: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    deletion_candidate_model_keys
+        .difference(running_job_model_keys)
+        .cloned()
+        .collect()
 }
 
 fn clear_active_download(app_handle: &tauri::AppHandle, provider: &str, model_id: &str) {
@@ -1073,6 +1085,29 @@ mod tests {
         assert_eq!(
             response.skipped_processing_jobs[0].model_id,
             ocr::DEFAULT_TESSERACT_MODEL_ID
+        );
+    }
+
+    #[test]
+    fn retargetable_ocr_deletion_model_keys_exclude_running_job_models() {
+        let deletion_candidates = BTreeSet::from([
+            model_key(ocr::TESSERACT_PROVIDER_ID, ocr::DEFAULT_TESSERACT_MODEL_ID),
+            model_key(ocr::PADDLE_OCR_PROVIDER_ID, ocr::DEFAULT_PADDLE_OCR_MODEL_ID),
+        ]);
+        let running_job_models = BTreeSet::from([model_key(
+            ocr::TESSERACT_PROVIDER_ID,
+            ocr::DEFAULT_TESSERACT_MODEL_ID,
+        )]);
+
+        let retargetable =
+            retargetable_deletion_model_keys(&deletion_candidates, &running_job_models);
+
+        assert_eq!(
+            retargetable,
+            BTreeSet::from([model_key(
+                ocr::PADDLE_OCR_PROVIDER_ID,
+                ocr::DEFAULT_PADDLE_OCR_MODEL_ID,
+            )])
         );
     }
 }

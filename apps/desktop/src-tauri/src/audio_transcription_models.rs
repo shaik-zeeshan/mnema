@@ -267,18 +267,20 @@ pub async fn delete_unused_audio_transcription_models(
         active_download.as_deref(),
     )
     .map_err(|error| format!("failed to inspect unused transcription models: {error}"))?;
+    let running_job_model_keys = infra
+        .list_running_audio_transcription_model_keys()
+        .await
+        .map_err(|error| format!("failed to inspect running transcription jobs: {error}"))?;
+    let retarget_candidate_model_keys =
+        retargetable_deletion_model_keys(&deletion_candidate_model_keys, &running_job_model_keys);
     let retargeted_processing_jobs = infra
         .retarget_audio_transcription_jobs_referencing_model_keys(
-            &deletion_candidate_model_keys,
+            &retarget_candidate_model_keys,
             selected_provider,
             selected_model_id,
         )
         .await
         .map_err(|error| format!("failed to retarget queued transcription jobs: {error}"))?;
-    let running_job_model_keys = infra
-        .list_running_audio_transcription_model_keys()
-        .await
-        .map_err(|error| format!("failed to inspect running transcription jobs: {error}"))?;
 
     delete_unused_audio_transcription_models_inner(
         &app_data_dir,
@@ -528,6 +530,16 @@ fn unused_installed_audio_transcription_model_keys(
     }
 
     Ok(keys)
+}
+
+fn retargetable_deletion_model_keys(
+    deletion_candidate_model_keys: &BTreeSet<String>,
+    running_job_model_keys: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    deletion_candidate_model_keys
+        .difference(running_job_model_keys)
+        .cloned()
+        .collect()
 }
 
 impl AudioTranscriptionModelDownloadProgressDto {
@@ -1386,5 +1398,22 @@ mod tests {
             LOCAL_WHISPER_PROVIDER_ID
         );
         assert_eq!(response.skipped_processing_jobs[0].model_id, "base");
+    }
+
+    #[test]
+    fn retargetable_audio_transcription_deletion_model_keys_exclude_running_job_models() {
+        let deletion_candidates = BTreeSet::from([
+            model_key(LOCAL_WHISPER_PROVIDER_ID, "base"),
+            model_key(LOCAL_WHISPER_PROVIDER_ID, "small"),
+        ]);
+        let running_job_models = BTreeSet::from([model_key(LOCAL_WHISPER_PROVIDER_ID, "base")]);
+
+        let retargetable =
+            retargetable_deletion_model_keys(&deletion_candidates, &running_job_models);
+
+        assert_eq!(
+            retargetable,
+            BTreeSet::from([model_key(LOCAL_WHISPER_PROVIDER_ID, "small")])
+        );
     }
 }
