@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "dev": "turbo run dev --filter=desktop",
-    "build": "turbo run build --filter=desktop",
+    "build": "turbo run build --filter=desktop --cache=local:r",
     "check": "turbo run check --filter=desktop",
     "tauri": "turbo run tauri --filter=desktop --",
     "build:macos-local-sign": "./scripts/build-macos-local-sign.sh"
