@@ -572,6 +572,66 @@ impl ProcessingStore {
         rows.into_iter().map(map_processing_job).collect()
     }
 
+    pub async fn list_running_jobs_for_processor(
+        &self,
+        processor: &str,
+    ) -> Result<Vec<ProcessingJob>> {
+        let rows = sqlx::query(
+            "SELECT \
+                id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+                created_at, updated_at, started_at, finished_at \
+             FROM processing_jobs \
+             WHERE processor = ?1 AND status = 'running' \
+             ORDER BY id ASC",
+        )
+        .bind(processor)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(map_processing_job).collect()
+    }
+
+    pub async fn list_retargetable_jobs_for_processor(
+        &self,
+        processor: &str,
+    ) -> Result<Vec<ProcessingJob>> {
+        let rows = sqlx::query(
+            "SELECT \
+                id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+                created_at, updated_at, started_at, finished_at \
+             FROM processing_jobs \
+             WHERE processor = ?1 AND status IN ('queued', 'failed') \
+             ORDER BY id ASC",
+        )
+        .bind(processor)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(map_processing_job).collect()
+    }
+
+    pub async fn update_retargetable_job_payload(
+        &self,
+        job_id: i64,
+        payload_json: &str,
+    ) -> Result<Option<ProcessingJob>> {
+        let update = sqlx::query(
+            "UPDATE processing_jobs \
+             SET payload_json = ?2, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status IN ('queued', 'failed')",
+        )
+        .bind(job_id)
+        .bind(payload_json)
+        .execute(&self.pool)
+        .await?;
+
+        if update.rows_affected() == 0 {
+            return Ok(None);
+        }
+
+        self.get_job(job_id).await
+    }
+
     pub async fn claim_next_queued_job(&self) -> Result<Option<ProcessingJob>> {
         self.claim_next_queued_job_matching_processor(None, None)
             .await

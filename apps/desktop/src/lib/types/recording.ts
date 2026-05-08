@@ -175,6 +175,8 @@ export interface DeletedAudioTranscriptionModel {
 export interface DeleteUnusedAudioTranscriptionModelsResponse {
 	deleted: DeletedAudioTranscriptionModel[];
 	skippedActiveDownloads: DeletedAudioTranscriptionModel[];
+	skippedProcessingJobs: DeletedAudioTranscriptionModel[];
+	retargetedProcessingJobs: number;
 }
 
 export type OcrModelStatusKind =
@@ -248,4 +250,6 @@ export interface DeletedOcrModel {
 export interface DeleteUnusedOcrModelsResponse {
 	deleted: DeletedOcrModel[];
 	skippedActiveDownloads: DeletedOcrModel[];
+	skippedProcessingJobs: DeletedOcrModel[];
+	retargetedProcessingJobs: number;
 }

@@ -126,6 +126,7 @@
   let deleteUnusedOcrModelsMessage = $state<string | null>(null);
   let deletedUnusedOcrModelLabels = $state<string[]>([]);
   let skippedUnusedOcrModelLabels = $state<string[]>([]);
+  let skippedOcrProcessingJobModelLabels = $state<string[]>([]);
   let deleteUnusedOcrModelsError = $state<string | null>(null);
 
   // Transcription drafts/status
@@ -148,6 +149,7 @@
   let deleteUnusedTranscriptionModelsMessage = $state<string | null>(null);
   let deletedUnusedTranscriptionModelLabels = $state<string[]>([]);
   let skippedUnusedTranscriptionModelLabels = $state<string[]>([]);
+  let skippedTranscriptionProcessingJobModelLabels = $state<string[]>([]);
   let deleteUnusedTranscriptionModelsError = $state<string | null>(null);
   let requestingAppleSpeechPermission = $state(false);
   let appleSpeechPermissionError = $state<string | null>(null);
@@ -651,18 +653,20 @@
     deleteUnusedOcrModelsMessage = null;
     deletedUnusedOcrModelLabels = [];
     skippedUnusedOcrModelLabels = [];
+    skippedOcrProcessingJobModelLabels = [];
     deleteUnusedOcrModelsError = null;
     try {
       const result = await invoke<DeleteUnusedOcrModelsResponse>("delete_unused_ocr_models");
-      const skipped = result.skippedActiveDownloads.length;
+      const skipped = result.skippedActiveDownloads.length + result.skippedProcessingJobs.length;
       deletedUnusedOcrModelLabels = result.deleted.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
       skippedUnusedOcrModelLabels = result.skippedActiveDownloads.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      skippedOcrProcessingJobModelLabels = result.skippedProcessingJobs.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
       deleteUnusedOcrModelsMessage =
         result.deleted.length === 0
           ? skipped > 0
-            ? `No unused OCR models deleted. ${skipped} active download skipped.`
+            ? `No unused OCR models deleted. ${skipped} running model${skipped === 1 ? "" : "s"} skipped.${result.retargetedProcessingJobs > 0 ? ` Retargeted ${result.retargetedProcessingJobs} queued/failed OCR job${result.retargetedProcessingJobs === 1 ? "" : "s"}.` : ""}`
             : "No unused OCR models found."
-          : `Deleted ${result.deleted.length} unused OCR model${result.deleted.length === 1 ? "" : "s"}.`;
+          : `Deleted ${result.deleted.length} unused OCR model${result.deleted.length === 1 ? "" : "s"}.${result.retargetedProcessingJobs > 0 ? ` Retargeted ${result.retargetedProcessingJobs} queued/failed OCR job${result.retargetedProcessingJobs === 1 ? "" : "s"}.` : ""}`;
       await loadOcrModelStatus();
     } catch (err) {
       deleteUnusedOcrModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
@@ -761,20 +765,22 @@
     deleteUnusedTranscriptionModelsMessage = null;
     deletedUnusedTranscriptionModelLabels = [];
     skippedUnusedTranscriptionModelLabels = [];
+    skippedTranscriptionProcessingJobModelLabels = [];
     deleteUnusedTranscriptionModelsError = null;
     try {
       const result = await invoke<DeleteUnusedAudioTranscriptionModelsResponse>(
         "delete_unused_audio_transcription_models"
       );
-      const skipped = result.skippedActiveDownloads.length;
+      const skipped = result.skippedActiveDownloads.length + result.skippedProcessingJobs.length;
       deletedUnusedTranscriptionModelLabels = result.deleted.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
       skippedUnusedTranscriptionModelLabels = result.skippedActiveDownloads.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      skippedTranscriptionProcessingJobModelLabels = result.skippedProcessingJobs.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
       deleteUnusedTranscriptionModelsMessage =
         result.deleted.length === 0
           ? skipped > 0
-            ? `No unused transcription models deleted. ${skipped} active download skipped.`
+            ? `No unused transcription models deleted. ${skipped} running model${skipped === 1 ? "" : "s"} skipped.${result.retargetedProcessingJobs > 0 ? ` Retargeted ${result.retargetedProcessingJobs} queued/failed transcription job${result.retargetedProcessingJobs === 1 ? "" : "s"}.` : ""}`
             : "No unused transcription models found."
-          : `Deleted ${result.deleted.length} unused transcription model${result.deleted.length === 1 ? "" : "s"}.`;
+          : `Deleted ${result.deleted.length} unused transcription model${result.deleted.length === 1 ? "" : "s"}.${result.retargetedProcessingJobs > 0 ? ` Retargeted ${result.retargetedProcessingJobs} queued/failed transcription job${result.retargetedProcessingJobs === 1 ? "" : "s"}.` : ""}`;
       await loadTranscriptionModelStatus();
     } catch (err) {
       deleteUnusedTranscriptionModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
@@ -2228,7 +2234,7 @@
         {#if confirmingDeleteUnusedOcrModels}
           <div class="delete-confirmation" role="alert">
             <strong>Delete unused OCR models?</strong>
-            <p>This removes app-managed OCR model directories that are not currently selected. The selected model and active downloads are kept.</p>
+            <p>This removes app-managed OCR model directories that are not currently selected. The selected model, active downloads, and running OCR jobs are kept. Queued and failed OCR jobs using deleted models are moved to the current OCR selection.</p>
             <div class="debug-log-actions">
               <button class="btn btn--danger" onclick={deleteUnusedOcrModels} disabled={deletingUnusedOcrModels}>
                 {deletingUnusedOcrModels ? "Deleting" : "Confirm delete"}
@@ -2254,6 +2260,14 @@
               <p>Skipped active downloads:</p>
               <ul>
                 {#each skippedUnusedOcrModelLabels as model}
+                  <li>{model}</li>
+                {/each}
+              </ul>
+            {/if}
+            {#if skippedOcrProcessingJobModelLabels.length > 0}
+              <p>Skipped running jobs:</p>
+              <ul>
+                {#each skippedOcrProcessingJobModelLabels as model}
                   <li>{model}</li>
                 {/each}
               </ul>
@@ -2491,7 +2505,7 @@
           {#if confirmingDeleteUnusedTranscriptionModels}
             <div class="delete-confirmation" role="alert">
               <strong>Delete unused transcription models?</strong>
-              <p>This removes app-managed transcription model directories that are not currently selected. The selected model and active downloads are kept.</p>
+              <p>This removes app-managed transcription model directories that are not currently selected. The selected model, active downloads, and running transcription jobs are kept. Queued and failed transcription jobs using deleted models are moved to the current transcription selection.</p>
               <div class="debug-log-actions">
                 <button class="btn btn--danger" onclick={deleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels}>
                   {deletingUnusedTranscriptionModels ? "Deleting" : "Confirm delete"}
@@ -2517,6 +2531,14 @@
                 <p>Skipped active downloads:</p>
                 <ul>
                   {#each skippedUnusedTranscriptionModelLabels as model}
+                    <li>{model}</li>
+                  {/each}
+                </ul>
+              {/if}
+              {#if skippedTranscriptionProcessingJobModelLabels.length > 0}
+                <p>Skipped running jobs:</p>
+                <ul>
+                  {#each skippedTranscriptionProcessingJobModelLabels as model}
                     <li>{model}</li>
                   {/each}
                 </ul>
