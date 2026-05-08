@@ -43,6 +43,22 @@ pub struct AudioTranscriptionModelDownloadRequestDto {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedAudioTranscriptionModelDto {
+    pub provider: String,
+    pub model_id: String,
+    pub display_name: String,
+    pub install_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteUnusedAudioTranscriptionModelsResponseDto {
+    pub deleted: Vec<DeletedAudioTranscriptionModelDto>,
+    pub skipped_active_downloads: Vec<DeletedAudioTranscriptionModelDto>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioTranscriptionModelDownloadStatusDto {
     Starting,
@@ -228,6 +244,30 @@ pub fn cancel_audio_transcription_model_download(
 }
 
 #[tauri::command]
+pub fn delete_unused_audio_transcription_models(
+    app_handle: tauri::AppHandle,
+    download_state: tauri::State<'_, AudioTranscriptionModelDownloadState>,
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+) -> Result<DeleteUnusedAudioTranscriptionModelsResponseDto, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+    let settings = crate::native_capture::read_recording_settings(settings.inner());
+    let selected_provider = provider_id_for_settings(settings.transcription.provider);
+    let selected_model_id = settings.transcription.model_id.as_deref();
+    let active_download = active_download_key(download_state.inner())?;
+
+    delete_unused_audio_transcription_models_inner(
+        &app_data_dir,
+        selected_provider,
+        selected_model_id,
+        active_download.as_deref(),
+    )
+    .map_err(|error| format!("failed to delete unused audio transcription models: {error}"))
+}
+
+#[tauri::command]
 pub fn request_apple_speech_recognition_permission(
     app_handle: tauri::AppHandle,
 ) -> Result<AudioTranscriptionModelStatusResponseDto, String> {
@@ -349,6 +389,79 @@ fn claim_model_download(
         cancel_requested,
     });
     Ok(())
+}
+
+fn active_download_key(
+    download_state: &AudioTranscriptionModelDownloadState,
+) -> Result<Option<String>, String> {
+    let active = download_state
+        .lock()
+        .map_err(|_| "audio transcription model download state poisoned".to_string())?;
+    Ok(active
+        .as_ref()
+        .map(|download| model_key(&download.provider, &download.model_id)))
+}
+
+fn model_key(provider: &str, model_id: &str) -> String {
+    format!("{provider}/{model_id}")
+}
+
+#[derive(Debug, thiserror::Error)]
+enum DeleteUnusedAudioTranscriptionModelsError {
+    #[error(transparent)]
+    Status(#[from] ModelStatusError),
+    #[error(transparent)]
+    Install(#[from] audio_transcription::ModelInstallError),
+}
+
+fn delete_unused_audio_transcription_models_inner(
+    app_data_dir: &Path,
+    selected_provider: &str,
+    selected_model_id: Option<&str>,
+    active_download: Option<&str>,
+) -> Result<
+    DeleteUnusedAudioTranscriptionModelsResponseDto,
+    DeleteUnusedAudioTranscriptionModelsError,
+> {
+    let models_dir = audio_transcription_models_dir(app_data_dir);
+    let manifest = builtin_model_manifest();
+    let mut deleted = Vec::new();
+    let mut skipped_active_downloads = Vec::new();
+
+    for descriptor in &manifest.models {
+        let ModelManagement::AppManaged { .. } = &descriptor.management else {
+            continue;
+        };
+        let Some(model_id) = descriptor.model_id.as_deref() else {
+            continue;
+        };
+        if descriptor.provider == selected_provider && Some(model_id) == selected_model_id {
+            continue;
+        }
+        let install_dir = model_install_dir(&models_dir, &descriptor.provider, model_id)?;
+        if !install_dir.exists() {
+            continue;
+        }
+
+        let candidate = DeletedAudioTranscriptionModelDto {
+            provider: descriptor.provider.clone(),
+            model_id: model_id.to_string(),
+            display_name: descriptor.display_name.clone(),
+            install_path: install_dir.display().to_string(),
+        };
+        if active_download == Some(model_key(&descriptor.provider, model_id).as_str()) {
+            skipped_active_downloads.push(candidate);
+            continue;
+        }
+
+        remove_model_dir_if_exists(&install_dir)?;
+        deleted.push(candidate);
+    }
+
+    Ok(DeleteUnusedAudioTranscriptionModelsResponseDto {
+        deleted,
+        skipped_active_downloads,
+    })
 }
 
 impl AudioTranscriptionModelDownloadProgressDto {

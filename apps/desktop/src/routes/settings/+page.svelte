@@ -25,6 +25,8 @@
     AudioTranscriptionModelDownloadProgress,
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
+    DeleteUnusedAudioTranscriptionModelsResponse,
+    DeleteUnusedOcrModelsResponse,
     AudioTranscriptionProvider,
     AudioTranscriptionMemoryMode,
     AppleSpeechOnDeviceAvailabilityStatus,
@@ -119,6 +121,12 @@
   let startingOcrDownload = $state(false);
   let cancellingOcrDownload = $state(false);
   let ocrDownloadError = $state<string | null>(null);
+  let deletingUnusedOcrModels = $state(false);
+  let confirmingDeleteUnusedOcrModels = $state(false);
+  let deleteUnusedOcrModelsMessage = $state<string | null>(null);
+  let deletedUnusedOcrModelLabels = $state<string[]>([]);
+  let skippedUnusedOcrModelLabels = $state<string[]>([]);
+  let deleteUnusedOcrModelsError = $state<string | null>(null);
 
   // Transcription drafts/status
   let draftTranscriptionEnabled = $state(true);
@@ -135,6 +143,12 @@
   let startingTranscriptionDownload = $state(false);
   let cancellingTranscriptionDownload = $state(false);
   let transcriptionDownloadError = $state<string | null>(null);
+  let deletingUnusedTranscriptionModels = $state(false);
+  let confirmingDeleteUnusedTranscriptionModels = $state(false);
+  let deleteUnusedTranscriptionModelsMessage = $state<string | null>(null);
+  let deletedUnusedTranscriptionModelLabels = $state<string[]>([]);
+  let skippedUnusedTranscriptionModelLabels = $state<string[]>([]);
+  let deleteUnusedTranscriptionModelsError = $state<string | null>(null);
   let requestingAppleSpeechPermission = $state(false);
   let appleSpeechPermissionError = $state<string | null>(null);
 
@@ -624,6 +638,40 @@
     }
   }
 
+  function requestDeleteUnusedOcrModels() {
+    confirmingDeleteUnusedOcrModels = true;
+    deleteUnusedOcrModelsMessage = null;
+    deleteUnusedOcrModelsError = null;
+    deletedUnusedOcrModelLabels = [];
+    skippedUnusedOcrModelLabels = [];
+  }
+
+  async function deleteUnusedOcrModels() {
+    deletingUnusedOcrModels = true;
+    deleteUnusedOcrModelsMessage = null;
+    deletedUnusedOcrModelLabels = [];
+    skippedUnusedOcrModelLabels = [];
+    deleteUnusedOcrModelsError = null;
+    try {
+      const result = await invoke<DeleteUnusedOcrModelsResponse>("delete_unused_ocr_models");
+      const skipped = result.skippedActiveDownloads.length;
+      deletedUnusedOcrModelLabels = result.deleted.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      skippedUnusedOcrModelLabels = result.skippedActiveDownloads.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      deleteUnusedOcrModelsMessage =
+        result.deleted.length === 0
+          ? skipped > 0
+            ? `No unused OCR models deleted. ${skipped} active download skipped.`
+            : "No unused OCR models found."
+          : `Deleted ${result.deleted.length} unused OCR model${result.deleted.length === 1 ? "" : "s"}.`;
+      await loadOcrModelStatus();
+    } catch (err) {
+      deleteUnusedOcrModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      deletingUnusedOcrModels = false;
+      confirmingDeleteUnusedOcrModels = false;
+    }
+  }
+
   async function loadTranscriptionModelStatus() {
     loadingTranscriptionModelStatus = true;
     transcriptionModelError = null;
@@ -697,6 +745,42 @@
     transcriptionDownloadProgress = progress;
     if (["completed", "failed", "cancelled"].includes(progress.status)) {
       await loadTranscriptionModelStatus();
+    }
+  }
+
+  function requestDeleteUnusedTranscriptionModels() {
+    confirmingDeleteUnusedTranscriptionModels = true;
+    deleteUnusedTranscriptionModelsMessage = null;
+    deleteUnusedTranscriptionModelsError = null;
+    deletedUnusedTranscriptionModelLabels = [];
+    skippedUnusedTranscriptionModelLabels = [];
+  }
+
+  async function deleteUnusedTranscriptionModels() {
+    deletingUnusedTranscriptionModels = true;
+    deleteUnusedTranscriptionModelsMessage = null;
+    deletedUnusedTranscriptionModelLabels = [];
+    skippedUnusedTranscriptionModelLabels = [];
+    deleteUnusedTranscriptionModelsError = null;
+    try {
+      const result = await invoke<DeleteUnusedAudioTranscriptionModelsResponse>(
+        "delete_unused_audio_transcription_models"
+      );
+      const skipped = result.skippedActiveDownloads.length;
+      deletedUnusedTranscriptionModelLabels = result.deleted.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      skippedUnusedTranscriptionModelLabels = result.skippedActiveDownloads.map((model) => `${model.displayName} (${model.provider}/${model.modelId})`);
+      deleteUnusedTranscriptionModelsMessage =
+        result.deleted.length === 0
+          ? skipped > 0
+            ? `No unused transcription models deleted. ${skipped} active download skipped.`
+            : "No unused transcription models found."
+          : `Deleted ${result.deleted.length} unused transcription model${result.deleted.length === 1 ? "" : "s"}.`;
+      await loadTranscriptionModelStatus();
+    } catch (err) {
+      deleteUnusedTranscriptionModelsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      deletingUnusedTranscriptionModels = false;
+      confirmingDeleteUnusedTranscriptionModels = false;
     }
   }
 
@@ -1984,7 +2068,7 @@
           { value: draftOcrModelId ?? "__os_managed__", label: "Loading model options" },
         ]}
       />
-      {#if draftOcrProvider !== "apple_vision"}
+      {#if draftOcrProvider === "tesseract"}
         <label class="field-label" for="ocr-language">Language</label>
         <input
           id="ocr-language"
@@ -2134,6 +2218,50 @@
           {/if}
         {:else}
           <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
+        {/if}
+        <div class="debug-log-actions">
+          <button class="btn btn--danger" onclick={requestDeleteUnusedOcrModels} disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning}>
+            Delete unused OCR models
+          </button>
+        </div>
+        <p class="group-hint">Removes app-managed OCR model files except the model selected above.</p>
+        {#if confirmingDeleteUnusedOcrModels}
+          <div class="delete-confirmation" role="alert">
+            <strong>Delete unused OCR models?</strong>
+            <p>This removes app-managed OCR model directories that are not currently selected. The selected model and active downloads are kept.</p>
+            <div class="debug-log-actions">
+              <button class="btn btn--danger" onclick={deleteUnusedOcrModels} disabled={deletingUnusedOcrModels}>
+                {deletingUnusedOcrModels ? "Deleting" : "Confirm delete"}
+              </button>
+              <button class="btn btn--ghost" onclick={() => { confirmingDeleteUnusedOcrModels = false; }} disabled={deletingUnusedOcrModels}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        {/if}
+        {#if deleteUnusedOcrModelsMessage}
+          <div class="cleanup-result" aria-live="polite">
+            <strong>{deleteUnusedOcrModelsMessage}</strong>
+            {#if deletedUnusedOcrModelLabels.length > 0}
+              <p>Deleted:</p>
+              <ul>
+                {#each deletedUnusedOcrModelLabels as model}
+                  <li>{model}</li>
+                {/each}
+              </ul>
+            {/if}
+            {#if skippedUnusedOcrModelLabels.length > 0}
+              <p>Skipped active downloads:</p>
+              <ul>
+                {#each skippedUnusedOcrModelLabels as model}
+                  <li>{model}</li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+        {#if deleteUnusedOcrModelsError}
+          <p class="group-hint group-hint--warn">Delete failed: {deleteUnusedOcrModelsError}</p>
         {/if}
       {:else if loadingOcrModelStatus}
         <p class="group-hint">Checking installed OCR models…</p>
@@ -2353,6 +2481,50 @@
             {/if}
           {:else}
             <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
+          {/if}
+          <div class="debug-log-actions">
+            <button class="btn btn--danger" onclick={requestDeleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning}>
+              Delete unused transcription models
+            </button>
+          </div>
+          <p class="group-hint">Removes app-managed transcription model files except the model selected above.</p>
+          {#if confirmingDeleteUnusedTranscriptionModels}
+            <div class="delete-confirmation" role="alert">
+              <strong>Delete unused transcription models?</strong>
+              <p>This removes app-managed transcription model directories that are not currently selected. The selected model and active downloads are kept.</p>
+              <div class="debug-log-actions">
+                <button class="btn btn--danger" onclick={deleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels}>
+                  {deletingUnusedTranscriptionModels ? "Deleting" : "Confirm delete"}
+                </button>
+                <button class="btn btn--ghost" onclick={() => { confirmingDeleteUnusedTranscriptionModels = false; }} disabled={deletingUnusedTranscriptionModels}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          {/if}
+          {#if deleteUnusedTranscriptionModelsMessage}
+            <div class="cleanup-result" aria-live="polite">
+              <strong>{deleteUnusedTranscriptionModelsMessage}</strong>
+              {#if deletedUnusedTranscriptionModelLabels.length > 0}
+                <p>Deleted:</p>
+                <ul>
+                  {#each deletedUnusedTranscriptionModelLabels as model}
+                    <li>{model}</li>
+                  {/each}
+                </ul>
+              {/if}
+              {#if skippedUnusedTranscriptionModelLabels.length > 0}
+                <p>Skipped active downloads:</p>
+                <ul>
+                  {#each skippedUnusedTranscriptionModelLabels as model}
+                    <li>{model}</li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+          {/if}
+          {#if deleteUnusedTranscriptionModelsError}
+            <p class="group-hint group-hint--warn">Delete failed: {deleteUnusedTranscriptionModelsError}</p>
           {/if}
         {:else if loadingTranscriptionModelStatus}
           <p class="group-hint">Checking installed transcription models…</p>
@@ -3147,6 +3319,57 @@
     border-radius: inherit;
     background: var(--app-accent);
     transition: width 0.15s ease;
+  }
+
+  .cleanup-result {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-accent) 7%, transparent);
+    color: var(--app-text);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .cleanup-result strong {
+    font-size: 12px;
+  }
+
+  .cleanup-result p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-weight: 700;
+  }
+
+  .cleanup-result ul {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--app-text-muted);
+  }
+
+  .delete-confirmation {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 4px;
+    background: var(--app-danger-bg-soft);
+    color: var(--app-text);
+  }
+
+  .delete-confirmation strong {
+    font-size: 12px;
+  }
+
+  .delete-confirmation p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.45;
   }
 
   /* ── Text input ────────────────────────────────────────────── */

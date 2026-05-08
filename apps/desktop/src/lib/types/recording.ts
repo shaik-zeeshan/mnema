@@ -165,6 +165,18 @@ export interface AudioTranscriptionModelDownloadProgress {
 	message: string | null;
 }
 
+export interface DeletedAudioTranscriptionModel {
+	provider: AudioTranscriptionProvider;
+	modelId: string;
+	displayName: string;
+	installPath: string;
+}
+
+export interface DeleteUnusedAudioTranscriptionModelsResponse {
+	deleted: DeletedAudioTranscriptionModel[];
+	skippedActiveDownloads: DeletedAudioTranscriptionModel[];
+}
+
 export type OcrModelStatusKind =
 	| "installed"
 	| "missing"
@@ -224,4 +236,16 @@ export interface OcrModelDownloadProgress {
 	downloadedBytes: number;
 	totalBytes: number | null;
 	message: string | null;
+}
+
+export interface DeletedOcrModel {
+	provider: OcrProvider;
+	modelId: string;
+	displayName: string;
+	installPath: string;
+}
+
+export interface DeleteUnusedOcrModelsResponse {
+	deleted: DeletedOcrModel[];
+	skippedActiveDownloads: DeletedOcrModel[];
 }
