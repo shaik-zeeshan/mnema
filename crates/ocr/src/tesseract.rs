@@ -19,6 +19,7 @@ const PAGE_SEGMENTATION_MODE_OPTION: &str = "pageSegmentationMode";
 const PREPROCESS_MODE_OPTION: &str = "preprocessMode";
 const UPSCALE_FACTOR_OPTION: &str = "upscaleFactor";
 const CHAR_WHITELIST_OPTION: &str = "charWhitelist";
+const MAX_PREPROCESSED_LONG_EDGE: u32 = 2400;
 
 #[derive(Debug, Clone)]
 pub struct TesseractModelSelection {
@@ -320,11 +321,13 @@ fn preprocess_tesseract_image(
     upscale_factor: u8,
     preprocess_mode: TesseractPreprocessMode,
 ) -> GrayImage {
-    let scaled = if upscale_factor > 1 {
+    let (target_width, target_height) =
+        bounded_preprocessed_dimensions(source.width(), source.height(), upscale_factor);
+    let scaled = if target_width != source.width() || target_height != source.height() {
         image::imageops::resize(
             source,
-            source.width().saturating_mul(upscale_factor as u32),
-            source.height().saturating_mul(upscale_factor as u32),
+            target_width,
+            target_height,
             FilterType::CatmullRom,
         )
     } else {
@@ -335,6 +338,21 @@ fn preprocess_tesseract_image(
         TesseractPreprocessMode::Grayscale => scaled,
         TesseractPreprocessMode::Thresholded => otsu_threshold(&scaled),
     }
+}
+
+fn bounded_preprocessed_dimensions(width: u32, height: u32, upscale_factor: u8) -> (u32, u32) {
+    let target_width = width.saturating_mul(upscale_factor as u32).max(1);
+    let target_height = height.saturating_mul(upscale_factor as u32).max(1);
+    let longest = target_width.max(target_height);
+    if longest <= MAX_PREPROCESSED_LONG_EDGE {
+        return (target_width, target_height);
+    }
+
+    let scale = MAX_PREPROCESSED_LONG_EDGE as f64 / longest as f64;
+    (
+        ((target_width as f64 * scale).round() as u32).max(1),
+        ((target_height as f64 * scale).round() as u32).max(1),
+    )
 }
 
 fn otsu_threshold(source: &GrayImage) -> GrayImage {
@@ -466,5 +484,28 @@ mod tests {
             .map(|pixel| pixel[0])
             .collect::<Vec<_>>();
         assert!(values.iter().all(|value| *value == 0 || *value == 255));
+    }
+
+    #[test]
+    fn preprocessing_honors_upscale_for_small_images() {
+        let (width, height) = bounded_preprocessed_dimensions(320, 180, 2);
+
+        assert_eq!((width, height), (640, 360));
+    }
+
+    #[test]
+    fn preprocessing_caps_large_upscaled_screenshots() {
+        let (width, height) = bounded_preprocessed_dimensions(1920, 1080, 4);
+
+        assert_eq!(width, MAX_PREPROCESSED_LONG_EDGE);
+        assert_eq!(height, 1350);
+    }
+
+    #[test]
+    fn preprocessing_caps_native_large_screenshots() {
+        let (width, height) = bounded_preprocessed_dimensions(3840, 2160, 1);
+
+        assert_eq!(width, MAX_PREPROCESSED_LONG_EDGE);
+        assert_eq!(height, 1350);
     }
 }
