@@ -124,10 +124,12 @@ mod tests {
     use crate::{
         db::Database,
         processing::{
-            NewFrame, OcrOutput, OcrProcessorBackend, OcrProvider, OcrRequest, ProcessingJobDraft,
-            ProcessingResultDraft, ProcessingSubject,
+            NewFrame, OcrProcessorBackend, ProcessingJobDraft, ProcessingResultDraft,
+            ProcessingSubject,
         },
-        OcrEngine,
+    };
+    use ocr::{
+        OcrBoundingBox, OcrObservation, OcrOutput, OcrProvider, OcrRequest, OcrStructuredPayload,
     };
 
     struct TestDir {
@@ -222,15 +224,15 @@ mod tests {
     }
 
     #[async_trait]
-    impl OcrEngine for MockOcrEngine {
-        fn provider(&self) -> OcrProvider {
-            OcrProvider::AppleVision
+    impl OcrProvider for MockOcrEngine {
+        fn provider(&self) -> &'static str {
+            ocr::APPLE_VISION_PROVIDER_ID
         }
 
-        async fn recognize(&self, _request: OcrRequest) -> Result<OcrOutput> {
+        async fn recognize(&self, _request: OcrRequest) -> ocr::OcrResult<OcrOutput> {
             match &self.response {
                 MockOcrResponse::Success(output) => Ok(output.clone()),
-                MockOcrResponse::Failure(message) => Err(AppInfraError::OcrEngine(message.clone())),
+                MockOcrResponse::Failure(message) => Err(ocr::OcrError::Provider(message.clone())),
             }
         }
     }
@@ -287,14 +289,23 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let store = ProcessingStore::new(database.pool().clone());
-            let structured_payload_json = r#"{"blocks":[{"text":"recognized text"}]}"#;
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
                     response: MockOcrResponse::Success(
-                        OcrOutput::new("recognized text")
-                            .with_structured_payload_json(structured_payload_json)
-                            .with_engine_version("vision-1.0"),
+                        OcrOutput::new(
+                            "recognized text",
+                            OcrStructuredPayload::new(
+                                ocr::APPLE_VISION_PROVIDER_ID,
+                                None,
+                                vec![OcrObservation::new(
+                                    "recognized text",
+                                    0.95,
+                                    OcrBoundingBox::new(0.1, 0.2, 0.3, 0.4),
+                                )],
+                            ),
+                        )
+                        .with_provider_version("vision-1.0"),
                     ),
                 })),
             );
@@ -332,10 +343,16 @@ mod tests {
                 completion.result.result_text.as_deref(),
                 Some("recognized text")
             );
-            assert_eq!(
-                completion.result.structured_payload_json.as_deref(),
-                Some(structured_payload_json)
-            );
+            let structured: serde_json::Value = serde_json::from_str(
+                completion
+                    .result
+                    .structured_payload_json
+                    .as_deref()
+                    .expect("structured payload should persist"),
+            )
+            .expect("structured payload should parse");
+            assert_eq!(structured["provider"], ocr::APPLE_VISION_PROVIDER_ID);
+            assert_eq!(structured["observations"][0]["text"], "recognized text");
             assert_eq!(
                 completion.result.processor_version.as_deref(),
                 Some("apple_vision:vision-1.0")
@@ -462,7 +479,7 @@ mod tests {
             assert_eq!(failed_job.attempt_count, 1);
             assert_eq!(
                 failed_job.last_error.as_deref(),
-                Some("ocr engine error: vision bridge failed")
+                Some("ocr engine error: ocr provider error: vision bridge failed")
             );
 
             assert!(store

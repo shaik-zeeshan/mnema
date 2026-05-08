@@ -1,0 +1,28 @@
+[package]
+name = "ocr"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+paddle-rs = ["dep:paddle_ocr_rs", "dep:tokio"]
+paddle-onnx = ["paddle-rs"]
+tesseract-embedded = ["dep:tesseract_rs"]
+
+[dependencies]
+async-trait = "0.1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+paddle_ocr_rs = { package = "ocr-rs", version = "2.2.2", default-features = false, optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tesseract_rs = { package = "tesseract-rs", version = "0.2.0", optional = true }
+thiserror = "2"
+tokio = { version = "1", features = ["rt"], optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cidre = { version = "0.15", default-features = false, features = ["vn", "blocks", "cm", "cv", "macos_15_0"] }
+
+[dev-dependencies]
+tempfile = "3"

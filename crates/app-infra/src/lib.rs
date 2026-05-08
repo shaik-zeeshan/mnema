@@ -41,13 +41,17 @@ pub use jobs::{
     default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
     CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
+pub use ocr::{
+    AppleVisionProvider, FrozenOcrPayload, OcrBoundingBox, OcrObservation, OcrOutput, OcrProvider,
+    OcrProviderKind, OcrRecognitionMode, OcrRequest, OcrStructuredPayload, PaddleOcrProvider,
+    TesseractProvider,
+};
 pub use processing::{
-    AppleVisionOcrEngine, AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend,
-    FocusedFrameWindow, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameProcessingJob,
-    FrameSummary, NewFrame, OcrEngine, OcrOutput, OcrProcessorBackend, OcrProvider, OcrRequest,
-    ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft, ProcessingJobRunOutcome,
-    ProcessingJobStatus, ProcessingResult, ProcessingResultDraft, ProcessingRuntime,
-    ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
+    AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend, FocusedFrameWindow, Frame,
+    FrameEquivalence, FrameEquivalenceStatus, FrameProcessingJob, FrameSummary, NewFrame,
+    OcrProcessorBackend, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
+    ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingResult, ProcessingResultDraft,
+    ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
     SegmentWorkspaceOcrReference, AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR,
     FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
@@ -715,7 +719,11 @@ impl AppInfra {
 
 fn default_processing_registry() -> ProcessorRegistry {
     ProcessorRegistry::new()
-        .register(OcrProcessorBackend::new(AppleVisionOcrEngine::new()))
+        .register(OcrProcessorBackend::from_provider_arcs([
+            Arc::new(AppleVisionProvider::new()) as Arc<dyn ocr::OcrProvider>,
+            Arc::new(TesseractProvider::with_models_dir(std::env::temp_dir())),
+            Arc::new(PaddleOcrProvider::with_models_dir(std::env::temp_dir())),
+        ]))
         .register(AudioTranscriptionProcessorBackend::from_provider_arcs([
             Arc::new(audio_transcription::providers::LocalWhisperProvider)
                 as Arc<dyn audio_transcription::TranscriptionProvider>,

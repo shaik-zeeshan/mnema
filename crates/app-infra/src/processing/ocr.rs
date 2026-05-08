@@ -1,32 +1,52 @@
-use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
+use ocr::{FrozenOcrPayload, OcrProvider, OcrRequest};
 
-use crate::{AppInfraError, Result};
+use crate::{AppInfraError, Frame, Result};
 
 use super::{
-    engine::{OcrEngine, OcrRequest},
-    Frame, ProcessingJob, ProcessingResultDraft, ProcessingStore, FRAME_SUBJECT_TYPE,
-    OCR_PROCESSOR,
+    ProcessingJob, ProcessingResultDraft, ProcessingStore, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
+
+const OCR_SOURCE_IMAGE_PATH_OPTION: &str = "mnemaSourceImagePath";
 
 #[derive(Clone)]
 pub struct OcrProcessorBackend {
-    engine: Arc<dyn OcrEngine>,
+    providers: HashMap<String, Arc<dyn OcrProvider>>,
 }
 
 impl OcrProcessorBackend {
-    pub fn new<E>(engine: E) -> Self
+    pub fn new<P>(provider: P) -> Self
     where
-        E: OcrEngine + 'static,
+        P: OcrProvider + 'static,
     {
+        Self::from_arc(Arc::new(provider))
+    }
+
+    pub fn from_arc(provider: Arc<dyn OcrProvider>) -> Self {
+        let provider_id = provider.provider().to_string();
         Self {
-            engine: Arc::new(engine),
+            providers: HashMap::from([(provider_id, provider)]),
         }
     }
 
-    pub fn from_arc(engine: Arc<dyn OcrEngine>) -> Self {
-        Self { engine }
+    pub fn from_provider_arcs<I>(providers: I) -> Self
+    where
+        I: IntoIterator<Item = Arc<dyn OcrProvider>>,
+    {
+        Self {
+            providers: providers
+                .into_iter()
+                .map(|provider| (provider.provider().to_string(), provider))
+                .collect(),
+        }
+    }
+
+    fn provider_for(&self, provider: &str) -> Result<Arc<dyn OcrProvider>> {
+        self.providers.get(provider).cloned().ok_or_else(|| {
+            AppInfraError::OcrEngine(format!("ocr provider is not registered for '{provider}'"))
+        })
     }
 
     async fn load_frame(&self, store: &ProcessingStore, job: &ProcessingJob) -> Result<Frame> {
@@ -44,6 +64,17 @@ impl OcrProcessorBackend {
     }
 }
 
+fn source_image_path_from_payload(payload: &FrozenOcrPayload) -> Option<PathBuf> {
+    payload
+        .options
+        .get(OCR_SOURCE_IMAGE_PATH_OPTION)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+}
+
 #[async_trait]
 impl super::ProcessorBackend for OcrProcessorBackend {
     fn processor(&self) -> &'static str {
@@ -56,19 +87,31 @@ impl super::ProcessorBackend for OcrProcessorBackend {
         job: &ProcessingJob,
     ) -> Result<ProcessingResultDraft> {
         let frame = self.load_frame(store, job).await?;
-        let request = OcrRequest::new(frame.file_path).with_payload_json(job.payload_json.clone());
-        let output = self.engine.recognize(request).await?;
-        let provider = self.engine.provider().as_str();
-
+        let mut payload = FrozenOcrPayload::from_payload_json(job.payload_json.as_deref())
+            .map_err(|error| AppInfraError::OcrEngine(error.to_string()))?;
+        let provider = self.provider_for(&payload.provider)?;
+        let image_path = source_image_path_from_payload(&payload)
+            .unwrap_or_else(|| PathBuf::from(frame.file_path));
+        payload.options.remove(OCR_SOURCE_IMAGE_PATH_OPTION);
+        let request: OcrRequest = payload.to_request(image_path);
+        let output = provider
+            .recognize(request)
+            .await
+            .map_err(|error| AppInfraError::OcrEngine(error.to_string()))?;
+        let provider_id = provider.provider();
         let processor_version = output
-            .engine_version
-            .map(|engine_version| format!("{provider}:{engine_version}"))
-            .unwrap_or_else(|| provider.to_string());
+            .provider_version
+            .clone()
+            .map(|provider_version| format!("{provider_id}:{provider_version}"))
+            .unwrap_or_else(|| provider_id.to_string());
+        let structured_payload_json = output
+            .structured_payload_json()
+            .map_err(|error| AppInfraError::OcrEngine(error.to_string()))?;
 
         Ok(ProcessingResultDraft::new()
             .with_result_text(output.text)
             .with_processor_version(processor_version)
-            .with_optional_structured_payload_json(output.structured_payload_json))
+            .with_structured_payload_json(structured_payload_json))
     }
 }
 
@@ -81,8 +124,12 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use ocr::{
+        OcrBoundingBox, OcrObservation, OcrOutput, OcrStructuredPayload, TESSERACT_PROVIDER_ID,
+    };
+
     use super::*;
-    use crate::{db::Database, AppInfraError, OcrOutput, ProcessorBackend};
+    use crate::{db::Database, AppInfraError, ProcessorBackend};
 
     #[derive(Debug, Clone)]
     enum MockOcrResponse {
@@ -91,14 +138,16 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct MockOcrEngine {
+    struct MockOcrProvider {
+        provider: &'static str,
         response: MockOcrResponse,
         requests: Mutex<Vec<OcrRequest>>,
     }
 
-    impl MockOcrEngine {
-        fn succeed(output: OcrOutput) -> Self {
+    impl MockOcrProvider {
+        fn succeed(provider: &'static str, output: OcrOutput) -> Self {
             Self {
+                provider,
                 response: MockOcrResponse::Success(output),
                 requests: Mutex::new(Vec::new()),
             }
@@ -113,12 +162,12 @@ mod tests {
     }
 
     #[async_trait]
-    impl OcrEngine for MockOcrEngine {
-        fn provider(&self) -> super::super::OcrProvider {
-            super::super::OcrProvider::AppleVision
+    impl OcrProvider for MockOcrProvider {
+        fn provider(&self) -> &'static str {
+            self.provider
         }
 
-        async fn recognize(&self, request: OcrRequest) -> Result<OcrOutput> {
+        async fn recognize(&self, request: OcrRequest) -> ocr::OcrResult<OcrOutput> {
             self.requests
                 .lock()
                 .expect("mock ocr requests should be writable")
@@ -126,7 +175,7 @@ mod tests {
 
             match &self.response {
                 MockOcrResponse::Success(output) => Ok(output.clone()),
-                MockOcrResponse::Failure(message) => Err(AppInfraError::OcrEngine(message.clone())),
+                MockOcrResponse::Failure(message) => Err(ocr::OcrError::Provider(message.clone())),
             }
         }
     }
@@ -168,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn ocr_backend_builds_request_and_result_through_engine_abstraction() {
+    fn ocr_backend_builds_request_and_result_through_provider_abstraction() {
         run_async_test(async {
             let dir = TestDir::new("ocr-backend-success");
             let database = Database::initialize(dir.path())
@@ -186,15 +235,26 @@ mod tests {
             let job = store
                 .enqueue_job(
                     &super::super::ProcessingJobDraft::for_frame_ocr(frame.id)
-                        .with_payload_json("{\"language\":\"eng\"}"),
+                        .with_payload_json("{\"provider\":\"tesseract\",\"modelId\":\"tesseract-5.5.2\",\"language\":\"eng\"}"),
                 )
                 .await
                 .expect("job should persist");
 
-            let engine = Arc::new(MockOcrEngine::succeed(
-                OcrOutput::new("recognized text")
-                    .with_structured_payload_json("{\"blocks\":[]}")
-                    .with_engine_version("macOS-14.4"),
+            let engine = Arc::new(MockOcrProvider::succeed(
+                TESSERACT_PROVIDER_ID,
+                OcrOutput::new(
+                    "recognized text",
+                    OcrStructuredPayload::new(
+                        TESSERACT_PROVIDER_ID,
+                        Some("tesseract-5.5.2".to_string()),
+                        vec![OcrObservation::new(
+                            "recognized text",
+                            0.99,
+                            OcrBoundingBox::new(0.1, 0.2, 0.3, 0.4),
+                        )],
+                    ),
+                )
+                .with_provider_version("5.5.2"),
             ));
             let backend = OcrProcessorBackend::from_arc(engine.clone());
 
@@ -204,14 +264,16 @@ mod tests {
                 .expect("ocr backend should produce a result");
 
             assert_eq!(result.result_text.as_deref(), Some("recognized text"));
-            assert_eq!(
-                result.structured_payload_json.as_deref(),
-                Some("{\"blocks\":[]}")
-            );
-            assert_eq!(
-                result.processor_version.as_deref(),
-                Some("apple_vision:macOS-14.4")
-            );
+            assert_eq!(result.processor_version.as_deref(), Some("tesseract:5.5.2"));
+            let structured: serde_json::Value = serde_json::from_str(
+                result
+                    .structured_payload_json
+                    .as_deref()
+                    .expect("structured payload"),
+            )
+            .expect("payload parses");
+            assert_eq!(structured["provider"], TESSERACT_PROVIDER_ID);
+            assert_eq!(structured["modelId"], "tesseract-5.5.2");
 
             let requests = engine.recorded_requests();
             assert_eq!(requests.len(), 1);
@@ -219,10 +281,71 @@ mod tests {
                 requests[0].image_path,
                 PathBuf::from("/tmp/frame-ocr-success.png")
             );
-            assert_eq!(
-                requests[0].payload_json.as_deref(),
-                Some("{\"language\":\"eng\"}")
-            );
+            assert_eq!(requests[0].provider, TESSERACT_PROVIDER_ID);
+            assert_eq!(requests[0].model_id.as_deref(), Some("tesseract-5.5.2"));
+            assert_eq!(requests[0].language.as_deref(), Some("eng"));
+        });
+    }
+
+    #[test]
+    fn ocr_backend_uses_materialized_source_image_path_when_original_frame_file_is_missing() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-backend-source-image");
+            let source_image_path = dir.path().join("materialized-preview.jpg");
+            fs::write(&source_image_path, b"preview bytes")
+                .expect("materialized preview should exist");
+            let missing_frame_path = dir.path().join("missing-hidden-frame.jpg");
+            let payload_json = serde_json::json!({
+                "provider": "tesseract",
+                "modelId": "tesseract-5.5.2",
+                "language": "eng",
+                "options": {
+                    OCR_SOURCE_IMAGE_PATH_OPTION: source_image_path,
+                    "pageSegmentationMode": "single_block"
+                }
+            })
+            .to_string();
+
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(database.pool().clone());
+            let frame = store
+                .insert_frame(&super::super::NewFrame::new(
+                    "session-ocr",
+                    missing_frame_path.to_string_lossy(),
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+            let job = store
+                .enqueue_job(
+                    &super::super::ProcessingJobDraft::for_frame_ocr(frame.id)
+                        .with_payload_json(payload_json),
+                )
+                .await
+                .expect("job should persist");
+
+            let engine = Arc::new(MockOcrProvider::succeed(
+                TESSERACT_PROVIDER_ID,
+                OcrOutput::new(
+                    "recognized text",
+                    OcrStructuredPayload::new(TESSERACT_PROVIDER_ID, None, vec![]),
+                ),
+            ));
+            let backend = OcrProcessorBackend::from_arc(engine.clone());
+
+            backend
+                .process(&store, &job)
+                .await
+                .expect("ocr backend should use materialized preview source");
+
+            let requests = engine.recorded_requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].image_path, source_image_path);
+            assert!(!requests[0]
+                .options
+                .contains_key(OCR_SOURCE_IMAGE_PATH_OPTION));
         });
     }
 
@@ -242,7 +365,8 @@ mod tests {
                 .await
                 .expect("job should persist");
 
-            let backend = OcrProcessorBackend::from_arc(Arc::new(MockOcrEngine {
+            let backend = OcrProcessorBackend::from_arc(Arc::new(MockOcrProvider {
+                provider: ocr::APPLE_VISION_PROVIDER_ID,
                 response: MockOcrResponse::Failure("should not run".to_string()),
                 requests: Mutex::new(Vec::new()),
             }));
