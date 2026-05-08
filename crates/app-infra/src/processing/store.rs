@@ -749,52 +749,104 @@ impl ProcessingStore {
     ) -> Result<Option<ProcessingJob>> {
         loop {
             let mut transaction = self.pool.begin().await?;
-            let rows = match (processor, excluded_processor) {
+            let row = match (processor, excluded_processor) {
                 (Some(processor), _) => sqlx::query(
                     "SELECT \
-                        id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                        created_at, updated_at, started_at, finished_at \
-                     FROM processing_jobs \
-                     WHERE status = 'queued' AND processor = ?1 \
-                     ORDER BY id ASC",
+                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
+                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                        pj.finished_at \
+                     FROM processing_jobs AS pj \
+                     WHERE pj.status = 'queued' \
+                       AND pj.processor = ?1 \
+                       AND NOT EXISTS ( \
+                         SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                         WHERE lock.processor = pj.processor \
+                           AND lock.model_key = CASE \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                              AND pj.payload_json IS NOT NULL \
+                              AND json_valid(pj.payload_json) \
+                             THEN CASE \
+                               WHEN json_type(pj.payload_json, '$.provider') = 'text' \
+                                AND json_type(pj.payload_json, '$.modelId') = 'text' \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.provider')), '') IS NOT NULL \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.modelId')), '') IS NOT NULL \
+                               THEN TRIM(json_extract(pj.payload_json, '$.provider')) || '/' || TRIM(json_extract(pj.payload_json, '$.modelId')) \
+                               ELSE NULL \
+                             END \
+                             ELSE NULL \
+                           END \
+                       ) \
+                     ORDER BY pj.id ASC \
+                     LIMIT 1",
                 )
                 .bind(processor)
-                .fetch_all(&mut *transaction)
+                .fetch_optional(&mut *transaction)
                 .await?,
                 (None, Some(excluded_processor)) => sqlx::query(
                     "SELECT \
-                        id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                        created_at, updated_at, started_at, finished_at \
-                     FROM processing_jobs \
-                     WHERE status = 'queued' AND processor != ?1 \
-                     ORDER BY id ASC",
+                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
+                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                        pj.finished_at \
+                     FROM processing_jobs AS pj \
+                     WHERE pj.status = 'queued' \
+                       AND pj.processor != ?1 \
+                       AND NOT EXISTS ( \
+                         SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                         WHERE lock.processor = pj.processor \
+                           AND lock.model_key = CASE \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                              AND pj.payload_json IS NOT NULL \
+                              AND json_valid(pj.payload_json) \
+                             THEN CASE \
+                               WHEN json_type(pj.payload_json, '$.provider') = 'text' \
+                                AND json_type(pj.payload_json, '$.modelId') = 'text' \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.provider')), '') IS NOT NULL \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.modelId')), '') IS NOT NULL \
+                               THEN TRIM(json_extract(pj.payload_json, '$.provider')) || '/' || TRIM(json_extract(pj.payload_json, '$.modelId')) \
+                               ELSE NULL \
+                             END \
+                             ELSE NULL \
+                           END \
+                       ) \
+                     ORDER BY pj.id ASC \
+                     LIMIT 1",
                 )
                 .bind(excluded_processor)
-                .fetch_all(&mut *transaction)
+                .fetch_optional(&mut *transaction)
                 .await?,
                 (None, None) => sqlx::query(
                     "SELECT \
-                        id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                        created_at, updated_at, started_at, finished_at \
-                     FROM processing_jobs \
-                     WHERE status = 'queued' \
-                     ORDER BY id ASC",
+                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
+                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                        pj.finished_at \
+                     FROM processing_jobs AS pj \
+                     WHERE pj.status = 'queued' \
+                       AND NOT EXISTS ( \
+                         SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                         WHERE lock.processor = pj.processor \
+                           AND lock.model_key = CASE \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                              AND pj.payload_json IS NOT NULL \
+                              AND json_valid(pj.payload_json) \
+                             THEN CASE \
+                               WHEN json_type(pj.payload_json, '$.provider') = 'text' \
+                                AND json_type(pj.payload_json, '$.modelId') = 'text' \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.provider')), '') IS NOT NULL \
+                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.modelId')), '') IS NOT NULL \
+                               THEN TRIM(json_extract(pj.payload_json, '$.provider')) || '/' || TRIM(json_extract(pj.payload_json, '$.modelId')) \
+                               ELSE NULL \
+                             END \
+                             ELSE NULL \
+                           END \
+                       ) \
+                     ORDER BY pj.id ASC \
+                     LIMIT 1",
                 )
-                .fetch_all(&mut *transaction)
+                .fetch_optional(&mut *transaction)
                 .await?,
             };
 
-            let mut claimable_job_id = None;
-            for row in rows {
-                let job = map_processing_job(row)?;
-                if processing_job_model_cleanup_locked(&mut transaction, &job).await? {
-                    continue;
-                }
-                claimable_job_id = Some(job.id);
-                break;
-            }
-
-            let job_id = claimable_job_id;
+            let job_id = row.map(map_processing_job).transpose()?.map(|job| job.id);
             let Some(job_id) = job_id else {
                 transaction.commit().await?;
                 return Ok(None);
@@ -1454,8 +1506,9 @@ async fn processing_job_model_cleanup_locked(
     transaction: &mut Transaction<'_, Sqlite>,
     job: &ProcessingJob,
 ) -> Result<bool> {
-    let Some(model_key) = processing_model_key_for_job(job)? else {
-        return Ok(false);
+    let model_key = match processing_model_key_for_job(job) {
+        Ok(Some(model_key)) => model_key,
+        Ok(None) | Err(_) => return Ok(false),
     };
 
     let row = sqlx::query(

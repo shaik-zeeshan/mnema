@@ -2098,6 +2098,64 @@ mod tests {
     }
 
     #[test]
+    fn malformed_ocr_payload_is_isolated_to_that_job_during_next_claim() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-malformed-payload-next-claim");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let malformed_frame = infra
+                .insert_frame(&test_frame(
+                    "ocr-malformed-payload-next-claim",
+                    "malformed.png",
+                ))
+                .await
+                .expect("malformed frame should insert");
+            let valid_frame = infra
+                .insert_frame(&test_frame("ocr-malformed-payload-next-claim", "valid.png"))
+                .await
+                .expect("valid frame should insert");
+            let malformed_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(malformed_frame.id)
+                        .with_payload_json("{not valid json"),
+                )
+                .await
+                .expect("malformed ocr job should insert");
+            let valid_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(valid_frame.id).with_payload_json(
+                        "{\"provider\":\"tesseract\",\"modelId\":\"tesseract-5.5.2\"}",
+                    ),
+                )
+                .await
+                .expect("valid ocr job should insert");
+
+            let first = infra
+                .process_next_processing_job_for_processor(OCR_PROCESSOR)
+                .await
+                .expect("malformed payload should be claimed and failed by the processor")
+                .expect("malformed job should run");
+            let first_job_id = match first {
+                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+                ProcessingJobRunOutcome::Failed(job) => job.id,
+            };
+            assert_eq!(first_job_id, malformed_job.id);
+
+            let second = infra
+                .process_next_processing_job_for_processor(OCR_PROCESSOR)
+                .await
+                .expect("later queued jobs should keep draining")
+                .expect("valid job should run next");
+            let second_job_id = match second {
+                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+                ProcessingJobRunOutcome::Failed(job) => job.id,
+            };
+            assert_eq!(second_job_id, valid_job.id);
+        });
+    }
+
+    #[test]
     fn running_audio_transcription_model_keys_include_only_running_jobs() {
         run_async_test(async {
             let dir = TestDir::new("audio-transcription-model-keys");
