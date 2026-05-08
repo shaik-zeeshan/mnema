@@ -286,24 +286,50 @@ pub async fn delete_unused_ocr_models(
         .map_err(|error| format!("failed to inspect running OCR jobs: {error}"))?;
     let retarget_candidate_model_keys =
         retargetable_deletion_model_keys(&deletion_candidate_model_keys, &running_job_model_keys);
-    let retargeted_processing_jobs = infra
-        .retarget_ocr_jobs_referencing_model_keys(
-            &retarget_candidate_model_keys,
+    let cleanup_lock = infra
+        .acquire_ocr_model_cleanup_locks(&retarget_candidate_model_keys)
+        .await
+        .map_err(|error| format!("failed to reserve OCR models for cleanup: {error}"))?;
+    let result = async {
+        let retargeted_processing_jobs = infra
+            .retarget_ocr_jobs_referencing_model_keys(
+                &cleanup_lock.acquired_model_keys,
+                selected_provider,
+                selected_model_id.as_deref(),
+            )
+            .await
+            .map_err(|error| format!("failed to retarget queued OCR jobs: {error}"))?;
+        let mut protected_model_keys =
+            infra.list_running_ocr_model_keys().await.map_err(|error| {
+                format!("failed to re-check running OCR jobs before deleting models: {error}")
+            })?;
+        protected_model_keys.extend(
+            deletion_candidate_model_keys
+                .difference(&cleanup_lock.acquired_model_keys)
+                .cloned(),
+        );
+
+        delete_unused_ocr_models_inner(
+            &app_data_dir,
             selected_provider,
             selected_model_id.as_deref(),
+            active_download.as_deref(),
+            &protected_model_keys,
+            retargeted_processing_jobs,
         )
+        .map_err(|error| format!("failed to delete unused OCR models: {error}"))
+    }
+    .await;
+    let release_result = infra
+        .release_processing_model_cleanup_locks(&cleanup_lock)
         .await
-        .map_err(|error| format!("failed to retarget queued OCR jobs: {error}"))?;
+        .map_err(|error| format!("failed to release OCR model cleanup reservation: {error}"));
 
-    delete_unused_ocr_models_inner(
-        &app_data_dir,
-        selected_provider,
-        selected_model_id.as_deref(),
-        active_download.as_deref(),
-        &running_job_model_keys,
-        retargeted_processing_jobs,
-    )
-    .map_err(|error| format!("failed to delete unused OCR models: {error}"))
+    match (result, release_result) {
+        (Ok(response), Ok(_)) => Ok(response),
+        (Err(error), Ok(_)) => Err(error),
+        (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
+    }
 }
 
 pub(crate) fn selected_ocr_model_available(
@@ -1092,7 +1118,10 @@ mod tests {
     fn retargetable_ocr_deletion_model_keys_exclude_running_job_models() {
         let deletion_candidates = BTreeSet::from([
             model_key(ocr::TESSERACT_PROVIDER_ID, ocr::DEFAULT_TESSERACT_MODEL_ID),
-            model_key(ocr::PADDLE_OCR_PROVIDER_ID, ocr::DEFAULT_PADDLE_OCR_MODEL_ID),
+            model_key(
+                ocr::PADDLE_OCR_PROVIDER_ID,
+                ocr::DEFAULT_PADDLE_OCR_MODEL_ID,
+            ),
         ]);
         let running_job_models = BTreeSet::from([model_key(
             ocr::TESSERACT_PROVIDER_ID,

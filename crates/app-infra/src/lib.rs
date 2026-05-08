@@ -12,6 +12,7 @@ pub mod processing;
 pub mod status;
 
 use std::{collections::BTreeSet, path::Path, sync::Arc};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlx::SqlitePool;
 
@@ -50,10 +51,10 @@ pub use processing::{
     AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend, FocusedFrameWindow, Frame,
     FrameEquivalence, FrameEquivalenceStatus, FrameProcessingJob, FrameSummary, NewFrame,
     OcrProcessorBackend, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
-    ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingResult, ProcessingResultDraft,
-    ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
-    SegmentWorkspaceOcrReference, AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR,
-    FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
+    ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingModelCleanupLock, ProcessingResult,
+    ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend,
+    ProcessorRegistry, SegmentWorkspaceOcrReference, AUDIO_SEGMENT_SUBJECT_TYPE,
+    AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
@@ -148,6 +149,7 @@ impl AppInfra {
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
+        processing.clear_model_cleanup_locks().await?;
         processing.backfill_frame_equivalence().await?;
         jobs.reconcile_orphaned_running_jobs().await?;
         processing.reconcile_orphaned_running_jobs().await?;
@@ -636,6 +638,14 @@ impl AppInfra {
             .await
     }
 
+    pub async fn acquire_ocr_model_cleanup_locks(
+        &self,
+        model_keys: &BTreeSet<String>,
+    ) -> Result<ProcessingModelCleanupLock> {
+        self.acquire_processing_model_cleanup_locks(OCR_PROCESSOR, model_keys)
+            .await
+    }
+
     pub async fn list_running_audio_transcription_model_keys(&self) -> Result<BTreeSet<String>> {
         let jobs = self
             .processing
@@ -650,6 +660,14 @@ impl AppInfra {
         }
 
         Ok(keys)
+    }
+
+    pub async fn acquire_audio_transcription_model_cleanup_locks(
+        &self,
+        model_keys: &BTreeSet<String>,
+    ) -> Result<ProcessingModelCleanupLock> {
+        self.acquire_processing_model_cleanup_locks(AUDIO_TRANSCRIPTION_PROCESSOR, model_keys)
+            .await
     }
 
     pub async fn retarget_ocr_jobs_referencing_model_keys(
@@ -726,6 +744,13 @@ impl AppInfra {
         }
 
         Ok(updated)
+    }
+
+    pub async fn release_processing_model_cleanup_locks(
+        &self,
+        lock: &ProcessingModelCleanupLock,
+    ) -> Result<u64> {
+        self.processing.release_model_cleanup_locks(lock).await
     }
 
     pub async fn claim_queued_processing_job(&self, job_id: i64) -> Result<Option<ProcessingJob>> {
@@ -840,6 +865,19 @@ impl AppInfra {
     }
 }
 
+impl AppInfra {
+    async fn acquire_processing_model_cleanup_locks(
+        &self,
+        processor: &str,
+        model_keys: &BTreeSet<String>,
+    ) -> Result<ProcessingModelCleanupLock> {
+        let lock_token = processing_model_cleanup_lock_token(processor);
+        self.processing
+            .acquire_model_cleanup_locks(processor, model_keys, &lock_token)
+            .await
+    }
+}
+
 fn default_processing_registry() -> ProcessorRegistry {
     ProcessorRegistry::new()
         .register(OcrProcessorBackend::from_provider_arcs([
@@ -857,6 +895,14 @@ fn default_processing_registry() -> ProcessorRegistry {
 
 fn model_key(provider: &str, model_id: &str) -> String {
     format!("{provider}/{model_id}")
+}
+
+fn processing_model_cleanup_lock_token(processor: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("model-cleanup:{processor}:{}:{nanos}", std::process::id())
 }
 
 fn ocr_model_key_for_job(job: &ProcessingJob) -> Result<Option<String>> {
@@ -1939,6 +1985,119 @@ mod tests {
     }
 
     #[test]
+    fn ocr_model_cleanup_lock_blocks_direct_queued_job_claim_until_released() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-cleanup-lock-direct-claim");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let frame = infra
+                .insert_frame(&test_frame("ocr-cleanup-lock-direct-claim", "queued.png"))
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(frame.id).with_payload_json(
+                        "{\"provider\":\"tesseract\",\"modelId\":\"tesseract-5.5.2\"}",
+                    ),
+                )
+                .await
+                .expect("ocr job should insert");
+            let lock = infra
+                .acquire_ocr_model_cleanup_locks(&BTreeSet::from([
+                    "tesseract/tesseract-5.5.2".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire");
+
+            let blocked = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("claim should not fail");
+            assert!(blocked.is_none());
+            let queued = infra
+                .get_processing_job(job.id)
+                .await
+                .expect("job should load")
+                .expect("job should exist");
+            assert_eq!(queued.status, ProcessingJobStatus::Queued);
+
+            infra
+                .release_processing_model_cleanup_locks(&lock)
+                .await
+                .expect("cleanup lock should release");
+            let claimed = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("claim should succeed after release")
+                .expect("job should claim");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    #[test]
+    fn ocr_model_cleanup_lock_makes_next_claim_skip_locked_model_jobs() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-cleanup-lock-next-claim");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let locked_frame = infra
+                .insert_frame(&test_frame("ocr-cleanup-lock-next-claim", "locked.png"))
+                .await
+                .expect("locked frame should insert");
+            let unlocked_frame = infra
+                .insert_frame(&test_frame("ocr-cleanup-lock-next-claim", "unlocked.png"))
+                .await
+                .expect("unlocked frame should insert");
+            let locked_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(locked_frame.id).with_payload_json(
+                        "{\"provider\":\"tesseract\",\"modelId\":\"tesseract-5.5.2\"}",
+                    ),
+                )
+                .await
+                .expect("locked ocr job should insert");
+            let unlocked_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_frame_ocr(unlocked_frame.id).with_payload_json(
+                        "{\"provider\":\"paddleocr\",\"modelId\":\"paddleocr-en-v5\"}",
+                    ),
+                )
+                .await
+                .expect("unlocked ocr job should insert");
+            let lock = infra
+                .acquire_ocr_model_cleanup_locks(&BTreeSet::from([
+                    "tesseract/tesseract-5.5.2".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire");
+
+            let claimed = infra
+                .process_next_processing_job_for_processor(OCR_PROCESSOR)
+                .await
+                .expect("next job should process")
+                .expect("unlocked job should be claimable");
+            let claimed_job_id = match claimed {
+                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+                ProcessingJobRunOutcome::Failed(job) => job.id,
+            };
+            assert_eq!(claimed_job_id, unlocked_job.id);
+            let locked = infra
+                .get_processing_job(locked_job.id)
+                .await
+                .expect("locked job should load")
+                .expect("locked job should exist");
+            assert_eq!(locked.status, ProcessingJobStatus::Queued);
+
+            infra
+                .release_processing_model_cleanup_locks(&lock)
+                .await
+                .expect("cleanup lock should release");
+        });
+    }
+
+    #[test]
     fn running_audio_transcription_model_keys_include_only_running_jobs() {
         run_async_test(async {
             let dir = TestDir::new("audio-transcription-model-keys");
@@ -2045,6 +2204,99 @@ mod tests {
             assert!(!keys.contains("local_whisper/base"));
             assert!(keys.contains("parakeet/parakeet-tdt-0.6b-v3-onnx"));
             assert!(!keys.contains("local_whisper/completed-model"));
+        });
+    }
+
+    #[test]
+    fn audio_transcription_model_cleanup_lock_blocks_direct_queued_job_claim_until_released() {
+        run_async_test(async {
+            let dir = TestDir::new("audio-cleanup-lock-direct-claim");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "audio-cleanup-lock-direct-claim",
+                    1,
+                    "/tmp/audio-cleanup-lock-direct-claim.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                "local_whisper",
+                Some("base".to_string()),
+                "auto",
+            ))
+            .expect("payload should serialize");
+            let job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(segment.id)
+                        .with_payload_json(payload),
+                )
+                .await
+                .expect("transcription job should insert");
+            let lock = infra
+                .acquire_audio_transcription_model_cleanup_locks(&BTreeSet::from([
+                    "local_whisper/base".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire");
+
+            let blocked = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("claim should not fail");
+            assert!(blocked.is_none());
+            let queued = infra
+                .get_processing_job(job.id)
+                .await
+                .expect("job should load")
+                .expect("job should exist");
+            assert_eq!(queued.status, ProcessingJobStatus::Queued);
+
+            infra
+                .release_processing_model_cleanup_locks(&lock)
+                .await
+                .expect("cleanup lock should release");
+            let claimed = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("claim should succeed after release")
+                .expect("job should claim");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    #[test]
+    fn startup_clears_stale_processing_model_cleanup_locks() {
+        run_async_test(async {
+            let dir = TestDir::new("stale-processing-model-cleanup-locks");
+            let initial = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let lock = initial
+                .acquire_ocr_model_cleanup_locks(&BTreeSet::from([
+                    "tesseract/tesseract-5.5.2".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire");
+            assert_eq!(lock.acquired_model_keys.len(), 1);
+            drop(initial);
+
+            let recovered = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should reinitialize");
+            let lock = recovered
+                .acquire_ocr_model_cleanup_locks(&BTreeSet::from([
+                    "tesseract/tesseract-5.5.2".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire after restart");
+
+            assert_eq!(lock.acquired_model_keys.len(), 1);
         });
     }
 

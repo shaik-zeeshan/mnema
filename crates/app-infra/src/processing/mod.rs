@@ -18,6 +18,6 @@ pub use ocr::OcrProcessorBackend;
 pub use result::{ProcessingResult, ProcessingResultDraft};
 pub use runtime::{ProcessingJobRunOutcome, ProcessingRuntime};
 pub use store::{
-    FocusedFrameWindow, FrameProcessingJob, ProcessingJobCompletion, ProcessingStore,
-    SegmentWorkspaceOcrReference,
+    FocusedFrameWindow, FrameProcessingJob, ProcessingJobCompletion, ProcessingModelCleanupLock,
+    ProcessingStore, SegmentWorkspaceOcrReference,
 };
