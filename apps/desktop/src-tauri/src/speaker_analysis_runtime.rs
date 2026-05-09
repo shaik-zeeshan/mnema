@@ -6,12 +6,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use speaker_analysis::{
     providers::sherpa_onnx::{
-        analyze_sherpa_samples_blocking, decode_sherpa_audio_to_mono_16khz,
-        SherpaOnnxSpeakerAnalysisProvider,
+        analyze_sherpa_request_blocking, SherpaOnnxSpeakerAnalysisProvider,
     },
     SpeakerAnalysisOutput, SpeakerAnalysisProvider, SpeakerAnalysisRequest, SpeakerAnalysisResult,
 };
@@ -23,7 +21,6 @@ const SPEAKER_ANALYSIS_MODELS_DIR_ARG: &str = "--speaker-analysis-models-dir";
 #[serde(rename_all = "camelCase")]
 struct SpeakerAnalysisHelperPayload {
     request: SpeakerAnalysisRequest,
-    samples_f32_le_base64: String,
 }
 
 #[derive(Debug, Clone)]
@@ -76,8 +73,7 @@ fn run_subprocess_helper() -> Result<(), String> {
         .map_err(|error| format!("failed reading speaker-analysis helper stdin: {error}"))?;
     let payload: SpeakerAnalysisHelperPayload = serde_json::from_str(&request_json)
         .map_err(|error| format!("failed parsing speaker-analysis helper request json: {error}"))?;
-    let samples = decode_f32_le_base64(&payload.samples_f32_le_base64)?;
-    let output = analyze_sherpa_samples_blocking(payload.request, &models_dir, samples)
+    let output = analyze_sherpa_request_blocking(payload.request, &models_dir)
         .map_err(|error| format!("speaker-analysis helper failed: {error}"))?;
     serde_json::to_writer(std::io::stdout(), &output).map_err(|error| {
         format!("failed writing speaker-analysis helper response json: {error}")
@@ -116,10 +112,8 @@ fn run_sherpa_analysis_subprocess(
             "failed to locate Mnema executable for speaker-analysis helper: {error}"
         ))
     })?;
-    let samples = decode_sherpa_audio_to_mono_16khz(&request.audio_path)?;
     let payload = SpeakerAnalysisHelperPayload {
         request: request.clone(),
-        samples_f32_le_base64: encode_f32_le_base64(&samples),
     };
     let request_json = serde_json::to_vec(&payload).map_err(|error| {
         speaker_analysis::SpeakerAnalysisError::Analysis(format!(
@@ -179,25 +173,4 @@ fn run_sherpa_analysis_subprocess(
             "failed to parse speaker-analysis helper response: {error}"
         ))
     })
-}
-
-fn encode_f32_le_base64(samples: &[f32]) -> String {
-    let mut bytes = Vec::with_capacity(samples.len() * 4);
-    for sample in samples {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-    BASE64_STANDARD.encode(bytes)
-}
-
-fn decode_f32_le_base64(encoded: &str) -> Result<Vec<f32>, String> {
-    let bytes = BASE64_STANDARD
-        .decode(encoded)
-        .map_err(|error| format!("failed decoding helper sample payload: {error}"))?;
-    if bytes.len() % 4 != 0 {
-        return Err("helper sample payload length is not a multiple of 4".to_string());
-    }
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect())
 }

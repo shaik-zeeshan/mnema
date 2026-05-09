@@ -102,6 +102,7 @@ pub fn run() {
             app_infra::debug_insert_frame_and_enqueue_ocr,
             app_infra::reprocess_captured_frame_ocr,
             app_infra::reprocess_audio_segment_transcription,
+            app_infra::reprocess_audio_segment_speaker_analysis,
             app_infra::classify_hidden_segment_workspace,
             app_infra::list_frames,
             app_infra::list_frame_summaries_in_range,

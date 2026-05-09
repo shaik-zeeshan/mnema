@@ -373,12 +373,12 @@ pub(super) fn reanchor_active_segment_timing(
     runtime: &mut NativeCaptureRuntime,
     context: &str,
 ) -> Result<(), CaptureErrorResponse> {
-    if runtime.segment_schedule.is_none() {
+    let Some(schedule) = runtime.segment_schedule.as_ref() else {
         return Err(CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),
             message: format!("Capture schedule missing while {context}"),
         });
-    }
+    };
 
     if runtime.capture_clock.is_none() {
         return Err(CaptureErrorResponse {
@@ -388,8 +388,53 @@ pub(super) fn reanchor_active_segment_timing(
     }
 
     runtime.capture_clock = Some(CaptureClock::start_now());
+    reanchor_source_session_timing(
+        runtime.source_sessions.as_mut(),
+        runtime.current_segment_index,
+        schedule,
+        super::runtime::now_unix_ms(),
+    );
 
     Ok(())
+}
+
+fn reanchored_source_session_started_at_unix_ms(
+    now_unix_ms: u64,
+    current_segment_index: u64,
+    schedule: &SegmentSchedule,
+) -> u64 {
+    let duration_ms = schedule
+        .segment_duration()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let offset_ms = current_segment_index
+        .saturating_sub(1)
+        .saturating_mul(duration_ms);
+
+    now_unix_ms.saturating_sub(offset_ms)
+}
+
+fn reanchor_source_session_timing(
+    source_sessions: Option<&mut SourceSessions>,
+    current_segment_index: u64,
+    schedule: &SegmentSchedule,
+    now_unix_ms: u64,
+) {
+    let Some(source_sessions) = source_sessions else {
+        return;
+    };
+    let started_at_unix_ms =
+        reanchored_source_session_started_at_unix_ms(now_unix_ms, current_segment_index, schedule);
+
+    if let Some(session) = source_sessions.screen.as_mut() {
+        session.started_at_unix_ms = started_at_unix_ms;
+    }
+    if let Some(session) = source_sessions.microphone.as_mut() {
+        session.started_at_unix_ms = started_at_unix_ms;
+    }
+    if let Some(session) = source_sessions.system_audio.as_mut() {
+        session.started_at_unix_ms = started_at_unix_ms;
+    }
 }
 
 pub(super) fn next_emitted_segment_index(current_segment_index: u64) -> u64 {
@@ -792,6 +837,73 @@ fn transcription_admission_for_app_handle(
 }
 
 #[cfg(target_os = "macos")]
+fn speaker_analysis_admission_for_app_handle(
+    app_handle: &tauri::AppHandle,
+) -> ::app_infra::AudioSegmentSpeakerAnalysisAdmission {
+    let speaker_settings = match app_handle
+        .state::<crate::native_capture::RecordingSettingsState>()
+        .lock()
+    {
+        Ok(settings) => settings.settings.speaker_analysis.clone(),
+        Err(_) => {
+            super::debug_log::log(
+                "failed to read recording settings for speaker analysis admission".to_string(),
+            );
+            return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::disabled();
+        }
+    };
+    if !speaker_settings.separate_speakers {
+        return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::disabled();
+    }
+    let app_data_dir = match app_handle.path().app_data_dir() {
+        Ok(app_data_dir) => app_data_dir,
+        Err(error) => {
+            super::debug_log::log(format!(
+                "failed to resolve app data directory for speaker analysis admission: {error}"
+            ));
+            return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable();
+        }
+    };
+    let models_dir = speaker_analysis::speaker_analysis_models_dir(&app_data_dir);
+    let manifest = speaker_analysis::builtin_model_manifest();
+    let Some(descriptor) = speaker_analysis::find_model_descriptor(
+        &manifest,
+        &speaker_settings.provider,
+        speaker_settings.model_id.as_deref(),
+    ) else {
+        return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable();
+    };
+    match speaker_analysis::detect_model_status(&models_dir, descriptor) {
+        Ok(status) if status.status == speaker_analysis::ModelStatusKind::Installed => {
+            let mut payload = ::app_infra::SpeakerAnalysisJobPayload::new(
+                speaker_settings.provider.clone(),
+                speaker_settings.model_id.clone(),
+            );
+            payload.normalize_model_selection();
+            payload.recognize_people = speaker_settings.recognize_saved_people;
+            match serde_json::to_string(&payload) {
+                Ok(payload_json) => {
+                    ::app_infra::AudioSegmentSpeakerAnalysisAdmission::available(payload_json)
+                }
+                Err(error) => {
+                    super::debug_log::log(format!(
+                        "failed to serialize speaker analysis admission payload: {error}"
+                    ));
+                    ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable()
+                }
+            }
+        }
+        Ok(_) => ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable(),
+        Err(error) => {
+            super::debug_log::log(format!(
+                "failed to inspect selected speaker analysis model: {error}"
+            ));
+            ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable()
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn persist_committed_audio_segments(
     app_handle: Option<&tauri::AppHandle>,
     source_sessions: Option<&SourceSessions>,
@@ -820,11 +932,13 @@ pub(super) fn persist_committed_audio_segments(
     let persistence = run_native_capture_async("audio-segment-persistence", async move {
         let mut persisted_any = false;
         let transcription_admission = transcription_admission_for_app_handle(&app_handle);
+        let speaker_admission = speaker_analysis_admission_for_app_handle(&app_handle);
         for segment in segments {
             match infra
-                .upsert_audio_segment_and_maybe_enqueue_transcription(
+                .upsert_audio_segment_and_maybe_enqueue_processing(
                     &segment,
                     &transcription_admission,
+                    &speaker_admission,
                 )
                 .await
             {
@@ -1150,12 +1264,13 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
                 );
             }
 
-            // The finished system-audio file is already tracked in
-            // system_audio_files via set_current_system_audio_output_file.
-            // Clear only the "current" pointer so a future resume gets a
-            // fresh path, but preserve the finished files list.
+            // The finished system-audio file has already been appended to the
+            // committed output list and persisted. Remove it from the live
+            // segment bookkeeping so a later screen pause/rotation/stop cannot
+            // upsert the same audio path again with the later segment clock.
             if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
                 output_files.system_audio_file = None;
+                output_files.system_audio_files.clear();
             }
             runtime.system_audio_recording_file = None;
         } else {
@@ -1164,6 +1279,7 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
             // fail in the native capture stack.
             if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
                 output_files.system_audio_file = None;
+                output_files.system_audio_files.clear();
             }
             runtime.system_audio_recording_file = None;
         }

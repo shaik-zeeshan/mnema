@@ -30,10 +30,10 @@ use super::segments::{
     committed_audio_segments_for_output_files, pause_microphone_for_inactivity,
     pause_runtime_for_inactivity, pause_screen_for_inactivity, pause_system_audio_for_inactivity,
     plan_live_rotation_segment, process_inactivity_audio_transitions_for_snapshot,
-    recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
-    resume_runtime_from_inactivity_with_start_segment, resume_screen_from_inactivity,
-    resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
-    segment_loop_sleep_duration, StartedSegmentState,
+    reanchor_active_segment_timing, recover_screen_capture_after_wake_with_start_segment,
+    resume_microphone_from_inactivity, resume_runtime_from_inactivity_with_start_segment,
+    resume_screen_from_inactivity, resume_screen_from_inactivity_with_start_segment,
+    resume_system_audio_from_inactivity, segment_loop_sleep_duration, StartedSegmentState,
 };
 use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
@@ -473,6 +473,87 @@ fn audio_segment_start_falls_back_to_scheduled_boundary_for_base_file() {
         ),
         1_700_000_060_000
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn audio_segment_start_uses_reanchored_session_timing_for_contiguous_late_segment() {
+    let mut runtime = NativeCaptureRuntime {
+        current_segment_index: 5,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        source_sessions: Some(SourceSessions {
+            screen: None,
+            microphone: Some(SourceSessionMeta {
+                session_id: "mic-source".to_string(),
+                started_at_unix_ms: 1_700_000_000_000,
+            }),
+            system_audio: Some(SourceSessionMeta {
+                session_id: "system-source".to_string(),
+                started_at_unix_ms: 1_700_000_000_000,
+            }),
+        }),
+        ..Default::default()
+    };
+
+    reanchor_active_segment_timing(&mut runtime, "test reanchor")
+        .expect("active segment timing should reanchor");
+
+    let source_sessions = runtime
+        .source_sessions
+        .as_ref()
+        .expect("source sessions should remain present");
+    let schedule = runtime
+        .segment_schedule
+        .as_ref()
+        .expect("schedule should remain present");
+    let output_files = CaptureOutputFiles {
+        screen_file: None,
+        screen_files: Vec::new(),
+        microphone_file: Some("/tmp/audio/microphone-mic-source-segment-0005.m4a".to_string()),
+        microphone_files: vec!["/tmp/audio/microphone-mic-source-segment-0005.m4a".to_string()],
+        system_audio_file: Some(
+            "/tmp/audio/system-audio-system-source-segment-0005.m4a".to_string(),
+        ),
+        system_audio_files: vec![
+            "/tmp/audio/system-audio-system-source-segment-0005.m4a".to_string(),
+        ],
+    };
+
+    let segments = committed_audio_segments_for_output_files(
+        Some(source_sessions),
+        Some(schedule),
+        runtime.current_segment_index,
+        Some(&output_files),
+    );
+
+    assert_eq!(segments.len(), 2);
+    assert_ne!(
+        segments[0].started_at, "2023-11-14T22:17:20Z",
+        "segment 5 must not be anchored to the original session start after reanchor"
+    );
+    for segment in segments {
+        assert_eq!(
+            segment.started_at,
+            audio_segment_window_from_duration_ms(
+                audio_segment_started_at_unix_ms_for_file(
+                    match segment.source_kind {
+                        ::app_infra::AudioSegmentSourceKind::Microphone => {
+                            source_sessions.microphone.as_ref().unwrap()
+                        }
+                        ::app_infra::AudioSegmentSourceKind::SystemAudio => {
+                            source_sessions.system_audio.as_ref().unwrap()
+                        }
+                    },
+                    runtime.current_segment_index,
+                    schedule,
+                    &segment.file_path,
+                ),
+                60_000,
+            )
+            .0
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -5593,10 +5674,7 @@ fn live_audio_inactivity_pause_detaches_system_audio_writer_truth_while_screen_s
         .expect("screen output bookkeeping should stay present");
     assert!(outputs.screen_file.is_some());
     assert!(outputs.system_audio_file.is_none());
-    assert_eq!(
-        outputs.system_audio_files,
-        vec!["/tmp/system-audio.m4a".to_string()]
-    );
+    assert!(outputs.system_audio_files.is_empty());
     let sources = runtime
         .current_segment_sources
         .as_ref()
@@ -5734,9 +5812,9 @@ fn pause_audio_for_inactivity_clears_system_audio_output_file_bookkeeping() {
 
     pause_system_audio_for_inactivity(&mut runtime).expect("system audio pause should succeed");
 
-    // system_audio_file (the "current" pointer) must be cleared so a future
-    // resume gets a fresh path, but system_audio_files must preserve the
-    // finished file so finalization can still reference it.
+    // The finished file has already moved into committed output bookkeeping.
+    // Clear the live pointer and list so a later screen pause/rotation cannot
+    // re-commit the old audio with a newer segment clock.
     let output_files = runtime
         .current_segment_output_files
         .as_ref()
@@ -5745,11 +5823,7 @@ fn pause_audio_for_inactivity_clears_system_audio_output_file_bookkeeping() {
         output_files.system_audio_file.is_none(),
         "system_audio_file should be cleared from output bookkeeping"
     );
-    assert_eq!(
-        output_files.system_audio_files,
-        vec!["/tmp/system-audio.m4a".to_string()],
-        "system_audio_files should preserve the finished file"
-    );
+    assert!(output_files.system_audio_files.is_empty());
     // screen bookkeeping must remain intact
     assert!(output_files.screen_file.is_some());
 }
@@ -6685,8 +6759,8 @@ fn active_sources_for_inactivity_system_audio_requires_both_families_active() {
 #[test]
 fn pause_audio_soft_pause_no_session_reconciles_bookkeeping() {
     // When there is no active screen session (test/headless), pause takes the
-    // fallback path: clears the current system-audio pointer but preserves
-    // finished files in the segment list.
+    // fallback path: clears system-audio live bookkeeping while leaving screen
+    // bookkeeping intact.
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -6735,7 +6809,8 @@ fn pause_audio_soft_pause_no_session_reconciles_bookkeeping() {
 
     // system_audio_recording_file must be cleared
     assert!(runtime.system_audio_recording_file.is_none());
-    // Current pointer cleared, but finished files preserved
+    // Current pointer and finished live list cleared so this audio path cannot
+    // be re-committed later with a newer segment clock.
     let output_files = runtime
         .current_segment_output_files
         .as_ref()
@@ -6744,11 +6819,7 @@ fn pause_audio_soft_pause_no_session_reconciles_bookkeeping() {
         output_files.system_audio_file.is_none(),
         "system_audio_file should be cleared from output bookkeeping"
     );
-    assert_eq!(
-        output_files.system_audio_files,
-        vec!["/tmp/system-audio.m4a".to_string()],
-        "system_audio_files should preserve the finished file"
-    );
+    assert!(output_files.system_audio_files.is_empty());
     // Screen bookkeeping should not be touched
     assert!(runtime.recording_file.is_some());
     assert!(output_files.screen_file.is_some());

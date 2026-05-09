@@ -445,60 +445,13 @@
     return Math.abs(turnMidpoint - segmentMidpoint);
   }
 
-  function transcriptTextsBySpeakerTurn(
-    turns: SpeakerTurnDto[],
-    segments: TranscriptionSegment[],
-  ): Map<number, string> {
+  function transcriptTextsBySpeakerTurn(turns: SpeakerTurnDto[]): Map<number, string> {
     const textByTurnId = new Map<number, string>();
-    const assignedSegmentsByTurnId = new Map<number, string[]>();
 
     for (const turn of turns) {
       const direct = turn.transcriptText?.trim();
       if (direct) {
         textByTurnId.set(turn.id, direct);
-        continue;
-      }
-      assignedSegmentsByTurnId.set(turn.id, []);
-    }
-
-    for (const segment of segments) {
-      let bestTurn: SpeakerTurnDto | null = null;
-      let bestOverlap = 0;
-      let bestMidpointDistance = Number.POSITIVE_INFINITY;
-
-      for (const turn of turns) {
-        if (textByTurnId.has(turn.id)) continue;
-        const overlap = overlapDurationMs(
-          turn.startMs,
-          turn.endMs,
-          segment.startMs,
-          segment.endMs,
-        );
-        if (overlap <= 0) continue;
-
-        const midpointDistance = segmentMidpointDistanceMs(turn, segment);
-        const isBetter =
-          overlap > bestOverlap ||
-          (overlap === bestOverlap && midpointDistance < bestMidpointDistance) ||
-          (overlap === bestOverlap &&
-            midpointDistance === bestMidpointDistance &&
-            bestTurn != null &&
-            turn.startMs < bestTurn.startMs);
-
-        if (!isBetter) continue;
-        bestTurn = turn;
-        bestOverlap = overlap;
-        bestMidpointDistance = midpointDistance;
-      }
-
-      if (!bestTurn) continue;
-      assignedSegmentsByTurnId.get(bestTurn.id)?.push(segment.text);
-    }
-
-    for (const [turnId, texts] of assignedSegmentsByTurnId) {
-      const merged = texts.join(" ").trim();
-      if (merged) {
-        textByTurnId.set(turnId, merged);
       }
     }
 
@@ -512,6 +465,8 @@
     suggestedPersonId: number | null;
     recognitionConfidence: SpeakerTurnDto["recognitionConfidence"];
     recognitionScore: number | null;
+    suggestedMergeTargetClusterId: number | null;
+    suggestedMergeScore: number | null;
     startMs: number;
     endMs: number;
     text: string;
@@ -520,10 +475,7 @@
   };
 
   const selectedAudioSpeakerGroups = $derived.by<SpeakerTranscriptGroup[]>(() => {
-    const transcriptByTurnId = transcriptTextsBySpeakerTurn(
-      selectedAudioSpeakerTurns,
-      selectedAudioTranscriptSegments,
-    );
+    const transcriptByTurnId = transcriptTextsBySpeakerTurn(selectedAudioSpeakerTurns);
     const groups: SpeakerTranscriptGroup[] = [];
     for (const turn of selectedAudioSpeakerTurns) {
       const text = transcriptByTurnId.get(turn.id) ?? "";
@@ -543,6 +495,12 @@
         suggestedPersonId: turn.suggestedPersonId,
         recognitionConfidence: turn.recognitionConfidence,
         recognitionScore: turn.recognitionScore,
+        suggestedMergeTargetClusterId:
+          selectedAudioSpeakerClusters.find((cluster) => cluster.id === turn.clusterId)
+            ?.suggestedMergeTargetClusterId ?? null,
+        suggestedMergeScore:
+          selectedAudioSpeakerClusters.find((cluster) => cluster.id === turn.clusterId)
+            ?.suggestedMergeScore ?? null,
         startMs: turn.startMs,
         endMs: turn.endMs,
         text,
@@ -610,6 +568,13 @@
         : group.recognitionScore.toFixed(2);
     if (group.recognitionConfidence && score) return `${group.recognitionConfidence} · ${score}`;
     return group.recognitionConfidence ?? (score ? `score ${score}` : null);
+  }
+
+  function suggestedMergeTargetLabel(group: SpeakerTranscriptGroup): string | null {
+    const targetId = group.suggestedMergeTargetClusterId;
+    if (targetId == null) return null;
+    const target = selectedAudioSpeakerClusters.find((cluster) => cluster.id === targetId);
+    return target ? speakerClusterOptionLabel(target) : null;
   }
 
   function updateSpeakerNameDraft(clusterId: number, event: Event): void {
@@ -805,6 +770,15 @@
     const select = event.currentTarget as HTMLSelectElement;
     const targetClusterId = Number(select.value);
     if (!Number.isFinite(targetClusterId) || targetClusterId <= 0) return;
+    await mergeSpeakerClusterById(sourceClusterId, targetClusterId);
+    select.value = "";
+  }
+
+  async function mergeSpeakerClusterById(
+    sourceClusterId: number,
+    targetClusterId: number | null,
+  ): Promise<void> {
+    if (targetClusterId == null || !Number.isFinite(targetClusterId) || targetClusterId <= 0) return;
     speakerCorrectionBusyClusterId = sourceClusterId;
     speakerCorrectionError = null;
     try {
@@ -816,7 +790,6 @@
       speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
       speakerCorrectionBusyClusterId = null;
-      select.value = "";
     }
   }
 
@@ -5121,6 +5094,16 @@
                             onclick={() => rejectSpeakerSuggestion(group.clusterId)}
                           >
                             Reject suggestion
+                          </button>
+                        {/if}
+                        {#if group.suggestedMergeTargetClusterId != null && suggestedMergeTargetLabel(group)}
+                          <button
+                            type="button"
+                            class="audio-drawer__speaker-tool audio-drawer__speaker-tool--confirm"
+                            disabled={speakerCorrectionBusyClusterId === group.clusterId}
+                            onclick={() => mergeSpeakerClusterById(group.clusterId, group.suggestedMergeTargetClusterId)}
+                          >
+                            Merge with {suggestedMergeTargetLabel(group)}
                           </button>
                         {/if}
                         {#if selectedAudioSpeakerClusters.length > 1}

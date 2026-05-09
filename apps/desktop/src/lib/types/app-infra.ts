@@ -157,6 +157,10 @@ export interface MoveSpeakerTurnRequest {
 	targetClusterId: number;
 }
 
+export interface ReprocessAudioSegmentSpeakerAnalysisRequest {
+	audioSegmentId: number;
+}
+
 export type SpeakerRecognitionConfidence = "high" | "medium" | "low";
 
 export interface SpeakerTurnDto {
@@ -164,6 +168,7 @@ export interface SpeakerTurnDto {
 	audioSegmentId: number;
 	sessionId: string;
 	clusterId: number;
+	segmentClusterId: number | null;
 	providerClusterId: string;
 	speakerLabel: string;
 	personId: number | null;
@@ -196,6 +201,8 @@ export interface SpeakerClusterDto {
 	suggestedPersonId: number | null;
 	recognitionConfidence: SpeakerRecognitionConfidence | null;
 	recognitionScore: number | null;
+	suggestedMergeTargetClusterId: number | null;
+	suggestedMergeScore: number | null;
 }
 
 export type FrameBatchStatus = "open" | "closed" | "processing" | "completed" | "failed";
