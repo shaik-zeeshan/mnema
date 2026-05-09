@@ -201,21 +201,21 @@ pub fn builtin_model_manifest() -> SpeakerAnalysisModelManifest {
                 },
                 artifact: Some(ModelArtifact {
                     url: "https://github.com/k2-fsa/sherpa-onnx".to_string(),
-                    byte_size: 0,
+                    byte_size: 47_215_727,
                     sha256: None,
                     shape: ModelArtifactShape::MultiFile {
                         files: vec![
                             ModelArtifactFile {
                                 relative_path: "pyannote-segmentation-3.0/model.onnx".to_string(),
                                 url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2".to_string(),
-                                byte_size: 0,
-                                sha256: None,
+                                byte_size: 6_958_444,
+                                sha256: Some("24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488".to_string()),
                             },
                             ModelArtifactFile {
                                 relative_path: "nemo_en_titanet_small.onnx".to_string(),
                                 url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx".to_string(),
-                                byte_size: 0,
-                                sha256: None,
+                                byte_size: 40_257_283,
+                                sha256: Some("ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e".to_string()),
                             },
                         ],
                     },

@@ -106,6 +106,53 @@ pub struct AudioSegmentTranscriptionAdmissionOutcome {
     pub job: Option<ProcessingJob>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioSegmentSpeakerAnalysisAdmission {
+    pub enabled: bool,
+    pub provider_available: bool,
+    pub payload_json: Option<String>,
+}
+
+impl AudioSegmentSpeakerAnalysisAdmission {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            provider_available: false,
+            payload_json: None,
+        }
+    }
+
+    pub fn unavailable() -> Self {
+        Self {
+            enabled: true,
+            provider_available: false,
+            payload_json: None,
+        }
+    }
+
+    pub fn available(payload_json: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            provider_available: true,
+            payload_json: Some(payload_json.into()),
+        }
+    }
+
+    fn should_enqueue_for(&self, segment: &NewAudioSegment) -> bool {
+        self.enabled
+            && self.provider_available
+            && self.payload_json.is_some()
+            && segment.source_kind == AudioSegmentSourceKind::Microphone
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioSegmentProcessingAdmissionOutcome {
+    pub segment: AudioSegment,
+    pub transcription_job: Option<ProcessingJob>,
+    pub speaker_analysis_job: Option<ProcessingJob>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioSegmentTranscriptionReprocessingOutcome {
@@ -117,6 +164,15 @@ pub enum AudioSegmentTranscriptionReprocessingOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSegmentTranscriptionReprocessingResult {
     pub outcome: AudioSegmentTranscriptionReprocessingOutcome,
+    pub job: ProcessingJob,
+}
+
+pub type AudioSegmentSpeakerAnalysisReprocessingOutcome =
+    AudioSegmentTranscriptionReprocessingOutcome;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioSegmentSpeakerAnalysisReprocessingResult {
+    pub outcome: AudioSegmentSpeakerAnalysisReprocessingOutcome,
     pub job: ProcessingJob,
 }
 
@@ -412,13 +468,33 @@ impl AppInfra {
         segment: &NewAudioSegment,
         admission: &AudioSegmentTranscriptionAdmission,
     ) -> Result<AudioSegmentTranscriptionAdmissionOutcome> {
-        let should_enqueue = admission.should_enqueue_for(segment);
+        let outcome = self
+            .upsert_audio_segment_and_maybe_enqueue_processing(
+                segment,
+                admission,
+                &AudioSegmentSpeakerAnalysisAdmission::disabled(),
+            )
+            .await?;
+        return Ok(AudioSegmentTranscriptionAdmissionOutcome {
+            segment: outcome.segment,
+            job: outcome.transcription_job,
+        });
+    }
+
+    pub async fn upsert_audio_segment_and_maybe_enqueue_processing(
+        &self,
+        segment: &NewAudioSegment,
+        transcription_admission: &AudioSegmentTranscriptionAdmission,
+        speaker_admission: &AudioSegmentSpeakerAnalysisAdmission,
+    ) -> Result<AudioSegmentProcessingAdmissionOutcome> {
+        let should_enqueue_transcription = transcription_admission.should_enqueue_for(segment);
+        let should_enqueue_speaker = speaker_admission.should_enqueue_for(segment);
         let mut transaction = self.pool().begin().await?;
         let segment = self
             .audio_segments
             .upsert_in_transaction(&mut transaction, segment)
             .await?;
-        let job = if should_enqueue {
+        let transcription_job = if should_enqueue_transcription {
             let subject = ProcessingSubject::audio_segment(segment.id);
             let existing = self
                 .processing
@@ -436,7 +512,33 @@ impl AppInfra {
                             &mut transaction,
                             &subject,
                             AUDIO_TRANSCRIPTION_PROCESSOR,
-                            admission.payload_json.as_deref(),
+                            transcription_admission.payload_json.as_deref(),
+                        )
+                        .await?,
+                ),
+            }
+        } else {
+            None
+        };
+        let speaker_analysis_job = if should_enqueue_speaker {
+            let subject = ProcessingSubject::audio_segment(segment.id);
+            let existing = self
+                .processing
+                .get_latest_processing_job_for_subject_and_processor_in_transaction(
+                    &mut transaction,
+                    &subject,
+                    SPEAKER_ANALYSIS_PROCESSOR,
+                )
+                .await?;
+            match existing {
+                Some(job) => Some(job),
+                None => Some(
+                    self.processing
+                        .enqueue_job_in_transaction(
+                            &mut transaction,
+                            &subject,
+                            SPEAKER_ANALYSIS_PROCESSOR,
+                            speaker_admission.payload_json.as_deref(),
                         )
                         .await?,
                 ),
@@ -446,7 +548,11 @@ impl AppInfra {
         };
         transaction.commit().await?;
 
-        Ok(AudioSegmentTranscriptionAdmissionOutcome { segment, job })
+        Ok(AudioSegmentProcessingAdmissionOutcome {
+            segment,
+            transcription_job,
+            speaker_analysis_job,
+        })
     }
 
     pub async fn backfill_missing_audio_transcription_jobs(
@@ -480,6 +586,47 @@ impl AppInfra {
                         &mut transaction,
                         &subject,
                         AUDIO_TRANSCRIPTION_PROCESSOR,
+                        admission.payload_json.as_deref(),
+                    )
+                    .await?;
+                enqueued = enqueued.saturating_add(1);
+            }
+        }
+        transaction.commit().await?;
+        Ok(enqueued)
+    }
+
+    pub async fn backfill_missing_speaker_analysis_jobs(
+        &self,
+        admission: &AudioSegmentSpeakerAnalysisAdmission,
+    ) -> Result<u64> {
+        if !admission.enabled || !admission.provider_available || admission.payload_json.is_none() {
+            return Ok(0);
+        }
+
+        let mut transaction = self.pool().begin().await?;
+        let segments = self
+            .audio_segments
+            .list_microphone_without_speaker_analysis_job_in_transaction(&mut transaction)
+            .await?;
+        let mut enqueued = 0_u64;
+        for segment in segments {
+            let subject = ProcessingSubject::audio_segment(segment.id);
+            if self
+                .processing
+                .get_latest_processing_job_for_subject_and_processor_in_transaction(
+                    &mut transaction,
+                    &subject,
+                    SPEAKER_ANALYSIS_PROCESSOR,
+                )
+                .await?
+                .is_none()
+            {
+                self.processing
+                    .enqueue_job_in_transaction(
+                        &mut transaction,
+                        &subject,
+                        SPEAKER_ANALYSIS_PROCESSOR,
                         admission.payload_json.as_deref(),
                     )
                     .await?;
@@ -581,6 +728,99 @@ impl AppInfra {
 
         transaction.commit().await?;
 
+        Ok(result)
+    }
+
+    pub async fn reprocess_audio_segment_speaker_analysis(
+        &self,
+        audio_segment_id: i64,
+        admission: &AudioSegmentSpeakerAnalysisAdmission,
+    ) -> Result<AudioSegmentSpeakerAnalysisReprocessingResult> {
+        let segment = self
+            .audio_segments
+            .get(audio_segment_id)
+            .await?
+            .ok_or(AppInfraError::AudioSegmentNotFound(audio_segment_id))?;
+
+        if segment.source_kind != AudioSegmentSourceKind::Microphone {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "only microphone segments can be speaker-analyzed".to_string(),
+            ));
+        }
+
+        let payload_json = if !admission.enabled {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "speaker analysis is disabled".to_string(),
+            ));
+        } else if !admission.provider_available {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "selected speaker analysis model is unavailable".to_string(),
+            ));
+        } else {
+            admission.payload_json.as_deref().ok_or_else(|| {
+                AppInfraError::SpeakerAnalysisEngine(
+                    "speaker analysis job payload is unavailable".to_string(),
+                )
+            })?
+        };
+
+        let mut transaction = self.pool().begin().await?;
+        let subject = ProcessingSubject::audio_segment(segment.id);
+        let existing_job = self
+            .processing
+            .get_latest_processing_job_for_subject_and_processor_in_transaction(
+                &mut transaction,
+                &subject,
+                SPEAKER_ANALYSIS_PROCESSOR,
+            )
+            .await?;
+
+        let result = match existing_job {
+            None => {
+                let job = self
+                    .processing
+                    .enqueue_job_in_transaction(
+                        &mut transaction,
+                        &subject,
+                        SPEAKER_ANALYSIS_PROCESSOR,
+                        Some(payload_json),
+                    )
+                    .await?;
+                AudioSegmentSpeakerAnalysisReprocessingResult {
+                    outcome: AudioSegmentTranscriptionReprocessingOutcome::Created,
+                    job,
+                }
+            }
+            Some(job) if job.status == ProcessingJobStatus::Queued => {
+                AudioSegmentSpeakerAnalysisReprocessingResult {
+                    outcome: AudioSegmentTranscriptionReprocessingOutcome::Ignored,
+                    job,
+                }
+            }
+            Some(job) if job.status == ProcessingJobStatus::Running => {
+                return Err(AppInfraError::ProcessingJobInvalidTransition {
+                    job_id: job.id,
+                    from: job.status.as_str().to_string(),
+                    to: ProcessingJobStatus::Queued.as_str().to_string(),
+                });
+            }
+            Some(job) => {
+                let job = self
+                    .processing
+                    .requeue_processing_job_in_transaction(
+                        &mut transaction,
+                        job.id,
+                        Some(payload_json),
+                    )
+                    .await?;
+                AudioSegmentSpeakerAnalysisReprocessingResult {
+                    outcome: AudioSegmentTranscriptionReprocessingOutcome::Requeued,
+                    job,
+                }
+            }
+        };
+
+        transaction.commit().await?;
         Ok(result)
     }
 
@@ -1181,6 +1421,73 @@ mod tests {
             out.extend_from_slice(&value.to_le_bytes());
         }
         out
+    }
+
+    fn speaker_analysis_output_for_segment(
+        session_id: &str,
+        audio_segment_id: i64,
+        provider_cluster_id: &str,
+        embedding: &[f32],
+        turn_text: Option<&str>,
+    ) -> speaker_analysis::SpeakerAnalysisOutput {
+        speaker_analysis::SpeakerAnalysisOutput {
+            clusters: vec![speaker_analysis::SpeakerCluster {
+                provider_cluster_id: provider_cluster_id.to_string(),
+                stable_label: "Unknown Speaker 1".to_string(),
+                embedding: test_embedding_bytes(embedding),
+                embedding_model_id: "voice-model".to_string(),
+                suggestion: None,
+            }],
+            turns: vec![speaker_analysis::SpeakerTurn {
+                provider_cluster_id: provider_cluster_id.to_string(),
+                start_ms: 0,
+                end_ms: 1_000,
+                transcript_text: turn_text.map(str::to_string),
+                overlaps: false,
+            }],
+            metadata: speaker_analysis::SpeakerAnalysisMetadata {
+                provider: "mock_speaker".to_string(),
+                model_id: Some("voice-model".to_string()),
+                session_id: session_id.to_string(),
+                audio_segment_id,
+                provenance: Default::default(),
+            },
+            provider_version: None,
+        }
+    }
+
+    async fn complete_speaker_output(
+        infra: &AppInfra,
+        segment: &AudioSegment,
+        output: speaker_analysis::SpeakerAnalysisOutput,
+    ) -> ProcessingJob {
+        let payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
+            "mock_speaker",
+            Some("voice-model".to_string()),
+        ))
+        .expect("speaker payload should encode");
+        let job = infra
+            .enqueue_processing_job(
+                &ProcessingJobDraft::for_audio_segment_speaker_analysis(segment.id)
+                    .with_payload_json(payload),
+            )
+            .await
+            .expect("speaker job should enqueue");
+        infra
+            .claim_queued_processing_job(job.id)
+            .await
+            .expect("speaker job should claim")
+            .expect("claimed speaker job should exist");
+        infra
+            .complete_processing_job(
+                job.id,
+                &ProcessingResultDraft::new().with_structured_payload_json(
+                    serde_json::to_string(&output).expect("speaker output should encode"),
+                ),
+            )
+            .await
+            .expect("speaker output should complete");
+        job
     }
 
     #[derive(Clone, Default)]
@@ -2387,6 +2694,347 @@ mod tests {
             assert_eq!(jobs[0].subject_type, AUDIO_SEGMENT_SUBJECT_TYPE);
             assert_eq!(jobs[0].processor, AUDIO_TRANSCRIPTION_PROCESSOR);
             assert_eq!(jobs[0].payload_json.as_deref(), Some(payload.as_str()));
+        });
+    }
+
+    #[test]
+    fn speaker_segment_local_labels_do_not_force_stable_identity() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-segment-local-labels");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let first = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-session",
+                    1,
+                    "/tmp/speaker-local-1.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("first segment should insert");
+            let second = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-session",
+                    2,
+                    "/tmp/speaker-local-2.m4a",
+                    "2026-04-12T10:01:00Z",
+                    "2026-04-12T10:02:00Z",
+                ))
+                .await
+                .expect("second segment should insert");
+
+            complete_speaker_output(
+                &infra,
+                &first,
+                speaker_analysis_output_for_segment(
+                    "speaker-session",
+                    first.id,
+                    "speaker_00",
+                    &[1.0, 0.0],
+                    Some("first"),
+                ),
+            )
+            .await;
+            complete_speaker_output(
+                &infra,
+                &second,
+                speaker_analysis_output_for_segment(
+                    "speaker-session",
+                    second.id,
+                    "speaker_00",
+                    &[0.0, 1.0],
+                    Some("second"),
+                ),
+            )
+            .await;
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("speaker-session")
+                .await
+                .expect("clusters should list");
+            assert_eq!(clusters.len(), 2);
+            assert_ne!(clusters[0].id, clusters[1].id);
+            let second_turn = infra
+                .list_speaker_turns_for_audio_segment(second.id)
+                .await
+                .expect("second turns should list")
+                .pop()
+                .expect("second turn should exist");
+            assert_eq!(second_turn.cluster_id, clusters[1].id);
+            assert!(second_turn.segment_cluster_id.is_some());
+        });
+    }
+
+    #[test]
+    fn speaker_cluster_resolution_auto_merges_suggests_and_skips_ambiguous() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-cluster-resolution");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let mut segment_ids = Vec::new();
+            for index in 0..4 {
+                let segment = infra
+                    .upsert_audio_segment(&NewAudioSegment::new(
+                        AudioSegmentSourceKind::Microphone,
+                        "speaker-resolution",
+                        index + 1,
+                        format!("/tmp/speaker-resolution-{index}.m4a"),
+                        "2026-04-12T10:00:00Z",
+                        "2026-04-12T10:01:00Z",
+                    ))
+                    .await
+                    .expect("segment should insert");
+                segment_ids.push(segment);
+            }
+
+            complete_speaker_output(
+                &infra,
+                &segment_ids[0],
+                speaker_analysis_output_for_segment(
+                    "speaker-resolution",
+                    segment_ids[0].id,
+                    "speaker_00",
+                    &[1.0, 0.0],
+                    None,
+                ),
+            )
+            .await;
+            complete_speaker_output(
+                &infra,
+                &segment_ids[1],
+                speaker_analysis_output_for_segment(
+                    "speaker-resolution",
+                    segment_ids[1].id,
+                    "speaker_00",
+                    &[0.99, 0.01],
+                    None,
+                ),
+            )
+            .await;
+            let clusters_after_auto = infra
+                .list_speaker_clusters_for_session("speaker-resolution")
+                .await
+                .expect("clusters should list after auto merge");
+            assert_eq!(clusters_after_auto.len(), 1);
+
+            complete_speaker_output(
+                &infra,
+                &segment_ids[2],
+                speaker_analysis_output_for_segment(
+                    "speaker-resolution",
+                    segment_ids[2].id,
+                    "speaker_00",
+                    &[0.70, 0.71],
+                    None,
+                ),
+            )
+            .await;
+            let clusters_after_suggestion = infra
+                .list_speaker_clusters_for_session("speaker-resolution")
+                .await
+                .expect("clusters should list after suggestion");
+            assert_eq!(clusters_after_suggestion.len(), 2);
+            assert_eq!(
+                clusters_after_suggestion[1].suggested_merge_target_cluster_id,
+                Some(clusters_after_suggestion[0].id)
+            );
+            assert!(clusters_after_suggestion[1]
+                .suggested_merge_score
+                .is_some_and(|score| score >= 0.68));
+
+            complete_speaker_output(
+                &infra,
+                &segment_ids[3],
+                speaker_analysis_output_for_segment(
+                    "speaker-resolution",
+                    segment_ids[3].id,
+                    "speaker_00",
+                    &[0.92, 0.39],
+                    None,
+                ),
+            )
+            .await;
+            let clusters_after_ambiguous = infra
+                .list_speaker_clusters_for_session("speaker-resolution")
+                .await
+                .expect("clusters should list after ambiguous candidate");
+            assert_eq!(clusters_after_ambiguous.len(), 3);
+        });
+    }
+
+    #[test]
+    fn speaker_analysis_admission_backfills_without_transcription() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-analysis-backfill");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "speaker-backfill",
+                1,
+                "/tmp/speaker-backfill.m4a",
+                "2026-04-12T10:00:00Z",
+                "2026-04-12T10:01:00Z",
+            );
+            let speaker_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
+                "mock_speaker",
+                Some("voice-model".to_string()),
+            ))
+            .expect("speaker payload should serialize");
+            let outcome = infra
+                .upsert_audio_segment_and_maybe_enqueue_processing(
+                    &segment,
+                    &AudioSegmentTranscriptionAdmission::disabled(),
+                    &AudioSegmentSpeakerAnalysisAdmission::available(speaker_payload.clone()),
+                )
+                .await
+                .expect("segment should persist with speaker job");
+            assert!(outcome.transcription_job.is_none());
+            assert_eq!(
+                outcome
+                    .speaker_analysis_job
+                    .as_ref()
+                    .map(|job| job.processor.as_str()),
+                Some(SPEAKER_ANALYSIS_PROCESSOR)
+            );
+
+            assert_eq!(
+                infra.backfill_missing_speaker_analysis_jobs(
+                    &AudioSegmentSpeakerAnalysisAdmission::available(speaker_payload)
+                )
+                .await
+                .expect("speaker backfill should be idempotent"),
+                0
+            );
+        });
+    }
+
+    #[test]
+    fn transcript_text_attaches_to_speaker_turns_in_either_completion_order() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-transcript-alignment");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            async fn insert_segment(infra: &AppInfra, suffix: &str) -> AudioSegment {
+                infra
+                    .upsert_audio_segment(&NewAudioSegment::new(
+                        AudioSegmentSourceKind::Microphone,
+                        "speaker-transcript",
+                        if suffix == "a" { 1 } else { 2 },
+                        format!("/tmp/speaker-transcript-{suffix}.m4a"),
+                        "2026-04-12T10:00:00Z",
+                        "2026-04-12T10:01:00Z",
+                    ))
+                    .await
+                    .expect("segment should insert")
+            }
+
+            async fn complete_transcription(infra: &AppInfra, segment: &AudioSegment) {
+                let payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                    "local_whisper",
+                    Some("base".to_string()),
+                    "auto",
+                ))
+                .expect("transcription payload should encode");
+                let job = infra
+                    .enqueue_processing_job(
+                        &ProcessingJobDraft::for_audio_segment_transcription(segment.id)
+                            .with_payload_json(payload),
+                    )
+                    .await
+                    .expect("transcription job should enqueue");
+                infra
+                    .claim_queued_processing_job(job.id)
+                    .await
+                    .expect("transcription job should claim")
+                    .expect("claimed transcription job should exist");
+                let metadata = audio_transcription::TranscriptionMetadata {
+                    provider: "local_whisper".to_string(),
+                    model_id: Some("base".to_string()),
+                    language: "auto".to_string(),
+                    segments: vec![audio_transcription::TranscriptionSegment {
+                        start_ms: 0,
+                        end_ms: 1_000,
+                        text: "hello world".to_string(),
+                        confidence: None,
+                    }],
+                    words: vec![
+                        audio_transcription::TranscriptionWord {
+                            start_ms: 0,
+                            end_ms: 400,
+                            text: "hello".to_string(),
+                            confidence: None,
+                        },
+                        audio_transcription::TranscriptionWord {
+                            start_ms: 450,
+                            end_ms: 900,
+                            text: "world".to_string(),
+                            confidence: None,
+                        },
+                    ],
+                    provenance: Default::default(),
+                };
+                infra
+                    .complete_processing_job(
+                        job.id,
+                        &ProcessingResultDraft::new()
+                            .with_structured_payload_json(serde_json::to_string(&metadata).unwrap()),
+                    )
+                    .await
+                    .expect("transcription should complete");
+            }
+
+            let speaker_first = insert_segment(&infra, "a").await;
+            complete_speaker_output(
+                &infra,
+                &speaker_first,
+                speaker_analysis_output_for_segment(
+                    "speaker-transcript",
+                    speaker_first.id,
+                    "speaker_00",
+                    &[1.0, 0.0],
+                    None,
+                ),
+            )
+            .await;
+            complete_transcription(&infra, &speaker_first).await;
+            let turn = infra
+                .list_speaker_turns_for_audio_segment(speaker_first.id)
+                .await
+                .expect("turns should list")
+                .pop()
+                .expect("turn should exist");
+            assert_eq!(turn.transcript_text.as_deref(), Some("hello world"));
+
+            let transcription_first = insert_segment(&infra, "b").await;
+            complete_transcription(&infra, &transcription_first).await;
+            complete_speaker_output(
+                &infra,
+                &transcription_first,
+                speaker_analysis_output_for_segment(
+                    "speaker-transcript",
+                    transcription_first.id,
+                    "speaker_00",
+                    &[0.0, 1.0],
+                    None,
+                ),
+            )
+            .await;
+            let turn = infra
+                .list_speaker_turns_for_audio_segment(transcription_first.id)
+                .await
+                .expect("turns should list")
+                .pop()
+                .expect("turn should exist");
+            assert_eq!(turn.transcript_text.as_deref(), Some("hello world"));
         });
     }
 

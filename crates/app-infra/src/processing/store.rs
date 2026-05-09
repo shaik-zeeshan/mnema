@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use audio_transcription::{TranscriptionMetadata, TranscriptionSegment, TranscriptionWord};
 use serde::{Deserialize, Serialize};
 use speaker_analysis::{
     PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisOutput,
@@ -48,6 +49,7 @@ pub struct SpeakerTurnView {
     pub audio_segment_id: i64,
     pub session_id: String,
     pub cluster_id: i64,
+    pub segment_cluster_id: Option<i64>,
     pub provider_cluster_id: String,
     pub speaker_label: String,
     pub person_id: Option<i64>,
@@ -84,6 +86,8 @@ pub struct SpeakerClusterView {
     pub suggested_person_id: Option<i64>,
     pub recognition_confidence: Option<String>,
     pub recognition_score: Option<f32>,
+    pub suggested_merge_target_cluster_id: Option<i64>,
+    pub suggested_merge_score: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1272,6 +1276,14 @@ impl ProcessingStore {
                 persist_speaker_analysis_output(&mut transaction, job.subject_id, &output).await?;
             }
         }
+        if job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
+            && matches!(
+                job.processor.as_str(),
+                AUDIO_TRANSCRIPTION_PROCESSOR | SPEAKER_ANALYSIS_PROCESSOR
+            )
+        {
+            refresh_speaker_turn_transcript_texts(&mut transaction, job.subject_id).await?;
+        }
 
         transaction.commit().await?;
 
@@ -1323,7 +1335,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT \
                 speaker_turns.id, speaker_turns.audio_segment_id, speaker_turns.session_id, \
-                speaker_turns.cluster_id, speaker_turns.start_ms, speaker_turns.end_ms, \
+                speaker_turns.cluster_id, speaker_turns.segment_cluster_id, speaker_turns.start_ms, speaker_turns.end_ms, \
                 speaker_turns.transcript_text, speaker_turns.overlaps, \
                 recording_speaker_clusters.provider_cluster_id, \
                 COALESCE(recording_speaker_clusters.transcript_local_label, recording_speaker_clusters.stable_label) AS speaker_label, \
@@ -1397,7 +1409,8 @@ impl ProcessingStore {
             "SELECT \
                 id, session_id, provider, model_id, provider_cluster_id, \
                 COALESCE(transcript_local_label, stable_label) AS speaker_label, \
-                person_id, recognition_person_id, recognition_confidence, recognition_score \
+                person_id, recognition_person_id, recognition_confidence, recognition_score, \
+                suggested_merge_target_cluster_id, suggested_merge_score \
              FROM recording_speaker_clusters \
              WHERE session_id = ?1 \
              ORDER BY id ASC",
@@ -1696,7 +1709,8 @@ impl ProcessingStore {
             "SELECT \
                 id, session_id, provider, model_id, provider_cluster_id, \
                 COALESCE(transcript_local_label, stable_label) AS speaker_label, \
-                person_id, recognition_person_id, recognition_confidence, recognition_score \
+                person_id, recognition_person_id, recognition_confidence, recognition_score, \
+                suggested_merge_target_cluster_id, suggested_merge_score \
              FROM recording_speaker_clusters \
              WHERE id = ?1",
         )
@@ -1710,7 +1724,7 @@ impl ProcessingStore {
         let row = sqlx::query(
             "SELECT \
                 speaker_turns.id, speaker_turns.audio_segment_id, speaker_turns.session_id, \
-                speaker_turns.cluster_id, speaker_turns.start_ms, speaker_turns.end_ms, \
+                speaker_turns.cluster_id, speaker_turns.segment_cluster_id, speaker_turns.start_ms, speaker_turns.end_ms, \
                 speaker_turns.transcript_text, speaker_turns.overlaps, \
                 recording_speaker_clusters.provider_cluster_id, \
                 COALESCE(recording_speaker_clusters.transcript_local_label, recording_speaker_clusters.stable_label) AS speaker_label, \
@@ -1750,7 +1764,7 @@ async fn persist_speaker_analysis_output(
         .execute(&mut **transaction)
         .await?;
 
-    let mut cluster_ids = std::collections::HashMap::<String, i64>::new();
+    let mut cluster_ids = std::collections::HashMap::<String, (i64, i64)>::new();
     for cluster in &output.clusters {
         let (suggested_person_id, recognition_confidence, recognition_score) = cluster
             .suggestion
@@ -1764,11 +1778,27 @@ async fn persist_speaker_analysis_output(
             })
             .unwrap_or((None, None, None));
 
+        let merge_candidate = resolve_stable_speaker_cluster(
+            transaction,
+            &output.metadata.session_id,
+            &output.metadata.provider,
+            output.metadata.model_id.as_deref(),
+            &cluster.embedding,
+        )
+        .await?;
+        let stable_provider_cluster_id =
+            if let Some(target_cluster_id) = merge_candidate.auto_merge_target_cluster_id {
+                existing_speaker_cluster_provider_id(transaction, target_cluster_id).await?
+            } else {
+                format!("{audio_segment_id}:{}", cluster.provider_cluster_id)
+            };
+
         sqlx::query(
             "INSERT INTO recording_speaker_clusters (\
                 session_id, provider, model_id, provider_cluster_id, stable_label, \
-                recognition_person_id, recognition_confidence, recognition_score, embedding\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                recognition_person_id, recognition_confidence, recognition_score, embedding, \
+                suggested_merge_target_cluster_id, suggested_merge_score\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
              ON CONFLICT(session_id, provider, provider_cluster_id) DO UPDATE SET \
                 model_id = excluded.model_id, \
                 stable_label = COALESCE(recording_speaker_clusters.transcript_local_label, excluded.stable_label), \
@@ -1776,17 +1806,21 @@ async fn persist_speaker_analysis_output(
                 recognition_confidence = excluded.recognition_confidence, \
                 recognition_score = excluded.recognition_score, \
                 embedding = excluded.embedding, \
+                suggested_merge_target_cluster_id = excluded.suggested_merge_target_cluster_id, \
+                suggested_merge_score = excluded.suggested_merge_score, \
                 updated_at = CURRENT_TIMESTAMP",
         )
         .bind(&output.metadata.session_id)
         .bind(&output.metadata.provider)
         .bind(output.metadata.model_id.as_deref())
-        .bind(&cluster.provider_cluster_id)
+        .bind(&stable_provider_cluster_id)
         .bind(&cluster.stable_label)
         .bind(suggested_person_id)
         .bind(recognition_confidence)
         .bind(recognition_score)
         .bind(&cluster.embedding)
+        .bind(merge_candidate.suggested_merge_target_cluster_id)
+        .bind(merge_candidate.suggested_merge_score)
         .execute(&mut **transaction)
         .await?;
 
@@ -1796,24 +1830,71 @@ async fn persist_speaker_analysis_output(
         )
         .bind(&output.metadata.session_id)
         .bind(&output.metadata.provider)
+        .bind(&stable_provider_cluster_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+        let stable_cluster_id = row.get("id");
+
+        sqlx::query(
+            "INSERT INTO speaker_segment_clusters (\
+                audio_segment_id, session_id, provider, model_id, provider_cluster_id, \
+                stable_cluster_id, stable_label, embedding, embedding_model_id, \
+                suggested_merge_target_cluster_id, suggested_merge_score\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+             ON CONFLICT(audio_segment_id, provider, provider_cluster_id) DO UPDATE SET \
+                model_id = excluded.model_id, \
+                stable_cluster_id = excluded.stable_cluster_id, \
+                stable_label = excluded.stable_label, \
+                embedding = excluded.embedding, \
+                embedding_model_id = excluded.embedding_model_id, \
+                suggested_merge_target_cluster_id = excluded.suggested_merge_target_cluster_id, \
+                suggested_merge_score = excluded.suggested_merge_score, \
+                updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(audio_segment_id)
+        .bind(&output.metadata.session_id)
+        .bind(&output.metadata.provider)
+        .bind(output.metadata.model_id.as_deref())
+        .bind(&cluster.provider_cluster_id)
+        .bind(stable_cluster_id)
+        .bind(&cluster.stable_label)
+        .bind(&cluster.embedding)
+        .bind(&cluster.embedding_model_id)
+        .bind(merge_candidate.suggested_merge_target_cluster_id)
+        .bind(merge_candidate.suggested_merge_score)
+        .execute(&mut **transaction)
+        .await?;
+
+        let row = sqlx::query(
+            "SELECT id FROM speaker_segment_clusters \
+             WHERE audio_segment_id = ?1 AND provider = ?2 AND provider_cluster_id = ?3",
+        )
+        .bind(audio_segment_id)
+        .bind(&output.metadata.provider)
         .bind(&cluster.provider_cluster_id)
         .fetch_one(&mut **transaction)
         .await?;
-        cluster_ids.insert(cluster.provider_cluster_id.clone(), row.get("id"));
+        cluster_ids.insert(
+            cluster.provider_cluster_id.clone(),
+            (stable_cluster_id, row.get("id")),
+        );
     }
 
     for turn in &output.turns {
-        let Some(cluster_id) = cluster_ids.get(&turn.provider_cluster_id).copied() else {
+        let Some((cluster_id, segment_cluster_id)) =
+            cluster_ids.get(&turn.provider_cluster_id).copied()
+        else {
             continue;
         };
         sqlx::query(
             "INSERT INTO speaker_turns (\
-                audio_segment_id, session_id, cluster_id, start_ms, end_ms, transcript_text, overlaps\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                audio_segment_id, session_id, cluster_id, segment_cluster_id, start_ms, end_ms, transcript_text, overlaps\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
         .bind(audio_segment_id)
         .bind(&output.metadata.session_id)
         .bind(cluster_id)
+        .bind(segment_cluster_id)
         .bind(i64::try_from(turn.start_ms).unwrap_or(i64::MAX))
         .bind(i64::try_from(turn.end_ms).unwrap_or(i64::MAX))
         .bind(turn.transcript_text.as_deref())
@@ -1823,6 +1904,292 @@ async fn persist_speaker_analysis_output(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StableSpeakerClusterResolution {
+    auto_merge_target_cluster_id: Option<i64>,
+    suggested_merge_target_cluster_id: Option<i64>,
+    suggested_merge_score: Option<f32>,
+}
+
+async fn resolve_stable_speaker_cluster(
+    transaction: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    provider: &str,
+    model_id: Option<&str>,
+    embedding: &[u8],
+) -> Result<StableSpeakerClusterResolution> {
+    let incoming = f32_embedding_from_le_bytes(embedding);
+    if incoming.is_empty() {
+        return Ok(StableSpeakerClusterResolution::default());
+    }
+
+    let rows = sqlx::query(
+        "SELECT id, embedding FROM recording_speaker_clusters \
+         WHERE session_id = ?1 AND provider = ?2 AND COALESCE(model_id, '') = COALESCE(?3, '') \
+           AND embedding IS NOT NULL \
+         ORDER BY id ASC",
+    )
+    .bind(session_id)
+    .bind(provider)
+    .bind(model_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+
+    let mut scores = rows
+        .into_iter()
+        .filter_map(|row| {
+            let embedding: Vec<u8> = row.get("embedding");
+            let score = cosine_similarity(&incoming, &f32_embedding_from_le_bytes(&embedding));
+            score.is_finite().then_some((row.get::<i64, _>("id"), score))
+        })
+        .collect::<Vec<_>>();
+    scores.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let Some((best_cluster_id, best_score)) = scores.first().copied() else {
+        return Ok(StableSpeakerClusterResolution::default());
+    };
+    let second_score = scores.get(1).map(|(_, score)| *score);
+    let ambiguous = second_score.is_some_and(|score| best_score - score < 0.05);
+
+    if best_score >= 0.82 && !ambiguous {
+        Ok(StableSpeakerClusterResolution {
+            auto_merge_target_cluster_id: Some(best_cluster_id),
+            ..Default::default()
+        })
+    } else if best_score >= 0.68 {
+        Ok(StableSpeakerClusterResolution {
+            suggested_merge_target_cluster_id: Some(best_cluster_id),
+            suggested_merge_score: Some(best_score),
+            ..Default::default()
+        })
+    } else {
+        Ok(StableSpeakerClusterResolution::default())
+    }
+}
+
+async fn existing_speaker_cluster_provider_id(
+    transaction: &mut Transaction<'_, Sqlite>,
+    cluster_id: i64,
+) -> Result<String> {
+    let row = sqlx::query("SELECT provider_cluster_id FROM recording_speaker_clusters WHERE id = ?1")
+        .bind(cluster_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+    Ok(row.get("provider_cluster_id"))
+}
+
+async fn refresh_speaker_turn_transcript_texts(
+    transaction: &mut Transaction<'_, Sqlite>,
+    audio_segment_id: i64,
+) -> Result<()> {
+    let Some(metadata) = latest_transcription_metadata_for_audio_segment(transaction, audio_segment_id).await? else {
+        return Ok(());
+    };
+    let turns = speaker_turn_ranges_for_audio_segment(transaction, audio_segment_id).await?;
+    if turns.is_empty() {
+        return Ok(());
+    }
+
+    let runs = if metadata.words.is_empty() {
+        metadata
+            .segments
+            .iter()
+            .map(TimedTextRun::from_segment)
+            .collect::<Vec<_>>()
+    } else {
+        metadata
+            .words
+            .iter()
+            .map(TimedTextRun::from_word)
+            .collect::<Vec<_>>()
+    };
+
+    let mut text_by_turn = std::collections::HashMap::<i64, Vec<String>>::new();
+    for run in runs {
+        if run.text.trim().is_empty() {
+            continue;
+        }
+        if let Some(turn_id) = best_turn_for_timed_text_run(&turns, &run) {
+            text_by_turn
+                .entry(turn_id)
+                .or_default()
+                .push(run.text.trim().to_string());
+        }
+    }
+
+    for turn in turns {
+        let text = text_by_turn
+            .remove(&turn.id)
+            .map(|parts| parts.join(" "))
+            .filter(|text| !text.trim().is_empty());
+        sqlx::query(
+            "UPDATE speaker_turns SET transcript_text = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+        )
+        .bind(turn.id)
+        .bind(text)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn latest_transcription_metadata_for_audio_segment(
+    transaction: &mut Transaction<'_, Sqlite>,
+    audio_segment_id: i64,
+) -> Result<Option<TranscriptionMetadata>> {
+    let row = sqlx::query(
+        "SELECT structured_payload_json FROM processing_results \
+         WHERE subject_type = ?1 AND subject_id = ?2 AND processor = ?3 \
+           AND structured_payload_json IS NOT NULL \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+    .bind(audio_segment_id)
+    .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    row.map(|row| serde_json::from_str(row.get::<String, _>("structured_payload_json").as_str()))
+        .transpose()
+        .map_err(AppInfraError::from)
+}
+
+#[derive(Debug, Clone)]
+struct SpeakerTurnRange {
+    id: i64,
+    start_ms: u64,
+    end_ms: u64,
+}
+
+async fn speaker_turn_ranges_for_audio_segment(
+    transaction: &mut Transaction<'_, Sqlite>,
+    audio_segment_id: i64,
+) -> Result<Vec<SpeakerTurnRange>> {
+    let rows = sqlx::query(
+        "SELECT id, start_ms, end_ms FROM speaker_turns \
+         WHERE audio_segment_id = ?1 ORDER BY start_ms ASC, end_ms ASC, id ASC",
+    )
+    .bind(audio_segment_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| SpeakerTurnRange {
+            id: row.get("id"),
+            start_ms: u64::try_from(row.get::<i64, _>("start_ms")).unwrap_or_default(),
+            end_ms: u64::try_from(row.get::<i64, _>("end_ms")).unwrap_or_default(),
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone)]
+struct TimedTextRun {
+    start_ms: u64,
+    end_ms: u64,
+    text: String,
+}
+
+impl TimedTextRun {
+    fn from_word(word: &TranscriptionWord) -> Self {
+        Self {
+            start_ms: word.start_ms,
+            end_ms: word.end_ms,
+            text: word.text.clone(),
+        }
+    }
+
+    fn from_segment(segment: &TranscriptionSegment) -> Self {
+        Self {
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            text: segment.text.clone(),
+        }
+    }
+}
+
+fn best_turn_for_timed_text_run(turns: &[SpeakerTurnRange], run: &TimedTextRun) -> Option<i64> {
+    let mut best = None::<(&SpeakerTurnRange, u64, u64)>;
+    for turn in turns {
+        let overlap = overlap_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms);
+        if overlap == 0 {
+            continue;
+        }
+        let distance = midpoint_distance_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms);
+        if best.is_none_or(|(best_turn, best_overlap, best_distance)| {
+            overlap > best_overlap
+                || (overlap == best_overlap && distance < best_distance)
+                || (overlap == best_overlap && distance == best_distance && turn.id < best_turn.id)
+        }) {
+            best = Some((turn, overlap, distance));
+        }
+    }
+    if let Some((turn, _, _)) = best {
+        return Some(turn.id);
+    }
+
+    turns
+        .iter()
+        .map(|turn| {
+            (
+                turn,
+                gap_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms),
+                midpoint_distance_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms),
+            )
+        })
+        .filter(|(_, gap, _)| *gap <= 500)
+        .min_by_key(|(turn, gap, distance)| (*gap, *distance, turn.id))
+        .map(|(turn, _, _)| turn.id)
+}
+
+fn overlap_ms(start_a: u64, end_a: u64, start_b: u64, end_b: u64) -> u64 {
+    end_a.min(end_b).saturating_sub(start_a.max(start_b))
+}
+
+fn gap_ms(start_a: u64, end_a: u64, start_b: u64, end_b: u64) -> u64 {
+    if end_a < start_b {
+        start_b - end_a
+    } else if end_b < start_a {
+        start_a - end_b
+    } else {
+        0
+    }
+}
+
+fn midpoint_distance_ms(start_a: u64, end_a: u64, start_b: u64, end_b: u64) -> u64 {
+    let mid_a = start_a.saturating_add(end_a) / 2;
+    let mid_b = start_b.saturating_add(end_b) / 2;
+    mid_a.abs_diff(mid_b)
+}
+
+fn f32_embedding_from_le_bytes(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+    if left.len() != right.len() || left.is_empty() {
+        return f32::NAN;
+    }
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for (left, right) in left.iter().zip(right) {
+        dot += left * right;
+        left_norm += left * left;
+        right_norm += right * right;
+    }
+    if left_norm == 0.0 || right_norm == 0.0 {
+        return f32::NAN;
+    }
+    dot / (left_norm.sqrt() * right_norm.sqrt())
 }
 
 fn recognition_confidence_as_str(confidence: &RecognitionConfidence) -> &'static str {
@@ -2192,6 +2559,7 @@ fn map_speaker_turn_view(row: SqliteRow) -> Result<SpeakerTurnView> {
         audio_segment_id: row.get("audio_segment_id"),
         session_id: row.get("session_id"),
         cluster_id: row.get("cluster_id"),
+        segment_cluster_id: row.get("segment_cluster_id"),
         provider_cluster_id: row.get("provider_cluster_id"),
         speaker_label: row.get("speaker_label"),
         person_id: row.get("person_id"),
@@ -2231,6 +2599,10 @@ fn map_speaker_cluster_view(row: SqliteRow) -> Result<SpeakerClusterView> {
         recognition_confidence: row.get("recognition_confidence"),
         recognition_score: row
             .get::<Option<f64>, _>("recognition_score")
+            .map(|score| score as f32),
+        suggested_merge_target_cluster_id: row.get("suggested_merge_target_cluster_id"),
+        suggested_merge_score: row
+            .get::<Option<f64>, _>("suggested_merge_score")
             .map(|score| score as f32),
     })
 }

@@ -27,7 +27,8 @@ const MIN_DURATION_OFF_OPTION: &str = "minDurationOff";
 const MIN_DIARIZATION_AUDIO_MS: u64 = 1_000;
 const MIN_DIARIZATION_PEAK: f32 = 1.0e-5;
 const DEFAULT_CLUSTERING_THRESHOLD: f32 = 0.65;
-const SAFE_SINGLE_CHUNK_DIARIZATION_MS: u64 = 8_000;
+const SAFE_SINGLE_CHUNK_DIARIZATION_MS: u64 = 10_000;
+const SAFE_CHUNK_OVERLAP_MS: u64 = 1_000;
 const CROSS_CHUNK_CLUSTER_SIMILARITY_THRESHOLD: f32 = 0.60;
 const MERGE_ADJACENT_TURN_GAP_MS: u64 = 250;
 const MIN_RECOGNITION_SUGGESTION_SCORE: f32 = 0.50;
@@ -259,6 +260,7 @@ fn run_sherpa_on_samples(
             suggestion,
         });
     }
+    output.turns = mark_overlapping_turns(output.turns);
 
     Ok(output)
 }
@@ -277,8 +279,19 @@ fn analyze_long_audio_with_safe_chunking(
     let mut pending_turns = Vec::new();
     let mut next_local_cluster_key = 0usize;
 
-    for chunk_start in (0..samples.len()).step_by(chunk_len) {
+    let step_len = chunk_len.saturating_sub(overlap_sample_limit()).max(1);
+    for chunk_start in (0..samples.len()).step_by(step_len) {
         let chunk_end = (chunk_start + chunk_len).min(samples.len());
+        let trim_start = if chunk_start == 0 {
+            0
+        } else {
+            overlap_sample_limit() / 2
+        };
+        let trim_end = if chunk_end == samples.len() {
+            chunk_end - chunk_start
+        } else {
+            (chunk_end - chunk_start).saturating_sub(overlap_sample_limit() / 2)
+        };
         let chunk_samples = &samples[chunk_start..chunk_end];
         if should_skip_diarization(
             chunk_samples,
@@ -297,6 +310,8 @@ fn analyze_long_audio_with_safe_chunking(
             samples,
             chunk_start,
             chunk_samples.len(),
+            trim_start,
+            trim_end,
             &segments,
             extractor,
             next_local_cluster_key,
@@ -329,7 +344,7 @@ fn analyze_long_audio_with_safe_chunking(
             overlaps: false,
         });
     }
-    output.turns = merge_adjacent_turns(output.turns);
+    output.turns = mark_overlapping_turns(merge_adjacent_turns(output.turns));
 
     for cluster in global_clusters {
         let cluster_samples = concatenate_ranges(samples, &cluster.ranges);
@@ -357,6 +372,8 @@ fn analyze_single_safe_chunk(
     all_samples: &[f32],
     chunk_start: usize,
     chunk_len: usize,
+    trim_start: usize,
+    trim_end: usize,
     segments: &[sherpa_onnx_runtime::OfflineSpeakerDiarizationSegment],
     extractor: &sherpa_onnx_runtime::SpeakerEmbeddingExtractor,
     next_local_cluster_key: usize,
@@ -367,12 +384,27 @@ fn analyze_single_safe_chunk(
     for segment in segments {
         let local_start_ms = seconds_to_ms(segment.start);
         let local_end_ms = seconds_to_ms(segment.end);
+        let start = ms_to_sample_index(local_start_ms, chunk_len);
+        let end = ms_to_sample_index(local_end_ms, chunk_len);
+        let trimmed_start = start.max(trim_start);
+        let trimmed_end = end.min(trim_end);
+        if trimmed_end <= trimmed_start {
+            continue;
+        }
         let global_start_ms = chunk_start as u64 * 1000 / SAMPLE_RATE_HZ as u64 + local_start_ms;
         let global_end_ms = chunk_start as u64 * 1000 / SAMPLE_RATE_HZ as u64 + local_end_ms;
-        raw_turns.push((segment.speaker, global_start_ms, global_end_ms));
+        let trim_global_start_ms =
+            (chunk_start + trimmed_start) as u64 * 1000 / SAMPLE_RATE_HZ as u64;
+        let trim_global_end_ms =
+            (chunk_start + trimmed_end) as u64 * 1000 / SAMPLE_RATE_HZ as u64;
+        raw_turns.push((
+            segment.speaker,
+            global_start_ms.max(trim_global_start_ms),
+            global_end_ms.min(trim_global_end_ms),
+        ));
 
-        let start = chunk_start + ms_to_sample_index(local_start_ms, chunk_len);
-        let end = chunk_start + ms_to_sample_index(local_end_ms, chunk_len);
+        let start = chunk_start + trimmed_start;
+        let end = chunk_start + trimmed_end;
         if end > start {
             ranges_by_speaker
                 .entry(segment.speaker)
@@ -506,6 +538,25 @@ fn merge_adjacent_turns(mut turns: Vec<SpeakerTurn>) -> Vec<SpeakerTurn> {
 
 fn safe_single_chunk_sample_limit() -> usize {
     SAMPLE_RATE_HZ as usize * SAFE_SINGLE_CHUNK_DIARIZATION_MS as usize / 1000
+}
+
+fn overlap_sample_limit() -> usize {
+    SAMPLE_RATE_HZ as usize * SAFE_CHUNK_OVERLAP_MS as usize / 1000
+}
+
+fn mark_overlapping_turns(mut turns: Vec<SpeakerTurn>) -> Vec<SpeakerTurn> {
+    for index in 0..turns.len() {
+        let overlaps = turns.iter().enumerate().any(|(other_index, other)| {
+            other_index != index
+                && other.provider_cluster_id != turns[index].provider_cluster_id
+                && other.end_ms > turns[index].start_ms
+                && other.start_ms < turns[index].end_ms
+        });
+        if overlaps {
+            turns[index].overlaps = true;
+        }
+    }
+    turns
 }
 
 #[cfg(feature = "sherpa-onnx")]
