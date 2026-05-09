@@ -1078,7 +1078,7 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        sync::mpsc,
+        sync::{mpsc, Arc, Mutex},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1181,6 +1181,57 @@ mod tests {
             out.extend_from_slice(&value.to_le_bytes());
         }
         out
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturingSpeakerAnalysisProvider {
+        requests: Arc<Mutex<Vec<speaker_analysis::SpeakerAnalysisRequest>>>,
+    }
+
+    #[async_trait]
+    impl speaker_analysis::SpeakerAnalysisProvider for CapturingSpeakerAnalysisProvider {
+        fn provider(&self) -> &'static str {
+            "mock_speaker"
+        }
+
+        async fn analyze(
+            &self,
+            request: speaker_analysis::SpeakerAnalysisRequest,
+        ) -> speaker_analysis::SpeakerAnalysisResult<speaker_analysis::SpeakerAnalysisOutput>
+        {
+            self.requests
+                .lock()
+                .expect("captured speaker requests should lock")
+                .push(request.clone());
+
+            let suggestion = request.enrolled_people.first().map(|person| {
+                speaker_analysis::SpeakerRecognitionSuggestion {
+                    person_id: person.person_id,
+                    display_name: person.display_name.clone(),
+                    confidence: speaker_analysis::RecognitionConfidence::High,
+                    score: 0.94,
+                }
+            });
+
+            Ok(speaker_analysis::SpeakerAnalysisOutput {
+                clusters: vec![speaker_analysis::SpeakerCluster {
+                    provider_cluster_id: "speaker_00".to_string(),
+                    stable_label: "Unknown Speaker 1".to_string(),
+                    embedding: test_embedding_bytes(&[0.5, 0.5]),
+                    embedding_model_id: request.model_id.clone().unwrap_or_default(),
+                    suggestion,
+                }],
+                turns: vec![speaker_analysis::SpeakerTurn {
+                    provider_cluster_id: "speaker_00".to_string(),
+                    start_ms: 0,
+                    end_ms: 1_000,
+                    transcript_text: Some("hello".to_string()),
+                    overlaps: false,
+                }],
+                metadata: speaker_analysis::SpeakerAnalysisMetadata::from_request(&request),
+                provider_version: None,
+            })
+        }
     }
 
     fn test_frame_with_equivalent_image(
@@ -2137,6 +2188,155 @@ mod tests {
             assert_eq!(rejections.len(), 1);
             assert_eq!(rejections[0].person_id, jack.id);
             assert_eq!(rejections[0].embedding, test_embedding_bytes(&[0.0, 1.0]));
+        });
+    }
+
+    #[test]
+    fn saved_speaker_profile_embedding_is_available_to_later_sessions() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-cross-session-recognition");
+            let provider = CapturingSpeakerAnalysisProvider::default();
+            let captured_requests = provider.requests.clone();
+            let infra = AppInfra::initialize_with_processing_registry(
+                dir.path(),
+                ProcessorRegistry::new().register(SpeakerAnalysisProcessorBackend::new(provider)),
+            )
+            .await
+            .expect("app infra should initialize");
+
+            let first_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-profile-source-session",
+                    1,
+                    "/tmp/speaker-profile-source.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("source audio segment should insert");
+            let first_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(first_segment.id)
+                        .with_payload_json(
+                            serde_json::to_string(&SpeakerAnalysisJobPayload::new(
+                                "mock_speaker",
+                                Some("voice-model".to_string()),
+                            ))
+                            .expect("source payload should encode"),
+                        ),
+                )
+                .await
+                .expect("source speaker analysis job should enqueue");
+            infra
+                .claim_queued_processing_job(first_job.id)
+                .await
+                .expect("source job should claim")
+                .expect("source job should exist");
+            let first_output = speaker_analysis::SpeakerAnalysisOutput {
+                clusters: vec![speaker_analysis::SpeakerCluster {
+                    provider_cluster_id: "speaker_00".to_string(),
+                    stable_label: "Unknown Speaker 1".to_string(),
+                    embedding: test_embedding_bytes(&[1.0, 0.0]),
+                    embedding_model_id: "voice-model".to_string(),
+                    suggestion: None,
+                }],
+                turns: vec![speaker_analysis::SpeakerTurn {
+                    provider_cluster_id: "speaker_00".to_string(),
+                    start_ms: 0,
+                    end_ms: 1_000,
+                    transcript_text: Some("hello".to_string()),
+                    overlaps: false,
+                }],
+                metadata: speaker_analysis::SpeakerAnalysisMetadata {
+                    provider: "mock_speaker".to_string(),
+                    model_id: Some("voice-model".to_string()),
+                    session_id: "speaker-profile-source-session".to_string(),
+                    audio_segment_id: first_segment.id,
+                    provenance: Default::default(),
+                },
+                provider_version: None,
+            };
+            infra
+                .complete_processing_job(
+                    first_job.id,
+                    &ProcessingResultDraft::new().with_structured_payload_json(
+                        serde_json::to_string(&first_output).expect("source output should encode"),
+                    ),
+                )
+                .await
+                .expect("source speaker analysis should complete");
+            let source_cluster = infra
+                .list_speaker_clusters_for_session("speaker-profile-source-session")
+                .await
+                .expect("source clusters should list")
+                .into_iter()
+                .next()
+                .expect("source cluster should exist");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            infra
+                .link_speaker_cluster_to_person(source_cluster.id, jack.id, true)
+                .await
+                .expect("source cluster should link and enroll embedding");
+
+            let later_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-profile-later-session",
+                    1,
+                    "/tmp/speaker-profile-later.m4a",
+                    "2026-04-12T10:05:00Z",
+                    "2026-04-12T10:06:00Z",
+                ))
+                .await
+                .expect("later audio segment should insert");
+            let mut later_payload =
+                SpeakerAnalysisJobPayload::new("mock_speaker", Some("voice-model".to_string()));
+            later_payload.recognize_people = true;
+            let later_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(later_segment.id)
+                        .with_payload_json(
+                            serde_json::to_string(&later_payload)
+                                .expect("later payload should encode"),
+                        ),
+                )
+                .await
+                .expect("later speaker analysis job should enqueue");
+
+            infra
+                .process_processing_job(later_job.id)
+                .await
+                .expect("later speaker analysis should process");
+
+            let requests = captured_requests
+                .lock()
+                .expect("captured speaker requests should lock");
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].session_id, "speaker-profile-later-session");
+            assert_eq!(requests[0].enrolled_people.len(), 1);
+            assert_eq!(requests[0].enrolled_people[0].person_id, jack.id);
+            assert_eq!(
+                requests[0].enrolled_people[0].embedding,
+                test_embedding_bytes(&[1.0, 0.0])
+            );
+            drop(requests);
+
+            let later_cluster = infra
+                .list_speaker_clusters_for_session("speaker-profile-later-session")
+                .await
+                .expect("later clusters should list")
+                .into_iter()
+                .next()
+                .expect("later cluster should exist");
+            assert_eq!(later_cluster.suggested_person_id, Some(jack.id));
+            assert_eq!(
+                later_cluster.recognition_confidence.as_deref(),
+                Some("high")
+            );
         });
     }
 
