@@ -555,8 +555,8 @@
 
   function speakerDisplayLabel(group: SpeakerTranscriptGroup): string {
     if (group.personId != null) return speakerProfileName(group.personId) ?? group.speakerLabel;
-    if (group.suggestedPersonId != null && group.recognitionConfidence === "medium") {
-      return `Maybe ${group.speakerLabel}`;
+    if (group.suggestedPersonId != null) {
+      return `Maybe ${speakerProfileName(group.suggestedPersonId) ?? speakerCleanLabel(group.speakerLabel)}`;
     }
     return group.speakerLabel;
   }
@@ -595,7 +595,7 @@
 
   function speakerClusterOptionLabel(cluster: SpeakerClusterDto): string {
     if (cluster.personId != null) return speakerProfileName(cluster.personId) ?? cluster.speakerLabel;
-    if (cluster.suggestedPersonId != null && cluster.recognitionConfidence === "medium") {
+    if (cluster.suggestedPersonId != null) {
       return speakerProfileName(cluster.suggestedPersonId) ?? `Maybe ${speakerCleanLabel(cluster.speakerLabel)}`;
     }
     return speakerCleanLabel(cluster.speakerLabel);
