@@ -706,11 +706,14 @@ pub(super) fn committed_audio_segments_for_output_files(
 fn transcription_admission_for_app_handle(
     app_handle: &tauri::AppHandle,
 ) -> ::app_infra::AudioSegmentTranscriptionAdmission {
-    let transcription_settings = match app_handle
+    let (transcription_settings, speaker_settings) = match app_handle
         .state::<crate::native_capture::RecordingSettingsState>()
         .lock()
     {
-        Ok(settings) => settings.settings.transcription.clone(),
+        Ok(settings) => (
+            settings.settings.transcription.clone(),
+            settings.settings.speaker_analysis.clone(),
+        ),
         Err(_) => {
             super::debug_log::log(
                 "failed to read recording settings for audio transcription admission".to_string(),
@@ -752,6 +755,20 @@ fn transcription_admission_for_app_handle(
                 crate::audio_transcription_models::transcription_request_options_for_settings(
                     &transcription_settings,
                 );
+            if speaker_settings.separate_speakers {
+                let mut speaker_payload = ::app_infra::SpeakerAnalysisJobPayload::new(
+                    speaker_settings.provider.clone(),
+                    speaker_settings.model_id.clone(),
+                );
+                speaker_payload.normalize_model_selection();
+                speaker_payload.recognize_people = speaker_settings.recognize_saved_people;
+                if let Ok(value) = serde_json::to_value(speaker_payload) {
+                    payload.options.insert(
+                        ::app_infra::SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY.to_string(),
+                        value,
+                    );
+                }
+            }
             match serde_json::to_string(&payload) {
                 Ok(payload_json) => {
                     ::app_infra::AudioSegmentTranscriptionAdmission::available(payload_json)

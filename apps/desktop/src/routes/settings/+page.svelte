@@ -39,10 +39,14 @@
     MicrophonePreferenceMode,
     MicrophoneDisconnectPolicy,
     MicrophoneAutoDisconnectTransitionFailedEvent,
+    SpeakerAnalysisModelDownloadProgress,
+    SpeakerAnalysisModelStatus,
+    SpeakerAnalysisModelStatusResponse,
   } from "$lib/types";
 
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
+  const SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT = "speaker_analysis_model_download_progress";
   const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
   const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
 
@@ -138,6 +142,19 @@
   let draftTranscriptionMemoryMode = $state<AudioTranscriptionMemoryMode>("balanced");
   let draftTranscriptionIdleUnloadSeconds = $state(300);
   let draftTranscriptionChunkSeconds = $state(30);
+  let draftSpeakerSeparateSpeakers = $state(false);
+  let draftSpeakerRecognizeSavedPeople = $state(false);
+  let draftSpeakerProvider = $state("sherpa_onnx");
+  let draftSpeakerModelId = $state<string | null>("pyannote-3.0-nemo-titanet-small");
+  let speakerModelStatus = $state<SpeakerAnalysisModelStatusResponse | null>(null);
+  let loadingSpeakerModelStatus = $state(false);
+  let speakerModelError = $state<string | null>(null);
+  let speakerDownloadProgress = $state<SpeakerAnalysisModelDownloadProgress | null>(null);
+  let startingSpeakerDownload = $state(false);
+  let cancellingSpeakerDownload = $state(false);
+  let speakerDownloadError = $state<string | null>(null);
+  let deletingSpeakerModel = $state(false);
+  let speakerModelDeleteMessage = $state<string | null>(null);
   let transcriptionModelStatus = $state<AudioTranscriptionModelStatusResponse | null>(null);
   let loadingTranscriptionModelStatus = $state(false);
   let transcriptionModelError = $state<string | null>(null);
@@ -191,6 +208,7 @@
     | "microphone"
     | "ocr"
     | "transcription"
+    | "speakers"
     | "developer";
 
   let activeTab = $state<SettingsTab>("capture");
@@ -223,6 +241,7 @@
     { id: "microphone", label: "Microphone",  description: "Devices & disconnect policy" },
     { id: "ocr",        label: "OCR & Cache", description: "Recognition & previews" },
     { id: "transcription", label: "Transcription", description: "Local speech-to-text models" },
+    { id: "speakers", label: "Speakers", description: "Diarization & voice profiles" },
     { id: "developer",  label: "Developer",   description: "Debug toggles & logs" },
   ];
 
@@ -234,6 +253,7 @@
       || value === "microphone"
       || value === "ocr"
       || value === "transcription"
+      || value === "speakers"
       || value === "developer";
   }
 
@@ -366,6 +386,10 @@
     draftTranscriptionMemoryMode = s.transcription?.memoryMode ?? "balanced";
     draftTranscriptionIdleUnloadSeconds = s.transcription?.idleUnloadSeconds ?? 300;
     draftTranscriptionChunkSeconds = s.transcription?.chunkSeconds ?? 30;
+    draftSpeakerSeparateSpeakers = s.speakerAnalysis?.separateSpeakers ?? false;
+    draftSpeakerRecognizeSavedPeople = s.speakerAnalysis?.recognizeSavedPeople ?? false;
+    draftSpeakerProvider = s.speakerAnalysis?.provider ?? "sherpa_onnx";
+    draftSpeakerModelId = s.speakerAnalysis?.modelId ?? "pyannote-3.0-nemo-titanet-small";
     if (s.screenResolution.mode === "custom") {
       draftResolutionMode = "custom";
       draftCustomWidth = s.screenResolution.width;
@@ -451,6 +475,12 @@
         memoryMode: draftTranscriptionMemoryMode,
         idleUnloadSeconds: Math.max(0, Math.trunc(Number(draftTranscriptionIdleUnloadSeconds) || 0)),
         chunkSeconds: Math.max(0, Math.trunc(Number(draftTranscriptionChunkSeconds) || 0)),
+      },
+      speakerAnalysis: {
+        separateSpeakers: draftSpeakerSeparateSpeakers,
+        recognizeSavedPeople: draftSpeakerRecognizeSavedPeople,
+        provider: draftSpeakerProvider,
+        modelId: draftSpeakerModelId,
       },
       screenResolution: draftResolutionMode === "custom"
         ? {
@@ -752,6 +782,80 @@
     transcriptionDownloadProgress = progress;
     if (["completed", "failed", "cancelled"].includes(progress.status)) {
       await loadTranscriptionModelStatus();
+    }
+  }
+
+  async function loadSpeakerModelStatus() {
+    loadingSpeakerModelStatus = true;
+    speakerModelError = null;
+    try {
+      speakerModelStatus = await invoke<SpeakerAnalysisModelStatusResponse>("get_speaker_analysis_model_status");
+    } catch (err) {
+      speakerModelError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      loadingSpeakerModelStatus = false;
+    }
+  }
+
+  async function startSelectedSpeakerModelDownload() {
+    if (!selectedSpeakerModel?.modelId) return;
+    startingSpeakerDownload = true;
+    speakerDownloadError = null;
+    speakerModelDeleteMessage = null;
+    try {
+      speakerDownloadProgress = await invoke<SpeakerAnalysisModelDownloadProgress>(
+        "start_speaker_analysis_model_download",
+        {
+          request: {
+            provider: selectedSpeakerModel.provider,
+            modelId: selectedSpeakerModel.modelId,
+          },
+        }
+      );
+    } catch (err) {
+      speakerDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      startingSpeakerDownload = false;
+    }
+  }
+
+  async function cancelSelectedSpeakerModelDownload() {
+    cancellingSpeakerDownload = true;
+    speakerDownloadError = null;
+    try {
+      await invoke("cancel_speaker_analysis_model_download");
+    } catch (err) {
+      speakerDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      cancellingSpeakerDownload = false;
+    }
+  }
+
+  async function deleteSelectedSpeakerModel() {
+    if (!selectedSpeakerModel?.modelId) return;
+    deletingSpeakerModel = true;
+    speakerModelDeleteMessage = null;
+    speakerDownloadError = null;
+    try {
+      await invoke("delete_speaker_analysis_model", {
+        request: {
+          provider: selectedSpeakerModel.provider,
+          modelId: selectedSpeakerModel.modelId,
+        },
+      });
+      speakerModelDeleteMessage = `Deleted ${selectedSpeakerModel.displayName}.`;
+      await loadSpeakerModelStatus();
+    } catch (err) {
+      speakerDownloadError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      deletingSpeakerModel = false;
+    }
+  }
+
+  async function handleSpeakerDownloadProgress(progress: SpeakerAnalysisModelDownloadProgress) {
+    speakerDownloadProgress = progress;
+    if (["completed", "failed", "cancelled"].includes(progress.status)) {
+      await loadSpeakerModelStatus();
     }
   }
 
@@ -1124,6 +1228,45 @@
     return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
   })());
 
+  const selectedSpeakerProviderStatus = $derived(
+    speakerModelStatus?.providers.find((provider) => provider.provider === draftSpeakerProvider) ?? speakerModelStatus?.providers[0] ?? null
+  );
+
+  const selectedSpeakerModels = $derived(
+    selectedSpeakerProviderStatus?.models ?? []
+  );
+
+  const selectedSpeakerModel = $derived(
+    selectedSpeakerModels.find((model) => model.modelId === draftSpeakerModelId) ?? selectedSpeakerModels[0] ?? null
+  );
+
+  const selectedSpeakerDownloadProgress = $derived(
+    speakerDownloadProgress
+      && speakerDownloadProgress.provider === selectedSpeakerModel?.provider
+      && speakerDownloadProgress.modelId === selectedSpeakerModel?.modelId
+      ? speakerDownloadProgress
+      : null
+  );
+
+  const selectedSpeakerDownloadRunning = $derived(
+    selectedSpeakerDownloadProgress !== null
+      && ["starting", "downloading", "installing"].includes(selectedSpeakerDownloadProgress.status)
+  );
+
+  const selectedSpeakerDownloadPercent = $derived((() => {
+    const progress = selectedSpeakerDownloadProgress;
+    if (!progress?.totalBytes || progress.totalBytes <= 0) return null;
+    return Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
+  })());
+
+  function speakerStatusLabel(model: SpeakerAnalysisModelStatus): string {
+    if (model.status === "installed") return "Installed";
+    if (model.status === "downloading") return "Downloading";
+    if (model.status === "failed") return "Failed";
+    if (model.status === "incomplete") return "Incomplete";
+    return "Missing";
+  }
+
   function transcriptionStatusLabel(model: AudioTranscriptionModelStatus): string {
     if (model.provider === "apple_speech_on_device" && model.availabilityStatus) {
       return appleSpeechPermissionLabel(model.availabilityStatus);
@@ -1256,6 +1399,7 @@
     loadMicState();
     loadOcrModelStatus();
     loadTranscriptionModelStatus();
+    loadSpeakerModelStatus();
     loadDebugLogStatus();
     loadGeneralLogStatus();
 
@@ -1265,6 +1409,7 @@
     let unlistenOpenSettingsTab: (() => void) | undefined;
     let unlistenOcrDownloadProgress: (() => void) | undefined;
     let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
+    let unlistenSpeakerDownloadProgress: (() => void) | undefined;
     let destroyed = false;
 
     listen<MicrophoneControllerState>("microphone_controller_changed", (event) => {
@@ -1325,6 +1470,16 @@
       else unlistenTranscriptionDownloadProgress = fn;
     });
 
+    listen<SpeakerAnalysisModelDownloadProgress>(
+      SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT,
+      (event) => {
+        void handleSpeakerDownloadProgress(event.payload);
+      }
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSpeakerDownloadProgress = fn;
+    });
+
     return () => {
       destroyed = true;
       unlistenControllerChanged?.();
@@ -1333,6 +1488,7 @@
       unlistenOpenSettingsTab?.();
       unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
+      unlistenSpeakerDownloadProgress?.();
     };
   });
 </script>
@@ -2578,6 +2734,110 @@
     </div>
   {/if}
 
+  {#if activeTab === "speakers"}
+    <div role="tabpanel" id="settings-panel-speakers" aria-labelledby="settings-tab-speakers" tabindex="0">
+    <section class="card card--speaker">
+      <div class="card__header">
+        <div class="card__heading">
+          <span class="card__index">08</span>
+          <div>
+            <h2 class="card__title">Speaker analysis</h2>
+            <p class="card__subtitle">Anonymous diarization first; saved-person recognition only when you explicitly opt in.</p>
+          </div>
+        </div>
+        <button class="btn btn--ghost btn--sm" onclick={loadSpeakerModelStatus} disabled={loadingSpeakerModelStatus}>
+          {loadingSpeakerModelStatus ? "Checking" : "Refresh"}
+        </button>
+      </div>
+
+      <div class="speaker-settings-hero">
+        <div>
+          <span class="group-label">Transcript speakers</span>
+          <h3>Split the room before naming anyone.</h3>
+          <p>Speaker separation runs locally after microphone transcription. Recognition uses only confirmed Person voice embeddings stored in this save directory.</p>
+        </div>
+        <div class="speaker-settings-hero__toggles">
+          <Switch
+            bind:checked={draftSpeakerSeparateSpeakers}
+            label="Separate speakers in transcripts"
+            description="Queue local diarization after successful microphone transcription"
+          />
+          <Switch
+            bind:checked={draftSpeakerRecognizeSavedPeople}
+            disabled={!draftSpeakerSeparateSpeakers}
+            label="Recognize saved people"
+            description="Opt in to matching against confirmed local Person voice profiles"
+          />
+        </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Speaker model</span>
+        {#if speakerModelError}
+          <p class="group-hint group-hint--warn">Failed to load speaker model status: {speakerModelError}</p>
+        {:else if selectedSpeakerModel}
+          <div class="model-status" class:model-status--available={selectedSpeakerModel.available}>
+            <div>
+              <div class="model-status__title">{selectedSpeakerModel.displayName}</div>
+              <div class="model-status__meta">{speakerStatusLabel(selectedSpeakerModel)}</div>
+            </div>
+            <span class="model-status__pill">{selectedSpeakerModel.available ? "available" : "unavailable"}</span>
+          </div>
+          <p class="group-hint">{selectedSpeakerModel.description}</p>
+          {#if selectedSpeakerModel.installPath}
+            <p class="group-hint"><strong>Install path:</strong> {selectedSpeakerModel.installPath}</p>
+          {/if}
+          {#if selectedSpeakerModel.missingFiles.length > 0}
+            <p class="group-hint group-hint--warn"><strong>Missing files:</strong> {selectedSpeakerModel.missingFiles.join(", ")}</p>
+          {/if}
+          {#if selectedSpeakerModel.failureMessage}
+            <p class="group-hint group-hint--warn"><strong>Failure:</strong> {selectedSpeakerModel.failureMessage}</p>
+          {/if}
+          {#if selectedSpeakerModel.download}
+            {#if selectedSpeakerDownloadRunning}
+              <div class="download-progress" aria-live="polite">
+                <div class="download-progress__bar">
+                  <span style={`width: ${selectedSpeakerDownloadPercent ?? 8}%`}></span>
+                </div>
+                <p class="group-hint">
+                  {selectedSpeakerDownloadProgress?.status ?? "downloading"}
+                  {#if selectedSpeakerDownloadPercent !== null} · {selectedSpeakerDownloadPercent}%{/if}
+                  {#if selectedSpeakerDownloadProgress?.message} · {selectedSpeakerDownloadProgress.message}{/if}
+                </p>
+                <button class="btn btn--ghost" onclick={cancelSelectedSpeakerModelDownload} disabled={cancellingSpeakerDownload}>
+                  {cancellingSpeakerDownload ? "Cancelling" : "Cancel download"}
+                </button>
+              </div>
+            {:else}
+              <div class="debug-log-actions">
+                <button class="btn btn--ghost" onclick={startSelectedSpeakerModelDownload} disabled={startingSpeakerDownload || selectedSpeakerModel.available}>
+                  {startingSpeakerDownload ? "Starting" : "Download speaker model"}
+                </button>
+                <button class="btn btn--danger" onclick={deleteSelectedSpeakerModel} disabled={deletingSpeakerModel || selectedSpeakerDownloadRunning || !selectedSpeakerModel.available}>
+                  {deletingSpeakerModel ? "Deleting" : "Delete speaker model"}
+                </button>
+              </div>
+            {/if}
+            <p class="group-hint">Downloads the pyannote segmentation bundle plus NeMo Titanet embedding model into app-managed storage.</p>
+          {/if}
+          {#if speakerDownloadError}
+            <p class="group-hint group-hint--warn">Speaker model action failed: {speakerDownloadError}</p>
+          {/if}
+          {#if speakerModelDeleteMessage}
+            <p class="group-hint">{speakerModelDeleteMessage}</p>
+          {/if}
+        {:else if loadingSpeakerModelStatus}
+          <p class="group-hint">Checking installed speaker models…</p>
+        {:else}
+          <p class="group-hint group-hint--warn">No speaker model status is available.</p>
+        {/if}
+      </div>
+    </section>
+    </div>
+  {/if}
+
   {#if activeTab === "developer"}
     <div role="tabpanel" id="settings-panel-developer" aria-labelledby="settings-tab-developer" tabindex="0">
     <!-- ── Card: Developer & Logs ─────────────────────── -->
@@ -3160,6 +3420,12 @@
     opacity: 0.4;
   }
 
+  .card--speaker::before {
+    height: 2px;
+    background: linear-gradient(90deg, transparent, #f59e0b 18%, var(--app-accent) 48%, #22d3ee 78%, transparent);
+    opacity: 0.62;
+  }
+
   .card__header {
     display: flex;
     align-items: flex-start;
@@ -3237,6 +3503,39 @@
   .settings-divider {
     height: 1px;
     background: var(--app-border);
+  }
+
+  .speaker-settings-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(18rem, 1.1fr);
+    gap: 16px;
+    align-items: start;
+    padding: 16px;
+    border: 1px solid color-mix(in srgb, var(--app-accent) 20%, var(--app-border));
+    border-radius: 10px;
+    background:
+      radial-gradient(circle at 18% 20%, color-mix(in srgb, #f59e0b 12%, transparent), transparent 38%),
+      radial-gradient(circle at 84% 8%, color-mix(in srgb, var(--app-accent) 14%, transparent), transparent 42%),
+      color-mix(in srgb, var(--app-surface) 88%, transparent);
+  }
+
+  .speaker-settings-hero h3 {
+    margin: 6px 0 6px;
+    color: var(--app-text-strong);
+    font-size: 17px;
+    line-height: 1.15;
+  }
+
+  .speaker-settings-hero p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .speaker-settings-hero__toggles {
+    display: grid;
+    gap: 10px;
   }
 
   .group-hint {

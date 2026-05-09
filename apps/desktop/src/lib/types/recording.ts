@@ -28,6 +28,7 @@ export interface RecordingSettings {
 	appearance: AppearanceSetting;
 	ocr: OcrSettings;
 	transcription: AudioTranscriptionSettings;
+	speakerAnalysis: SpeakerAnalysisSettings;
 	developerOptionsEnabled: boolean;
 }
 
@@ -112,6 +113,70 @@ export interface AudioTranscriptionSettings {
 	memoryMode: AudioTranscriptionMemoryMode;
 	idleUnloadSeconds: number;
 	chunkSeconds: number;
+}
+
+export interface SpeakerAnalysisSettings {
+	separateSpeakers: boolean;
+	recognizeSavedPeople: boolean;
+	provider: "sherpa_onnx" | string;
+	modelId: string | null;
+}
+
+export type SpeakerAnalysisModelStatusKind =
+	| "not_installed"
+	| "installed"
+	| "incomplete"
+	| "failed"
+	| "downloading";
+
+export interface SpeakerAnalysisModelStatusResponse {
+	modelsDirectory: string;
+	providers: SpeakerAnalysisProviderStatus[];
+}
+
+export interface SpeakerAnalysisProviderStatus {
+	provider: string;
+	displayName: string;
+	models: SpeakerAnalysisModelStatus[];
+}
+
+export interface SpeakerAnalysisModelStatus {
+	provider: string;
+	modelId: string | null;
+	displayName: string;
+	description: string;
+	status: SpeakerAnalysisModelStatusKind;
+	available: boolean;
+	installPath: string;
+	missingFiles: string[];
+	failureMessage: string | null;
+	licenseLabel: string | null;
+	sourceUrl: string | null;
+	download: SpeakerAnalysisModelDownload | null;
+}
+
+export interface SpeakerAnalysisModelDownload {
+	url: string;
+	byteSize: number;
+	sha256: string | null;
+	shape: unknown;
+}
+
+export type SpeakerAnalysisModelDownloadStatus =
+	| "starting"
+	| "downloading"
+	| "installing"
+	| "completed"
+	| "failed"
+	| "cancelled";
+
+export interface SpeakerAnalysisModelDownloadProgress {
+	provider: string;
+	modelId: string;
+	status: SpeakerAnalysisModelDownloadStatus;
+	downloadedBytes: number;
+	totalBytes: number | null;
+	message: string | null;
 }
 
 export interface AudioTranscriptionModelStatusResponse {

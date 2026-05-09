@@ -4,6 +4,8 @@ mod general_app_log;
 mod managed_storage_layout;
 mod native_capture;
 mod ocr_models;
+mod speaker_analysis_models;
+mod speaker_analysis_runtime;
 mod windows;
 
 use tauri::Manager;
@@ -48,6 +50,7 @@ pub fn run() {
         .manage(native_capture::RecordingSettingsState::default())
         .manage(native_capture::AppNotificationsState::default())
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
+        .manage(speaker_analysis_models::SpeakerAnalysisModelDownloadState::default())
         .manage(ocr_models::OcrModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
@@ -84,6 +87,10 @@ pub fn run() {
             audio_transcription_models::delete_unused_audio_transcription_models,
             audio_transcription_models::request_apple_speech_recognition_permission,
             audio_transcription_models::open_apple_speech_recognition_privacy_settings,
+            speaker_analysis_models::get_speaker_analysis_model_status,
+            speaker_analysis_models::start_speaker_analysis_model_download,
+            speaker_analysis_models::cancel_speaker_analysis_model_download,
+            speaker_analysis_models::delete_speaker_analysis_model,
             ocr_models::get_ocr_model_status,
             ocr_models::start_ocr_model_download,
             ocr_models::cancel_ocr_model_download,
@@ -110,6 +117,18 @@ pub fn run() {
             app_infra::get_processing_job,
             app_infra::get_processing_result,
             app_infra::list_processing_results,
+            app_infra::list_speaker_turns,
+            app_infra::list_person_profiles,
+            app_infra::create_person_profile,
+            app_infra::delete_person_profile,
+            app_infra::list_speaker_clusters,
+            app_infra::name_speaker_cluster,
+            app_infra::link_speaker_cluster_to_person,
+            app_infra::unlink_speaker_cluster_from_person,
+            app_infra::confirm_speaker_recognition_suggestion,
+            app_infra::reject_speaker_recognition_suggestion,
+            app_infra::merge_speaker_clusters,
+            app_infra::move_speaker_turn_to_cluster,
             general_app_log::get_general_app_log_status,
             general_app_log::open_general_app_log,
             general_app_log::delete_general_app_log,
@@ -155,6 +174,10 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+pub fn maybe_run_speaker_analysis_helper_and_exit() {
+    speaker_analysis_runtime::maybe_run_subprocess_helper_and_exit();
 }
 
 #[cfg(test)]
