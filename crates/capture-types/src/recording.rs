@@ -317,6 +317,50 @@ impl Default for AudioTranscriptionSettings {
     }
 }
 
+pub fn default_speaker_separation_enabled() -> bool {
+    false
+}
+
+pub fn default_speaker_recognition_enabled() -> bool {
+    false
+}
+
+pub fn default_speaker_analysis_provider() -> String {
+    "sherpa_onnx".to_string()
+}
+
+pub fn default_speaker_analysis_model_id() -> Option<String> {
+    Some("pyannote-3.0-nemo-titanet-small".to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerAnalysisSettings {
+    #[serde(default = "default_speaker_separation_enabled")]
+    pub separate_speakers: bool,
+    #[serde(default = "default_speaker_recognition_enabled")]
+    pub recognize_saved_people: bool,
+    #[serde(default = "default_speaker_analysis_provider")]
+    pub provider: String,
+    #[serde(default = "default_speaker_analysis_model_id")]
+    pub model_id: Option<String>,
+}
+
+pub fn default_speaker_analysis_settings() -> SpeakerAnalysisSettings {
+    SpeakerAnalysisSettings {
+        separate_speakers: default_speaker_separation_enabled(),
+        recognize_saved_people: default_speaker_recognition_enabled(),
+        provider: default_speaker_analysis_provider(),
+        model_id: default_speaker_analysis_model_id(),
+    }
+}
+
+impl Default for SpeakerAnalysisSettings {
+    fn default() -> Self {
+        default_speaker_analysis_settings()
+    }
+}
+
 impl Default for VideoBitrateSettings {
     fn default() -> Self {
         default_video_bitrate()
@@ -357,6 +401,8 @@ pub struct RecordingSettings {
     pub ocr: OcrSettings,
     #[serde(default = "default_audio_transcription_settings")]
     pub transcription: AudioTranscriptionSettings,
+    #[serde(default = "default_speaker_analysis_settings")]
+    pub speaker_analysis: SpeakerAnalysisSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -403,6 +449,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub ocr: OcrSettings,
     #[serde(default = "default_audio_transcription_settings")]
     pub transcription: AudioTranscriptionSettings,
+    #[serde(default = "default_speaker_analysis_settings")]
+    pub speaker_analysis: SpeakerAnalysisSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]

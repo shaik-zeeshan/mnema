@@ -3,6 +3,7 @@ members = [
     "apps/desktop/src-tauri",
     "crates/app-infra",
     "crates/audio-transcription",
+    "crates/speaker-analysis",
     "crates/ocr",
     "crates/capture-runtime",
     "crates/capture-microphone",
