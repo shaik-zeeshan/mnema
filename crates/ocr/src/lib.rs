@@ -527,7 +527,12 @@ fn recognize_apple_vision_with_options(
     let tile_rows = tile_rows.max(1);
     let tile_columns = tile_columns.max(1);
     if tile_rows == 1 && tile_columns == 1 {
-        return perform_apple_vision_request(grayscale, recognition_level, language_correction, recognition_langs);
+        return perform_apple_vision_request(
+            grayscale,
+            recognition_level,
+            language_correction,
+            recognition_langs,
+        );
     }
 
     let full_width = grayscale.width();
@@ -545,11 +550,24 @@ fn recognize_apple_vision_with_options(
             }
             let width = (full_width - origin_x).min(tile_width);
             let height = (full_height - origin_y).min(tile_height);
-            let tile = image::imageops::crop_imm(grayscale, origin_x, origin_y, width, height).to_image();
-            let tile_observations =
-                perform_apple_vision_request(&tile, recognition_level, language_correction, recognition_langs)?;
+            let tile =
+                image::imageops::crop_imm(grayscale, origin_x, origin_y, width, height).to_image();
+            let tile_observations = perform_apple_vision_request(
+                &tile,
+                recognition_level,
+                language_correction,
+                recognition_langs,
+            )?;
             observations.extend(tile_observations.into_iter().map(|observation| {
-                remap_tiled_observation(observation, origin_x, origin_y, width, height, full_width, full_height)
+                remap_tiled_observation(
+                    observation,
+                    origin_x,
+                    origin_y,
+                    width,
+                    height,
+                    full_width,
+                    full_height,
+                )
             }));
         }
     }
@@ -617,8 +635,8 @@ fn remap_tiled_observation(
     let full_width_f = full_width as f64;
     let full_height_f = full_height as f64;
     let x_pixels = observation.bounding_box.x * tile_width_f + origin_x as f64;
-    let y_pixels = observation.bounding_box.y * tile_height_f
-        + (full_height - origin_y - tile_height) as f64;
+    let y_pixels =
+        observation.bounding_box.y * tile_height_f + (full_height - origin_y - tile_height) as f64;
     let width_pixels = observation.bounding_box.width * tile_width_f;
     let height_pixels = observation.bounding_box.height * tile_height_f;
     observation.bounding_box = OcrBoundingBox::new(

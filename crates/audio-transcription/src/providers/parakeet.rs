@@ -16,6 +16,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "parakeet-onnx")]
+use crate::macos_audio_decode::decode_audio_to_mono_with_avassetreader_fallback;
+#[cfg(any(test, feature = "parakeet-onnx"))]
+use crate::macos_audio_decode::resample_linear;
 use crate::{
     model_install_dir, TranscriptionError, TranscriptionOutput, TranscriptionProvider,
     TranscriptionRequest, TranscriptionResult, PARAKEET_PROVIDER_ID,
@@ -1280,133 +1284,11 @@ fn decode_audio_to_mono_16khz(_request: &TranscriptionRequest) -> TranscriptionR
 }
 
 #[cfg(all(feature = "parakeet-onnx", target_os = "macos"))]
-#[derive(Debug)]
-struct DecodedAudio {
-    samples: Vec<f32>,
-    sample_rate_hz: u32,
-}
-
-#[cfg(all(feature = "parakeet-onnx", target_os = "macos"))]
 fn avfoundation_decode_audio_to_mono(
     path: &Path,
     sample_rate_override: Option<f64>,
-) -> TranscriptionResult<DecodedAudio> {
-    use cidre::{av, ns, objc};
-
-    let path_str = path.to_str().ok_or_else(|| {
-        TranscriptionError::InvalidRequest(format!(
-            "audio path is not valid UTF-8 for AVFoundation: {}",
-            path.display()
-        ))
-    })?;
-
-    let _pool = objc::autorelease_pool::AutoreleasePoolPage::push();
-    let url = ns::Url::with_fs_path_str(path_str, false);
-    let mut file =
-        av::AudioFile::open_read_common_format(&url, av::AudioCommonFormat::PcmF32, false)
-            .map_err(|error| {
-                TranscriptionError::Transcription(format!(
-                    "AVFoundation failed to open audio file {}: {error}",
-                    path.display()
-                ))
-            })?;
-    let format = file.processing_format();
-    let sample_rate = sample_rate_override.unwrap_or(format.absd().sample_rate);
-    if !sample_rate.is_finite() || sample_rate <= 0.0 {
-        return Err(TranscriptionError::Transcription(format!(
-            "AVFoundation reported invalid sample rate {sample_rate} for {}",
-            path.display()
-        )));
-    }
-    let sample_rate_hz = sample_rate.round().clamp(1.0, u32::MAX as f64) as u32;
-    let channels = usize::try_from(format.channel_count()).unwrap_or(0);
-    if channels == 0 {
-        return Err(TranscriptionError::Transcription(format!(
-            "AVFoundation reported zero channels for {}",
-            path.display()
-        )));
-    }
-
-    let mut out = Vec::new();
-    let total_frames = file.len().max(0) as u64;
-    let chunk_frames = 16_384_u32;
-    let mut remaining = total_frames;
-    while remaining > 0 {
-        let frames = remaining.min(chunk_frames as u64) as u32;
-        let mut buffer = av::AudioPcmBuf::with_format(&format, frames).ok_or_else(|| {
-            TranscriptionError::Transcription("failed to allocate AVAudioPCMBuffer".to_string())
-        })?;
-        file.read_n(&mut buffer, frames).map_err(|error| {
-            TranscriptionError::Transcription(format!(
-                "AVFoundation failed reading audio file {}: {error}",
-                path.display()
-            ))
-        })?;
-        let frame_len = buffer.frame_len() as usize;
-        if frame_len == 0 {
-            break;
-        }
-        append_downmixed_f32(&mut out, &buffer, channels, frame_len)?;
-        remaining = remaining.saturating_sub(frame_len as u64);
-    }
-
-    Ok(DecodedAudio {
-        samples: out,
-        sample_rate_hz,
-    })
-}
-
-#[cfg(all(feature = "parakeet-onnx", target_os = "macos"))]
-fn append_downmixed_f32(
-    out: &mut Vec<f32>,
-    buffer: &cidre::av::AudioPcmBuf,
-    channels: usize,
-    frame_len: usize,
-) -> TranscriptionResult<()> {
-    if buffer.stride() > 1 {
-        let data = buffer.data_f32_at(0).ok_or_else(|| {
-            TranscriptionError::Transcription("AVFoundation returned no f32 audio data".to_string())
-        })?;
-        for frame in data.chunks(buffer.stride()).take(frame_len) {
-            let sum: f32 = frame.iter().take(channels).copied().sum();
-            out.push(sum / channels as f32);
-        }
-        return Ok(());
-    }
-
-    let first = buffer.data_f32_at(0).ok_or_else(|| {
-        TranscriptionError::Transcription("AVFoundation returned no f32 audio data".to_string())
-    })?;
-    for frame_index in 0..frame_len {
-        let mut sum = first.get(frame_index).copied().unwrap_or_default();
-        for channel in 1..channels {
-            if let Some(samples) = buffer.data_f32_at(channel) {
-                sum += samples.get(frame_index).copied().unwrap_or_default();
-            }
-        }
-        out.push(sum / channels as f32);
-    }
-    Ok(())
-}
-
-#[cfg(any(test, feature = "parakeet-onnx"))]
-fn resample_linear(samples: &[f32], source_rate_hz: u32, target_rate_hz: u32) -> Vec<f32> {
-    if samples.is_empty() || source_rate_hz == 0 || source_rate_hz == target_rate_hz {
-        return samples.to_vec();
-    }
-
-    let ratio = source_rate_hz as f64 / target_rate_hz as f64;
-    let out_len = ((samples.len() as f64) / ratio).ceil().max(1.0) as usize;
-    let mut out = Vec::with_capacity(out_len);
-    for out_index in 0..out_len {
-        let source_pos = out_index as f64 * ratio;
-        let left = source_pos.floor() as usize;
-        let right = (left + 1).min(samples.len().saturating_sub(1));
-        let frac = (source_pos - left as f64) as f32;
-        let sample = samples[left] * (1.0 - frac) + samples[right] * frac;
-        out.push(sample.clamp(-1.0, 1.0));
-    }
-    out
+) -> TranscriptionResult<crate::macos_audio_decode::DecodedAudio> {
+    decode_audio_to_mono_with_avassetreader_fallback(path, sample_rate_override)
 }
 
 #[cfg(test)]
