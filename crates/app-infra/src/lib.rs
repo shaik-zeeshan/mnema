@@ -21,8 +21,8 @@ pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };
 pub use capture_retention::{
-    CaptureRetentionStore, CaptureSegment, CaptureSourceKind, NewCaptureSegment,
-    NewCaptureSession, RetentionCleanupContext, RetentionCleanupSummary, RetentionPolicy,
+    CaptureRetentionStore, CaptureSegment, CaptureSourceKind, NewCaptureSegment, NewCaptureSession,
+    RetentionCleanupContext, RetentionCleanupSummary, RetentionPolicy,
 };
 pub use captured_frame_equivalence::{
     CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,
@@ -3078,7 +3078,10 @@ mod tests {
                 .await
                 .expect("clusters should list after reprocess");
             assert_eq!(clusters.len(), 1);
-            assert_eq!(clusters[0].provider_cluster_id, format!("{}:speaker_01", segment.id));
+            assert_eq!(
+                clusters[0].provider_cluster_id,
+                format!("{}:speaker_01", segment.id)
+            );
             assert_ne!(clusters[0].id, old_clusters[0].id);
             let turns = infra
                 .list_speaker_turns_for_audio_segment(segment.id)
@@ -3225,11 +3228,12 @@ mod tests {
             );
 
             assert_eq!(
-                infra.backfill_missing_speaker_analysis_jobs(
-                    &AudioSegmentSpeakerAnalysisAdmission::available(speaker_payload)
-                )
-                .await
-                .expect("speaker backfill should be idempotent"),
+                infra
+                    .backfill_missing_speaker_analysis_jobs(
+                        &AudioSegmentSpeakerAnalysisAdmission::available(speaker_payload)
+                    )
+                    .await
+                    .expect("speaker backfill should be idempotent"),
                 0
             );
         });
@@ -3305,8 +3309,9 @@ mod tests {
                 infra
                     .complete_processing_job(
                         job.id,
-                        &ProcessingResultDraft::new()
-                            .with_structured_payload_json(serde_json::to_string(&metadata).unwrap()),
+                        &ProcessingResultDraft::new().with_structured_payload_json(
+                            serde_json::to_string(&metadata).unwrap(),
+                        ),
                     )
                     .await
                     .expect("transcription should complete");

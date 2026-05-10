@@ -116,8 +116,11 @@ pub fn default_follow_timeline_live() -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum RetentionPolicy {
     Never,
+    #[serde(rename = "days_7", alias = "days7")]
     Days7,
+    #[serde(rename = "days_14", alias = "days14")]
     Days14,
+    #[serde(rename = "days_30", alias = "days30")]
     Days30,
 }
 

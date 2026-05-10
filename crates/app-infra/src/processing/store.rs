@@ -2004,7 +2004,9 @@ async fn resolve_stable_speaker_cluster(
         .filter_map(|row| {
             let embedding: Vec<u8> = row.get("embedding");
             let score = cosine_similarity(&incoming, &f32_embedding_from_le_bytes(&embedding));
-            score.is_finite().then_some((row.get::<i64, _>("id"), score))
+            score
+                .is_finite()
+                .then_some((row.get::<i64, _>("id"), score))
         })
         .collect::<Vec<_>>();
     scores.sort_by(|left, right| {
@@ -2040,10 +2042,11 @@ async fn existing_speaker_cluster_provider_id(
     transaction: &mut Transaction<'_, Sqlite>,
     cluster_id: i64,
 ) -> Result<String> {
-    let row = sqlx::query("SELECT provider_cluster_id FROM recording_speaker_clusters WHERE id = ?1")
-        .bind(cluster_id)
-        .fetch_one(&mut **transaction)
-        .await?;
+    let row =
+        sqlx::query("SELECT provider_cluster_id FROM recording_speaker_clusters WHERE id = ?1")
+            .bind(cluster_id)
+            .fetch_one(&mut **transaction)
+            .await?;
     Ok(row.get("provider_cluster_id"))
 }
 
@@ -2051,7 +2054,9 @@ async fn refresh_speaker_turn_transcript_texts(
     transaction: &mut Transaction<'_, Sqlite>,
     audio_segment_id: i64,
 ) -> Result<()> {
-    let Some(metadata) = latest_transcription_metadata_for_audio_segment(transaction, audio_segment_id).await? else {
+    let Some(metadata) =
+        latest_transcription_metadata_for_audio_segment(transaction, audio_segment_id).await?
+    else {
         return Ok(());
     };
     let turns = speaker_turn_ranges_for_audio_segment(transaction, audio_segment_id).await?;

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
-use time::{format_description::well_known::Rfc3339, Date, Duration};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 use crate::{processing::ProcessingJobStatus, Result};
 
@@ -10,8 +10,11 @@ use crate::{processing::ProcessingJobStatus, Result};
 #[serde(rename_all = "snake_case")]
 pub enum RetentionPolicy {
     Never,
+    #[serde(rename = "days_7", alias = "days7")]
     Days7,
+    #[serde(rename = "days_14", alias = "days14")]
     Days14,
+    #[serde(rename = "days_30", alias = "days30")]
     Days30,
 }
 
@@ -108,7 +111,11 @@ pub struct RetentionCleanupSummary {
     pub eligible_capture_segments: i64,
     pub deleted_capture_segments: i64,
     pub deleted_frames: i64,
+    #[serde(default)]
+    pub deleted_frame_ids: Vec<i64>,
     pub deleted_audio_segments: i64,
+    #[serde(default)]
+    pub deleted_audio_segment_ids: Vec<i64>,
     pub deleted_processing_jobs: i64,
     pub deleted_processing_results: i64,
     pub deleted_background_jobs: i64,
@@ -131,7 +138,7 @@ pub struct RetentionCleanupContext {
 
 #[derive(Debug, Clone)]
 struct SegmentFilePath {
-    capture_segment_id: i64,
+    capture_segment_id: Option<i64>,
     path: String,
     path_kind: String,
 }
@@ -229,7 +236,10 @@ impl CaptureRetentionStore {
         Ok(query.build().execute(&self.pool).await?.rows_affected())
     }
 
-    pub async fn upsert_capture_segment(&self, segment: &NewCaptureSegment) -> Result<CaptureSegment> {
+    pub async fn upsert_capture_segment(
+        &self,
+        segment: &NewCaptureSegment,
+    ) -> Result<CaptureSegment> {
         sqlx::query(
             "INSERT INTO capture_segments (
                 capture_session_id, source_kind, source_session_id, segment_index, media_file_path,
@@ -275,6 +285,28 @@ impl CaptureRetentionStore {
         map_capture_segment(row)
     }
 
+    pub async fn capture_segment_by_source(
+        &self,
+        source_kind: CaptureSourceKind,
+        source_session_id: &str,
+        segment_index: i64,
+    ) -> Result<Option<CaptureSegment>> {
+        let row = sqlx::query(
+            "SELECT id, capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, workspace_dir_path, frame_dir_path, sidecar_file_path,
+                    started_at, ended_at, status
+             FROM capture_segments
+             WHERE source_kind = ?1 AND source_session_id = ?2 AND segment_index = ?3",
+        )
+        .bind(source_kind.as_str())
+        .bind(source_session_id)
+        .bind(segment_index)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(map_capture_segment).transpose()
+    }
+
     pub async fn upsert_screen_segment_for_source_session(
         &self,
         source_session_id: &str,
@@ -318,10 +350,10 @@ impl CaptureRetentionStore {
     pub async fn preview_cleanup(
         &self,
         policy: RetentionPolicy,
-        local_today: Date,
+        local_now: OffsetDateTime,
         context: &RetentionCleanupContext,
     ) -> Result<RetentionCleanupSummary> {
-        let Some(cutoff) = cutoff_ended_before(policy, local_today) else {
+        let Some(cutoff) = cutoff_ended_before(policy, local_now) else {
             return Ok(RetentionCleanupSummary {
                 policy: policy.as_str().to_string(),
                 ..Default::default()
@@ -333,40 +365,67 @@ impl CaptureRetentionStore {
     pub async fn run_cleanup(
         &self,
         policy: RetentionPolicy,
-        local_today: Date,
+        local_now: OffsetDateTime,
         context: &RetentionCleanupContext,
     ) -> Result<RetentionCleanupSummary> {
-        let Some(cutoff) = cutoff_ended_before(policy, local_today) else {
+        let Some(cutoff) = cutoff_ended_before(policy, local_now) else {
             return Ok(RetentionCleanupSummary {
                 policy: policy.as_str().to_string(),
                 ..Default::default()
             });
         };
         let mut summary = self.plan_cleanup(policy, cutoff.clone(), context).await?;
-        if summary.eligible_capture_segments == 0 {
+        if summary.eligible_capture_segments == 0
+            && summary.deleted_frames == 0
+            && summary.deleted_audio_segments == 0
+        {
             return Ok(summary);
         }
 
         let segment_ids = eligible_segment_ids(&self.pool, &cutoff, context).await?;
-        if segment_ids.is_empty() {
+        let orphan_frame_ids = orphan_frame_ids(&self.pool, &cutoff, context).await?;
+        let orphan_audio_ids = orphan_audio_segment_ids(&self.pool, &cutoff, context).await?;
+        if segment_ids.is_empty() && orphan_frame_ids.is_empty() && orphan_audio_ids.is_empty() {
             return Ok(summary);
         }
 
-        let file_paths = file_paths_for_segments(&self.pool, &segment_ids).await?;
+        let mut file_paths = file_paths_for_segments(&self.pool, &segment_ids).await?;
+        file_paths.extend(file_paths_for_orphan_frames(&self.pool, &orphan_frame_ids).await?);
+        file_paths
+            .extend(file_paths_for_orphan_audio_segments(&self.pool, &orphan_audio_ids).await?);
+        file_paths.sort_by_key(|path| match path.path_kind.as_str() {
+            "media_file" | "sidecar_file" => 0,
+            "frame_dir" => 1,
+            _ => 3,
+        });
+        file_paths.dedup_by(|a, b| a.path == b.path);
         let mut tx = self.pool.begin().await?;
-        let frame_ids = ids_for_capture_segments(&mut tx, "frames", &segment_ids).await?;
-        let audio_ids = ids_for_capture_segments(&mut tx, "audio_segments", &segment_ids).await?;
-        let frame_batch_ids = frame_batch_ids_for_frames(&mut tx, &frame_ids).await?;
-        let background_job_ids = background_job_ids_for_frame_batches(&mut tx, &frame_batch_ids).await?;
+        let mut frame_ids = ids_for_capture_segments(&mut tx, "frames", &segment_ids).await?;
+        frame_ids.extend(orphan_frame_ids);
+        let mut audio_ids =
+            ids_for_capture_segments(&mut tx, "audio_segments", &segment_ids).await?;
+        audio_ids.extend(orphan_audio_ids);
+        let frame_batch_ids = frame_batch_ids_deletable_with_frames(&mut tx, &frame_ids).await?;
+        let background_job_ids =
+            background_job_ids_for_frame_batches(&mut tx, &frame_batch_ids).await?;
         let job_ids = processing_job_ids_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
-        summary.deleted_processing_results = delete_by_job_ids(&mut tx, "processing_results", &job_ids).await?;
+        summary.deleted_processing_results =
+            delete_by_job_ids(&mut tx, "processing_results", &job_ids).await?;
         summary.deleted_processing_jobs = delete_processing_jobs(&mut tx, &job_ids).await?;
         delete_speaker_rows_for_audio_segments(&mut tx, &audio_ids).await?;
+        let deleted_frame_ids = frame_ids.clone();
+        let deleted_audio_segment_ids = audio_ids.clone();
         summary.deleted_frames = delete_by_ids(&mut tx, "frames", &frame_ids).await?;
-        summary.deleted_frame_batches = delete_by_ids(&mut tx, "frame_batches", &frame_batch_ids).await?;
-        summary.deleted_background_jobs = delete_by_ids(&mut tx, "background_jobs", &background_job_ids).await?;
-        summary.deleted_audio_segments = delete_by_ids(&mut tx, "audio_segments", &audio_ids).await?;
-        summary.deleted_capture_segments = delete_by_ids(&mut tx, "capture_segments", &segment_ids).await?;
+        summary.deleted_frame_ids = deleted_frame_ids;
+        summary.deleted_frame_batches =
+            delete_by_ids(&mut tx, "frame_batches", &frame_batch_ids).await?;
+        summary.deleted_background_jobs =
+            delete_by_ids(&mut tx, "background_jobs", &background_job_ids).await?;
+        summary.deleted_audio_segments =
+            delete_by_ids(&mut tx, "audio_segments", &audio_ids).await?;
+        summary.deleted_audio_segment_ids = deleted_audio_segment_ids;
+        summary.deleted_capture_segments =
+            delete_by_ids(&mut tx, "capture_segments", &segment_ids).await?;
         let cleanup_run_id = insert_cleanup_run(&mut tx, &summary, "manual", "completed").await?;
         tx.commit().await?;
         let file_delete_errors = self
@@ -486,7 +545,7 @@ impl CaptureRetentionStore {
         let segment_ids = eligible_segment_ids(&self.pool, &cutoff, context).await?;
         let mut summary = RetentionCleanupSummary {
             policy: policy.as_str().to_string(),
-            cutoff_ended_before: Some(cutoff),
+            cutoff_ended_before: Some(cutoff.clone()),
             eligible_capture_segments: segment_ids.len() as i64,
             skipped_active_segments: count_active_skipped(&self.pool, context).await?,
             skipped_running_jobs: count_running_blocked_segments(&self.pool).await?,
@@ -495,10 +554,16 @@ impl CaptureRetentionStore {
             ..Default::default()
         };
         if !segment_ids.is_empty() {
-            summary.deleted_frames = count_by_capture_segments(&self.pool, "frames", &segment_ids).await?;
+            summary.deleted_frames =
+                count_by_capture_segments(&self.pool, "frames", &segment_ids).await?;
             summary.deleted_audio_segments =
                 count_by_capture_segments(&self.pool, "audio_segments", &segment_ids).await?;
         }
+        summary.deleted_frames +=
+            orphan_frame_ids(&self.pool, &cutoff, context).await?.len() as i64;
+        summary.deleted_audio_segments += orphan_audio_segment_ids(&self.pool, &cutoff, context)
+            .await?
+            .len() as i64;
         Ok(summary)
     }
 
@@ -539,11 +604,15 @@ impl CaptureRetentionStore {
     }
 }
 
-pub fn cutoff_ended_before(policy: RetentionPolicy, local_today: Date) -> Option<String> {
+pub fn cutoff_ended_before(policy: RetentionPolicy, local_now: OffsetDateTime) -> Option<String> {
     let days = policy.retention_days()?;
-    let cutoff_date = local_today - Duration::days(days - 1);
+    let cutoff_date = local_now.date() - Duration::days(days - 1);
     let cutoff = cutoff_date.midnight().assume_utc();
-    Some(cutoff.format(&Rfc3339).expect("RFC3339 formatting should succeed"))
+    Some(
+        cutoff
+            .format(&Rfc3339)
+            .expect("RFC3339 formatting should succeed"),
+    )
 }
 
 async fn file_paths_for_segments(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<SegmentFilePath>> {
@@ -571,7 +640,7 @@ async fn file_paths_for_segments(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<S
         ] {
             if let Some(path) = row.get::<Option<String>, _>(column) {
                 paths.push(SegmentFilePath {
-                    capture_segment_id,
+                    capture_segment_id: Some(capture_segment_id),
                     path,
                     path_kind: kind.to_string(),
                 });
@@ -587,7 +656,63 @@ async fn file_paths_for_segments(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<S
     Ok(paths)
 }
 
-fn delete_path_if_safe(path: &str, context: &RetentionCleanupContext) -> std::result::Result<(), String> {
+async fn file_paths_for_orphan_frames(
+    pool: &SqlitePool,
+    ids: &[i64],
+) -> Result<Vec<SegmentFilePath>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT file_path FROM frames WHERE id IN (");
+    let mut separated = query.separated(", ");
+    for id in ids {
+        separated.push_bind(id);
+    }
+    separated.push_unseparated(")");
+    Ok(query
+        .build()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| SegmentFilePath {
+            capture_segment_id: None,
+            path: row.get("file_path"),
+            path_kind: "media_file".to_string(),
+        })
+        .collect())
+}
+
+async fn file_paths_for_orphan_audio_segments(
+    pool: &SqlitePool,
+    ids: &[i64],
+) -> Result<Vec<SegmentFilePath>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT file_path FROM audio_segments WHERE id IN (");
+    let mut separated = query.separated(", ");
+    for id in ids {
+        separated.push_bind(id);
+    }
+    separated.push_unseparated(")");
+    Ok(query
+        .build()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| SegmentFilePath {
+            capture_segment_id: None,
+            path: row.get("file_path"),
+            path_kind: "media_file".to_string(),
+        })
+        .collect())
+}
+
+fn delete_path_if_safe(
+    path: &str,
+    context: &RetentionCleanupContext,
+) -> std::result::Result<(), String> {
     let path = PathBuf::from(path);
     if !path.is_absolute() {
         return Err("refusing to delete a relative retention path".to_string());
@@ -629,9 +754,8 @@ async fn eligible_segment_ids(
     cutoff: &str,
     context: &RetentionCleanupContext,
 ) -> Result<Vec<i64>> {
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id FROM capture_segments WHERE ended_at < ",
-    );
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT id FROM capture_segments WHERE ended_at < ");
     query.push_bind(cutoff);
     query.push(" AND status != 'recording'");
     push_exclusions(&mut query, context);
@@ -641,22 +765,99 @@ async fn eligible_segment_ids(
           AND ((subject_type = 'frame' AND subject_id IN (SELECT id FROM frames WHERE frames.capture_segment_id = capture_segments.id))
             OR (subject_type = 'audio_segment' AND subject_id IN (SELECT id FROM audio_segments WHERE audio_segments.capture_segment_id = capture_segments.id)))
     )");
-    query.push(" AND NOT EXISTS (
+    query.push(
+        " AND NOT EXISTS (
         SELECT 1 FROM frames
         INNER JOIN frame_batches ON frame_batches.id = frames.frame_batch_id
         INNER JOIN background_jobs ON background_jobs.id = frame_batches.finalize_job_id
         WHERE frames.capture_segment_id = capture_segments.id
           AND background_jobs.status = 'running'
-    )");
+    )",
+    );
     query.push(" ORDER BY ended_at ASC, id ASC");
     let rows = query.build().fetch_all(pool).await?;
     Ok(rows.into_iter().map(|row| row.get("id")).collect())
 }
 
-fn push_exclusions<'a>(
-    query: &mut QueryBuilder<'a, Sqlite>,
-    context: &'a RetentionCleanupContext,
-) {
+async fn orphan_frame_ids(
+    pool: &SqlitePool,
+    cutoff: &str,
+    context: &RetentionCleanupContext,
+) -> Result<Vec<i64>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id FROM frames WHERE capture_segment_id IS NULL AND captured_at < ",
+    );
+    query.push_bind(cutoff);
+    if !context.active_source_session_ids.is_empty() {
+        query.push(" AND session_id NOT IN (");
+        let mut separated = query.separated(", ");
+        for id in &context.active_source_session_ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+    }
+    query.push(
+        " AND NOT EXISTS (
+        SELECT 1 FROM processing_jobs
+        WHERE subject_type = 'frame'
+          AND subject_id = frames.id
+          AND status = 'running'
+    )",
+    );
+    query.push(
+        " AND NOT EXISTS (
+        SELECT 1 FROM frame_batches
+        INNER JOIN background_jobs ON background_jobs.id = frame_batches.finalize_job_id
+        WHERE frame_batches.id = frames.frame_batch_id
+          AND background_jobs.status = 'running'
+    )",
+    );
+    query.push(" ORDER BY captured_at ASC, id ASC");
+    Ok(query
+        .build()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get("id"))
+        .collect())
+}
+
+async fn orphan_audio_segment_ids(
+    pool: &SqlitePool,
+    cutoff: &str,
+    context: &RetentionCleanupContext,
+) -> Result<Vec<i64>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id FROM audio_segments WHERE capture_segment_id IS NULL AND ended_at < ",
+    );
+    query.push_bind(cutoff);
+    if !context.active_source_session_ids.is_empty() {
+        query.push(" AND source_session_id NOT IN (");
+        let mut separated = query.separated(", ");
+        for id in &context.active_source_session_ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+    }
+    query.push(
+        " AND NOT EXISTS (
+        SELECT 1 FROM processing_jobs
+        WHERE subject_type = 'audio_segment'
+          AND subject_id = audio_segments.id
+          AND status = 'running'
+    )",
+    );
+    query.push(" ORDER BY ended_at ASC, id ASC");
+    Ok(query
+        .build()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get("id"))
+        .collect())
+}
+
+fn push_exclusions<'a>(query: &mut QueryBuilder<'a, Sqlite>, context: &'a RetentionCleanupContext) {
     if !context.active_capture_segment_ids.is_empty() {
         query.push(" AND id NOT IN (");
         let mut separated = query.separated(", ");
@@ -746,7 +947,7 @@ async fn processing_job_ids_for_subjects(
     Ok(ids)
 }
 
-async fn frame_batch_ids_for_frames(
+async fn frame_batch_ids_deletable_with_frames(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     frame_ids: &[i64],
 ) -> Result<Vec<i64>> {
@@ -754,13 +955,27 @@ async fn frame_batch_ids_for_frames(
         return Ok(Vec::new());
     }
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT DISTINCT frame_batch_id AS id FROM frames WHERE frame_batch_id IS NOT NULL AND id IN (",
+        "SELECT DISTINCT candidate.frame_batch_id AS id
+         FROM frames candidate
+         WHERE candidate.frame_batch_id IS NOT NULL
+           AND candidate.id IN (",
     );
     let mut separated = query.separated(", ");
     for id in frame_ids {
         separated.push_bind(id);
     }
-    separated.push_unseparated(")");
+    separated.push_unseparated(
+        ")
+           AND NOT EXISTS (
+               SELECT 1 FROM frames retained
+               WHERE retained.frame_batch_id = candidate.frame_batch_id
+                 AND retained.id NOT IN (",
+    );
+    let mut separated = query.separated(", ");
+    for id in frame_ids {
+        separated.push_bind(id);
+    }
+    separated.push_unseparated("))");
     Ok(query
         .build()
         .fetch_all(&mut **tx)
@@ -811,7 +1026,10 @@ async fn delete_by_job_ids(
     Ok(query.build().execute(&mut **tx).await?.rows_affected() as i64)
 }
 
-async fn delete_processing_jobs(tx: &mut sqlx::Transaction<'_, Sqlite>, ids: &[i64]) -> Result<i64> {
+async fn delete_processing_jobs(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    ids: &[i64],
+) -> Result<i64> {
     delete_by_ids(tx, "processing_jobs", ids).await
 }
 
@@ -837,7 +1055,13 @@ async fn delete_speaker_rows_for_audio_segments(
     audio_ids: &[i64],
 ) -> Result<()> {
     delete_by_subject_ids(tx, "speaker_turns", "audio_segment_id", audio_ids).await?;
-    delete_by_subject_ids(tx, "speaker_segment_clusters", "audio_segment_id", audio_ids).await?;
+    delete_by_subject_ids(
+        tx,
+        "speaker_segment_clusters",
+        "audio_segment_id",
+        audio_ids,
+    )
+    .await?;
     sqlx::query(
         "DELETE FROM recording_speaker_clusters
          WHERE NOT EXISTS (SELECT 1 FROM speaker_turns WHERE speaker_turns.cluster_id = recording_speaker_clusters.id)
@@ -880,14 +1104,13 @@ async fn delete_by_subject_ids(
     Ok(query.build().execute(&mut **tx).await?.rows_affected() as i64)
 }
 
-async fn count_active_skipped(
-    pool: &SqlitePool,
-    context: &RetentionCleanupContext,
-) -> Result<i64> {
-    if context.active_capture_segment_ids.is_empty() && context.active_source_session_ids.is_empty() {
+async fn count_active_skipped(pool: &SqlitePool, context: &RetentionCleanupContext) -> Result<i64> {
+    if context.active_capture_segment_ids.is_empty() && context.active_source_session_ids.is_empty()
+    {
         return Ok(0);
     }
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) AS count FROM capture_segments WHERE 1=1");
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT COUNT(*) AS count FROM capture_segments WHERE 1=1");
     if !context.active_capture_segment_ids.is_empty() {
         query.push(" AND id IN (");
         let mut separated = query.separated(", ");
@@ -977,4 +1200,333 @@ fn map_capture_segment(row: SqliteRow) -> Result<CaptureSegment> {
         ended_at: row.get("ended_at"),
         status: row.get("status"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    fn rfc3339(value: &str) -> OffsetDateTime {
+        OffsetDateTime::parse(value, &Rfc3339).expect("test timestamp should parse")
+    }
+
+    #[test]
+    fn day_policy_keeps_local_calendar_cutoff() {
+        let cutoff = cutoff_ended_before(RetentionPolicy::Days7, rfc3339("2026-05-10T12:34:56Z"));
+
+        assert_eq!(cutoff.as_deref(), Some("2026-05-04T00:00:00Z"));
+    }
+
+    async fn create_retention_cleanup_tables(pool: &SqlitePool) {
+        for statement in [
+            "CREATE TABLE capture_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                capture_session_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_session_id TEXT NOT NULL,
+                segment_index INTEGER NOT NULL,
+                media_file_path TEXT,
+                workspace_dir_path TEXT,
+                frame_dir_path TEXT,
+                sidecar_file_path TEXT,
+                started_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                UNIQUE(source_kind, source_session_id, segment_index)
+            )",
+            "CREATE TABLE frames (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                capture_segment_id INTEGER,
+                frame_batch_id INTEGER
+            )",
+            "CREATE TABLE audio_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_kind TEXT NOT NULL,
+                source_session_id TEXT NOT NULL,
+                segment_index INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL,
+                capture_segment_id INTEGER
+            )",
+            "CREATE TABLE processing_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject_type TEXT,
+                subject_id INTEGER,
+                processor TEXT,
+                status TEXT
+            )",
+            "CREATE TABLE processing_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER,
+                output_json TEXT
+            )",
+            "CREATE TABLE frame_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                finalize_job_id INTEGER
+            )",
+            "CREATE TABLE background_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT
+            )",
+            "CREATE TABLE speaker_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                audio_segment_id INTEGER,
+                cluster_id INTEGER
+            )",
+            "CREATE TABLE speaker_segment_clusters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                audio_segment_id INTEGER,
+                stable_cluster_id INTEGER
+            )",
+            "CREATE TABLE recording_speaker_clusters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT
+            )",
+            "CREATE TABLE person_voice_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_cluster_id INTEGER
+            )",
+            "CREATE TABLE speaker_recognition_rejections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_cluster_id INTEGER
+            )",
+            "CREATE TABLE retention_cleanup_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                policy TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                cutoff_ended_before TEXT,
+                status TEXT NOT NULL,
+                deleted_capture_segments INTEGER NOT NULL DEFAULT 0,
+                deleted_frames INTEGER NOT NULL DEFAULT 0,
+                deleted_audio_segments INTEGER NOT NULL DEFAULT 0,
+                deleted_processing_jobs INTEGER NOT NULL DEFAULT 0,
+                deleted_processing_results INTEGER NOT NULL DEFAULT 0,
+                deleted_background_jobs INTEGER NOT NULL DEFAULT 0,
+                deleted_frame_batches INTEGER NOT NULL DEFAULT 0,
+                skipped_running_jobs INTEGER NOT NULL DEFAULT 0,
+                skipped_active_segments INTEGER NOT NULL DEFAULT 0,
+                pending_file_tombstones INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+            "CREATE TABLE retention_file_tombstones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cleanup_run_id INTEGER,
+                capture_segment_id INTEGER,
+                path TEXT NOT NULL,
+                path_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                last_error TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TEXT
+            )",
+        ] {
+            sqlx::query(statement)
+                .execute(pool)
+                .await
+                .expect("retention cleanup test table should be created");
+        }
+    }
+
+    #[test]
+    fn active_segment_exclusion_keeps_older_segments_from_same_source_eligible() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            sqlx::query(
+                "CREATE TABLE capture_segments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    capture_session_id TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_session_id TEXT NOT NULL,
+                    segment_index INTEGER NOT NULL,
+                    media_file_path TEXT,
+                    workspace_dir_path TEXT,
+                    frame_dir_path TEXT,
+                    sidecar_file_path TEXT,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    UNIQUE(source_kind, source_session_id, segment_index)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("capture_segments table should be created");
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY AUTOINCREMENT, capture_segment_id INTEGER, frame_batch_id INTEGER)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY AUTOINCREMENT, capture_segment_id INTEGER)",
+                "CREATE TABLE processing_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, subject_type TEXT, subject_id INTEGER, status TEXT)",
+                "CREATE TABLE frame_batches (id INTEGER PRIMARY KEY AUTOINCREMENT, finalize_job_id INTEGER)",
+                "CREATE TABLE background_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT)",
+            ] {
+                sqlx::query(statement)
+                    .execute(&pool)
+                    .await
+                    .expect("supporting table should be created");
+            }
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    capture_session_id, source_kind, source_session_id, segment_index, started_at, ended_at, status
+                 ) VALUES
+                    ('capture-1', 'screen', 'screen-source-1', 1, '2026-05-01T00:00:00Z', '2026-05-01T00:05:00Z', 'completed'),
+                    ('capture-1', 'screen', 'screen-source-1', 2, '2026-05-01T00:05:00Z', '2026-05-01T00:10:00Z', 'completed')",
+            )
+            .execute(&pool)
+            .await
+            .expect("segments should insert");
+
+            let ids = eligible_segment_ids(
+                &pool,
+                "2026-05-02T00:00:00Z",
+                &RetentionCleanupContext {
+                    active_capture_segment_ids: vec![2],
+                    active_source_session_ids: Vec::new(),
+                    save_directory: None,
+                },
+            )
+            .await
+            .expect("eligible ids should query");
+
+            assert_eq!(ids, vec![1]);
+        });
+    }
+
+    #[test]
+    fn cleanup_deletes_expired_orphan_frame_rows() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO frames (session_id, file_path, captured_at, capture_segment_id, frame_batch_id)
+                 VALUES ('screen-source-1', '/tmp/mnema-expired-orphan-frame.jpg', '2026-05-10T15:01:50Z', NULL, NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("orphan frame should insert");
+            sqlx::query(
+                "INSERT INTO processing_jobs (subject_type, subject_id, processor, status)
+                 VALUES ('frame', 1, 'ocr', 'completed')",
+            )
+            .execute(&pool)
+            .await
+            .expect("processing job should insert");
+            sqlx::query("INSERT INTO processing_results (job_id, output_json) VALUES (1, '{}')")
+                .execute(&pool)
+                .await
+                .expect("processing result should insert");
+
+            let summary = CaptureRetentionStore::new(pool.clone())
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext::default(),
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            assert_eq!(summary.eligible_capture_segments, 0);
+            assert_eq!(summary.deleted_frames, 1);
+            assert_eq!(summary.deleted_processing_jobs, 1);
+            assert_eq!(summary.deleted_processing_results, 1);
+            assert_eq!(summary.status, "completed");
+            for table in ["frames", "processing_jobs", "processing_results"] {
+                let count: i64 = sqlx::query(&format!("SELECT COUNT(*) AS count FROM {table}"))
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count should query")
+                    .get("count");
+                assert_eq!(count, 0, "{table} should be empty after cleanup");
+            }
+        });
+    }
+
+    #[test]
+    fn cleanup_preserves_frame_batch_with_retained_frames() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index, started_at, ended_at, status
+                 ) VALUES
+                    (1, 'capture-1', 'screen', 'screen-source-1', 1, '2026-05-10T15:00:00Z', '2026-05-10T15:00:59Z', 'completed'),
+                    (2, 'capture-1', 'screen', 'screen-source-1', 2, '2026-05-11T15:01:00Z', '2026-05-11T15:01:59Z', 'completed')",
+            )
+            .execute(&pool)
+            .await
+            .expect("segments should insert");
+            sqlx::query("INSERT INTO frame_batches (id, finalize_job_id) VALUES (10, NULL)")
+                .execute(&pool)
+                .await
+                .expect("frame batch should insert");
+            sqlx::query(
+                "INSERT INTO frames (id, session_id, file_path, captured_at, capture_segment_id, frame_batch_id)
+                 VALUES
+                    (1, 'screen-source-1', '/tmp/deleted-frame.jpg', '2026-05-10T15:00:30Z', 1, 10),
+                    (2, 'screen-source-1', '/tmp/retained-frame.jpg', '2026-05-11T15:01:30Z', 2, 10)",
+            )
+            .execute(&pool)
+            .await
+            .expect("frames should insert");
+
+            let summary = CaptureRetentionStore::new(pool.clone())
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:06:30Z"),
+                    &RetentionCleanupContext::default(),
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            assert_eq!(summary.deleted_capture_segments, 1);
+            assert_eq!(summary.deleted_frames, 1);
+            assert_eq!(summary.deleted_frame_batches, 0);
+
+            let retained_frame_batch_id: Option<i64> =
+                sqlx::query_scalar("SELECT frame_batch_id FROM frames WHERE id = 2")
+                    .fetch_one(&pool)
+                    .await
+                    .expect("retained frame should query");
+            assert_eq!(retained_frame_batch_id, Some(10));
+
+            let batch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frame_batches")
+                .fetch_one(&pool)
+                .await
+                .expect("frame batch count should query");
+            assert_eq!(batch_count, 1);
+        });
+    }
 }
