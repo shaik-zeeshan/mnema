@@ -81,6 +81,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
+            app_infra::preview_retention_cleanup,
+            app_infra::run_retention_cleanup_now,
+            app_infra::get_retention_cleanup_status,
             audio_transcription_models::get_audio_transcription_model_status,
             audio_transcription_models::start_audio_transcription_model_download,
             audio_transcription_models::cancel_audio_transcription_model_download,

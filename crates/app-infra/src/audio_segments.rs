@@ -35,6 +35,7 @@ pub struct NewAudioSegment {
     pub file_path: String,
     pub started_at: String,
     pub ended_at: String,
+    pub capture_segment_id: Option<i64>,
 }
 
 impl NewAudioSegment {
@@ -53,7 +54,13 @@ impl NewAudioSegment {
             file_path: file_path.into(),
             started_at: started_at.into(),
             ended_at: ended_at.into(),
+            capture_segment_id: None,
         }
+    }
+
+    pub fn with_capture_segment_id(mut self, capture_segment_id: i64) -> Self {
+        self.capture_segment_id = Some(capture_segment_id);
+        self
     }
 }
 
@@ -67,6 +74,7 @@ pub struct AudioSegment {
     pub file_path: String,
     pub started_at: String,
     pub ended_at: String,
+    pub capture_segment_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -97,7 +105,7 @@ impl AudioSegmentStore {
 
     pub async fn get(&self, audio_segment_id: i64) -> Result<Option<AudioSegment>> {
         let row = sqlx::query(
-            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id, created_at, updated_at \
              FROM audio_segments \
              WHERE id = ?1",
         )
@@ -113,7 +121,7 @@ impl AudioSegmentStore {
         transaction: &mut Transaction<'_, Sqlite>,
     ) -> Result<Vec<AudioSegment>> {
         let rows = sqlx::query(
-            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id, created_at, updated_at \
              FROM audio_segments \
              WHERE source_kind = ?1 \
                AND NOT EXISTS (\
@@ -138,7 +146,7 @@ impl AudioSegmentStore {
         transaction: &mut Transaction<'_, Sqlite>,
     ) -> Result<Vec<AudioSegment>> {
         let rows = sqlx::query(
-            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id, created_at, updated_at \
              FROM audio_segments \
              WHERE source_kind = ?1 \
                AND NOT EXISTS (\
@@ -166,7 +174,7 @@ impl AudioSegmentStore {
         source_session_id: Option<&str>,
     ) -> Result<Vec<AudioSegment>> {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at FROM audio_segments WHERE started_at <= ",
+            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id, created_at, updated_at FROM audio_segments WHERE started_at <= ",
         );
         query.push_bind(range_end);
         query.push(" AND ended_at >= ");
@@ -195,12 +203,13 @@ where
 {
     sqlx::query(
         "INSERT INTO audio_segments \
-            (source_kind, source_session_id, segment_index, file_path, started_at, ended_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+            (source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
          ON CONFLICT(source_kind, source_session_id, file_path) DO UPDATE SET \
             segment_index = excluded.segment_index, \
             started_at = excluded.started_at, \
             ended_at = excluded.ended_at, \
+            capture_segment_id = COALESCE(excluded.capture_segment_id, audio_segments.capture_segment_id), \
             updated_at = CURRENT_TIMESTAMP",
     )
     .bind(segment.source_kind.as_str())
@@ -209,6 +218,7 @@ where
     .bind(&segment.file_path)
     .bind(&segment.started_at)
     .bind(&segment.ended_at)
+    .bind(segment.capture_segment_id)
     .execute(executor)
     .await?;
 
@@ -223,7 +233,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let row = sqlx::query(
-        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id, created_at, updated_at \
          FROM audio_segments \
          WHERE source_kind = ?1 AND source_session_id = ?2 AND file_path = ?3",
     )
@@ -245,6 +255,7 @@ fn map_audio_segment(row: SqliteRow) -> Result<AudioSegment> {
         file_path: row.get("file_path"),
         started_at: row.get("started_at"),
         ended_at: row.get("ended_at"),
+        capture_segment_id: row.get("capture_segment_id"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })

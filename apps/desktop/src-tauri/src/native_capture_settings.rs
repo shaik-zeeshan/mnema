@@ -9,7 +9,7 @@ use capture_types::{
     default_speaker_analysis_settings, default_system_audio_activity_sensitivity,
     default_video_bitrate, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
+    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
     UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
@@ -81,6 +81,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         developer_options_enabled: default_developer_options_enabled(),
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: default_follow_timeline_live(),
+        retention_policy: RetentionPolicy::Never,
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
@@ -548,6 +549,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         developer_options_enabled: request.developer_options_enabled,
         preview_cache_ttl_seconds: request.preview_cache_ttl_seconds,
         follow_timeline_live: request.follow_timeline_live,
+        retention_policy: request.retention_policy,
         appearance: request.appearance,
         ocr,
         transcription,
@@ -599,6 +601,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             developer_options_enabled: parsed.developer_options_enabled,
             preview_cache_ttl_seconds: parsed.preview_cache_ttl_seconds,
             follow_timeline_live: parsed.follow_timeline_live,
+            retention_policy: parsed.retention_policy,
             appearance: parsed.appearance,
             ocr: parsed.ocr,
             transcription: parsed.transcription,
