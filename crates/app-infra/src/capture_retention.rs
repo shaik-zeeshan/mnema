@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
-use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime, UtcOffset};
 
 use crate::{processing::ProcessingJobStatus, Result};
 
@@ -581,7 +581,8 @@ impl CaptureRetentionStore {
             cutoff_ended_before: Some(cutoff.clone()),
             eligible_capture_segments: segment_ids.len() as i64,
             skipped_active_segments: count_active_skipped(&self.pool, context).await?,
-            skipped_running_jobs: count_running_blocked_segments(&self.pool).await?,
+            skipped_running_jobs: count_running_blocked_segments(&self.pool, &cutoff, context)
+                .await?,
             pending_file_tombstones: self.pending_file_tombstone_count().await?,
             status: "skipped".to_string(),
             ..Default::default()
@@ -640,7 +641,10 @@ impl CaptureRetentionStore {
 pub fn cutoff_ended_before(policy: RetentionPolicy, local_now: OffsetDateTime) -> Option<String> {
     let days = policy.retention_days()?;
     let cutoff_date = local_now.date() - Duration::days(days - 1);
-    let cutoff = cutoff_date.midnight().assume_utc();
+    let cutoff = cutoff_date
+        .midnight()
+        .assume_offset(local_now.offset())
+        .to_offset(UtcOffset::UTC);
     Some(
         cutoff
             .format(&Rfc3339)
@@ -920,7 +924,7 @@ async fn orphan_audio_segment_ids(
 
 fn push_exclusions<'a>(query: &mut QueryBuilder<'a, Sqlite>, context: &'a RetentionCleanupContext) {
     if !context.active_capture_segment_ids.is_empty() {
-        query.push(" AND id NOT IN (");
+        query.push(" AND capture_segments.id NOT IN (");
         let mut separated = query.separated(", ");
         for id in &context.active_capture_segment_ids {
             separated.push_bind(id);
@@ -928,7 +932,7 @@ fn push_exclusions<'a>(query: &mut QueryBuilder<'a, Sqlite>, context: &'a Retent
         separated.push_unseparated(")");
     }
     if !context.active_source_session_ids.is_empty() {
-        query.push(" AND source_session_id NOT IN (");
+        query.push(" AND capture_segments.source_session_id NOT IN (");
         let mut separated = query.separated(", ");
         for id in &context.active_source_session_ids {
             separated.push_bind(id);
@@ -1194,20 +1198,28 @@ async fn count_active_skipped(pool: &SqlitePool, context: &RetentionCleanupConte
     Ok(query.build().fetch_one(pool).await?.get("count"))
 }
 
-async fn count_running_blocked_segments(pool: &SqlitePool) -> Result<i64> {
-    let count = sqlx::query(
+async fn count_running_blocked_segments(
+    pool: &SqlitePool,
+    cutoff: &str,
+    context: &RetentionCleanupContext,
+) -> Result<i64> {
+    let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT COUNT(DISTINCT capture_segments.id) AS count
          FROM capture_segments
          LEFT JOIN frames ON frames.capture_segment_id = capture_segments.id
          LEFT JOIN audio_segments ON audio_segments.capture_segment_id = capture_segments.id
-         INNER JOIN processing_jobs ON processing_jobs.status = ?1
-            AND ((processing_jobs.subject_type = 'frame' AND processing_jobs.subject_id = frames.id)
-              OR (processing_jobs.subject_type = 'audio_segment' AND processing_jobs.subject_id = audio_segments.id))",
-    )
-    .bind(ProcessingJobStatus::Running.as_str())
-    .fetch_one(pool)
-    .await?
-    .get("count");
+         INNER JOIN processing_jobs ON processing_jobs.status = ",
+    );
+    query.push_bind(ProcessingJobStatus::Running.as_str());
+    query.push(
+        " AND ((processing_jobs.subject_type = 'frame' AND processing_jobs.subject_id = frames.id)
+              OR (processing_jobs.subject_type = 'audio_segment' AND processing_jobs.subject_id = audio_segments.id))
+         WHERE capture_segments.ended_at < ",
+    );
+    query.push_bind(cutoff);
+    query.push(" AND capture_segments.status != 'recording'");
+    push_exclusions(&mut query, context);
+    let count = query.build().fetch_one(pool).await?.get("count");
     Ok(count)
 }
 
@@ -1284,6 +1296,14 @@ mod tests {
         let cutoff = cutoff_ended_before(RetentionPolicy::Days7, rfc3339("2026-05-10T12:34:56Z"));
 
         assert_eq!(cutoff.as_deref(), Some("2026-05-04T00:00:00Z"));
+    }
+
+    #[test]
+    fn day_policy_converts_local_calendar_cutoff_to_utc() {
+        let cutoff =
+            cutoff_ended_before(RetentionPolicy::Days7, rfc3339("2026-05-10T12:34:56-07:00"));
+
+        assert_eq!(cutoff.as_deref(), Some("2026-05-04T07:00:00Z"));
     }
 
     async fn create_retention_cleanup_tables(pool: &SqlitePool) {
@@ -1728,6 +1748,70 @@ mod tests {
             .expect("active skipped count should query");
 
             assert_eq!(skipped, 1);
+        });
+    }
+
+    #[test]
+    fn cleanup_counts_running_jobs_only_for_expired_inactive_segments() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index, started_at, ended_at, status
+                 ) VALUES
+                    (1, 'capture-1', 'screen', 'expired-source', 1, '2026-05-01T00:00:00Z', '2026-05-01T00:05:00Z', 'completed'),
+                    (2, 'capture-2', 'screen', 'recent-source', 1, '2026-05-16T00:00:00Z', '2026-05-16T00:05:00Z', 'completed'),
+                    (3, 'capture-3', 'screen', 'active-source', 1, '2026-05-01T00:00:00Z', '2026-05-01T00:05:00Z', 'completed')",
+            )
+            .execute(&pool)
+            .await
+            .expect("segments should insert");
+            sqlx::query(
+                "INSERT INTO frames (id, session_id, file_path, captured_at, capture_segment_id, frame_batch_id)
+                 VALUES
+                    (1, 'expired-source', '/tmp/expired.jpg', '2026-05-01T00:01:00Z', 1, NULL),
+                    (2, 'recent-source', '/tmp/recent.jpg', '2026-05-16T00:01:00Z', 2, NULL),
+                    (3, 'active-source', '/tmp/active.jpg', '2026-05-01T00:01:00Z', 3, NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("frames should insert");
+            sqlx::query(
+                "INSERT INTO processing_jobs (subject_type, subject_id, processor, status)
+                 VALUES
+                    ('frame', 1, 'ocr', 'running'),
+                    ('frame', 2, 'ocr', 'running'),
+                    ('frame', 3, 'ocr', 'running')",
+            )
+            .execute(&pool)
+            .await
+            .expect("processing jobs should insert");
+
+            let summary = CaptureRetentionStore::new(pool)
+                .preview_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext {
+                        active_capture_segment_ids: vec![3],
+                        active_source_session_ids: Vec::new(),
+                        save_directory: None,
+                    },
+                )
+                .await
+                .expect("cleanup preview should succeed");
+
+            assert_eq!(summary.eligible_capture_segments, 0);
+            assert_eq!(summary.skipped_running_jobs, 1);
         });
     }
 
