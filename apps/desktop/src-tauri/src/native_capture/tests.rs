@@ -516,7 +516,7 @@ fn audio_segment_start_uses_reanchored_session_timing_for_contiguous_late_segmen
             "/tmp/audio/system-audio-system-source-segment-0005.m4a".to_string(),
         ),
         system_audio_files: vec![
-            "/tmp/audio/system-audio-system-source-segment-0005.m4a".to_string(),
+            "/tmp/audio/system-audio-system-source-segment-0005.m4a".to_string()
         ],
     };
 

@@ -928,6 +928,30 @@ impl AppInfra {
         Ok(keys)
     }
 
+    pub async fn list_active_speaker_analysis_model_keys(&self) -> Result<BTreeSet<String>> {
+        let running_jobs = self
+            .processing
+            .list_running_jobs_for_processor(SPEAKER_ANALYSIS_PROCESSOR)
+            .await?;
+        let pending_jobs = self
+            .processing
+            .list_retargetable_jobs_for_processor(SPEAKER_ANALYSIS_PROCESSOR)
+            .await?;
+        let mut keys = BTreeSet::new();
+
+        for job in running_jobs.into_iter().chain(
+            pending_jobs
+                .into_iter()
+                .filter(|job| matches!(job.status, ProcessingJobStatus::Queued)),
+        ) {
+            if let Some(key) = speaker_analysis_model_key_for_job(&job)? {
+                keys.insert(key);
+            }
+        }
+
+        Ok(keys)
+    }
+
     pub async fn acquire_speaker_analysis_model_cleanup_locks(
         &self,
         model_keys: &BTreeSet<String>,
@@ -3542,6 +3566,262 @@ mod tests {
                 .expect("claim should succeed after release")
                 .expect("job should claim");
             assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    #[test]
+    fn speaker_analysis_model_cleanup_lock_blocks_direct_queued_job_claim_until_released() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-cleanup-lock-direct-claim");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-cleanup-lock-direct-claim",
+                    1,
+                    "/tmp/speaker-cleanup-lock-direct-claim.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
+                "mock_speaker",
+                Some("voice-model".to_string()),
+            ))
+            .expect("payload should serialize");
+            let job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(segment.id)
+                        .with_payload_json(payload),
+                )
+                .await
+                .expect("speaker analysis job should insert");
+            let lock = infra
+                .acquire_speaker_analysis_model_cleanup_locks(&BTreeSet::from([
+                    "mock_speaker/voice-model".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire");
+
+            let blocked = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("claim should not fail");
+            assert!(blocked.is_none());
+            let queued = infra
+                .get_processing_job(job.id)
+                .await
+                .expect("job should load")
+                .expect("job should exist");
+            assert_eq!(queued.status, ProcessingJobStatus::Queued);
+
+            infra
+                .release_processing_model_cleanup_locks(&lock)
+                .await
+                .expect("cleanup lock should release");
+            let claimed = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("claim should succeed after release")
+                .expect("job should claim");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    #[test]
+    fn speaker_analysis_model_cleanup_lock_makes_next_claim_skip_locked_model_jobs() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-cleanup-lock-next-claim");
+            let infra = AppInfra::initialize_with_processing_registry(
+                dir.path(),
+                ProcessorRegistry::new().register(SuccessfulProcessingBackend::new(
+                    SPEAKER_ANALYSIS_PROCESSOR,
+                    "speaker analysis done",
+                )),
+            )
+            .await
+            .expect("app infra should initialize");
+            let locked_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-cleanup-lock-next-claim",
+                    1,
+                    "/tmp/speaker-cleanup-lock-next-claim-locked.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("locked segment should insert");
+            let unlocked_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-cleanup-lock-next-claim",
+                    2,
+                    "/tmp/speaker-cleanup-lock-next-claim-unlocked.m4a",
+                    "2026-04-12T10:01:00Z",
+                    "2026-04-12T10:02:00Z",
+                ))
+                .await
+                .expect("unlocked segment should insert");
+            let locked_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
+                "mock_speaker",
+                Some("voice-model".to_string()),
+            ))
+            .expect("locked payload should serialize");
+            let unlocked_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
+                "mock_speaker",
+                Some("other-voice-model".to_string()),
+            ))
+            .expect("unlocked payload should serialize");
+            let locked_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(locked_segment.id)
+                        .with_payload_json(locked_payload),
+                )
+                .await
+                .expect("locked speaker analysis job should insert");
+            let unlocked_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(unlocked_segment.id)
+                        .with_payload_json(unlocked_payload),
+                )
+                .await
+                .expect("unlocked speaker analysis job should insert");
+            let lock = infra
+                .acquire_speaker_analysis_model_cleanup_locks(&BTreeSet::from([
+                    "mock_speaker/voice-model".to_string(),
+                ]))
+                .await
+                .expect("cleanup lock should acquire");
+
+            let claimed = infra
+                .process_next_processing_job_for_processor(SPEAKER_ANALYSIS_PROCESSOR)
+                .await
+                .expect("next job should process")
+                .expect("unlocked job should be claimable");
+            let claimed_job_id = match claimed {
+                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+                ProcessingJobRunOutcome::Failed(job) => job.id,
+            };
+            assert_eq!(claimed_job_id, unlocked_job.id);
+            let locked = infra
+                .get_processing_job(locked_job.id)
+                .await
+                .expect("locked job should load")
+                .expect("locked job should exist");
+            assert_eq!(locked.status, ProcessingJobStatus::Queued);
+
+            infra
+                .release_processing_model_cleanup_locks(&lock)
+                .await
+                .expect("cleanup lock should release");
+        });
+    }
+
+    #[test]
+    fn active_speaker_analysis_model_keys_include_queued_and_running_jobs() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-active-model-keys");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let queued_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-active-model-keys",
+                    1,
+                    "/tmp/speaker-active-model-keys-queued.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("queued segment should insert");
+            let running_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-active-model-keys",
+                    2,
+                    "/tmp/speaker-active-model-keys-running.m4a",
+                    "2026-04-12T10:01:00Z",
+                    "2026-04-12T10:02:00Z",
+                ))
+                .await
+                .expect("running segment should insert");
+            let completed_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-active-model-keys",
+                    3,
+                    "/tmp/speaker-active-model-keys-completed.m4a",
+                    "2026-04-12T10:02:00Z",
+                    "2026-04-12T10:03:00Z",
+                ))
+                .await
+                .expect("completed segment should insert");
+
+            let queued_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
+                "mock_speaker",
+                Some("queued-model".to_string()),
+            ))
+            .expect("queued payload should serialize");
+            let running_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
+                "mock_speaker",
+                Some("running-model".to_string()),
+            ))
+            .expect("running payload should serialize");
+            let completed_payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
+                "mock_speaker",
+                Some("completed-model".to_string()),
+            ))
+            .expect("completed payload should serialize");
+
+            infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(queued_segment.id)
+                        .with_payload_json(queued_payload),
+                )
+                .await
+                .expect("queued speaker analysis job should insert");
+            let running = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(running_segment.id)
+                        .with_payload_json(running_payload),
+                )
+                .await
+                .expect("running speaker analysis job should insert");
+            infra
+                .claim_queued_processing_job(running.id)
+                .await
+                .expect("running speaker analysis job should claim")
+                .expect("running speaker analysis job should exist");
+            let completed = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_speaker_analysis(completed_segment.id)
+                        .with_payload_json(completed_payload),
+                )
+                .await
+                .expect("completed speaker analysis job should insert");
+            infra
+                .claim_queued_processing_job(completed.id)
+                .await
+                .expect("completed speaker analysis job should claim")
+                .expect("completed speaker analysis job should exist");
+            infra
+                .complete_processing_job(completed.id, &ProcessingResultDraft::new())
+                .await
+                .expect("completed speaker analysis job should complete");
+
+            let keys = infra
+                .list_active_speaker_analysis_model_keys()
+                .await
+                .expect("speaker analysis model keys should list");
+
+            assert!(keys.contains("mock_speaker/queued-model"));
+            assert!(keys.contains("mock_speaker/running-model"));
+            assert!(!keys.contains("mock_speaker/completed-model"));
         });
     }
 

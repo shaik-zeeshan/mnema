@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -219,10 +220,11 @@ pub fn cancel_speaker_analysis_model_download(
 }
 
 #[tauri::command]
-pub fn delete_speaker_analysis_model(
+pub async fn delete_speaker_analysis_model(
     app_handle: tauri::AppHandle,
     request: SpeakerAnalysisModelDownloadRequestDto,
     download_state: tauri::State<'_, SpeakerAnalysisModelDownloadState>,
+    infra: tauri::State<'_, crate::app_infra::AppInfraState>,
 ) -> Result<(), String> {
     if active_download_key(download_state.inner())?
         == Some(model_key(&request.provider, &request.model_id))
@@ -242,9 +244,46 @@ pub fn delete_speaker_analysis_model(
         }
         .to_string()
     })?;
-    let install_dir = model_install_dir(speaker_analysis_models_dir(app_data_dir), descriptor)
-        .map_err(|error| error.to_string())?;
-    remove_model_dir_if_exists(install_dir).map_err(|error| error.to_string())
+    let model_key = model_key(&request.provider, &request.model_id);
+    let cleanup_lock = infra
+        .acquire_speaker_analysis_model_cleanup_locks(&BTreeSet::from([model_key.clone()]))
+        .await
+        .map_err(|error| {
+            format!("failed to reserve speaker analysis model for cleanup: {error}")
+        })?;
+    let result = async {
+        let protected_model_keys = infra
+            .list_active_speaker_analysis_model_keys()
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to inspect queued or running speaker analysis jobs before deleting model: {error}"
+                )
+            })?;
+        if protected_model_keys.contains(&model_key) {
+            return Err(
+                "cannot delete a speaker analysis model while jobs are queued or running for it"
+                    .to_string(),
+            );
+        }
+
+        let install_dir = model_install_dir(speaker_analysis_models_dir(app_data_dir), descriptor)
+            .map_err(|error| error.to_string())?;
+        remove_model_dir_if_exists(install_dir).map_err(|error| error.to_string())
+    }
+    .await;
+    let release_result = infra
+        .release_processing_model_cleanup_locks(&cleanup_lock)
+        .await
+        .map_err(|error| {
+            format!("failed to release speaker analysis model cleanup reservation: {error}")
+        });
+
+    match (result, release_result) {
+        (Ok(_), Ok(_)) => Ok(()),
+        (Err(error), Ok(_)) => Err(error),
+        (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
+    }
 }
 
 fn build_speaker_analysis_model_status_response(
@@ -485,17 +524,7 @@ async fn download_and_install_model(
             download_model_file(app_handle, plan, file, downloaded_total, cancel_requested).await?;
         downloaded_total = downloaded_total.saturating_add(bytes.len() as u64);
         let destination = safe_relative_model_file_path(&file.relative_path)?;
-        if file.url.ends_with(".tar.bz2") {
-            install_from_tar_bz2(&plan.install_dir, &destination, &bytes)?;
-        } else {
-            let temp_path = plan.install_dir.join(".download.tmp");
-            install_model_file(&temp_path, &bytes).map_err(ModelDownloadError::Install)?;
-            validate_artifact_sha256(&temp_path, file.sha256.as_deref())
-                .map_err(ModelDownloadError::Install)?;
-            install_model_file(plan.install_dir.join(destination), &bytes)
-                .map_err(ModelDownloadError::Install)?;
-            remove_model_file_if_exists(temp_path).map_err(ModelDownloadError::Install)?;
-        }
+        install_downloaded_model_file(&plan.install_dir, file, &destination, &bytes)?;
     }
 
     emit_download_progress(
@@ -557,6 +586,26 @@ async fn download_model_file(
         );
     }
     Ok(bytes)
+}
+
+fn install_downloaded_model_file(
+    install_dir: &Path,
+    file: &ModelArtifactFile,
+    destination_relative_path: &Path,
+    bytes: &[u8],
+) -> Result<(), ModelDownloadError> {
+    let temp_path = install_dir.join(".download.tmp");
+    install_model_file(&temp_path, bytes).map_err(ModelDownloadError::Install)?;
+    validate_artifact_sha256(&temp_path, file.sha256.as_deref())
+        .map_err(ModelDownloadError::Install)?;
+    if file.url.ends_with(".tar.bz2") {
+        install_from_tar_bz2(install_dir, destination_relative_path, bytes)?;
+    } else {
+        install_model_file(install_dir.join(destination_relative_path), bytes)
+            .map_err(ModelDownloadError::Install)?;
+    }
+    remove_model_file_if_exists(temp_path).map_err(ModelDownloadError::Install)?;
+    Ok(())
 }
 
 fn install_from_tar_bz2(
@@ -623,4 +672,67 @@ fn safe_relative_model_file_path(relative_path: &str) -> Result<PathBuf, ModelDo
         ));
     }
     Ok(path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "mnema-speaker-analysis-models-{label}-{}-{unique}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("test dir should be created");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn tar_bz2_install_validates_checksum_before_unpacking() {
+        let dir = TestDir::new("archive-checksum");
+        let file = ModelArtifactFile {
+            relative_path: "segmentation/model.onnx".to_string(),
+            url: "https://example.invalid/model.tar.bz2".to_string(),
+            byte_size: 15,
+            sha256: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+        };
+
+        let result = install_downloaded_model_file(
+            dir.path(),
+            &file,
+            Path::new("segmentation/model.onnx"),
+            b"not a tar bz2 archive",
+        );
+
+        assert!(matches!(
+            result,
+            Err(ModelDownloadError::Install(
+                speaker_analysis::ModelInstallError::ChecksumMismatch { .. }
+            ))
+        ));
+        assert!(!dir.path().join("segmentation/model.onnx").exists());
+    }
 }

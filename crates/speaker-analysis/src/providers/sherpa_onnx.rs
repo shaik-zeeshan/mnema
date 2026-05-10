@@ -395,8 +395,7 @@ fn analyze_single_safe_chunk(
         let global_end_ms = chunk_start as u64 * 1000 / SAMPLE_RATE_HZ as u64 + local_end_ms;
         let trim_global_start_ms =
             (chunk_start + trimmed_start) as u64 * 1000 / SAMPLE_RATE_HZ as u64;
-        let trim_global_end_ms =
-            (chunk_start + trimmed_end) as u64 * 1000 / SAMPLE_RATE_HZ as u64;
+        let trim_global_end_ms = (chunk_start + trimmed_end) as u64 * 1000 / SAMPLE_RATE_HZ as u64;
         raw_turns.push((
             segment.speaker,
             global_start_ms.max(trim_global_start_ms),

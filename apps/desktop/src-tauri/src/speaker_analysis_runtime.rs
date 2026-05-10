@@ -8,9 +8,7 @@ use std::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use speaker_analysis::{
-    providers::sherpa_onnx::{
-        analyze_sherpa_request_blocking, SherpaOnnxSpeakerAnalysisProvider,
-    },
+    providers::sherpa_onnx::{analyze_sherpa_request_blocking, SherpaOnnxSpeakerAnalysisProvider},
     SpeakerAnalysisOutput, SpeakerAnalysisProvider, SpeakerAnalysisRequest, SpeakerAnalysisResult,
 };
 

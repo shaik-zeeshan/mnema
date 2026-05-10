@@ -816,7 +816,7 @@ impl ProcessingStore {
                          SELECT 1 FROM processing_model_cleanup_locks AS lock \
                          WHERE lock.processor = pj.processor \
                            AND lock.model_key = CASE \
-                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
                               AND pj.payload_json IS NOT NULL \
                               AND json_valid(pj.payload_json) \
                              THEN CASE \
@@ -848,7 +848,7 @@ impl ProcessingStore {
                          SELECT 1 FROM processing_model_cleanup_locks AS lock \
                          WHERE lock.processor = pj.processor \
                            AND lock.model_key = CASE \
-                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
                               AND pj.payload_json IS NOT NULL \
                               AND json_valid(pj.payload_json) \
                              THEN CASE \
@@ -879,7 +879,7 @@ impl ProcessingStore {
                          SELECT 1 FROM processing_model_cleanup_locks AS lock \
                          WHERE lock.processor = pj.processor \
                            AND lock.model_key = CASE \
-                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
                               AND pj.payload_json IS NOT NULL \
                               AND json_valid(pj.payload_json) \
                              THEN CASE \
