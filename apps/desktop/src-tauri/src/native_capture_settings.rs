@@ -581,9 +581,7 @@ fn load_recording_settings_from_path_with_resolution_support(
 ) -> Option<RecordingSettings> {
     let raw = std::fs::read_to_string(path).ok()?;
 
-    // Backward compatibility: if the old single `audioActivitySensitivity` field is present
-    // but the new per-source fields are absent, copy its value into both new fields.
-    let raw = migrate_legacy_audio_sensitivity(&raw);
+    let raw = migrate_legacy_recording_settings_json(&raw);
 
     let parsed = serde_json::from_str::<RecordingSettings>(&raw).ok()?;
     validate_recording_settings_with_resolution_support(
@@ -618,10 +616,7 @@ fn load_recording_settings_from_path_with_resolution_support(
     .ok()
 }
 
-/// Migrate legacy JSON that has a single `audioActivitySensitivity` field into the
-/// two new per-source fields. If the new fields already exist, the legacy field is
-/// simply removed.
-fn migrate_legacy_audio_sensitivity(raw: &str) -> String {
+fn migrate_legacy_recording_settings_json(raw: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return raw.to_string();
     };
@@ -636,6 +631,17 @@ fn migrate_legacy_audio_sensitivity(raw: &str) -> String {
         if !obj.contains_key("systemAudioActivitySensitivity") {
             obj.insert("systemAudioActivitySensitivity".to_string(), legacy);
         }
+    }
+
+    if obj
+        .get("retentionPolicy")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value == "minutes_5" || value == "minutes5")
+    {
+        obj.insert(
+            "retentionPolicy".to_string(),
+            serde_json::Value::String("never".to_string()),
+        );
     }
 
     serde_json::to_string(&value).unwrap_or_else(|_| raw.to_string())

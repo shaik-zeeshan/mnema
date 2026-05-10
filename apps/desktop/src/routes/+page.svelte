@@ -160,6 +160,8 @@
   type TimelineDataChangedPayload = {
     reason: "retention" | string;
     deletedBefore: string | null;
+    deletedFrameIds?: number[];
+    deletedAudioSegmentIds?: number[];
   };
 
   let timelineFrames = $state<FrameDto[]>([]);
@@ -3662,6 +3664,15 @@
     if (changed) staleMonths = next;
   }
 
+  function invalidateLoadedPickerSummaryMonths(): void {
+    if (loadedMonths.size === 0) return;
+    const next = new Set(staleMonths);
+    for (const month of loadedMonths) {
+      next.add(month);
+    }
+    staleMonths = next;
+  }
+
   async function loadMonthSummaries(value: DateValue): Promise<void> {
     const key = monthKeyOf(value);
     const isStale = staleMonths.has(key);
@@ -4199,28 +4210,37 @@
 
     listen<TimelineDataChangedPayload>("timeline_data_changed", (event) => {
       if (event.payload.reason !== "retention" || !event.payload.deletedBefore) return;
-      const cutoffMs = Date.parse(event.payload.deletedBefore);
-      if (!Number.isFinite(cutoffMs)) {
-        void refreshTimelineAndDashboard();
-        return;
-      }
+      invalidateLoadedPickerSummaryMonths();
+      const deletedFrameIds = new Set(event.payload.deletedFrameIds ?? []);
+      const deletedAudioSegmentIds = new Set(event.payload.deletedAudioSegmentIds ?? []);
       const activeFrameId = timelineActive?.id ?? null;
-      timelineFrames = timelineFrames.filter((frame) => Date.parse(frame.capturedAt) >= cutoffMs);
-      audioSegments = audioSegments.filter((segment) => segment.endUnixMs >= cutoffMs);
-      if (selectedAudioSegmentId !== null && !audioSegments.some((segment) => segment.id === selectedAudioSegmentId)) {
-        selectedAudioSegmentId = null;
+      const previousActiveIndex = timelineActiveIndex;
+
+      if (deletedFrameIds.size > 0) {
+        const nextFrames = timelineFrames.filter((frame) => !deletedFrameIds.has(frame.id));
+        if (nextFrames.length !== timelineFrames.length) {
+          timelineFrames = nextFrames;
+          if (timelineFrames.length === 0) {
+            timelineActiveIndex = 0;
+          } else if (activeFrameId !== null && !deletedFrameIds.has(activeFrameId)) {
+            const nextActiveIndex = timelineFrames.findIndex((frame) => frame.id === activeFrameId);
+            timelineActiveIndex = nextActiveIndex >= 0
+              ? nextActiveIndex
+              : Math.min(previousActiveIndex, timelineFrames.length - 1);
+          } else {
+            timelineActiveIndex = Math.min(previousActiveIndex, timelineFrames.length - 1);
+          }
+          prunePreviewCache(timelineFrames);
+          void syncTimelineScrollToActiveFrame();
+        }
       }
-      if (timelineFrames.length === 0) {
-        void refreshTimelineAndDashboard();
-        return;
+
+      if (deletedAudioSegmentIds.size > 0) {
+        audioSegments = audioSegments.filter((segment) => !deletedAudioSegmentIds.has(segment.id));
+        if (selectedAudioSegmentId !== null && deletedAudioSegmentIds.has(selectedAudioSegmentId)) {
+          selectedAudioSegmentId = null;
+        }
       }
-      if (activeFrameId !== null) {
-        const nextIndex = timelineFrames.findIndex((frame) => frame.id === activeFrameId);
-        timelineActiveIndex = nextIndex >= 0 ? nextIndex : Math.min(timelineActiveIndex, timelineFrames.length - 1);
-      } else {
-        timelineActiveIndex = Math.min(timelineActiveIndex, timelineFrames.length - 1);
-      }
-      prunePreviewCache(timelineFrames);
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenTimelineDataChanged = fn;

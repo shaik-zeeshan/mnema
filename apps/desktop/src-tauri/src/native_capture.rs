@@ -1434,6 +1434,18 @@ pub fn update_recording_settings(
         }
     }
 
+    if previous_settings.retention_policy != settings.retention_policy {
+        if let Some(background_workers) =
+            app_handle.try_state::<crate::app_infra::BackgroundWorkersState>()
+        {
+            background_workers.notify_retention_schedule_changed();
+        } else {
+            debug_log::log_warn(
+                "background workers state unavailable while updating retention policy; retention cleanup schedule was not woken",
+            );
+        }
+    }
+
     emit_recording_settings_changed(&app_handle, &settings);
 
     Ok(settings)

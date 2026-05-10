@@ -2,6 +2,7 @@
   import { page } from "$app/stores";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { ask } from "@tauri-apps/plugin-dialog";
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
@@ -924,14 +925,22 @@
       return;
     }
 
-    if ((recordingSettings?.retentionPolicy ?? "never") === "never" && draftRetentionPolicy !== "never") {
+    const previousRetentionPolicy = recordingSettings?.retentionPolicy ?? "never";
+
+    if (previousRetentionPolicy === "never" && draftRetentionPolicy !== "never") {
       try {
         const preview = await invoke<RetentionCleanupSummary>("preview_retention_cleanup", {
           request: { policy: draftRetentionPolicy },
         });
         retentionCleanupSummary = preview;
-        const ok = window.confirm(
-          `Retention will delete ${preview.deletedFrames} frame row(s), ${preview.deletedAudioSegments} audio segment row(s), and ${preview.eligibleCaptureSegments} capture segment(s) before ${preview.cutoffEndedBefore ?? "the cutoff"}. Continue?`
+        const ok = await ask(
+          `Retention will delete ${preview.deletedFrames} frame row(s), ${preview.deletedAudioSegments} audio segment row(s), and ${preview.eligibleCaptureSegments} capture segment(s) before ${preview.cutoffEndedBefore ?? "the cutoff"}. Continue?`,
+          {
+            title: "Confirm retention cleanup",
+            kind: "warning",
+            okLabel: "Continue",
+            cancelLabel: "Cancel",
+          }
         );
         if (!ok) {
           draftRetentionPolicy = recordingSettings?.retentionPolicy ?? "never";
@@ -961,6 +970,18 @@
       setTimeout(() => { recSaved = false; }, 2200);
       // Refresh debug log status since the enabled flag may have changed.
       loadDebugLogStatus();
+
+      if (previousRetentionPolicy !== updated.retentionPolicy && updated.retentionPolicy !== "never") {
+        retentionCleanupRunning = true;
+        retentionCleanupError = null;
+        try {
+          retentionCleanupSummary = await invoke<RetentionCleanupSummary>("run_retention_cleanup_now");
+        } catch (err) {
+          retentionCleanupError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+        } finally {
+          retentionCleanupRunning = false;
+        }
+      }
     } catch (err) {
       recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
