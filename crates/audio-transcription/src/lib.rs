@@ -6,6 +6,7 @@
 //! app supplies the app data directory and owns download orchestration.
 
 mod core;
+mod macos_audio_decode;
 pub mod providers;
 
 pub use core::{

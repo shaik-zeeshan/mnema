@@ -5,11 +5,12 @@ use capture_types::{
     default_ocr_settings, default_ocr_tesseract_char_whitelist,
     default_ocr_tesseract_page_segmentation_mode, default_ocr_tesseract_preprocess_mode,
     default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
-    default_preview_cache_ttl_seconds, default_system_audio_activity_sensitivity,
+    default_preview_cache_ttl_seconds, default_speaker_analysis_model_id,
+    default_speaker_analysis_settings, default_system_audio_activity_sensitivity,
     default_video_bitrate, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    ScreenResolution, ScreenResolutionPreset, UpdateRecordingSettingsRequest, VideoBitrateMode,
-    VideoBitratePreset, VideoBitrateSettings,
+    ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
+    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -83,6 +84,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
+        speaker_analysis: default_speaker_analysis_settings(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -221,6 +223,31 @@ fn validate_audio_transcription_settings(
         idle_unload_seconds: value.idle_unload_seconds,
         chunk_seconds: value.chunk_seconds,
     })
+}
+
+fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> SpeakerAnalysisSettings {
+    const SHERPA_ONNX_PROVIDER_ID: &str = "sherpa_onnx";
+    const DEFAULT_SHERPA_MODEL_ID: &str = "pyannote-3.0-nemo-titanet-small";
+
+    let provider = if value.provider.trim() == SHERPA_ONNX_PROVIDER_ID {
+        SHERPA_ONNX_PROVIDER_ID.to_string()
+    } else {
+        default_speaker_analysis_settings().provider
+    };
+    let model_id = value
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| *model_id == DEFAULT_SHERPA_MODEL_ID)
+        .map(ToOwned::to_owned)
+        .or_else(default_speaker_analysis_model_id);
+
+    SpeakerAnalysisSettings {
+        separate_speakers: value.separate_speakers,
+        recognize_saved_people: value.recognize_saved_people,
+        provider,
+        model_id,
+    }
 }
 
 fn validate_ocr_settings(value: OcrSettings) -> Result<OcrSettings, CaptureErrorResponse> {
@@ -487,6 +514,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
     let video_bitrate = validate_video_bitrate(request.video_bitrate)?;
     let ocr = validate_ocr_settings(request.ocr)?;
     let transcription = validate_audio_transcription_settings(request.transcription)?;
+    let speaker_analysis = validate_speaker_analysis_settings(request.speaker_analysis);
     let microphone_activity_sensitivity = validate_audio_activity_sensitivity(
         "microphoneActivitySensitivity",
         request.microphone_activity_sensitivity,
@@ -523,6 +551,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         appearance: request.appearance,
         ocr,
         transcription,
+        speaker_analysis,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -573,6 +602,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             appearance: parsed.appearance,
             ocr: parsed.ocr,
             transcription: parsed.transcription,
+            speaker_analysis: parsed.speaker_analysis,
             pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
             idle_timeout_seconds: parsed.idle_timeout_seconds,
             microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -926,6 +956,7 @@ mod tests {
                 appearance: default_appearance(),
                 ocr: default_ocr_settings(),
                 transcription: default_audio_transcription_settings(),
+                speaker_analysis: default_speaker_analysis_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -977,6 +1008,7 @@ mod tests {
                 appearance: default_appearance(),
                 ocr,
                 transcription: default_audio_transcription_settings(),
+                speaker_analysis: default_speaker_analysis_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1044,6 +1076,7 @@ mod tests {
                 appearance: default_appearance(),
                 ocr: ocr_settings,
                 transcription: default_audio_transcription_settings(),
+                speaker_analysis: default_speaker_analysis_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1085,6 +1118,7 @@ mod tests {
                 appearance: default_appearance(),
                 ocr: default_ocr_settings(),
                 transcription,
+                speaker_analysis: default_speaker_analysis_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1176,6 +1210,7 @@ mod tests {
             appearance: default_appearance(),
             ocr: default_ocr_settings(),
             transcription: default_audio_transcription_settings(),
+            speaker_analysis: default_speaker_analysis_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

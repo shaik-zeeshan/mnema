@@ -324,12 +324,7 @@ fn preprocess_tesseract_image(
     let (target_width, target_height) =
         bounded_preprocessed_dimensions(source.width(), source.height(), upscale_factor);
     let scaled = if target_width != source.width() || target_height != source.height() {
-        image::imageops::resize(
-            source,
-            target_width,
-            target_height,
-            FilterType::CatmullRom,
-        )
+        image::imageops::resize(source, target_width, target_height, FilterType::CatmullRom)
     } else {
         source.clone()
     };

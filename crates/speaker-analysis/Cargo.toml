@@ -1,0 +1,22 @@
+[package]
+name = "speaker-analysis"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+sherpa-onnx = ["dep:sherpa-onnx-runtime", "dep:tokio", "dep:cidre"]
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+sherpa-onnx-runtime = { package = "sherpa-onnx", version = "1.13.1", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
+tempfile = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cidre = { version = "0.15", default-features = false, features = ["async", "av", "blocks", "cat", "cf", "cm", "dispatch", "ns", "ut", "macos_15_0"], optional = true }

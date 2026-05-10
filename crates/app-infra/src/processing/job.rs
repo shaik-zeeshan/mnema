@@ -4,6 +4,7 @@ pub const FRAME_SUBJECT_TYPE: &str = "frame";
 pub const AUDIO_SEGMENT_SUBJECT_TYPE: &str = "audio_segment";
 pub const OCR_PROCESSOR: &str = "ocr";
 pub const AUDIO_TRANSCRIPTION_PROCESSOR: &str = "audio_transcription";
+pub const SPEAKER_ANALYSIS_PROCESSOR: &str = "speaker_analysis";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +108,13 @@ impl ProcessingJobDraft {
         Self::new(
             ProcessingSubject::audio_segment(audio_segment_id),
             AUDIO_TRANSCRIPTION_PROCESSOR,
+        )
+    }
+
+    pub fn for_audio_segment_speaker_analysis(audio_segment_id: i64) -> Self {
+        Self::new(
+            ProcessingSubject::audio_segment(audio_segment_id),
+            SPEAKER_ANALYSIS_PROCESSOR,
         )
     }
 

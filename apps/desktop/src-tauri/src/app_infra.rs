@@ -16,7 +16,9 @@ use std::sync::OnceLock;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
-use capture_types::{AudioTranscriptionSettings, OcrProvider, OcrSettings};
+use capture_types::{
+    AudioTranscriptionSettings, OcrProvider, OcrSettings, SpeakerAnalysisSettings,
+};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime::JoinHandle, path::BaseDirectory, Manager};
@@ -448,6 +450,73 @@ pub struct GetAudioSegmentMediaRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ListSpeakerTurnsRequest {
+    pub audio_segment_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListSpeakerClustersRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePersonProfileRequest {
+    pub display_name: String,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletePersonProfileRequest {
+    pub person_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NameSpeakerClusterRequest {
+    pub cluster_id: i64,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkSpeakerClusterRequest {
+    pub cluster_id: i64,
+    pub person_id: i64,
+    pub add_embedding: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerClusterRequest {
+    pub cluster_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmSpeakerSuggestionRequest {
+    pub cluster_id: i64,
+    pub add_embedding: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeSpeakerClustersRequest {
+    pub source_cluster_id: i64,
+    pub target_cluster_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveSpeakerTurnRequest {
+    pub turn_id: i64,
+    pub target_cluster_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListFramesRequest {
     pub session_id: Option<String>,
     pub before_id: Option<i64>,
@@ -665,6 +734,13 @@ pub struct AudioSegmentTranscriptionReprocessingResultDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AudioSegmentSpeakerAnalysisReprocessingResultDto {
+    pub outcome: ::app_infra::AudioSegmentSpeakerAnalysisReprocessingOutcome,
+    pub job: ProcessingJobDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioSegmentDto {
     pub id: i64,
     pub source_kind: ::app_infra::AudioSegmentSourceKind,
@@ -675,6 +751,54 @@ pub struct AudioSegmentDto {
     pub ended_at: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerTurnDto {
+    pub id: i64,
+    pub audio_segment_id: i64,
+    pub session_id: String,
+    pub cluster_id: i64,
+    pub segment_cluster_id: Option<i64>,
+    pub provider_cluster_id: String,
+    pub speaker_label: String,
+    pub person_id: Option<i64>,
+    pub suggested_person_id: Option<i64>,
+    pub recognition_confidence: Option<String>,
+    pub recognition_score: Option<f32>,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub transcript_text: Option<String>,
+    pub overlaps: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonProfileDto {
+    pub id: i64,
+    pub display_name: String,
+    pub notes: Option<String>,
+    pub embedding_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerClusterDto {
+    pub id: i64,
+    pub session_id: String,
+    pub provider: String,
+    pub model_id: Option<String>,
+    pub provider_cluster_id: String,
+    pub speaker_label: String,
+    pub person_id: Option<i64>,
+    pub suggested_person_id: Option<i64>,
+    pub recognition_confidence: Option<String>,
+    pub recognition_score: Option<f32>,
+    pub suggested_merge_target_cluster_id: Option<i64>,
+    pub suggested_merge_score: Option<f32>,
 }
 
 impl From<::app_infra::BackgroundJob> for AppJobDto {
@@ -766,10 +890,75 @@ impl From<::app_infra::ProcessingResult> for ProcessingResultDto {
     }
 }
 
+impl From<::app_infra::SpeakerTurnView> for SpeakerTurnDto {
+    fn from(value: ::app_infra::SpeakerTurnView) -> Self {
+        Self {
+            id: value.id,
+            audio_segment_id: value.audio_segment_id,
+            session_id: value.session_id,
+            cluster_id: value.cluster_id,
+            segment_cluster_id: value.segment_cluster_id,
+            provider_cluster_id: value.provider_cluster_id,
+            speaker_label: value.speaker_label,
+            person_id: value.person_id,
+            suggested_person_id: value.suggested_person_id,
+            recognition_confidence: value.recognition_confidence,
+            recognition_score: value.recognition_score,
+            start_ms: value.start_ms,
+            end_ms: value.end_ms,
+            transcript_text: value.transcript_text,
+            overlaps: value.overlaps,
+        }
+    }
+}
+
+impl From<::app_infra::PersonProfile> for PersonProfileDto {
+    fn from(value: ::app_infra::PersonProfile) -> Self {
+        Self {
+            id: value.id,
+            display_name: value.display_name,
+            notes: value.notes,
+            embedding_count: value.embedding_count,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+impl From<::app_infra::SpeakerClusterView> for SpeakerClusterDto {
+    fn from(value: ::app_infra::SpeakerClusterView) -> Self {
+        Self {
+            id: value.id,
+            session_id: value.session_id,
+            provider: value.provider,
+            model_id: value.model_id,
+            provider_cluster_id: value.provider_cluster_id,
+            speaker_label: value.speaker_label,
+            person_id: value.person_id,
+            suggested_person_id: value.suggested_person_id,
+            recognition_confidence: value.recognition_confidence,
+            recognition_score: value.recognition_score,
+            suggested_merge_target_cluster_id: value.suggested_merge_target_cluster_id,
+            suggested_merge_score: value.suggested_merge_score,
+        }
+    }
+}
+
 impl From<::app_infra::FrameProcessingJob> for FrameProcessingJobDto {
     fn from(value: ::app_infra::FrameProcessingJob) -> Self {
         Self {
             frame: value.frame.into(),
+            job: value.job.into(),
+        }
+    }
+}
+
+impl From<::app_infra::AudioSegmentSpeakerAnalysisReprocessingResult>
+    for AudioSegmentSpeakerAnalysisReprocessingResultDto
+{
+    fn from(value: ::app_infra::AudioSegmentSpeakerAnalysisReprocessingResult) -> Self {
+        Self {
+            outcome: value.outcome,
             job: value.job.into(),
         }
     }
@@ -2161,6 +2350,7 @@ fn desktop_processing_registry(
         format!("failed to resolve app data directory for processing registry: {error}")
     })?;
     let models_dir = audio_transcription::audio_transcription_models_dir(&app_data_dir);
+    let speaker_models_dir = speaker_analysis::speaker_analysis_models_dir(&app_data_dir);
 
     let ocr_models_dir = ocr::ocr_models_dir(&app_data_dir);
 
@@ -2186,7 +2376,12 @@ fn desktop_processing_registry(
                     audio_transcription::providers::ParakeetProvider::with_models_dir(models_dir),
                 ),
             ]),
-        ))
+        )
+        .register(::app_infra::SpeakerAnalysisProcessorBackend::new(
+            crate::speaker_analysis_runtime::SubprocessSherpaOnnxSpeakerAnalysisProvider::with_models_dir(
+                speaker_models_dir,
+            ),
+        )))
 }
 
 pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
@@ -2368,16 +2563,41 @@ async fn run_audio_transcription_backfill_pass(
             ));
         }
     }
+
+    let speaker_admission = speaker_analysis_admission_for_current_settings(app_handle);
+    if speaker_admission.enabled
+        && speaker_admission.provider_available
+        && speaker_admission.payload_json.is_some()
+    {
+        match infra
+            .backfill_missing_speaker_analysis_jobs(&speaker_admission)
+            .await
+        {
+            Ok(enqueued_count) => {
+                crate::native_capture::debug_log::log_info(format!(
+                    "{reason} speaker analysis backfill completed (enqueued={enqueued_count})"
+                ));
+            }
+            Err(error) => {
+                crate::native_capture::debug_log::log_error(format!(
+                    "{reason} speaker analysis backfill failed: {error}"
+                ));
+            }
+        }
+    }
 }
 
 fn audio_transcription_admission_for_current_settings(
     app_handle: &tauri::AppHandle,
 ) -> ::app_infra::AudioSegmentTranscriptionAdmission {
-    let transcription_settings = match app_handle
+    let (transcription_settings, speaker_settings) = match app_handle
         .state::<crate::native_capture::RecordingSettingsState>()
         .lock()
     {
-        Ok(settings) => settings.settings.transcription.clone(),
+        Ok(settings) => (
+            settings.settings.transcription.clone(),
+            settings.settings.speaker_analysis.clone(),
+        ),
         Err(_) => {
             crate::native_capture::debug_log::log_error(
                 "failed to read recording settings for audio transcription backfill admission",
@@ -2400,12 +2620,89 @@ fn audio_transcription_admission_for_current_settings(
         }
     };
 
-    audio_transcription_admission_for_settings(&app_data_dir, &transcription_settings)
+    audio_transcription_admission_for_settings(
+        &app_data_dir,
+        &transcription_settings,
+        Some(&speaker_settings),
+    )
+}
+
+fn speaker_analysis_admission_for_current_settings(
+    app_handle: &tauri::AppHandle,
+) -> ::app_infra::AudioSegmentSpeakerAnalysisAdmission {
+    let speaker_settings = match app_handle
+        .state::<crate::native_capture::RecordingSettingsState>()
+        .lock()
+    {
+        Ok(settings) => settings.settings.speaker_analysis.clone(),
+        Err(_) => {
+            crate::native_capture::debug_log::log_error(
+                "failed to read recording settings for speaker analysis admission",
+            );
+            return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::disabled();
+        }
+    };
+    speaker_analysis_admission_for_settings(app_handle, &speaker_settings)
+}
+
+fn speaker_analysis_admission_for_settings(
+    app_handle: &tauri::AppHandle,
+    speaker_settings: &SpeakerAnalysisSettings,
+) -> ::app_infra::AudioSegmentSpeakerAnalysisAdmission {
+    if !speaker_settings.separate_speakers {
+        return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::disabled();
+    }
+
+    let app_data_dir = match app_handle.path().app_data_dir() {
+        Ok(app_data_dir) => app_data_dir,
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to resolve app data directory for speaker analysis admission: {error}"
+            ));
+            return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable();
+        }
+    };
+    let models_dir = speaker_analysis::speaker_analysis_models_dir(&app_data_dir);
+    let provider = speaker_settings.provider.clone();
+    let model_id = speaker_settings.model_id.clone();
+    let manifest = speaker_analysis::builtin_model_manifest();
+    let Some(descriptor) =
+        speaker_analysis::find_model_descriptor(&manifest, &provider, model_id.as_deref())
+    else {
+        return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable();
+    };
+    match speaker_analysis::detect_model_status(&models_dir, descriptor) {
+        Ok(status) if status.status == speaker_analysis::ModelStatusKind::Installed => {
+            let mut payload =
+                ::app_infra::SpeakerAnalysisJobPayload::new(provider, model_id.clone());
+            payload.normalize_model_selection();
+            payload.recognize_people = speaker_settings.recognize_saved_people;
+            match serde_json::to_string(&payload) {
+                Ok(payload_json) => {
+                    ::app_infra::AudioSegmentSpeakerAnalysisAdmission::available(payload_json)
+                }
+                Err(error) => {
+                    crate::native_capture::debug_log::log_error(format!(
+                        "failed to serialize speaker analysis payload: {error}"
+                    ));
+                    ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable()
+                }
+            }
+        }
+        Ok(_) => ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable(),
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to inspect selected speaker analysis model: {error}"
+            ));
+            ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable()
+        }
+    }
 }
 
 fn audio_transcription_admission_for_settings(
     app_data_dir: &Path,
     transcription_settings: &AudioTranscriptionSettings,
+    speaker_settings: Option<&SpeakerAnalysisSettings>,
 ) -> ::app_infra::AudioSegmentTranscriptionAdmission {
     if !transcription_settings.enabled {
         return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
@@ -2428,6 +2725,7 @@ fn audio_transcription_admission_for_settings(
                 crate::audio_transcription_models::transcription_request_options_for_settings(
                     transcription_settings,
                 );
+            attach_speaker_analysis_payload(&mut payload, app_data_dir, speaker_settings);
             match serde_json::to_string(&payload) {
                 Ok(payload_json) => {
                     ::app_infra::AudioSegmentTranscriptionAdmission::available(payload_json)
@@ -2447,6 +2745,50 @@ fn audio_transcription_admission_for_settings(
             ));
             ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
         }
+    }
+}
+
+fn attach_speaker_analysis_payload(
+    payload: &mut ::app_infra::AudioTranscriptionJobPayload,
+    app_data_dir: &Path,
+    speaker_settings: Option<&SpeakerAnalysisSettings>,
+) {
+    let Some(speaker_settings) = speaker_settings else {
+        return;
+    };
+    if !speaker_settings.separate_speakers {
+        return;
+    }
+    let models_dir = speaker_analysis::speaker_analysis_models_dir(app_data_dir);
+    let manifest = speaker_analysis::builtin_model_manifest();
+    let Some(descriptor) = speaker_analysis::find_model_descriptor(
+        &manifest,
+        &speaker_settings.provider,
+        speaker_settings.model_id.as_deref(),
+    ) else {
+        return;
+    };
+    match speaker_analysis::detect_model_status(&models_dir, descriptor) {
+        Ok(status) if status.status == speaker_analysis::ModelStatusKind::Installed => {}
+        Ok(_) => return,
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to inspect selected speaker analysis model for transcription payload: {error}"
+            ));
+            return;
+        }
+    }
+    let mut speaker_payload = ::app_infra::SpeakerAnalysisJobPayload::new(
+        speaker_settings.provider.clone(),
+        speaker_settings.model_id.clone(),
+    );
+    speaker_payload.normalize_model_selection();
+    speaker_payload.recognize_people = speaker_settings.recognize_saved_people;
+    if let Ok(value) = serde_json::to_value(speaker_payload) {
+        payload.options.insert(
+            ::app_infra::SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY.to_string(),
+            value,
+        );
     }
 }
 
@@ -2944,6 +3286,19 @@ async fn reprocess_audio_segment_transcription_inner(
         .map(AudioSegmentTranscriptionReprocessingResultDto::from)
 }
 
+async fn reprocess_audio_segment_speaker_analysis_inner(
+    infra: &::app_infra::AppInfra,
+    request: ReprocessAudioSegmentTranscriptionRequest,
+    app_handle: &tauri::AppHandle,
+) -> ::app_infra::Result<AudioSegmentSpeakerAnalysisReprocessingResultDto> {
+    let admission = speaker_analysis_admission_for_current_settings(app_handle);
+
+    infra
+        .reprocess_audio_segment_speaker_analysis(request.audio_segment_id, &admission)
+        .await
+        .map(AudioSegmentSpeakerAnalysisReprocessingResultDto::from)
+}
+
 async fn classify_hidden_segment_workspace_inner(
     infra: &::app_infra::AppInfra,
     request: ClassifyHiddenSegmentWorkspaceRequest,
@@ -3062,6 +3417,24 @@ pub async fn reprocess_audio_segment_transcription(
         .map_err(|error| {
             format!(
                 "failed to reprocess audio segment transcription for segment {}: {error}",
+                request.audio_segment_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn reprocess_audio_segment_speaker_analysis(
+    request: ReprocessAudioSegmentTranscriptionRequest,
+    state: tauri::State<'_, AppInfraState>,
+    app_handle: tauri::AppHandle,
+) -> Result<AudioSegmentSpeakerAnalysisReprocessingResultDto, String> {
+    let infra = Arc::clone(&*state);
+
+    reprocess_audio_segment_speaker_analysis_inner(&infra, request.clone(), &app_handle)
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to reprocess audio segment speaker analysis for segment {}: {error}",
                 request.audio_segment_id
             )
         })
@@ -3370,6 +3743,214 @@ pub async fn list_processing_results(
         .map_err(|error| format!("failed to list processing results: {error}"))
 }
 
+#[tauri::command]
+pub async fn list_speaker_turns(
+    request: ListSpeakerTurnsRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<SpeakerTurnDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .list_speaker_turns_for_audio_segment(request.audio_segment_id)
+        .await
+        .map(|turns| turns.into_iter().map(SpeakerTurnDto::from).collect())
+        .map_err(|error| {
+            format!(
+                "failed to list speaker turns for audio segment {}: {error}",
+                request.audio_segment_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn list_person_profiles(
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<PersonProfileDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .list_person_profiles()
+        .await
+        .map(|profiles| profiles.into_iter().map(PersonProfileDto::from).collect())
+        .map_err(|error| format!("failed to list person profiles: {error}"))
+}
+
+#[tauri::command]
+pub async fn create_person_profile(
+    request: CreatePersonProfileRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<PersonProfileDto, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .create_person_profile(&request.display_name, request.notes.as_deref())
+        .await
+        .map(PersonProfileDto::from)
+        .map_err(|error| format!("failed to create person profile: {error}"))
+}
+
+#[tauri::command]
+pub async fn delete_person_profile(
+    request: DeletePersonProfileRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<(), String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .delete_person_profile(request.person_id)
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to delete person profile {}: {error}",
+                request.person_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn list_speaker_clusters(
+    request: ListSpeakerClustersRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<SpeakerClusterDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .list_speaker_clusters_for_session(&request.session_id)
+        .await
+        .map(|clusters| clusters.into_iter().map(SpeakerClusterDto::from).collect())
+        .map_err(|error| {
+            format!(
+                "failed to list speaker clusters for session {}: {error}",
+                request.session_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn name_speaker_cluster(
+    request: NameSpeakerClusterRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<SpeakerClusterDto, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .name_speaker_cluster(request.cluster_id, &request.label)
+        .await
+        .map(SpeakerClusterDto::from)
+        .map_err(|error| {
+            format!(
+                "failed to name speaker cluster {}: {error}",
+                request.cluster_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn link_speaker_cluster_to_person(
+    request: LinkSpeakerClusterRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<SpeakerClusterDto, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .link_speaker_cluster_to_person(
+            request.cluster_id,
+            request.person_id,
+            request.add_embedding,
+        )
+        .await
+        .map(SpeakerClusterDto::from)
+        .map_err(|error| {
+            format!(
+                "failed to link speaker cluster {} to person {}: {error}",
+                request.cluster_id, request.person_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn unlink_speaker_cluster_from_person(
+    request: SpeakerClusterRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<SpeakerClusterDto, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .unlink_speaker_cluster_from_person(request.cluster_id)
+        .await
+        .map(SpeakerClusterDto::from)
+        .map_err(|error| {
+            format!(
+                "failed to unlink speaker cluster {} from person: {error}",
+                request.cluster_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn confirm_speaker_recognition_suggestion(
+    request: ConfirmSpeakerSuggestionRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<SpeakerClusterDto, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .confirm_speaker_recognition_suggestion(request.cluster_id, request.add_embedding)
+        .await
+        .map(SpeakerClusterDto::from)
+        .map_err(|error| {
+            format!(
+                "failed to confirm speaker recognition suggestion for cluster {}: {error}",
+                request.cluster_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn reject_speaker_recognition_suggestion(
+    request: SpeakerClusterRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<SpeakerClusterDto, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .reject_speaker_recognition_suggestion(request.cluster_id)
+        .await
+        .map(SpeakerClusterDto::from)
+        .map_err(|error| {
+            format!(
+                "failed to reject speaker recognition suggestion for cluster {}: {error}",
+                request.cluster_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn merge_speaker_clusters(
+    request: MergeSpeakerClustersRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<SpeakerClusterDto, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .merge_speaker_clusters(request.source_cluster_id, request.target_cluster_id)
+        .await
+        .map(SpeakerClusterDto::from)
+        .map_err(|error| {
+            format!(
+                "failed to merge speaker cluster {} into {}: {error}",
+                request.source_cluster_id, request.target_cluster_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn move_speaker_turn_to_cluster(
+    request: MoveSpeakerTurnRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<SpeakerTurnDto, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .move_speaker_turn_to_cluster(request.turn_id, request.target_cluster_id)
+        .await
+        .map(SpeakerTurnDto::from)
+        .map_err(|error| {
+            format!(
+                "failed to move speaker turn {} to cluster {}: {error}",
+                request.turn_id, request.target_cluster_id
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -3501,7 +4082,7 @@ mod tests {
         let dir = TestDir::new("audio-transcription-backfill-admission");
         let settings = AudioTranscriptionSettings::default();
 
-        let missing = audio_transcription_admission_for_settings(dir.path(), &settings);
+        let missing = audio_transcription_admission_for_settings(dir.path(), &settings, None);
         assert!(missing.enabled);
         assert!(!missing.provider_available);
         assert_eq!(missing.payload_json, None);
@@ -3523,7 +4104,7 @@ mod tests {
         )
         .expect("installed marker should be written");
 
-        let available = audio_transcription_admission_for_settings(dir.path(), &settings);
+        let available = audio_transcription_admission_for_settings(dir.path(), &settings, None);
         assert!(available.enabled);
         assert!(available.provider_available);
         let payload: ::app_infra::AudioTranscriptionJobPayload = serde_json::from_str(

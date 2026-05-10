@@ -133,6 +133,31 @@ impl AudioSegmentStore {
         rows.into_iter().map(map_audio_segment).collect()
     }
 
+    pub(crate) async fn list_microphone_without_speaker_analysis_job_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+    ) -> Result<Vec<AudioSegment>> {
+        let rows = sqlx::query(
+            "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+             FROM audio_segments \
+             WHERE source_kind = ?1 \
+               AND NOT EXISTS (\
+                    SELECT 1 FROM processing_jobs \
+                    WHERE processing_jobs.subject_type = ?2 \
+                      AND processing_jobs.subject_id = audio_segments.id \
+                      AND processing_jobs.processor = ?3\
+               ) \
+             ORDER BY id ASC",
+        )
+        .bind(AudioSegmentSourceKind::Microphone.as_str())
+        .bind(crate::processing::AUDIO_SEGMENT_SUBJECT_TYPE)
+        .bind(crate::processing::SPEAKER_ANALYSIS_PROCESSOR)
+        .fetch_all(&mut **transaction)
+        .await?;
+
+        rows.into_iter().map(map_audio_segment).collect()
+    }
+
     pub async fn list_overlapping_range(
         &self,
         range_start: &str,

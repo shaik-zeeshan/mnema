@@ -1,6 +1,10 @@
 use std::collections::BTreeSet;
 
+use audio_transcription::{TranscriptionMetadata, TranscriptionSegment, TranscriptionWord};
 use serde::{Deserialize, Serialize};
+use speaker_analysis::{
+    PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisOutput,
+};
 use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
 use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
@@ -8,11 +12,13 @@ use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment
 use super::{
     AudioTranscriptionJobPayload, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary,
     NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingResult,
-    ProcessingResultDraft, ProcessingSubject, AUDIO_TRANSCRIPTION_PROCESSOR, OCR_PROCESSOR,
+    ProcessingResultDraft, ProcessingSubject, AUDIO_SEGMENT_SUBJECT_TYPE,
+    AUDIO_TRANSCRIPTION_PROCESSOR, OCR_PROCESSOR, SPEAKER_ANALYSIS_PROCESSOR,
 };
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
     "processing job was marked failed during startup recovery after the app shut down while it was running";
+pub const SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY: &str = "speakerAnalysisPayload";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +40,54 @@ pub struct SegmentWorkspaceOcrReference {
     pub frame_id: i64,
     pub job_id: i64,
     pub status: ProcessingJobStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerTurnView {
+    pub id: i64,
+    pub audio_segment_id: i64,
+    pub session_id: String,
+    pub cluster_id: i64,
+    pub segment_cluster_id: Option<i64>,
+    pub provider_cluster_id: String,
+    pub speaker_label: String,
+    pub person_id: Option<i64>,
+    pub suggested_person_id: Option<i64>,
+    pub recognition_confidence: Option<String>,
+    pub recognition_score: Option<f32>,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub transcript_text: Option<String>,
+    pub overlaps: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonProfile {
+    pub id: i64,
+    pub display_name: String,
+    pub notes: Option<String>,
+    pub embedding_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerClusterView {
+    pub id: i64,
+    pub session_id: String,
+    pub provider: String,
+    pub model_id: Option<String>,
+    pub provider_cluster_id: String,
+    pub speaker_label: String,
+    pub person_id: Option<i64>,
+    pub suggested_person_id: Option<i64>,
+    pub recognition_confidence: Option<String>,
+    pub recognition_score: Option<f32>,
+    pub suggested_merge_target_cluster_id: Option<i64>,
+    pub suggested_merge_score: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -762,7 +816,7 @@ impl ProcessingStore {
                          SELECT 1 FROM processing_model_cleanup_locks AS lock \
                          WHERE lock.processor = pj.processor \
                            AND lock.model_key = CASE \
-                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
                               AND pj.payload_json IS NOT NULL \
                               AND json_valid(pj.payload_json) \
                              THEN CASE \
@@ -794,7 +848,7 @@ impl ProcessingStore {
                          SELECT 1 FROM processing_model_cleanup_locks AS lock \
                          WHERE lock.processor = pj.processor \
                            AND lock.model_key = CASE \
-                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
                               AND pj.payload_json IS NOT NULL \
                               AND json_valid(pj.payload_json) \
                              THEN CASE \
@@ -825,7 +879,7 @@ impl ProcessingStore {
                          SELECT 1 FROM processing_model_cleanup_locks AS lock \
                          WHERE lock.processor = pj.processor \
                            AND lock.model_key = CASE \
-                             WHEN pj.processor IN ('ocr', 'audio_transcription') \
+                             WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
                               AND pj.payload_json IS NOT NULL \
                               AND json_valid(pj.payload_json) \
                              THEN CASE \
@@ -1179,6 +1233,55 @@ impl ProcessingStore {
             .await?
             .ok_or(AppInfraError::ProcessingResultNotFound(result_id))?;
 
+        if job.processor == AUDIO_TRANSCRIPTION_PROCESSOR
+            && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
+        {
+            if let Some(payload_json) = speaker_analysis_payload_from_transcription_job(&job)? {
+                let subject = ProcessingSubject::audio_segment(job.subject_id);
+                let existing = self
+                    .get_latest_processing_job_for_subject_and_processor_in_transaction(
+                        &mut transaction,
+                        &subject,
+                        SPEAKER_ANALYSIS_PROCESSOR,
+                    )
+                    .await?;
+                if existing.is_none() {
+                    self.enqueue_job_in_transaction(
+                        &mut transaction,
+                        &subject,
+                        SPEAKER_ANALYSIS_PROCESSOR,
+                        Some(&payload_json),
+                    )
+                    .await?;
+                } else if let Some(existing) = existing {
+                    if existing.status == ProcessingJobStatus::Failed {
+                        self.requeue_processing_job_in_transaction(
+                            &mut transaction,
+                            existing.id,
+                            Some(&payload_json),
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+        if job.processor == SPEAKER_ANALYSIS_PROCESSOR
+            && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
+        {
+            if let Some(payload_json) = result.structured_payload_json.as_deref() {
+                let output: SpeakerAnalysisOutput = serde_json::from_str(payload_json)?;
+                persist_speaker_analysis_output(&mut transaction, job.subject_id, &output).await?;
+            }
+        }
+        if job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
+            && matches!(
+                job.processor.as_str(),
+                AUDIO_TRANSCRIPTION_PROCESSOR | SPEAKER_ANALYSIS_PROCESSOR
+            )
+        {
+            refresh_speaker_turn_transcript_texts(&mut transaction, job.subject_id).await?;
+        }
+
         transaction.commit().await?;
 
         Ok(ProcessingJobCompletion {
@@ -1222,6 +1325,363 @@ impl ProcessingStore {
         rows.into_iter().map(map_processing_result).collect()
     }
 
+    pub async fn list_speaker_turns_for_audio_segment(
+        &self,
+        audio_segment_id: i64,
+    ) -> Result<Vec<SpeakerTurnView>> {
+        let rows = sqlx::query(
+            "SELECT \
+                speaker_turns.id, speaker_turns.audio_segment_id, speaker_turns.session_id, \
+                speaker_turns.cluster_id, speaker_turns.segment_cluster_id, speaker_turns.start_ms, speaker_turns.end_ms, \
+                speaker_turns.transcript_text, speaker_turns.overlaps, \
+                recording_speaker_clusters.provider_cluster_id, \
+                COALESCE(recording_speaker_clusters.transcript_local_label, recording_speaker_clusters.stable_label) AS speaker_label, \
+                recording_speaker_clusters.person_id, \
+                recording_speaker_clusters.recognition_person_id, \
+                recording_speaker_clusters.recognition_confidence, \
+                recording_speaker_clusters.recognition_score \
+             FROM speaker_turns \
+             INNER JOIN recording_speaker_clusters ON recording_speaker_clusters.id = speaker_turns.cluster_id \
+             WHERE speaker_turns.audio_segment_id = ?1 \
+             ORDER BY speaker_turns.start_ms ASC, speaker_turns.end_ms ASC, speaker_turns.id ASC",
+        )
+        .bind(audio_segment_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(map_speaker_turn_view).collect()
+    }
+
+    pub async fn list_person_profiles(&self) -> Result<Vec<PersonProfile>> {
+        let rows = sqlx::query(
+            "SELECT \
+                person_profiles.id, person_profiles.display_name, person_profiles.notes, \
+                COUNT(person_voice_embeddings.id) AS embedding_count, \
+                person_profiles.created_at, person_profiles.updated_at \
+             FROM person_profiles \
+             LEFT JOIN person_voice_embeddings ON person_voice_embeddings.person_id = person_profiles.id \
+             GROUP BY person_profiles.id \
+             ORDER BY person_profiles.display_name COLLATE NOCASE ASC, person_profiles.id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(map_person_profile).collect()
+    }
+
+    pub async fn create_person_profile(
+        &self,
+        display_name: &str,
+        notes: Option<&str>,
+    ) -> Result<PersonProfile> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "person display name cannot be empty".to_string(),
+            ));
+        }
+        let result =
+            sqlx::query("INSERT INTO person_profiles (display_name, notes) VALUES (?1, ?2)")
+                .bind(display_name)
+                .bind(notes.map(str::trim).filter(|value| !value.is_empty()))
+                .execute(&self.pool)
+                .await?;
+        self.get_required_person_profile(result.last_insert_rowid())
+            .await
+    }
+
+    pub async fn delete_person_profile(&self, person_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM person_profiles WHERE id = ?1")
+            .bind(person_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_speaker_clusters_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SpeakerClusterView>> {
+        let rows = sqlx::query(
+            "SELECT \
+                id, session_id, provider, model_id, provider_cluster_id, \
+                COALESCE(transcript_local_label, stable_label) AS speaker_label, \
+                person_id, recognition_person_id, recognition_confidence, recognition_score, \
+                suggested_merge_target_cluster_id, suggested_merge_score \
+             FROM recording_speaker_clusters \
+             WHERE session_id = ?1 \
+             ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(map_speaker_cluster_view).collect()
+    }
+
+    pub async fn name_speaker_cluster(
+        &self,
+        cluster_id: i64,
+        label: &str,
+    ) -> Result<SpeakerClusterView> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "speaker label cannot be empty".to_string(),
+            ));
+        }
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET transcript_local_label = ?2, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1",
+        )
+        .bind(cluster_id)
+        .bind(label)
+        .execute(&self.pool)
+        .await?;
+        self.get_required_speaker_cluster(cluster_id).await
+    }
+
+    pub async fn link_speaker_cluster_to_person(
+        &self,
+        cluster_id: i64,
+        person_id: i64,
+        add_embedding: bool,
+    ) -> Result<SpeakerClusterView> {
+        let mut transaction = self.pool.begin().await?;
+        let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
+        if cluster
+            .person_id
+            .is_some_and(|existing| existing != person_id)
+        {
+            persist_speaker_recognition_rejection_for_cluster(
+                &mut transaction,
+                &cluster,
+                cluster_id,
+                cluster.person_id,
+            )
+            .await?;
+        }
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET person_id = ?2, transcript_local_label = NULL, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1",
+        )
+        .bind(cluster_id)
+        .bind(person_id)
+        .execute(&mut *transaction)
+        .await?;
+        if add_embedding {
+            if let Some(embedding) = cluster.embedding {
+                sqlx::query(
+                    "INSERT INTO person_voice_embeddings (\
+                        person_id, provider, model_id, embedding, source_session_id, source_cluster_id\
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .bind(person_id)
+                .bind(&cluster.provider)
+                .bind(cluster.model_id.as_deref().unwrap_or(""))
+                .bind(embedding)
+                .bind(&cluster.session_id)
+                .bind(cluster_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
+        transaction.commit().await?;
+        self.get_required_speaker_cluster(cluster_id).await
+    }
+
+    pub async fn unlink_speaker_cluster_from_person(
+        &self,
+        cluster_id: i64,
+    ) -> Result<SpeakerClusterView> {
+        let mut transaction = self.pool.begin().await?;
+        let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
+        persist_speaker_recognition_rejection_for_cluster(
+            &mut transaction,
+            &cluster,
+            cluster_id,
+            cluster.person_id,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET person_id = NULL, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1",
+        )
+        .bind(cluster_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.get_required_speaker_cluster(cluster_id).await
+    }
+
+    pub async fn confirm_speaker_recognition_suggestion(
+        &self,
+        cluster_id: i64,
+        add_embedding: bool,
+    ) -> Result<SpeakerClusterView> {
+        let cluster = get_speaker_cluster_row(&self.pool, cluster_id).await?;
+        let Some(person_id) = cluster.recognition_person_id else {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "speaker cluster has no recognition suggestion to confirm".to_string(),
+            ));
+        };
+        self.link_speaker_cluster_to_person(cluster_id, person_id, add_embedding)
+            .await
+    }
+
+    pub async fn reject_speaker_recognition_suggestion(
+        &self,
+        cluster_id: i64,
+    ) -> Result<SpeakerClusterView> {
+        let mut transaction = self.pool.begin().await?;
+        let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
+        persist_speaker_recognition_rejection_for_cluster(
+            &mut transaction,
+            &cluster,
+            cluster_id,
+            cluster.recognition_person_id,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET recognition_person_id = NULL, recognition_confidence = NULL, recognition_score = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1",
+        )
+        .bind(cluster_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.get_required_speaker_cluster(cluster_id).await
+    }
+
+    pub async fn merge_speaker_clusters(
+        &self,
+        source_cluster_id: i64,
+        target_cluster_id: i64,
+    ) -> Result<SpeakerClusterView> {
+        if source_cluster_id == target_cluster_id {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "cannot merge a speaker cluster into itself".to_string(),
+            ));
+        }
+        let mut transaction = self.pool.begin().await?;
+        let source = get_speaker_cluster_row(&mut *transaction, source_cluster_id).await?;
+        let target = get_speaker_cluster_row(&mut *transaction, target_cluster_id).await?;
+        if source.session_id != target.session_id {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "speaker clusters must belong to the same session to merge".to_string(),
+            ));
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO speaker_cluster_merges \
+                (session_id, source_cluster_id, target_cluster_id) \
+             VALUES (?1, ?2, ?3)",
+        )
+        .bind(&source.session_id)
+        .bind(source_cluster_id)
+        .bind(target_cluster_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE speaker_turns SET cluster_id = ?2, updated_at = CURRENT_TIMESTAMP \
+             WHERE cluster_id = ?1",
+        )
+        .bind(source_cluster_id)
+        .bind(target_cluster_id)
+        .execute(&mut *transaction)
+        .await?;
+        purge_orphaned_speaker_cluster(&mut transaction, source_cluster_id).await?;
+        transaction.commit().await?;
+        self.get_required_speaker_cluster(target_cluster_id).await
+    }
+
+    pub async fn move_speaker_turn_to_cluster(
+        &self,
+        turn_id: i64,
+        target_cluster_id: i64,
+    ) -> Result<SpeakerTurnView> {
+        let mut transaction = self.pool.begin().await?;
+        let turn = fetch_required_speaker_turn(&mut *transaction, turn_id).await?;
+        let target = get_speaker_cluster_row(&mut *transaction, target_cluster_id).await?;
+        if turn.session_id != target.session_id {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "speaker turn and target cluster must belong to the same session".to_string(),
+            ));
+        }
+        sqlx::query(
+            "UPDATE speaker_turns \
+             SET cluster_id = ?2, moved_to_cluster_id = ?2, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1",
+        )
+        .bind(turn_id)
+        .bind(target_cluster_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.get_required_speaker_turn(turn_id).await
+    }
+
+    pub async fn list_person_enrollments_for_speaker_model(
+        &self,
+        provider: &str,
+        model_id: Option<&str>,
+    ) -> Result<Vec<PersonEnrollment>> {
+        let model_id = model_id.unwrap_or("");
+        let rows = sqlx::query(
+            "SELECT \
+                person_profiles.id AS person_id, person_profiles.display_name, \
+                person_voice_embeddings.embedding, person_voice_embeddings.model_id AS embedding_model_id \
+             FROM person_voice_embeddings \
+             INNER JOIN person_profiles ON person_profiles.id = person_voice_embeddings.person_id \
+             WHERE person_voice_embeddings.provider = ?1 AND person_voice_embeddings.model_id = ?2 \
+             ORDER BY person_profiles.id ASC, person_voice_embeddings.id ASC",
+        )
+        .bind(provider)
+        .bind(model_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(PersonEnrollment {
+                    person_id: row.get("person_id"),
+                    display_name: row.get("display_name"),
+                    embedding: row.get("embedding"),
+                    embedding_model_id: row.get("embedding_model_id"),
+                })
+            })
+            .collect()
+    }
+
+    pub async fn list_person_recognition_rejections_for_speaker_model(
+        &self,
+        provider: &str,
+        model_id: Option<&str>,
+    ) -> Result<Vec<PersonRecognitionRejection>> {
+        let model_id = model_id.unwrap_or("");
+        let rows = sqlx::query(
+            "SELECT person_id, embedding, model_id AS embedding_model_id \
+             FROM speaker_recognition_rejections \
+             WHERE provider = ?1 AND model_id = ?2 \
+             ORDER BY person_id ASC, id ASC",
+        )
+        .bind(provider)
+        .bind(model_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(PersonRecognitionRejection {
+                    person_id: row.get("person_id"),
+                    embedding: row.get("embedding"),
+                    embedding_model_id: row.get("embedding_model_id"),
+                })
+            })
+            .collect()
+    }
+
     async fn get_required_frame(&self, frame_id: i64) -> Result<Frame> {
         self.get_frame(frame_id)
             .await?
@@ -1232,6 +1692,573 @@ impl ProcessingStore {
         self.get_job(job_id)
             .await?
             .ok_or(AppInfraError::ProcessingJobNotFound(job_id))
+    }
+
+    async fn get_required_person_profile(&self, person_id: i64) -> Result<PersonProfile> {
+        let row = sqlx::query(
+            "SELECT \
+                person_profiles.id, person_profiles.display_name, person_profiles.notes, \
+                COUNT(person_voice_embeddings.id) AS embedding_count, \
+                person_profiles.created_at, person_profiles.updated_at \
+             FROM person_profiles \
+             LEFT JOIN person_voice_embeddings ON person_voice_embeddings.person_id = person_profiles.id \
+             WHERE person_profiles.id = ?1 \
+             GROUP BY person_profiles.id",
+        )
+        .bind(person_id)
+        .fetch_one(&self.pool)
+        .await?;
+        map_person_profile(row)
+    }
+
+    async fn get_required_speaker_cluster(&self, cluster_id: i64) -> Result<SpeakerClusterView> {
+        let row = sqlx::query(
+            "SELECT \
+                id, session_id, provider, model_id, provider_cluster_id, \
+                COALESCE(transcript_local_label, stable_label) AS speaker_label, \
+                person_id, recognition_person_id, recognition_confidence, recognition_score, \
+                suggested_merge_target_cluster_id, suggested_merge_score \
+             FROM recording_speaker_clusters \
+             WHERE id = ?1",
+        )
+        .bind(cluster_id)
+        .fetch_one(&self.pool)
+        .await?;
+        map_speaker_cluster_view(row)
+    }
+
+    async fn get_required_speaker_turn(&self, turn_id: i64) -> Result<SpeakerTurnView> {
+        fetch_required_speaker_turn(&self.pool, turn_id).await
+    }
+}
+
+async fn fetch_required_speaker_turn<'e, E>(executor: E, turn_id: i64) -> Result<SpeakerTurnView>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        "SELECT \
+            speaker_turns.id, speaker_turns.audio_segment_id, speaker_turns.session_id, \
+            speaker_turns.cluster_id, speaker_turns.segment_cluster_id, speaker_turns.start_ms, speaker_turns.end_ms, \
+            speaker_turns.transcript_text, speaker_turns.overlaps, \
+            recording_speaker_clusters.provider_cluster_id, \
+            COALESCE(recording_speaker_clusters.transcript_local_label, recording_speaker_clusters.stable_label) AS speaker_label, \
+            recording_speaker_clusters.person_id, \
+            recording_speaker_clusters.recognition_person_id, \
+            recording_speaker_clusters.recognition_confidence, \
+            recording_speaker_clusters.recognition_score \
+         FROM speaker_turns \
+         INNER JOIN recording_speaker_clusters ON recording_speaker_clusters.id = speaker_turns.cluster_id \
+         WHERE speaker_turns.id = ?1",
+    )
+    .bind(turn_id)
+    .fetch_one(executor)
+    .await?;
+    map_speaker_turn_view(row)
+}
+
+fn speaker_analysis_payload_from_transcription_job(job: &ProcessingJob) -> Result<Option<String>> {
+    let Some(payload_json) = job.payload_json.as_deref() else {
+        return Ok(None);
+    };
+    let payload: AudioTranscriptionJobPayload = serde_json::from_str(payload_json)?;
+    let Some(value) = payload.options.get(SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY) else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::to_string(value)?))
+}
+
+async fn persist_speaker_analysis_output(
+    transaction: &mut Transaction<'_, Sqlite>,
+    audio_segment_id: i64,
+    output: &SpeakerAnalysisOutput,
+) -> Result<()> {
+    sqlx::query("DELETE FROM speaker_turns WHERE audio_segment_id = ?1")
+        .bind(audio_segment_id)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("DELETE FROM speaker_segment_clusters WHERE audio_segment_id = ?1")
+        .bind(audio_segment_id)
+        .execute(&mut **transaction)
+        .await?;
+    purge_orphaned_speaker_clusters_for_session_provider(
+        transaction,
+        &output.metadata.session_id,
+        &output.metadata.provider,
+    )
+    .await?;
+
+    let mut cluster_ids = std::collections::HashMap::<String, (i64, i64)>::new();
+    for cluster in &output.clusters {
+        let (suggested_person_id, recognition_confidence, recognition_score) = cluster
+            .suggestion
+            .as_ref()
+            .map(|suggestion| {
+                (
+                    Some(suggestion.person_id),
+                    Some(recognition_confidence_as_str(&suggestion.confidence)),
+                    Some(suggestion.score),
+                )
+            })
+            .unwrap_or((None, None, None));
+
+        let merge_candidate = resolve_stable_speaker_cluster(
+            transaction,
+            &output.metadata.session_id,
+            &output.metadata.provider,
+            output.metadata.model_id.as_deref(),
+            &cluster.embedding,
+        )
+        .await?;
+        let stable_provider_cluster_id =
+            if let Some(target_cluster_id) = merge_candidate.auto_merge_target_cluster_id {
+                existing_speaker_cluster_provider_id(transaction, target_cluster_id).await?
+            } else {
+                format!("{audio_segment_id}:{}", cluster.provider_cluster_id)
+            };
+
+        sqlx::query(
+            "INSERT INTO recording_speaker_clusters (\
+                session_id, provider, model_id, provider_cluster_id, stable_label, \
+                recognition_person_id, recognition_confidence, recognition_score, embedding, \
+                suggested_merge_target_cluster_id, suggested_merge_score\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+             ON CONFLICT(session_id, provider, provider_cluster_id) DO UPDATE SET \
+                model_id = excluded.model_id, \
+                stable_label = COALESCE(recording_speaker_clusters.transcript_local_label, excluded.stable_label), \
+                recognition_person_id = excluded.recognition_person_id, \
+                recognition_confidence = excluded.recognition_confidence, \
+                recognition_score = excluded.recognition_score, \
+                embedding = excluded.embedding, \
+                suggested_merge_target_cluster_id = excluded.suggested_merge_target_cluster_id, \
+                suggested_merge_score = excluded.suggested_merge_score, \
+                updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(&output.metadata.session_id)
+        .bind(&output.metadata.provider)
+        .bind(output.metadata.model_id.as_deref())
+        .bind(&stable_provider_cluster_id)
+        .bind(&cluster.stable_label)
+        .bind(suggested_person_id)
+        .bind(recognition_confidence)
+        .bind(recognition_score)
+        .bind(&cluster.embedding)
+        .bind(merge_candidate.suggested_merge_target_cluster_id)
+        .bind(merge_candidate.suggested_merge_score)
+        .execute(&mut **transaction)
+        .await?;
+
+        let row = sqlx::query(
+            "SELECT id FROM recording_speaker_clusters \
+             WHERE session_id = ?1 AND provider = ?2 AND provider_cluster_id = ?3",
+        )
+        .bind(&output.metadata.session_id)
+        .bind(&output.metadata.provider)
+        .bind(&stable_provider_cluster_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+        let stable_cluster_id = row.get("id");
+
+        sqlx::query(
+            "INSERT INTO speaker_segment_clusters (\
+                audio_segment_id, session_id, provider, model_id, provider_cluster_id, \
+                stable_cluster_id, stable_label, embedding, embedding_model_id, \
+                suggested_merge_target_cluster_id, suggested_merge_score\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+             ON CONFLICT(audio_segment_id, provider, provider_cluster_id) DO UPDATE SET \
+                model_id = excluded.model_id, \
+                stable_cluster_id = excluded.stable_cluster_id, \
+                stable_label = excluded.stable_label, \
+                embedding = excluded.embedding, \
+                embedding_model_id = excluded.embedding_model_id, \
+                suggested_merge_target_cluster_id = excluded.suggested_merge_target_cluster_id, \
+                suggested_merge_score = excluded.suggested_merge_score, \
+                updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(audio_segment_id)
+        .bind(&output.metadata.session_id)
+        .bind(&output.metadata.provider)
+        .bind(output.metadata.model_id.as_deref())
+        .bind(&cluster.provider_cluster_id)
+        .bind(stable_cluster_id)
+        .bind(&cluster.stable_label)
+        .bind(&cluster.embedding)
+        .bind(&cluster.embedding_model_id)
+        .bind(merge_candidate.suggested_merge_target_cluster_id)
+        .bind(merge_candidate.suggested_merge_score)
+        .execute(&mut **transaction)
+        .await?;
+
+        let row = sqlx::query(
+            "SELECT id FROM speaker_segment_clusters \
+             WHERE audio_segment_id = ?1 AND provider = ?2 AND provider_cluster_id = ?3",
+        )
+        .bind(audio_segment_id)
+        .bind(&output.metadata.provider)
+        .bind(&cluster.provider_cluster_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+        cluster_ids.insert(
+            cluster.provider_cluster_id.clone(),
+            (stable_cluster_id, row.get("id")),
+        );
+    }
+
+    for turn in &output.turns {
+        let Some((cluster_id, segment_cluster_id)) =
+            cluster_ids.get(&turn.provider_cluster_id).copied()
+        else {
+            continue;
+        };
+        sqlx::query(
+            "INSERT INTO speaker_turns (\
+                audio_segment_id, session_id, cluster_id, segment_cluster_id, start_ms, end_ms, transcript_text, overlaps\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(audio_segment_id)
+        .bind(&output.metadata.session_id)
+        .bind(cluster_id)
+        .bind(segment_cluster_id)
+        .bind(i64::try_from(turn.start_ms).unwrap_or(i64::MAX))
+        .bind(i64::try_from(turn.end_ms).unwrap_or(i64::MAX))
+        .bind(turn.transcript_text.as_deref())
+        .bind(if turn.overlaps { 1_i64 } else { 0_i64 })
+        .execute(&mut **transaction)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn purge_orphaned_speaker_clusters_for_session_provider(
+    transaction: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    provider: &str,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM recording_speaker_clusters \
+         WHERE session_id = ?1 AND provider = ?2 \
+           AND NOT EXISTS (\
+                SELECT 1 FROM speaker_turns \
+                WHERE speaker_turns.cluster_id = recording_speaker_clusters.id\
+           )",
+    )
+    .bind(session_id)
+    .bind(provider)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn purge_orphaned_speaker_cluster(
+    transaction: &mut Transaction<'_, Sqlite>,
+    cluster_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM recording_speaker_clusters \
+         WHERE id = ?1 \
+           AND NOT EXISTS (\
+                SELECT 1 FROM speaker_turns \
+                WHERE speaker_turns.cluster_id = recording_speaker_clusters.id\
+           )",
+    )
+    .bind(cluster_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StableSpeakerClusterResolution {
+    auto_merge_target_cluster_id: Option<i64>,
+    suggested_merge_target_cluster_id: Option<i64>,
+    suggested_merge_score: Option<f32>,
+}
+
+async fn resolve_stable_speaker_cluster(
+    transaction: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    provider: &str,
+    model_id: Option<&str>,
+    embedding: &[u8],
+) -> Result<StableSpeakerClusterResolution> {
+    let incoming = f32_embedding_from_le_bytes(embedding);
+    if incoming.is_empty() {
+        return Ok(StableSpeakerClusterResolution::default());
+    }
+
+    let rows = sqlx::query(
+        "SELECT id, embedding FROM recording_speaker_clusters \
+         WHERE session_id = ?1 AND provider = ?2 AND COALESCE(model_id, '') = COALESCE(?3, '') \
+           AND embedding IS NOT NULL \
+         ORDER BY id ASC",
+    )
+    .bind(session_id)
+    .bind(provider)
+    .bind(model_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+
+    let mut scores = rows
+        .into_iter()
+        .filter_map(|row| {
+            let embedding: Vec<u8> = row.get("embedding");
+            let score = cosine_similarity(&incoming, &f32_embedding_from_le_bytes(&embedding));
+            score.is_finite().then_some((row.get::<i64, _>("id"), score))
+        })
+        .collect::<Vec<_>>();
+    scores.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let Some((best_cluster_id, best_score)) = scores.first().copied() else {
+        return Ok(StableSpeakerClusterResolution::default());
+    };
+    let second_score = scores.get(1).map(|(_, score)| *score);
+    let ambiguous = second_score.is_some_and(|score| best_score - score < 0.05);
+
+    if best_score >= 0.82 && !ambiguous {
+        Ok(StableSpeakerClusterResolution {
+            auto_merge_target_cluster_id: Some(best_cluster_id),
+            ..Default::default()
+        })
+    } else if best_score >= 0.68 {
+        Ok(StableSpeakerClusterResolution {
+            suggested_merge_target_cluster_id: Some(best_cluster_id),
+            suggested_merge_score: Some(best_score),
+            ..Default::default()
+        })
+    } else {
+        Ok(StableSpeakerClusterResolution::default())
+    }
+}
+
+async fn existing_speaker_cluster_provider_id(
+    transaction: &mut Transaction<'_, Sqlite>,
+    cluster_id: i64,
+) -> Result<String> {
+    let row = sqlx::query("SELECT provider_cluster_id FROM recording_speaker_clusters WHERE id = ?1")
+        .bind(cluster_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+    Ok(row.get("provider_cluster_id"))
+}
+
+async fn refresh_speaker_turn_transcript_texts(
+    transaction: &mut Transaction<'_, Sqlite>,
+    audio_segment_id: i64,
+) -> Result<()> {
+    let Some(metadata) = latest_transcription_metadata_for_audio_segment(transaction, audio_segment_id).await? else {
+        return Ok(());
+    };
+    let turns = speaker_turn_ranges_for_audio_segment(transaction, audio_segment_id).await?;
+    if turns.is_empty() {
+        return Ok(());
+    }
+
+    let runs = if metadata.words.is_empty() {
+        metadata
+            .segments
+            .iter()
+            .map(TimedTextRun::from_segment)
+            .collect::<Vec<_>>()
+    } else {
+        metadata
+            .words
+            .iter()
+            .map(TimedTextRun::from_word)
+            .collect::<Vec<_>>()
+    };
+
+    let mut text_by_turn = std::collections::HashMap::<i64, Vec<String>>::new();
+    for run in runs {
+        if run.text.trim().is_empty() {
+            continue;
+        }
+        if let Some(turn_id) = best_turn_for_timed_text_run(&turns, &run) {
+            text_by_turn
+                .entry(turn_id)
+                .or_default()
+                .push(run.text.trim().to_string());
+        }
+    }
+
+    for turn in turns {
+        let text = text_by_turn
+            .remove(&turn.id)
+            .map(|parts| parts.join(" "))
+            .filter(|text| !text.trim().is_empty());
+        sqlx::query(
+            "UPDATE speaker_turns SET transcript_text = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+        )
+        .bind(turn.id)
+        .bind(text)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn latest_transcription_metadata_for_audio_segment(
+    transaction: &mut Transaction<'_, Sqlite>,
+    audio_segment_id: i64,
+) -> Result<Option<TranscriptionMetadata>> {
+    let row = sqlx::query(
+        "SELECT structured_payload_json FROM processing_results \
+         WHERE subject_type = ?1 AND subject_id = ?2 AND processor = ?3 \
+           AND structured_payload_json IS NOT NULL \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+    .bind(audio_segment_id)
+    .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    row.map(|row| serde_json::from_str(row.get::<String, _>("structured_payload_json").as_str()))
+        .transpose()
+        .map_err(AppInfraError::from)
+}
+
+#[derive(Debug, Clone)]
+struct SpeakerTurnRange {
+    id: i64,
+    start_ms: u64,
+    end_ms: u64,
+}
+
+async fn speaker_turn_ranges_for_audio_segment(
+    transaction: &mut Transaction<'_, Sqlite>,
+    audio_segment_id: i64,
+) -> Result<Vec<SpeakerTurnRange>> {
+    let rows = sqlx::query(
+        "SELECT id, start_ms, end_ms FROM speaker_turns \
+         WHERE audio_segment_id = ?1 ORDER BY start_ms ASC, end_ms ASC, id ASC",
+    )
+    .bind(audio_segment_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| SpeakerTurnRange {
+            id: row.get("id"),
+            start_ms: u64::try_from(row.get::<i64, _>("start_ms")).unwrap_or_default(),
+            end_ms: u64::try_from(row.get::<i64, _>("end_ms")).unwrap_or_default(),
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone)]
+struct TimedTextRun {
+    start_ms: u64,
+    end_ms: u64,
+    text: String,
+}
+
+impl TimedTextRun {
+    fn from_word(word: &TranscriptionWord) -> Self {
+        Self {
+            start_ms: word.start_ms,
+            end_ms: word.end_ms,
+            text: word.text.clone(),
+        }
+    }
+
+    fn from_segment(segment: &TranscriptionSegment) -> Self {
+        Self {
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            text: segment.text.clone(),
+        }
+    }
+}
+
+fn best_turn_for_timed_text_run(turns: &[SpeakerTurnRange], run: &TimedTextRun) -> Option<i64> {
+    let mut best = None::<(&SpeakerTurnRange, u64, u64)>;
+    for turn in turns {
+        let overlap = overlap_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms);
+        if overlap == 0 {
+            continue;
+        }
+        let distance = midpoint_distance_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms);
+        if best.is_none_or(|(best_turn, best_overlap, best_distance)| {
+            overlap > best_overlap
+                || (overlap == best_overlap && distance < best_distance)
+                || (overlap == best_overlap && distance == best_distance && turn.id < best_turn.id)
+        }) {
+            best = Some((turn, overlap, distance));
+        }
+    }
+    if let Some((turn, _, _)) = best {
+        return Some(turn.id);
+    }
+
+    turns
+        .iter()
+        .map(|turn| {
+            (
+                turn,
+                gap_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms),
+                midpoint_distance_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms),
+            )
+        })
+        .filter(|(_, gap, _)| *gap <= 500)
+        .min_by_key(|(turn, gap, distance)| (*gap, *distance, turn.id))
+        .map(|(turn, _, _)| turn.id)
+}
+
+fn overlap_ms(start_a: u64, end_a: u64, start_b: u64, end_b: u64) -> u64 {
+    end_a.min(end_b).saturating_sub(start_a.max(start_b))
+}
+
+fn gap_ms(start_a: u64, end_a: u64, start_b: u64, end_b: u64) -> u64 {
+    if end_a < start_b {
+        start_b - end_a
+    } else if end_b < start_a {
+        start_a - end_b
+    } else {
+        0
+    }
+}
+
+fn midpoint_distance_ms(start_a: u64, end_a: u64, start_b: u64, end_b: u64) -> u64 {
+    let mid_a = start_a.saturating_add(end_a) / 2;
+    let mid_b = start_b.saturating_add(end_b) / 2;
+    mid_a.abs_diff(mid_b)
+}
+
+fn f32_embedding_from_le_bytes(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+    if left.len() != right.len() || left.is_empty() {
+        return f32::NAN;
+    }
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for (left, right) in left.iter().zip(right) {
+        dot += left * right;
+        left_norm += left * left;
+        right_norm += right * right;
+    }
+    if left_norm == 0.0 || right_norm == 0.0 {
+        return f32::NAN;
+    }
+    dot / (left_norm.sqrt() * right_norm.sqrt())
+}
+
+fn recognition_confidence_as_str(confidence: &RecognitionConfidence) -> &'static str {
+    match confidence {
+        RecognitionConfidence::High => "high",
+        RecognitionConfidence::Medium => "medium",
+        RecognitionConfidence::Low => "low",
     }
 }
 
@@ -1528,6 +2555,7 @@ fn processing_model_key_for_job(job: &ProcessingJob) -> Result<Option<String>> {
     match job.processor.as_str() {
         OCR_PROCESSOR => ocr_model_key_for_job(job),
         AUDIO_TRANSCRIPTION_PROCESSOR => audio_transcription_model_key_for_job(job),
+        SPEAKER_ANALYSIS_PROCESSOR => speaker_analysis_model_key_for_job(job),
         _ => Ok(None),
     }
 }
@@ -1560,6 +2588,19 @@ fn audio_transcription_model_key_for_job(job: &ProcessingJob) -> Result<Option<S
         .map(|model_id| model_key(&payload.provider, model_id)))
 }
 
+fn speaker_analysis_model_key_for_job(job: &ProcessingJob) -> Result<Option<String>> {
+    let Some(payload_json) = job.payload_json.as_deref() else {
+        return Ok(None);
+    };
+    let payload: super::SpeakerAnalysisJobPayload = serde_json::from_str(payload_json)?;
+    Ok(payload
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+        .map(|model_id| model_key(&payload.provider, model_id)))
+}
+
 fn map_processing_result(row: SqliteRow) -> Result<ProcessingResult> {
     Ok(ProcessingResult {
         id: row.get("id"),
@@ -1572,6 +2613,117 @@ fn map_processing_result(row: SqliteRow) -> Result<ProcessingResult> {
         processor_version: row.get("processor_version"),
         created_at: row.get("created_at"),
     })
+}
+
+fn map_speaker_turn_view(row: SqliteRow) -> Result<SpeakerTurnView> {
+    Ok(SpeakerTurnView {
+        id: row.get("id"),
+        audio_segment_id: row.get("audio_segment_id"),
+        session_id: row.get("session_id"),
+        cluster_id: row.get("cluster_id"),
+        segment_cluster_id: row.get("segment_cluster_id"),
+        provider_cluster_id: row.get("provider_cluster_id"),
+        speaker_label: row.get("speaker_label"),
+        person_id: row.get("person_id"),
+        suggested_person_id: row.get("recognition_person_id"),
+        recognition_confidence: row.get("recognition_confidence"),
+        recognition_score: row
+            .get::<Option<f64>, _>("recognition_score")
+            .map(|score| score as f32),
+        start_ms: u64::try_from(row.get::<i64, _>("start_ms")).unwrap_or_default(),
+        end_ms: u64::try_from(row.get::<i64, _>("end_ms")).unwrap_or_default(),
+        transcript_text: row.get("transcript_text"),
+        overlaps: row.get::<i64, _>("overlaps") != 0,
+    })
+}
+
+fn map_person_profile(row: SqliteRow) -> Result<PersonProfile> {
+    Ok(PersonProfile {
+        id: row.get("id"),
+        display_name: row.get("display_name"),
+        notes: row.get("notes"),
+        embedding_count: row.get("embedding_count"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+fn map_speaker_cluster_view(row: SqliteRow) -> Result<SpeakerClusterView> {
+    Ok(SpeakerClusterView {
+        id: row.get("id"),
+        session_id: row.get("session_id"),
+        provider: row.get("provider"),
+        model_id: row.get("model_id"),
+        provider_cluster_id: row.get("provider_cluster_id"),
+        speaker_label: row.get("speaker_label"),
+        person_id: row.get("person_id"),
+        suggested_person_id: row.get("recognition_person_id"),
+        recognition_confidence: row.get("recognition_confidence"),
+        recognition_score: row
+            .get::<Option<f64>, _>("recognition_score")
+            .map(|score| score as f32),
+        suggested_merge_target_cluster_id: row.get("suggested_merge_target_cluster_id"),
+        suggested_merge_score: row
+            .get::<Option<f64>, _>("suggested_merge_score")
+            .map(|score| score as f32),
+    })
+}
+
+#[derive(Debug)]
+struct SpeakerClusterRow {
+    session_id: String,
+    provider: String,
+    model_id: Option<String>,
+    person_id: Option<i64>,
+    recognition_person_id: Option<i64>,
+    embedding: Option<Vec<u8>>,
+}
+
+async fn get_speaker_cluster_row<'e, E>(executor: E, cluster_id: i64) -> Result<SpeakerClusterRow>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        "SELECT session_id, provider, model_id, person_id, recognition_person_id, embedding \
+         FROM recording_speaker_clusters \
+         WHERE id = ?1",
+    )
+    .bind(cluster_id)
+    .fetch_one(executor)
+    .await?;
+    Ok(SpeakerClusterRow {
+        session_id: row.get("session_id"),
+        provider: row.get("provider"),
+        model_id: row.get("model_id"),
+        person_id: row.get("person_id"),
+        recognition_person_id: row.get("recognition_person_id"),
+        embedding: row.get("embedding"),
+    })
+}
+
+async fn persist_speaker_recognition_rejection_for_cluster(
+    transaction: &mut Transaction<'_, Sqlite>,
+    cluster: &SpeakerClusterRow,
+    cluster_id: i64,
+    person_id: Option<i64>,
+) -> Result<()> {
+    let (Some(person_id), Some(embedding)) = (person_id, cluster.embedding.as_ref()) else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT OR IGNORE INTO speaker_recognition_rejections (\
+            person_id, provider, model_id, embedding, source_session_id, source_cluster_id\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )
+    .bind(person_id)
+    .bind(&cluster.provider)
+    .bind(cluster.model_id.as_deref().unwrap_or(""))
+    .bind(embedding)
+    .bind(&cluster.session_id)
+    .bind(cluster_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
 }
 
 fn processing_job_invalid_transition(

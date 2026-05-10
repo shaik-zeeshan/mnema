@@ -110,6 +110,101 @@ export interface AudioSegmentMediaDto {
 	dataBase64: string;
 }
 
+export interface ListSpeakerTurnsRequest {
+	audioSegmentId: number;
+}
+
+export interface ListSpeakerClustersRequest {
+	sessionId: string;
+}
+
+export interface CreatePersonProfileRequest {
+	displayName: string;
+	notes?: string | null;
+}
+
+export interface DeletePersonProfileRequest {
+	personId: number;
+}
+
+export interface NameSpeakerClusterRequest {
+	clusterId: number;
+	label: string;
+}
+
+export interface LinkSpeakerClusterRequest {
+	clusterId: number;
+	personId: number;
+	addEmbedding: boolean;
+}
+
+export interface SpeakerClusterRequest {
+	clusterId: number;
+}
+
+export interface ConfirmSpeakerSuggestionRequest {
+	clusterId: number;
+	addEmbedding: boolean;
+}
+
+export interface MergeSpeakerClustersRequest {
+	sourceClusterId: number;
+	targetClusterId: number;
+}
+
+export interface MoveSpeakerTurnRequest {
+	turnId: number;
+	targetClusterId: number;
+}
+
+export interface ReprocessAudioSegmentSpeakerAnalysisRequest {
+	audioSegmentId: number;
+}
+
+export type SpeakerRecognitionConfidence = "high" | "medium" | "low";
+
+export interface SpeakerTurnDto {
+	id: number;
+	audioSegmentId: number;
+	sessionId: string;
+	clusterId: number;
+	segmentClusterId: number | null;
+	providerClusterId: string;
+	speakerLabel: string;
+	personId: number | null;
+	suggestedPersonId: number | null;
+	recognitionConfidence: SpeakerRecognitionConfidence | null;
+	recognitionScore: number | null;
+	startMs: number;
+	endMs: number;
+	transcriptText: string | null;
+	overlaps: boolean;
+}
+
+export interface PersonProfileDto {
+	id: number;
+	displayName: string;
+	notes: string | null;
+	embeddingCount: number;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface SpeakerClusterDto {
+	id: number;
+	sessionId: string;
+	provider: string;
+	modelId: string | null;
+	providerClusterId: string;
+	speakerLabel: string;
+	personId: number | null;
+	suggestedPersonId: number | null;
+	recognitionConfidence: SpeakerRecognitionConfidence | null;
+	recognitionScore: number | null;
+	suggestedMergeTargetClusterId: number | null;
+	suggestedMergeScore: number | null;
+}
+
 export type FrameBatchStatus = "open" | "closed" | "processing" | "completed" | "failed";
 export type ProcessingJobStatus = "queued" | "running" | "completed" | "failed";
 

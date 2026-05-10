@@ -17,12 +17,13 @@ thiserror = "2"
 ndarray = { version = "0.17", optional = true }
 ort = { version = "2.0.0-rc.12", optional = true }
 tokio = { version = "1", features = ["rt"], optional = true }
+tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block = "0.1"
 block2 = { version = "0.6", features = ["alloc"] }
-cidre = { version = "0.15", default-features = false, features = ["av", "async", "blocks", "cm", "dispatch", "macos_15_0"], optional = true }
+cidre = { version = "0.15", default-features = false, features = ["async", "av", "blocks", "cat", "cm", "dispatch", "macos_15_0"], optional = true }
 objc = "0.2"
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSError", "NSLocale", "NSEnumerator", "NSString", "NSURL", "alloc", "std"] }
@@ -33,5 +34,4 @@ whisper-rs = { version = "0.16", optional = true, features = ["metal"] }
 whisper-rs = { version = "0.16", optional = true }
 
 [dev-dependencies]
-tempfile = "3"
 tokio = { version = "1", features = ["rt"] }
