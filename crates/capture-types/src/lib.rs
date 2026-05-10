@@ -126,6 +126,7 @@ mod tests {
             settings.follow_timeline_live,
             default_follow_timeline_live()
         );
+        assert_eq!(settings.retention_policy, default_retention_policy());
         assert_eq!(settings.appearance, default_appearance());
         assert_eq!(settings.ocr, default_ocr_settings());
         assert_eq!(
@@ -152,6 +153,7 @@ mod tests {
             developer_options_enabled: false,
             preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
             follow_timeline_live: false,
+            retention_policy: default_retention_policy(),
             appearance: default_appearance(),
             ocr: default_ocr_settings(),
             transcription: default_audio_transcription_settings(),

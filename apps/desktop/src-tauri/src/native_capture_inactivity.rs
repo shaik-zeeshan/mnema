@@ -715,6 +715,7 @@ mod tests {
             developer_options_enabled: false,
             preview_cache_ttl_seconds: capture_types::default_preview_cache_ttl_seconds(),
             follow_timeline_live: false,
+            retention_policy: capture_types::default_retention_policy(),
             appearance: default_appearance(),
             ocr: capture_types::default_ocr_settings(),
             transcription: default_audio_transcription_settings(),
