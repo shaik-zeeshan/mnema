@@ -1113,9 +1113,8 @@
         selectedAudioTranscriptStatus = "missing";
         selectedAudioTranscriptText = null;
         selectedAudioTranscriptSegments = [];
-        selectedAudioSpeakerTurns = [];
-        selectedAudioSpeakerAnalysisRunning = false;
         selectedAudioTranscriptError = null;
+        await waitForSelectedAudioSpeakerAnalysisIfNeeded(id, gen);
         return;
       }
 

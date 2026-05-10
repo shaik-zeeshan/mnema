@@ -4385,6 +4385,103 @@ mod tests {
     }
 
     #[test]
+    fn completed_transcription_does_not_requeue_completed_speaker_analysis() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-analysis-completed-before-transcription");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-completed-session",
+                    1,
+                    "/tmp/speaker-completed.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("audio segment should insert");
+
+            let speaker_output = speaker_analysis_output_for_segment(
+                "speaker-completed-session",
+                segment.id,
+                "speaker-1",
+                &[0.1, 0.2],
+                None,
+            );
+            let completed_speaker_job =
+                complete_speaker_output(&infra, &segment, speaker_output).await;
+            let completed_speaker_result = infra
+                .get_processing_result_for_job(completed_speaker_job.id)
+                .await
+                .expect("speaker result lookup should succeed")
+                .expect("speaker result should exist");
+
+            let mut speaker_payload = SpeakerAnalysisJobPayload::new(
+                "sherpa_onnx",
+                Some("pyannote-3.0-nemo-titanet-small".to_string()),
+            );
+            speaker_payload.recognize_people = true;
+            let speaker_payload_value =
+                serde_json::to_value(&speaker_payload).expect("speaker payload should encode");
+            let mut transcription_payload = AudioTranscriptionJobPayload::new(
+                "local_whisper",
+                Some("base".to_string()),
+                "auto",
+            );
+            transcription_payload.options.insert(
+                SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY.to_string(),
+                speaker_payload_value,
+            );
+            let transcription_payload_json = serde_json::to_string(&transcription_payload)
+                .expect("transcription payload should serialize");
+            let transcription_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(segment.id)
+                        .with_payload_json(transcription_payload_json),
+                )
+                .await
+                .expect("transcription job should enqueue");
+            infra
+                .claim_queued_processing_job(transcription_job.id)
+                .await
+                .expect("transcription job should claim")
+                .expect("transcription job should exist");
+            infra
+                .complete_processing_job(
+                    transcription_job.id,
+                    &ProcessingResultDraft::new().with_result_text("new transcript"),
+                )
+                .await
+                .expect("transcription completion should not requeue completed speaker analysis");
+
+            let jobs = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(segment.id))
+                .await
+                .expect("jobs should list");
+            let speaker_jobs = jobs
+                .iter()
+                .filter(|job| job.processor == SPEAKER_ANALYSIS_PROCESSOR)
+                .collect::<Vec<_>>();
+            assert_eq!(speaker_jobs.len(), 1);
+            assert_eq!(speaker_jobs[0].id, completed_speaker_job.id);
+            assert_eq!(speaker_jobs[0].status, ProcessingJobStatus::Completed);
+
+            let speaker_result = infra
+                .get_processing_result_for_job(completed_speaker_job.id)
+                .await
+                .expect("speaker result lookup should succeed")
+                .expect("speaker result should remain");
+            assert_eq!(speaker_result.id, completed_speaker_result.id);
+            assert_eq!(
+                speaker_result.structured_payload_json,
+                completed_speaker_result.structured_payload_json
+            );
+        });
+    }
+
+    #[test]
     fn reprocess_audio_segment_transcription_rejects_system_audio_segments() {
         run_async_test(async {
             let dir = TestDir::new("audio-segment-transcription-system-reprocess");
