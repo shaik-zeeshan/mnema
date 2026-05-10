@@ -245,11 +245,6 @@ impl AppInfra {
     }
 
     #[cfg(test)]
-    pub(crate) fn audio_segments(&self) -> &AudioSegmentStore {
-        &self.audio_segments
-    }
-
-    #[cfg(test)]
     pub(crate) fn processing(&self) -> &ProcessingStore {
         &self.processing
     }
