@@ -155,6 +155,7 @@ mod tests {
             appearance: default_appearance(),
             ocr: default_ocr_settings(),
             transcription: default_audio_transcription_settings(),
+            speaker_analysis: default_speaker_analysis_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
