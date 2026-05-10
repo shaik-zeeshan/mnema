@@ -2871,6 +2871,91 @@ mod tests {
     }
 
     #[test]
+    fn merging_speaker_clusters_removes_source_cluster() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-cluster-merge-removes-source");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let first = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-cluster-merge-session",
+                    1,
+                    "/tmp/speaker-cluster-merge-1.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("first segment should insert");
+            let second = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-cluster-merge-session",
+                    2,
+                    "/tmp/speaker-cluster-merge-2.m4a",
+                    "2026-04-12T10:01:00Z",
+                    "2026-04-12T10:02:00Z",
+                ))
+                .await
+                .expect("second segment should insert");
+
+            complete_speaker_output(
+                &infra,
+                &first,
+                speaker_analysis_output_for_segment(
+                    "speaker-cluster-merge-session",
+                    first.id,
+                    "speaker_00",
+                    &[1.0, 0.0],
+                    Some("first"),
+                ),
+            )
+            .await;
+            complete_speaker_output(
+                &infra,
+                &second,
+                speaker_analysis_output_for_segment(
+                    "speaker-cluster-merge-session",
+                    second.id,
+                    "speaker_00",
+                    &[0.0, 1.0],
+                    Some("second"),
+                ),
+            )
+            .await;
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("speaker-cluster-merge-session")
+                .await
+                .expect("clusters should list");
+            assert_eq!(clusters.len(), 2);
+            let source_cluster_id = clusters[1].id;
+            let target_cluster_id = clusters[0].id;
+
+            let merged = infra
+                .merge_speaker_clusters(source_cluster_id, target_cluster_id)
+                .await
+                .expect("clusters should merge");
+            assert_eq!(merged.id, target_cluster_id);
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("speaker-cluster-merge-session")
+                .await
+                .expect("clusters should list after merge");
+            assert_eq!(clusters.len(), 1);
+            assert_eq!(clusters[0].id, target_cluster_id);
+            let moved_turn = infra
+                .list_speaker_turns_for_audio_segment(second.id)
+                .await
+                .expect("second turns should list after merge")
+                .pop()
+                .expect("second turn should still exist");
+            assert_eq!(moved_turn.cluster_id, target_cluster_id);
+        });
+    }
+
+    #[test]
     fn reprocessing_speaker_analysis_removes_obsolete_clusters() {
         run_async_test(async {
             let dir = TestDir::new("speaker-reprocess-obsolete-clusters");

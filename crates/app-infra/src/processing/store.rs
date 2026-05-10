@@ -1593,6 +1593,7 @@ impl ProcessingStore {
         .bind(target_cluster_id)
         .execute(&mut *transaction)
         .await?;
+        purge_orphaned_speaker_cluster(&mut transaction, source_cluster_id).await?;
         transaction.commit().await?;
         self.get_required_speaker_cluster(target_cluster_id).await
     }
@@ -1603,7 +1604,7 @@ impl ProcessingStore {
         target_cluster_id: i64,
     ) -> Result<SpeakerTurnView> {
         let mut transaction = self.pool.begin().await?;
-        let turn = self.get_required_speaker_turn(turn_id).await?;
+        let turn = fetch_required_speaker_turn(&mut *transaction, turn_id).await?;
         let target = get_speaker_cluster_row(&mut *transaction, target_cluster_id).await?;
         if turn.session_id != target.session_id {
             return Err(AppInfraError::SpeakerAnalysisEngine(
@@ -1727,26 +1728,33 @@ impl ProcessingStore {
     }
 
     async fn get_required_speaker_turn(&self, turn_id: i64) -> Result<SpeakerTurnView> {
-        let row = sqlx::query(
-            "SELECT \
-                speaker_turns.id, speaker_turns.audio_segment_id, speaker_turns.session_id, \
-                speaker_turns.cluster_id, speaker_turns.segment_cluster_id, speaker_turns.start_ms, speaker_turns.end_ms, \
-                speaker_turns.transcript_text, speaker_turns.overlaps, \
-                recording_speaker_clusters.provider_cluster_id, \
-                COALESCE(recording_speaker_clusters.transcript_local_label, recording_speaker_clusters.stable_label) AS speaker_label, \
-                recording_speaker_clusters.person_id, \
-                recording_speaker_clusters.recognition_person_id, \
-                recording_speaker_clusters.recognition_confidence, \
-                recording_speaker_clusters.recognition_score \
-             FROM speaker_turns \
-             INNER JOIN recording_speaker_clusters ON recording_speaker_clusters.id = speaker_turns.cluster_id \
-             WHERE speaker_turns.id = ?1",
-        )
-        .bind(turn_id)
-        .fetch_one(&self.pool)
-        .await?;
-        map_speaker_turn_view(row)
+        fetch_required_speaker_turn(&self.pool, turn_id).await
     }
+}
+
+async fn fetch_required_speaker_turn<'e, E>(executor: E, turn_id: i64) -> Result<SpeakerTurnView>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        "SELECT \
+            speaker_turns.id, speaker_turns.audio_segment_id, speaker_turns.session_id, \
+            speaker_turns.cluster_id, speaker_turns.segment_cluster_id, speaker_turns.start_ms, speaker_turns.end_ms, \
+            speaker_turns.transcript_text, speaker_turns.overlaps, \
+            recording_speaker_clusters.provider_cluster_id, \
+            COALESCE(recording_speaker_clusters.transcript_local_label, recording_speaker_clusters.stable_label) AS speaker_label, \
+            recording_speaker_clusters.person_id, \
+            recording_speaker_clusters.recognition_person_id, \
+            recording_speaker_clusters.recognition_confidence, \
+            recording_speaker_clusters.recognition_score \
+         FROM speaker_turns \
+         INNER JOIN recording_speaker_clusters ON recording_speaker_clusters.id = speaker_turns.cluster_id \
+         WHERE speaker_turns.id = ?1",
+    )
+    .bind(turn_id)
+    .fetch_one(executor)
+    .await?;
+    map_speaker_turn_view(row)
 }
 
 fn speaker_analysis_payload_from_transcription_job(job: &ProcessingJob) -> Result<Option<String>> {
@@ -1937,6 +1945,24 @@ async fn purge_orphaned_speaker_clusters_for_session_provider(
     )
     .bind(session_id)
     .bind(provider)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn purge_orphaned_speaker_cluster(
+    transaction: &mut Transaction<'_, Sqlite>,
+    cluster_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM recording_speaker_clusters \
+         WHERE id = ?1 \
+           AND NOT EXISTS (\
+                SELECT 1 FROM speaker_turns \
+                WHERE speaker_turns.cluster_id = recording_speaker_clusters.id\
+           )",
+    )
+    .bind(cluster_id)
     .execute(&mut **transaction)
     .await?;
     Ok(())
