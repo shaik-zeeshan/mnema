@@ -419,6 +419,7 @@ impl CaptureRetentionStore {
         }
 
         let mut file_paths = file_paths_for_segments(&self.pool, &segment_ids).await?;
+        file_paths.extend(file_paths_for_audio_segments(&self.pool, &segment_ids).await?);
         file_paths.extend(file_paths_for_orphan_frames(&self.pool, &orphan_frame_ids).await?);
         file_paths
             .extend(file_paths_for_orphan_audio_segments(&self.pool, &orphan_audio_ids).await?);
@@ -686,6 +687,34 @@ async fn file_paths_for_segments(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<S
     });
     paths.dedup_by(|a, b| a.path == b.path);
     Ok(paths)
+}
+
+async fn file_paths_for_audio_segments(
+    pool: &SqlitePool,
+    capture_segment_ids: &[i64],
+) -> Result<Vec<SegmentFilePath>> {
+    if capture_segment_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT capture_segment_id, file_path FROM audio_segments WHERE capture_segment_id IN (",
+    );
+    let mut separated = query.separated(", ");
+    for id in capture_segment_ids {
+        separated.push_bind(id);
+    }
+    separated.push_unseparated(")");
+    Ok(query
+        .build()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| SegmentFilePath {
+            capture_segment_id: row.get("capture_segment_id"),
+            path: row.get("file_path"),
+            path_kind: "media_file".to_string(),
+        })
+        .collect())
 }
 
 async fn file_paths_for_orphan_frames(
@@ -1241,6 +1270,10 @@ fn map_capture_segment(row: SqliteRow) -> Result<CaptureSegment> {
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn rfc3339(value: &str) -> OffsetDateTime {
         OffsetDateTime::parse(value, &Rfc3339).expect("test timestamp should parse")
@@ -1367,6 +1400,16 @@ mod tests {
                 .await
                 .expect("retention cleanup test table should be created");
         }
+    }
+
+    fn create_test_dir(name: &str) -> PathBuf {
+        let id = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-retention-{name}-{}-{id}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("test directory should be created");
+        dir
     }
 
     #[test]
@@ -1496,6 +1539,77 @@ mod tests {
                     .get("count");
                 assert_eq!(count, 0, "{table} should be empty after cleanup");
             }
+        });
+    }
+
+    #[test]
+    fn cleanup_deletes_all_audio_files_for_expired_capture_segments() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            let dir = create_test_dir("attached-audio-files");
+            let screen_path = dir.join("capture-1-segment-0001.mov");
+            let first_audio_path = dir.join("audio-1.wav");
+            let second_audio_path = dir.join("audio-2.wav");
+            for path in [&screen_path, &first_audio_path, &second_audio_path] {
+                fs::write(path, b"media").expect("test media file should be written");
+            }
+
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, started_at, ended_at, status
+                 ) VALUES (
+                    1, 'capture-1', 'screen', 'screen-source-1', 1,
+                    ?1, '2026-05-10T15:00:00Z', '2026-05-10T15:05:00Z', 'completed'
+                 )",
+            )
+            .bind(screen_path.to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .expect("capture segment should insert");
+            sqlx::query(
+                "INSERT INTO audio_segments (
+                    source_kind, source_session_id, segment_index, file_path, started_at, ended_at,
+                    capture_segment_id
+                 ) VALUES
+                    ('microphone', 'mic-source-1', 1, ?1, '2026-05-10T15:00:00Z', '2026-05-10T15:01:00Z', 1),
+                    ('microphone', 'mic-source-1', 2, ?2, '2026-05-10T15:01:00Z', '2026-05-10T15:05:00Z', 1)",
+            )
+            .bind(first_audio_path.to_string_lossy().as_ref())
+            .bind(second_audio_path.to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .expect("audio segments should insert");
+
+            let summary = CaptureRetentionStore::new(pool.clone())
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext {
+                        save_directory: Some(dir.to_string_lossy().to_string()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            assert_eq!(summary.deleted_capture_segments, 1);
+            assert_eq!(summary.deleted_audio_segments, 2);
+            assert!(!screen_path.exists(), "screen media file should be deleted");
+            assert!(!first_audio_path.exists(), "first audio file should be deleted");
+            assert!(!second_audio_path.exists(), "second audio file should be deleted");
+
+            fs::remove_dir_all(&dir).ok();
         });
     }
 
