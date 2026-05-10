@@ -157,6 +157,10 @@
     | "missing"
     | "running"
     | "error";
+  type TimelineDataChangedPayload = {
+    reason: "retention" | string;
+    deletedBefore: string | null;
+  };
 
   let timelineFrames = $state<FrameDto[]>([]);
   let timelineActiveIndex = $state(0);
@@ -4175,6 +4179,7 @@
     const onFocus = () => { void resyncCaptureSession(); };
     let unlistenSystemDidWake: (() => void) | undefined;
     let unlistenAudioSegmentsChanged: (() => void) | undefined;
+    let unlistenTimelineDataChanged: (() => void) | undefined;
     let destroyed = false;
 
     listen("system_did_wake", () => {
@@ -4190,6 +4195,35 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenAudioSegmentsChanged = fn;
+    });
+
+    listen<TimelineDataChangedPayload>("timeline_data_changed", (event) => {
+      if (event.payload.reason !== "retention" || !event.payload.deletedBefore) return;
+      const cutoffMs = Date.parse(event.payload.deletedBefore);
+      if (!Number.isFinite(cutoffMs)) {
+        void refreshTimelineAndDashboard();
+        return;
+      }
+      const activeFrameId = timelineActive?.id ?? null;
+      timelineFrames = timelineFrames.filter((frame) => Date.parse(frame.capturedAt) >= cutoffMs);
+      audioSegments = audioSegments.filter((segment) => segment.endUnixMs >= cutoffMs);
+      if (selectedAudioSegmentId !== null && !audioSegments.some((segment) => segment.id === selectedAudioSegmentId)) {
+        selectedAudioSegmentId = null;
+      }
+      if (timelineFrames.length === 0) {
+        void refreshTimelineAndDashboard();
+        return;
+      }
+      if (activeFrameId !== null) {
+        const nextIndex = timelineFrames.findIndex((frame) => frame.id === activeFrameId);
+        timelineActiveIndex = nextIndex >= 0 ? nextIndex : Math.min(timelineActiveIndex, timelineFrames.length - 1);
+      } else {
+        timelineActiveIndex = Math.min(timelineActiveIndex, timelineFrames.length - 1);
+      }
+      prunePreviewCache(timelineFrames);
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenTimelineDataChanged = fn;
     });
 
     document.addEventListener("visibilitychange", onVisibility);
@@ -4214,6 +4248,7 @@
       destroyed = true;
       unlistenSystemDidWake?.();
       unlistenAudioSegmentsChanged?.();
+      unlistenTimelineDataChanged?.();
       if (refreshAudioSegmentsDebounceTimer != null) {
         clearTimeout(refreshAudioSegmentsDebounceTimer);
         refreshAudioSegmentsDebounceTimer = null;

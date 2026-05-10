@@ -39,6 +39,7 @@
     MicrophonePreferenceMode,
     MicrophoneDisconnectPolicy,
     MicrophoneAutoDisconnectTransitionFailedEvent,
+    RetentionPolicy,
     SpeakerAnalysisModelDownloadProgress,
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
@@ -49,6 +50,20 @@
   const SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT = "speaker_analysis_model_download_progress";
   const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
   const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
+
+  type RetentionCleanupSummary = {
+    policy: string;
+    cutoffEndedBefore: string | null;
+    eligibleCaptureSegments: number;
+    deletedCaptureSegments: number;
+    deletedFrames: number;
+    deletedAudioSegments: number;
+    deletedProcessingJobs: number;
+    deletedProcessingResults: number;
+    skippedRunningJobs: number;
+    skippedActiveSegments: number;
+    pendingFileTombstones: number;
+  };
 
   // ─── State ────────────────────────────────────────────────────────────────
 
@@ -103,6 +118,10 @@
 
   // Timeline behavior draft
   let draftFollowTimelineLive = $state(false);
+  let draftRetentionPolicy = $state<RetentionPolicy>("never");
+  let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
+  let retentionCleanupRunning = $state(false);
+  let retentionCleanupError = $state<string | null>(null);
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
   // runtime in `$lib/theme.svelte` and is persisted via recording settings.
@@ -365,6 +384,7 @@
     draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
     draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
     draftFollowTimelineLive = s.followTimelineLive ?? false;
+    draftRetentionPolicy = s.retentionPolicy ?? "never";
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
     draftAppearance = s.appearance ?? "system";
     draftOcrEnabled = s.ocr?.enabled ?? true;
@@ -453,6 +473,7 @@
       nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
       previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
       followTimelineLive: draftFollowTimelineLive,
+      retentionPolicy: draftRetentionPolicy,
       appearance: draftAppearance,
       developerOptionsEnabled: draftDeveloperOptionsEnabled,
       ocr: {
@@ -903,6 +924,25 @@
       return;
     }
 
+    if ((recordingSettings?.retentionPolicy ?? "never") === "never" && draftRetentionPolicy !== "never") {
+      try {
+        const preview = await invoke<RetentionCleanupSummary>("preview_retention_cleanup", {
+          request: { policy: draftRetentionPolicy },
+        });
+        retentionCleanupSummary = preview;
+        const ok = window.confirm(
+          `Retention will delete ${preview.deletedFrames} frame row(s), ${preview.deletedAudioSegments} audio segment row(s), and ${preview.eligibleCaptureSegments} capture segment(s) before ${preview.cutoffEndedBefore ?? "the cutoff"}. Continue?`
+        );
+        if (!ok) {
+          draftRetentionPolicy = recordingSettings?.retentionPolicy ?? "never";
+          return;
+        }
+      } catch (err) {
+        recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+        return;
+      }
+    }
+
     savingRecSettings = true;
     recError = null;
     recSaved = false;
@@ -925,6 +965,18 @@
       recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
       savingRecSettings = false;
+    }
+  }
+
+  async function runRetentionCleanupNow() {
+    retentionCleanupRunning = true;
+    retentionCleanupError = null;
+    try {
+      retentionCleanupSummary = await invoke<RetentionCleanupSummary>("run_retention_cleanup_now");
+    } catch (err) {
+      retentionCleanupError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      retentionCleanupRunning = false;
     }
   }
 
@@ -1943,6 +1995,36 @@
         label="Auto-start recording on launch"
         description="Begin capturing immediately when the app opens"
       />
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <div class="settings-group">
+      <span class="group-label">Retention</span>
+      <SelectMenu
+        value={draftRetentionPolicy}
+        onValueChange={(v) => { draftRetentionPolicy = v as RetentionPolicy; }}
+        label="Delete captured data"
+        options={[
+          { value: "never", label: "Never" },
+          { value: "days_7", label: "After 7 days" },
+          { value: "days_14", label: "After 14 days" },
+          { value: "days_30", label: "After 30 days" },
+        ]}
+      />
+      <div class="row">
+        <button type="button" class="btn btn--ghost btn--sm" onclick={runRetentionCleanupNow} disabled={retentionCleanupRunning}>
+          {retentionCleanupRunning ? "Running…" : "Run cleanup now"}
+        </button>
+      </div>
+      {#if retentionCleanupSummary}
+        <p class="group-hint">
+          Latest cleanup: {retentionCleanupSummary.deletedCaptureSegments} segment(s), {retentionCleanupSummary.deletedFrames} frame(s), {retentionCleanupSummary.deletedAudioSegments} audio segment(s).
+        </p>
+      {/if}
+      {#if retentionCleanupError}
+        <p class="group-hint group-hint--error">{retentionCleanupError}</p>
+      {/if}
     </div>
 
     <div class="settings-divider"></div>
