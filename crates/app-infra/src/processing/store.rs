@@ -1605,6 +1605,14 @@ impl ProcessingStore {
         turn_id: i64,
         target_cluster_id: i64,
     ) -> Result<SpeakerTurnView> {
+        let mut transaction = self.pool.begin().await?;
+        let turn = self.get_required_speaker_turn(turn_id).await?;
+        let target = get_speaker_cluster_row(&mut *transaction, target_cluster_id).await?;
+        if turn.session_id != target.session_id {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "speaker turn and target cluster must belong to the same session".to_string(),
+            ));
+        }
         sqlx::query(
             "UPDATE speaker_turns \
              SET cluster_id = ?2, moved_to_cluster_id = ?2, updated_at = CURRENT_TIMESTAMP \
@@ -1612,8 +1620,9 @@ impl ProcessingStore {
         )
         .bind(turn_id)
         .bind(target_cluster_id)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
+        transaction.commit().await?;
         self.get_required_speaker_turn(turn_id).await
     }
 
@@ -1763,6 +1772,16 @@ async fn persist_speaker_analysis_output(
         .bind(audio_segment_id)
         .execute(&mut **transaction)
         .await?;
+    sqlx::query("DELETE FROM speaker_segment_clusters WHERE audio_segment_id = ?1")
+        .bind(audio_segment_id)
+        .execute(&mut **transaction)
+        .await?;
+    purge_orphaned_speaker_clusters_for_session_provider(
+        transaction,
+        &output.metadata.session_id,
+        &output.metadata.provider,
+    )
+    .await?;
 
     let mut cluster_ids = std::collections::HashMap::<String, (i64, i64)>::new();
     for cluster in &output.clusters {
@@ -1903,6 +1922,26 @@ async fn persist_speaker_analysis_output(
         .await?;
     }
 
+    Ok(())
+}
+
+async fn purge_orphaned_speaker_clusters_for_session_provider(
+    transaction: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    provider: &str,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM recording_speaker_clusters \
+         WHERE session_id = ?1 AND provider = ?2 \
+           AND NOT EXISTS (\
+                SELECT 1 FROM speaker_turns \
+                WHERE speaker_turns.cluster_id = recording_speaker_clusters.id\
+           )",
+    )
+    .bind(session_id)
+    .bind(provider)
+    .execute(&mut **transaction)
+    .await?;
     Ok(())
 }
 

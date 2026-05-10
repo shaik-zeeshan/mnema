@@ -2789,6 +2789,154 @@ mod tests {
     }
 
     #[test]
+    fn moving_speaker_turn_rejects_cross_session_cluster() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-turn-cross-session-move");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let source_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-move-source",
+                    1,
+                    "/tmp/speaker-move-source.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("source segment should insert");
+            let target_segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-move-target",
+                    1,
+                    "/tmp/speaker-move-target.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("target segment should insert");
+
+            complete_speaker_output(
+                &infra,
+                &source_segment,
+                speaker_analysis_output_for_segment(
+                    "speaker-move-source",
+                    source_segment.id,
+                    "speaker_00",
+                    &[1.0, 0.0],
+                    Some("source"),
+                ),
+            )
+            .await;
+            complete_speaker_output(
+                &infra,
+                &target_segment,
+                speaker_analysis_output_for_segment(
+                    "speaker-move-target",
+                    target_segment.id,
+                    "speaker_00",
+                    &[0.0, 1.0],
+                    Some("target"),
+                ),
+            )
+            .await;
+
+            let source_turn = infra
+                .list_speaker_turns_for_audio_segment(source_segment.id)
+                .await
+                .expect("source turns should list")
+                .pop()
+                .expect("source turn should exist");
+            let target_cluster = infra
+                .list_speaker_clusters_for_session("speaker-move-target")
+                .await
+                .expect("target clusters should list")
+                .pop()
+                .expect("target cluster should exist");
+
+            let result = infra
+                .move_speaker_turn_to_cluster(source_turn.id, target_cluster.id)
+                .await;
+            assert!(result.is_err());
+            let unchanged = infra
+                .list_speaker_turns_for_audio_segment(source_segment.id)
+                .await
+                .expect("source turns should list after failed move")
+                .pop()
+                .expect("source turn should still exist");
+            assert_eq!(unchanged.cluster_id, source_turn.cluster_id);
+        });
+    }
+
+    #[test]
+    fn reprocessing_speaker_analysis_removes_obsolete_clusters() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-reprocess-obsolete-clusters");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-reprocess-session",
+                    1,
+                    "/tmp/speaker-reprocess.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+
+            complete_speaker_output(
+                &infra,
+                &segment,
+                speaker_analysis_output_for_segment(
+                    "speaker-reprocess-session",
+                    segment.id,
+                    "speaker_00",
+                    &[1.0, 0.0],
+                    Some("old"),
+                ),
+            )
+            .await;
+            let old_clusters = infra
+                .list_speaker_clusters_for_session("speaker-reprocess-session")
+                .await
+                .expect("old clusters should list");
+            assert_eq!(old_clusters.len(), 1);
+
+            complete_speaker_output(
+                &infra,
+                &segment,
+                speaker_analysis_output_for_segment(
+                    "speaker-reprocess-session",
+                    segment.id,
+                    "speaker_01",
+                    &[0.0, 1.0],
+                    Some("new"),
+                ),
+            )
+            .await;
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("speaker-reprocess-session")
+                .await
+                .expect("clusters should list after reprocess");
+            assert_eq!(clusters.len(), 1);
+            assert_eq!(clusters[0].provider_cluster_id, format!("{}:speaker_01", segment.id));
+            assert_ne!(clusters[0].id, old_clusters[0].id);
+            let turns = infra
+                .list_speaker_turns_for_audio_segment(segment.id)
+                .await
+                .expect("turns should list after reprocess");
+            assert_eq!(turns.len(), 1);
+            assert_eq!(turns[0].cluster_id, clusters[0].id);
+        });
+    }
+
+    #[test]
     fn speaker_cluster_resolution_auto_merges_suggests_and_skips_ambiguous() {
         run_async_test(async {
             let dir = TestDir::new("speaker-cluster-resolution");

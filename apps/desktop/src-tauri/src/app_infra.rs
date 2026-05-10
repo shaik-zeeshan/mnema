@@ -2725,7 +2725,7 @@ fn audio_transcription_admission_for_settings(
                 crate::audio_transcription_models::transcription_request_options_for_settings(
                     transcription_settings,
                 );
-            attach_speaker_analysis_payload(&mut payload, speaker_settings);
+            attach_speaker_analysis_payload(&mut payload, app_data_dir, speaker_settings);
             match serde_json::to_string(&payload) {
                 Ok(payload_json) => {
                     ::app_infra::AudioSegmentTranscriptionAdmission::available(payload_json)
@@ -2750,6 +2750,7 @@ fn audio_transcription_admission_for_settings(
 
 fn attach_speaker_analysis_payload(
     payload: &mut ::app_infra::AudioTranscriptionJobPayload,
+    app_data_dir: &Path,
     speaker_settings: Option<&SpeakerAnalysisSettings>,
 ) {
     let Some(speaker_settings) = speaker_settings else {
@@ -2757,6 +2758,25 @@ fn attach_speaker_analysis_payload(
     };
     if !speaker_settings.separate_speakers {
         return;
+    }
+    let models_dir = speaker_analysis::speaker_analysis_models_dir(app_data_dir);
+    let manifest = speaker_analysis::builtin_model_manifest();
+    let Some(descriptor) = speaker_analysis::find_model_descriptor(
+        &manifest,
+        &speaker_settings.provider,
+        speaker_settings.model_id.as_deref(),
+    ) else {
+        return;
+    };
+    match speaker_analysis::detect_model_status(&models_dir, descriptor) {
+        Ok(status) if status.status == speaker_analysis::ModelStatusKind::Installed => {}
+        Ok(_) => return,
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to inspect selected speaker analysis model for transcription payload: {error}"
+            ));
+            return;
+        }
     }
     let mut speaker_payload = ::app_infra::SpeakerAnalysisJobPayload::new(
         speaker_settings.provider.clone(),
