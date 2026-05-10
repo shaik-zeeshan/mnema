@@ -3230,7 +3230,9 @@ fn spawn_retention_cleanup_worker(
                                 reason: "retention".to_string(),
                                 deleted_before: summary.cutoff_ended_before.clone(),
                                 deleted_frame_ids: summary.deleted_frame_ids.clone(),
-                                deleted_audio_segment_ids: summary.deleted_audio_segment_ids.clone(),
+                                deleted_audio_segment_ids: summary
+                                    .deleted_audio_segment_ids
+                                    .clone(),
                             },
                         );
                         crate::native_capture::debug_log::log_info(format!(
@@ -3683,6 +3685,10 @@ async fn retention_context_for_app(
             }
         }
     }
+    let active_source_session_ids = active_capture_segment_refs
+        .iter()
+        .map(|active_ref| active_ref.source_session_id.clone())
+        .collect();
     let mut active_capture_segment_ids = Vec::new();
     for active_ref in active_capture_segment_refs {
         match infra
@@ -3706,7 +3712,7 @@ async fn retention_context_for_app(
     }
     ::app_infra::RetentionCleanupContext {
         active_capture_segment_ids,
-        active_source_session_ids: Vec::new(),
+        active_source_session_ids,
         save_directory,
     }
 }

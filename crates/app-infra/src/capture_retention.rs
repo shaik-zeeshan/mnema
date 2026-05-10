@@ -488,9 +488,11 @@ impl CaptureRetentionStore {
                     skipped_running_jobs, skipped_active_segments, pending_file_tombstones,
                     error_message, created_at
              FROM retention_cleanup_runs
+             WHERE policy = ?1
              ORDER BY id DESC
              LIMIT 1",
         )
+        .bind(policy.as_str())
         .fetch_optional(&self.pool)
         .await?;
         let pending = self.pending_file_tombstone_count().await?;
@@ -1140,9 +1142,9 @@ async fn count_active_skipped(pool: &SqlitePool, context: &RetentionCleanupConte
         return Ok(0);
     }
     let mut query =
-        QueryBuilder::<Sqlite>::new("SELECT COUNT(*) AS count FROM capture_segments WHERE 1=1");
+        QueryBuilder::<Sqlite>::new("SELECT COUNT(*) AS count FROM capture_segments WHERE ");
     if !context.active_capture_segment_ids.is_empty() {
-        query.push(" AND id IN (");
+        query.push("id IN (");
         let mut separated = query.separated(", ");
         for id in &context.active_capture_segment_ids {
             separated.push_bind(id);
@@ -1150,7 +1152,10 @@ async fn count_active_skipped(pool: &SqlitePool, context: &RetentionCleanupConte
         separated.push_unseparated(")");
     }
     if !context.active_source_session_ids.is_empty() {
-        query.push(" OR source_session_id IN (");
+        if !context.active_capture_segment_ids.is_empty() {
+            query.push(" OR ");
+        }
+        query.push("source_session_id IN (");
         let mut separated = query.separated(", ");
         for id in &context.active_source_session_ids {
             separated.push_bind(id);
@@ -1531,6 +1536,84 @@ mod tests {
                 .await
                 .expect("cleanup run mode should query");
             assert_eq!(mode, "automatic");
+        });
+    }
+
+    #[test]
+    fn latest_status_returns_latest_run_for_requested_policy() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO retention_cleanup_runs (
+                    policy, mode, cutoff_ended_before, status, deleted_capture_segments,
+                    deleted_frames, deleted_audio_segments, deleted_processing_jobs,
+                    deleted_processing_results, deleted_background_jobs, deleted_frame_batches,
+                    skipped_running_jobs, skipped_active_segments, pending_file_tombstones
+                 ) VALUES
+                    ('days_7', 'manual', '2026-05-01T00:00:00Z', 'completed', 7, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                    ('days_14', 'manual', '2026-05-02T00:00:00Z', 'completed', 14, 0, 0, 0, 0, 0, 0, 0, 0, 0)",
+            )
+            .execute(&pool)
+            .await
+            .expect("cleanup runs should insert");
+
+            let status = CaptureRetentionStore::new(pool)
+                .latest_status(RetentionPolicy::Days7)
+                .await
+                .expect("latest status should query");
+
+            assert_eq!(status.policy, "days_7");
+            assert_eq!(status.deleted_capture_segments, 7);
+        });
+    }
+
+    #[test]
+    fn count_active_skipped_filters_by_source_session_when_segment_ids_empty() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index, started_at, ended_at, status
+                 ) VALUES
+                    (1, 'capture-1', 'screen', 'active-source', 1, '2026-05-01T00:00:00Z', '2026-05-01T00:05:00Z', 'completed'),
+                    (2, 'capture-2', 'screen', 'inactive-source', 1, '2026-05-01T00:00:00Z', '2026-05-01T00:05:00Z', 'completed')",
+            )
+            .execute(&pool)
+            .await
+            .expect("segments should insert");
+
+            let skipped = count_active_skipped(
+                &pool,
+                &RetentionCleanupContext {
+                    active_capture_segment_ids: Vec::new(),
+                    active_source_session_ids: vec!["active-source".to_string()],
+                    save_directory: None,
+                },
+            )
+            .await
+            .expect("active skipped count should query");
+
+            assert_eq!(skipped, 1);
         });
     }
 
