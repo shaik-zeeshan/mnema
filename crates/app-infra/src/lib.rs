@@ -22,7 +22,7 @@ pub use audio_segments::{
 };
 pub use capture_retention::{
     CaptureRetentionStore, CaptureSegment, CaptureSourceKind, NewCaptureSegment, NewCaptureSession,
-    RetentionCleanupContext, RetentionCleanupSummary, RetentionPolicy,
+    RetentionCleanupContext, RetentionCleanupMode, RetentionCleanupSummary, RetentionPolicy,
 };
 pub use captured_frame_equivalence::{
     CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,

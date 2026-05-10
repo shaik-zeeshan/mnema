@@ -56,6 +56,24 @@ impl CaptureSourceKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionCleanupMode {
+    Manual,
+    Automatic,
+    Retry,
+}
+
+impl RetentionCleanupMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Automatic => "automatic",
+            Self::Retry => "retry",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NewCaptureSession {
@@ -368,6 +386,17 @@ impl CaptureRetentionStore {
         local_now: OffsetDateTime,
         context: &RetentionCleanupContext,
     ) -> Result<RetentionCleanupSummary> {
+        self.run_cleanup_with_mode(policy, local_now, context, RetentionCleanupMode::Manual)
+            .await
+    }
+
+    pub async fn run_cleanup_with_mode(
+        &self,
+        policy: RetentionPolicy,
+        local_now: OffsetDateTime,
+        context: &RetentionCleanupContext,
+        mode: RetentionCleanupMode,
+    ) -> Result<RetentionCleanupSummary> {
         let Some(cutoff) = cutoff_ended_before(policy, local_now) else {
             return Ok(RetentionCleanupSummary {
                 policy: policy.as_str().to_string(),
@@ -426,7 +455,8 @@ impl CaptureRetentionStore {
         summary.deleted_audio_segment_ids = deleted_audio_segment_ids;
         summary.deleted_capture_segments =
             delete_by_ids(&mut tx, "capture_segments", &segment_ids).await?;
-        let cleanup_run_id = insert_cleanup_run(&mut tx, &summary, "manual", "completed").await?;
+        let cleanup_run_id =
+            insert_cleanup_run(&mut tx, &summary, mode.as_str(), "completed").await?;
         tx.commit().await?;
         let file_delete_errors = self
             .delete_segment_files_and_tombstone(cleanup_run_id, &file_paths, context)
@@ -1461,6 +1491,46 @@ mod tests {
                     .get("count");
                 assert_eq!(count, 0, "{table} should be empty after cleanup");
             }
+        });
+    }
+
+    #[test]
+    fn cleanup_persists_requested_run_mode() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO frames (session_id, file_path, captured_at, capture_segment_id, frame_batch_id)
+                 VALUES ('screen-source-1', '/tmp/mnema-expired-orphan-frame.jpg', '2026-05-10T15:01:50Z', NULL, NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("orphan frame should insert");
+
+            CaptureRetentionStore::new(pool.clone())
+                .run_cleanup_with_mode(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext::default(),
+                    RetentionCleanupMode::Automatic,
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            let mode: String = sqlx::query_scalar("SELECT mode FROM retention_cleanup_runs")
+                .fetch_one(&pool)
+                .await
+                .expect("cleanup run mode should query");
+            assert_eq!(mode, "automatic");
         });
     }
 

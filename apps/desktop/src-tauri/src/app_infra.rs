@@ -3211,10 +3211,11 @@ fn spawn_retention_cleanup_worker(
                 ));
                 match infra
                     .capture_retention()
-                    .run_cleanup(
+                    .run_cleanup_with_mode(
                         app_retention_policy(policy),
                         local_now_for_retention(),
                         &context,
+                        ::app_infra::RetentionCleanupMode::Automatic,
                     )
                     .await
                 {
