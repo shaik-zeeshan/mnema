@@ -919,7 +919,8 @@ fn best_enrollment_match(
 
     let best = matches.first()?;
     if matches
-        .get(1)
+        .iter()
+        .find(|candidate| candidate.person_id != best.person_id)
         .is_some_and(|second| best.score - second.score < PERSON_AMBIGUITY_MARGIN)
     {
         return None;
@@ -1145,6 +1146,23 @@ mod tests {
         let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID);
 
         assert!(suggestion.is_none());
+    }
+
+    #[test]
+    fn recognition_keeps_close_same_person_enrollments_unambiguous() {
+        let mut request = request_with_enrollment(0.72);
+        request.enrolled_people.push(PersonEnrollment {
+            person_id: 1,
+            display_name: "Jack".to_string(),
+            embedding: f32_embedding_to_le_bytes(&unit_embedding_for_score(0.71)),
+            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
+        });
+
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID)
+            .expect("same-person enrollments should not be ambiguous");
+
+        assert_eq!(suggestion.person_id, 1);
+        assert!(suggestion.score >= 0.72);
     }
 
     #[test]

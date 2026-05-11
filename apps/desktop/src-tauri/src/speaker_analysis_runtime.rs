@@ -142,13 +142,7 @@ async fn run_sherpa_analysis_subprocess(
         request.audio_path.display()
     );
 
-    let mut child = Command::new(current_exe)
-        .env(SPEAKER_ANALYSIS_HELPER_ENV, "1")
-        .arg(SPEAKER_ANALYSIS_MODELS_DIR_ARG)
-        .arg(models_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    let mut child = speaker_analysis_helper_command(&current_exe, models_dir)
         .spawn()
         .map_err(|error| SpeakerAnalysisError::Subprocess {
             stage: "spawn_helper".to_string(),
@@ -283,6 +277,19 @@ async fn run_sherpa_analysis_subprocess(
     Ok(output)
 }
 
+fn speaker_analysis_helper_command(current_exe: &Path, models_dir: &Path) -> Command {
+    let mut command = Command::new(current_exe);
+    command
+        .env(SPEAKER_ANALYSIS_HELPER_ENV, "1")
+        .arg(SPEAKER_ANALYSIS_MODELS_DIR_ARG)
+        .arg(models_dir)
+        .kill_on_drop(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
 async fn join_reader_task(
     task: tokio::task::JoinHandle<std::io::Result<Vec<u8>>>,
     stream_name: &str,
@@ -322,6 +329,12 @@ fn trimmed_stderr(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use tokio::time::{sleep, Duration};
 
     fn request_with_timeout(value: Option<serde_json::Value>) -> SpeakerAnalysisRequest {
         let mut request = SpeakerAnalysisRequest::new(
@@ -371,6 +384,59 @@ mod tests {
                 900
             )))),
             900
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_command_kills_child_when_dropped() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                assert_helper_command_kills_child_when_dropped().await;
+            });
+    }
+
+    #[cfg(unix)]
+    async fn assert_helper_command_kills_child_when_dropped() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let helper_path = tempdir.path().join("helper.sh");
+        let started_path = tempdir.path().join("started");
+        let survived_path = tempdir.path().join("survived");
+        fs::write(
+            &helper_path,
+            format!(
+                "#!/bin/sh\nprintf started > '{}'\nsleep 1\nprintf survived > '{}'\n",
+                started_path.display(),
+                survived_path.display()
+            ),
+        )
+        .expect("write helper");
+        let mut permissions = fs::metadata(&helper_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper_path, permissions).expect("chmod helper");
+
+        let child = speaker_analysis_helper_command(&helper_path, tempdir.path())
+            .spawn()
+            .expect("spawn helper");
+
+        for _ in 0..50 {
+            if started_path.exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        assert!(started_path.exists(), "helper did not start");
+
+        drop(child);
+        sleep(Duration::from_millis(1_200)).await;
+
+        assert!(
+            !survived_path.exists(),
+            "dropped helper child kept running long enough to write survived marker"
         );
     }
 }
