@@ -46,7 +46,7 @@ use super::settings::{
 };
 use super::{
     audio_transcription_unavailable_notification, ocr_unavailable_notification,
-    should_warn_audio_transcription_unavailable_at_start,
+    recording_requires_speech_detector, should_warn_audio_transcription_unavailable_at_start,
     should_warn_audio_transcription_unavailable_at_startup, should_warn_ocr_unavailable_at_start,
     should_warn_ocr_unavailable_at_startup, AppNotification, AppNotificationAction,
     AppNotificationsRuntime,
@@ -61,7 +61,7 @@ use capture_types::{
     default_audio_transcription_settings, default_inactivity_activity_mode,
     default_microphone_vad_adapter, default_ocr_settings, default_preview_cache_ttl_seconds,
     default_retention_policy, default_speaker_analysis_settings, default_video_bitrate,
-    AppearanceSetting, AudioTranscriptionProvider, AudioTranscriptionSettings,
+    AppearanceSetting, AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
     InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
     MicrophonePreference, MicrophonePreferenceMode, OcrProvider, RecordingSettings,
@@ -303,6 +303,32 @@ fn audio_transcription_startup_warning_requires_enabled_microphone_transcription
     assert!(!should_warn_audio_transcription_unavailable_at_startup(
         &settings
     ));
+}
+
+#[test]
+fn speech_detector_preflight_only_requires_system_audio_transcription_gate() {
+    let mut settings = recording_settings_fixture();
+    settings.capture_screen = false;
+    settings.capture_microphone = true;
+    settings.capture_system_audio = false;
+    settings.transcription.enabled = false;
+    settings.transcription.microphone_enabled = false;
+    settings.transcription.system_audio_enabled = false;
+    settings.audio_speech_detection.detector = AudioSpeechDetector::Silero;
+
+    assert!(!recording_requires_speech_detector(&settings));
+
+    settings.capture_microphone = false;
+    settings.capture_system_audio = true;
+    settings.transcription.enabled = true;
+    settings.transcription.system_audio_enabled = false;
+    assert!(!recording_requires_speech_detector(&settings));
+
+    settings.transcription.system_audio_enabled = true;
+    assert!(recording_requires_speech_detector(&settings));
+
+    settings.audio_speech_detection.detector = AudioSpeechDetector::Off;
+    assert!(!recording_requires_speech_detector(&settings));
 }
 
 #[test]

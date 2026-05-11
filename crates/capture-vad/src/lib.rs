@@ -5,6 +5,7 @@ use self::webrtc_vad::WebrtcVadAdapter;
 pub use capture_types::AudioSpeechDetector;
 use capture_types::MicrophoneVadAdapter;
 use silero_vad::{SileroVadAdapter, SileroVadLoadError};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 
@@ -422,10 +423,19 @@ impl AudioSpeechDetectorRuntime {
         let mut active_start_ms: Option<u64> = None;
         let mut processed_samples = 0usize;
 
-        for chunk in pcm.chunks_exact(frame_samples) {
+        while processed_samples < pcm.len() {
+            let remaining_samples = pcm.len() - processed_samples;
+            let actual_frame_samples = remaining_samples.min(frame_samples);
             let frame_start_ms = (processed_samples as u64 * 1_000) / target_rate_hz as u64;
             let frame_end_ms =
-                ((processed_samples + frame_samples) as u64 * 1_000) / target_rate_hz as u64;
+                ((processed_samples + actual_frame_samples) as u64 * 1_000) / target_rate_hz as u64;
+            let raw_chunk = &pcm[processed_samples..processed_samples + actual_frame_samples];
+            let chunk = match self.configured_detector {
+                AudioSpeechDetector::Webrtc if actual_frame_samples < frame_samples => {
+                    Cow::Owned(pad_webrtc_frame_16khz(raw_chunk))
+                }
+                _ => Cow::Borrowed(raw_chunk),
+            };
             let speech = match self.configured_detector {
                 AudioSpeechDetector::Silero => {
                     let adapter = self.silero_adapter.as_mut().ok_or_else(|| {
@@ -435,7 +445,7 @@ impl AudioSpeechDetectorRuntime {
                         }
                     })?;
                     adapter
-                        .process_pcm_frame(chunk, target_rate_hz)
+                        .process_pcm_frame(chunk.as_ref(), target_rate_hz)
                         .map_err(|error| MicrophoneVadError::AdapterUnavailable {
                             adapter: EffectiveMicrophoneVadAdapter::Silero,
                             reason: error.to_string(),
@@ -445,7 +455,7 @@ impl AudioSpeechDetectorRuntime {
                 AudioSpeechDetector::Webrtc => self
                     .webrtc_adapter
                     .process_pcm_frame(&MicrophonePcmVadFrame {
-                        samples: chunk,
+                        samples: chunk.as_ref(),
                         sample_rate_hz: target_rate_hz,
                         captured_at_unix_ms: frame_start_ms,
                         normalized_peak_level: 0.0,
@@ -462,7 +472,7 @@ impl AudioSpeechDetectorRuntime {
                     end_ms: frame_end_ms,
                 });
             }
-            processed_samples += frame_samples;
+            processed_samples += actual_frame_samples;
         }
 
         if let Some(start_ms) = active_start_ms {
@@ -499,6 +509,17 @@ fn f32_to_i16_pcm(samples: &[f32]) -> Vec<i16> {
             (clamped * i16::MAX as f32).round() as i16
         })
         .collect()
+}
+
+fn pad_webrtc_frame_16khz(samples: &[i16]) -> Vec<i16> {
+    let target_len = [160, 320, 480]
+        .into_iter()
+        .find(|target_len| samples.len() <= *target_len)
+        .unwrap_or(480);
+    let mut padded = Vec::with_capacity(target_len);
+    padded.extend_from_slice(samples);
+    padded.resize(target_len, 0);
+    padded
 }
 
 fn resample_f32_linear(samples: &[f32], source_rate_hz: u32, target_rate_hz: u32) -> Vec<f32> {
@@ -784,6 +805,31 @@ mod tests {
         assert_eq!(outcome.decision.idle_ms, Some(0));
         assert_eq!(outcome.decision.latest_normalized_level, Some(1.0));
         assert!(outcome.vad_speech_detected);
+    }
+
+    #[test]
+    fn audio_speech_detector_processes_final_partial_webrtc_frame() {
+        let mut runtime = AudioSpeechDetectorRuntime::new(AudioSpeechDetector::Webrtc)
+            .expect("WebRTC detector should initialize");
+        let samples = voiced_like_frame_16khz_30ms()
+            .into_iter()
+            .take(320)
+            .map(|sample| f32::from(sample) / f32::from(i16::MAX))
+            .collect::<Vec<_>>();
+
+        let outcome = runtime
+            .detect_f32_mono(&samples, 16_000)
+            .expect("partial final frame should be processed");
+
+        assert!(outcome.speech_detected);
+        assert_eq!(
+            outcome.speech_ranges_ms,
+            vec![SpeechRangeMs {
+                start_ms: 0,
+                end_ms: 20
+            }]
+        );
+        assert_eq!(outcome.processed_duration_ms, 20);
     }
 
     #[test]

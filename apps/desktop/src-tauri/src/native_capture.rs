@@ -292,10 +292,9 @@ fn maybe_push_audio_transcription_unavailable_start_warning(
 
 fn recording_requires_speech_detector(settings: &RecordingSettings) -> bool {
     settings.audio_speech_detection.detector != capture_types::AudioSpeechDetector::Off
-        && (settings.capture_microphone
-            || (settings.capture_system_audio
-                && settings.transcription.enabled
-                && settings.transcription.system_audio_enabled))
+        && settings.capture_system_audio
+        && settings.transcription.enabled
+        && settings.transcription.system_audio_enabled
 }
 
 fn selected_speech_detector_available(settings: &RecordingSettings) -> Result<bool, String> {
