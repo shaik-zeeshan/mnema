@@ -2389,6 +2389,13 @@ impl ScreenCaptureKitCaptureSession {
         if let Some(mut writer) = ctx.system_audio_writer.take() {
             set_audio_writer_inactivity_tail_trim_seconds(&mut writer, tail_trim_seconds);
             if let Err(error) = finish_audio_asset_writer_discarding_inactivity_tail(&mut writer) {
+                if recover_zero_sample_system_audio_soft_pause(
+                    ctx.system_audio_output_file.as_deref(),
+                    &error,
+                ) {
+                    return Ok(());
+                }
+
                 log_capture_error(
                     "failed to finalize system audio writer during soft-pause",
                     &error,
@@ -2547,6 +2554,22 @@ impl ScreenCaptureKitCaptureSession {
             output_files,
         })
     }
+}
+
+#[cfg(target_os = "macos")]
+fn recover_zero_sample_system_audio_soft_pause(
+    system_audio_output_file: Option<&str>,
+    error: &CaptureErrorResponse,
+) -> bool {
+    if !capture_writers::is_no_audio_samples_error_message("system audio", &error.message) {
+        return false;
+    }
+
+    if let Some(path) = system_audio_output_file {
+        maybe_remove_system_audio_file(path);
+    }
+
+    true
 }
 
 #[cfg(target_os = "macos")]
@@ -4788,6 +4811,42 @@ mod tests {
         }
 
         assert!(!Path::new(&temp_path).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn zero_sample_system_audio_soft_pause_recovers_and_removes_output_artifact() {
+        let temp_path = std::env::temp_dir().join(format!(
+            "zero-sample-system-audio-soft-pause-{}.m4a",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&temp_path, b"placeholder")
+            .expect("placeholder audio artifact should exist");
+        let temp_path = temp_path.to_string_lossy().to_string();
+        let error = capture_writers::no_audio_samples_error("system audio");
+
+        assert!(recover_zero_sample_system_audio_soft_pause(
+            Some(&temp_path),
+            &error
+        ));
+        assert!(!Path::new(&temp_path).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_audio_soft_pause_keeps_unexpected_finalize_errors_fatal() {
+        let error = CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: "writer exploded".to_string(),
+        };
+
+        assert!(!recover_zero_sample_system_audio_soft_pause(
+            Some("/tmp/system-audio.m4a"),
+            &error
+        ));
     }
 
     #[cfg(target_os = "macos")]
