@@ -1319,6 +1319,12 @@ impl ProcessingStore {
                         .await?;
                     }
                 }
+            } else {
+                clear_audio_transcription_and_speaker_analysis_for_audio_segment(
+                    &mut transaction,
+                    job.subject_id,
+                )
+                .await?;
             }
         }
         if job.processor == SPEAKER_ANALYSIS_PROCESSOR
@@ -2723,6 +2729,44 @@ where
         .bind(job_id)
         .execute(executor)
         .await?;
+    Ok(())
+}
+
+async fn clear_audio_transcription_and_speaker_analysis_for_audio_segment(
+    transaction: &mut Transaction<'_, Sqlite>,
+    audio_segment_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM processing_results \
+         WHERE subject_type = ?1 AND subject_id = ?2 AND processor IN (?3, ?4)",
+    )
+    .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+    .bind(audio_segment_id)
+    .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+    .bind(SPEAKER_ANALYSIS_PROCESSOR)
+    .execute(&mut **transaction)
+    .await?;
+
+    sqlx::query(
+        "DELETE FROM processing_jobs \
+         WHERE subject_type = ?1 AND subject_id = ?2 AND processor IN (?3, ?4)",
+    )
+    .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+    .bind(audio_segment_id)
+    .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+    .bind(SPEAKER_ANALYSIS_PROCESSOR)
+    .execute(&mut **transaction)
+    .await?;
+
+    sqlx::query("DELETE FROM speaker_turns WHERE audio_segment_id = ?1")
+        .bind(audio_segment_id)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("DELETE FROM speaker_segment_clusters WHERE audio_segment_id = ?1")
+        .bind(audio_segment_id)
+        .execute(&mut **transaction)
+        .await?;
+
     Ok(())
 }
 

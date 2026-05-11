@@ -135,6 +135,8 @@ dependencies = [
  "capture-runtime",
  "capture-screen",
  "capture-types",
+ "capture-vad",
+ "capture-writers",
  "chrono",
  "cidre",
  "image",

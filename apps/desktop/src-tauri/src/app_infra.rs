@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
 use capture_types::{
-    AudioTranscriptionSettings, CaptureSources, OcrProvider, OcrSettings,
+    AudioSpeechDetector, AudioTranscriptionSettings, CaptureSources, OcrProvider, OcrSettings,
     RetentionPolicy as SettingsRetentionPolicy, SpeakerAnalysisSettings,
 };
 use fs2::FileExt;
@@ -767,6 +767,13 @@ pub struct AudioSegmentSpeakerAnalysisReprocessingResultDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SystemAudioSpeechActivityReprocessingResultDto {
+    pub outcome: ::app_infra::SystemAudioSpeechActivityReprocessingOutcome,
+    pub job: ProcessingJobDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioSegmentDto {
     pub id: i64,
     pub source_kind: ::app_infra::AudioSegmentSourceKind,
@@ -983,6 +990,17 @@ impl From<::app_infra::AudioSegmentSpeakerAnalysisReprocessingResult>
     for AudioSegmentSpeakerAnalysisReprocessingResultDto
 {
     fn from(value: ::app_infra::AudioSegmentSpeakerAnalysisReprocessingResult) -> Self {
+        Self {
+            outcome: value.outcome,
+            job: value.job.into(),
+        }
+    }
+}
+
+impl From<::app_infra::SystemAudioSpeechActivityReprocessingResult>
+    for SystemAudioSpeechActivityReprocessingResultDto
+{
+    fn from(value: ::app_infra::SystemAudioSpeechActivityReprocessingResult) -> Self {
         Self {
             outcome: value.outcome,
             job: value.job.into(),
@@ -2687,7 +2705,7 @@ fn audio_transcription_admission_for_current_settings(
         }
     };
 
-    if !transcription_settings.enabled {
+    if !transcription_settings.enabled || !transcription_settings.microphone_enabled {
         return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
     }
 
@@ -2786,7 +2804,7 @@ fn audio_transcription_admission_for_settings(
     transcription_settings: &AudioTranscriptionSettings,
     speaker_settings: Option<&SpeakerAnalysisSettings>,
 ) -> ::app_infra::AudioSegmentTranscriptionAdmission {
-    if !transcription_settings.enabled {
+    if !transcription_settings.enabled || !transcription_settings.microphone_enabled {
         return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
     }
 
@@ -2826,6 +2844,72 @@ fn audio_transcription_admission_for_settings(
                 "failed to inspect selected audio transcription model for backfill: {error}"
             ));
             ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
+        }
+    }
+}
+
+fn system_audio_speech_admission_for_current_settings(
+    app_handle: &tauri::AppHandle,
+) -> ::app_infra::SystemAudioSpeechActivityAdmission {
+    let settings = match app_handle
+        .state::<crate::native_capture::RecordingSettingsState>()
+        .lock()
+    {
+        Ok(settings) => settings.settings.clone(),
+        Err(_) => {
+            crate::native_capture::debug_log::log_error(
+                "failed to read recording settings for system-audio speech admission",
+            );
+            return ::app_infra::SystemAudioSpeechActivityAdmission::disabled();
+        }
+    };
+
+    if !settings.transcription.enabled || !settings.transcription.system_audio_enabled {
+        return ::app_infra::SystemAudioSpeechActivityAdmission::disabled();
+    }
+    if settings.audio_speech_detection.detector == AudioSpeechDetector::Off {
+        return ::app_infra::SystemAudioSpeechActivityAdmission::unavailable();
+    }
+
+    let app_data_dir = match app_handle.path().app_data_dir() {
+        Ok(app_data_dir) => app_data_dir,
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to resolve app data directory for system-audio speech admission: {error}"
+            ));
+            return ::app_infra::SystemAudioSpeechActivityAdmission::unavailable();
+        }
+    };
+
+    let transcription_admission = audio_transcription_admission_for_settings(
+        &app_data_dir,
+        &AudioTranscriptionSettings {
+            microphone_enabled: true,
+            ..settings.transcription.clone()
+        },
+        Some(&settings.speaker_analysis),
+    );
+    if !transcription_admission.enabled || !transcription_admission.provider_available {
+        return ::app_infra::SystemAudioSpeechActivityAdmission::unavailable();
+    }
+
+    let Some(transcription_payload) = transcription_admission.payload_json else {
+        return ::app_infra::SystemAudioSpeechActivityAdmission::unavailable();
+    };
+    let speaker_admission = speaker_analysis_admission_for_current_settings(app_handle);
+    let payload = ::app_infra::SystemAudioSpeechActivityJobPayload {
+        detector: settings.audio_speech_detection.detector,
+        transcription_payload,
+        speaker_analysis_payload: speaker_admission.payload_json,
+    };
+
+    match serde_json::to_string(&payload) {
+        Ok(payload_json) => ::app_infra::SystemAudioSpeechActivityAdmission::available(payload_json),
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to serialize system-audio speech activity payload: {error}"
+            ));
+            ::app_infra::SystemAudioSpeechActivityAdmission::unavailable()
         }
     }
 }
@@ -3588,6 +3672,19 @@ async fn reprocess_audio_segment_speaker_analysis_inner(
         .map(AudioSegmentSpeakerAnalysisReprocessingResultDto::from)
 }
 
+async fn reprocess_system_audio_speech_activity_inner(
+    infra: &::app_infra::AppInfra,
+    request: ReprocessAudioSegmentTranscriptionRequest,
+    app_handle: &tauri::AppHandle,
+) -> ::app_infra::Result<SystemAudioSpeechActivityReprocessingResultDto> {
+    let admission = system_audio_speech_admission_for_current_settings(app_handle);
+
+    infra
+        .reprocess_system_audio_speech_activity(request.audio_segment_id, &admission)
+        .await
+        .map(SystemAudioSpeechActivityReprocessingResultDto::from)
+}
+
 async fn classify_hidden_segment_workspace_inner(
     infra: &::app_infra::AppInfra,
     request: ClassifyHiddenSegmentWorkspaceRequest,
@@ -3932,6 +4029,24 @@ pub async fn reprocess_audio_segment_speaker_analysis(
         .map_err(|error| {
             format!(
                 "failed to reprocess audio segment speaker analysis for segment {}: {error}",
+                request.audio_segment_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn reprocess_system_audio_speech_activity(
+    request: ReprocessAudioSegmentTranscriptionRequest,
+    state: tauri::State<'_, AppInfraState>,
+    app_handle: tauri::AppHandle,
+) -> Result<SystemAudioSpeechActivityReprocessingResultDto, String> {
+    let infra = Arc::clone(&*state);
+
+    reprocess_system_audio_speech_activity_inner(&infra, request.clone(), &app_handle)
+        .await
+        .map_err(|error| {
+            format!(
+                "failed to reprocess system-audio speech activity for segment {}: {error}",
                 request.audio_segment_id
             )
         })

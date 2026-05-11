@@ -106,29 +106,26 @@ impl super::ProcessorBackend for SystemAudioSpeechActivityProcessorBackend {
             )));
         }
 
-        // The finalized decoder-backed detector is the intended production path. Until a
-        // platform decoder is available to this crate on every build target, keep the job
-        // deterministic: readable very small files complete as no-speech, larger files gate
-        // downstream processing as speech-present.
-        let speech_detected = metadata.len() > 4096;
+        let detection = detect_system_audio_speech(&segment.file_path, payload.detector)?;
+        let speech_detected = detection.speech_detected;
         let result = SystemAudioSpeechActivityResult {
             speech_detected,
-            speech_ranges_ms: if speech_detected {
-                vec![SpeechRangeMs {
-                    start_ms: 0,
-                    end_ms: 0,
-                }]
-            } else {
-                Vec::new()
-            },
+            speech_ranges_ms: detection
+                .speech_ranges_ms
+                .into_iter()
+                .map(|range| SpeechRangeMs {
+                    start_ms: range.start_ms.saturating_sub(1000),
+                    end_ms: range.end_ms.saturating_add(1000),
+                })
+                .collect(),
             range_strategy: "first_last_with_padding".to_string(),
             padding_ms: 1000,
-            timing_reliable: false,
+            timing_reliable: detection.timing_reliable,
             configured_detector: payload.detector,
-            effective_detector: payload.detector,
+            effective_detector: detection.effective_detector,
             fallback_reason: None,
-            detector_version: None,
-            processed_duration_ms: 0,
+            detector_version: detection.detector_version,
+            processed_duration_ms: detection.processed_duration_ms,
         };
         let structured_payload_json = serde_json::to_string(&result)?;
 
@@ -141,4 +138,29 @@ impl super::ProcessorBackend for SystemAudioSpeechActivityProcessorBackend {
             .with_processor_version("system_audio_speech_activity:metadata-v1")
             .with_structured_payload_json(structured_payload_json))
     }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_system_audio_speech(
+    file_path: &str,
+    detector: AudioSpeechDetector,
+) -> Result<capture_vad::AudioSpeechDetectionOutcome> {
+    let decoded = capture_writers::decode_audio_file_to_mono_pcm(std::path::Path::new(file_path))
+        .map_err(|error| AppInfraError::AudioTranscriptionEngine(error.message))?;
+    let mut runtime = capture_vad::AudioSpeechDetectorRuntime::new(detector)
+        .map_err(|error| AppInfraError::AudioTranscriptionEngine(error.to_string()))?;
+    runtime
+        .detect_f32_mono(&decoded.samples, decoded.sample_rate_hz)
+        .map_err(|error| AppInfraError::AudioTranscriptionEngine(error.to_string()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detect_system_audio_speech(
+    _file_path: &str,
+    detector: AudioSpeechDetector,
+) -> Result<capture_vad::AudioSpeechDetectionOutcome> {
+    Err(AppInfraError::AudioTranscriptionEngine(format!(
+        "system-audio speech detection with {} is only available on macOS",
+        capture_vad::configured_adapter_as_str(detector)
+    )))
 }

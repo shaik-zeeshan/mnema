@@ -1123,7 +1123,19 @@
                     <Switch
                       bind:checked={draftTranscriptionEnabled}
                       label="Enable transcription"
-                      description="Queue local speech-to-text for committed microphone audio."
+                      description="Master switch for source-specific speech-to-text."
+                    />
+                    <Switch
+                      bind:checked={draftTranscriptionMicrophoneEnabled}
+                      label="Transcribe microphone"
+                      description="Queue speech-to-text for committed microphone audio."
+                      disabled={!draftTranscriptionEnabled}
+                    />
+                    <Switch
+                      bind:checked={draftTranscriptionSystemAudioEnabled}
+                      label="Transcribe system audio"
+                      description="Transcribe system audio only when speech is detected."
+                      disabled={!draftTranscriptionEnabled}
                     />
                   </div>
                   <RadioGroup

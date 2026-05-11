@@ -43,6 +43,7 @@
     PersonProfileDto,
     SpeakerAnalysisSkipReason,
     SpeakerAnalysisStructuredPayload,
+    SystemAudioSpeechActivityReprocessingResultDto,
     SpeakerClusterDto,
     SpeakerTurnDto,
     TranscriptionSegment,
@@ -818,6 +819,22 @@
     }
   }
 
+  interface SystemAudioSpeechActivityPayload {
+    speechDetected?: boolean;
+  }
+
+  function parseSystemAudioSpeechActivityPayload(
+    structuredPayloadJson: string | null,
+  ): SystemAudioSpeechActivityPayload | null {
+    if (!structuredPayloadJson) return null;
+    try {
+      const parsed = JSON.parse(structuredPayloadJson) as SystemAudioSpeechActivityPayload;
+      return typeof parsed.speechDetected === "boolean" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
   function latestProcessingJobForProcessor(
     jobs: ProcessingJobDto[],
     processor: string,
@@ -1319,6 +1336,42 @@
       });
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
 
+      if (selectedAudioSegment?.source === "systemAudio") {
+        const speechJob = latestProcessingJobForProcessor(jobs, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR);
+        if (!speechJob) {
+          clearSelectedAudioTranscriptPoll();
+          selectedAudioTranscriptStatus = "missing";
+          selectedAudioTranscriptText = null;
+          selectedAudioTranscriptSegments = [];
+          selectedAudioTranscriptError = null;
+          return;
+        }
+        if (processingJobIsPending(speechJob)) {
+          selectedAudioTranscriptStatus = "running";
+          selectedAudioTranscriptText = null;
+          selectedAudioTranscriptSegments = [];
+          selectedAudioTranscriptError = null;
+          scheduleSelectedAudioTranscriptPoll(id, gen, speechJob.id);
+          return;
+        }
+        if (speechJob.status === "failed") {
+          selectedAudioTranscriptStatus = "error";
+          selectedAudioTranscriptError = speechJob.lastError ?? "Speech detection failed";
+          return;
+        }
+        const speechResult = await invoke<ProcessingResultDto | null>("get_processing_result", {
+          request: { jobId: speechJob.id } satisfies GetProcessingResultRequest,
+        });
+        const speechPayload = parseSystemAudioSpeechActivityPayload(speechResult?.structuredPayloadJson ?? null);
+        if (speechPayload?.speechDetected === false) {
+          selectedAudioTranscriptStatus = "empty";
+          selectedAudioTranscriptText = null;
+          selectedAudioTranscriptSegments = [];
+          selectedAudioTranscriptError = null;
+          return;
+        }
+      }
+
       const transcriptionJobs = jobs.filter(
         (job) => job.processor === AUDIO_TRANSCRIPTION_PROCESSOR,
       );
@@ -1369,19 +1422,18 @@
   );
   const selectedAudioTranscriptActionDisabled = $derived(
     !selectedAudioSegment ||
-      selectedAudioSegment.source !== "microphone" ||
       selectedAudioTranscriptRerunLoading ||
       selectedAudioTranscriptStatus === "loading" ||
       selectedAudioTranscriptStatus === "running",
   );
   const selectedAudioTranscriptActionTitle = $derived(
-    selectedAudioSegment?.source !== "microphone"
-      ? "Only microphone segments can be transcribed"
-      : selectedAudioTranscriptStatus === "loading"
+    selectedAudioTranscriptStatus === "loading"
         ? "Transcript is still loading"
         : selectedAudioTranscriptStatus === "running"
           ? "Transcription is queued or still processing"
-          : `${selectedAudioTranscriptActionLabel} transcription with current settings`,
+          : selectedAudioSegment?.source === "systemAudio"
+            ? `${selectedAudioTranscriptActionLabel} speech detection and transcription with current settings`
+            : `${selectedAudioTranscriptActionLabel} transcription with current settings`,
   );
 
   async function reprocessSelectedAudioSegmentTranscript(): Promise<void> {
@@ -1392,14 +1444,23 @@
     selectedAudioTranscriptRerunLoading = true;
     selectedAudioTranscriptRerunError = null;
     try {
-      const result = await invoke<AudioSegmentTranscriptionReprocessingResultDto>(
-        "reprocess_audio_segment_transcription",
-        {
-          request: {
-            audioSegmentId: id,
-          } satisfies ReprocessAudioSegmentTranscriptionRequest,
-        },
-      );
+      const result = segment.source === "systemAudio"
+        ? await invoke<SystemAudioSpeechActivityReprocessingResultDto>(
+            "reprocess_system_audio_speech_activity",
+            {
+              request: {
+                audioSegmentId: id,
+              } satisfies ReprocessAudioSegmentTranscriptionRequest,
+            },
+          )
+        : await invoke<AudioSegmentTranscriptionReprocessingResultDto>(
+            "reprocess_audio_segment_transcription",
+            {
+              request: {
+                audioSegmentId: id,
+              } satisfies ReprocessAudioSegmentTranscriptionRequest,
+            },
+          );
       if (selectedAudioSegmentId !== id) return;
       selectedAudioTranscriptGeneration += 1;
       const gen = selectedAudioTranscriptGeneration;
@@ -3266,6 +3327,7 @@
   const OCR_SOURCE_IMAGE_PATH_OPTION = "mnemaSourceImagePath";
   const AUDIO_TRANSCRIPTION_PROCESSOR = "audio_transcription";
   const SPEAKER_ANALYSIS_PROCESSOR = "speaker_analysis";
+  const SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR = "system_audio_speech_activity";
 
   let ocrStatus = $state<OcrStatus>("idle");
   let ocrError = $state<string | null>(null);
@@ -5276,6 +5338,12 @@
           <span class="audio-drawer__transcript-state audio-drawer__transcript-state--{selectedAudioTranscriptStatus}">
             {#if selectedAudioSpeakerAnalysisRunning}
               speakers
+            {:else if selectedAudioSegment.source === "systemAudio" && selectedAudioTranscriptStatus === "running"}
+              detecting speech
+            {:else if selectedAudioSegment.source === "systemAudio" && selectedAudioTranscriptStatus === "empty"}
+              no speech detected
+            {:else if selectedAudioSegment.source === "systemAudio" && selectedAudioTranscriptStatus === "error"}
+              speech detection failed
             {:else if selectedAudioTranscriptStatus === "loading"}
               loading
             {:else if selectedAudioTranscriptStatus === "running"}

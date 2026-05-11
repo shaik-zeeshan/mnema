@@ -225,6 +225,15 @@ pub struct AudioSegmentSpeakerAnalysisReprocessingResult {
     pub job: ProcessingJob,
 }
 
+pub type SystemAudioSpeechActivityReprocessingOutcome =
+    AudioSegmentTranscriptionReprocessingOutcome;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemAudioSpeechActivityReprocessingResult {
+    pub outcome: SystemAudioSpeechActivityReprocessingOutcome,
+    pub job: ProcessingJob,
+}
+
 #[derive(Clone)]
 pub struct AppInfra {
     database: db::Database,
@@ -969,6 +978,100 @@ impl AppInfra {
         };
 
         transaction.commit().await?;
+        Ok(result)
+    }
+
+    pub async fn reprocess_system_audio_speech_activity(
+        &self,
+        audio_segment_id: i64,
+        admission: &SystemAudioSpeechActivityAdmission,
+    ) -> Result<SystemAudioSpeechActivityReprocessingResult> {
+        let segment = self
+            .audio_segments
+            .get(audio_segment_id)
+            .await?
+            .ok_or(AppInfraError::AudioSegmentNotFound(audio_segment_id))?;
+
+        if segment.source_kind != AudioSegmentSourceKind::SystemAudio {
+            return Err(AppInfraError::AudioTranscriptionEngine(
+                "only system-audio segments can run speech-gated transcription".to_string(),
+            ));
+        }
+
+        let payload_json = if !admission.enabled {
+            return Err(AppInfraError::AudioTranscriptionEngine(
+                "system-audio transcription is disabled".to_string(),
+            ));
+        } else if !admission.detector_available {
+            return Err(AppInfraError::AudioTranscriptionEngine(
+                "selected speech detector is unavailable".to_string(),
+            ));
+        } else {
+            admission.payload_json.as_deref().ok_or_else(|| {
+                AppInfraError::AudioTranscriptionEngine(
+                    "system-audio speech activity payload is unavailable".to_string(),
+                )
+            })?
+        };
+
+        let mut transaction = self.pool().begin().await?;
+        let subject = ProcessingSubject::audio_segment(segment.id);
+        let existing_job = self
+            .processing
+            .get_latest_processing_job_for_subject_and_processor_in_transaction(
+                &mut transaction,
+                &subject,
+                SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+            )
+            .await?;
+
+        let result = match existing_job {
+            None => {
+                let job = self
+                    .processing
+                    .enqueue_job_in_transaction(
+                        &mut transaction,
+                        &subject,
+                        SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+                        Some(payload_json),
+                    )
+                    .await?;
+                SystemAudioSpeechActivityReprocessingResult {
+                    outcome: SystemAudioSpeechActivityReprocessingOutcome::Created,
+                    job,
+                }
+            }
+            Some(job) if job.status == ProcessingJobStatus::Queued => {
+                SystemAudioSpeechActivityReprocessingResult {
+                    outcome: SystemAudioSpeechActivityReprocessingOutcome::Ignored,
+                    job,
+                }
+            }
+            Some(job) if job.status == ProcessingJobStatus::Running => {
+                return Err(AppInfraError::ProcessingJobInvalidTransition {
+                    job_id: job.id,
+                    from: job.status.as_str().to_string(),
+                    to: ProcessingJobStatus::Queued.as_str().to_string(),
+                });
+            }
+            Some(job) => {
+                let job = self
+                    .processing
+                    .requeue_processing_job_in_transaction(
+                        &mut transaction,
+                        job.id,
+                        Some(payload_json),
+                    )
+                    .await?;
+                SystemAudioSpeechActivityReprocessingResult {
+                    outcome: SystemAudioSpeechActivityReprocessingOutcome::Requeued,
+                    job,
+                }
+            }
+        };
+
+        transaction.commit().await?;
+
         Ok(result)
     }
 
