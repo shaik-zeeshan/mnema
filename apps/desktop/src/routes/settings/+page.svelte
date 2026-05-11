@@ -156,6 +156,8 @@
 
   // Transcription drafts/status
   let draftTranscriptionEnabled = $state(true);
+  let draftTranscriptionMicrophoneEnabled = $state(true);
+  let draftTranscriptionSystemAudioEnabled = $state(false);
   let draftTranscriptionProvider = $state<AudioTranscriptionProvider>("local_whisper");
   let draftTranscriptionModelId = $state<string | null>("base");
   let draftTranscriptionLanguage = $state("auto");
@@ -379,10 +381,10 @@
     draftAutoStart = s.autoStart;
     draftPauseCaptureOnInactivity = s.pauseCaptureOnInactivity;
     draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
-    draftActivityMode = s.activityMode ?? "system_input_only";
+    draftActivityMode = "system_input_or_screen_or_audio";
     draftMicrophoneActivitySensitivity = s.microphoneActivitySensitivity ?? 50;
     draftSystemAudioActivitySensitivity = s.systemAudioActivitySensitivity ?? 50;
-    draftMicrophoneVadAdapter = s.microphoneVadAdapter ?? "silero";
+    draftMicrophoneVadAdapter = s.audioSpeechDetection?.detector ?? s.microphoneVadAdapter ?? "silero";
     draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
     draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
     draftFollowTimelineLive = s.followTimelineLive ?? false;
@@ -402,6 +404,8 @@
     draftOcrTesseractUpscaleFactor = s.ocr?.tesseractUpscaleFactor ?? 1;
     draftOcrTesseractCharWhitelist = s.ocr?.tesseractCharWhitelist ?? "";
     draftTranscriptionEnabled = s.transcription?.enabled ?? true;
+    draftTranscriptionMicrophoneEnabled = s.transcription?.microphoneEnabled ?? true;
+    draftTranscriptionSystemAudioEnabled = s.transcription?.systemAudioEnabled ?? false;
     draftTranscriptionProvider = s.transcription?.provider ?? "local_whisper";
     draftTranscriptionModelId = s.transcription?.modelId ?? (draftTranscriptionProvider === "apple_speech_on_device" ? null : "base");
     draftTranscriptionLanguage = s.transcription?.language ?? "auto";
@@ -469,10 +473,13 @@
       autoStart: draftAutoStart,
       pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
       idleTimeoutSeconds: draftIdleTimeoutSeconds,
-      activityMode: draftActivityMode,
+      activityMode: "system_input_or_screen_or_audio",
       microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
       systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
       microphoneVadAdapter: draftMicrophoneVadAdapter,
+      audioSpeechDetection: {
+        detector: draftMicrophoneVadAdapter,
+      },
       nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
       previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
       followTimelineLive: draftFollowTimelineLive,
@@ -493,6 +500,8 @@
       },
       transcription: {
         enabled: draftTranscriptionEnabled,
+        microphoneEnabled: draftTranscriptionMicrophoneEnabled,
+        systemAudioEnabled: draftTranscriptionSystemAudioEnabled,
         provider: draftTranscriptionProvider,
         modelId: draftTranscriptionModelId,
         language: draftTranscriptionLanguage.trim() || "auto",
@@ -2615,7 +2624,19 @@
         <Switch
           bind:checked={draftTranscriptionEnabled}
           label="Enable audio transcription"
-          description="Automatically queue local transcription for committed microphone audio segments when the selected model is available"
+          description="Master switch for source-specific audio transcription"
+        />
+        <Switch
+          bind:checked={draftTranscriptionMicrophoneEnabled}
+          label="Transcribe microphone"
+          description="Automatically queue transcription for committed microphone audio segments"
+          disabled={!draftTranscriptionEnabled}
+        />
+        <Switch
+          bind:checked={draftTranscriptionSystemAudioEnabled}
+          label="Transcribe system audio"
+          description="Transcribe system audio only when speech is detected."
+          disabled={!draftTranscriptionEnabled}
         />
         <div class="settings-divider"></div>
         <RadioGroup

@@ -60,9 +60,11 @@ pub use processing::{
     ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend,
     ProcessorRegistry, SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload,
     SpeakerAnalysisProcessorBackend, SpeakerClusterView, SpeakerTurnView,
+    SystemAudioSpeechActivityJobPayload, SystemAudioSpeechActivityProcessorBackend,
+    SystemAudioSpeechActivityResult,
     AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE,
     HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
-    SPEAKER_ANALYSIS_PROCESSOR,
+    SPEAKER_ANALYSIS_PROCESSOR, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
@@ -71,6 +73,46 @@ pub struct AudioSegmentTranscriptionAdmission {
     pub enabled: bool,
     pub provider_available: bool,
     pub payload_json: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemAudioSpeechActivityAdmission {
+    pub enabled: bool,
+    pub detector_available: bool,
+    pub payload_json: Option<String>,
+}
+
+impl SystemAudioSpeechActivityAdmission {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            detector_available: false,
+            payload_json: None,
+        }
+    }
+
+    pub fn unavailable() -> Self {
+        Self {
+            enabled: true,
+            detector_available: false,
+            payload_json: None,
+        }
+    }
+
+    pub fn available(payload_json: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            detector_available: true,
+            payload_json: Some(payload_json.into()),
+        }
+    }
+
+    fn should_enqueue_for(&self, segment: &NewAudioSegment) -> bool {
+        self.enabled
+            && self.detector_available
+            && self.payload_json.is_some()
+            && segment.source_kind == AudioSegmentSourceKind::SystemAudio
+    }
 }
 
 impl AudioSegmentTranscriptionAdmission {
@@ -157,6 +199,7 @@ pub struct AudioSegmentProcessingAdmissionOutcome {
     pub segment: AudioSegment,
     pub transcription_job: Option<ProcessingJob>,
     pub speaker_analysis_job: Option<ProcessingJob>,
+    pub system_audio_speech_activity_job: Option<ProcessingJob>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -485,6 +528,7 @@ impl AppInfra {
                 segment,
                 admission,
                 &AudioSegmentSpeakerAnalysisAdmission::disabled(),
+                &SystemAudioSpeechActivityAdmission::disabled(),
             )
             .await?;
         return Ok(AudioSegmentTranscriptionAdmissionOutcome {
@@ -498,9 +542,12 @@ impl AppInfra {
         segment: &NewAudioSegment,
         transcription_admission: &AudioSegmentTranscriptionAdmission,
         speaker_admission: &AudioSegmentSpeakerAnalysisAdmission,
+        system_audio_speech_admission: &SystemAudioSpeechActivityAdmission,
     ) -> Result<AudioSegmentProcessingAdmissionOutcome> {
         let should_enqueue_transcription = transcription_admission.should_enqueue_for(segment);
         let should_enqueue_speaker = speaker_admission.should_enqueue_for(segment);
+        let should_enqueue_system_audio_speech =
+            system_audio_speech_admission.should_enqueue_for(segment);
         let mut transaction = self.pool().begin().await?;
         let mut segment = self
             .audio_segments
@@ -558,6 +605,32 @@ impl AppInfra {
         } else {
             None
         };
+        let system_audio_speech_activity_job = if should_enqueue_system_audio_speech {
+            let subject = ProcessingSubject::audio_segment(segment.id);
+            let existing = self
+                .processing
+                .get_latest_processing_job_for_subject_and_processor_in_transaction(
+                    &mut transaction,
+                    &subject,
+                    SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+                )
+                .await?;
+            match existing {
+                Some(job) => Some(job),
+                None => Some(
+                    self.processing
+                        .enqueue_job_in_transaction(
+                            &mut transaction,
+                            &subject,
+                            SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+                            system_audio_speech_admission.payload_json.as_deref(),
+                        )
+                        .await?,
+                ),
+            }
+        } else {
+            None
+        };
         transaction.commit().await?;
 
         if segment.capture_segment_id.is_none() {
@@ -573,6 +646,7 @@ impl AppInfra {
             segment,
             transcription_job,
             speaker_analysis_job,
+            system_audio_speech_activity_job,
         })
     }
 
@@ -1368,6 +1442,7 @@ fn default_processing_registry() -> ProcessorRegistry {
             Arc::new(audio_transcription::providers::AppleSpeechOnDeviceProvider),
             Arc::new(audio_transcription::providers::ParakeetProvider),
         ]))
+        .register(SystemAudioSpeechActivityProcessorBackend)
 }
 
 fn model_key(provider: &str, model_id: &str) -> String {
@@ -3366,6 +3441,7 @@ mod tests {
                     &segment,
                     &AudioSegmentTranscriptionAdmission::disabled(),
                     &AudioSegmentSpeakerAnalysisAdmission::available(speaker_payload.clone()),
+                    &SystemAudioSpeechActivityAdmission::disabled(),
                 )
                 .await
                 .expect("segment should persist with speaker job");

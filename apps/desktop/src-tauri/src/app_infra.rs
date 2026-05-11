@@ -2455,7 +2455,8 @@ fn desktop_processing_registry(
             crate::speaker_analysis_runtime::SubprocessSherpaOnnxSpeakerAnalysisProvider::with_models_dir(
                 speaker_models_dir,
             ),
-        )))
+        ))
+        .register(::app_infra::SystemAudioSpeechActivityProcessorBackend))
 }
 
 pub fn initialize(app: &mut tauri::App) -> Result<(), String> {

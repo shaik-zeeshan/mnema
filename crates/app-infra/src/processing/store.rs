@@ -14,7 +14,9 @@ use super::{
     NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingResult,
     ProcessingResultDraft, ProcessingSubject, AUDIO_SEGMENT_SUBJECT_TYPE,
     AUDIO_TRANSCRIPTION_PROCESSOR, OCR_PROCESSOR, SPEAKER_ANALYSIS_PROCESSOR,
+    SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
+use super::SystemAudioSpeechActivityJobPayload;
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
     "processing job was marked failed during startup recovery after the app shut down while it was running";
@@ -1274,6 +1276,45 @@ impl ProcessingStore {
                             &mut transaction,
                             existing.id,
                             Some(&payload_json),
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+        if job.processor == SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR
+            && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
+        {
+            let speech_detected = result
+                .structured_payload_json
+                .as_deref()
+                .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+                .and_then(|payload| payload.get("speechDetected").and_then(|value| value.as_bool()))
+                .unwrap_or(false);
+            if speech_detected {
+                let payload = SystemAudioSpeechActivityJobPayload::from_job(&job)?;
+                let subject = ProcessingSubject::audio_segment(job.subject_id);
+                let existing = self
+                    .get_latest_processing_job_for_subject_and_processor_in_transaction(
+                        &mut transaction,
+                        &subject,
+                        AUDIO_TRANSCRIPTION_PROCESSOR,
+                    )
+                    .await?;
+                if existing.is_none() {
+                    self.enqueue_job_in_transaction(
+                        &mut transaction,
+                        &subject,
+                        AUDIO_TRANSCRIPTION_PROCESSOR,
+                        Some(&payload.transcription_payload),
+                    )
+                    .await?;
+                } else if let Some(existing) = existing {
+                    if existing.status == ProcessingJobStatus::Failed {
+                        self.requeue_processing_job_in_transaction(
+                            &mut transaction,
+                            existing.id,
+                            Some(&payload.transcription_payload),
                         )
                         .await?;
                     }

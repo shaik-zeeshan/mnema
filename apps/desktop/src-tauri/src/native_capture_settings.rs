@@ -1,6 +1,7 @@
 use capture_types::{
     default_appearance, default_audio_transcription_settings, default_developer_options_enabled,
-    default_follow_timeline_live, default_idle_timeout_seconds, default_inactivity_activity_mode,
+    default_audio_speech_detection_settings,
+    default_follow_timeline_live, default_idle_timeout_seconds,
     default_microphone_activity_sensitivity, default_native_capture_debug_logging_enabled,
     default_ocr_settings, default_ocr_tesseract_char_whitelist,
     default_ocr_tesseract_page_segmentation_mode, default_ocr_tesseract_preprocess_mode,
@@ -8,8 +9,9 @@ use capture_types::{
     default_preview_cache_ttl_seconds, default_speaker_analysis_model_id,
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
     default_system_audio_activity_sensitivity, default_video_bitrate, AudioTranscriptionProvider,
-    AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
-    RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
+    AudioSpeechDetectionSettings, AudioSpeechDetector, AudioTranscriptionSettings,
+    CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
+    RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
     SpeakerAnalysisSettings, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
     VideoBitrateSettings,
 };
@@ -87,12 +89,13 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
+        audio_speech_detection: default_audio_speech_detection_settings(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
         system_audio_activity_sensitivity: default_system_audio_activity_sensitivity(),
-        microphone_vad_adapter: capture_types::default_microphone_vad_adapter(),
-        inactivity_activity_mode: default_inactivity_activity_mode(),
+        microphone_vad_adapter: capture_types::default_audio_speech_detector(),
+        inactivity_activity_mode: capture_types::InactivityActivityMode::SystemInputOrScreenOrAudio,
     }
 }
 
@@ -218,6 +221,8 @@ fn validate_audio_transcription_settings(
 
     Ok(AudioTranscriptionSettings {
         enabled: value.enabled,
+        microphone_enabled: value.microphone_enabled,
+        system_audio_enabled: value.system_audio_enabled,
         provider: value.provider,
         model_id,
         language,
@@ -225,6 +230,23 @@ fn validate_audio_transcription_settings(
         idle_unload_seconds: value.idle_unload_seconds,
         chunk_seconds: value.chunk_seconds,
     })
+}
+
+fn validate_audio_speech_detection_settings(
+    value: AudioSpeechDetectionSettings,
+    transcription: &AudioTranscriptionSettings,
+) -> Result<AudioSpeechDetectionSettings, CaptureErrorResponse> {
+    if transcription.enabled
+        && transcription.system_audio_enabled
+        && value.detector == AudioSpeechDetector::Off
+    {
+        return Err(CaptureErrorResponse {
+            code: "invalid_recording_settings".to_string(),
+            message: "audioSpeechDetection.detector cannot be off while transcription.systemAudioEnabled is true".to_string(),
+        });
+    }
+
+    Ok(value)
 }
 
 fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> SpeakerAnalysisSettings {
@@ -525,6 +547,8 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
     let video_bitrate = validate_video_bitrate(request.video_bitrate)?;
     let ocr = validate_ocr_settings(request.ocr)?;
     let transcription = validate_audio_transcription_settings(request.transcription)?;
+    let audio_speech_detection =
+        validate_audio_speech_detection_settings(request.audio_speech_detection, &transcription)?;
     let speaker_analysis = validate_speaker_analysis_settings(request.speaker_analysis);
     let microphone_activity_sensitivity = validate_audio_activity_sensitivity(
         "microphoneActivitySensitivity",
@@ -564,12 +588,13 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         ocr,
         transcription,
         speaker_analysis,
+        audio_speech_detection: audio_speech_detection.clone(),
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
         system_audio_activity_sensitivity,
-        microphone_vad_adapter: request.microphone_vad_adapter,
-        inactivity_activity_mode: request.inactivity_activity_mode,
+        microphone_vad_adapter: audio_speech_detection.detector,
+        inactivity_activity_mode: capture_types::InactivityActivityMode::SystemInputOrScreenOrAudio,
     })
 }
 
@@ -614,6 +639,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             ocr: parsed.ocr,
             transcription: parsed.transcription,
             speaker_analysis: parsed.speaker_analysis,
+            audio_speech_detection: parsed.audio_speech_detection,
             pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
             idle_timeout_seconds: parsed.idle_timeout_seconds,
             microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -640,6 +666,15 @@ fn migrate_legacy_recording_settings_json(raw: &str) -> String {
         }
         if !obj.contains_key("systemAudioActivitySensitivity") {
             obj.insert("systemAudioActivitySensitivity".to_string(), legacy);
+        }
+    }
+
+    if !obj.contains_key("audioSpeechDetection") {
+        if let Some(legacy) = obj.get("microphoneVadAdapter").cloned() {
+            obj.insert(
+                "audioSpeechDetection".to_string(),
+                serde_json::json!({ "detector": legacy }),
+            );
         }
     }
 

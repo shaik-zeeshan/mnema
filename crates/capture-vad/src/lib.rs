@@ -396,17 +396,9 @@ fn resolve_effective_adapter_with_probes(
                 fallback_reason: None,
                 silero_adapter: Some(silero_adapter),
             },
-            Err(error) if webrtc_available() => MicrophoneVadResolution {
-                effective_adapter: EffectiveMicrophoneVadAdapter::Webrtc,
-                fallback_reason: Some(format!("{}; using WebRTC VAD", error.fallback_reason())),
-                silero_adapter: None,
-            },
             Err(error) => MicrophoneVadResolution {
                 effective_adapter: EffectiveMicrophoneVadAdapter::PeakLevel,
-                fallback_reason: Some(format!(
-                    "{}; WebRTC VAD is unavailable; using peak-level microphone activity",
-                    error.fallback_reason()
-                )),
+                fallback_reason: Some(error.fallback_reason().to_string()),
                 silero_adapter: None,
             },
         },
@@ -523,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn silero_falls_back_to_peak_level_when_no_vad_adapter_is_usable() {
+    fn silero_does_not_fall_back_to_webrtc_when_unavailable() {
         let resolution = resolve_effective_adapter_with_probes(
             MicrophoneVadAdapter::Silero,
             || {
@@ -540,8 +532,7 @@ mod tests {
         );
         let reason = resolution.fallback_reason.expect("fallback reason");
         assert!(reason.contains("Silero VAD model was not found"));
-        assert!(reason.contains("WebRTC VAD is unavailable"));
-        assert!(reason.contains("using peak-level microphone activity"));
+        assert!(!reason.contains("WebRTC"));
     }
 
     #[test]

@@ -295,6 +295,7 @@ function buildUpdatePayload(
     microphoneActivitySensitivity: base.microphoneActivitySensitivity,
     systemAudioActivitySensitivity: base.systemAudioActivitySensitivity,
     microphoneVadAdapter: base.microphoneVadAdapter,
+    audioSpeechDetection: base.audioSpeechDetection ?? { detector: base.microphoneVadAdapter ?? "silero" },
     nativeCaptureDebugLoggingEnabled: base.nativeCaptureDebugLoggingEnabled,
     previewCacheTtlSeconds: base.previewCacheTtlSeconds,
     followTimelineLive: base.followTimelineLive,

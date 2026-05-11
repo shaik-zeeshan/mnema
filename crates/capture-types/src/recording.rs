@@ -86,14 +86,33 @@ pub fn default_system_audio_activity_sensitivity() -> u8 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-pub enum MicrophoneVadAdapter {
+pub enum AudioSpeechDetector {
     Silero,
     Webrtc,
     Off,
 }
 
-pub fn default_microphone_vad_adapter() -> MicrophoneVadAdapter {
-    MicrophoneVadAdapter::Silero
+pub type MicrophoneVadAdapter = AudioSpeechDetector;
+
+pub fn default_audio_speech_detector() -> AudioSpeechDetector {
+    AudioSpeechDetector::Silero
+}
+
+pub fn default_microphone_vad_adapter() -> AudioSpeechDetector {
+    default_audio_speech_detector()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSpeechDetectionSettings {
+    #[serde(default = "default_audio_speech_detector")]
+    pub detector: AudioSpeechDetector,
+}
+
+pub fn default_audio_speech_detection_settings() -> AudioSpeechDetectionSettings {
+    AudioSpeechDetectionSettings {
+        detector: default_audio_speech_detector(),
+    }
 }
 
 pub fn default_native_capture_debug_logging_enabled() -> bool {
@@ -264,6 +283,14 @@ pub fn default_audio_transcription_enabled() -> bool {
     true
 }
 
+pub fn default_audio_transcription_microphone_enabled() -> bool {
+    true
+}
+
+pub fn default_audio_transcription_system_audio_enabled() -> bool {
+    false
+}
+
 pub fn default_audio_transcription_provider() -> AudioTranscriptionProvider {
     AudioTranscriptionProvider::LocalWhisper
 }
@@ -301,6 +328,10 @@ pub fn default_audio_transcription_chunk_seconds() -> u64 {
 pub struct AudioTranscriptionSettings {
     #[serde(default = "default_audio_transcription_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_audio_transcription_microphone_enabled")]
+    pub microphone_enabled: bool,
+    #[serde(default = "default_audio_transcription_system_audio_enabled")]
+    pub system_audio_enabled: bool,
     #[serde(default = "default_audio_transcription_provider")]
     pub provider: AudioTranscriptionProvider,
     #[serde(default = "default_audio_transcription_model_id")]
@@ -318,6 +349,8 @@ pub struct AudioTranscriptionSettings {
 pub fn default_audio_transcription_settings() -> AudioTranscriptionSettings {
     AudioTranscriptionSettings {
         enabled: default_audio_transcription_enabled(),
+        microphone_enabled: default_audio_transcription_microphone_enabled(),
+        system_audio_enabled: default_audio_transcription_system_audio_enabled(),
         provider: default_audio_transcription_provider(),
         model_id: default_audio_transcription_model_id(),
         language: default_audio_transcription_language(),
@@ -428,6 +461,8 @@ pub struct RecordingSettings {
     pub transcription: AudioTranscriptionSettings,
     #[serde(default = "default_speaker_analysis_settings")]
     pub speaker_analysis: SpeakerAnalysisSettings,
+    #[serde(default = "default_audio_speech_detection_settings")]
+    pub audio_speech_detection: AudioSpeechDetectionSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -436,8 +471,12 @@ pub struct RecordingSettings {
     pub microphone_activity_sensitivity: u8,
     #[serde(default = "default_system_audio_activity_sensitivity")]
     pub system_audio_activity_sensitivity: u8,
-    #[serde(default = "default_microphone_vad_adapter")]
-    pub microphone_vad_adapter: MicrophoneVadAdapter,
+    #[serde(
+        default = "default_audio_speech_detector",
+        alias = "microphoneVadAdapter",
+        skip_serializing
+    )]
+    pub microphone_vad_adapter: AudioSpeechDetector,
     #[serde(
         default = "crate::default_inactivity_activity_mode",
         rename = "activityMode",
@@ -478,6 +517,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub transcription: AudioTranscriptionSettings,
     #[serde(default = "default_speaker_analysis_settings")]
     pub speaker_analysis: SpeakerAnalysisSettings,
+    #[serde(default = "default_audio_speech_detection_settings")]
+    pub audio_speech_detection: AudioSpeechDetectionSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -486,8 +527,12 @@ pub struct UpdateRecordingSettingsRequest {
     pub microphone_activity_sensitivity: u8,
     #[serde(default = "default_system_audio_activity_sensitivity")]
     pub system_audio_activity_sensitivity: u8,
-    #[serde(default = "default_microphone_vad_adapter")]
-    pub microphone_vad_adapter: MicrophoneVadAdapter,
+    #[serde(
+        default = "default_audio_speech_detector",
+        alias = "microphoneVadAdapter",
+        skip_serializing
+    )]
+    pub microphone_vad_adapter: AudioSpeechDetector,
     #[serde(
         default = "crate::default_inactivity_activity_mode",
         rename = "activityMode",

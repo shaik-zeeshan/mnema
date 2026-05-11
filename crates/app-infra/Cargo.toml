@@ -10,6 +10,7 @@ speaker-analysis = { path = "../speaker-analysis" }
 ocr = { path = "../ocr" }
 capture-screen = { path = "../capture-screen" }
 capture-runtime = { path = "../capture-runtime" }
+capture-types = { path = "../capture-types" }
 chrono = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rayon = "1"

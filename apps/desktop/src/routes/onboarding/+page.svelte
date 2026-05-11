@@ -119,6 +119,8 @@
   let startingTranscriptionDownload = $state(false);
   let cancellingTranscriptionDownload = $state(false);
   let transcriptionDownloadError = $state<string | null>(null);
+  let draftTranscriptionMicrophoneEnabled = $state(true);
+  let draftTranscriptionSystemAudioEnabled = $state(false);
 
   const activeIndex = $derived(steps.findIndex((step) => step.id === activeStep));
   const railActiveIndex = $derived(railSteps.findIndex((step) => step.id === activeStep));
@@ -216,7 +218,7 @@
     draftAutoStart = next.autoStart;
     draftPauseCaptureOnInactivity = next.pauseCaptureOnInactivity;
     draftIdleTimeoutSeconds = next.idleTimeoutSeconds;
-    draftActivityMode = next.activityMode ?? "system_input_only";
+    draftActivityMode = "system_input_or_screen_or_audio";
     draftMicrophoneActivitySensitivity = next.microphoneActivitySensitivity ?? 50;
     draftSystemAudioActivitySensitivity = next.systemAudioActivitySensitivity ?? 50;
     draftOcrEnabled = next.ocr?.enabled ?? true;
@@ -235,6 +237,8 @@
     draftOcrTesseractPreprocessMode = next.ocr?.tesseractPreprocessMode ?? "grayscale";
     draftOcrTesseractUpscaleFactor = next.ocr?.tesseractUpscaleFactor ?? 1;
     draftTranscriptionEnabled = next.transcription?.enabled ?? true;
+    draftTranscriptionMicrophoneEnabled = next.transcription?.microphoneEnabled ?? true;
+    draftTranscriptionSystemAudioEnabled = next.transcription?.systemAudioEnabled ?? false;
     draftTranscriptionProvider = next.transcription?.provider ?? "local_whisper";
     draftTranscriptionModelId = next.transcription?.modelId ?? defaultTranscriptionModelIdForProvider(draftTranscriptionProvider);
     draftTranscriptionLanguage = next.transcription?.language ?? "auto";
@@ -259,7 +263,7 @@
       autoStart: draftAutoStart,
       pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
       idleTimeoutSeconds: draftIdleTimeoutSeconds,
-      activityMode: draftActivityMode,
+      activityMode: "system_input_or_screen_or_audio",
       microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
       systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
       ocr: {
@@ -276,6 +280,8 @@
       },
       transcription: {
         enabled: draftTranscriptionEnabled,
+        microphoneEnabled: draftTranscriptionMicrophoneEnabled,
+        systemAudioEnabled: draftTranscriptionSystemAudioEnabled,
         provider: draftTranscriptionProvider,
         modelId: draftTranscriptionModelId,
         language: draftTranscriptionLanguage.trim() || "auto",

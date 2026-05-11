@@ -4,7 +4,8 @@ export type ActivityMode =
 	| "system_input_or_screen_or_audio";
 
 export type AppearanceSetting = "system" | "light" | "dark";
-export type MicrophoneVadAdapter = "silero" | "webrtc" | "off";
+export type AudioSpeechDetector = "silero" | "webrtc" | "off";
+export type MicrophoneVadAdapter = AudioSpeechDetector;
 export type RetentionPolicy = "never" | "days_7" | "days_14" | "days_30";
 
 export interface RecordingSettings {
@@ -23,7 +24,8 @@ export interface RecordingSettings {
 	activityMode: ActivityMode;
 	microphoneActivitySensitivity: number;
 	systemAudioActivitySensitivity: number;
-	microphoneVadAdapter: MicrophoneVadAdapter;
+	microphoneVadAdapter?: MicrophoneVadAdapter;
+	audioSpeechDetection: AudioSpeechDetectionSettings;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
 	retentionPolicy: RetentionPolicy;
@@ -109,12 +111,18 @@ export type AudioTranscriptionMemoryMode = "balanced" | "low_memory" | "performa
 
 export interface AudioTranscriptionSettings {
 	enabled: boolean;
+	microphoneEnabled: boolean;
+	systemAudioEnabled: boolean;
 	provider: AudioTranscriptionProvider;
 	modelId: string | null;
 	language: string;
 	memoryMode: AudioTranscriptionMemoryMode;
 	idleUnloadSeconds: number;
 	chunkSeconds: number;
+}
+
+export interface AudioSpeechDetectionSettings {
+	detector: AudioSpeechDetector;
 }
 
 export interface SpeakerAnalysisSettings {
