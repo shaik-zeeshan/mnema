@@ -1314,7 +1314,10 @@ impl ProcessingStore {
                     )
                     .await?;
                 } else if let Some(existing) = existing {
-                    if existing.status == ProcessingJobStatus::Failed {
+                    if matches!(
+                        existing.status,
+                        ProcessingJobStatus::Completed | ProcessingJobStatus::Failed
+                    ) {
                         self.requeue_processing_job_in_transaction(
                             &mut transaction,
                             existing.id,

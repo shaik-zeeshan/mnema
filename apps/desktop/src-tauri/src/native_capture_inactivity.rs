@@ -1424,8 +1424,7 @@ mod tests {
 
     #[test]
     fn default_system_audio_threshold_accepts_quieter_playback_than_microphone() {
-        let mut microphone_state =
-            inactivity_state_fixture(default_inactivity_activity_mode(), 50);
+        let mut microphone_state = inactivity_state_fixture(default_inactivity_activity_mode(), 50);
         let mut system_audio_state =
             inactivity_state_fixture(default_inactivity_activity_mode(), 50);
         let now = 20_000;
@@ -1454,10 +1453,7 @@ mod tests {
         };
 
         assert!(
-            microphone_state.should_pause_microphone_for_inactivity(
-                now,
-                quiet_microphone_snapshot
-            ),
+            microphone_state.should_pause_microphone_for_inactivity(now, quiet_microphone_snapshot),
             "quiet 3% microphone peaks remain below the default microphone threshold"
         );
         assert!(

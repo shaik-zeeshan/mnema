@@ -3222,7 +3222,9 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
 #[test]
 fn wake_recovery_keeps_system_audio_stream_attached_when_writer_was_paused() {
     let mut runtime = running_screen_capture_runtime_fixture();
-    runtime.inactivity.set_family_paused_states(false, false, true);
+    runtime
+        .inactivity
+        .set_family_paused_states(false, false, true);
     runtime.system_audio_recording_file = None;
     if let Some(outputs) = runtime.current_segment_output_files.as_mut() {
         outputs.system_audio_file = None;
