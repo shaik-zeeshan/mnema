@@ -6,11 +6,12 @@ use capture_types::{
     default_ocr_tesseract_page_segmentation_mode, default_ocr_tesseract_preprocess_mode,
     default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
     default_preview_cache_ttl_seconds, default_speaker_analysis_model_id,
-    default_speaker_analysis_settings, default_system_audio_activity_sensitivity,
-    default_video_bitrate, AudioTranscriptionProvider, AudioTranscriptionSettings,
-    CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
-    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
+    default_system_audio_activity_sensitivity, default_video_bitrate, AudioTranscriptionProvider,
+    AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
+    RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
+    SpeakerAnalysisSettings, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
+    VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -229,6 +230,8 @@ fn validate_audio_transcription_settings(
 fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> SpeakerAnalysisSettings {
     const SHERPA_ONNX_PROVIDER_ID: &str = "sherpa_onnx";
     const DEFAULT_SHERPA_MODEL_ID: &str = "pyannote-3.0-nemo-titanet-small";
+    const MIN_TIMEOUT_SECONDS: u64 = 60;
+    const MAX_TIMEOUT_SECONDS: u64 = 3600;
 
     let provider = if value.provider.trim() == SHERPA_ONNX_PROVIDER_ID {
         SHERPA_ONNX_PROVIDER_ID.to_string()
@@ -248,6 +251,13 @@ fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> Speaker
         recognize_saved_people: value.recognize_saved_people,
         provider,
         model_id,
+        timeout_seconds: if value.timeout_seconds == 0 {
+            default_speaker_analysis_timeout_seconds()
+        } else {
+            value
+                .timeout_seconds
+                .clamp(MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS)
+        },
     }
 }
 

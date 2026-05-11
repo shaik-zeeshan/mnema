@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::Instant,
 };
 
 use async_trait::async_trait;
@@ -31,7 +32,9 @@ const SAFE_SINGLE_CHUNK_DIARIZATION_MS: u64 = 10_000;
 const SAFE_CHUNK_OVERLAP_MS: u64 = 1_000;
 const CROSS_CHUNK_CLUSTER_SIMILARITY_THRESHOLD: f32 = 0.60;
 const MERGE_ADJACENT_TURN_GAP_MS: u64 = 250;
-const MIN_RECOGNITION_SUGGESTION_SCORE: f32 = 0.50;
+const MIN_RECOGNITION_SUGGESTION_SCORE: f32 = 0.60;
+const HIGH_RECOGNITION_SUGGESTION_SCORE: f32 = 0.72;
+const PERSON_AMBIGUITY_MARGIN: f32 = 0.05;
 const REJECTED_PERSON_SIMILARITY_THRESHOLD: f32 = 0.80;
 static SHERPA_DIARIZATION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -143,8 +146,14 @@ fn run_sherpa_blocking(
     request: SpeakerAnalysisRequest,
     models_dir: &Path,
 ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
+    let started_at = Instant::now();
     let samples = decode_audio_to_mono_16khz(&request.audio_path)?;
-    run_sherpa_on_samples(request, models_dir, samples)
+    let mut output = run_sherpa_on_samples(request, models_dir, samples)?;
+    output.metadata.provenance.insert(
+        "elapsedMs".to_string(),
+        json!(started_at.elapsed().as_millis() as u64),
+    );
+    Ok(output)
 }
 
 #[cfg(feature = "sherpa-onnx")]
@@ -875,7 +884,7 @@ fn best_enrollment_match(
     embedding: &[f32],
     model_id: &str,
 ) -> Option<SpeakerRecognitionSuggestion> {
-    request
+    let mut matches = request
         .enrolled_people
         .iter()
         .filter(|person| person.embedding_model_id == model_id)
@@ -887,12 +896,10 @@ fn best_enrollment_match(
             {
                 return None;
             }
-            let confidence = if score >= 0.65 {
+            let confidence = if score >= HIGH_RECOGNITION_SUGGESTION_SCORE {
                 crate::RecognitionConfidence::High
-            } else if score >= 0.50 {
-                crate::RecognitionConfidence::Medium
             } else {
-                crate::RecognitionConfidence::Low
+                crate::RecognitionConfidence::Medium
             };
             Some(SpeakerRecognitionSuggestion {
                 person_id: person.person_id,
@@ -901,11 +908,23 @@ fn best_enrollment_match(
                 score,
             })
         })
-        .max_by(|left, right| {
-            left.score
-                .partial_cmp(&right.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.person_id.cmp(&right.person_id))
+    });
+
+    let best = matches.first()?;
+    if matches
+        .get(1)
+        .is_some_and(|second| best.score - second.score < PERSON_AMBIGUITY_MARGIN)
+    {
+        return None;
+    }
+    Some(best.clone())
 }
 
 fn has_similar_rejection(
@@ -1046,8 +1065,7 @@ mod tests {
         assert_eq!(f32_embedding_from_le_bytes(&bytes), Some(embedding));
     }
 
-    #[test]
-    fn recognition_skips_weak_best_match() {
+    fn request_with_enrollment(score: f32) -> SpeakerAnalysisRequest {
         let mut request = SpeakerAnalysisRequest::new(
             "/tmp/audio.m4a",
             SHERPA_ONNX_PROVIDER_ID,
@@ -1058,33 +1076,69 @@ mod tests {
         request.enrolled_people.push(PersonEnrollment {
             person_id: 1,
             display_name: "Jack".to_string(),
-            embedding: f32_embedding_to_le_bytes(&[1.0, 0.0]),
+            embedding: f32_embedding_to_le_bytes(&unit_embedding_for_score(score)),
             embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
         });
+        request
+    }
 
-        let suggestion = best_enrollment_match(&request, &[0.0, 1.0], DEFAULT_SHERPA_ONNX_MODEL_ID);
+    fn unit_embedding_for_score(score: f32) -> [f32; 2] {
+        [score, (1.0 - score.powi(2)).max(0.0).sqrt()]
+    }
+
+    #[test]
+    fn recognition_skips_weak_best_match() {
+        let request = request_with_enrollment(0.59);
+
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID);
 
         assert!(suggestion.is_none());
     }
 
     #[test]
+    fn recognition_maps_high_confidence_from_strict_threshold() {
+        let request = request_with_enrollment(0.72);
+
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID)
+            .expect("suggestion");
+
+        assert_eq!(suggestion.confidence, crate::RecognitionConfidence::High);
+        assert!(suggestion.score >= 0.72);
+    }
+
+    #[test]
+    fn recognition_maps_medium_confidence_from_minimum_threshold() {
+        let request = request_with_enrollment(0.60);
+
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID)
+            .expect("suggestion");
+
+        assert_eq!(suggestion.confidence, crate::RecognitionConfidence::Medium);
+        assert!(suggestion.score >= 0.60);
+        assert!(suggestion.score < 0.72);
+    }
+
+    #[test]
     fn recognition_skips_person_with_similar_rejection() {
-        let mut request = SpeakerAnalysisRequest::new(
-            "/tmp/audio.m4a",
-            SHERPA_ONNX_PROVIDER_ID,
-            Some(DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
-            "session-a",
-            7,
-        );
-        request.enrolled_people.push(PersonEnrollment {
-            person_id: 1,
-            display_name: "Jack".to_string(),
-            embedding: f32_embedding_to_le_bytes(&[1.0, 0.0]),
-            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
-        });
+        let mut request = request_with_enrollment(1.0);
         request.rejected_people.push(PersonRecognitionRejection {
             person_id: 1,
             embedding: f32_embedding_to_le_bytes(&[1.0, 0.0]),
+            embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
+        });
+
+        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], DEFAULT_SHERPA_ONNX_MODEL_ID);
+
+        assert!(suggestion.is_none());
+    }
+
+    #[test]
+    fn recognition_skips_ambiguous_top_two_people() {
+        let mut request = request_with_enrollment(0.72);
+        request.enrolled_people.push(PersonEnrollment {
+            person_id: 2,
+            display_name: "Jill".to_string(),
+            embedding: f32_embedding_to_le_bytes(&unit_embedding_for_score(0.68)),
             embedding_model_id: DEFAULT_SHERPA_ONNX_MODEL_ID.to_string(),
         });
 

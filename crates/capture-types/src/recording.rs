@@ -349,6 +349,10 @@ pub fn default_speaker_analysis_model_id() -> Option<String> {
     Some("pyannote-3.0-nemo-titanet-small".to_string())
 }
 
+pub fn default_speaker_analysis_timeout_seconds() -> u64 {
+    600
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeakerAnalysisSettings {
@@ -360,6 +364,8 @@ pub struct SpeakerAnalysisSettings {
     pub provider: String,
     #[serde(default = "default_speaker_analysis_model_id")]
     pub model_id: Option<String>,
+    #[serde(default = "default_speaker_analysis_timeout_seconds")]
+    pub timeout_seconds: u64,
 }
 
 pub fn default_speaker_analysis_settings() -> SpeakerAnalysisSettings {
@@ -368,6 +374,7 @@ pub fn default_speaker_analysis_settings() -> SpeakerAnalysisSettings {
         recognize_saved_people: default_speaker_recognition_enabled(),
         provider: default_speaker_analysis_provider(),
         model_id: default_speaker_analysis_model_id(),
+        timeout_seconds: default_speaker_analysis_timeout_seconds(),
     }
 }
 

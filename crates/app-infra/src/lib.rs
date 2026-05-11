@@ -60,8 +60,9 @@ pub use processing::{
     ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend,
     ProcessorRegistry, SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload,
     SpeakerAnalysisProcessorBackend, SpeakerClusterView, SpeakerTurnView,
-    AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
-    SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY, SPEAKER_ANALYSIS_PROCESSOR,
+    AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE,
+    HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
+    SPEAKER_ANALYSIS_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
@@ -1274,8 +1275,16 @@ impl AppInfra {
         &self,
         excluded_processor: &str,
     ) -> Result<Option<ProcessingJobRunOutcome>> {
+        self.process_next_processing_job_excluding_processors(&[excluded_processor])
+            .await
+    }
+
+    pub async fn process_next_processing_job_excluding_processors(
+        &self,
+        excluded_processors: &[&str],
+    ) -> Result<Option<ProcessingJobRunOutcome>> {
         self.processing_runtime
-            .process_next_queued_job_excluding_processor(excluded_processor)
+            .process_next_queued_job_excluding_processors(excluded_processors)
             .await
     }
 

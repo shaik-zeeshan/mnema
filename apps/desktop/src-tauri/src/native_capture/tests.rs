@@ -59,12 +59,13 @@ use capture_types::{
     default_appearance, default_audio_transcription_settings, default_inactivity_activity_mode,
     default_microphone_vad_adapter, default_ocr_settings, default_preview_cache_ttl_seconds,
     default_retention_policy, default_speaker_analysis_settings, default_video_bitrate,
-    AppearanceSetting, AudioTranscriptionProvider, AudioTranscriptionSettings, CaptureErrorResponse,
-    CaptureOutputFiles, CaptureSources, CaptureSupportResponse, InactivityActivityMode,
-    MicrophoneControllerState, MicrophoneDisconnectPolicy, MicrophonePreference,
-    MicrophonePreferenceMode, OcrProvider, RecordingSettings, ScreenResolution,
-    ScreenResolutionPreset, SourceSessionMeta, SourceSessions, StartNativeCaptureRequest,
-    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    AppearanceSetting, AudioTranscriptionProvider, AudioTranscriptionSettings,
+    CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
+    InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
+    MicrophonePreference, MicrophonePreferenceMode, OcrProvider, RecordingSettings,
+    ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
+    StartNativeCaptureRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
+    VideoBitratePreset, VideoBitrateSettings,
 };
 use capture_vad::{MicrophonePcmVadFrame, MicrophoneVadRuntime};
 use std::{

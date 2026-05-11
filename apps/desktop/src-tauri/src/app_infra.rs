@@ -2757,6 +2757,7 @@ fn speaker_analysis_admission_for_settings(
                 ::app_infra::SpeakerAnalysisJobPayload::new(provider, model_id.clone());
             payload.normalize_model_selection();
             payload.recognize_people = speaker_settings.recognize_saved_people;
+            insert_speaker_analysis_timeout_option(&mut payload, speaker_settings.timeout_seconds);
             match serde_json::to_string(&payload) {
                 Ok(payload_json) => {
                     ::app_infra::AudioSegmentSpeakerAnalysisAdmission::available(payload_json)
@@ -2864,12 +2865,24 @@ fn attach_speaker_analysis_payload(
     );
     speaker_payload.normalize_model_selection();
     speaker_payload.recognize_people = speaker_settings.recognize_saved_people;
+    insert_speaker_analysis_timeout_option(&mut speaker_payload, speaker_settings.timeout_seconds);
     if let Ok(value) = serde_json::to_value(speaker_payload) {
         payload.options.insert(
             ::app_infra::SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY.to_string(),
             value,
         );
     }
+}
+
+fn insert_speaker_analysis_timeout_option(
+    payload: &mut ::app_infra::SpeakerAnalysisJobPayload,
+    timeout_seconds: u64,
+) {
+    let timeout_seconds = timeout_seconds.clamp(60, 3600);
+    payload.options.insert(
+        ::app_infra::HELPER_TIMEOUT_SECONDS_OPTION.to_string(),
+        serde_json::json!(timeout_seconds),
+    );
 }
 
 fn run_hidden_segment_workspace_repair_startup_pass(
@@ -2942,8 +2955,14 @@ fn spawn_processing_worker(
     );
     spawn_processing_worker_loop(
         Arc::clone(&infra),
-        base_dir_display,
+        base_dir_display.clone(),
         ProcessingWorkerKind::AudioTranscription,
+        background_workers.clone(),
+    );
+    spawn_processing_worker_loop(
+        Arc::clone(&infra),
+        base_dir_display,
+        ProcessingWorkerKind::SpeakerAnalysis,
         background_workers.clone(),
     );
 
@@ -2954,6 +2973,7 @@ fn spawn_processing_worker(
 enum ProcessingWorkerKind {
     NonTranscriptionAndFrameBatch,
     AudioTranscription,
+    SpeakerAnalysis,
 }
 
 impl ProcessingWorkerKind {
@@ -2961,6 +2981,7 @@ impl ProcessingWorkerKind {
         match self {
             Self::NonTranscriptionAndFrameBatch => "non-transcription processing/frame-batch",
             Self::AudioTranscription => "audio transcription",
+            Self::SpeakerAnalysis => "speaker analysis",
         }
     }
 
@@ -2968,6 +2989,7 @@ impl ProcessingWorkerKind {
         match self {
             Self::NonTranscriptionAndFrameBatch => process_pending_jobs_once(infra).await,
             Self::AudioTranscription => process_pending_audio_transcription_jobs_once(infra).await,
+            Self::SpeakerAnalysis => process_pending_speaker_analysis_jobs_once(infra).await,
         }
     }
 }
@@ -3417,7 +3439,10 @@ async fn process_pending_jobs_once(
     infra: &::app_infra::AppInfra,
 ) -> ::app_infra::Result<Option<()>> {
     let did_processing = infra
-        .process_next_processing_job_excluding_processor(::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR)
+        .process_next_processing_job_excluding_processors(&[
+            ::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR,
+            ::app_infra::SPEAKER_ANALYSIS_PROCESSOR,
+        ])
         .await?
         .is_some();
 
@@ -3443,6 +3468,20 @@ async fn process_pending_audio_transcription_jobs_once(
 ) -> ::app_infra::Result<Option<()>> {
     if infra
         .process_next_processing_job_for_processor(::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR)
+        .await?
+        .is_some()
+    {
+        Ok(Some(()))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn process_pending_speaker_analysis_jobs_once(
+    infra: &::app_infra::AppInfra,
+) -> ::app_infra::Result<Option<()>> {
+    if infra
+        .process_next_processing_job_for_processor(::app_infra::SPEAKER_ANALYSIS_PROCESSOR)
         .await?
         .is_some()
     {
