@@ -1,4 +1,5 @@
 use capture_types::CaptureErrorResponse;
+use std::path::Path;
 
 #[cfg(target_os = "macos")]
 #[link(name = "AVFoundation", kind = "framework")]
@@ -68,6 +69,118 @@ pub fn trim_audio_file_to_m4a(
             Err(error)
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+pub struct DecodedMonoPcm {
+    pub samples: Vec<f32>,
+    pub sample_rate_hz: u32,
+}
+
+#[cfg(target_os = "macos")]
+pub fn decode_audio_file_to_mono_pcm(path: &Path) -> Result<DecodedMonoPcm, CaptureErrorResponse> {
+    let path_str = path.to_str().ok_or_else(|| CaptureErrorResponse {
+        code: "audio_decode_invalid_path".to_string(),
+        message: format!("Audio path is not valid UTF-8: {}", path.display()),
+    })?;
+    let _autorelease_pool = AutoreleasePoolPage::push();
+    let url = cidre::ns::Url::with_fs_path_str(path_str, false);
+    let mut file = cidre::av::AudioFile::open_read_common_format(
+        &url,
+        cidre::av::AudioCommonFormat::PcmF32,
+        false,
+    )
+    .map_err(|error| CaptureErrorResponse {
+        code: "audio_decode_failed".to_string(),
+        message: format!("Failed to open audio file {}: {error}", path.display()),
+    })?;
+    let format = file.processing_format();
+    let sample_rate = format.absd().sample_rate;
+    if !sample_rate.is_finite() || sample_rate <= 0.0 {
+        return Err(CaptureErrorResponse {
+            code: "audio_decode_failed".to_string(),
+            message: format!("Audio file {} reported invalid sample rate", path.display()),
+        });
+    }
+    let channels = usize::try_from(format.channel_count()).unwrap_or(0);
+    if channels == 0 {
+        return Err(CaptureErrorResponse {
+            code: "audio_decode_failed".to_string(),
+            message: format!("Audio file {} reported zero channels", path.display()),
+        });
+    }
+
+    let total_frames = file.len().max(0) as u64;
+    if total_frames == 0 {
+        return Ok(DecodedMonoPcm {
+            samples: Vec::new(),
+            sample_rate_hz: sample_rate.round().clamp(1.0, u32::MAX as f64) as u32,
+        });
+    }
+
+    let mut out = Vec::new();
+    let mut remaining = total_frames;
+    while remaining > 0 {
+        let frames = remaining.min(16_384) as u32;
+        let mut buffer = cidre::av::AudioPcmBuf::with_format(&format, frames).ok_or_else(|| {
+            CaptureErrorResponse {
+                code: "audio_decode_failed".to_string(),
+                message: "Failed to allocate audio decode buffer".to_string(),
+            }
+        })?;
+        file.read_n(&mut buffer, frames)
+            .map_err(|error| CaptureErrorResponse {
+                code: "audio_decode_failed".to_string(),
+                message: format!("Failed reading audio file {}: {error}", path.display()),
+            })?;
+        let frame_len = buffer.frame_len() as usize;
+        if frame_len == 0 {
+            break;
+        }
+        append_downmixed_f32(&mut out, &buffer, channels, frame_len)?;
+        remaining = remaining.saturating_sub(frame_len as u64);
+    }
+
+    Ok(DecodedMonoPcm {
+        samples: out,
+        sample_rate_hz: sample_rate.round().clamp(1.0, u32::MAX as f64) as u32,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn append_downmixed_f32(
+    out: &mut Vec<f32>,
+    buffer: &cidre::av::AudioPcmBuf,
+    channels: usize,
+    frame_len: usize,
+) -> Result<(), CaptureErrorResponse> {
+    if buffer.stride() > 1 {
+        let data = buffer.data_f32_at(0).ok_or_else(|| CaptureErrorResponse {
+            code: "audio_decode_failed".to_string(),
+            message: "Decoded audio buffer did not expose float channel data".to_string(),
+        })?;
+        for frame in data.chunks(buffer.stride()).take(frame_len) {
+            let sum: f32 = frame.iter().take(channels).copied().sum();
+            out.push(sum / channels as f32);
+        }
+        return Ok(());
+    }
+
+    let first = buffer.data_f32_at(0).ok_or_else(|| CaptureErrorResponse {
+        code: "audio_decode_failed".to_string(),
+        message: "Decoded audio buffer did not expose float channel data".to_string(),
+    })?;
+    for frame_idx in 0..frame_len {
+        let mut sum = first.get(frame_idx).copied().unwrap_or_default();
+        for channel in 1..channels {
+            if let Some(samples) = buffer.data_f32_at(channel) {
+                sum += samples.get(frame_idx).copied().unwrap_or_default();
+            }
+        }
+        out.push(sum / channels as f32);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

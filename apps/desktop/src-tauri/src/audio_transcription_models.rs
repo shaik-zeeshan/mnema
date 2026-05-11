@@ -1252,6 +1252,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let settings = capture_types::AudioTranscriptionSettings {
             enabled: true,
+            microphone_enabled: capture_types::default_audio_transcription_microphone_enabled(),
+            system_audio_enabled: capture_types::default_audio_transcription_system_audio_enabled(),
             provider: capture_types::AudioTranscriptionProvider::AppleSpeechOnDevice,
             model_id: None,
             language: "auto".to_string(),

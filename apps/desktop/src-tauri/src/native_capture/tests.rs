@@ -46,7 +46,7 @@ use super::settings::{
 };
 use super::{
     audio_transcription_unavailable_notification, ocr_unavailable_notification,
-    should_warn_audio_transcription_unavailable_at_start,
+    recording_requires_speech_detector, should_warn_audio_transcription_unavailable_at_start,
     should_warn_audio_transcription_unavailable_at_startup, should_warn_ocr_unavailable_at_start,
     should_warn_ocr_unavailable_at_startup, AppNotification, AppNotificationAction,
     AppNotificationsRuntime,
@@ -57,10 +57,11 @@ use capture_runtime::{
 };
 use capture_runtime::{RuntimeController, RuntimeState};
 use capture_types::{
-    default_appearance, default_audio_transcription_settings, default_inactivity_activity_mode,
+    default_appearance, default_audio_speech_detection_settings,
+    default_audio_transcription_settings, default_inactivity_activity_mode,
     default_microphone_vad_adapter, default_ocr_settings, default_preview_cache_ttl_seconds,
     default_retention_policy, default_speaker_analysis_settings, default_video_bitrate,
-    AppearanceSetting, AudioTranscriptionProvider, AudioTranscriptionSettings,
+    AppearanceSetting, AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
     InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
     MicrophonePreference, MicrophonePreferenceMode, OcrProvider, RecordingSettings,
@@ -158,6 +159,7 @@ fn recording_settings_fixture() -> RecordingSettings {
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
+        audio_speech_detection: default_audio_speech_detection_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -188,6 +190,7 @@ fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest
         ocr: settings.ocr,
         transcription: settings.transcription,
         speaker_analysis: settings.speaker_analysis,
+        audio_speech_detection: settings.audio_speech_detection,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -300,6 +303,32 @@ fn audio_transcription_startup_warning_requires_enabled_microphone_transcription
     assert!(!should_warn_audio_transcription_unavailable_at_startup(
         &settings
     ));
+}
+
+#[test]
+fn speech_detector_preflight_only_requires_system_audio_transcription_gate() {
+    let mut settings = recording_settings_fixture();
+    settings.capture_screen = false;
+    settings.capture_microphone = true;
+    settings.capture_system_audio = false;
+    settings.transcription.enabled = false;
+    settings.transcription.microphone_enabled = false;
+    settings.transcription.system_audio_enabled = false;
+    settings.audio_speech_detection.detector = AudioSpeechDetector::Silero;
+
+    assert!(!recording_requires_speech_detector(&settings));
+
+    settings.capture_microphone = false;
+    settings.capture_system_audio = true;
+    settings.transcription.enabled = true;
+    settings.transcription.system_audio_enabled = false;
+    assert!(!recording_requires_speech_detector(&settings));
+
+    settings.transcription.system_audio_enabled = true;
+    assert!(recording_requires_speech_detector(&settings));
+
+    settings.audio_speech_detection.detector = AudioSpeechDetector::Off;
+    assert!(!recording_requires_speech_detector(&settings));
 }
 
 #[test]
@@ -1275,6 +1304,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
+        audio_speech_detection: default_audio_speech_detection_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1316,6 +1346,7 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
+        audio_speech_detection: default_audio_speech_detection_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1353,6 +1384,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
+        audio_speech_detection: default_audio_speech_detection_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -3182,6 +3214,73 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
             screen: true,
             microphone: true,
             system_audio: true,
+        })
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_keeps_system_audio_stream_attached_when_writer_was_paused() {
+    let mut runtime = running_screen_capture_runtime_fixture();
+    runtime
+        .inactivity
+        .set_family_paused_states(false, false, true);
+    runtime.system_audio_recording_file = None;
+    if let Some(outputs) = runtime.current_segment_output_files.as_mut() {
+        outputs.system_audio_file = None;
+        outputs.system_audio_files.clear();
+    }
+    runtime.current_segment_sources = Some(CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: false,
+    });
+
+    let expected_screen_file =
+        "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
+            .to_string();
+
+    let recovered = recover_screen_capture_after_wake_with_start_segment(
+        &mut runtime,
+        None,
+        |_segment_dir,
+         _screen_output,
+         system_audio_output_path,
+         sources,
+         _frame_rate,
+         _resolution,
+         _bitrate,
+         _microphone_device_id,
+         _frame_tx,
+         _microphone_output_path| {
+            assert_eq!(
+                sources,
+                &CaptureSources {
+                    screen: true,
+                    microphone: false,
+                    system_audio: true,
+                },
+                "the ScreenCaptureKit stream must keep system audio attached so activity can resume the paused writer"
+            );
+            assert!(
+                system_audio_output_path.is_none(),
+                "paused system-audio writer should not receive an output path during wake recovery"
+            );
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        },
+    )
+    .expect("wake recovery should restart screen capture");
+
+    assert!(recovered);
+    assert!(!runtime.inactivity.is_screen_paused());
+    assert!(runtime.inactivity.is_system_audio_paused());
+    assert!(runtime.system_audio_recording_file.is_none());
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
         })
     );
 }

@@ -60,9 +60,11 @@ pub use processing::{
     ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend,
     ProcessorRegistry, SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload,
     SpeakerAnalysisProcessorBackend, SpeakerClusterView, SpeakerTurnView,
-    AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE,
-    HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
-    SPEAKER_ANALYSIS_PROCESSOR,
+    SystemAudioSpeechActivityJobPayload, SystemAudioSpeechActivityProcessorBackend,
+    SystemAudioSpeechActivityResult, AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR,
+    FRAME_SUBJECT_TYPE, HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR,
+    SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY, SPEAKER_ANALYSIS_PROCESSOR,
+    SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 pub use status::AppInfraStatus;
 
@@ -71,6 +73,46 @@ pub struct AudioSegmentTranscriptionAdmission {
     pub enabled: bool,
     pub provider_available: bool,
     pub payload_json: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemAudioSpeechActivityAdmission {
+    pub enabled: bool,
+    pub detector_available: bool,
+    pub payload_json: Option<String>,
+}
+
+impl SystemAudioSpeechActivityAdmission {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            detector_available: false,
+            payload_json: None,
+        }
+    }
+
+    pub fn unavailable() -> Self {
+        Self {
+            enabled: true,
+            detector_available: false,
+            payload_json: None,
+        }
+    }
+
+    pub fn available(payload_json: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            detector_available: true,
+            payload_json: Some(payload_json.into()),
+        }
+    }
+
+    fn should_enqueue_for(&self, segment: &NewAudioSegment) -> bool {
+        self.enabled
+            && self.detector_available
+            && self.payload_json.is_some()
+            && segment.source_kind == AudioSegmentSourceKind::SystemAudio
+    }
 }
 
 impl AudioSegmentTranscriptionAdmission {
@@ -157,6 +199,7 @@ pub struct AudioSegmentProcessingAdmissionOutcome {
     pub segment: AudioSegment,
     pub transcription_job: Option<ProcessingJob>,
     pub speaker_analysis_job: Option<ProcessingJob>,
+    pub system_audio_speech_activity_job: Option<ProcessingJob>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -179,6 +222,15 @@ pub type AudioSegmentSpeakerAnalysisReprocessingOutcome =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSegmentSpeakerAnalysisReprocessingResult {
     pub outcome: AudioSegmentSpeakerAnalysisReprocessingOutcome,
+    pub job: ProcessingJob,
+}
+
+pub type SystemAudioSpeechActivityReprocessingOutcome =
+    AudioSegmentTranscriptionReprocessingOutcome;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemAudioSpeechActivityReprocessingResult {
+    pub outcome: SystemAudioSpeechActivityReprocessingOutcome,
     pub job: ProcessingJob,
 }
 
@@ -485,6 +537,7 @@ impl AppInfra {
                 segment,
                 admission,
                 &AudioSegmentSpeakerAnalysisAdmission::disabled(),
+                &SystemAudioSpeechActivityAdmission::disabled(),
             )
             .await?;
         return Ok(AudioSegmentTranscriptionAdmissionOutcome {
@@ -498,9 +551,12 @@ impl AppInfra {
         segment: &NewAudioSegment,
         transcription_admission: &AudioSegmentTranscriptionAdmission,
         speaker_admission: &AudioSegmentSpeakerAnalysisAdmission,
+        system_audio_speech_admission: &SystemAudioSpeechActivityAdmission,
     ) -> Result<AudioSegmentProcessingAdmissionOutcome> {
         let should_enqueue_transcription = transcription_admission.should_enqueue_for(segment);
         let should_enqueue_speaker = speaker_admission.should_enqueue_for(segment);
+        let should_enqueue_system_audio_speech =
+            system_audio_speech_admission.should_enqueue_for(segment);
         let mut transaction = self.pool().begin().await?;
         let mut segment = self
             .audio_segments
@@ -558,6 +614,32 @@ impl AppInfra {
         } else {
             None
         };
+        let system_audio_speech_activity_job = if should_enqueue_system_audio_speech {
+            let subject = ProcessingSubject::audio_segment(segment.id);
+            let existing = self
+                .processing
+                .get_latest_processing_job_for_subject_and_processor_in_transaction(
+                    &mut transaction,
+                    &subject,
+                    SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+                )
+                .await?;
+            match existing {
+                Some(job) => Some(job),
+                None => Some(
+                    self.processing
+                        .enqueue_job_in_transaction(
+                            &mut transaction,
+                            &subject,
+                            SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+                            system_audio_speech_admission.payload_json.as_deref(),
+                        )
+                        .await?,
+                ),
+            }
+        } else {
+            None
+        };
         transaction.commit().await?;
 
         if segment.capture_segment_id.is_none() {
@@ -573,6 +655,7 @@ impl AppInfra {
             segment,
             transcription_job,
             speaker_analysis_job,
+            system_audio_speech_activity_job,
         })
     }
 
@@ -895,6 +978,100 @@ impl AppInfra {
         };
 
         transaction.commit().await?;
+        Ok(result)
+    }
+
+    pub async fn reprocess_system_audio_speech_activity(
+        &self,
+        audio_segment_id: i64,
+        admission: &SystemAudioSpeechActivityAdmission,
+    ) -> Result<SystemAudioSpeechActivityReprocessingResult> {
+        let segment = self
+            .audio_segments
+            .get(audio_segment_id)
+            .await?
+            .ok_or(AppInfraError::AudioSegmentNotFound(audio_segment_id))?;
+
+        if segment.source_kind != AudioSegmentSourceKind::SystemAudio {
+            return Err(AppInfraError::AudioTranscriptionEngine(
+                "only system-audio segments can run speech-gated transcription".to_string(),
+            ));
+        }
+
+        let payload_json = if !admission.enabled {
+            return Err(AppInfraError::AudioTranscriptionEngine(
+                "system-audio transcription is disabled".to_string(),
+            ));
+        } else if !admission.detector_available {
+            return Err(AppInfraError::AudioTranscriptionEngine(
+                "selected speech detector is unavailable".to_string(),
+            ));
+        } else {
+            admission.payload_json.as_deref().ok_or_else(|| {
+                AppInfraError::AudioTranscriptionEngine(
+                    "system-audio speech activity payload is unavailable".to_string(),
+                )
+            })?
+        };
+
+        let mut transaction = self.pool().begin().await?;
+        let subject = ProcessingSubject::audio_segment(segment.id);
+        let existing_job = self
+            .processing
+            .get_latest_processing_job_for_subject_and_processor_in_transaction(
+                &mut transaction,
+                &subject,
+                SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+            )
+            .await?;
+
+        let result = match existing_job {
+            None => {
+                let job = self
+                    .processing
+                    .enqueue_job_in_transaction(
+                        &mut transaction,
+                        &subject,
+                        SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+                        Some(payload_json),
+                    )
+                    .await?;
+                SystemAudioSpeechActivityReprocessingResult {
+                    outcome: SystemAudioSpeechActivityReprocessingOutcome::Created,
+                    job,
+                }
+            }
+            Some(job) if job.status == ProcessingJobStatus::Queued => {
+                SystemAudioSpeechActivityReprocessingResult {
+                    outcome: SystemAudioSpeechActivityReprocessingOutcome::Ignored,
+                    job,
+                }
+            }
+            Some(job) if job.status == ProcessingJobStatus::Running => {
+                return Err(AppInfraError::ProcessingJobInvalidTransition {
+                    job_id: job.id,
+                    from: job.status.as_str().to_string(),
+                    to: ProcessingJobStatus::Queued.as_str().to_string(),
+                });
+            }
+            Some(job) => {
+                let job = self
+                    .processing
+                    .requeue_processing_job_in_transaction(
+                        &mut transaction,
+                        job.id,
+                        Some(payload_json),
+                    )
+                    .await?;
+                SystemAudioSpeechActivityReprocessingResult {
+                    outcome: SystemAudioSpeechActivityReprocessingOutcome::Requeued,
+                    job,
+                }
+            }
+        };
+
+        transaction.commit().await?;
+
         Ok(result)
     }
 
@@ -1368,6 +1545,7 @@ fn default_processing_registry() -> ProcessorRegistry {
             Arc::new(audio_transcription::providers::AppleSpeechOnDeviceProvider),
             Arc::new(audio_transcription::providers::ParakeetProvider),
         ]))
+        .register(SystemAudioSpeechActivityProcessorBackend)
 }
 
 fn model_key(provider: &str, model_id: &str) -> String {
@@ -3366,6 +3544,7 @@ mod tests {
                     &segment,
                     &AudioSegmentTranscriptionAdmission::disabled(),
                     &AudioSegmentSpeakerAnalysisAdmission::available(speaker_payload.clone()),
+                    &SystemAudioSpeechActivityAdmission::disabled(),
                 )
                 .await
                 .expect("segment should persist with speaker job");
@@ -4672,6 +4851,481 @@ mod tests {
                 .await
                 .expect("result lookup should succeed")
                 .is_none());
+        });
+    }
+
+    #[test]
+    fn rerun_system_audio_speech_activity_requeues_completed_transcription_with_current_payload() {
+        run_async_test(async {
+            let dir = TestDir::new("system-audio-speech-rerun-transcription");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let original_transcription_payload =
+                serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                    "local_whisper",
+                    Some("base".to_string()),
+                    "auto",
+                ))
+                .expect("original transcription payload should serialize");
+            let current_transcription_payload =
+                serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                    "local_whisper",
+                    Some("small".to_string()),
+                    "en",
+                ))
+                .expect("current transcription payload should serialize");
+            let original_speech_payload =
+                serde_json::to_string(&SystemAudioSpeechActivityJobPayload {
+                    detector: capture_types::AudioSpeechDetector::Webrtc,
+                    transcription_payload: original_transcription_payload.clone(),
+                    speaker_analysis_payload: None,
+                })
+                .expect("original speech payload should serialize");
+            let current_speech_payload =
+                serde_json::to_string(&SystemAudioSpeechActivityJobPayload {
+                    detector: capture_types::AudioSpeechDetector::Webrtc,
+                    transcription_payload: current_transcription_payload.clone(),
+                    speaker_analysis_payload: None,
+                })
+                .expect("current speech payload should serialize");
+            let segment = NewAudioSegment::new(
+                AudioSegmentSourceKind::SystemAudio,
+                "system-audio-session",
+                1,
+                "/tmp/system-audio-1.m4a",
+                "2026-04-12T10:00:00Z",
+                "2026-04-12T10:01:00Z",
+            );
+            let committed = infra
+                .upsert_audio_segment_and_maybe_enqueue_processing(
+                    &segment,
+                    &AudioSegmentTranscriptionAdmission::disabled(),
+                    &AudioSegmentSpeakerAnalysisAdmission::disabled(),
+                    &SystemAudioSpeechActivityAdmission::available(original_speech_payload),
+                )
+                .await
+                .expect("system-audio segment and speech job should commit");
+            let speech_job = committed
+                .system_audio_speech_activity_job
+                .expect("speech job should enqueue");
+            infra
+                .claim_queued_processing_job(speech_job.id)
+                .await
+                .expect("speech job should claim")
+                .expect("speech job should exist");
+            infra
+                .complete_processing_job(
+                    speech_job.id,
+                    &ProcessingResultDraft::new()
+                        .with_structured_payload_json("{\"speechDetected\":true}"),
+                )
+                .await
+                .expect("speech job should complete");
+            let transcription_job = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(
+                    committed.segment.id,
+                ))
+                .await
+                .expect("jobs should list")
+                .into_iter()
+                .find(|job| job.processor == AUDIO_TRANSCRIPTION_PROCESSOR)
+                .expect("transcription job should enqueue");
+            infra
+                .claim_queued_processing_job(transcription_job.id)
+                .await
+                .expect("transcription job should claim")
+                .expect("transcription job should exist");
+            infra
+                .complete_processing_job(
+                    transcription_job.id,
+                    &ProcessingResultDraft::new().with_result_text("old transcript"),
+                )
+                .await
+                .expect("transcription job should complete");
+            assert!(infra
+                .get_processing_result_for_job(transcription_job.id)
+                .await
+                .expect("result lookup should succeed")
+                .is_some());
+
+            let reprocessed = infra
+                .reprocess_system_audio_speech_activity(
+                    committed.segment.id,
+                    &SystemAudioSpeechActivityAdmission::available(current_speech_payload),
+                )
+                .await
+                .expect("terminal speech job should requeue");
+            assert_eq!(
+                reprocessed.outcome,
+                SystemAudioSpeechActivityReprocessingOutcome::Requeued
+            );
+            infra
+                .claim_queued_processing_job(reprocessed.job.id)
+                .await
+                .expect("requeued speech job should claim")
+                .expect("requeued speech job should exist");
+            infra
+                .complete_processing_job(
+                    reprocessed.job.id,
+                    &ProcessingResultDraft::new()
+                        .with_structured_payload_json("{\"speechDetected\":true}"),
+                )
+                .await
+                .expect("requeued speech job should complete");
+
+            let jobs = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(
+                    committed.segment.id,
+                ))
+                .await
+                .expect("jobs should list");
+            let refreshed_transcription_job = jobs
+                .iter()
+                .find(|job| job.processor == AUDIO_TRANSCRIPTION_PROCESSOR)
+                .expect("transcription job should exist");
+            assert_eq!(refreshed_transcription_job.id, transcription_job.id);
+            assert_eq!(
+                refreshed_transcription_job.status,
+                ProcessingJobStatus::Queued
+            );
+            assert_eq!(
+                refreshed_transcription_job.payload_json.as_deref(),
+                Some(current_transcription_payload.as_str())
+            );
+            assert!(infra
+                .get_processing_result_for_job(transcription_job.id)
+                .await
+                .expect("result lookup should succeed")
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn rerun_system_audio_speech_activity_refreshes_queued_transcription_payload() {
+        run_async_test(async {
+            let dir = TestDir::new("system-audio-speech-rerun-queued-transcription");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let original_transcription_payload =
+                serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                    "local_whisper",
+                    Some("base".to_string()),
+                    "auto",
+                ))
+                .expect("original transcription payload should serialize");
+            let current_transcription_payload =
+                serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                    "local_whisper",
+                    Some("small".to_string()),
+                    "en",
+                ))
+                .expect("current transcription payload should serialize");
+            let original_speech_payload =
+                serde_json::to_string(&SystemAudioSpeechActivityJobPayload {
+                    detector: capture_types::AudioSpeechDetector::Webrtc,
+                    transcription_payload: original_transcription_payload,
+                    speaker_analysis_payload: None,
+                })
+                .expect("original speech payload should serialize");
+            let current_speech_payload =
+                serde_json::to_string(&SystemAudioSpeechActivityJobPayload {
+                    detector: capture_types::AudioSpeechDetector::Webrtc,
+                    transcription_payload: current_transcription_payload.clone(),
+                    speaker_analysis_payload: None,
+                })
+                .expect("current speech payload should serialize");
+            let segment = NewAudioSegment::new(
+                AudioSegmentSourceKind::SystemAudio,
+                "system-audio-queued-rerun-session",
+                1,
+                "/tmp/system-audio-queued-rerun-1.m4a",
+                "2026-04-12T10:00:00Z",
+                "2026-04-12T10:01:00Z",
+            );
+            let committed = infra
+                .upsert_audio_segment_and_maybe_enqueue_processing(
+                    &segment,
+                    &AudioSegmentTranscriptionAdmission::disabled(),
+                    &AudioSegmentSpeakerAnalysisAdmission::disabled(),
+                    &SystemAudioSpeechActivityAdmission::available(original_speech_payload),
+                )
+                .await
+                .expect("system-audio segment and speech job should commit");
+            let speech_job = committed
+                .system_audio_speech_activity_job
+                .expect("speech job should enqueue");
+            infra
+                .claim_queued_processing_job(speech_job.id)
+                .await
+                .expect("speech job should claim")
+                .expect("speech job should exist");
+            infra
+                .complete_processing_job(
+                    speech_job.id,
+                    &ProcessingResultDraft::new()
+                        .with_structured_payload_json("{\"speechDetected\":true}"),
+                )
+                .await
+                .expect("speech job should complete");
+            let transcription_job = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(
+                    committed.segment.id,
+                ))
+                .await
+                .expect("jobs should list")
+                .into_iter()
+                .find(|job| job.processor == AUDIO_TRANSCRIPTION_PROCESSOR)
+                .expect("transcription job should enqueue");
+            assert_eq!(transcription_job.status, ProcessingJobStatus::Queued);
+
+            let reprocessed = infra
+                .reprocess_system_audio_speech_activity(
+                    committed.segment.id,
+                    &SystemAudioSpeechActivityAdmission::available(current_speech_payload),
+                )
+                .await
+                .expect("terminal speech job should requeue");
+            infra
+                .claim_queued_processing_job(reprocessed.job.id)
+                .await
+                .expect("requeued speech job should claim")
+                .expect("requeued speech job should exist");
+            infra
+                .complete_processing_job(
+                    reprocessed.job.id,
+                    &ProcessingResultDraft::new()
+                        .with_structured_payload_json("{\"speechDetected\":true}"),
+                )
+                .await
+                .expect("requeued speech job should complete");
+
+            let jobs = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(
+                    committed.segment.id,
+                ))
+                .await
+                .expect("jobs should list");
+            let refreshed_transcription_job = jobs
+                .iter()
+                .find(|job| job.processor == AUDIO_TRANSCRIPTION_PROCESSOR)
+                .expect("transcription job should exist");
+            assert_eq!(refreshed_transcription_job.id, transcription_job.id);
+            assert_eq!(
+                refreshed_transcription_job.status,
+                ProcessingJobStatus::Queued
+            );
+            assert_eq!(
+                refreshed_transcription_job.payload_json.as_deref(),
+                Some(current_transcription_payload.as_str())
+            );
+        });
+    }
+
+    #[test]
+    fn no_speech_system_audio_rerun_clears_queued_downstream_jobs() {
+        run_async_test(async {
+            let dir = TestDir::new("system-audio-no-speech-clears-queued-downstream");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let transcription_payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                "local_whisper",
+                Some("base".to_string()),
+                "auto",
+            ))
+            .expect("transcription payload should serialize");
+            let speech_payload = serde_json::to_string(&SystemAudioSpeechActivityJobPayload {
+                detector: capture_types::AudioSpeechDetector::Webrtc,
+                transcription_payload,
+                speaker_analysis_payload: None,
+            })
+            .expect("speech payload should serialize");
+            let segment = NewAudioSegment::new(
+                AudioSegmentSourceKind::SystemAudio,
+                "system-audio-no-speech-clear-session",
+                1,
+                "/tmp/system-audio-no-speech-clear-1.m4a",
+                "2026-04-12T10:00:00Z",
+                "2026-04-12T10:01:00Z",
+            );
+            let committed = infra
+                .upsert_audio_segment_and_maybe_enqueue_processing(
+                    &segment,
+                    &AudioSegmentTranscriptionAdmission::disabled(),
+                    &AudioSegmentSpeakerAnalysisAdmission::disabled(),
+                    &SystemAudioSpeechActivityAdmission::available(speech_payload.clone()),
+                )
+                .await
+                .expect("system-audio segment and speech job should commit");
+            let speech_job = committed
+                .system_audio_speech_activity_job
+                .expect("speech job should enqueue");
+            infra
+                .claim_queued_processing_job(speech_job.id)
+                .await
+                .expect("speech job should claim")
+                .expect("speech job should exist");
+            infra
+                .complete_processing_job(
+                    speech_job.id,
+                    &ProcessingResultDraft::new()
+                        .with_structured_payload_json("{\"speechDetected\":true}"),
+                )
+                .await
+                .expect("speech job should complete");
+            let queued_speaker_job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_speaker_analysis(
+                    committed.segment.id,
+                ))
+                .await
+                .expect("speaker job should enqueue");
+            assert_eq!(queued_speaker_job.status, ProcessingJobStatus::Queued);
+
+            let reprocessed = infra
+                .reprocess_system_audio_speech_activity(
+                    committed.segment.id,
+                    &SystemAudioSpeechActivityAdmission::available(speech_payload),
+                )
+                .await
+                .expect("terminal speech job should requeue");
+            infra
+                .claim_queued_processing_job(reprocessed.job.id)
+                .await
+                .expect("requeued speech job should claim")
+                .expect("requeued speech job should exist");
+            infra
+                .complete_processing_job(
+                    reprocessed.job.id,
+                    &ProcessingResultDraft::new()
+                        .with_structured_payload_json("{\"speechDetected\":false}"),
+                )
+                .await
+                .expect("no-speech rerun should complete");
+
+            let jobs = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(
+                    committed.segment.id,
+                ))
+                .await
+                .expect("jobs should list");
+            assert!(jobs
+                .iter()
+                .all(|job| job.processor != AUDIO_TRANSCRIPTION_PROCESSOR));
+            assert!(jobs
+                .iter()
+                .all(|job| job.processor != SPEAKER_ANALYSIS_PROCESSOR));
+        });
+    }
+
+    #[test]
+    fn no_speech_system_audio_rerun_preserves_running_transcription_job() {
+        run_async_test(async {
+            let dir = TestDir::new("system-audio-no-speech-preserves-running-transcription");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let transcription_payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                "local_whisper",
+                Some("base".to_string()),
+                "auto",
+            ))
+            .expect("transcription payload should serialize");
+            let speech_payload = serde_json::to_string(&SystemAudioSpeechActivityJobPayload {
+                detector: capture_types::AudioSpeechDetector::Webrtc,
+                transcription_payload: transcription_payload.clone(),
+                speaker_analysis_payload: None,
+            })
+            .expect("speech payload should serialize");
+            let segment = NewAudioSegment::new(
+                AudioSegmentSourceKind::SystemAudio,
+                "system-audio-no-speech-session",
+                1,
+                "/tmp/system-audio-no-speech-1.m4a",
+                "2026-04-12T10:00:00Z",
+                "2026-04-12T10:01:00Z",
+            );
+            let committed = infra
+                .upsert_audio_segment_and_maybe_enqueue_processing(
+                    &segment,
+                    &AudioSegmentTranscriptionAdmission::disabled(),
+                    &AudioSegmentSpeakerAnalysisAdmission::disabled(),
+                    &SystemAudioSpeechActivityAdmission::available(speech_payload.clone()),
+                )
+                .await
+                .expect("system-audio segment and speech job should commit");
+            let speech_job = committed
+                .system_audio_speech_activity_job
+                .expect("speech job should enqueue");
+            infra
+                .claim_queued_processing_job(speech_job.id)
+                .await
+                .expect("speech job should claim")
+                .expect("speech job should exist");
+            infra
+                .complete_processing_job(
+                    speech_job.id,
+                    &ProcessingResultDraft::new()
+                        .with_structured_payload_json("{\"speechDetected\":true}"),
+                )
+                .await
+                .expect("speech job should complete");
+
+            let transcription_job = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(
+                    committed.segment.id,
+                ))
+                .await
+                .expect("jobs should list")
+                .into_iter()
+                .find(|job| job.processor == AUDIO_TRANSCRIPTION_PROCESSOR)
+                .expect("transcription job should enqueue");
+            infra
+                .claim_queued_processing_job(transcription_job.id)
+                .await
+                .expect("transcription job should claim")
+                .expect("transcription job should exist");
+
+            let reprocessed = infra
+                .reprocess_system_audio_speech_activity(
+                    committed.segment.id,
+                    &SystemAudioSpeechActivityAdmission::available(speech_payload),
+                )
+                .await
+                .expect("terminal speech job should requeue");
+            infra
+                .claim_queued_processing_job(reprocessed.job.id)
+                .await
+                .expect("requeued speech job should claim")
+                .expect("requeued speech job should exist");
+            infra
+                .complete_processing_job(
+                    reprocessed.job.id,
+                    &ProcessingResultDraft::new()
+                        .with_structured_payload_json("{\"speechDetected\":false}"),
+                )
+                .await
+                .expect("no-speech rerun should complete");
+
+            let jobs = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(
+                    committed.segment.id,
+                ))
+                .await
+                .expect("jobs should list");
+            let preserved_transcription_job = jobs
+                .iter()
+                .find(|job| job.id == transcription_job.id)
+                .expect("running transcription job should be preserved");
+            assert_eq!(
+                preserved_transcription_job.status,
+                ProcessingJobStatus::Running
+            );
+            assert_eq!(
+                preserved_transcription_job.payload_json.as_deref(),
+                Some(transcription_payload.as_str())
+            );
         });
     }
 

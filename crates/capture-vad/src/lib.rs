@@ -2,8 +2,10 @@ mod silero_vad;
 mod webrtc_vad;
 
 use self::webrtc_vad::WebrtcVadAdapter;
+pub use capture_types::AudioSpeechDetector;
 use capture_types::MicrophoneVadAdapter;
 use silero_vad::{SileroVadAdapter, SileroVadLoadError};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 
@@ -346,6 +348,213 @@ pub fn configured_adapter_as_str(adapter: MicrophoneVadAdapter) -> &'static str 
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpeechRangeMs {
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioSpeechDetectionOutcome {
+    pub speech_detected: bool,
+    pub speech_ranges_ms: Vec<SpeechRangeMs>,
+    pub effective_detector: AudioSpeechDetector,
+    pub detector_version: Option<String>,
+    pub processed_duration_ms: u64,
+    pub timing_reliable: bool,
+}
+
+#[derive(Debug)]
+pub struct AudioSpeechDetectorRuntime {
+    configured_detector: AudioSpeechDetector,
+    silero_adapter: Option<SileroVadAdapter>,
+    webrtc_adapter: WebrtcVadAdapter,
+}
+
+impl AudioSpeechDetectorRuntime {
+    pub fn new(configured_detector: AudioSpeechDetector) -> Result<Self, MicrophoneVadError> {
+        let silero_adapter = match configured_detector {
+            AudioSpeechDetector::Silero => {
+                Some(SileroVadAdapter::load_default().map_err(|error| {
+                    MicrophoneVadError::AdapterUnavailable {
+                        adapter: EffectiveMicrophoneVadAdapter::Silero,
+                        reason: error.to_string(),
+                    }
+                })?)
+            }
+            AudioSpeechDetector::Webrtc | AudioSpeechDetector::Off => None,
+        };
+
+        if configured_detector == AudioSpeechDetector::Off {
+            return Err(MicrophoneVadError::AdapterUnavailable {
+                adapter: EffectiveMicrophoneVadAdapter::Off,
+                reason: "speech detector is disabled".to_string(),
+            });
+        }
+
+        Ok(Self {
+            configured_detector,
+            silero_adapter,
+            webrtc_adapter: WebrtcVadAdapter::new(),
+        })
+    }
+
+    pub fn detect_f32_mono(
+        &mut self,
+        samples: &[f32],
+        sample_rate_hz: u32,
+    ) -> Result<AudioSpeechDetectionOutcome, MicrophoneVadError> {
+        if samples.is_empty() {
+            return Ok(AudioSpeechDetectionOutcome {
+                speech_detected: false,
+                speech_ranges_ms: Vec::new(),
+                effective_detector: self.configured_detector,
+                detector_version: Some(detector_version(self.configured_detector).to_string()),
+                processed_duration_ms: 0,
+                timing_reliable: true,
+            });
+        }
+
+        let target_rate_hz = 16_000;
+        let resampled = resample_f32_linear(samples, sample_rate_hz, target_rate_hz);
+        let pcm = f32_to_i16_pcm(&resampled);
+        let frame_samples = (target_rate_hz as usize * 30) / 1_000;
+        let mut speech_ranges = Vec::new();
+        let mut active_start_ms: Option<u64> = None;
+        let mut processed_samples = 0usize;
+
+        while processed_samples < pcm.len() {
+            let remaining_samples = pcm.len() - processed_samples;
+            let actual_frame_samples = remaining_samples.min(frame_samples);
+            let frame_start_ms = (processed_samples as u64 * 1_000) / target_rate_hz as u64;
+            let raw_chunk = &pcm[processed_samples..processed_samples + actual_frame_samples];
+            let chunk = match self.configured_detector {
+                AudioSpeechDetector::Webrtc if actual_frame_samples < frame_samples => {
+                    Cow::Owned(pad_webrtc_frame_16khz(raw_chunk))
+                }
+                _ => Cow::Borrowed(raw_chunk),
+            };
+            let speech = match self.configured_detector {
+                AudioSpeechDetector::Silero => {
+                    let adapter = self.silero_adapter.as_mut().ok_or_else(|| {
+                        MicrophoneVadError::AdapterUnavailable {
+                            adapter: EffectiveMicrophoneVadAdapter::Silero,
+                            reason: "Silero VAD adapter was not initialized".to_string(),
+                        }
+                    })?;
+                    adapter
+                        .process_pcm_frame(chunk.as_ref(), target_rate_hz)
+                        .map_err(|error| MicrophoneVadError::AdapterUnavailable {
+                            adapter: EffectiveMicrophoneVadAdapter::Silero,
+                            reason: error.to_string(),
+                        })?
+                        .unwrap_or(false)
+                }
+                AudioSpeechDetector::Webrtc => self
+                    .webrtc_adapter
+                    .process_pcm_frame(&MicrophonePcmVadFrame {
+                        samples: chunk.as_ref(),
+                        sample_rate_hz: target_rate_hz,
+                        captured_at_unix_ms: frame_start_ms,
+                        normalized_peak_level: 0.0,
+                    })?
+                    .unwrap_or(false),
+                AudioSpeechDetector::Off => false,
+            };
+
+            record_speech_frame_decision(
+                &mut speech_ranges,
+                &mut active_start_ms,
+                speech,
+                frame_start_ms,
+            );
+            processed_samples += actual_frame_samples;
+        }
+
+        if let Some(start_ms) = active_start_ms {
+            speech_ranges.push(SpeechRangeMs {
+                start_ms,
+                end_ms: (processed_samples as u64 * 1_000) / target_rate_hz as u64,
+            });
+        }
+
+        Ok(AudioSpeechDetectionOutcome {
+            speech_detected: !speech_ranges.is_empty(),
+            speech_ranges_ms: speech_ranges,
+            effective_detector: self.configured_detector,
+            detector_version: Some(detector_version(self.configured_detector).to_string()),
+            processed_duration_ms: (samples.len() as u64 * 1_000) / sample_rate_hz.max(1) as u64,
+            timing_reliable: true,
+        })
+    }
+}
+
+fn record_speech_frame_decision(
+    speech_ranges: &mut Vec<SpeechRangeMs>,
+    active_start_ms: &mut Option<u64>,
+    speech: bool,
+    frame_start_ms: u64,
+) {
+    if speech {
+        active_start_ms.get_or_insert(frame_start_ms);
+    } else if let Some(start_ms) = active_start_ms.take() {
+        speech_ranges.push(SpeechRangeMs {
+            start_ms,
+            end_ms: frame_start_ms,
+        });
+    }
+}
+
+pub fn detector_version(detector: AudioSpeechDetector) -> &'static str {
+    match detector {
+        AudioSpeechDetector::Silero => "silero",
+        AudioSpeechDetector::Webrtc => "webrtc-vad",
+        AudioSpeechDetector::Off => "off",
+    }
+}
+
+fn f32_to_i16_pcm(samples: &[f32]) -> Vec<i16> {
+    samples
+        .iter()
+        .map(|sample| {
+            let clamped = sample.clamp(-1.0, 1.0);
+            (clamped * i16::MAX as f32).round() as i16
+        })
+        .collect()
+}
+
+fn pad_webrtc_frame_16khz(samples: &[i16]) -> Vec<i16> {
+    let target_len = [160, 320, 480]
+        .into_iter()
+        .find(|target_len| samples.len() <= *target_len)
+        .unwrap_or(480);
+    let mut padded = Vec::with_capacity(target_len);
+    padded.extend_from_slice(samples);
+    padded.resize(target_len, 0);
+    padded
+}
+
+fn resample_f32_linear(samples: &[f32], source_rate_hz: u32, target_rate_hz: u32) -> Vec<f32> {
+    if samples.is_empty() || source_rate_hz == 0 || target_rate_hz == 0 {
+        return Vec::new();
+    }
+    if source_rate_hz == target_rate_hz {
+        return samples.to_vec();
+    }
+    let output_len =
+        ((samples.len() as u64 * target_rate_hz as u64) / source_rate_hz as u64).max(1) as usize;
+    let ratio = source_rate_hz as f64 / target_rate_hz as f64;
+    let mut output = Vec::with_capacity(output_len);
+    for index in 0..output_len {
+        let source_pos = index as f64 * ratio;
+        let left = source_pos.floor() as usize;
+        let right = (left + 1).min(samples.len() - 1);
+        let frac = (source_pos - left as f64) as f32;
+        output.push(samples[left] + (samples[right] - samples[left]) * frac);
+    }
+    output
+}
+
 #[derive(Debug)]
 struct MicrophoneVadResolution {
     effective_adapter: EffectiveMicrophoneVadAdapter,
@@ -396,17 +605,9 @@ fn resolve_effective_adapter_with_probes(
                 fallback_reason: None,
                 silero_adapter: Some(silero_adapter),
             },
-            Err(error) if webrtc_available() => MicrophoneVadResolution {
-                effective_adapter: EffectiveMicrophoneVadAdapter::Webrtc,
-                fallback_reason: Some(format!("{}; using WebRTC VAD", error.fallback_reason())),
-                silero_adapter: None,
-            },
             Err(error) => MicrophoneVadResolution {
                 effective_adapter: EffectiveMicrophoneVadAdapter::PeakLevel,
-                fallback_reason: Some(format!(
-                    "{}; WebRTC VAD is unavailable; using peak-level microphone activity",
-                    error.fallback_reason()
-                )),
+                fallback_reason: Some(error.fallback_reason().to_string()),
                 silero_adapter: None,
             },
         },
@@ -523,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn silero_falls_back_to_peak_level_when_no_vad_adapter_is_usable() {
+    fn silero_does_not_fall_back_to_webrtc_when_unavailable() {
         let resolution = resolve_effective_adapter_with_probes(
             MicrophoneVadAdapter::Silero,
             || {
@@ -540,8 +741,7 @@ mod tests {
         );
         let reason = resolution.fallback_reason.expect("fallback reason");
         assert!(reason.contains("Silero VAD model was not found"));
-        assert!(reason.contains("WebRTC VAD is unavailable"));
-        assert!(reason.contains("using peak-level microphone activity"));
+        assert!(!reason.contains("WebRTC"));
     }
 
     #[test]
@@ -617,6 +817,49 @@ mod tests {
         assert_eq!(outcome.decision.idle_ms, Some(0));
         assert_eq!(outcome.decision.latest_normalized_level, Some(1.0));
         assert!(outcome.vad_speech_detected);
+    }
+
+    #[test]
+    fn audio_speech_detector_processes_final_partial_webrtc_frame() {
+        let mut runtime = AudioSpeechDetectorRuntime::new(AudioSpeechDetector::Webrtc)
+            .expect("WebRTC detector should initialize");
+        let samples = voiced_like_frame_16khz_30ms()
+            .into_iter()
+            .take(320)
+            .map(|sample| f32::from(sample) / f32::from(i16::MAX))
+            .collect::<Vec<_>>();
+
+        let outcome = runtime
+            .detect_f32_mono(&samples, 16_000)
+            .expect("partial final frame should be processed");
+
+        assert!(outcome.speech_detected);
+        assert_eq!(
+            outcome.speech_ranges_ms,
+            vec![SpeechRangeMs {
+                start_ms: 0,
+                end_ms: 20
+            }]
+        );
+        assert_eq!(outcome.processed_duration_ms, 20);
+    }
+
+    #[test]
+    fn speech_range_ends_at_first_non_speech_frame_start() {
+        let mut speech_ranges = Vec::new();
+        let mut active_start_ms = None;
+
+        record_speech_frame_decision(&mut speech_ranges, &mut active_start_ms, true, 0);
+        record_speech_frame_decision(&mut speech_ranges, &mut active_start_ms, false, 30);
+
+        assert_eq!(active_start_ms, None);
+        assert_eq!(
+            speech_ranges,
+            vec![SpeechRangeMs {
+                start_ms: 0,
+                end_ms: 30
+            }]
+        );
     }
 
     #[test]

@@ -9,11 +9,13 @@ use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, T
 
 use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
 
+use super::SystemAudioSpeechActivityJobPayload;
 use super::{
     AudioTranscriptionJobPayload, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary,
     NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingResult,
     ProcessingResultDraft, ProcessingSubject, AUDIO_SEGMENT_SUBJECT_TYPE,
     AUDIO_TRANSCRIPTION_PROCESSOR, OCR_PROCESSOR, SPEAKER_ANALYSIS_PROCESSOR,
+    SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
@@ -250,6 +252,39 @@ impl ProcessingStore {
         }
 
         delete_processing_result_for_job(&mut **transaction, job_id).await?;
+
+        get_processing_job_optional(&mut **transaction, job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))
+    }
+
+    pub(crate) async fn update_queued_processing_job_payload_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        job_id: i64,
+        payload_json: Option<&str>,
+    ) -> Result<ProcessingJob> {
+        let update = sqlx::query(
+            "UPDATE processing_jobs \
+             SET payload_json = COALESCE(?2, payload_json), \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status = 'queued'",
+        )
+        .bind(job_id)
+        .bind(payload_json)
+        .execute(&mut **transaction)
+        .await?;
+
+        if update.rows_affected() == 0 {
+            let current = get_processing_job_optional(&mut **transaction, job_id)
+                .await?
+                .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+            return Err(processing_job_invalid_transition(
+                job_id,
+                &current.status,
+                ProcessingJobStatus::Queued.as_str(),
+            ));
+        }
 
         get_processing_job_optional(&mut **transaction, job_id)
             .await?
@@ -1278,6 +1313,66 @@ impl ProcessingStore {
                         .await?;
                     }
                 }
+            }
+        }
+        if job.processor == SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR
+            && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
+        {
+            let speech_detected = result
+                .structured_payload_json
+                .as_deref()
+                .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+                .and_then(|payload| {
+                    payload
+                        .get("speechDetected")
+                        .and_then(|value| value.as_bool())
+                })
+                .unwrap_or(false);
+            if speech_detected {
+                let payload = SystemAudioSpeechActivityJobPayload::from_job(&job)?;
+                let subject = ProcessingSubject::audio_segment(job.subject_id);
+                let existing = self
+                    .get_latest_processing_job_for_subject_and_processor_in_transaction(
+                        &mut transaction,
+                        &subject,
+                        AUDIO_TRANSCRIPTION_PROCESSOR,
+                    )
+                    .await?;
+                if existing.is_none() {
+                    self.enqueue_job_in_transaction(
+                        &mut transaction,
+                        &subject,
+                        AUDIO_TRANSCRIPTION_PROCESSOR,
+                        Some(&payload.transcription_payload),
+                    )
+                    .await?;
+                } else if let Some(existing) = existing {
+                    if matches!(
+                        existing.status,
+                        ProcessingJobStatus::Completed | ProcessingJobStatus::Failed
+                    ) {
+                        self.requeue_processing_job_in_transaction(
+                            &mut transaction,
+                            existing.id,
+                            Some(&payload.transcription_payload),
+                        )
+                        .await?;
+                    }
+                    if existing.status == ProcessingJobStatus::Queued {
+                        self.update_queued_processing_job_payload_in_transaction(
+                            &mut transaction,
+                            existing.id,
+                            Some(&payload.transcription_payload),
+                        )
+                        .await?;
+                    }
+                }
+            } else {
+                clear_audio_transcription_and_speaker_analysis_for_audio_segment(
+                    &mut transaction,
+                    job.subject_id,
+                )
+                .await?;
             }
         }
         if job.processor == SPEAKER_ANALYSIS_PROCESSOR
@@ -2682,6 +2777,54 @@ where
         .bind(job_id)
         .execute(executor)
         .await?;
+    Ok(())
+}
+
+async fn clear_audio_transcription_and_speaker_analysis_for_audio_segment(
+    transaction: &mut Transaction<'_, Sqlite>,
+    audio_segment_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM processing_results \
+         WHERE job_id IN (\
+            SELECT id \
+            FROM processing_jobs \
+            WHERE subject_type = ?1 \
+              AND subject_id = ?2 \
+              AND processor IN (?3, ?4) \
+              AND status IN ('queued', 'completed', 'failed')\
+         )",
+    )
+    .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+    .bind(audio_segment_id)
+    .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+    .bind(SPEAKER_ANALYSIS_PROCESSOR)
+    .execute(&mut **transaction)
+    .await?;
+
+    sqlx::query(
+        "DELETE FROM processing_jobs \
+         WHERE subject_type = ?1 \
+           AND subject_id = ?2 \
+           AND processor IN (?3, ?4) \
+           AND status IN ('queued', 'completed', 'failed')",
+    )
+    .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+    .bind(audio_segment_id)
+    .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+    .bind(SPEAKER_ANALYSIS_PROCESSOR)
+    .execute(&mut **transaction)
+    .await?;
+
+    sqlx::query("DELETE FROM speaker_turns WHERE audio_segment_id = ?1")
+        .bind(audio_segment_id)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("DELETE FROM speaker_segment_clusters WHERE audio_segment_id = ?1")
+        .bind(audio_segment_id)
+        .execute(&mut **transaction)
+        .await?;
+
     Ok(())
 }
 

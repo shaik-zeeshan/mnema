@@ -331,6 +331,11 @@ export interface AudioSegmentTranscriptionReprocessingResultDto {
 	job: ProcessingJobDto;
 }
 
+export interface SystemAudioSpeechActivityReprocessingResultDto {
+	outcome: AudioSegmentTranscriptionReprocessingOutcome;
+	job: ProcessingJobDto;
+}
+
 export interface ReprocessCapturedFrameOcrRequest {
 	frameId: number;
 	payloadJson?: string | null;

@@ -963,7 +963,7 @@ fn transcription_admission_for_app_handle(
         }
     };
 
-    if !transcription_settings.enabled {
+    if !transcription_settings.enabled || !transcription_settings.microphone_enabled {
         return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
     }
 
@@ -1025,6 +1025,98 @@ fn transcription_admission_for_app_handle(
                 "failed to inspect selected audio transcription model: {error}"
             ));
             ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn system_audio_speech_admission_for_app_handle(
+    app_handle: &tauri::AppHandle,
+) -> ::app_infra::SystemAudioSpeechActivityAdmission {
+    let settings = match app_handle
+        .state::<crate::native_capture::RecordingSettingsState>()
+        .lock()
+    {
+        Ok(settings) => settings.settings.clone(),
+        Err(_) => {
+            super::debug_log::log(
+                "failed to read recording settings for system-audio speech admission".to_string(),
+            );
+            return ::app_infra::SystemAudioSpeechActivityAdmission::disabled();
+        }
+    };
+
+    if !settings.transcription.enabled || !settings.transcription.system_audio_enabled {
+        return ::app_infra::SystemAudioSpeechActivityAdmission::disabled();
+    }
+    if settings.audio_speech_detection.detector == capture_types::AudioSpeechDetector::Off {
+        return ::app_infra::SystemAudioSpeechActivityAdmission::unavailable();
+    }
+
+    let transcription_admission = {
+        let available = match app_handle.path().app_data_dir() {
+            Ok(app_data_dir) => {
+                crate::audio_transcription_models::selected_audio_transcription_model_available(
+                    &app_data_dir,
+                    &settings.transcription,
+                )
+            }
+            Err(error) => {
+                super::debug_log::log(format!(
+                    "failed to resolve app data directory for system-audio speech admission: {error}"
+                ));
+                return ::app_infra::SystemAudioSpeechActivityAdmission::unavailable();
+            }
+        };
+        match available {
+            Ok(true) => {
+                let provider = crate::audio_transcription_models::provider_id_for_settings(
+                    settings.transcription.provider,
+                );
+                let mut payload = ::app_infra::AudioTranscriptionJobPayload::new(
+                    provider,
+                    settings.transcription.model_id.clone(),
+                    settings.transcription.language.clone(),
+                );
+                payload.options =
+                    crate::audio_transcription_models::transcription_request_options_for_settings(
+                        &settings.transcription,
+                    );
+                let speaker_admission = speaker_analysis_admission_for_app_handle(app_handle);
+                if speaker_admission.enabled && speaker_admission.provider_available {
+                    if let Some(payload_json) = speaker_admission.payload_json.as_deref() {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload_json) {
+                            payload.options.insert(
+                                ::app_infra::SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY.to_string(),
+                                value,
+                            );
+                        }
+                    }
+                }
+                serde_json::to_string(&payload).ok()
+            }
+            Ok(false) | Err(_) => None,
+        }
+    };
+
+    let Some(transcription_payload) = transcription_admission else {
+        return ::app_infra::SystemAudioSpeechActivityAdmission::unavailable();
+    };
+    let payload = ::app_infra::SystemAudioSpeechActivityJobPayload {
+        detector: settings.audio_speech_detection.detector,
+        transcription_payload,
+        speaker_analysis_payload: speaker_analysis_admission_for_app_handle(app_handle)
+            .payload_json,
+    };
+    match serde_json::to_string(&payload) {
+        Ok(payload_json) => {
+            ::app_infra::SystemAudioSpeechActivityAdmission::available(payload_json)
+        }
+        Err(error) => {
+            super::debug_log::log(format!(
+                "failed to serialize system-audio speech admission payload: {error}"
+            ));
+            ::app_infra::SystemAudioSpeechActivityAdmission::unavailable()
         }
     }
 }
@@ -1126,12 +1218,15 @@ pub(super) fn persist_committed_audio_segments(
         let mut persisted_any = false;
         let transcription_admission = transcription_admission_for_app_handle(&app_handle);
         let speaker_admission = speaker_analysis_admission_for_app_handle(&app_handle);
+        let system_audio_speech_admission =
+            system_audio_speech_admission_for_app_handle(&app_handle);
         for segment in segments {
             match infra
                 .upsert_audio_segment_and_maybe_enqueue_processing(
                     &segment,
                     &transcription_admission,
                     &speaker_admission,
+                    &system_audio_speech_admission,
                 )
                 .await
             {
@@ -2425,13 +2520,13 @@ where
         });
     };
 
+    let system_audio_writer_paused = runtime.inactivity.is_system_audio_paused();
     let screen_sources = CaptureSources {
         screen: true,
         microphone: false,
-        system_audio: requested_sources.system_audio
-            && !runtime.inactivity.is_system_audio_paused(),
+        system_audio: requested_sources.system_audio,
     };
-    let system_audio_planner = if screen_sources.system_audio {
+    let system_audio_planner = if screen_sources.system_audio && !system_audio_writer_paused {
         ensure_system_audio_planner_for_runtime(runtime, "recovering after system wake")?
     } else {
         None
@@ -2520,8 +2615,7 @@ where
     let next_index = next_emitted_segment_index(runtime.current_segment_index);
     let segment_dir = screen_planner.segment_dir(next_index);
     let screen_output_file = screen_planner.segment_screen_output(next_index);
-    let system_audio_output_path = screen_sources
-        .system_audio
+    let system_audio_output_path = (screen_sources.system_audio && !system_audio_writer_paused)
         .then(|| {
             system_audio_planner
                 .as_ref()
