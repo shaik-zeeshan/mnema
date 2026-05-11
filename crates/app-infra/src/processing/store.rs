@@ -258,6 +258,39 @@ impl ProcessingStore {
             .ok_or(AppInfraError::ProcessingJobNotFound(job_id))
     }
 
+    pub(crate) async fn update_queued_processing_job_payload_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        job_id: i64,
+        payload_json: Option<&str>,
+    ) -> Result<ProcessingJob> {
+        let update = sqlx::query(
+            "UPDATE processing_jobs \
+             SET payload_json = COALESCE(?2, payload_json), \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status = 'queued'",
+        )
+        .bind(job_id)
+        .bind(payload_json)
+        .execute(&mut **transaction)
+        .await?;
+
+        if update.rows_affected() == 0 {
+            let current = get_processing_job_optional(&mut **transaction, job_id)
+                .await?
+                .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+            return Err(processing_job_invalid_transition(
+                job_id,
+                &current.status,
+                ProcessingJobStatus::Queued.as_str(),
+            ));
+        }
+
+        get_processing_job_optional(&mut **transaction, job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))
+    }
+
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
         get_frame_optional(&self.pool, frame_id).await
     }
@@ -1319,6 +1352,14 @@ impl ProcessingStore {
                         ProcessingJobStatus::Completed | ProcessingJobStatus::Failed
                     ) {
                         self.requeue_processing_job_in_transaction(
+                            &mut transaction,
+                            existing.id,
+                            Some(&payload.transcription_payload),
+                        )
+                        .await?;
+                    }
+                    if existing.status == ProcessingJobStatus::Queued {
+                        self.update_queued_processing_job_payload_in_transaction(
                             &mut transaction,
                             existing.id,
                             Some(&payload.transcription_payload),
@@ -2751,7 +2792,7 @@ async fn clear_audio_transcription_and_speaker_analysis_for_audio_segment(
             WHERE subject_type = ?1 \
               AND subject_id = ?2 \
               AND processor IN (?3, ?4) \
-              AND status IN ('completed', 'failed')\
+              AND status IN ('queued', 'completed', 'failed')\
          )",
     )
     .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
@@ -2766,7 +2807,7 @@ async fn clear_audio_transcription_and_speaker_analysis_for_audio_segment(
          WHERE subject_type = ?1 \
            AND subject_id = ?2 \
            AND processor IN (?3, ?4) \
-           AND status IN ('completed', 'failed')",
+           AND status IN ('queued', 'completed', 'failed')",
     )
     .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
     .bind(audio_segment_id)
