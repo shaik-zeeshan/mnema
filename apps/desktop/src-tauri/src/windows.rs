@@ -101,8 +101,8 @@ impl AppWindow {
                 label: "onboarding",
                 path: "onboarding",
                 title: "mnema · Onboarding",
-                inner_size: (760.0, 620.0),
-                min_inner_size: (640.0, 520.0),
+                inner_size: (960.0, 760.0),
+                min_inner_size: (820.0, 620.0),
                 gated_by_dev_options: false,
                 decorations: false,
                 overlay_title_bar: false,
@@ -127,8 +127,8 @@ impl AppWindow {
                 label: "settings",
                 path: "settings",
                 title: "mnema · Settings",
-                inner_size: (900.0, 820.0),
-                min_inner_size: (640.0, 480.0),
+                inner_size: (1040.0, 820.0),
+                min_inner_size: (820.0, 620.0),
                 gated_by_dev_options: false,
                 decorations: false,
                 overlay_title_bar: false,
@@ -288,34 +288,35 @@ fn open_or_focus_window(
     Ok(())
 }
 
+fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
+    match tab {
+        "capture" | "behavior" => Some("capture"),
+        "video" => Some("video"),
+        "audio" | "microphone" => Some("audio"),
+        "processing" | "ocr" | "transcription" | "speakers" => Some("processing"),
+        "storage" => Some("storage"),
+        "appearance" => Some("appearance"),
+        "developer" => Some("developer"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
 fn is_known_settings_tab(tab: &str) -> bool {
-    matches!(
-        tab,
-        "capture"
-            | "video"
-            | "storage"
-            | "behavior"
-            | "microphone"
-            | "ocr"
-            | "transcription"
-            | "developer"
-    )
+    normalize_settings_tab(tab).is_some()
 }
 
 fn settings_tab_path(tab: &str) -> Result<String, String> {
-    if is_known_settings_tab(tab) {
-        Ok(format!("/settings?tab={tab}"))
-    } else {
-        Err(format!("unknown settings tab: {tab}"))
-    }
+    let normalized =
+        normalize_settings_tab(tab).ok_or_else(|| format!("unknown settings tab: {tab}"))?;
+    Ok(format!("/settings?tab={normalized}"))
 }
 
 fn open_or_focus_settings_window_to_tab(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
     let path = settings_tab_path(tab)?;
     let config = AppWindow::Settings.config();
-    let payload = OpenSettingsTabPayload {
-        tab: tab.to_string(),
-    };
+    let tab = normalize_settings_tab(tab).ok_or_else(|| format!("unknown settings tab: {tab}"))?;
+    let payload = OpenSettingsTabPayload { tab: tab.to_string() };
 
     if let Some(existing) = app.get_webview_window(config.label) {
         let _ = existing.show();
@@ -531,7 +532,7 @@ pub fn complete_onboarding(
 mod tests {
     use super::{
         destroyed_window_action, is_known_settings_tab, load_onboarding_state_from_path,
-        settings_tab_path, DestroyedWindowAction,
+        normalize_settings_tab, settings_tab_path, DestroyedWindowAction,
     };
 
     #[test]
@@ -572,18 +573,30 @@ mod tests {
 
     #[test]
     fn settings_tab_deeplink_accepts_known_tabs_only() {
+        assert!(is_known_settings_tab("processing"));
         assert!(is_known_settings_tab("transcription"));
+        assert!(is_known_settings_tab("microphone"));
         assert!(is_known_settings_tab("capture"));
         assert!(!is_known_settings_tab("transcripts"));
         assert!(!is_known_settings_tab("../developer"));
     }
 
     #[test]
-    fn settings_tab_deeplink_path_targets_requested_tab() {
+    fn settings_tab_aliases_normalize_to_canonical_tabs() {
+        assert_eq!(normalize_settings_tab("ocr"), Some("processing"));
+        assert_eq!(normalize_settings_tab("transcription"), Some("processing"));
+        assert_eq!(normalize_settings_tab("speakers"), Some("processing"));
+        assert_eq!(normalize_settings_tab("microphone"), Some("audio"));
+        assert_eq!(normalize_settings_tab("behavior"), Some("capture"));
+    }
+
+    #[test]
+    fn settings_tab_deeplink_path_targets_canonical_tab() {
         assert_eq!(
             settings_tab_path("transcription").as_deref(),
-            Ok("/settings?tab=transcription")
+            Ok("/settings?tab=processing")
         );
+        assert_eq!(settings_tab_path("audio").as_deref(), Ok("/settings?tab=audio"));
         assert!(settings_tab_path("../developer").is_err());
     }
 

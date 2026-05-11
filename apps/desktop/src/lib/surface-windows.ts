@@ -11,12 +11,16 @@ export type SurfaceWindowLabel = "main" | "onboarding" | "settings" | "debug";
 export type SettingsWindowTab =
   | "capture"
   | "video"
+  | "audio"
+  | "processing"
   | "storage"
+  | "appearance"
+  | "developer"
   | "behavior"
   | "microphone"
   | "ocr"
   | "transcription"
-  | "developer";
+  | "speakers";
 
 export async function openSettingsWindow(tab?: SettingsWindowTab): Promise<void> {
   if (tab) {

@@ -365,11 +365,11 @@ fn ocr_unavailable_notification_opens_ocr_settings_tab() {
 
     let payload = serde_json::to_value(&notification).expect("notification should serialize");
     assert_eq!(payload["action"]["type"], "open_settings_tab");
-    assert_eq!(payload["action"]["tab"], "ocr");
+    assert_eq!(payload["action"]["tab"], "processing");
 
     match notification.action {
         Some(AppNotificationAction::OpenSettingsTab { tab }) => {
-            assert_eq!(tab, "ocr");
+            assert_eq!(tab, "processing");
         }
         None => panic!("OCR warning should include settings CTA"),
     }
@@ -399,11 +399,11 @@ fn audio_transcription_unavailable_notification_opens_transcription_settings_tab
 
     let payload = serde_json::to_value(&notification).expect("notification should serialize");
     assert_eq!(payload["action"]["type"], "open_settings_tab");
-    assert_eq!(payload["action"]["tab"], "transcription");
+    assert_eq!(payload["action"]["tab"], "processing");
 
     match notification.action {
         Some(AppNotificationAction::OpenSettingsTab { tab }) => {
-            assert_eq!(tab, "transcription");
+            assert_eq!(tab, "processing");
         }
         None => panic!("transcription warning should include settings CTA"),
     }

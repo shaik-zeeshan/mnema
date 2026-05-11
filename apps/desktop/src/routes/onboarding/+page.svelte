@@ -6,6 +6,9 @@
   import Slider from "$lib/components/Slider.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
+  import ScreenResolutionControl from "$lib/components/ScreenResolutionControl.svelte";
+  import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
+  import { theme } from "$lib/theme.svelte";
   import type {
     ActivityMode,
     AudioTranscriptionMemoryMode,
@@ -23,28 +26,33 @@
     OcrTesseractPreprocessMode,
     PermissionStatus,
     RecordingSettings,
+    ResolutionMode,
+    ResolutionPreset,
     RetentionPolicy,
+    VideoBitrateMode,
+    VideoBitratePreset,
   } from "$lib/types";
 
   type OnboardingState = {
     schemaVersion: number;
     completedAtUnixMs: number | null;
   };
+  const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
   const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
   const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
 
-  type OnboardingStep = "about" | "permissions" | "sources" | "storage" | "processing" | "inactivity" | "done";
+  type OnboardingStep = "about" | "permissions" | "sources" | "video" | "storage" | "processing" | "done";
   type ProcessingPanel = "ocr" | "transcription";
   type PermissionValue = PermissionStatus | "unsupported" | "unknown";
 
   const steps: { id: OnboardingStep; label: string }[] = [
     { id: "about", label: "About" },
     { id: "permissions", label: "Access" },
-    { id: "sources", label: "Sources" },
+    { id: "sources", label: "Capture" },
+    { id: "video", label: "Video" },
     { id: "storage", label: "Storage" },
     { id: "processing", label: "Processing" },
-    { id: "inactivity", label: "Idle" },
     { id: "done", label: "Ready" },
   ];
   const railSteps = steps.filter((step) => step.id !== "about" && step.id !== "done");
@@ -80,6 +88,16 @@
   let draftCaptureSystemAudio = $state(false);
   let draftFrameRate = $state(1);
   let draftSegmentDuration = $state(60);
+  let draftResolutionMode = $state<ResolutionMode>("original");
+  let draftResolutionPreset = $state<ResolutionPreset>("1080p");
+  let draftCustomWidth = $state<number | null>(null);
+  let draftCustomHeight = $state<number | null>(null);
+  let customWidthRaw = $state("");
+  let customHeightRaw = $state("");
+  let draftBitrateMode = $state<VideoBitrateMode>("preset");
+  let draftBitratePreset = $state<VideoBitratePreset>("medium");
+  let draftCustomMbpsRaw = $state("");
+  let draftCustomMbps = $state<number | null>(null);
   let draftSaveDirectory = $state("");
   let draftPreviewCacheTtlSeconds = $state(3600);
   let draftRetentionPolicy = $state<RetentionPolicy>("never");
@@ -143,6 +161,8 @@
     permissions === null ? 0
       : (["screen", "microphone", "systemAudio"] as const).filter((k) => permissions?.[k] === "granted").length
   );
+  const customResolutionErrors = $derived(validateCustomResolution());
+  const customBitrateErrors = $derived(validateCustomBitrate());
 
   $effect(() => { void initialize(); });
   $effect(() => {
@@ -151,6 +171,7 @@
 
     let unlistenOcrDownloadProgress: (() => void) | undefined;
     let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
+    let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let destroyed = false;
 
     listen<OcrModelDownloadProgress>(
@@ -169,14 +190,34 @@
       else unlistenTranscriptionDownloadProgress = fn;
     });
 
+    listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
+      settings = event.payload;
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenRecordingSettingsChanged = fn;
+    });
+
     return () => {
       destroyed = true;
       unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
+      unlistenRecordingSettingsChanged?.();
     };
   });
   $effect(() => {
     if (!draftCaptureScreen && draftCaptureSystemAudio) draftCaptureSystemAudio = false;
+  });
+  $effect(() => {
+    const parsed = parsePositiveInteger(customWidthRaw);
+    draftCustomWidth = parsed !== null && parsed >= 320 && parsed <= 7680 ? parsed : null;
+  });
+  $effect(() => {
+    const parsed = parsePositiveInteger(customHeightRaw);
+    draftCustomHeight = parsed !== null && parsed >= 240 && parsed <= 4320 ? parsed : null;
+  });
+  $effect(() => {
+    const parsed = parsePositiveInteger(draftCustomMbpsRaw);
+    draftCustomMbps = parsed !== null && parsed >= 1 && parsed <= 40 ? parsed : null;
   });
 
   async function initialize(): Promise<void> {
@@ -212,6 +253,38 @@
     draftCaptureSystemAudio = next.captureSystemAudio;
     draftFrameRate = next.screenFrameRate;
     draftSegmentDuration = next.segmentDurationSeconds;
+    if (next.screenResolution.mode === "custom") {
+      draftResolutionMode = "custom";
+      draftCustomWidth = next.screenResolution.width;
+      draftCustomHeight = next.screenResolution.height;
+      customWidthRaw = String(next.screenResolution.width);
+      customHeightRaw = String(next.screenResolution.height);
+    } else if (next.screenResolution.preset === "original") {
+      draftResolutionMode = "original";
+      draftResolutionPreset = "1080p";
+      draftCustomWidth = null;
+      draftCustomHeight = null;
+      customWidthRaw = "";
+      customHeightRaw = "";
+    } else {
+      draftResolutionMode = "preset";
+      draftResolutionPreset = next.screenResolution.preset;
+      draftCustomWidth = null;
+      draftCustomHeight = null;
+      customWidthRaw = "";
+      customHeightRaw = "";
+    }
+    if (next.videoBitrate.mode === "custom") {
+      draftBitrateMode = "custom";
+      draftBitratePreset = "medium";
+      draftCustomMbps = next.videoBitrate.customMbps;
+      draftCustomMbpsRaw = String(next.videoBitrate.customMbps);
+    } else {
+      draftBitrateMode = "preset";
+      draftBitratePreset = next.videoBitrate.preset;
+      draftCustomMbps = null;
+      draftCustomMbpsRaw = "";
+    }
     draftSaveDirectory = next.saveDirectory;
     draftPreviewCacheTtlSeconds = next.previewCacheTtlSeconds ?? 3600;
     draftRetentionPolicy = next.retentionPolicy ?? "never";
@@ -256,10 +329,17 @@
       captureMicrophone: draftCaptureMicrophone,
       captureSystemAudio: draftCaptureScreen && draftCaptureSystemAudio,
       screenFrameRate: draftFrameRate,
+      screenResolution: draftResolutionMode === "custom"
+        ? { mode: "custom", width: draftCustomWidth!, height: draftCustomHeight! }
+        : { mode: "preset", preset: draftResolutionMode === "original" ? "original" : draftResolutionPreset },
+      videoBitrate: draftBitrateMode === "custom"
+        ? { mode: "custom", preset: null, customMbps: draftCustomMbps! }
+        : { mode: "preset", preset: draftBitratePreset, customMbps: null },
       segmentDurationSeconds: draftSegmentDuration,
       saveDirectory: draftSaveDirectory.trim(),
       previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
       retentionPolicy: draftRetentionPolicy,
+      appearance: theme.loaded ? theme.appearance : base.appearance,
       autoStart: draftAutoStart,
       pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
       idleTimeoutSeconds: draftIdleTimeoutSeconds,
@@ -423,7 +503,7 @@
 
   async function nextStep(): Promise<void> {
     if (!canGoNext) return;
-    if (activeStep === "sources" || activeStep === "storage" || activeStep === "processing" || activeStep === "inactivity") {
+    if (activeStep === "sources" || activeStep === "video" || activeStep === "storage" || activeStep === "processing") {
       try { await saveSettings(); } catch { return; }
     }
     activeStep = steps[Math.min(activeIndex + 1, steps.length - 1)].id;
@@ -482,6 +562,26 @@
       return s ? `${m}m ${s}s` : `${m}m`;
     }
     return `${v}s`;
+  }
+
+  function parsePositiveInteger(raw: string): number | null {
+    const trimmed = raw.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number.parseInt(trimmed, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function validateCustomResolution(): string[] {
+    if (draftResolutionMode !== "custom") return [];
+    const errors: string[] = [];
+    if (draftCustomWidth === null) errors.push("Width must be between 320 and 7680 pixels.");
+    if (draftCustomHeight === null) errors.push("Height must be between 240 and 4320 pixels.");
+    return errors;
+  }
+
+  function validateCustomBitrate(): string[] {
+    if (draftBitrateMode !== "custom") return [];
+    return draftCustomMbps === null ? ["Bitrate must be a whole number from 1 to 40 Mbps."] : [];
   }
 
   const ocrProviderOptions = $derived(
@@ -584,6 +684,9 @@
   );
 
   function canProceedFromActiveStep(): boolean {
+    if (activeStep === "video") {
+      return customResolutionErrors.length === 0 && customBitrateErrors.length === 0;
+    }
     if (activeStep === "processing" || activeStep === "done") {
       return processingReady;
     }
@@ -843,9 +946,68 @@
                 </div>
               </div>
 
+              <div class="settings-divider"></div>
+
+              <div class="settings-stack">
+                <Switch
+                  bind:checked={draftPauseCaptureOnInactivity}
+                  label="Pause when idle"
+                  description="Resume automatically when activity returns"
+                />
+              </div>
+
+              {#if draftPauseCaptureOnInactivity}
+                <div class="settings-group">
+                  <span class="group-label">Idle timeout</span>
+                  <Slider
+                    bind:value={draftIdleTimeoutSeconds}
+                    min={5}
+                    max={300}
+                    step={5}
+                    label="Timeout"
+                    formatValue={formatDuration}
+                  />
+                </div>
+              {/if}
+
               {#if selectedSourceCount === 0}
                 <p class="hint hint--err">Enable at least one source to continue.</p>
               {/if}
+            </article>
+          {:else if activeStep === "video"}
+            <article class="card">
+              <header class="card__header">
+                <span class="card__index">03</span>
+                <div class="card__heading">
+                  <h2 class="card__title">Video</h2>
+                  <p class="card__subtitle">Pick screen output size and compression before the first session.</p>
+                </div>
+              </header>
+
+              <div class="settings-group">
+                <span class="group-label">Screen resolution</span>
+                <ScreenResolutionControl
+                  bind:mode={draftResolutionMode}
+                  bind:preset={draftResolutionPreset}
+                  bind:widthRaw={customWidthRaw}
+                  bind:heightRaw={customHeightRaw}
+                  customErrors={customResolutionErrors}
+                />
+              </div>
+
+              <div class="settings-divider"></div>
+
+              <div class="settings-group">
+                <span class="group-label">Video bitrate</span>
+                <VideoBitrateControl
+                  bind:mode={draftBitrateMode}
+                  bind:preset={draftBitratePreset}
+                  bind:customMbpsRaw={draftCustomMbpsRaw}
+                  customMbps={draftCustomMbps}
+                  customErrors={customBitrateErrors}
+                />
+                <p class="hint">Bitrate applies on the ScreenCaptureKit path. Older systems keep the macOS default.</p>
+              </div>
             </article>
           {:else if activeStep === "storage"}
             <article class="card">
@@ -1256,66 +1418,6 @@
                 </div>
                 {/if}
               </div>
-            </article>
-          {:else if activeStep === "inactivity"}
-            <article class="card">
-              <header class="card__header">
-                <span class="card__index">05</span>
-                <div class="card__heading">
-                  <h2 class="card__title">Idle behavior</h2>
-                  <p class="card__subtitle">Optionally pause capture when nothing is happening.</p>
-                </div>
-              </header>
-
-              <div class="settings-stack">
-                <Switch
-                  bind:checked={draftPauseCaptureOnInactivity}
-                  label="Pause when idle"
-                  description="Resume automatically when activity returns"
-                />
-              </div>
-
-              {#if draftPauseCaptureOnInactivity}
-                <div class="reveal">
-                  <div class="settings-group">
-                    <span class="group-label">Idle timeout</span>
-                    <Slider
-                      bind:value={draftIdleTimeoutSeconds}
-                      min={5}
-                      max={300}
-                      step={5}
-                      label="Timeout"
-                      formatValue={formatDuration}
-                    />
-                  </div>
-                  <div class="settings-group">
-                    <span class="group-label">Activity mode</span>
-                    <RadioGroup bind:value={draftActivityMode} options={activityModeOptions} />
-                  </div>
-                  {#if draftActivityMode === "system_input_or_screen_or_audio"}
-                    <div class="grid-2">
-                      <div class="settings-group">
-                        <span class="group-label">Mic sensitivity</span>
-                        <Slider
-                          bind:value={draftMicrophoneActivitySensitivity}
-                          min={0} max={100} step={1} label="Mic" unit="%"
-                          disabled={!draftCaptureMicrophone}
-                        />
-                      </div>
-                      <div class="settings-group">
-                        <span class="group-label">System audio</span>
-                        <Slider
-                          bind:value={draftSystemAudioActivitySensitivity}
-                          min={0} max={100} step={1} label="System" unit="%"
-                          disabled={!draftCaptureSystemAudio}
-                        />
-                      </div>
-                    </div>
-                  {/if}
-                </div>
-              {:else}
-                <p class="hint">Capture runs continuously until stopped manually.</p>
-              {/if}
             </article>
           {:else}
             <section class="finale" aria-labelledby="finale-title">

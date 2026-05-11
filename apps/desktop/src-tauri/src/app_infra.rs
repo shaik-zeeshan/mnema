@@ -49,6 +49,42 @@ const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5
 const RETENTION_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppInfraInitializeError {
+    AlreadyRunning,
+    Other(String),
+}
+
+impl std::fmt::Display for AppInfraInitializeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyRunning => write!(f, "app infrastructure is already running"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for AppInfraInitializeError {}
+
+#[derive(Debug)]
+enum AppInfraDirectoryLockError {
+    Contended { path: PathBuf, source: std::io::Error },
+    Other(String),
+}
+
+impl std::fmt::Display for AppInfraDirectoryLockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Contended { path, source } => {
+                write!(f, "app infrastructure lock is already held at {}: {source}", path.display())
+            }
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for AppInfraDirectoryLockError {}
+
 #[derive(Clone)]
 pub struct BackgroundWorkersControl {
     inner: Arc<BackgroundWorkersControlInner>,
@@ -2401,28 +2437,27 @@ struct AppInfraDirectoryLock {
 }
 
 impl AppInfraDirectoryLock {
-    fn acquire(base_dir: &Path) -> Result<Self, String> {
+    fn acquire(base_dir: &Path) -> Result<Self, AppInfraDirectoryLockError> {
         fs::create_dir_all(base_dir).map_err(|error| {
-            format!(
+            AppInfraDirectoryLockError::Other(format!(
                 "failed to create app infrastructure base directory {}: {error}",
                 base_dir.display()
-            )
+            ))
         })?;
 
         let path = base_dir.join(APP_INFRA_LOCK_FILE_NAME);
         let file = File::create(&path).map_err(|error| {
-            format!(
+            AppInfraDirectoryLockError::Other(format!(
                 "failed to open app infrastructure lock file {}: {error}",
                 path.display()
-            )
+            ))
         })?;
 
-        file.try_lock_exclusive().map_err(|error| {
-            format!(
-                "app infrastructure is already active for {}: {error}",
-                base_dir.display()
-            )
-        })?;
+        file.try_lock_exclusive()
+            .map_err(|source| AppInfraDirectoryLockError::Contended {
+                path: path.clone(),
+                source,
+            })?;
 
         Ok(Self { _file: file, path })
     }
@@ -2477,27 +2512,33 @@ fn desktop_processing_registry(
         .register(::app_infra::SystemAudioSpeechActivityProcessorBackend))
 }
 
-pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
+pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
     let app_handle = app.handle().clone();
-    let resolved_base_dir = resolve_base_dir(app.handle())?;
+    let resolved_base_dir =
+        resolve_base_dir(app.handle()).map_err(AppInfraInitializeError::Other)?;
     crate::native_capture::debug_log::log_info(format!(
         "initializing app infrastructure (save_directory='{}', base_dir='{}')",
         resolved_base_dir.save_directory,
         resolved_base_dir.base_dir.display()
     ));
 
-    let directory_lock = AppInfraDirectoryLock::acquire(&resolved_base_dir.base_dir).map_err(
-        |error| {
+    let directory_lock =
+        AppInfraDirectoryLock::acquire(&resolved_base_dir.base_dir).map_err(|error| {
             crate::native_capture::debug_log::log_error(format!(
                 "failed to acquire app infrastructure directory lock (save_directory='{}', base_dir='{}'): {error}",
                 resolved_base_dir.save_directory,
                 resolved_base_dir.base_dir.display()
             ));
-            error
-        },
-    )?;
+            match error {
+                AppInfraDirectoryLockError::Contended { .. } => {
+                    AppInfraInitializeError::AlreadyRunning
+                }
+                AppInfraDirectoryLockError::Other(message) => AppInfraInitializeError::Other(message),
+            }
+        })?;
 
-    let processing_registry = desktop_processing_registry(&app_handle)?;
+    let processing_registry =
+        desktop_processing_registry(&app_handle).map_err(AppInfraInitializeError::Other)?;
     let infra =
         tauri::async_runtime::block_on(::app_infra::AppInfra::initialize_with_processing_registry(
             &resolved_base_dir.base_dir,
@@ -2510,10 +2551,10 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
             resolved_base_dir.base_dir.display()
         ));
 
-            format!(
+            AppInfraInitializeError::Other(format!(
                 "failed to initialize app infrastructure at {}: {error}",
                 resolved_base_dir.base_dir.display()
-            )
+            ))
         })?;
     let infra = Arc::new(infra);
     let frame_preview_cache = FramePreviewCacheState::default();
@@ -2523,28 +2564,36 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
         crate::native_capture::debug_log::log_error(
             "app infrastructure state was already initialized; refusing duplicate setup",
         );
-        return Err("app infrastructure state was already initialized".to_string());
+        return Err(AppInfraInitializeError::Other(
+            "app infrastructure state was already initialized".to_string(),
+        ));
     }
 
     if !app.manage(Mutex::new(Some(directory_lock))) {
         crate::native_capture::debug_log::log_error(
             "app infrastructure directory lock state was already initialized; refusing duplicate setup",
         );
-        return Err("app infrastructure directory lock state was already initialized".to_string());
+        return Err(AppInfraInitializeError::Other(
+            "app infrastructure directory lock state was already initialized".to_string(),
+        ));
     }
 
     if !app.manage(frame_preview_cache) {
         crate::native_capture::debug_log::log_error(
             "frame preview cache state was already initialized; refusing duplicate setup",
         );
-        return Err("frame preview cache state was already initialized".to_string());
+        return Err(AppInfraInitializeError::Other(
+            "frame preview cache state was already initialized".to_string(),
+        ));
     }
 
     if !app.manage(background_workers.clone()) {
         crate::native_capture::debug_log::log_error(
             "background workers state was already initialized; refusing duplicate setup",
         );
-        return Err("background workers state was already initialized".to_string());
+        return Err(AppInfraInitializeError::Other(
+            "background workers state was already initialized".to_string(),
+        ));
     }
 
     crate::native_capture::debug_log::log_info(format!(
@@ -4793,12 +4842,34 @@ mod tests {
         let error = AppInfraDirectoryLock::acquire(dir.path())
             .expect_err("second app infra directory lock should fail");
 
-        assert!(error.contains("already active"));
+        assert!(matches!(
+            error,
+            AppInfraDirectoryLockError::Contended { .. }
+        ));
 
         drop(first);
 
         AppInfraDirectoryLock::acquire(dir.path())
             .expect("directory lock should be reacquirable after release");
+    }
+
+    #[test]
+    fn app_infra_directory_lock_contention_maps_to_already_running() {
+        let dir = TestDir::new("app-infra-lock-map");
+        let _first = AppInfraDirectoryLock::acquire(dir.path())
+            .expect("first app infra directory lock should succeed");
+
+        let mapped = AppInfraDirectoryLock::acquire(dir.path()).map_err(|error| match error {
+            AppInfraDirectoryLockError::Contended { .. } => {
+                AppInfraInitializeError::AlreadyRunning
+            }
+            AppInfraDirectoryLockError::Other(message) => AppInfraInitializeError::Other(message),
+        });
+
+        assert!(matches!(
+            mapped,
+            Err(AppInfraInitializeError::AlreadyRunning)
+        ));
     }
 
     #[test]
