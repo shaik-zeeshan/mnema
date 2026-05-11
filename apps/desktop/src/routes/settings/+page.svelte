@@ -166,6 +166,7 @@
   let draftSpeakerRecognizeSavedPeople = $state(false);
   let draftSpeakerProvider = $state("sherpa_onnx");
   let draftSpeakerModelId = $state<string | null>("pyannote-3.0-nemo-titanet-small");
+  let draftSpeakerTimeoutMinutes = $state(10);
   let speakerModelStatus = $state<SpeakerAnalysisModelStatusResponse | null>(null);
   let loadingSpeakerModelStatus = $state(false);
   let speakerModelError = $state<string | null>(null);
@@ -411,6 +412,7 @@
     draftSpeakerRecognizeSavedPeople = s.speakerAnalysis?.recognizeSavedPeople ?? false;
     draftSpeakerProvider = s.speakerAnalysis?.provider ?? "sherpa_onnx";
     draftSpeakerModelId = s.speakerAnalysis?.modelId ?? "pyannote-3.0-nemo-titanet-small";
+    draftSpeakerTimeoutMinutes = Math.round((s.speakerAnalysis?.timeoutSeconds ?? 600) / 60);
     if (s.screenResolution.mode === "custom") {
       draftResolutionMode = "custom";
       draftCustomWidth = s.screenResolution.width;
@@ -503,6 +505,7 @@
         recognizeSavedPeople: draftSpeakerRecognizeSavedPeople,
         provider: draftSpeakerProvider,
         modelId: draftSpeakerModelId,
+        timeoutSeconds: Math.max(60, Math.min(3600, Math.trunc(Number(draftSpeakerTimeoutMinutes) || 10) * 60)),
       },
       screenResolution: draftResolutionMode === "custom"
         ? {
@@ -2685,8 +2688,6 @@
         </p>
       </div>
 
-      <div class="settings-divider"></div>
-
       <div class="settings-group">
         <span class="group-label">Selected model status</span>
         {#if transcriptionModelError}
@@ -2872,6 +2873,22 @@
             description="Opt in to matching against confirmed local Person voice profiles"
           />
         </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Helper timeout</span>
+        <Slider
+          bind:value={draftSpeakerTimeoutMinutes}
+          min={1}
+          max={60}
+          step={1}
+          label="Timeout"
+          unit="m"
+          disabled={!draftSpeakerSeparateSpeakers}
+        />
+        <p class="group-hint">Stops speaker analysis if the local helper runs too long. Existing queued jobs keep the timeout they were created with.</p>
       </div>
 
       <div class="settings-divider"></div>

@@ -122,6 +122,7 @@ export interface SpeakerAnalysisSettings {
 	recognizeSavedPeople: boolean;
 	provider: "sherpa_onnx" | string;
 	modelId: string | null;
+	timeoutSeconds: number;
 }
 
 export type SpeakerAnalysisModelStatusKind =

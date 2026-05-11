@@ -5137,10 +5137,10 @@
                           confidence {speakerConfidenceLabel(group)}
                         </span>
                       {/if}
-                      {#if group.overlaps}
-                        <span class="audio-drawer__speaker-meta">overlap</span>
-                      {/if}
                     </div>
+                    {#if group.overlaps}
+                      <div class="audio-drawer__speaker-overlap-note">Overlapping speech</div>
+                    {/if}
                     <div class="audio-drawer__speaker-popover-row audio-drawer__speaker-popover-row--primary">
                       <button
                         type="button"
@@ -5240,20 +5240,22 @@
                     </details>
                   </div>
                 {/if}
-                <button
-                  type="button"
-                  class="audio-drawer__speaker-chip"
-                  class:audio-drawer__speaker-chip--open={speakerActionsOpenIndex === index}
-                  aria-haspopup="dialog"
-                  aria-expanded={speakerActionsOpenIndex === index}
-                  title="Edit speaker"
-                  onclick={(event) => toggleSpeakerActions(index, event)}
-                >
-                  {speakerPersistedName(group)}
+                <div class="audio-drawer__speaker-label-stack">
+                  <button
+                    type="button"
+                    class="audio-drawer__speaker-chip"
+                    class:audio-drawer__speaker-chip--open={speakerActionsOpenIndex === index}
+                    aria-haspopup="dialog"
+                    aria-expanded={speakerActionsOpenIndex === index}
+                    title="Edit speaker"
+                    onclick={(event) => toggleSpeakerActions(index, event)}
+                  >
+                    {speakerPersistedName(group)}
+                  </button>
                   {#if group.overlaps}
-                    <span class="audio-drawer__speaker-meta">overlap</span>
+                    <span class="audio-drawer__speaker-overlap-note">Overlapping speech</span>
                   {/if}
-                </button>
+                </div>
                 <button
                   type="button"
                   class="audio-drawer__speaker-text"
@@ -5903,6 +5905,12 @@
     border-left-color: var(--app-accent);
   }
 
+  .audio-drawer__speaker-label-stack {
+    display: grid;
+    gap: 1px;
+    align-self: start;
+  }
+
   .audio-drawer__speaker-popover {
     position: absolute;
     left: 8px;
@@ -6145,9 +6153,11 @@
     outline: none;
   }
 
-  .audio-drawer__speaker-meta {
-    color: var(--app-warn);
-    font-size: 8px;
+  .audio-drawer__speaker-overlap-note {
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1.2;
   }
 
   .audio-drawer__speaker-confidence {
