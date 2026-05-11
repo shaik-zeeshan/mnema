@@ -14,6 +14,8 @@ use super::{
     SPEAKER_ANALYSIS_PROCESSOR,
 };
 
+pub const HELPER_TIMEOUT_SECONDS_OPTION: &str = "helperTimeoutSeconds";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeakerAnalysisJobPayload {

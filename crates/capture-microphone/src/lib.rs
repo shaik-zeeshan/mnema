@@ -11,8 +11,8 @@ use capture_writers::{
     finalize_microphone_output_context as writers_finalize_microphone_output_context,
     finish_audio_asset_writer_discarding_inactivity_tail, record_audio_writer_tail_activity,
     set_audio_writer_activity_threshold, set_audio_writer_inactivity_tail_trim_seconds,
-    try_append_audio_sample_to_writer_with_activity_override, AudioAssetWriterState,
-    AudioSampleAppendDisposition, AudioSampleFormat,
+    trim_audio_file_to_m4a, try_append_audio_sample_to_writer_with_activity_override,
+    AudioAssetWriterState, AudioSampleAppendDisposition, AudioSampleFormat,
 };
 
 #[cfg(target_os = "macos")]
@@ -44,6 +44,23 @@ static LAST_MICROPHONE_ACTIVITY_WINDOW_PEAK_LEVEL_BITS: AtomicU32 = AtomicU32::n
 static LAST_MICROPHONE_ACTIVITY_WINDOW_SAMPLE_COUNT: AtomicU32 = AtomicU32::new(0);
 #[cfg(target_os = "macos")]
 static MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "macos")]
+static MICROPHONE_VAD_BOUNDARY_TRIM_DISABLED_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Default, Clone, Copy)]
+struct MicrophoneVadSpeechBoundaryState {
+    first_start_secs: Option<f64>,
+    last_end_secs: Option<f64>,
+    detected_speech: bool,
+    invalid_timing: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_vad_speech_boundaries() -> &'static Mutex<MicrophoneVadSpeechBoundaryState> {
+    static BOUNDARIES: OnceLock<Mutex<MicrophoneVadSpeechBoundaryState>> = OnceLock::new();
+    BOUNDARIES.get_or_init(|| Mutex::new(MicrophoneVadSpeechBoundaryState::default()))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MicrophoneInactivityTailTrimActivityMode {
@@ -61,7 +78,24 @@ pub struct MicrophoneVadPcmFrame {
     pub sample_rate_hz: u32,
     pub captured_at_unix_ms: u64,
     pub normalized_peak_level: f32,
+    pub media_start_secs: Option<f64>,
+    pub media_end_secs: Option<f64>,
     pub samples: Vec<i16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MicrophoneVadSpeechEvent {
+    pub media_start_secs: Option<f64>,
+    pub media_end_secs: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicrophoneOutputFinalization {
+    pub source_file: Option<String>,
+    pub output_file: Option<String>,
+    pub speech_detected: bool,
+    pub trim_start_offset_ms: u64,
+    pub discard_reason: Option<String>,
 }
 
 #[cfg(target_os = "macos")]
@@ -69,6 +103,7 @@ pub struct MicrophoneVadPcmFrame {
 struct MicrophoneVadPcmFeedState {
     source_format: Option<MicrophoneVadSourceFormat>,
     pending_source_samples: Vec<f32>,
+    pending_source_start_secs: Option<f64>,
     output_frames: VecDeque<MicrophoneVadPcmFrame>,
 }
 
@@ -171,6 +206,11 @@ pub fn reset_microphone_vad_pcm_feed() {}
 #[cfg(target_os = "macos")]
 pub fn reset_microphone_vad_tail_activity() {
     MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE.store(0, Ordering::Relaxed);
+    MICROPHONE_VAD_BOUNDARY_TRIM_DISABLED_SEQUENCE.store(0, Ordering::Relaxed);
+    let mut boundaries = microphone_vad_speech_boundaries()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *boundaries = MicrophoneVadSpeechBoundaryState::default();
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -178,15 +218,77 @@ pub fn reset_microphone_vad_tail_activity() {}
 
 #[cfg(target_os = "macos")]
 pub fn record_microphone_vad_tail_speech() {
-    MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    record_microphone_vad_speech_event(MicrophoneVadSpeechEvent {
+        media_start_secs: None,
+        media_end_secs: None,
+    });
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn record_microphone_vad_tail_speech() {}
 
 #[cfg(target_os = "macos")]
+pub fn record_microphone_vad_speech_event(_event: MicrophoneVadSpeechEvent) {
+    MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut boundaries = microphone_vad_speech_boundaries()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    boundaries.detected_speech = true;
+    match (_event.media_start_secs, _event.media_end_secs) {
+        (Some(start), Some(end)) if start.is_finite() && end.is_finite() && end >= start => {
+            boundaries.first_start_secs = Some(
+                boundaries
+                    .first_start_secs
+                    .map(|current| current.min(start))
+                    .unwrap_or(start),
+            );
+            boundaries.last_end_secs = Some(
+                boundaries
+                    .last_end_secs
+                    .map(|current| current.max(end))
+                    .unwrap_or(end),
+            );
+        }
+        _ => boundaries.invalid_timing = true,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn record_microphone_vad_speech_event(_event: MicrophoneVadSpeechEvent) {}
+
+#[cfg(target_os = "macos")]
+pub fn disable_microphone_vad_boundary_trim_for_current_output() {
+    MICROPHONE_VAD_BOUNDARY_TRIM_DISABLED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn disable_microphone_vad_boundary_trim_for_current_output() {}
+
+#[cfg(target_os = "macos")]
 fn current_microphone_vad_tail_speech_sequence() -> u64 {
     MICROPHONE_VAD_TAIL_SPEECH_SEQUENCE.load(Ordering::Relaxed)
+}
+
+#[cfg(target_os = "macos")]
+fn current_microphone_vad_boundary_trim_disabled_sequence() -> u64 {
+    MICROPHONE_VAD_BOUNDARY_TRIM_DISABLED_SEQUENCE.load(Ordering::Relaxed)
+}
+
+#[cfg(all(target_os = "macos", test))]
+fn current_microphone_vad_speech_boundaries() -> MicrophoneVadSpeechBoundaryState {
+    *microphone_vad_speech_boundaries()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(target_os = "macos")]
+fn take_microphone_vad_speech_boundaries() -> MicrophoneVadSpeechBoundaryState {
+    let mut boundaries = microphone_vad_speech_boundaries()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let current = *boundaries;
+    *boundaries = MicrophoneVadSpeechBoundaryState::default();
+    current
 }
 
 #[cfg(target_os = "macos")]
@@ -243,8 +345,17 @@ fn maybe_feed_microphone_vad_pcm(sample_buf: &cidre::cm::SampleBuf) {
         &mut feed,
         sample_format,
         now_microphone_activity_unix_ms(),
+        sample_buf_start_secs(sample_buf),
         &samples,
     );
+}
+
+#[cfg(target_os = "macos")]
+fn sample_buf_start_secs(sample_buf: &cidre::cm::SampleBuf) -> Option<f64> {
+    let pts = sample_buf.pts();
+    pts.is_numeric()
+        .then(|| pts.as_secs())
+        .filter(|value| value.is_finite())
 }
 
 #[cfg(target_os = "macos")]
@@ -321,6 +432,7 @@ pub fn microphone_activity_level() -> Option<f32> {
 struct MicrophoneOutputContext {
     writer: Option<AudioAssetWriterState>,
     output_url: Option<cidre::arc::R<cidre::ns::Url>>,
+    source_output_file: Option<String>,
     output_file: Option<String>,
     first_error: Option<CaptureErrorResponse>,
     format_state: MicFormatStabilityState,
@@ -330,6 +442,12 @@ struct MicrophoneOutputContext {
     activity_threshold: f32,
     tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
     observed_vad_tail_speech_sequence: u64,
+    boundary_trim_enabled: bool,
+    boundary_trim_disabled: bool,
+    observed_boundary_trim_disabled_sequence: u64,
+    first_speech_start_secs: Option<f64>,
+    last_speech_end_secs: Option<f64>,
+    detected_vad_speech: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -421,7 +539,7 @@ mod tests {
         take_microphone_activity_window_peak_level, transfer_pending_microphone_samples,
         AudioSampleAppendDisposition, AudioSampleFormat, MicFormatStabilityState,
         MicrophoneInactivityTailTrimActivityMode, MicrophoneOutputContext,
-        MicrophoneVadPcmFeedState, OnceLock, MAX_PENDING_MIC_SAMPLES,
+        MicrophoneVadPcmFeedState, MicrophoneVadSpeechEvent, OnceLock, MAX_PENDING_MIC_SAMPLES,
         MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT, MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ,
     };
 
@@ -440,6 +558,7 @@ mod tests {
         MicrophoneOutputContext {
             writer: None,
             output_url: None,
+            source_output_file: None,
             output_file: None,
             first_error: None,
             format_state: MicFormatStabilityState::default(),
@@ -449,6 +568,12 @@ mod tests {
             activity_threshold: 0.0,
             tail_activity_mode: mode,
             observed_vad_tail_speech_sequence: 0,
+            boundary_trim_enabled: false,
+            boundary_trim_disabled: false,
+            observed_boundary_trim_disabled_sequence: 0,
+            first_speech_start_secs: None,
+            last_speech_end_secs: None,
+            detected_vad_speech: false,
         }
     }
 
@@ -465,6 +590,71 @@ mod tests {
         assert_eq!(microphone_tail_activity_override(&mut context), Some(false));
         record_microphone_vad_tail_speech();
         assert_eq!(microphone_tail_activity_override(&mut context), Some(true));
+    }
+
+    #[test]
+    fn vad_speech_events_coalesce_first_and_last_media_boundaries() {
+        let _guard = microphone_activity_state_test_guard();
+        reset_microphone_vad_tail_activity();
+
+        super::record_microphone_vad_speech_event(MicrophoneVadSpeechEvent {
+            media_start_secs: Some(3.0),
+            media_end_secs: Some(3.5),
+        });
+        super::record_microphone_vad_speech_event(MicrophoneVadSpeechEvent {
+            media_start_secs: Some(1.25),
+            media_end_secs: Some(1.75),
+        });
+        super::record_microphone_vad_speech_event(MicrophoneVadSpeechEvent {
+            media_start_secs: Some(8.0),
+            media_end_secs: Some(8.2),
+        });
+
+        let boundaries = super::current_microphone_vad_speech_boundaries();
+        assert!(boundaries.detected_speech);
+        assert_eq!(boundaries.first_start_secs, Some(1.25));
+        assert_eq!(boundaries.last_end_secs, Some(8.2));
+        assert!(!boundaries.invalid_timing);
+    }
+
+    #[test]
+    fn vad_boundary_trim_finalization_consumes_boundaries_per_output() {
+        let _guard = microphone_activity_state_test_guard();
+        reset_microphone_vad_tail_activity();
+
+        let mut first =
+            tail_activity_context(MicrophoneInactivityTailTrimActivityMode::VadSpeech, 10);
+        first.boundary_trim_enabled = true;
+        super::record_microphone_vad_speech_event(MicrophoneVadSpeechEvent {
+            media_start_secs: Some(1.0),
+            media_end_secs: Some(1.25),
+        });
+
+        let first_finalization = super::finalize_microphone_vad_boundary_trim(&mut first)
+            .expect("boundary finalization should tolerate a missing source file");
+        assert_eq!(first.first_speech_start_secs, Some(1.0));
+        assert_eq!(first.last_speech_end_secs, Some(1.25));
+        assert_eq!(
+            first_finalization.discard_reason.as_deref(),
+            Some("missing_source_file")
+        );
+
+        let mut second =
+            tail_activity_context(MicrophoneInactivityTailTrimActivityMode::VadSpeech, 10);
+        second.boundary_trim_enabled = true;
+        super::record_microphone_vad_speech_event(MicrophoneVadSpeechEvent {
+            media_start_secs: Some(8.0),
+            media_end_secs: Some(8.25),
+        });
+
+        let second_finalization = super::finalize_microphone_vad_boundary_trim(&mut second)
+            .expect("boundary finalization should tolerate a missing source file");
+        assert_eq!(second.first_speech_start_secs, Some(8.0));
+        assert_eq!(second.last_speech_end_secs, Some(8.25));
+        assert_eq!(
+            second_finalization.discard_reason.as_deref(),
+            Some("missing_source_file")
+        );
     }
 
     #[test]
@@ -714,12 +904,14 @@ mod tests {
             .map(|index| index as f32 / 960.0)
             .collect::<Vec<_>>();
 
-        feed_microphone_vad_pcm_samples(&mut state, format, 42_000, &samples);
+        feed_microphone_vad_pcm_samples(&mut state, format, 42_000, Some(12.5), &samples);
 
         assert_eq!(state.output_frames.len(), 1);
         let frame = state.output_frames.pop_front().expect("frame should exist");
         assert_eq!(frame.sample_rate_hz, MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ);
         assert_eq!(frame.captured_at_unix_ms, 42_000);
+        assert_eq!(frame.media_start_secs, Some(12.5));
+        assert_eq!(frame.media_end_secs, Some(12.52));
         assert_eq!(frame.samples.len(), MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT);
         assert_eq!(frame.samples[0], 0);
         assert_eq!(frame.samples[1], 102);
@@ -742,11 +934,11 @@ mod tests {
             cidre::cat::AudioFormatFlags::IS_FLOAT | cidre::cat::AudioFormatFlags::IS_PACKED,
         );
 
-        feed_microphone_vad_pcm_samples(&mut state, fmt48, 1, &vec![0.25; 480]);
+        feed_microphone_vad_pcm_samples(&mut state, fmt48, 1, None, &vec![0.25; 480]);
         assert_eq!(state.output_frames.len(), 0);
         assert_eq!(state.pending_source_samples.len(), 480);
 
-        feed_microphone_vad_pcm_samples(&mut state, fmt16, 2, &vec![0.50; 320]);
+        feed_microphone_vad_pcm_samples(&mut state, fmt16, 2, None, &vec![0.50; 320]);
 
         assert_eq!(state.pending_source_samples.len(), 0);
         assert_eq!(state.output_frames.len(), 1);
@@ -766,7 +958,7 @@ mod tests {
         let frame = vec![0.0; MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT];
 
         for index in 0..120 {
-            feed_microphone_vad_pcm_samples(&mut state, format, index, &frame);
+            feed_microphone_vad_pcm_samples(&mut state, format, index, None, &frame);
         }
 
         assert_eq!(state.output_frames.len(), 96);
@@ -950,6 +1142,7 @@ fn feed_microphone_vad_pcm_samples(
     state: &mut MicrophoneVadPcmFeedState,
     sample_format: AudioSampleFormat,
     captured_at_unix_ms: u64,
+    media_start_secs: Option<f64>,
     samples: &[f32],
 ) {
     if samples.is_empty() {
@@ -964,18 +1157,26 @@ fn feed_microphone_vad_pcm_samples(
 
     if state.source_format != Some(source_format) {
         state.pending_source_samples.clear();
+        state.pending_source_start_secs = None;
         state.source_format = Some(source_format);
     }
 
+    if state.pending_source_samples.is_empty() {
+        state.pending_source_start_secs = media_start_secs;
+    }
     state.pending_source_samples.extend_from_slice(samples);
 
     let input_frame_count = vad_input_frame_count_for_output_frame(source_format.sample_rate_hz);
     while state.pending_source_samples.len() >= input_frame_count {
+        let frame_media_start_secs = state.pending_source_start_secs;
+        let frame_duration_secs = input_frame_count as f64 / source_format.sample_rate_hz as f64;
+        let frame_media_end_secs = frame_media_start_secs.map(|start| start + frame_duration_secs);
         let output_samples = resample_microphone_vad_frame(
             &state.pending_source_samples[..input_frame_count],
             source_format.sample_rate_hz,
         );
         state.pending_source_samples.drain(..input_frame_count);
+        state.pending_source_start_secs = frame_media_end_secs;
 
         if output_samples.len() != MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT {
             continue;
@@ -993,6 +1194,8 @@ fn feed_microphone_vad_pcm_samples(
             sample_rate_hz: MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ,
             captured_at_unix_ms,
             normalized_peak_level,
+            media_start_secs: frame_media_start_secs,
+            media_end_secs: frame_media_end_secs,
             samples,
         });
 
@@ -1550,6 +1753,13 @@ pub struct AvFoundationMicrophoneCaptureSession {
 impl AvFoundationMicrophoneCaptureSession {
     pub fn stop(&mut self) -> Result<(), CaptureErrorResponse> {
         self.stop_with_inactivity_tail_trim_seconds(0, 0.0)
+            .map(|_| ())
+    }
+
+    pub fn stop_returning_finalization(
+        &mut self,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+        self.stop_with_inactivity_tail_trim_seconds(0, 0.0)
     }
 
     pub fn stop_for_inactivity(
@@ -1558,6 +1768,7 @@ impl AvFoundationMicrophoneCaptureSession {
         activity_threshold: f32,
     ) -> Result<(), CaptureErrorResponse> {
         self.stop_with_inactivity_tail_trim_seconds(tail_trim_seconds, activity_threshold)
+            .map(|_| ())
     }
 
     pub fn stop_for_inactivity_with_tail_activity_mode(
@@ -1565,7 +1776,7 @@ impl AvFoundationMicrophoneCaptureSession {
         tail_trim_seconds: u64,
         activity_threshold: f32,
         tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
-    ) -> Result<(), CaptureErrorResponse> {
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         self.stop_with_inactivity_tail_trim_seconds_and_activity_mode(
             tail_trim_seconds,
             activity_threshold,
@@ -1577,7 +1788,7 @@ impl AvFoundationMicrophoneCaptureSession {
         &mut self,
         tail_trim_seconds: u64,
         activity_threshold: f32,
-    ) -> Result<(), CaptureErrorResponse> {
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         self.stop_with_inactivity_tail_trim_seconds_and_activity_mode(
             tail_trim_seconds,
             activity_threshold,
@@ -1590,7 +1801,7 @@ impl AvFoundationMicrophoneCaptureSession {
         tail_trim_seconds: u64,
         activity_threshold: f32,
         tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
-    ) -> Result<(), CaptureErrorResponse> {
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         self.capture_session.stop_running();
         synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
         let context = self.output_delegate.inner_mut();
@@ -1601,6 +1812,14 @@ impl AvFoundationMicrophoneCaptureSession {
     }
 
     pub fn rotate_output_file(&mut self, output_file: &str) -> Result<(), CaptureErrorResponse> {
+        self.rotate_output_file_returning_finalization(output_file)
+            .map(|_| ())
+    }
+
+    pub fn rotate_output_file_returning_finalization(
+        &mut self,
+        output_file: &str,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
 
         synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
@@ -1613,20 +1832,18 @@ impl AvFoundationMicrophoneCaptureSession {
             current_context.tail_activity_mode,
         );
         let mut previous_context = std::mem::replace(current_context, next_context);
-        finalize_microphone_output_context(&mut previous_context)?;
-
-        Ok(())
+        finalize_microphone_output_context(&mut previous_context)
     }
 
     pub fn pause_output_file(&mut self) -> Result<(), CaptureErrorResponse> {
-        self.pause_output_file_for_inactivity(0, 0.0)
+        self.pause_output_file_for_inactivity(0, 0.0).map(|_| ())
     }
 
     pub fn pause_output_file_for_inactivity(
         &mut self,
         tail_trim_seconds: u64,
         activity_threshold: f32,
-    ) -> Result<(), CaptureErrorResponse> {
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         self.pause_output_file_for_inactivity_with_tail_activity_mode(
             tail_trim_seconds,
             activity_threshold,
@@ -1639,7 +1856,7 @@ impl AvFoundationMicrophoneCaptureSession {
         tail_trim_seconds: u64,
         activity_threshold: f32,
         tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
-    ) -> Result<(), CaptureErrorResponse> {
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
         let mut previous_context = std::mem::replace(
             self.output_delegate.inner_mut(),
@@ -1707,7 +1924,7 @@ fn synchronize_stream_output_queue(queue: Option<&dispatch::Queue>) {
 #[cfg(target_os = "macos")]
 fn finalize_microphone_output_context(
     context: &mut MicrophoneOutputContext,
-) -> Result<(), CaptureErrorResponse> {
+) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
     if context.writer.is_none() && !context.pending_samples.is_empty() {
         if let (Some(output_url), Some(format)) = (
             context.output_url.as_ref(),
@@ -1770,13 +1987,180 @@ fn finalize_microphone_output_context(
 
     match finalize_result {
         Err(error) if is_nonfatal_microphone_finalize_error(&error) => {
+            if context.boundary_trim_enabled {
+                take_microphone_vad_speech_boundaries_for_context(context);
+            }
             if let Some(path) = context.output_file.as_deref() {
                 maybe_remove_microphone_output_file(path);
             }
-            Ok(())
+            Ok(microphone_output_finalization_for_context(
+                context,
+                false,
+                0,
+                Some("no_audio_samples".to_string()),
+            ))
         }
-        result => result,
+        Err(error) => Err(error),
+        Ok(()) => finalize_microphone_vad_boundary_trim(context),
     }
+}
+
+#[cfg(target_os = "macos")]
+const MICROPHONE_VAD_BOUNDARY_PADDING_SECS: f64 = 1.0;
+
+#[cfg(target_os = "macos")]
+fn microphone_output_finalization_for_context(
+    context: &MicrophoneOutputContext,
+    speech_detected: bool,
+    trim_start_offset_ms: u64,
+    discard_reason: Option<String>,
+) -> MicrophoneOutputFinalization {
+    MicrophoneOutputFinalization {
+        source_file: context.source_output_file.clone(),
+        output_file: context.output_file.clone(),
+        speech_detected,
+        trim_start_offset_ms,
+        discard_reason,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn take_microphone_vad_speech_boundaries_for_context(
+    context: &mut MicrophoneOutputContext,
+) -> MicrophoneVadSpeechBoundaryState {
+    let boundaries = take_microphone_vad_speech_boundaries();
+    context.detected_vad_speech = boundaries.detected_speech;
+    context.first_speech_start_secs = boundaries.first_start_secs;
+    context.last_speech_end_secs = boundaries.last_end_secs;
+    boundaries
+}
+
+#[cfg(target_os = "macos")]
+fn finalize_microphone_vad_boundary_trim(
+    context: &mut MicrophoneOutputContext,
+) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+    let disabled_sequence = current_microphone_vad_boundary_trim_disabled_sequence();
+    if disabled_sequence > context.observed_boundary_trim_disabled_sequence {
+        context.boundary_trim_disabled = true;
+    }
+
+    if !context.boundary_trim_enabled || context.boundary_trim_disabled {
+        if context.boundary_trim_enabled {
+            take_microphone_vad_speech_boundaries_for_context(context);
+        }
+        if let (Some(source), Some(output)) = (
+            context.source_output_file.as_deref(),
+            context.output_file.as_deref(),
+        ) {
+            if source != output {
+                move_microphone_source_to_output(source, output)?;
+            }
+        }
+        return Ok(microphone_output_finalization_for_context(
+            context, false, 0, None,
+        ));
+    }
+
+    let boundaries = take_microphone_vad_speech_boundaries_for_context(context);
+
+    let Some(source_file) = context.source_output_file.clone() else {
+        return Ok(microphone_output_finalization_for_context(
+            context,
+            boundaries.detected_speech,
+            0,
+            Some("missing_source_file".to_string()),
+        ));
+    };
+    let Some(output_file) = context.output_file.clone() else {
+        return Ok(microphone_output_finalization_for_context(
+            context,
+            boundaries.detected_speech,
+            0,
+            Some("missing_output_file".to_string()),
+        ));
+    };
+
+    if !boundaries.detected_speech {
+        maybe_remove_microphone_output_file(&source_file);
+        maybe_remove_microphone_output_file(&output_file);
+        capture_runtime::debug_log!(
+            "[capture-microphone] discarded microphone output without VAD speech source={source_file}"
+        );
+        return Ok(MicrophoneOutputFinalization {
+            source_file: Some(source_file),
+            output_file: None,
+            speech_detected: false,
+            trim_start_offset_ms: 0,
+            discard_reason: Some("no_vad_speech".to_string()),
+        });
+    }
+
+    let valid_boundaries = !boundaries.invalid_timing
+        && boundaries.first_start_secs.is_some()
+        && boundaries.last_end_secs.is_some();
+    if !valid_boundaries {
+        move_microphone_source_to_output(&source_file, &output_file)?;
+        return Ok(MicrophoneOutputFinalization {
+            source_file: Some(source_file),
+            output_file: Some(output_file),
+            speech_detected: true,
+            trim_start_offset_ms: 0,
+            discard_reason: None,
+        });
+    }
+
+    let trim_start_secs =
+        (boundaries.first_start_secs.unwrap() - MICROPHONE_VAD_BOUNDARY_PADDING_SECS).max(0.0);
+    let trim_end_secs = (boundaries.last_end_secs.unwrap() + MICROPHONE_VAD_BOUNDARY_PADDING_SECS)
+        .max(trim_start_secs);
+    match trim_audio_file_to_m4a(&source_file, &output_file, trim_start_secs, trim_end_secs) {
+        Ok(()) => {
+            maybe_remove_microphone_output_file(&source_file);
+            Ok(MicrophoneOutputFinalization {
+                source_file: Some(source_file),
+                output_file: Some(output_file),
+                speech_detected: true,
+                trim_start_offset_ms: (trim_start_secs * 1000.0).round().max(0.0) as u64,
+                discard_reason: None,
+            })
+        }
+        Err(error) => {
+            capture_runtime::debug_log!(
+                "[capture-microphone] failed to trim microphone output; keeping full source: [{}] {}",
+                error.code,
+                error.message
+            );
+            move_microphone_source_to_output(&source_file, &output_file)?;
+            Ok(MicrophoneOutputFinalization {
+                source_file: Some(source_file),
+                output_file: Some(output_file),
+                speech_detected: true,
+                trim_start_offset_ms: 0,
+                discard_reason: None,
+            })
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn move_microphone_source_to_output(
+    source: &str,
+    output: &str,
+) -> Result<(), CaptureErrorResponse> {
+    if source == output {
+        return Ok(());
+    }
+    maybe_remove_microphone_output_file(output);
+    std::fs::rename(source, output)
+        .or_else(|_| {
+            std::fs::copy(source, output).map(|_| {
+                maybe_remove_microphone_output_file(source);
+            })
+        })
+        .map_err(|error| CaptureErrorResponse {
+            code: "io_error".to_string(),
+            message: format!("Failed to move microphone source output into place: {error}"),
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -1787,9 +2171,29 @@ fn microphone_output_context_for_output_url(
     activity_threshold: f32,
     tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
 ) -> MicrophoneOutputContext {
+    let boundary_trim_enabled = matches!(
+        tail_activity_mode,
+        MicrophoneInactivityTailTrimActivityMode::VadSpeech
+    );
+    let source_output_file = output_file.as_deref().map(|file| {
+        if boundary_trim_enabled {
+            microphone_vad_temp_source_file(file)
+        } else {
+            file.to_string()
+        }
+    });
+    let source_output_url = source_output_file
+        .as_deref()
+        .map(|file| cidre::ns::Url::with_fs_path_str(file, false));
     MicrophoneOutputContext {
         writer: None,
-        output_url: Some(output_url.retained()),
+        output_url: Some(
+            source_output_url
+                .as_ref()
+                .map(|url| url.retained())
+                .unwrap_or_else(|| output_url.retained()),
+        ),
+        source_output_file,
         output_file,
         first_error: None,
         format_state: MicFormatStabilityState::default(),
@@ -1799,7 +2203,30 @@ fn microphone_output_context_for_output_url(
         activity_threshold: normalized_audio_activity_threshold(activity_threshold),
         tail_activity_mode,
         observed_vad_tail_speech_sequence: current_microphone_vad_tail_speech_sequence(),
+        boundary_trim_enabled,
+        boundary_trim_disabled: false,
+        observed_boundary_trim_disabled_sequence:
+            current_microphone_vad_boundary_trim_disabled_sequence(),
+        first_speech_start_secs: None,
+        last_speech_end_secs: None,
+        detected_vad_speech: false,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_vad_temp_source_file(output_file: &str) -> String {
+    let path = std::path::Path::new(output_file);
+    let parent = path.parent();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("microphone.m4a");
+    let temp_name = format!(".{file_name}.vad-source.m4a");
+    parent
+        .map(|parent| parent.join(&temp_name))
+        .unwrap_or_else(|| std::path::PathBuf::from(temp_name))
+        .to_string_lossy()
+        .to_string()
 }
 
 #[cfg(target_os = "macos")]
@@ -1816,6 +2243,7 @@ fn microphone_probe_only_context() -> MicrophoneOutputContext {
     MicrophoneOutputContext {
         writer: None,
         output_url: None,
+        source_output_file: None,
         output_file: None,
         first_error: None,
         format_state: MicFormatStabilityState::default(),
@@ -1825,6 +2253,13 @@ fn microphone_probe_only_context() -> MicrophoneOutputContext {
         activity_threshold: 0.0,
         tail_activity_mode: MicrophoneInactivityTailTrimActivityMode::PeakLevel,
         observed_vad_tail_speech_sequence: current_microphone_vad_tail_speech_sequence(),
+        boundary_trim_enabled: false,
+        boundary_trim_disabled: false,
+        observed_boundary_trim_disabled_sequence:
+            current_microphone_vad_boundary_trim_disabled_sequence(),
+        first_speech_start_secs: None,
+        last_speech_end_secs: None,
+        detected_vad_speech: false,
     }
 }
 

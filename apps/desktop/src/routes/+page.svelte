@@ -37,9 +37,12 @@
     OcrStructuredPayload,
     ProcessingJobDto,
     ProcessingResultDto,
+    ReprocessAudioSegmentSpeakerAnalysisRequest,
     ReprocessAudioSegmentTranscriptionRequest,
     ReprocessCapturedFrameOcrRequest,
     PersonProfileDto,
+    SpeakerAnalysisSkipReason,
+    SpeakerAnalysisStructuredPayload,
     SpeakerClusterDto,
     SpeakerTurnDto,
     TranscriptionSegment,
@@ -336,11 +339,18 @@
   let selectedAudioTranscriptSegments = $state<TranscriptionSegment[]>([]);
   let selectedAudioSpeakerTurns = $state<SpeakerTurnDto[]>([]);
   let selectedAudioSpeakerTurnsError = $state<string | null>(null);
+  let selectedAudioSpeakerTurnsNotice = $state<string | null>(null);
   let selectedAudioSpeakerClusters = $state<SpeakerClusterDto[]>([]);
   let selectedAudioSpeakerAnalysisRunning = $state(false);
+  let selectedAudioSpeakerAnalysisFailedJobId = $state<number | null>(null);
+  let selectedAudioSpeakerAnalysisRetryLoading = $state(false);
   let personProfiles = $state<PersonProfileDto[]>([]);
   let speakerCorrectionError = $state<string | null>(null);
   let speakerCorrectionBusyClusterId = $state<number | null>(null);
+  let speakerInlineBusyAction = $state<{
+    clusterId: number;
+    action: SpeakerInlineAction;
+  } | null>(null);
   let speakerNameDrafts = $state<Record<number, string>>({});
   let speakerActionsOpenIndex = $state<number | null>(null);
   let selectedAudioTranscriptModelLabel = $state<string | null>(null);
@@ -407,10 +417,14 @@
     selectedAudioSpeakerTurns = [];
     selectedAudioSpeakerClusters = [];
     selectedAudioSpeakerAnalysisRunning = false;
+    selectedAudioSpeakerAnalysisFailedJobId = null;
+    selectedAudioSpeakerAnalysisRetryLoading = false;
+    speakerInlineBusyAction = null;
     speakerNameDrafts = {};
     speakerActionsOpenIndex = null;
     speakerCorrectionError = null;
     selectedAudioSpeakerTurnsError = null;
+    selectedAudioSpeakerTurnsNotice = null;
     selectedAudioTranscriptModelLabel = null;
     selectedAudioTranscriptError = null;
 
@@ -478,6 +492,10 @@
     text: string;
     overlaps: boolean;
     turnIds: number[];
+  };
+  type SpeakerInlineAction = "confirm" | "reject" | "merge";
+  type SpeakerTurnsLoadOptions = {
+    refreshPersonProfiles?: boolean;
   };
 
   const selectedAudioSpeakerGroups = $derived.by<SpeakerTranscriptGroup[]>(() => {
@@ -583,6 +601,128 @@
     return target ? speakerClusterOptionLabel(target) : null;
   }
 
+  function isFirstVisibleSpeakerClusterOccurrence(
+    group: SpeakerTranscriptGroup,
+    index: number,
+  ): boolean {
+    return selectedAudioSpeakerGroups.findIndex(
+      (candidate) => candidate.clusterId === group.clusterId,
+    ) === index;
+  }
+
+  function speakerSuggestedPersonName(group: SpeakerTranscriptGroup): string {
+    return speakerProfileName(group.suggestedPersonId) ?? speakerCleanLabel(group.speakerLabel);
+  }
+
+  function shouldShowPersonSuggestionRow(
+    group: SpeakerTranscriptGroup,
+    index: number,
+  ): boolean {
+    return group.suggestedPersonId != null &&
+      group.personId == null &&
+      isFirstVisibleSpeakerClusterOccurrence(group, index);
+  }
+
+  function shouldShowMergeSuggestionRow(
+    group: SpeakerTranscriptGroup,
+    index: number,
+  ): boolean {
+    return group.suggestedMergeTargetClusterId != null &&
+      suggestedMergeTargetLabel(group) != null &&
+      isFirstVisibleSpeakerClusterOccurrence(group, index);
+  }
+
+  function formatSpeakerActionScore(score: number | null): string | null {
+    if (score == null || !Number.isFinite(score)) return null;
+    const percentage = score <= 1 ? score * 100 : score;
+    return `${Math.round(Math.max(0, Math.min(100, percentage)))}%`;
+  }
+
+  function speakerActionConfidenceLabel(group: SpeakerTranscriptGroup): string | null {
+    const confidence = group.recognitionConfidence?.toLowerCase() ?? null;
+    const confidenceLabel = confidence === "high"
+      ? "High confidence"
+      : confidence === "medium"
+        ? "Medium confidence"
+        : null;
+    const scoreLabel = developerOptions.value
+      ? formatSpeakerActionScore(group.recognitionScore)
+      : null;
+    if (confidenceLabel && scoreLabel) return `${confidenceLabel} · ${scoreLabel}`;
+    return confidenceLabel ?? scoreLabel;
+  }
+
+  function speakerActionScoreLabel(group: SpeakerTranscriptGroup): string | null {
+    if (!developerOptions.value) return null;
+    const scoreLabel = formatSpeakerActionScore(group.suggestedMergeScore);
+    return scoreLabel ? `merge score ${scoreLabel}` : null;
+  }
+
+  function speakerActionBusyLabel(action: SpeakerInlineAction): string {
+    switch (action) {
+      case "confirm":
+        return "Confirming...";
+      case "reject":
+        return "Rejecting...";
+      case "merge":
+        return "Merging...";
+    }
+  }
+
+  function speakerInlineActionIsBusy(
+    group: SpeakerTranscriptGroup,
+    action: SpeakerInlineAction,
+  ): boolean {
+    return speakerInlineBusyAction?.clusterId === group.clusterId &&
+      speakerInlineBusyAction.action === action;
+  }
+
+  function speakerInlineActionDisabled(group: SpeakerTranscriptGroup): boolean {
+    return speakerCorrectionBusyClusterId === group.clusterId;
+  }
+
+  async function runSpeakerInlineAction(
+    clusterId: number,
+    action: SpeakerInlineAction,
+    task: () => Promise<void>,
+  ): Promise<void> {
+    speakerInlineBusyAction = { clusterId, action };
+    try {
+      await task();
+    } finally {
+      if (
+        speakerInlineBusyAction?.clusterId === clusterId &&
+        speakerInlineBusyAction.action === action
+      ) {
+        speakerInlineBusyAction = null;
+      }
+    }
+  }
+
+  async function confirmInlineSpeakerSuggestion(group: SpeakerTranscriptGroup): Promise<void> {
+    await runSpeakerInlineAction(
+      group.clusterId,
+      "confirm",
+      () => confirmSpeakerSuggestion(group.clusterId),
+    );
+  }
+
+  async function rejectInlineSpeakerSuggestion(group: SpeakerTranscriptGroup): Promise<void> {
+    await runSpeakerInlineAction(
+      group.clusterId,
+      "reject",
+      () => rejectSpeakerSuggestion(group.clusterId),
+    );
+  }
+
+  async function mergeInlineSpeakerSuggestion(group: SpeakerTranscriptGroup): Promise<void> {
+    await runSpeakerInlineAction(
+      group.clusterId,
+      "merge",
+      () => mergeSpeakerClusterById(group.clusterId, group.suggestedMergeTargetClusterId),
+    );
+  }
+
   function updateSpeakerNameDraft(clusterId: number, event: Event): void {
     const input = event.currentTarget as HTMLInputElement;
     speakerNameDrafts = { ...speakerNameDrafts, [clusterId]: input.value };
@@ -592,36 +732,90 @@
     speakerNameDrafts = { ...speakerNameDrafts, [group.clusterId]: speakerPersistedName(group) };
   }
 
-  async function loadSelectedAudioSpeakerTurns(id: number, gen: number): Promise<void> {
+  async function loadSelectedAudioSpeakerTurns(
+    id: number,
+    gen: number,
+    speakerJobId: number | null = null,
+    options: SpeakerTurnsLoadOptions = {},
+  ): Promise<void> {
     try {
+      const refreshPersonProfiles = options.refreshPersonProfiles ?? true;
       const [turns, profiles] = await Promise.all([
         invoke<SpeakerTurnDto[]>("list_speaker_turns", {
           request: { audioSegmentId: id },
         }),
-        invoke<PersonProfileDto[]>("list_person_profiles"),
+        refreshPersonProfiles
+          ? invoke<PersonProfileDto[]>("list_person_profiles")
+          : Promise.resolve(personProfiles),
       ]);
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
       selectedAudioSpeakerTurns = turns;
-      personProfiles = profiles;
+      if (refreshPersonProfiles) personProfiles = profiles;
       selectedAudioSpeakerTurnsError = null;
+      selectedAudioSpeakerTurnsNotice = null;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
       const sessionId = turns[0]?.sessionId;
       selectedAudioSpeakerClusters = sessionId
         ? await invoke<SpeakerClusterDto[]>("list_speaker_clusters", {
             request: { sessionId },
           })
         : [];
+      if (
+        turns.length === 0 &&
+        speakerJobId != null &&
+        selectedAudioTranscriptStatus === "success"
+      ) {
+        selectedAudioSpeakerTurnsNotice = await loadSpeakerAnalysisEmptyNotice(speakerJobId);
+      }
     } catch (err) {
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerClusters = [];
+      selectedAudioSpeakerTurnsNotice = null;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
       selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
     }
   }
 
-  async function refreshCurrentSpeakerTurns(): Promise<void> {
+  async function refreshCurrentSpeakerTurns(
+    options: SpeakerTurnsLoadOptions = {},
+  ): Promise<void> {
     const id = selectedAudioSegmentId;
     if (id == null) return;
-    await loadSelectedAudioSpeakerTurns(id, selectedAudioTranscriptGeneration);
+    const scrollEl = audioDrawerEl;
+    const scrollTop = scrollEl?.scrollTop ?? null;
+    await loadSelectedAudioSpeakerTurns(id, selectedAudioTranscriptGeneration, null, options);
+    if (scrollEl && scrollTop != null && audioDrawerEl === scrollEl) {
+      await tick();
+      scrollEl.scrollTop = scrollTop;
+    }
+  }
+
+  async function loadSpeakerAnalysisEmptyNotice(jobId: number): Promise<string> {
+    const result = await invoke<ProcessingResultDto | null>("get_processing_result", {
+      request: { jobId } satisfies GetProcessingResultRequest,
+    });
+    const skipReason = parseSpeakerAnalysisSkipReason(result?.structuredPayloadJson ?? null);
+    if (skipReason === "too_short") {
+      return "Speaker analysis skipped: audio segment is too short.";
+    }
+    if (skipReason === "silent") {
+      return "Speaker analysis skipped: no speech-level audio detected.";
+    }
+    return "No speaker turns found.";
+  }
+
+  function parseSpeakerAnalysisSkipReason(
+    structuredPayloadJson: string | null,
+  ): SpeakerAnalysisSkipReason | null {
+    if (!structuredPayloadJson) return null;
+    try {
+      const parsed = JSON.parse(structuredPayloadJson) as SpeakerAnalysisStructuredPayload;
+      const skipReason = parsed.metadata?.provenance?.skipReason;
+      return skipReason === "too_short" || skipReason === "silent" ? skipReason : null;
+    } catch {
+      return null;
+    }
   }
 
   function latestProcessingJobForProcessor(
@@ -646,7 +840,7 @@
       await invoke("name_speaker_cluster", { request: { clusterId, label: trimmedLabel } });
       const { [clusterId]: _removed, ...remainingDrafts } = speakerNameDrafts;
       speakerNameDrafts = remainingDrafts;
-      await refreshCurrentSpeakerTurns();
+      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
       speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
@@ -751,7 +945,7 @@
     speakerCorrectionError = null;
     try {
       await invoke("reject_speaker_recognition_suggestion", { request: { clusterId } });
-      await refreshCurrentSpeakerTurns();
+      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
       speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
@@ -764,7 +958,7 @@
     speakerCorrectionError = null;
     try {
       await invoke("unlink_speaker_cluster_from_person", { request: { clusterId } });
-      await refreshCurrentSpeakerTurns();
+      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
       speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
@@ -791,7 +985,7 @@
       await invoke("merge_speaker_clusters", {
         request: { sourceClusterId, targetClusterId },
       });
-      await refreshCurrentSpeakerTurns();
+      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
       speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
@@ -811,7 +1005,7 @@
           request: { turnId, targetClusterId },
         });
       }
-      await refreshCurrentSpeakerTurns();
+      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     } catch (err) {
       speakerCorrectionError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
@@ -1001,7 +1195,9 @@
 
     if (processingJobIsPending(job)) {
       selectedAudioSpeakerAnalysisRunning = true;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
       selectedAudioSpeakerTurnsError = null;
+      selectedAudioSpeakerTurnsNotice = null;
       scheduleSelectedAudioTranscriptPoll(id, job.id, gen);
       return;
     }
@@ -1012,11 +1208,14 @@
     if (job.status === "failed") {
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerClusters = [];
+      selectedAudioSpeakerAnalysisFailedJobId = job.id;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioSpeakerTurnsError = job.lastError ?? "Speaker analysis failed";
       return;
     }
 
-    await loadSelectedAudioSpeakerTurns(id, gen);
+    selectedAudioSpeakerAnalysisFailedJobId = null;
+    await loadSelectedAudioSpeakerTurns(id, gen, job.id);
   }
 
   async function waitForSelectedAudioSpeakerAnalysisIfNeeded(
@@ -1031,10 +1230,13 @@
         return;
       }
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
       await loadSelectedAudioSpeakerTurns(id, gen);
     } catch (err) {
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
     }
   }
@@ -1057,6 +1259,8 @@
       selectedAudioTranscriptSegments = [];
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = null;
       scheduleSelectedAudioTranscriptPoll(id, job.id, gen);
       return;
@@ -1070,6 +1274,8 @@
       selectedAudioTranscriptSegments = [];
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = job.lastError ?? "Transcription job failed";
       return;
     }
@@ -1085,6 +1291,8 @@
       selectedAudioTranscriptSegments = [];
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = "Transcription result not available";
       return;
     }
@@ -1138,9 +1346,23 @@
       selectedAudioTranscriptSegments = [];
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = typeof err === "string" ? err : JSON.stringify(err);
     }
   }
+
+  const selectedAudioSpeakerRetryVisible = $derived(
+    selectedAudioTranscriptStatus === "success" &&
+      selectedAudioSpeakerTurnsError != null &&
+      selectedAudioSpeakerAnalysisFailedJobId != null &&
+      selectedAudioSegment != null,
+  );
+  const selectedAudioSpeakerRetryDisabled = $derived(
+    !selectedAudioSpeakerRetryVisible ||
+      selectedAudioSpeakerAnalysisRetryLoading ||
+      selectedAudioSpeakerAnalysisRunning,
+  );
 
   const selectedAudioTranscriptActionLabel = $derived(
     selectedAudioTranscriptStatus === "missing" ? "Run" : "Rerun",
@@ -1187,6 +1409,8 @@
       selectedAudioTranscriptSegments = [];
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = null;
       selectedAudioTranscriptRerunError = null;
       await applySelectedAudioTranscriptJob(id, gen, result.job);
@@ -1196,6 +1420,35 @@
     } finally {
       if (selectedAudioSegmentId === id) {
         selectedAudioTranscriptRerunLoading = false;
+      }
+    }
+  }
+
+  async function reprocessSelectedAudioSegmentSpeakerAnalysis(): Promise<void> {
+    const segment = selectedAudioSegment;
+    if (!segment || selectedAudioSpeakerRetryDisabled) return;
+    const id = segment.id;
+    const gen = selectedAudioTranscriptGeneration;
+
+    selectedAudioSpeakerAnalysisRetryLoading = true;
+    speakerCorrectionError = null;
+    try {
+      const result = await invoke<{
+        outcome: string;
+        job: ProcessingJobDto;
+      }>("reprocess_audio_segment_speaker_analysis", {
+        request: {
+          audioSegmentId: id,
+        } satisfies ReprocessAudioSegmentSpeakerAnalysisRequest,
+      });
+      if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+      await applySelectedAudioSpeakerAnalysisJob(id, gen, result.job);
+    } catch (err) {
+      if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+      selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      if (selectedAudioSegmentId === id) {
+        selectedAudioSpeakerAnalysisRetryLoading = false;
       }
     }
   }
@@ -5050,6 +5303,8 @@
             bind:this={selectedAudioTranscriptContainerEl}
           >
             {#each selectedAudioSpeakerGroups as group, index}
+              {@const showPersonInlineAction = shouldShowPersonSuggestionRow(group, index)}
+              {@const showMergeInlineAction = shouldShowMergeSuggestionRow(group, index)}
               <section
                 class="audio-drawer__speaker-block"
                 class:audio-drawer__speaker-block--actions-open={speakerActionsOpenIndex === index}
@@ -5085,10 +5340,10 @@
                           confidence {speakerConfidenceLabel(group)}
                         </span>
                       {/if}
-                      {#if group.overlaps}
-                        <span class="audio-drawer__speaker-meta">overlap</span>
-                      {/if}
                     </div>
+                    {#if group.overlaps}
+                      <div class="audio-drawer__speaker-overlap-note">Overlapping speech</div>
+                    {/if}
                     <div class="audio-drawer__speaker-popover-row audio-drawer__speaker-popover-row--primary">
                       <button
                         type="button"
@@ -5131,35 +5386,6 @@
                             Not {profileName}
                           </button>
                         {/if}
-                        {#if group.suggestedPersonId != null && group.personId == null}
-                          {@const suggestionName = speakerProfileName(group.suggestedPersonId) ?? speakerCleanLabel(group.speakerLabel)}
-                          <button
-                            type="button"
-                            class="audio-drawer__speaker-tool audio-drawer__speaker-tool--confirm"
-                            disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                            onclick={() => confirmSpeakerSuggestion(group.clusterId)}
-                          >
-                            Confirm {suggestionName}
-                          </button>
-                          <button
-                            type="button"
-                            class="audio-drawer__speaker-tool audio-drawer__speaker-tool--reject"
-                            disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                            onclick={() => rejectSpeakerSuggestion(group.clusterId)}
-                          >
-                            Reject suggestion
-                          </button>
-                        {/if}
-                        {#if group.suggestedMergeTargetClusterId != null && suggestedMergeTargetLabel(group)}
-                          <button
-                            type="button"
-                            class="audio-drawer__speaker-tool audio-drawer__speaker-tool--confirm"
-                            disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                            onclick={() => mergeSpeakerClusterById(group.clusterId, group.suggestedMergeTargetClusterId)}
-                          >
-                            Merge with {suggestedMergeTargetLabel(group)}
-                          </button>
-                        {/if}
                         {#if selectedAudioSpeakerClusters.length > 1}
                           <select
                             class="audio-drawer__speaker-select"
@@ -5188,29 +5414,106 @@
                     </details>
                   </div>
                 {/if}
-                <button
-                  type="button"
-                  class="audio-drawer__speaker-chip"
-                  class:audio-drawer__speaker-chip--open={speakerActionsOpenIndex === index}
-                  aria-haspopup="dialog"
-                  aria-expanded={speakerActionsOpenIndex === index}
-                  title="Edit speaker"
-                  onclick={(event) => toggleSpeakerActions(index, event)}
-                >
-                  {speakerPersistedName(group)}
+                <div class="audio-drawer__speaker-label-stack">
+                  <button
+                    type="button"
+                    class="audio-drawer__speaker-chip"
+                    class:audio-drawer__speaker-chip--open={speakerActionsOpenIndex === index}
+                    aria-haspopup="dialog"
+                    aria-expanded={speakerActionsOpenIndex === index}
+                    title="Edit speaker"
+                    onclick={(event) => toggleSpeakerActions(index, event)}
+                  >
+                    {speakerPersistedName(group)}
+                  </button>
                   {#if group.overlaps}
-                    <span class="audio-drawer__speaker-meta">overlap</span>
+                    <span class="audio-drawer__speaker-overlap-note">Overlapping speech</span>
                   {/if}
-                </button>
-                <button
-                  type="button"
-                  class="audio-drawer__speaker-text"
-                  class:audio-drawer__speaker-text--active={selectedAudioSpeakerActiveGroupIndex === index}
-                  title={`Jump to ${formatTranscriptSegmentTitle(group)}`}
-                  onclick={() => onSpeakerLineClick(group)}
-                >
-                  {group.text}
-                </button>
+                </div>
+                <div class="audio-drawer__speaker-content">
+                  {#if showPersonInlineAction || showMergeInlineAction}
+                    <div
+                      class="audio-drawer__speaker-actions"
+                      role="group"
+                      aria-label={`Speaker suggestions for ${speakerPersistedName(group)}`}
+                    >
+                      {#if showPersonInlineAction}
+                        {@const suggestionName = speakerSuggestedPersonName(group)}
+                        {@const confidenceLabel = speakerActionConfidenceLabel(group)}
+                        <div class="audio-drawer__speaker-action-row">
+                          <div class="audio-drawer__speaker-action-copy">
+                            <span class="audio-drawer__speaker-action-title">Maybe {suggestionName}</span>
+                            {#if confidenceLabel}
+                              <span class="audio-drawer__speaker-action-meta">{confidenceLabel}</span>
+                            {/if}
+                          </div>
+                          <div class="audio-drawer__speaker-action-buttons">
+                            <button
+                              type="button"
+                              class="audio-drawer__speaker-action-button audio-drawer__speaker-action-button--confirm"
+                              disabled={speakerInlineActionDisabled(group)}
+                              aria-label={`Confirm ${suggestionName} for this speaker`}
+                              onclick={() => confirmInlineSpeakerSuggestion(group)}
+                            >
+                              {speakerInlineActionIsBusy(group, "confirm")
+                                ? speakerActionBusyLabel("confirm")
+                                : "Confirm"}
+                            </button>
+                            <button
+                              type="button"
+                              class="audio-drawer__speaker-action-button audio-drawer__speaker-action-button--reject"
+                              disabled={speakerInlineActionDisabled(group)}
+                              aria-label={`Reject ${suggestionName} for this speaker`}
+                              onclick={() => rejectInlineSpeakerSuggestion(group)}
+                            >
+                              {speakerInlineActionIsBusy(group, "reject")
+                                ? speakerActionBusyLabel("reject")
+                                : "Reject"}
+                            </button>
+                          </div>
+                        </div>
+                      {/if}
+                      {#if showMergeInlineAction}
+                        {@const mergeTargetLabel = suggestedMergeTargetLabel(group)}
+                        {@const mergeScoreLabel = speakerActionScoreLabel(group)}
+                        {#if mergeTargetLabel}
+                          <div class="audio-drawer__speaker-action-row">
+                            <div class="audio-drawer__speaker-action-copy">
+                              <span class="audio-drawer__speaker-action-title">
+                                Same speaker as {mergeTargetLabel}?
+                              </span>
+                              {#if mergeScoreLabel}
+                                <span class="audio-drawer__speaker-action-meta">{mergeScoreLabel}</span>
+                              {/if}
+                            </div>
+                            <div class="audio-drawer__speaker-action-buttons">
+                              <button
+                                type="button"
+                                class="audio-drawer__speaker-action-button audio-drawer__speaker-action-button--confirm"
+                                disabled={speakerInlineActionDisabled(group)}
+                                aria-label={`Merge this speaker with ${mergeTargetLabel}`}
+                                onclick={() => mergeInlineSpeakerSuggestion(group)}
+                              >
+                                {speakerInlineActionIsBusy(group, "merge")
+                                  ? speakerActionBusyLabel("merge")
+                                  : "Merge"}
+                              </button>
+                            </div>
+                          </div>
+                        {/if}
+                      {/if}
+                    </div>
+                  {/if}
+                  <button
+                    type="button"
+                    class="audio-drawer__speaker-text"
+                    class:audio-drawer__speaker-text--active={selectedAudioSpeakerActiveGroupIndex === index}
+                    title={`Jump to ${formatTranscriptSegmentTitle(group)}`}
+                    onclick={() => onSpeakerLineClick(group)}
+                  >
+                    {group.text}
+                  </button>
+                </div>
               </section>
             {/each}
           </div>
@@ -5240,7 +5543,24 @@
           <p class="audio-drawer__transcript-text">{selectedAudioTranscriptText}</p>
         {/if}
         {#if selectedAudioSpeakerTurnsError}
-          <p class="audio-drawer__transcript-error">{selectedAudioSpeakerTurnsError}</p>
+          <div class="audio-drawer__transcript-error-row">
+            <p class="audio-drawer__transcript-error">{selectedAudioSpeakerTurnsError}</p>
+            {#if selectedAudioSpeakerRetryVisible}
+              <button
+                type="button"
+                class="audio-drawer__transcript-action audio-drawer__transcript-action--retry"
+                disabled={selectedAudioSpeakerRetryDisabled}
+                onclick={reprocessSelectedAudioSegmentSpeakerAnalysis}
+              >
+                {selectedAudioSpeakerAnalysisRetryLoading
+                  ? "Retrying..."
+                  : "Retry speaker analysis"}
+              </button>
+            {/if}
+          </div>
+        {/if}
+        {#if selectedAudioSpeakerTurnsNotice && !selectedAudioSpeakerTurnsError}
+          <p class="audio-drawer__transcript-empty">{selectedAudioSpeakerTurnsNotice}</p>
         {/if}
       {:else if selectedAudioTranscriptStatus === "empty"}
         <p class="audio-drawer__transcript-empty">No speech detected in this segment.</p>
@@ -5848,6 +6168,19 @@
     border-left-color: var(--app-accent);
   }
 
+  .audio-drawer__speaker-label-stack {
+    display: grid;
+    gap: 1px;
+    align-self: start;
+  }
+
+  .audio-drawer__speaker-content {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    align-self: start;
+  }
+
   .audio-drawer__speaker-popover {
     position: absolute;
     left: 8px;
@@ -6090,9 +6423,11 @@
     outline: none;
   }
 
-  .audio-drawer__speaker-meta {
-    color: var(--app-warn);
-    font-size: 8px;
+  .audio-drawer__speaker-overlap-note {
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1.2;
   }
 
   .audio-drawer__speaker-confidence {
@@ -6103,7 +6438,98 @@
     text-transform: uppercase;
   }
 
+  .audio-drawer__speaker-actions {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    margin: 1px 0 2px;
+  }
+
+  .audio-drawer__speaker-action-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 5px 10px;
+    min-width: 0;
+    padding: 4px 6px;
+    border-left: 1px solid color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
+    background: color-mix(in srgb, var(--app-accent) 5%, transparent);
+  }
+
+  .audio-drawer__speaker-action-copy {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 5px 8px;
+    min-width: 0;
+    line-height: 1.25;
+  }
+
+  .audio-drawer__speaker-action-title {
+    color: var(--app-text);
+    font-size: 10px;
+    font-weight: 800;
+  }
+
+  .audio-drawer__speaker-action-meta {
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+  }
+
+  .audio-drawer__speaker-action-buttons {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    flex: 0 0 auto;
+  }
+
+  .audio-drawer__speaker-action-button {
+    min-height: 22px;
+    padding: 2px 8px;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--app-surface-raised) 72%, transparent);
+    color: var(--app-text);
+    font: inherit;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+      border-color 0.12s,
+      color 0.12s,
+      background 0.12s,
+      opacity 0.12s;
+  }
+
+  .audio-drawer__speaker-action-button--confirm {
+    color: color-mix(in srgb, var(--app-accent) 82%, var(--app-text));
+  }
+
+  .audio-drawer__speaker-action-button--reject {
+    color: var(--app-warn);
+  }
+
+  .audio-drawer__speaker-action-button:hover:not(:disabled),
+  .audio-drawer__speaker-action-button:focus-visible:not(:disabled) {
+    border-color: var(--app-accent);
+    background: color-mix(in srgb, var(--app-accent) 12%, var(--app-surface-raised));
+    color: var(--app-text);
+    outline: none;
+  }
+
+  .audio-drawer__speaker-action-button:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+  }
+
   .audio-drawer__speaker-text {
+    width: 100%;
+    min-width: 0;
     margin: 0;
     padding: 2px 6px;
     border: 0;
@@ -6160,10 +6586,37 @@
     font-style: italic;
   }
 
+  .audio-drawer__transcript-error-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+  }
+
+  .audio-drawer__transcript-action--retry {
+    flex: 0 0 auto;
+  }
+
   .audio-drawer__transcript-error {
     color: var(--app-danger-text);
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     word-break: break-word;
+  }
+
+  @media (max-width: 640px) {
+    .audio-drawer__speaker-block {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 3px;
+    }
+
+    .audio-drawer__speaker-action-row {
+      align-items: flex-start;
+    }
+
+    .audio-drawer__speaker-action-buttons {
+      flex: 1 1 100%;
+    }
   }
 
   /* ── Buttons (subset used by the timeline) ─────────────────── */

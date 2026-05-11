@@ -292,6 +292,31 @@ export interface TranscriptionStructuredPayload {
 	provenance?: Record<string, unknown>;
 }
 
+export type SpeakerAnalysisSkipReason = "too_short" | "silent";
+
+export interface SpeakerAnalysisProvenance {
+	schemaVersion?: number;
+	audioDurationMs?: number;
+	audioPeak?: number;
+	skipReason?: SpeakerAnalysisSkipReason | null;
+	chunkingMode?: "single" | "safe_chunked" | string;
+	chunkCount?: number;
+	turnCount?: number;
+	clusterCount?: number;
+	recognitionEnabled?: boolean;
+	warningReasons?: string[];
+	segmentationModelPath?: string;
+	embeddingModelPath?: string;
+}
+
+export interface SpeakerAnalysisStructuredPayload {
+	clusters?: unknown[];
+	turns?: unknown[];
+	metadata?: {
+		provenance?: SpeakerAnalysisProvenance | null;
+	} | null;
+}
+
 export type CapturedFrameReprocessingOutcome = "created" | "ignored" | "requeued";
 
 export interface CapturedFrameReprocessingResultDto {

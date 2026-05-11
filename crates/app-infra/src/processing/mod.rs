@@ -19,7 +19,9 @@ pub use job::{
 pub use ocr::OcrProcessorBackend;
 pub use result::{ProcessingResult, ProcessingResultDraft};
 pub use runtime::{ProcessingJobRunOutcome, ProcessingRuntime};
-pub use speaker_analysis::{SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend};
+pub use speaker_analysis::{
+    SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend, HELPER_TIMEOUT_SECONDS_OPTION,
+};
 pub use store::{
     FocusedFrameWindow, FrameProcessingJob, PersonProfile, ProcessingJobCompletion,
     ProcessingModelCleanupLock, ProcessingStore, SegmentWorkspaceOcrReference, SpeakerClusterView,

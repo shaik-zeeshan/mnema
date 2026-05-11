@@ -47,9 +47,17 @@ impl ProcessingRuntime {
         &self,
         excluded_processor: &str,
     ) -> Result<Option<ProcessingJobRunOutcome>> {
+        self.process_next_queued_job_excluding_processors(&[excluded_processor])
+            .await
+    }
+
+    pub async fn process_next_queued_job_excluding_processors(
+        &self,
+        excluded_processors: &[&str],
+    ) -> Result<Option<ProcessingJobRunOutcome>> {
         let Some(job) = self
             .store
-            .claim_next_queued_job_excluding_processor(excluded_processor)
+            .claim_next_queued_job_excluding_processors(excluded_processors)
             .await?
         else {
             return Ok(None);

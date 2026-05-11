@@ -776,7 +776,7 @@ impl ProcessingStore {
     }
 
     pub async fn claim_next_queued_job(&self) -> Result<Option<ProcessingJob>> {
-        self.claim_next_queued_job_matching_processor(None, None)
+        self.claim_next_queued_job_matching_processor(None, &[])
             .await
     }
 
@@ -784,7 +784,7 @@ impl ProcessingStore {
         &self,
         processor: &str,
     ) -> Result<Option<ProcessingJob>> {
-        self.claim_next_queued_job_matching_processor(Some(processor), None)
+        self.claim_next_queued_job_matching_processor(Some(processor), &[])
             .await
     }
 
@@ -792,18 +792,26 @@ impl ProcessingStore {
         &self,
         excluded_processor: &str,
     ) -> Result<Option<ProcessingJob>> {
-        self.claim_next_queued_job_matching_processor(None, Some(excluded_processor))
+        self.claim_next_queued_job_excluding_processors(&[excluded_processor])
+            .await
+    }
+
+    pub async fn claim_next_queued_job_excluding_processors(
+        &self,
+        excluded_processors: &[&str],
+    ) -> Result<Option<ProcessingJob>> {
+        self.claim_next_queued_job_matching_processor(None, excluded_processors)
             .await
     }
 
     async fn claim_next_queued_job_matching_processor(
         &self,
         processor: Option<&str>,
-        excluded_processor: Option<&str>,
+        excluded_processors: &[&str],
     ) -> Result<Option<ProcessingJob>> {
         loop {
             let mut transaction = self.pool.begin().await?;
-            let row = match (processor, excluded_processor) {
+            let row = match (processor, excluded_processors.is_empty()) {
                 (Some(processor), _) => sqlx::query(
                     "SELECT \
                         pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
@@ -836,39 +844,46 @@ impl ProcessingStore {
                 .bind(processor)
                 .fetch_optional(&mut *transaction)
                 .await?,
-                (None, Some(excluded_processor)) => sqlx::query(
-                    "SELECT \
-                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
-                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
-                        pj.finished_at \
-                     FROM processing_jobs AS pj \
-                     WHERE pj.status = 'queued' \
-                       AND pj.processor != ?1 \
-                       AND NOT EXISTS ( \
-                         SELECT 1 FROM processing_model_cleanup_locks AS lock \
-                         WHERE lock.processor = pj.processor \
-                           AND lock.model_key = CASE \
-                             WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
-                              AND pj.payload_json IS NOT NULL \
-                              AND json_valid(pj.payload_json) \
-                             THEN CASE \
-                               WHEN json_type(pj.payload_json, '$.provider') = 'text' \
-                                AND json_type(pj.payload_json, '$.modelId') = 'text' \
-                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.provider')), '') IS NOT NULL \
-                                AND NULLIF(TRIM(json_extract(pj.payload_json, '$.modelId')), '') IS NOT NULL \
-                               THEN TRIM(json_extract(pj.payload_json, '$.provider')) || '/' || TRIM(json_extract(pj.payload_json, '$.modelId')) \
-                               ELSE NULL \
-                             END \
-                             ELSE NULL \
-                           END \
-                       ) \
-                     ORDER BY pj.id ASC \
-                     LIMIT 1",
-                )
-                .bind(excluded_processor)
-                .fetch_optional(&mut *transaction)
-                .await?,
-                (None, None) => sqlx::query(
+                (None, false) => {
+                    let mut query = sqlx::QueryBuilder::new(
+                        "SELECT \
+                            pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
+                            pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                            pj.finished_at \
+                         FROM processing_jobs AS pj \
+                         WHERE pj.status = 'queued' \
+                           AND pj.processor NOT IN (",
+                    );
+                    let mut separated = query.separated(", ");
+                    for excluded_processor in excluded_processors {
+                        separated.push_bind(excluded_processor);
+                    }
+                    separated.push_unseparated(
+                        ") \
+                           AND NOT EXISTS ( \
+                             SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                             WHERE lock.processor = pj.processor \
+                               AND lock.model_key = CASE \
+                                 WHEN pj.processor IN ('ocr', 'audio_transcription', 'speaker_analysis') \
+                                  AND pj.payload_json IS NOT NULL \
+                                  AND json_valid(pj.payload_json) \
+                                 THEN CASE \
+                                   WHEN json_type(pj.payload_json, '$.provider') = 'text' \
+                                    AND json_type(pj.payload_json, '$.modelId') = 'text' \
+                                    AND NULLIF(TRIM(json_extract(pj.payload_json, '$.provider')), '') IS NOT NULL \
+                                    AND NULLIF(TRIM(json_extract(pj.payload_json, '$.modelId')), '') IS NOT NULL \
+                                   THEN TRIM(json_extract(pj.payload_json, '$.provider')) || '/' || TRIM(json_extract(pj.payload_json, '$.modelId')) \
+                                   ELSE NULL \
+                                 END \
+                                 ELSE NULL \
+                               END \
+                           ) \
+                         ORDER BY pj.id ASC \
+                         LIMIT 1",
+                    );
+                    query.build().fetch_optional(&mut *transaction).await?
+                }
+                (None, true) => sqlx::query(
                     "SELECT \
                         pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
                         pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
@@ -1808,6 +1823,7 @@ async fn persist_speaker_analysis_output(
             &output.metadata.provider,
             output.metadata.model_id.as_deref(),
             &cluster.embedding,
+            suggested_person_id,
         )
         .await?;
         let stable_provider_cluster_id =
@@ -1975,12 +1991,25 @@ struct StableSpeakerClusterResolution {
     suggested_merge_score: Option<f32>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct StableSpeakerClusterCandidate {
+    id: i64,
+    score: f32,
+    person_id: Option<i64>,
+}
+
+const SPEAKER_CLUSTER_AUTO_REUSE_THRESHOLD: f32 = 0.82;
+const SPEAKER_CLUSTER_SUGGEST_MERGE_THRESHOLD: f32 = 0.68;
+const SPEAKER_CLUSTER_AMBIGUITY_MARGIN: f32 = 0.06;
+const TIMED_TEXT_NEARBY_TURN_FALLBACK_MS: u64 = 500;
+
 async fn resolve_stable_speaker_cluster(
     transaction: &mut Transaction<'_, Sqlite>,
     session_id: &str,
     provider: &str,
     model_id: Option<&str>,
     embedding: &[u8],
+    recognition_person_id: Option<i64>,
 ) -> Result<StableSpeakerClusterResolution> {
     let incoming = f32_embedding_from_le_bytes(embedding);
     if incoming.is_empty() {
@@ -1988,7 +2017,7 @@ async fn resolve_stable_speaker_cluster(
     }
 
     let rows = sqlx::query(
-        "SELECT id, embedding FROM recording_speaker_clusters \
+        "SELECT id, embedding, person_id FROM recording_speaker_clusters \
          WHERE session_id = ?1 AND provider = ?2 AND COALESCE(model_id, '') = COALESCE(?3, '') \
            AND embedding IS NOT NULL \
          ORDER BY id ASC",
@@ -1999,42 +2028,62 @@ async fn resolve_stable_speaker_cluster(
     .fetch_all(&mut **transaction)
     .await?;
 
-    let mut scores = rows
+    let mut candidates = rows
         .into_iter()
         .filter_map(|row| {
             let embedding: Vec<u8> = row.get("embedding");
             let score = cosine_similarity(&incoming, &f32_embedding_from_le_bytes(&embedding));
-            score
-                .is_finite()
-                .then_some((row.get::<i64, _>("id"), score))
+            score.is_finite().then_some(StableSpeakerClusterCandidate {
+                id: row.get("id"),
+                score,
+                person_id: row.get("person_id"),
+            })
         })
         .collect::<Vec<_>>();
-    scores.sort_by(|left, right| {
+    Ok(resolve_stable_speaker_cluster_from_candidates(
+        &mut candidates,
+        recognition_person_id,
+    ))
+}
+
+fn resolve_stable_speaker_cluster_from_candidates(
+    candidates: &mut [StableSpeakerClusterCandidate],
+    recognition_person_id: Option<i64>,
+) -> StableSpeakerClusterResolution {
+    candidates.sort_by(|left, right| {
         right
-            .1
-            .partial_cmp(&left.1)
+            .score
+            .partial_cmp(&left.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.id.cmp(&right.id))
     });
 
-    let Some((best_cluster_id, best_score)) = scores.first().copied() else {
-        return Ok(StableSpeakerClusterResolution::default());
+    let Some(best) = candidates.first().copied() else {
+        return StableSpeakerClusterResolution::default();
     };
-    let second_score = scores.get(1).map(|(_, score)| *score);
-    let ambiguous = second_score.is_some_and(|score| best_score - score < 0.05);
+    let second_score = candidates.get(1).map(|candidate| candidate.score);
+    let ambiguous =
+        second_score.is_some_and(|score| best.score - score < SPEAKER_CLUSTER_AMBIGUITY_MARGIN);
+    let confirmed_person_conflict = recognition_person_id.zip(best.person_id).is_some_and(
+        |(incoming_person_id, existing_person_id)| incoming_person_id != existing_person_id,
+    );
 
-    if best_score >= 0.82 && !ambiguous {
-        Ok(StableSpeakerClusterResolution {
-            auto_merge_target_cluster_id: Some(best_cluster_id),
+    if best.score >= SPEAKER_CLUSTER_AUTO_REUSE_THRESHOLD
+        && !ambiguous
+        && !confirmed_person_conflict
+    {
+        StableSpeakerClusterResolution {
+            auto_merge_target_cluster_id: Some(best.id),
             ..Default::default()
-        })
-    } else if best_score >= 0.68 {
-        Ok(StableSpeakerClusterResolution {
-            suggested_merge_target_cluster_id: Some(best_cluster_id),
-            suggested_merge_score: Some(best_score),
+        }
+    } else if best.score >= SPEAKER_CLUSTER_SUGGEST_MERGE_THRESHOLD {
+        StableSpeakerClusterResolution {
+            suggested_merge_target_cluster_id: Some(best.id),
+            suggested_merge_score: Some(best.score),
             ..Default::default()
-        })
+        }
     } else {
-        Ok(StableSpeakerClusterResolution::default())
+        StableSpeakerClusterResolution::default()
     }
 }
 
@@ -2181,22 +2230,32 @@ impl TimedTextRun {
 }
 
 fn best_turn_for_timed_text_run(turns: &[SpeakerTurnRange], run: &TimedTextRun) -> Option<i64> {
-    let mut best = None::<(&SpeakerTurnRange, u64, u64)>;
+    let run_midpoint = midpoint_ms(run.start_ms, run.end_ms);
+    let mut best = None::<(&SpeakerTurnRange, u64, bool, u64)>;
     for turn in turns {
         let overlap = overlap_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms);
         if overlap == 0 {
             continue;
         }
+        let contains_run_midpoint = turn.start_ms <= run_midpoint && run_midpoint <= turn.end_ms;
         let distance = midpoint_distance_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms);
-        if best.is_none_or(|(best_turn, best_overlap, best_distance)| {
-            overlap > best_overlap
-                || (overlap == best_overlap && distance < best_distance)
-                || (overlap == best_overlap && distance == best_distance && turn.id < best_turn.id)
-        }) {
-            best = Some((turn, overlap, distance));
+        if best.is_none_or(
+            |(best_turn, best_overlap, best_contains_midpoint, best_distance)| {
+                overlap > best_overlap
+                    || (overlap == best_overlap && contains_run_midpoint && !best_contains_midpoint)
+                    || (overlap == best_overlap
+                        && contains_run_midpoint == best_contains_midpoint
+                        && distance < best_distance)
+                    || (overlap == best_overlap
+                        && contains_run_midpoint == best_contains_midpoint
+                        && distance == best_distance
+                        && turn.id < best_turn.id)
+            },
+        ) {
+            best = Some((turn, overlap, contains_run_midpoint, distance));
         }
     }
-    if let Some((turn, _, _)) = best {
+    if let Some((turn, _, _, _)) = best {
         return Some(turn.id);
     }
 
@@ -2209,9 +2268,13 @@ fn best_turn_for_timed_text_run(turns: &[SpeakerTurnRange], run: &TimedTextRun) 
                 midpoint_distance_ms(turn.start_ms, turn.end_ms, run.start_ms, run.end_ms),
             )
         })
-        .filter(|(_, gap, _)| *gap <= 500)
+        .filter(|(_, gap, _)| *gap <= TIMED_TEXT_NEARBY_TURN_FALLBACK_MS)
         .min_by_key(|(turn, gap, distance)| (*gap, *distance, turn.id))
         .map(|(turn, _, _)| turn.id)
+}
+
+fn midpoint_ms(start_ms: u64, end_ms: u64) -> u64 {
+    start_ms.saturating_add(end_ms) / 2
 }
 
 fn overlap_ms(start_a: u64, end_a: u64, start_b: u64, end_b: u64) -> u64 {
@@ -2264,6 +2327,156 @@ fn recognition_confidence_as_str(confidence: &RecognitionConfidence) -> &'static
         RecognitionConfidence::High => "high",
         RecognitionConfidence::Medium => "medium",
         RecognitionConfidence::Low => "low",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn(id: i64, start_ms: u64, end_ms: u64) -> SpeakerTurnRange {
+        SpeakerTurnRange {
+            id,
+            start_ms,
+            end_ms,
+        }
+    }
+
+    fn run(start_ms: u64, end_ms: u64) -> TimedTextRun {
+        TimedTextRun {
+            start_ms,
+            end_ms,
+            text: "hello".to_string(),
+        }
+    }
+
+    fn candidate(id: i64, score: f32, person_id: Option<i64>) -> StableSpeakerClusterCandidate {
+        StableSpeakerClusterCandidate {
+            id,
+            score,
+            person_id,
+        }
+    }
+
+    #[test]
+    fn timed_text_alignment_picks_greatest_overlap() {
+        let turns = vec![turn(1, 0, 800), turn(2, 400, 1_400)];
+
+        assert_eq!(
+            best_turn_for_timed_text_run(&turns, &run(500, 1_300)),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn timed_text_alignment_prefers_midpoint_containing_turn_on_overlap_tie() {
+        let turns = vec![turn(1, 0, 700), turn(2, 700, 1_300)];
+
+        assert_eq!(
+            best_turn_for_timed_text_run(&turns, &run(500, 900)),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn timed_text_alignment_uses_midpoint_distance_after_overlap_and_midpoint_tie() {
+        let turns = vec![turn(1, 100, 600), turn(2, 300, 1_000)];
+
+        assert_eq!(
+            best_turn_for_timed_text_run(&turns, &run(400, 800)),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn timed_text_alignment_uses_earliest_turn_id_as_final_tie_breaker() {
+        let turns = vec![turn(9, 0, 1_000), turn(3, 0, 1_000)];
+
+        assert_eq!(
+            best_turn_for_timed_text_run(&turns, &run(200, 800)),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn timed_text_alignment_uses_nearby_fallback_within_limit() {
+        let turns = vec![turn(1, 0, 1_000), turn(2, 2_000, 3_000)];
+
+        assert_eq!(
+            best_turn_for_timed_text_run(&turns, &run(1_450, 1_500)),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn timed_text_alignment_leaves_unassigned_without_reasonable_turn() {
+        let turns = vec![turn(1, 0, 1_000), turn(2, 3_000, 4_000)];
+
+        assert_eq!(
+            best_turn_for_timed_text_run(&turns, &run(1_600, 1_700)),
+            None
+        );
+    }
+
+    #[test]
+    fn stable_cluster_resolution_auto_reuses_unambiguous_high_similarity() {
+        let mut candidates = vec![candidate(1, 0.83, None), candidate(2, 0.70, None)];
+
+        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
+
+        assert_eq!(resolution.auto_merge_target_cluster_id, Some(1));
+        assert_eq!(resolution.suggested_merge_target_cluster_id, None);
+    }
+
+    #[test]
+    fn stable_cluster_resolution_suggests_for_ambiguous_high_similarity() {
+        let mut candidates = vec![candidate(1, 0.83, None), candidate(2, 0.78, None)];
+
+        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
+
+        assert_eq!(resolution.auto_merge_target_cluster_id, None);
+        assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
+    }
+
+    #[test]
+    fn stable_cluster_resolution_suggests_for_medium_similarity() {
+        let mut candidates = vec![candidate(1, 0.70, None)];
+
+        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
+
+        assert_eq!(resolution.auto_merge_target_cluster_id, None);
+        assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
+        assert_eq!(resolution.suggested_merge_score, Some(0.70));
+    }
+
+    #[test]
+    fn stable_cluster_resolution_creates_independent_for_low_similarity() {
+        let mut candidates = vec![candidate(1, 0.67, None)];
+
+        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
+
+        assert_eq!(resolution.auto_merge_target_cluster_id, None);
+        assert_eq!(resolution.suggested_merge_target_cluster_id, None);
+    }
+
+    #[test]
+    fn stable_cluster_resolution_has_no_match_when_provider_or_model_filter_removed_candidates() {
+        let mut candidates = vec![];
+
+        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
+
+        assert_eq!(resolution.auto_merge_target_cluster_id, None);
+        assert_eq!(resolution.suggested_merge_target_cluster_id, None);
+    }
+
+    #[test]
+    fn stable_cluster_resolution_confirmed_person_conflict_blocks_auto_reuse() {
+        let mut candidates = vec![candidate(1, 0.90, Some(10))];
+
+        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, Some(20));
+
+        assert_eq!(resolution.auto_merge_target_cluster_id, None);
+        assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
     }
 }
 
