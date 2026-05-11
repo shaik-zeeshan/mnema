@@ -9,7 +9,7 @@ use capture_types::{
     default_speaker_analysis_settings, default_system_audio_activity_sensitivity,
     default_video_bitrate, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
+    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
     UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
@@ -81,6 +81,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         developer_options_enabled: default_developer_options_enabled(),
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: default_follow_timeline_live(),
+        retention_policy: RetentionPolicy::Never,
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
@@ -548,6 +549,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         developer_options_enabled: request.developer_options_enabled,
         preview_cache_ttl_seconds: request.preview_cache_ttl_seconds,
         follow_timeline_live: request.follow_timeline_live,
+        retention_policy: request.retention_policy,
         appearance: request.appearance,
         ocr,
         transcription,
@@ -579,9 +581,7 @@ fn load_recording_settings_from_path_with_resolution_support(
 ) -> Option<RecordingSettings> {
     let raw = std::fs::read_to_string(path).ok()?;
 
-    // Backward compatibility: if the old single `audioActivitySensitivity` field is present
-    // but the new per-source fields are absent, copy its value into both new fields.
-    let raw = migrate_legacy_audio_sensitivity(&raw);
+    let raw = migrate_legacy_recording_settings_json(&raw);
 
     let parsed = serde_json::from_str::<RecordingSettings>(&raw).ok()?;
     validate_recording_settings_with_resolution_support(
@@ -599,6 +599,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             developer_options_enabled: parsed.developer_options_enabled,
             preview_cache_ttl_seconds: parsed.preview_cache_ttl_seconds,
             follow_timeline_live: parsed.follow_timeline_live,
+            retention_policy: parsed.retention_policy,
             appearance: parsed.appearance,
             ocr: parsed.ocr,
             transcription: parsed.transcription,
@@ -615,10 +616,7 @@ fn load_recording_settings_from_path_with_resolution_support(
     .ok()
 }
 
-/// Migrate legacy JSON that has a single `audioActivitySensitivity` field into the
-/// two new per-source fields. If the new fields already exist, the legacy field is
-/// simply removed.
-fn migrate_legacy_audio_sensitivity(raw: &str) -> String {
+fn migrate_legacy_recording_settings_json(raw: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return raw.to_string();
     };
@@ -633,6 +631,17 @@ fn migrate_legacy_audio_sensitivity(raw: &str) -> String {
         if !obj.contains_key("systemAudioActivitySensitivity") {
             obj.insert("systemAudioActivitySensitivity".to_string(), legacy);
         }
+    }
+
+    if obj
+        .get("retentionPolicy")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value == "minutes_5" || value == "minutes5")
+    {
+        obj.insert(
+            "retentionPolicy".to_string(),
+            serde_json::Value::String("never".to_string()),
+        );
     }
 
     serde_json::to_string(&value).unwrap_or_else(|_| raw.to_string())
@@ -953,6 +962,7 @@ mod tests {
                 developer_options_enabled: false,
                 preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
                 follow_timeline_live: false,
+                retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
                 ocr: default_ocr_settings(),
                 transcription: default_audio_transcription_settings(),
@@ -1005,6 +1015,7 @@ mod tests {
                 developer_options_enabled: false,
                 preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
                 follow_timeline_live: false,
+                retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
                 ocr,
                 transcription: default_audio_transcription_settings(),
@@ -1073,6 +1084,7 @@ mod tests {
                 developer_options_enabled: false,
                 preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
                 follow_timeline_live: false,
+                retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
                 ocr: ocr_settings,
                 transcription: default_audio_transcription_settings(),
@@ -1115,6 +1127,7 @@ mod tests {
                 developer_options_enabled: false,
                 preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
                 follow_timeline_live: false,
+                retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
                 ocr: default_ocr_settings(),
                 transcription,
@@ -1207,6 +1220,7 @@ mod tests {
             developer_options_enabled: false,
             preview_cache_ttl_seconds: MAX_PREVIEW_CACHE_TTL_SECONDS + 1,
             follow_timeline_live: false,
+            retention_policy: RetentionPolicy::Never,
             appearance: default_appearance(),
             ocr: default_ocr_settings(),
             transcription: default_audio_transcription_settings(),

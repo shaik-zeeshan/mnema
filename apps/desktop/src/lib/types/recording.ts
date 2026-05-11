@@ -5,6 +5,7 @@ export type ActivityMode =
 
 export type AppearanceSetting = "system" | "light" | "dark";
 export type MicrophoneVadAdapter = "silero" | "webrtc" | "off";
+export type RetentionPolicy = "never" | "days_7" | "days_14" | "days_30";
 
 export interface RecordingSettings {
 	captureScreen: boolean;
@@ -25,6 +26,7 @@ export interface RecordingSettings {
 	microphoneVadAdapter: MicrophoneVadAdapter;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
+	retentionPolicy: RetentionPolicy;
 	appearance: AppearanceSetting;
 	ocr: OcrSettings;
 	transcription: AudioTranscriptionSettings;

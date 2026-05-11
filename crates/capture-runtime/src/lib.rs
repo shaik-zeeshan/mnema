@@ -186,16 +186,16 @@ impl SegmentPlanner {
         self.date_dir().join("audio")
     }
 
-    /// `<save_root>/YYYY/MM/DD/audio/microphone-<session_id>-segment-####.m4a`
+    /// `<save_root>/YYYY/MM/DD/audio/<session_id>-segment-####.m4a`
     pub fn microphone_file(&self, segment_index: u64) -> PathBuf {
         self.audio_dir().join(format!(
-            "microphone-{}-segment-{segment_index:04}.m4a",
+            "{}-segment-{segment_index:04}.m4a",
             self.session_id
         ))
     }
 
     /// Collision-safe reconnect path for a microphone restart within a segment.
-    /// `<save_root>/YYYY/MM/DD/audio/microphone-<session_id>-segment-####-<ts>.m4a`
+    /// `<save_root>/YYYY/MM/DD/audio/<session_id>-segment-####-<ts>.m4a`
     ///
     /// If the base timestamp path already exists (e.g. two reconnects in the same
     /// millisecond), an incrementing suffix is appended to guarantee uniqueness.
@@ -206,7 +206,7 @@ impl SegmentPlanner {
     ) -> PathBuf {
         let audio_dir = self.audio_dir();
         let base = audio_dir.join(format!(
-            "microphone-{}-segment-{segment_index:04}-{reconnect_started_at_unix_ms}.m4a",
+            "{}-segment-{segment_index:04}-{reconnect_started_at_unix_ms}.m4a",
             self.session_id
         ));
         if !base.exists() {
@@ -215,7 +215,7 @@ impl SegmentPlanner {
         let mut counter = 1u32;
         loop {
             let candidate = audio_dir.join(format!(
-                "microphone-{}-segment-{segment_index:04}-{reconnect_started_at_unix_ms}-{counter}.m4a",
+                "{}-segment-{segment_index:04}-{reconnect_started_at_unix_ms}-{counter}.m4a",
                 self.session_id
             ));
             if !candidate.exists() {
@@ -225,23 +225,23 @@ impl SegmentPlanner {
         }
     }
 
-    /// `<save_root>/YYYY/MM/DD/audio/system-audio-<session_id>-segment-####.m4a`
+    /// `<save_root>/YYYY/MM/DD/audio/<session_id>-segment-####.m4a`
     pub fn system_audio_file(&self, segment_index: u64) -> PathBuf {
         self.audio_dir().join(format!(
-            "system-audio-{}-segment-{segment_index:04}.m4a",
+            "{}-segment-{segment_index:04}.m4a",
             self.session_id
         ))
     }
 
     /// Collision-safe resume path for a system-audio writer restart within a segment.
-    /// `<save_root>/YYYY/MM/DD/audio/system-audio-<session_id>-segment-####-<ts>.m4a`
+    /// `<save_root>/YYYY/MM/DD/audio/<session_id>-segment-####-<ts>.m4a`
     ///
     /// If the base timestamp path already exists (e.g. two resumes in the same
     /// millisecond), an incrementing suffix is appended to guarantee uniqueness.
     pub fn system_audio_resume_file(&self, segment_index: u64, resumed_at_unix_ms: u64) -> PathBuf {
         let audio_dir = self.audio_dir();
         let base = audio_dir.join(format!(
-            "system-audio-{}-segment-{segment_index:04}-{resumed_at_unix_ms}.m4a",
+            "{}-segment-{segment_index:04}-{resumed_at_unix_ms}.m4a",
             self.session_id
         ));
         if !base.exists() {
@@ -250,7 +250,7 @@ impl SegmentPlanner {
         let mut counter = 1u32;
         loop {
             let candidate = audio_dir.join(format!(
-                "system-audio-{}-segment-{segment_index:04}-{resumed_at_unix_ms}-{counter}.m4a",
+                "{}-segment-{segment_index:04}-{resumed_at_unix_ms}-{counter}.m4a",
                 self.session_id
             ));
             if !candidate.exists() {
@@ -267,9 +267,6 @@ impl SegmentPlanner {
 pub fn parse_audio_restart_started_at_unix_ms(file_path: impl AsRef<Path>) -> Option<u64> {
     let file_name = file_path.as_ref().file_name()?.to_str()?;
     let stem = file_name.strip_suffix(".m4a")?;
-    if !stem.starts_with("microphone-") && !stem.starts_with("system-audio-") {
-        return None;
-    }
 
     let marker = "-segment-";
     let marker_start = stem.rfind(marker)?;
@@ -402,23 +399,19 @@ mod tests {
         );
         assert_eq!(
             planner.microphone_file(7),
-            PathBuf::from(
-                "/tmp/records/2026/04/16/audio/microphone-native-session-123-segment-0007.m4a"
-            )
+            PathBuf::from("/tmp/records/2026/04/16/audio/native-session-123-segment-0007.m4a")
         );
         // microphone_reconnect_file: base path returned when no file exists on disk
         // (path-based collision probe; no files created in this test)
         assert_eq!(
             planner.microphone_reconnect_file(7, 12345),
             PathBuf::from(
-                "/tmp/records/2026/04/16/audio/microphone-native-session-123-segment-0007-12345.m4a"
+                "/tmp/records/2026/04/16/audio/native-session-123-segment-0007-12345.m4a"
             )
         );
         assert_eq!(
             planner.system_audio_file(7),
-            PathBuf::from(
-                "/tmp/records/2026/04/16/audio/system-audio-native-session-123-segment-0007.m4a"
-            )
+            PathBuf::from("/tmp/records/2026/04/16/audio/native-session-123-segment-0007.m4a")
         );
     }
 
@@ -455,7 +448,7 @@ mod tests {
         let first = planner.microphone_reconnect_file(1, ts);
         assert_eq!(
             first,
-            audio_dir.join("microphone-sess-mic-segment-0001-1700000000000.m4a")
+            audio_dir.join("sess-mic-segment-0001-1700000000000.m4a")
         );
 
         // Create that file so the next call must dodge it.
@@ -463,7 +456,7 @@ mod tests {
         let second = planner.microphone_reconnect_file(1, ts);
         assert_eq!(
             second,
-            audio_dir.join("microphone-sess-mic-segment-0001-1700000000000-1.m4a")
+            audio_dir.join("sess-mic-segment-0001-1700000000000-1.m4a")
         );
 
         // Create that too; third call increments again.
@@ -471,7 +464,7 @@ mod tests {
         let third = planner.microphone_reconnect_file(1, ts);
         assert_eq!(
             third,
-            audio_dir.join("microphone-sess-mic-segment-0001-1700000000000-2.m4a")
+            audio_dir.join("sess-mic-segment-0001-1700000000000-2.m4a")
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -493,7 +486,7 @@ mod tests {
         let first = planner.system_audio_resume_file(1, ts);
         assert_eq!(
             first,
-            audio_dir.join("system-audio-sess-col-segment-0001-1700000000000.m4a")
+            audio_dir.join("sess-col-segment-0001-1700000000000.m4a")
         );
 
         // Create that file so the next call must dodge it.
@@ -501,7 +494,7 @@ mod tests {
         let second = planner.system_audio_resume_file(1, ts);
         assert_eq!(
             second,
-            audio_dir.join("system-audio-sess-col-segment-0001-1700000000000-1.m4a")
+            audio_dir.join("sess-col-segment-0001-1700000000000-1.m4a")
         );
 
         // Create that too; third call increments again.
@@ -509,7 +502,7 @@ mod tests {
         let third = planner.system_audio_resume_file(1, ts);
         assert_eq!(
             third,
-            audio_dir.join("system-audio-sess-col-segment-0001-1700000000000-2.m4a")
+            audio_dir.join("sess-col-segment-0001-1700000000000-2.m4a")
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -519,25 +512,25 @@ mod tests {
     fn audio_restart_timestamp_parser_handles_planner_filenames() {
         assert_eq!(
             parse_audio_restart_started_at_unix_ms(
-                "/tmp/audio/microphone-session-segment-0001-1712345678901.m4a"
+                "/tmp/audio/mic_session-segment-0001-1712345678901.m4a"
             ),
             Some(1_712_345_678_901)
         );
         assert_eq!(
             parse_audio_restart_started_at_unix_ms(
-                "/tmp/audio/microphone-session-segment-0001-1712345678901-1.m4a"
+                "/tmp/audio/mic_session-segment-0001-1712345678901-1.m4a"
             ),
             Some(1_712_345_678_901)
         );
         assert_eq!(
             parse_audio_restart_started_at_unix_ms(
-                "/tmp/audio/system-audio-session-segment-0001-1712345678901.m4a"
+                "/tmp/audio/sysaudio_session-segment-0001-1712345678901.m4a"
             ),
             Some(1_712_345_678_901)
         );
         assert_eq!(
             parse_audio_restart_started_at_unix_ms(
-                "/tmp/audio/system-audio-session-segment-0001-1712345678901-1.m4a"
+                "/tmp/audio/sysaudio_session-segment-0001-1712345678901-1.m4a"
             ),
             Some(1_712_345_678_901)
         );
@@ -546,15 +539,11 @@ mod tests {
     #[test]
     fn audio_restart_timestamp_parser_ignores_base_files() {
         assert_eq!(
-            parse_audio_restart_started_at_unix_ms(
-                "/tmp/audio/microphone-session-segment-0001.m4a"
-            ),
+            parse_audio_restart_started_at_unix_ms("/tmp/audio/mic_session-segment-0001.m4a"),
             None
         );
         assert_eq!(
-            parse_audio_restart_started_at_unix_ms(
-                "/tmp/audio/system-audio-session-segment-0001.m4a"
-            ),
+            parse_audio_restart_started_at_unix_ms("/tmp/audio/sysaudio_session-segment-0001.m4a"),
             None
         );
     }
@@ -563,13 +552,13 @@ mod tests {
     fn audio_restart_timestamp_parser_handles_hyphenated_session_ids() {
         assert_eq!(
             parse_audio_restart_started_at_unix_ms(
-                "/tmp/audio/microphone-team-alpha-session-segment-0007-1712345678901.m4a"
+                "/tmp/audio/team-alpha-session-segment-0007-1712345678901.m4a"
             ),
             Some(1_712_345_678_901)
         );
         assert_eq!(
             parse_audio_restart_started_at_unix_ms(
-                "/tmp/audio/system-audio-team-alpha-session-segment-0007-1712345678901-2.m4a"
+                "/tmp/audio/team-alpha-session-segment-0007-1712345678901-2.m4a"
             ),
             Some(1_712_345_678_901)
         );

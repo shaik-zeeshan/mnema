@@ -81,6 +81,22 @@ _Avoid_: audio activity event, microphone activity, system audio activity
 The threshold-qualified inactivity-policy view of audio activity, including enabled state, threshold, and derived idle used for pause/resume decisions.
 _Avoid_: raw audio sample, activity reading, latest level
 
+**Capture Session**:
+The logical user recording that groups produced screen, microphone, and system-audio source sessions for retention and deletion policy.
+_Avoid_: recording row, source session, runtime session
+
+**Capture Segment**:
+The unified retention deletion unit for one produced screen, microphone, or system-audio artifact. A **Capture Segment** points at DB-derived subjects such as **Captured Frame** and **Audio Segment** rows and at DB-owned filesystem paths when present.
+_Avoid_: file row, media chunk, retention item
+
+**Retention Policy**:
+The user-selected local retention window for capture data: never, 7 days, 14 days, or 30 days. Calendar policies keep today plus the previous local calendar days, not rolling hours.
+_Avoid_: cleanup interval, TTL
+
+**Retention Cleanup**:
+The app-infra deletion flow that removes eligible **Capture Segment** values and their derived frames, audio segments, processing jobs/results, speaker rows, segment-derived voice embeddings, and rejections while preserving user-authored **Person Profile** rows.
+_Avoid_: purge, vacuum, file cleanup
+
 ## Relationships
 
 - A **Screen Frame Artifact** becomes a **Captured Frame** only after app-infra persists it.
@@ -90,7 +106,12 @@ _Avoid_: raw audio sample, activity reading, latest level
 - A **Recording Lifecycle** coordinates screen, microphone, and system-audio capture within one recording runtime.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.
+- A **Recording Lifecycle** creates one **Capture Session** for a user recording and **Capture Segment** rows only for produced artifacts.
 - An **Audio Segment** comes from exactly one recording source, such as microphone or system audio.
+- A **Retention Policy** applies only to the active **Managed Storage Layout** and active app-infra database.
+- **Retention Cleanup** skips active capture segments and subjects with running processing/finalize jobs.
+- **Retention Cleanup** preserves **Person Profile** values even when derived speaker rows are deleted.
+- A dashboard `timeline_data_changed` retention event should prune loaded rows older than the cutoff and preserve the active retained item when possible.
 - A microphone **Audio Segment** becomes eligible for an **Audio Transcription Job** when the **Recording Lifecycle** commits it, even if the eventual transcript is empty.
 - An **Audio Transcription Job** operates on exactly one **Audio Segment**.
 - An **Audio Transcription Job** uses exactly one **Audio Transcription Provider**.

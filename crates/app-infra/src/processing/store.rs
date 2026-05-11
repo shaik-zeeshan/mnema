@@ -2004,7 +2004,9 @@ async fn resolve_stable_speaker_cluster(
         .filter_map(|row| {
             let embedding: Vec<u8> = row.get("embedding");
             let score = cosine_similarity(&incoming, &f32_embedding_from_le_bytes(&embedding));
-            score.is_finite().then_some((row.get::<i64, _>("id"), score))
+            score
+                .is_finite()
+                .then_some((row.get::<i64, _>("id"), score))
         })
         .collect::<Vec<_>>();
     scores.sort_by(|left, right| {
@@ -2040,10 +2042,11 @@ async fn existing_speaker_cluster_provider_id(
     transaction: &mut Transaction<'_, Sqlite>,
     cluster_id: i64,
 ) -> Result<String> {
-    let row = sqlx::query("SELECT provider_cluster_id FROM recording_speaker_clusters WHERE id = ?1")
-        .bind(cluster_id)
-        .fetch_one(&mut **transaction)
-        .await?;
+    let row =
+        sqlx::query("SELECT provider_cluster_id FROM recording_speaker_clusters WHERE id = ?1")
+            .bind(cluster_id)
+            .fetch_one(&mut **transaction)
+            .await?;
     Ok(row.get("provider_cluster_id"))
 }
 
@@ -2051,7 +2054,9 @@ async fn refresh_speaker_turn_transcript_texts(
     transaction: &mut Transaction<'_, Sqlite>,
     audio_segment_id: i64,
 ) -> Result<()> {
-    let Some(metadata) = latest_transcription_metadata_for_audio_segment(transaction, audio_segment_id).await? else {
+    let Some(metadata) =
+        latest_transcription_metadata_for_audio_segment(transaction, audio_segment_id).await?
+    else {
         return Ok(());
     };
     let turns = speaker_turn_ranges_for_audio_segment(transaction, audio_segment_id).await?;
@@ -2277,8 +2282,9 @@ where
             equivalence_proof,
             equivalence_version,
             equivalence_status,
-            equivalence_error
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            equivalence_error,
+            capture_segment_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )
     .bind(&frame.session_id)
     .bind(&frame.file_path)
@@ -2296,6 +2302,7 @@ where
             .map(FrameEquivalenceStatus::as_str),
     )
     .bind(frame.equivalence.error.as_deref())
+    .bind(frame.capture_segment_id)
     .execute(executor)
     .await?;
 
@@ -2332,12 +2339,13 @@ where
 {
     sqlx::query(
         "INSERT INTO audio_segments \
-            (source_kind, source_session_id, segment_index, file_path, started_at, ended_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+            (source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
          ON CONFLICT(source_kind, source_session_id, file_path) DO UPDATE SET \
             segment_index = excluded.segment_index, \
             started_at = excluded.started_at, \
             ended_at = excluded.ended_at, \
+            capture_segment_id = COALESCE(excluded.capture_segment_id, audio_segments.capture_segment_id), \
             updated_at = CURRENT_TIMESTAMP",
     )
     .bind(segment.source_kind.as_str())
@@ -2346,6 +2354,7 @@ where
     .bind(&segment.file_path)
     .bind(&segment.started_at)
     .bind(&segment.ended_at)
+    .bind(segment.capture_segment_id)
     .execute(executor)
     .await?;
 
@@ -2360,7 +2369,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let row = sqlx::query(
-        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id, created_at, updated_at \
          FROM audio_segments \
          WHERE source_kind = ?1 AND source_session_id = ?2 AND file_path = ?3",
     )
@@ -2381,7 +2390,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let row = sqlx::query(
-        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, created_at, updated_at \
+        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id, created_at, updated_at \
          FROM audio_segments \
          WHERE id = ?1",
     )
@@ -2472,6 +2481,7 @@ fn map_audio_segment(row: SqliteRow) -> Result<AudioSegment> {
         file_path: row.get("file_path"),
         started_at: row.get("started_at"),
         ended_at: row.get("ended_at"),
+        capture_segment_id: row.get("capture_segment_id"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })

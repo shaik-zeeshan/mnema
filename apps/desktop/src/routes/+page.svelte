@@ -157,6 +157,12 @@
     | "missing"
     | "running"
     | "error";
+  type TimelineDataChangedPayload = {
+    reason: "retention" | string;
+    deletedBefore: string | null;
+    deletedFrameIds?: number[];
+    deletedAudioSegmentIds?: number[];
+  };
 
   let timelineFrames = $state<FrameDto[]>([]);
   let timelineActiveIndex = $state(0);
@@ -3658,6 +3664,15 @@
     if (changed) staleMonths = next;
   }
 
+  function invalidateLoadedPickerSummaryMonths(): void {
+    if (loadedMonths.size === 0) return;
+    const next = new Set(staleMonths);
+    for (const month of loadedMonths) {
+      next.add(month);
+    }
+    staleMonths = next;
+  }
+
   async function loadMonthSummaries(value: DateValue): Promise<void> {
     const key = monthKeyOf(value);
     const isStale = staleMonths.has(key);
@@ -4175,6 +4190,7 @@
     const onFocus = () => { void resyncCaptureSession(); };
     let unlistenSystemDidWake: (() => void) | undefined;
     let unlistenAudioSegmentsChanged: (() => void) | undefined;
+    let unlistenTimelineDataChanged: (() => void) | undefined;
     let destroyed = false;
 
     listen("system_did_wake", () => {
@@ -4190,6 +4206,44 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenAudioSegmentsChanged = fn;
+    });
+
+    listen<TimelineDataChangedPayload>("timeline_data_changed", (event) => {
+      if (event.payload.reason !== "retention" || !event.payload.deletedBefore) return;
+      invalidateLoadedPickerSummaryMonths();
+      const deletedFrameIds = new Set(event.payload.deletedFrameIds ?? []);
+      const deletedAudioSegmentIds = new Set(event.payload.deletedAudioSegmentIds ?? []);
+      const activeFrameId = timelineActive?.id ?? null;
+      const previousActiveIndex = timelineActiveIndex;
+
+      if (deletedFrameIds.size > 0) {
+        const nextFrames = timelineFrames.filter((frame) => !deletedFrameIds.has(frame.id));
+        if (nextFrames.length !== timelineFrames.length) {
+          timelineFrames = nextFrames;
+          if (timelineFrames.length === 0) {
+            timelineActiveIndex = 0;
+          } else if (activeFrameId !== null && !deletedFrameIds.has(activeFrameId)) {
+            const nextActiveIndex = timelineFrames.findIndex((frame) => frame.id === activeFrameId);
+            timelineActiveIndex = nextActiveIndex >= 0
+              ? nextActiveIndex
+              : Math.min(previousActiveIndex, timelineFrames.length - 1);
+          } else {
+            timelineActiveIndex = Math.min(previousActiveIndex, timelineFrames.length - 1);
+          }
+          prunePreviewCache(timelineFrames);
+          void syncTimelineScrollToActiveFrame();
+        }
+      }
+
+      if (deletedAudioSegmentIds.size > 0) {
+        audioSegments = audioSegments.filter((segment) => !deletedAudioSegmentIds.has(segment.id));
+        if (selectedAudioSegmentId !== null && deletedAudioSegmentIds.has(selectedAudioSegmentId)) {
+          selectedAudioSegmentId = null;
+        }
+      }
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenTimelineDataChanged = fn;
     });
 
     document.addEventListener("visibilitychange", onVisibility);
@@ -4214,6 +4268,7 @@
       destroyed = true;
       unlistenSystemDidWake?.();
       unlistenAudioSegmentsChanged?.();
+      unlistenTimelineDataChanged?.();
       if (refreshAudioSegmentsDebounceTimer != null) {
         clearTimeout(refreshAudioSegmentsDebounceTimer);
         refreshAudioSegmentsDebounceTimer = null;

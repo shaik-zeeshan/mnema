@@ -23,6 +23,7 @@
     OcrTesseractPreprocessMode,
     PermissionStatus,
     RecordingSettings,
+    RetentionPolicy,
   } from "$lib/types";
 
   type OnboardingState = {
@@ -81,6 +82,7 @@
   let draftSegmentDuration = $state(60);
   let draftSaveDirectory = $state("");
   let draftPreviewCacheTtlSeconds = $state(3600);
+  let draftRetentionPolicy = $state<RetentionPolicy>("never");
   let draftAutoStart = $state(false);
   let draftPauseCaptureOnInactivity = $state(false);
   let draftIdleTimeoutSeconds = $state(30);
@@ -210,6 +212,7 @@
     draftSegmentDuration = next.segmentDurationSeconds;
     draftSaveDirectory = next.saveDirectory;
     draftPreviewCacheTtlSeconds = next.previewCacheTtlSeconds ?? 3600;
+    draftRetentionPolicy = next.retentionPolicy ?? "never";
     draftAutoStart = next.autoStart;
     draftPauseCaptureOnInactivity = next.pauseCaptureOnInactivity;
     draftIdleTimeoutSeconds = next.idleTimeoutSeconds;
@@ -252,6 +255,7 @@
       segmentDurationSeconds: draftSegmentDuration,
       saveDirectory: draftSaveDirectory.trim(),
       previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
+      retentionPolicy: draftRetentionPolicy,
       autoStart: draftAutoStart,
       pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
       idleTimeoutSeconds: draftIdleTimeoutSeconds,
@@ -874,6 +878,19 @@
                       { value: "3600", label: "1 hour" },
                       { value: "21600", label: "6 hours" },
                       { value: "86400", label: "24 hours" },
+                    ]}
+                  />
+                </div>
+                <div class="settings-group">
+                  <SelectMenu
+                    value={draftRetentionPolicy}
+                    onValueChange={(v) => { draftRetentionPolicy = v as RetentionPolicy; }}
+                    label="Retention"
+                    options={[
+                      { value: "never", label: "Never" },
+                      { value: "days_7", label: "7 days" },
+                      { value: "days_14", label: "14 days" },
+                      { value: "days_30", label: "30 days" },
                     ]}
                   />
                 </div>

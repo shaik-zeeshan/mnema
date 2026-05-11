@@ -29,7 +29,7 @@ use super::lifecycle::TickOutcome;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
-    mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms,
+    mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms, prefixed_capture_id,
     refresh_runtime_planner_dates, reset_runtime_after_start_error, screen_planner_for_runtime,
     should_recover_from_segment_finalize_error, NativeCaptureRuntime, SegmentLoopControl,
 };
@@ -41,6 +41,55 @@ use super::NativeCaptureState;
 // non-blocking.
 const FRAME_ARTIFACT_BUFFER_CAPACITY: usize = 64;
 const SEGMENT_LOOP_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+#[cfg(target_os = "macos")]
+fn persist_capture_session_started(
+    app_handle: &tauri::AppHandle,
+    capture_session_id: String,
+    started_at_unix_ms: u64,
+    sources: &CaptureSources,
+    source_sessions: &SourceSessions,
+    segment_duration_seconds: u64,
+) {
+    let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
+    let started_at = rfc3339_from_unix_ms(started_at_unix_ms);
+    let session = ::app_infra::NewCaptureSession {
+        capture_session_id,
+        started_at,
+        requested_screen: sources.screen,
+        requested_microphone: sources.microphone,
+        requested_system_audio: sources.system_audio,
+        screen_source_session_id: source_sessions
+            .screen
+            .as_ref()
+            .map(|s| s.session_id.clone()),
+        microphone_source_session_id: source_sessions
+            .microphone
+            .as_ref()
+            .map(|s| s.session_id.clone()),
+        system_audio_source_session_id: source_sessions
+            .system_audio
+            .as_ref()
+            .map(|s| s.session_id.clone()),
+        segment_duration_seconds: segment_duration_seconds.min(i64::MAX as u64) as i64,
+    };
+    match run_native_capture_async("capture-session-persistence", async move {
+        infra
+            .capture_retention()
+            .create_capture_session(&session)
+            .await
+    }) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            super::debug_log::log(format!("failed to persist native capture session: {error}"))
+        }
+        Err(error) => {
+            super::debug_log::log(format!(
+                "native capture session persistence failed: {error}"
+            ));
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn run_native_capture_async<F, R>(context: &'static str, future: F) -> Result<R, String>
@@ -2797,16 +2846,17 @@ pub(super) fn start_capture_runtime(
         {
             let started = now_unix_ms();
             let started_monotonic = now_monotonic_marker_ms();
-            let session_id = capture_screen::new_session_id()?;
+            let capture_id = prefixed_capture_id("cap")?;
+            let session_id = prefixed_capture_id("screen")?;
             // Generate independent session IDs for microphone and system audio so each
             // source writes filenames tagged with its own logical source session.
             let microphone_session_id = if sources.microphone {
-                Some(capture_screen::new_session_id()?)
+                Some(prefixed_capture_id("mic")?)
             } else {
                 None
             };
             let system_audio_session_id = if sources.system_audio {
-                Some(capture_screen::new_session_id()?)
+                Some(prefixed_capture_id("sysaudio")?)
             } else {
                 None
             };
@@ -2888,12 +2938,8 @@ pub(super) fn start_capture_runtime(
             )?;
 
             let output_files = empty_output_files();
-            let segment_loop_control = spawn_segment_loop(app_handle);
-
-            runtime.is_running = true;
-            runtime.inactivity = initial_inactivity;
-            runtime.microphone_vad = initial_microphone_vad;
-            runtime.source_sessions = Some(SourceSessions {
+            let segment_loop_control = spawn_segment_loop(app_handle.clone());
+            let source_sessions = SourceSessions {
                 screen: sources.screen.then(|| SourceSessionMeta {
                     session_id: session_id.clone(),
                     started_at_unix_ms: started,
@@ -2910,7 +2956,20 @@ pub(super) fn start_capture_runtime(
                         .expect("system audio session id should exist when source is enabled"),
                     started_at_unix_ms: started,
                 }),
-            });
+            };
+            persist_capture_session_started(
+                &app_handle,
+                capture_id,
+                started,
+                &sources,
+                &source_sessions,
+                settings.segment_duration_seconds,
+            );
+
+            runtime.is_running = true;
+            runtime.inactivity = initial_inactivity;
+            runtime.microphone_vad = initial_microphone_vad;
+            runtime.source_sessions = Some(source_sessions);
             runtime.requested_sources = Some(sources.clone());
             runtime.current_segment_sources = Some(sources);
             runtime.output_files = Some(output_files);

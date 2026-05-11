@@ -5,7 +5,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -17,17 +17,24 @@ use std::sync::OnceLock;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
 use capture_types::{
-    AudioTranscriptionSettings, OcrProvider, OcrSettings, SpeakerAnalysisSettings,
+    AudioTranscriptionSettings, CaptureSources, OcrProvider, OcrSettings,
+    RetentionPolicy as SettingsRetentionPolicy, SpeakerAnalysisSettings,
 };
 use fs2::FileExt;
+use futures_util::{
+    future::{select, Either},
+    pin_mut,
+};
 use serde::{Deserialize, Serialize};
-use tauri::{async_runtime::JoinHandle, path::BaseDirectory, Manager};
+use tauri::{async_runtime::JoinHandle, path::BaseDirectory, Emitter, Manager};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::{oneshot, watch};
 
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
 pub type FramePreviewCacheState = Mutex<FramePreviewState>;
 pub type BackgroundWorkersState = BackgroundWorkersControl;
+
+pub const TIMELINE_DATA_CHANGED_EVENT: &str = "timeline_data_changed";
 
 const APP_INFRA_LOCK_FILE_NAME: &str = ".app-infra.lock";
 const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
@@ -39,6 +46,7 @@ const GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 *
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const RETENTION_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
@@ -49,6 +57,8 @@ pub struct BackgroundWorkersControl {
 struct BackgroundWorkersControlInner {
     shutdown_requested: AtomicBool,
     shutdown_tx: watch::Sender<bool>,
+    retention_schedule_version: AtomicU64,
+    retention_schedule_tx: watch::Sender<u64>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -61,10 +71,13 @@ struct BackgroundWorkerShutdownSummary {
 impl Default for BackgroundWorkersControl {
     fn default() -> Self {
         let (shutdown_tx, _) = watch::channel(false);
+        let (retention_schedule_tx, _) = watch::channel(0);
         Self {
             inner: Arc::new(BackgroundWorkersControlInner {
                 shutdown_requested: AtomicBool::new(false),
                 shutdown_tx,
+                retention_schedule_version: AtomicU64::new(0),
+                retention_schedule_tx,
                 tasks: Mutex::new(Vec::new()),
             }),
         }
@@ -74,6 +87,19 @@ impl Default for BackgroundWorkersControl {
 impl BackgroundWorkersControl {
     fn subscribe(&self) -> watch::Receiver<bool> {
         self.inner.shutdown_tx.subscribe()
+    }
+
+    fn subscribe_retention_schedule(&self) -> watch::Receiver<u64> {
+        self.inner.retention_schedule_tx.subscribe()
+    }
+
+    pub(crate) fn notify_retention_schedule_changed(&self) {
+        let version = self
+            .inner
+            .retention_schedule_version
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
+        let _ = self.inner.retention_schedule_tx.send(version);
     }
 
     fn track(&self, handle: JoinHandle<()>) {
@@ -2271,6 +2297,12 @@ pub async fn persist_screen_frame_artifact(
         file_path.clone(),
         captured_at_from_unix_ms(captured_at_unix_ms),
     );
+    if let Some(capture_segment_id) =
+        ensure_screen_capture_segment_for_frame(infra, session_id, &file_path, &frame.captured_at)
+            .await?
+    {
+        frame = frame.with_capture_segment_id(capture_segment_id);
+    }
 
     if let (Some(width), Some(height)) = (width, height) {
         frame = frame.with_dimensions(i64::from(width), i64::from(height));
@@ -2300,6 +2332,48 @@ pub async fn persist_screen_frame_artifact(
         .map_err(::app_infra::AppInfraError::OcrEngine)?;
 
     infra.capture_frame(&frame, payload_json.as_deref()).await
+}
+
+async fn ensure_screen_capture_segment_for_frame(
+    infra: &::app_infra::AppInfra,
+    source_session_id: &str,
+    file_path: &str,
+    captured_at: &str,
+) -> ::app_infra::Result<Option<i64>> {
+    let Some(paths) =
+        ::app_infra::HiddenSegmentWorkspacePaths::from_frame_artifact_path(Path::new(file_path))
+    else {
+        return Ok(None);
+    };
+    let Some(segment_index) = segment_index_from_visible_path(&paths.visible_segment_path) else {
+        return Ok(None);
+    };
+    let sidecar_path =
+        capture_screen::screen_segment_frame_index_path(Path::new(&paths.visible_segment_path))
+            .to_string_lossy()
+            .to_string();
+    let Some(segment) = infra
+        .capture_retention()
+        .upsert_screen_segment_for_source_session(
+            source_session_id,
+            segment_index,
+            paths.visible_segment_path,
+            paths.workspace_dir,
+            paths.frames_dir,
+            sidecar_path,
+            captured_at.to_string(),
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(segment.id))
+}
+
+fn segment_index_from_visible_path(path: &str) -> Option<i64> {
+    let stem = Path::new(path).file_stem()?.to_str()?;
+    let (_, suffix) = stem.rsplit_once("-segment-")?;
+    suffix.parse::<i64>().ok()
 }
 
 #[derive(Debug)]
@@ -2482,6 +2556,12 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), String> {
         );
     }
     run_audio_transcription_backfill_startup_pass(&infra, &app_handle);
+
+    spawn_retention_cleanup_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
 
     spawn_processing_worker(
         infra,
@@ -2904,6 +2984,36 @@ async fn shutdown_aware_sleep(shutdown_rx: &mut watch::Receiver<bool>, duration:
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetentionSleepOutcome {
+    Elapsed,
+    ScheduleChanged,
+    Shutdown,
+}
+
+async fn retention_schedule_aware_sleep(
+    shutdown_rx: &mut watch::Receiver<bool>,
+    retention_schedule_rx: &mut watch::Receiver<u64>,
+    duration: Duration,
+) -> RetentionSleepOutcome {
+    if *shutdown_rx.borrow() {
+        return RetentionSleepOutcome::Shutdown;
+    }
+
+    let shutdown_changed = shutdown_rx.changed();
+    let retention_schedule_changed = retention_schedule_rx.changed();
+    let sleep = tokio::time::sleep(duration);
+    pin_mut!(shutdown_changed, retention_schedule_changed, sleep);
+
+    match select(shutdown_changed, select(retention_schedule_changed, sleep)).await {
+        Either::Left((Ok(()), _)) => RetentionSleepOutcome::Shutdown,
+        Either::Left((Err(_), _)) => RetentionSleepOutcome::Shutdown,
+        Either::Right((Either::Left((Ok(()), _)), _)) => RetentionSleepOutcome::ScheduleChanged,
+        Either::Right((Either::Left((Err(_), _)), _)) => RetentionSleepOutcome::Elapsed,
+        Either::Right((Either::Right(((), _)), _)) => RetentionSleepOutcome::Elapsed,
+    }
+}
+
 fn spawn_processing_worker_loop(
     infra: AppInfraState,
     base_dir_display: String,
@@ -3042,6 +3152,145 @@ fn spawn_hidden_segment_workspace_repair_worker(
         ));
     });
     background_workers.track(handle);
+}
+
+fn spawn_retention_cleanup_worker(
+    infra: AppInfraState,
+    app_handle: tauri::AppHandle,
+    background_workers: BackgroundWorkersState,
+) {
+    let mut shutdown_rx = background_workers.subscribe();
+    let mut retention_schedule_rx = background_workers.subscribe_retention_schedule();
+    let handle = tauri::async_runtime::spawn(async move {
+        let mut next_sleep = Duration::from_secs(0);
+        loop {
+            let mut schedule_changed = false;
+            if !next_sleep.is_zero() {
+                match retention_schedule_aware_sleep(
+                    &mut shutdown_rx,
+                    &mut retention_schedule_rx,
+                    next_sleep,
+                )
+                .await
+                {
+                    RetentionSleepOutcome::Shutdown => break,
+                    RetentionSleepOutcome::Elapsed => {}
+                    RetentionSleepOutcome::ScheduleChanged => {
+                        schedule_changed = true;
+                        crate::native_capture::debug_log::log_info(
+                            "retention cleanup worker woke for retention schedule change",
+                        );
+                    }
+                }
+            }
+            let Some(settings_state) =
+                app_handle.try_state::<crate::native_capture::RecordingSettingsState>()
+            else {
+                break;
+            };
+            let policy = settings_state
+                .lock()
+                .map(|guard| guard.settings.retention_policy)
+                .unwrap_or(SettingsRetentionPolicy::Never);
+            let context = retention_context_for_app(&app_handle, &infra).await;
+            let _ = infra
+                .capture_retention()
+                .retry_pending_file_tombstones(&context)
+                .await;
+            let mut retry_soon = false;
+            if policy != SettingsRetentionPolicy::Never {
+                crate::native_capture::debug_log::log_info(format!(
+                    "retention cleanup worker running cleanup (policy={}, triggered_by={})",
+                    app_retention_policy(policy).as_str(),
+                    if schedule_changed {
+                        "settings_change"
+                    } else {
+                        "timer"
+                    }
+                ));
+                match infra
+                    .capture_retention()
+                    .run_cleanup_with_mode(
+                        app_retention_policy(policy),
+                        local_now_for_retention(),
+                        &context,
+                        ::app_infra::RetentionCleanupMode::Automatic,
+                    )
+                    .await
+                {
+                    Ok(summary)
+                        if summary.deleted_frames > 0 || summary.deleted_audio_segments > 0 =>
+                    {
+                        retry_soon =
+                            summary.skipped_running_jobs > 0 || summary.pending_file_tombstones > 0;
+                        let _ = app_handle.emit(
+                            TIMELINE_DATA_CHANGED_EVENT,
+                            TimelineDataChangedPayload {
+                                reason: "retention".to_string(),
+                                deleted_before: summary.cutoff_ended_before.clone(),
+                                deleted_frame_ids: summary.deleted_frame_ids.clone(),
+                                deleted_audio_segment_ids: summary
+                                    .deleted_audio_segment_ids
+                                    .clone(),
+                            },
+                        );
+                        crate::native_capture::debug_log::log_info(format!(
+                            "retention cleanup worker completed cleanup (policy={}, status={}, eligible_segments={}, deleted_segments={}, deleted_frames={}, deleted_audio_segments={}, retry_soon={})",
+                            summary.policy,
+                            summary.status,
+                            summary.eligible_capture_segments,
+                            summary.deleted_capture_segments,
+                            summary.deleted_frames,
+                            summary.deleted_audio_segments,
+                            retry_soon
+                        ));
+                    }
+                    Ok(summary) => {
+                        retry_soon =
+                            summary.skipped_running_jobs > 0 || summary.pending_file_tombstones > 0;
+                        crate::native_capture::debug_log::log_info(format!(
+                            "retention cleanup worker completed cleanup (policy={}, status={}, eligible_segments={}, deleted_segments={}, deleted_frames={}, deleted_audio_segments={}, retry_soon={})",
+                            summary.policy,
+                            summary.status,
+                            summary.eligible_capture_segments,
+                            summary.deleted_capture_segments,
+                            summary.deleted_frames,
+                            summary.deleted_audio_segments,
+                            retry_soon
+                        ));
+                    }
+                    Err(error) => crate::native_capture::debug_log::log_error(format!(
+                        "retention cleanup worker failed: {error}"
+                    )),
+                }
+            }
+            next_sleep = if retry_soon {
+                RETENTION_CLEANUP_RETRY_INTERVAL
+            } else {
+                duration_until_next_retention_daily_run()
+            };
+            crate::native_capture::debug_log::log_info(format!(
+                "retention cleanup worker scheduled next wake (policy={}, next_sleep_ms={})",
+                app_retention_policy(policy).as_str(),
+                next_sleep.as_millis()
+            ));
+        }
+    });
+    background_workers.track(handle);
+}
+
+fn duration_until_next_retention_daily_run() -> Duration {
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    let date = now.date();
+    let target_time = time::Time::from_hms(0, 5, 0).unwrap_or(time::Time::MIDNIGHT);
+    let mut target = date.with_time(target_time).assume_offset(now.offset());
+    if target <= now {
+        target = (date + time::Duration::days(1))
+            .with_time(target_time)
+            .assume_offset(now.offset());
+    }
+    let seconds = (target - now).whole_seconds().max(60) as u64;
+    Duration::from_secs(seconds)
 }
 
 fn convert_frame_index_sidecars_once(
@@ -3318,6 +3567,214 @@ pub async fn get_app_infra_status(
         .status()
         .await
         .map_err(|error| format!("failed to read app infrastructure status: {error}"))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewRetentionCleanupRequest {
+    pub policy: Option<SettingsRetentionPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineDataChangedPayload {
+    pub reason: String,
+    pub deleted_before: Option<String>,
+    pub deleted_frame_ids: Vec<i64>,
+    pub deleted_audio_segment_ids: Vec<i64>,
+}
+
+fn app_retention_policy(policy: SettingsRetentionPolicy) -> ::app_infra::RetentionPolicy {
+    match policy {
+        SettingsRetentionPolicy::Never => ::app_infra::RetentionPolicy::Never,
+        SettingsRetentionPolicy::Days7 => ::app_infra::RetentionPolicy::Days7,
+        SettingsRetentionPolicy::Days14 => ::app_infra::RetentionPolicy::Days14,
+        SettingsRetentionPolicy::Days30 => ::app_infra::RetentionPolicy::Days30,
+    }
+}
+
+fn local_now_for_retention() -> OffsetDateTime {
+    OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc())
+}
+
+fn retention_policy_from_settings(
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+    override_policy: Option<SettingsRetentionPolicy>,
+) -> SettingsRetentionPolicy {
+    override_policy.unwrap_or_else(|| {
+        settings
+            .lock()
+            .map(|guard| guard.settings.retention_policy)
+            .unwrap_or(SettingsRetentionPolicy::Never)
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ActiveCaptureSegmentRef {
+    source_kind: ::app_infra::CaptureSourceKind,
+    source_session_id: String,
+    segment_index: i64,
+}
+
+fn active_capture_segment_refs_for_sources(
+    source_sessions: capture_types::SourceSessions,
+    sources: CaptureSources,
+    segment_index: i64,
+) -> Vec<ActiveCaptureSegmentRef> {
+    let mut refs = Vec::new();
+    if sources.screen {
+        if let Some(source_session) = source_sessions.screen {
+            refs.push(ActiveCaptureSegmentRef {
+                source_kind: ::app_infra::CaptureSourceKind::Screen,
+                source_session_id: source_session.session_id,
+                segment_index,
+            });
+        }
+    }
+    if sources.microphone {
+        if let Some(source_session) = source_sessions.microphone {
+            refs.push(ActiveCaptureSegmentRef {
+                source_kind: ::app_infra::CaptureSourceKind::Microphone,
+                source_session_id: source_session.session_id,
+                segment_index,
+            });
+        }
+    }
+    if sources.system_audio {
+        if let Some(source_session) = source_sessions.system_audio {
+            refs.push(ActiveCaptureSegmentRef {
+                source_kind: ::app_infra::CaptureSourceKind::SystemAudio,
+                source_session_id: source_session.session_id,
+                segment_index,
+            });
+        }
+    }
+    refs
+}
+
+async fn retention_context_for_app(
+    app_handle: &tauri::AppHandle,
+    infra: &::app_infra::AppInfra,
+) -> ::app_infra::RetentionCleanupContext {
+    let save_directory = Some(infra.base_dir().display().to_string());
+    let mut active_capture_segment_refs = Vec::new();
+    if let Some(state) = app_handle.try_state::<crate::native_capture::NativeCaptureState>() {
+        if let Ok(lifecycle) = state.lock() {
+            let runtime = lifecycle.runtime();
+            if runtime.is_running {
+                let segment_index = runtime.current_segment_index.try_into().ok();
+                let source_sessions = runtime.source_sessions.clone();
+                let sources = runtime
+                    .current_segment_sources
+                    .clone()
+                    .or_else(|| runtime.requested_sources.clone());
+                if let (Some(segment_index), Some(source_sessions), Some(sources)) =
+                    (segment_index, source_sessions, sources)
+                {
+                    active_capture_segment_refs = active_capture_segment_refs_for_sources(
+                        source_sessions,
+                        sources,
+                        segment_index,
+                    );
+                }
+            }
+        }
+    }
+    let active_source_session_ids = active_capture_segment_refs
+        .iter()
+        .map(|active_ref| active_ref.source_session_id.clone())
+        .collect();
+    let mut active_capture_segment_ids = Vec::new();
+    for active_ref in active_capture_segment_refs {
+        match infra
+            .capture_retention()
+            .capture_segment_by_source(
+                active_ref.source_kind,
+                &active_ref.source_session_id,
+                active_ref.segment_index,
+            )
+            .await
+        {
+            Ok(Some(segment)) => active_capture_segment_ids.push(segment.id),
+            Ok(None) => {}
+            Err(error) => crate::native_capture::debug_log::log_warn(format!(
+                "failed to resolve active capture segment for retention context (source_kind={}, source_session_id='{}', segment_index={}): {error}",
+                active_ref.source_kind.as_str(),
+                active_ref.source_session_id,
+                active_ref.segment_index
+            )),
+        }
+    }
+    ::app_infra::RetentionCleanupContext {
+        active_capture_segment_ids,
+        active_source_session_ids,
+        save_directory,
+    }
+}
+
+#[tauri::command]
+pub async fn preview_retention_cleanup(
+    request: Option<PreviewRetentionCleanupRequest>,
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+) -> Result<::app_infra::RetentionCleanupSummary, String> {
+    let policy =
+        retention_policy_from_settings(settings, request.and_then(|request| request.policy));
+    let context = retention_context_for_app(&app_handle, &infra).await;
+    Arc::clone(&*infra)
+        .capture_retention()
+        .preview_cleanup(
+            app_retention_policy(policy),
+            local_now_for_retention(),
+            &context,
+        )
+        .await
+        .map_err(|error| format!("failed to preview retention cleanup: {error}"))
+}
+
+#[tauri::command]
+pub async fn run_retention_cleanup_now(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+) -> Result<::app_infra::RetentionCleanupSummary, String> {
+    let policy = retention_policy_from_settings(settings, None);
+    let context = retention_context_for_app(&app_handle, &infra).await;
+    let summary = Arc::clone(&*infra)
+        .capture_retention()
+        .run_cleanup(
+            app_retention_policy(policy),
+            local_now_for_retention(),
+            &context,
+        )
+        .await
+        .map_err(|error| format!("failed to run retention cleanup: {error}"))?;
+    if summary.deleted_frames > 0 || summary.deleted_audio_segments > 0 {
+        let _ = app_handle.emit(
+            TIMELINE_DATA_CHANGED_EVENT,
+            TimelineDataChangedPayload {
+                reason: "retention".to_string(),
+                deleted_before: summary.cutoff_ended_before.clone(),
+                deleted_frame_ids: summary.deleted_frame_ids.clone(),
+                deleted_audio_segment_ids: summary.deleted_audio_segment_ids.clone(),
+            },
+        );
+    }
+    Ok(summary)
+}
+
+#[tauri::command]
+pub async fn get_retention_cleanup_status(
+    infra: tauri::State<'_, AppInfraState>,
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+) -> Result<::app_infra::RetentionCleanupSummary, String> {
+    let policy = retention_policy_from_settings(settings, None);
+    Arc::clone(&*infra)
+        .capture_retention()
+        .latest_status(app_retention_policy(policy))
+        .await
+        .map_err(|error| format!("failed to read retention cleanup status: {error}"))
 }
 
 #[tauri::command]

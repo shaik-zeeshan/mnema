@@ -112,6 +112,22 @@ pub fn default_follow_timeline_live() -> bool {
     false
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionPolicy {
+    Never,
+    #[serde(rename = "days_7", alias = "days7")]
+    Days7,
+    #[serde(rename = "days_14", alias = "days14")]
+    Days14,
+    #[serde(rename = "days_30", alias = "days30")]
+    Days30,
+}
+
+pub fn default_retention_policy() -> RetentionPolicy {
+    RetentionPolicy::Never
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AppearanceSetting {
@@ -395,6 +411,8 @@ pub struct RecordingSettings {
     pub preview_cache_ttl_seconds: u64,
     #[serde(default = "default_follow_timeline_live")]
     pub follow_timeline_live: bool,
+    #[serde(default = "default_retention_policy")]
+    pub retention_policy: RetentionPolicy,
     #[serde(default = "default_appearance")]
     pub appearance: AppearanceSetting,
     #[serde(default = "default_ocr_settings")]
@@ -443,6 +461,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub preview_cache_ttl_seconds: u64,
     #[serde(default = "default_follow_timeline_live")]
     pub follow_timeline_live: bool,
+    #[serde(default = "default_retention_policy")]
+    pub retention_policy: RetentionPolicy,
     #[serde(default = "default_appearance")]
     pub appearance: AppearanceSetting,
     #[serde(default = "default_ocr_settings")]

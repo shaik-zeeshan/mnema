@@ -1,4 +1,5 @@
 mod audio_segments;
+mod capture_retention;
 mod captured_frame_equivalence;
 mod captured_frame_pipeline;
 mod db;
@@ -18,6 +19,10 @@ use sqlx::SqlitePool;
 
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
+};
+pub use capture_retention::{
+    CaptureRetentionStore, CaptureSegment, CaptureSourceKind, NewCaptureSegment, NewCaptureSession,
+    RetentionCleanupContext, RetentionCleanupMode, RetentionCleanupSummary, RetentionPolicy,
 };
 pub use captured_frame_equivalence::{
     CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,
@@ -182,6 +187,7 @@ pub struct AppInfra {
     jobs: JobStore,
     audio_segments: AudioSegmentStore,
     frame_batches: FrameBatchStore,
+    capture_retention: CaptureRetentionStore,
     processing: ProcessingStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
@@ -203,6 +209,7 @@ impl AppInfra {
         let jobs = JobStore::new(database.pool().clone());
         let audio_segments = AudioSegmentStore::new(database.pool().clone());
         let frame_batches = FrameBatchStore::new(database.pool().clone());
+        let capture_retention = CaptureRetentionStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
@@ -226,6 +233,7 @@ impl AppInfra {
             jobs,
             audio_segments,
             frame_batches,
+            capture_retention,
             processing,
             captured_frame_equivalence,
             captured_frame_pipeline,
@@ -237,6 +245,10 @@ impl AppInfra {
 
     pub fn pool(&self) -> &SqlitePool {
         self.database.pool()
+    }
+
+    pub fn base_dir(&self) -> &Path {
+        self.database.base_dir()
     }
 
     #[cfg(test)]
@@ -252,6 +264,10 @@ impl AppInfra {
     #[cfg(test)]
     pub(crate) fn frame_batches(&self) -> &FrameBatchStore {
         &self.frame_batches
+    }
+
+    pub fn capture_retention(&self) -> &CaptureRetentionStore {
+        &self.capture_retention
     }
 
     #[cfg(test)]
@@ -485,7 +501,7 @@ impl AppInfra {
         let should_enqueue_transcription = transcription_admission.should_enqueue_for(segment);
         let should_enqueue_speaker = speaker_admission.should_enqueue_for(segment);
         let mut transaction = self.pool().begin().await?;
-        let segment = self
+        let mut segment = self
             .audio_segments
             .upsert_in_transaction(&mut transaction, segment)
             .await?;
@@ -543,11 +559,67 @@ impl AppInfra {
         };
         transaction.commit().await?;
 
+        if segment.capture_segment_id.is_none() {
+            if let Some(capture_segment_id) = self
+                .ensure_capture_segment_for_audio_segment(&segment)
+                .await?
+            {
+                segment.capture_segment_id = Some(capture_segment_id);
+            }
+        }
+
         Ok(AudioSegmentProcessingAdmissionOutcome {
             segment,
             transcription_job,
             speaker_analysis_job,
         })
+    }
+
+    async fn ensure_capture_segment_for_audio_segment(
+        &self,
+        segment: &AudioSegment,
+    ) -> Result<Option<i64>> {
+        let source_column = match segment.source_kind {
+            AudioSegmentSourceKind::Microphone => "microphone_source_session_id",
+            AudioSegmentSourceKind::SystemAudio => "system_audio_source_session_id",
+        };
+        let query = format!(
+            "SELECT capture_session_id FROM capture_sessions WHERE {source_column} = ?1 ORDER BY id DESC LIMIT 1"
+        );
+        let Some(row) = sqlx::query(&query)
+            .bind(&segment.source_session_id)
+            .fetch_optional(self.pool())
+            .await?
+        else {
+            return Ok(None);
+        };
+        let capture_session_id: String = sqlx::Row::get(&row, "capture_session_id");
+        let source_kind = match segment.source_kind {
+            AudioSegmentSourceKind::Microphone => CaptureSourceKind::Microphone,
+            AudioSegmentSourceKind::SystemAudio => CaptureSourceKind::SystemAudio,
+        };
+        let capture_segment = self
+            .capture_retention
+            .upsert_capture_segment(&NewCaptureSegment {
+                capture_session_id,
+                source_kind,
+                source_session_id: segment.source_session_id.clone(),
+                segment_index: segment.segment_index,
+                media_file_path: Some(segment.file_path.clone()),
+                workspace_dir_path: None,
+                frame_dir_path: None,
+                sidecar_file_path: None,
+                started_at: segment.started_at.clone(),
+                ended_at: segment.ended_at.clone(),
+                status: "completed".to_string(),
+            })
+            .await?;
+        sqlx::query("UPDATE audio_segments SET capture_segment_id = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1")
+            .bind(segment.id)
+            .bind(capture_segment.id)
+            .execute(self.pool())
+            .await?;
+        Ok(Some(capture_segment.id))
     }
 
     pub async fn backfill_missing_audio_transcription_jobs(
@@ -1670,6 +1742,18 @@ mod tests {
                 .await
                 .expect("database should re-initialize");
             assert!(!second.migrations_ran());
+        });
+    }
+
+    #[test]
+    fn app_infra_reports_initialized_base_dir() {
+        run_async_test(async {
+            let dir = TestDir::new("base-dir");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            assert_eq!(infra.base_dir(), dir.path());
         });
     }
 
@@ -3010,7 +3094,10 @@ mod tests {
                 .await
                 .expect("clusters should list after reprocess");
             assert_eq!(clusters.len(), 1);
-            assert_eq!(clusters[0].provider_cluster_id, format!("{}:speaker_01", segment.id));
+            assert_eq!(
+                clusters[0].provider_cluster_id,
+                format!("{}:speaker_01", segment.id)
+            );
             assert_ne!(clusters[0].id, old_clusters[0].id);
             let turns = infra
                 .list_speaker_turns_for_audio_segment(segment.id)
@@ -3157,11 +3244,12 @@ mod tests {
             );
 
             assert_eq!(
-                infra.backfill_missing_speaker_analysis_jobs(
-                    &AudioSegmentSpeakerAnalysisAdmission::available(speaker_payload)
-                )
-                .await
-                .expect("speaker backfill should be idempotent"),
+                infra
+                    .backfill_missing_speaker_analysis_jobs(
+                        &AudioSegmentSpeakerAnalysisAdmission::available(speaker_payload)
+                    )
+                    .await
+                    .expect("speaker backfill should be idempotent"),
                 0
             );
         });
@@ -3237,8 +3325,9 @@ mod tests {
                 infra
                     .complete_processing_job(
                         job.id,
-                        &ProcessingResultDraft::new()
-                            .with_structured_payload_json(serde_json::to_string(&metadata).unwrap()),
+                        &ProcessingResultDraft::new().with_structured_payload_json(
+                            serde_json::to_string(&metadata).unwrap(),
+                        ),
                     )
                     .await
                     .expect("transcription should complete");

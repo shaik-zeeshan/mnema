@@ -52,18 +52,20 @@
       </span>
       <span class="select-chevron" aria-hidden="true">▾</span>
     </BitsSelect.Trigger>
-    <BitsSelect.Content class="select-content">
-      <BitsSelect.Viewport class="select-viewport">
-        {#each options as option (option.value)}
-          <BitsSelect.Item value={option.value} label={option.label} class="select-item">
-            {#snippet children({ selected })}
-              <span class="select-item-check" aria-hidden="true">{selected ? "✓" : ""}</span>
-              {option.label}
-            {/snippet}
-          </BitsSelect.Item>
-        {/each}
-      </BitsSelect.Viewport>
-    </BitsSelect.Content>
+    <BitsSelect.Portal>
+      <BitsSelect.Content class="select-content" sideOffset={4}>
+        <BitsSelect.Viewport class="select-viewport">
+          {#each options as option (option.value)}
+            <BitsSelect.Item value={option.value} label={option.label} class="select-item">
+              {#snippet children({ selected })}
+                <span class="select-item-check" aria-hidden="true">{selected ? "✓" : ""}</span>
+                {option.label}
+              {/snippet}
+            </BitsSelect.Item>
+          {/each}
+        </BitsSelect.Viewport>
+      </BitsSelect.Content>
+    </BitsSelect.Portal>
   </BitsSelect.Root>
 </div>
 

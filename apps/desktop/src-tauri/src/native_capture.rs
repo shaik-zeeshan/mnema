@@ -1434,6 +1434,18 @@ pub fn update_recording_settings(
         }
     }
 
+    if previous_settings.retention_policy != settings.retention_policy {
+        if let Some(background_workers) =
+            app_handle.try_state::<crate::app_infra::BackgroundWorkersState>()
+        {
+            background_workers.notify_retention_schedule_changed();
+        } else {
+            debug_log::log_warn(
+                "background workers state unavailable while updating retention policy; retention cleanup schedule was not woken",
+            );
+        }
+    }
+
     emit_recording_settings_changed(&app_handle, &settings);
 
     Ok(settings)
@@ -1468,6 +1480,22 @@ pub fn stop_native_capture(
     let session_id = runtime_log_session_id(runtime.runtime()).to_string();
     let requested_sources = runtime.runtime().requested_sources.clone();
     let output_files_before_stop = runtime.runtime().output_files.clone();
+    let source_session_ids_before_stop = runtime
+        .runtime()
+        .source_sessions
+        .clone()
+        .map(|source_sessions| {
+            [
+                source_sessions.screen,
+                source_sessions.microphone,
+                source_sessions.system_audio,
+            ]
+            .into_iter()
+            .flatten()
+            .map(|source_session| source_session.session_id)
+            .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     debug_log::log_info(format!(
         "received native capture stop request (is_running={}, session_id='{}', requested_sources={}, output_files_before_stop={})",
@@ -1504,6 +1532,30 @@ pub fn stop_native_capture(
         format_optional_capture_source_flags(session.requested_sources.as_ref()),
         format_output_file_counts(session.output_files.as_ref())
     ));
+
+    if !source_session_ids_before_stop.is_empty() {
+        if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
+            let stopped_at = time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+            let source_session_ids = source_session_ids_before_stop;
+            let infra = std::sync::Arc::clone(&*infra);
+            if let Err(error) = tauri::async_runtime::block_on(async move {
+                infra
+                    .capture_retention()
+                    .complete_capture_sessions_for_source_session_ids(
+                        &source_session_ids,
+                        &stopped_at,
+                        "completed",
+                    )
+                    .await
+            }) {
+                debug_log::log_error(format!(
+                    "failed to mark capture session completed after stop: {error}"
+                ));
+            }
+        }
+    }
 
     Ok(NativeCaptureSessionResponse { session })
 }

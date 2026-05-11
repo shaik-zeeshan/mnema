@@ -21,6 +21,7 @@ const DATABASE_FILE_NAME: &str = "app.sqlite3";
 #[derive(Clone)]
 pub struct Database {
     pool: SqlitePool,
+    base_dir: PathBuf,
     database_path: PathBuf,
     migrations_ran: bool,
 }
@@ -35,6 +36,7 @@ impl Database {
 
         Ok(Self {
             pool,
+            base_dir: base_dir.to_path_buf(),
             database_path,
             migrations_ran,
         })
@@ -46,6 +48,10 @@ impl Database {
 
     pub fn database_path(&self) -> &Path {
         &self.database_path
+    }
+
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
     }
 
     pub fn migrations_ran(&self) -> bool {

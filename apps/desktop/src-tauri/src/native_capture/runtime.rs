@@ -95,6 +95,19 @@ pub(super) fn now_monotonic_marker_ms() -> u64 {
     now_monotonic_ms().saturating_add(1)
 }
 
+fn source_session_suffix(raw_session_id: &str) -> String {
+    raw_session_id
+        .strip_prefix("native-session-")
+        .or_else(|| raw_session_id.strip_prefix("session-"))
+        .unwrap_or(raw_session_id)
+        .replace('-', "_")
+}
+
+pub(super) fn prefixed_capture_id(prefix: &str) -> Result<String, CaptureErrorResponse> {
+    let raw = capture_screen::new_session_id()?;
+    Ok(format!("{prefix}_{}", source_session_suffix(&raw)))
+}
+
 pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCaptureSession {
     NativeCaptureSession {
         is_running: session_reports_running(runtime),
@@ -474,8 +487,7 @@ pub(super) fn ensure_microphone_planner_for_runtime(
         .unwrap_or_else(|| {
             persist_microphone_source_session(
                 runtime,
-                capture_screen::new_session_id()
-                    .unwrap_or_else(|_| format!("microphone-{}", now_unix_ms())),
+                prefixed_capture_id("mic").unwrap_or_else(|_| format!("mic_{}", now_unix_ms())),
             )
         });
 
@@ -514,8 +526,8 @@ pub(super) fn ensure_system_audio_planner_for_runtime(
         .unwrap_or_else(|| {
             persist_system_audio_source_session(
                 runtime,
-                capture_screen::new_session_id()
-                    .unwrap_or_else(|_| format!("system-audio-{}", now_unix_ms())),
+                prefixed_capture_id("sysaudio")
+                    .unwrap_or_else(|_| format!("sysaudio_{}", now_unix_ms())),
             )
         });
 
@@ -578,4 +590,25 @@ pub(super) fn should_rotate_segment(
     scheduled_segment_index: u64,
 ) -> bool {
     scheduled_segment_index > current_segment_index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_session_suffix;
+
+    #[test]
+    fn source_session_suffix_removes_native_session_prefix() {
+        assert_eq!(
+            source_session_suffix("native-session-ceb00964-9039-4e1c-a770-c2c1a1251e83"),
+            "ceb00964_9039_4e1c_a770_c2c1a1251e83"
+        );
+    }
+
+    #[test]
+    fn source_session_suffix_keeps_legacy_session_prefix_compatibility() {
+        assert_eq!(
+            source_session_suffix("session-ceb00964-9039-4e1c-a770-c2c1a1251e83"),
+            "ceb00964_9039_4e1c_a770_c2c1a1251e83"
+        );
+    }
 }

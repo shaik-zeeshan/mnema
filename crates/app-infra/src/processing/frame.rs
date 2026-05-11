@@ -100,6 +100,7 @@ pub struct NewFrame {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub equivalence: FrameEquivalence,
+    pub capture_segment_id: Option<i64>,
 }
 
 impl NewFrame {
@@ -121,6 +122,7 @@ impl NewFrame {
                 status: None,
                 error: None,
             },
+            capture_segment_id: None,
         }
     }
 
@@ -132,6 +134,11 @@ impl NewFrame {
 
     pub fn with_equivalence(mut self, equivalence: FrameEquivalence) -> Self {
         self.equivalence = equivalence;
+        self
+    }
+
+    pub fn with_capture_segment_id(mut self, capture_segment_id: i64) -> Self {
+        self.capture_segment_id = Some(capture_segment_id);
         self
     }
 }
