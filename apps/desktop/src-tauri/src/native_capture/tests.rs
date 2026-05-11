@@ -25,15 +25,16 @@ use super::runtime::{
 };
 #[cfg(target_os = "macos")]
 use super::segments::{
-    audio_duration_time_to_ms, audio_segment_started_at_unix_ms_for_file,
-    audio_segment_window_from_duration_ms, cleanup_failed_segment_dirs,
-    committed_audio_segments_for_output_files, pause_microphone_for_inactivity,
-    pause_runtime_for_inactivity, pause_screen_for_inactivity, pause_system_audio_for_inactivity,
-    plan_live_rotation_segment, process_inactivity_audio_transitions_for_snapshot,
-    reanchor_active_segment_timing, recover_screen_capture_after_wake_with_start_segment,
-    resume_microphone_from_inactivity, resume_runtime_from_inactivity_with_start_segment,
-    resume_screen_from_inactivity, resume_screen_from_inactivity_with_start_segment,
-    resume_system_audio_from_inactivity, segment_loop_sleep_duration, StartedSegmentState,
+    apply_microphone_output_finalization, audio_duration_time_to_ms,
+    audio_segment_started_at_unix_ms_for_file, audio_segment_window_from_duration_ms,
+    cleanup_failed_segment_dirs, committed_audio_segments_for_output_files,
+    pause_microphone_for_inactivity, pause_runtime_for_inactivity, pause_screen_for_inactivity,
+    pause_system_audio_for_inactivity, plan_live_rotation_segment,
+    process_inactivity_audio_transitions_for_snapshot, reanchor_active_segment_timing,
+    recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
+    resume_runtime_from_inactivity_with_start_segment, resume_screen_from_inactivity,
+    resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
+    segment_loop_sleep_duration, StartedSegmentState,
 };
 use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
@@ -116,6 +117,12 @@ fn run_async_test(test: impl std::future::Future<Output = ()>) {
 fn write_openable_screen_file(path: &Path) {
     fs::write(path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10moovtrak")
         .expect("screen artifact should exist");
+}
+
+#[cfg(target_os = "macos")]
+fn write_existing_audio_placeholder(path: &Path) -> String {
+    fs::write(path, b"placeholder audio").expect("placeholder audio file should exist");
+    path.to_string_lossy().to_string()
 }
 
 fn app_notification_fixture(id: &str, title: &str, created_at_unix_ms: u64) -> AppNotification {
@@ -482,6 +489,60 @@ fn audio_segment_start_falls_back_to_scheduled_boundary_for_base_file() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn trimmed_microphone_finalization_keeps_segment_index_in_timestamped_filename() {
+    let dir = TestDir::new("trimmed-microphone-filename");
+    let microphone_file = write_existing_audio_placeholder(
+        &dir.path()
+            .join("microphone-native-session-microphone-segment-0001.m4a"),
+    );
+    let source_sessions = independent_source_sessions_fixture();
+    let schedule = SegmentSchedule::new(std::time::Duration::from_secs(60));
+    let shifted_started_at_unix_ms = 1_123;
+    let finalization = capture_microphone::MicrophoneOutputFinalization {
+        source_file: Some(microphone_file.clone()),
+        output_file: Some(microphone_file.clone()),
+        speech_detected: true,
+        trim_start_offset_ms: 1_000,
+        discard_reason: None,
+    };
+    let mut output_files = CaptureOutputFiles {
+        screen_file: None,
+        screen_files: Vec::new(),
+        microphone_file: Some(microphone_file.clone()),
+        microphone_files: vec![microphone_file],
+        system_audio_file: None,
+        system_audio_files: Vec::new(),
+    };
+
+    apply_microphone_output_finalization(
+        Some(&mut output_files),
+        &finalization,
+        Some(&source_sessions),
+        Some(&schedule),
+        1,
+    );
+
+    let renamed_file = output_files
+        .microphone_file
+        .as_deref()
+        .expect("trimmed microphone output should remain present");
+    assert!(
+        renamed_file.ends_with("microphone-native-session-microphone-segment-0001-1123.m4a"),
+        "trimmed microphone filename must preserve the segment index"
+    );
+    assert_eq!(
+        audio_segment_started_at_unix_ms_for_file(
+            source_sessions.microphone.as_ref().unwrap(),
+            1,
+            &schedule,
+            renamed_file,
+        ),
+        shifted_started_at_unix_ms
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn audio_segment_start_uses_reanchored_session_timing_for_contiguous_late_segment() {
     let mut runtime = NativeCaptureRuntime {
         current_segment_index: 5,
@@ -512,17 +573,21 @@ fn audio_segment_start_uses_reanchored_session_timing_for_contiguous_late_segmen
         .segment_schedule
         .as_ref()
         .expect("schedule should remain present");
+    let dir = TestDir::new("audio-segment-reanchored-files");
+    let microphone_file = write_existing_audio_placeholder(
+        &dir.path().join("microphone-mic-source-segment-0005.m4a"),
+    );
+    let system_audio_file = write_existing_audio_placeholder(
+        &dir.path()
+            .join("system-audio-system-source-segment-0005.m4a"),
+    );
     let output_files = CaptureOutputFiles {
         screen_file: None,
         screen_files: Vec::new(),
-        microphone_file: Some("/tmp/audio/microphone-mic-source-segment-0005.m4a".to_string()),
-        microphone_files: vec!["/tmp/audio/microphone-mic-source-segment-0005.m4a".to_string()],
-        system_audio_file: Some(
-            "/tmp/audio/system-audio-system-source-segment-0005.m4a".to_string(),
-        ),
-        system_audio_files: vec![
-            "/tmp/audio/system-audio-system-source-segment-0005.m4a".to_string()
-        ],
+        microphone_file: Some(microphone_file.clone()),
+        microphone_files: vec![microphone_file],
+        system_audio_file: Some(system_audio_file.clone()),
+        system_audio_files: vec![system_audio_file],
     };
 
     let segments = committed_audio_segments_for_output_files(
@@ -589,14 +654,44 @@ fn fresh_start_inactivity_empty_audio_outputs_leave_no_output_or_db_payloads() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn fresh_start_inactivity_valid_active_audio_outputs_survive_db_payload_planning() {
+fn committed_audio_segments_skip_missing_output_files() {
     let output_files = CaptureOutputFiles {
         screen_file: None,
         screen_files: Vec::new(),
-        microphone_file: Some("/tmp/startup-active-microphone.m4a".to_string()),
-        microphone_files: vec!["/tmp/startup-active-microphone.m4a".to_string()],
-        system_audio_file: Some("/tmp/startup-active-system-audio.m4a".to_string()),
-        system_audio_files: vec!["/tmp/startup-active-system-audio.m4a".to_string()],
+        microphone_file: Some("/tmp/missing-microphone-output.m4a".to_string()),
+        microphone_files: vec!["/tmp/missing-microphone-output.m4a".to_string()],
+        system_audio_file: Some("/tmp/missing-system-audio-output.m4a".to_string()),
+        system_audio_files: vec!["/tmp/missing-system-audio-output.m4a".to_string()],
+    };
+
+    let segments = committed_audio_segments_for_output_files(
+        Some(&independent_source_sessions_fixture()),
+        Some(&SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        1,
+        Some(&output_files),
+    );
+
+    assert!(
+        segments.is_empty(),
+        "missing finalized audio artifacts must not become persisted Audio Segment payloads"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn fresh_start_inactivity_valid_active_audio_outputs_survive_db_payload_planning() {
+    let dir = TestDir::new("startup-active-audio-files");
+    let microphone_file =
+        write_existing_audio_placeholder(&dir.path().join("startup-active-microphone.m4a"));
+    let system_audio_file =
+        write_existing_audio_placeholder(&dir.path().join("startup-active-system-audio.m4a"));
+    let output_files = CaptureOutputFiles {
+        screen_file: None,
+        screen_files: Vec::new(),
+        microphone_file: Some(microphone_file.clone()),
+        microphone_files: vec![microphone_file.clone()],
+        system_audio_file: Some(system_audio_file.clone()),
+        system_audio_files: vec![system_audio_file.clone()],
     };
 
     let segments = committed_audio_segments_for_output_files(
@@ -609,10 +704,10 @@ fn fresh_start_inactivity_valid_active_audio_outputs_survive_db_payload_planning
     assert_eq!(segments.len(), 2);
     assert!(segments
         .iter()
-        .any(|segment| segment.file_path == "/tmp/startup-active-microphone.m4a"));
+        .any(|segment| segment.file_path == microphone_file));
     assert!(segments
         .iter()
-        .any(|segment| segment.file_path == "/tmp/startup-active-system-audio.m4a"));
+        .any(|segment| segment.file_path == system_audio_file));
 }
 
 #[cfg(target_os = "macos")]

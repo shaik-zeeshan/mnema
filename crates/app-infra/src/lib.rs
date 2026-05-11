@@ -638,6 +638,9 @@ impl AppInfra {
             .await?;
         let mut enqueued = 0_u64;
         for segment in segments {
+            if !audio_segment_file_exists(&segment) {
+                continue;
+            }
             let subject = ProcessingSubject::audio_segment(segment.id);
             if self
                 .processing
@@ -679,6 +682,9 @@ impl AppInfra {
             .await?;
         let mut enqueued = 0_u64;
         for segment in segments {
+            if !audio_segment_file_exists(&segment) {
+                continue;
+            }
             let subject = ProcessingSubject::audio_segment(segment.id);
             if self
                 .processing
@@ -1376,6 +1382,10 @@ fn processing_model_cleanup_lock_token(processor: &str) -> String {
     format!("model-cleanup:{processor}:{}:{nanos}", std::process::id())
 }
 
+fn audio_segment_file_exists(segment: &AudioSegment) -> bool {
+    Path::new(&segment.file_path).is_file()
+}
+
 fn ocr_model_key_for_job(job: &ProcessingJob) -> Result<Option<String>> {
     let payload = FrozenOcrPayload::from_payload_json(job.payload_json.as_deref())
         .map_err(|error| AppInfraError::OcrEngine(error.to_string()))?;
@@ -1457,6 +1467,11 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    fn write_existing_audio_placeholder(path: &Path) -> String {
+        fs::write(path, b"placeholder audio").expect("placeholder audio file should exist");
+        path.to_string_lossy().to_string()
     }
 
     fn run_async_test(test: impl std::future::Future<Output = ()>) {
@@ -3376,6 +3391,49 @@ mod tests {
     }
 
     #[test]
+    fn speaker_analysis_backfill_skips_missing_audio_files() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-analysis-backfill-missing-file");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let missing_file = dir.path().join("missing-speaker.m4a");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-missing-file",
+                    1,
+                    missing_file.to_string_lossy().to_string(),
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("audio segment should persist");
+            let payload = serde_json::to_string(&SpeakerAnalysisJobPayload::new(
+                "mock_speaker",
+                Some("voice-model".to_string()),
+            ))
+            .expect("speaker payload should serialize");
+
+            assert_eq!(
+                infra
+                    .backfill_missing_speaker_analysis_jobs(
+                        &AudioSegmentSpeakerAnalysisAdmission::available(payload)
+                    )
+                    .await
+                    .expect("backfill should skip missing files"),
+                0
+            );
+
+            let jobs = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(segment.id))
+                .await
+                .expect("jobs should list");
+            assert!(jobs.is_empty());
+        });
+    }
+
+    #[test]
     fn transcript_text_attaches_to_speaker_turns_in_either_completion_order() {
         run_async_test(async {
             let dir = TestDir::new("speaker-transcript-alignment");
@@ -4420,11 +4478,12 @@ mod tests {
                 .await
                 .expect("app infra should initialize");
             let unavailable = AudioSegmentTranscriptionAdmission::unavailable();
+            let microphone_file = write_existing_audio_placeholder(&dir.path().join("mic-1.m4a"));
             let microphone = NewAudioSegment::new(
                 AudioSegmentSourceKind::Microphone,
                 "mic-session",
                 1,
-                "/tmp/mic-1.m4a",
+                microphone_file,
                 "2026-04-12T10:00:00Z",
                 "2026-04-12T10:01:00Z",
             );
@@ -4489,6 +4548,50 @@ mod tests {
                 .await
                 .expect("system jobs should list");
             assert!(system_jobs.is_empty());
+        });
+    }
+
+    #[test]
+    fn audio_transcription_backfill_skips_missing_audio_files() {
+        run_async_test(async {
+            let dir = TestDir::new("audio-transcription-backfill-missing-file");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let missing_file = dir.path().join("missing-mic.m4a");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-missing-file",
+                    1,
+                    missing_file.to_string_lossy().to_string(),
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("audio segment should persist");
+            let payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                "local_whisper",
+                Some("base".to_string()),
+                "auto",
+            ))
+            .expect("payload should serialize");
+
+            assert_eq!(
+                infra
+                    .backfill_missing_audio_transcription_jobs(
+                        &AudioSegmentTranscriptionAdmission::available(payload)
+                    )
+                    .await
+                    .expect("backfill should skip missing files"),
+                0
+            );
+
+            let jobs = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(segment.id))
+                .await
+                .expect("jobs should list");
+            assert!(jobs.is_empty());
         });
     }
 

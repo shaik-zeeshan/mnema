@@ -354,11 +354,7 @@ fn timestamped_microphone_output_file(file_path: &str, started_at_unix_ms: u64) 
     let parent = path.parent();
     let stem = path.file_stem()?.to_str()?;
     let extension = path.extension().and_then(|extension| extension.to_str());
-    let base_stem = stem
-        .rsplit_once('-')
-        .filter(|(_, suffix)| suffix.parse::<u64>().is_ok())
-        .map(|(base, _)| base)
-        .unwrap_or(stem);
+    let base_stem = microphone_output_timestamp_base_stem(stem);
     let file_name = match extension {
         Some(extension) => format!("{base_stem}-{started_at_unix_ms}.{extension}"),
         None => format!("{base_stem}-{started_at_unix_ms}"),
@@ -370,6 +366,43 @@ fn timestamped_microphone_output_file(file_path: &str, started_at_unix_ms: u64) 
             .to_string_lossy()
             .to_string(),
     )
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_output_timestamp_base_stem(stem: &str) -> &str {
+    let marker = "-segment-";
+    let Some(marker_start) = stem.rfind(marker) else {
+        return stem;
+    };
+    let after_marker_start = marker_start + marker.len();
+    let after_marker = &stem[after_marker_start..];
+    if after_marker.len() < 4 {
+        return stem;
+    }
+
+    let (segment_index, remainder) = after_marker.split_at(4);
+    if !segment_index.bytes().all(|byte| byte.is_ascii_digit()) {
+        return stem;
+    }
+    let Some(timestamp_with_suffix) = remainder.strip_prefix('-') else {
+        return stem;
+    };
+    let (timestamp, suffix) = timestamp_with_suffix
+        .split_once('-')
+        .map_or((timestamp_with_suffix, None), |(timestamp, suffix)| {
+            (timestamp, Some(suffix))
+        });
+
+    if timestamp.is_empty() || !timestamp.bytes().all(|byte| byte.is_ascii_digit()) {
+        return stem;
+    }
+    if suffix.is_some_and(|suffix| {
+        suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
+        return stem;
+    }
+
+    &stem[..after_marker_start + segment_index.len()]
 }
 
 #[cfg(target_os = "macos")]
@@ -843,32 +876,56 @@ pub(super) fn committed_audio_segments_for_output_files(
 
     let mut segments = Vec::new();
     if let Some(source_session) = source_sessions.microphone.as_ref() {
-        segments.extend(output_files.microphone_files.iter().map(|file_path| {
-            let (started_at, ended_at) =
-                audio_segment_window_for_file(source_session, segment_index, schedule, file_path);
-            ::app_infra::NewAudioSegment::new(
-                ::app_infra::AudioSegmentSourceKind::Microphone,
-                source_session.session_id.clone(),
-                segment_index_i64,
-                file_path.clone(),
-                started_at.clone(),
-                ended_at.clone(),
-            )
-        }));
+        segments.extend(
+            output_files
+                .microphone_files
+                .iter()
+                .filter_map(|file_path| {
+                    if !Path::new(file_path).is_file() {
+                        return None;
+                    }
+                    let (started_at, ended_at) = audio_segment_window_for_file(
+                        source_session,
+                        segment_index,
+                        schedule,
+                        file_path,
+                    );
+                    Some(::app_infra::NewAudioSegment::new(
+                        ::app_infra::AudioSegmentSourceKind::Microphone,
+                        source_session.session_id.clone(),
+                        segment_index_i64,
+                        file_path.clone(),
+                        started_at.clone(),
+                        ended_at.clone(),
+                    ))
+                }),
+        );
     }
     if let Some(source_session) = source_sessions.system_audio.as_ref() {
-        segments.extend(output_files.system_audio_files.iter().map(|file_path| {
-            let (started_at, ended_at) =
-                audio_segment_window_for_file(source_session, segment_index, schedule, file_path);
-            ::app_infra::NewAudioSegment::new(
-                ::app_infra::AudioSegmentSourceKind::SystemAudio,
-                source_session.session_id.clone(),
-                segment_index_i64,
-                file_path.clone(),
-                started_at.clone(),
-                ended_at.clone(),
-            )
-        }));
+        segments.extend(
+            output_files
+                .system_audio_files
+                .iter()
+                .filter_map(|file_path| {
+                    if !Path::new(file_path).is_file() {
+                        return None;
+                    }
+                    let (started_at, ended_at) = audio_segment_window_for_file(
+                        source_session,
+                        segment_index,
+                        schedule,
+                        file_path,
+                    );
+                    Some(::app_infra::NewAudioSegment::new(
+                        ::app_infra::AudioSegmentSourceKind::SystemAudio,
+                        source_session.session_id.clone(),
+                        segment_index_i64,
+                        file_path.clone(),
+                        started_at.clone(),
+                        ended_at.clone(),
+                    ))
+                }),
+        );
     }
 
     segments
@@ -1924,7 +1981,7 @@ where
         let next_index = next_emitted_segment_index(runtime.current_segment_index);
         let segment_dir = screen_planner.segment_dir(next_index);
         let screen_output_file = screen_planner.segment_screen_output(next_index);
-        let previous_microphone_outputs = audio_only_output_files(
+        let mut previous_microphone_outputs = audio_only_output_files(
             runtime.current_segment_output_files.as_ref(),
             runtime.active_microphone_session.is_some()
                 && !runtime.inactivity.is_microphone_paused(),
@@ -1971,7 +2028,15 @@ where
         )?;
         if let Some(microphone_output_file) = next_microphone_recording_file.as_deref() {
             if let Some(session) = runtime.active_microphone_session.as_mut() {
-                session.rotate_output_file(microphone_output_file)?;
+                let mic_finalization =
+                    session.rotate_output_file_returning_finalization(microphone_output_file)?;
+                apply_microphone_output_finalization(
+                    previous_microphone_outputs.as_mut(),
+                    &mic_finalization,
+                    runtime.source_sessions.as_ref(),
+                    runtime.segment_schedule.as_ref(),
+                    runtime.current_segment_index,
+                );
                 append_and_persist_committed_audio_outputs(
                     runtime,
                     app_handle,
@@ -2079,7 +2144,7 @@ where
         None, // no microphone output path when screen-only resume
     )?;
 
-    let previous_microphone_outputs = audio_only_output_files(
+    let mut previous_microphone_outputs = audio_only_output_files(
         runtime.current_segment_output_files.as_ref(),
         runtime.active_microphone_session.is_some() && !runtime.inactivity.is_microphone_paused(),
         false,
@@ -2101,19 +2166,32 @@ where
     )?;
     if let Some(microphone_output_file) = next_microphone_recording_file.as_deref() {
         if let Some(session) = runtime.active_microphone_session.as_mut() {
-            if let Err(error) = session.rotate_output_file(microphone_output_file) {
-                let _ = capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
-                    active_session: &mut active_screen_session,
-                    inactivity_tail_trim_seconds: 0,
-                });
-                cleanup_unusable_segment_artifacts(
-                    Some(&segment_outputs),
-                    recording_file.as_deref(),
-                    None,
-                    system_audio_recording_file.as_deref(),
-                );
-                return Err(error);
-            }
+            let mic_finalization = match session
+                .rotate_output_file_returning_finalization(microphone_output_file)
+            {
+                Ok(finalization) => finalization,
+                Err(error) => {
+                    let _ =
+                        capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
+                            active_session: &mut active_screen_session,
+                            inactivity_tail_trim_seconds: 0,
+                        });
+                    cleanup_unusable_segment_artifacts(
+                        Some(&segment_outputs),
+                        recording_file.as_deref(),
+                        None,
+                        system_audio_recording_file.as_deref(),
+                    );
+                    return Err(error);
+                }
+            };
+            apply_microphone_output_finalization(
+                previous_microphone_outputs.as_mut(),
+                &mic_finalization,
+                runtime.source_sessions.as_ref(),
+                runtime.segment_schedule.as_ref(),
+                runtime.current_segment_index,
+            );
             append_and_persist_committed_audio_outputs(
                 runtime,
                 app_handle,
@@ -2463,7 +2541,7 @@ where
         }
     };
 
-    let previous_microphone_outputs = audio_only_output_files(
+    let mut previous_microphone_outputs = audio_only_output_files(
         runtime.current_segment_output_files.as_ref(),
         runtime.active_microphone_session.is_some() && !runtime.inactivity.is_microphone_paused(),
         false,
@@ -2485,19 +2563,32 @@ where
     )?;
     if let Some(microphone_output_file) = next_microphone_recording_file.as_deref() {
         if let Some(session) = runtime.active_microphone_session.as_mut() {
-            if let Err(error) = session.rotate_output_file(microphone_output_file) {
-                let _ = capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
-                    active_session: &mut active_screen_session,
-                    inactivity_tail_trim_seconds: 0,
-                });
-                cleanup_unusable_segment_artifacts(
-                    Some(&segment_outputs),
-                    recording_file.as_deref(),
-                    None,
-                    system_audio_recording_file.as_deref(),
-                );
-                return Err(error);
-            }
+            let mic_finalization = match session
+                .rotate_output_file_returning_finalization(microphone_output_file)
+            {
+                Ok(finalization) => finalization,
+                Err(error) => {
+                    let _ =
+                        capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
+                            active_session: &mut active_screen_session,
+                            inactivity_tail_trim_seconds: 0,
+                        });
+                    cleanup_unusable_segment_artifacts(
+                        Some(&segment_outputs),
+                        recording_file.as_deref(),
+                        None,
+                        system_audio_recording_file.as_deref(),
+                    );
+                    return Err(error);
+                }
+            };
+            apply_microphone_output_finalization(
+                previous_microphone_outputs.as_mut(),
+                &mic_finalization,
+                runtime.source_sessions.as_ref(),
+                runtime.segment_schedule.as_ref(),
+                runtime.current_segment_index,
+            );
             append_and_persist_committed_audio_outputs(
                 runtime,
                 app_handle,
