@@ -282,6 +282,16 @@ fn current_microphone_vad_speech_boundaries() -> MicrophoneVadSpeechBoundaryStat
 }
 
 #[cfg(target_os = "macos")]
+fn take_microphone_vad_speech_boundaries() -> MicrophoneVadSpeechBoundaryState {
+    let mut boundaries = microphone_vad_speech_boundaries()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let current = *boundaries;
+    *boundaries = MicrophoneVadSpeechBoundaryState::default();
+    current
+}
+
+#[cfg(target_os = "macos")]
 pub fn take_microphone_vad_pcm_frames(max_frames: usize) -> Vec<MicrophoneVadPcmFrame> {
     let mut feed = microphone_vad_pcm_feed()
         .lock()
@@ -605,6 +615,46 @@ mod tests {
         assert_eq!(boundaries.first_start_secs, Some(1.25));
         assert_eq!(boundaries.last_end_secs, Some(8.2));
         assert!(!boundaries.invalid_timing);
+    }
+
+    #[test]
+    fn vad_boundary_trim_finalization_consumes_boundaries_per_output() {
+        let _guard = microphone_activity_state_test_guard();
+        reset_microphone_vad_tail_activity();
+
+        let mut first =
+            tail_activity_context(MicrophoneInactivityTailTrimActivityMode::VadSpeech, 10);
+        first.boundary_trim_enabled = true;
+        super::record_microphone_vad_speech_event(MicrophoneVadSpeechEvent {
+            media_start_secs: Some(1.0),
+            media_end_secs: Some(1.25),
+        });
+
+        let first_finalization = super::finalize_microphone_vad_boundary_trim(&mut first)
+            .expect("boundary finalization should tolerate a missing source file");
+        assert_eq!(first.first_speech_start_secs, Some(1.0));
+        assert_eq!(first.last_speech_end_secs, Some(1.25));
+        assert_eq!(
+            first_finalization.discard_reason.as_deref(),
+            Some("missing_source_file")
+        );
+
+        let mut second =
+            tail_activity_context(MicrophoneInactivityTailTrimActivityMode::VadSpeech, 10);
+        second.boundary_trim_enabled = true;
+        super::record_microphone_vad_speech_event(MicrophoneVadSpeechEvent {
+            media_start_secs: Some(8.0),
+            media_end_secs: Some(8.25),
+        });
+
+        let second_finalization = super::finalize_microphone_vad_boundary_trim(&mut second)
+            .expect("boundary finalization should tolerate a missing source file");
+        assert_eq!(second.first_speech_start_secs, Some(8.0));
+        assert_eq!(second.last_speech_end_secs, Some(8.25));
+        assert_eq!(
+            second_finalization.discard_reason.as_deref(),
+            Some("missing_source_file")
+        );
     }
 
     #[test]
@@ -1937,6 +1987,9 @@ fn finalize_microphone_output_context(
 
     match finalize_result {
         Err(error) if is_nonfatal_microphone_finalize_error(&error) => {
+            if context.boundary_trim_enabled {
+                take_microphone_vad_speech_boundaries_for_context(context);
+            }
             if let Some(path) = context.output_file.as_deref() {
                 maybe_remove_microphone_output_file(path);
             }
@@ -1972,6 +2025,17 @@ fn microphone_output_finalization_for_context(
 }
 
 #[cfg(target_os = "macos")]
+fn take_microphone_vad_speech_boundaries_for_context(
+    context: &mut MicrophoneOutputContext,
+) -> MicrophoneVadSpeechBoundaryState {
+    let boundaries = take_microphone_vad_speech_boundaries();
+    context.detected_vad_speech = boundaries.detected_speech;
+    context.first_speech_start_secs = boundaries.first_start_secs;
+    context.last_speech_end_secs = boundaries.last_end_secs;
+    boundaries
+}
+
+#[cfg(target_os = "macos")]
 fn finalize_microphone_vad_boundary_trim(
     context: &mut MicrophoneOutputContext,
 ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
@@ -1981,6 +2045,9 @@ fn finalize_microphone_vad_boundary_trim(
     }
 
     if !context.boundary_trim_enabled || context.boundary_trim_disabled {
+        if context.boundary_trim_enabled {
+            take_microphone_vad_speech_boundaries_for_context(context);
+        }
         if let (Some(source), Some(output)) = (
             context.source_output_file.as_deref(),
             context.output_file.as_deref(),
@@ -1994,10 +2061,7 @@ fn finalize_microphone_vad_boundary_trim(
         ));
     }
 
-    let boundaries = current_microphone_vad_speech_boundaries();
-    context.detected_vad_speech = boundaries.detected_speech;
-    context.first_speech_start_secs = boundaries.first_start_secs;
-    context.last_speech_end_secs = boundaries.last_end_secs;
+    let boundaries = take_microphone_vad_speech_boundaries_for_context(context);
 
     let Some(source_file) = context.source_output_file.clone() else {
         return Ok(microphone_output_finalization_for_context(
