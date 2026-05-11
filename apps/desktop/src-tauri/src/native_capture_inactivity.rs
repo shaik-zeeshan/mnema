@@ -40,11 +40,13 @@ const SYSTEM_AUDIO_ONLY_SOURCES: [ActivitySourceKind; 1] = [ActivitySourceKind::
 // Map the 0-100 sensitivity slider onto a bounded normalized audio threshold.
 // Higher sensitivity lowers the threshold so quieter audio counts as activity
 // more easily, while still avoiding a zero-threshold "everything is active"
-// policy.  Typical speech sits around 0.02–0.15 normalized RMS, so the range
-// is calibrated so that the default sensitivity (50) yields ≈0.08 — well
-// within normal conversational levels.
-const MIN_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.01;
-const MAX_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.15;
+// policy. Microphone peaks are calibrated around conversational speech, while
+// ScreenCaptureKit system-audio peaks are usually lower and need a quieter
+// threshold to avoid pausing while media is audibly playing.
+const MIN_MICROPHONE_ACTIVITY_THRESHOLD: f32 = 0.01;
+const MAX_MICROPHONE_ACTIVITY_THRESHOLD: f32 = 0.15;
+const MIN_SYSTEM_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.002;
+const MAX_SYSTEM_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.05;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ActivitySourceIdle {
@@ -203,17 +205,24 @@ impl InactivityState {
     }
 
     pub(crate) fn microphone_activity_threshold(&self) -> f32 {
-        Self::sensitivity_to_threshold(self.microphone_activity_sensitivity)
+        Self::sensitivity_to_threshold(
+            self.microphone_activity_sensitivity,
+            MIN_MICROPHONE_ACTIVITY_THRESHOLD,
+            MAX_MICROPHONE_ACTIVITY_THRESHOLD,
+        )
     }
 
     pub(crate) fn system_audio_activity_threshold(&self) -> f32 {
-        Self::sensitivity_to_threshold(self.system_audio_activity_sensitivity)
+        Self::sensitivity_to_threshold(
+            self.system_audio_activity_sensitivity,
+            MIN_SYSTEM_AUDIO_ACTIVITY_THRESHOLD,
+            MAX_SYSTEM_AUDIO_ACTIVITY_THRESHOLD,
+        )
     }
 
-    fn sensitivity_to_threshold(sensitivity: u8) -> f32 {
+    fn sensitivity_to_threshold(sensitivity: u8, min_threshold: f32, max_threshold: f32) -> f32 {
         let sensitivity_fraction = (sensitivity.min(100) as f32) / 100.0;
-        MAX_AUDIO_ACTIVITY_THRESHOLD
-            - (sensitivity_fraction * (MAX_AUDIO_ACTIVITY_THRESHOLD - MIN_AUDIO_ACTIVITY_THRESHOLD))
+        max_threshold - (sensitivity_fraction * (max_threshold - min_threshold))
     }
 
     fn threshold_audio_source_sample(
@@ -850,7 +859,7 @@ mod tests {
             evaluation.sources[3]
                 .activity_threshold
                 .expect("system-audio threshold should be present"),
-            0.08,
+            0.026,
         );
         assert_eq!(
             evaluation.effective_idle.source,
@@ -918,7 +927,7 @@ mod tests {
             evaluation.sources[3]
                 .activity_threshold
                 .expect("system-audio threshold should be present"),
-            0.01,
+            0.002,
         );
     }
 
@@ -975,7 +984,7 @@ mod tests {
             evaluations.system_audio.sources[3]
                 .activity_threshold
                 .expect("system-audio threshold should be present"),
-            0.01,
+            0.002,
         );
     }
 
@@ -1410,6 +1419,51 @@ mod tests {
         assert!(
             state.should_pause_system_audio_for_inactivity(30_001, idle_snapshot),
             "system audio should pause after >10s without threshold-qualified audio activity even when system input remains recent"
+        );
+    }
+
+    #[test]
+    fn default_system_audio_threshold_accepts_quieter_playback_than_microphone() {
+        let mut microphone_state =
+            inactivity_state_fixture(default_inactivity_activity_mode(), 50);
+        let mut system_audio_state =
+            inactivity_state_fixture(default_inactivity_activity_mode(), 50);
+        let now = 20_000;
+
+        let quiet_microphone_snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(microphone_state.idle_timeout_ms() + 1),
+            screen_activity_enabled: true,
+            screen_activity_idle_ms: Some(microphone_state.idle_timeout_ms() + 1),
+            microphone_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(0),
+                latest_normalized_level: Some(0.03),
+            },
+            system_audio_activity: empty_audio_activity(),
+        };
+        let quiet_system_audio_snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(system_audio_state.idle_timeout_ms() + 1),
+            screen_activity_enabled: true,
+            screen_activity_idle_ms: Some(system_audio_state.idle_timeout_ms() + 1),
+            microphone_activity: empty_audio_activity(),
+            system_audio_activity: AudioActivitySourceState {
+                enabled: true,
+                idle_ms: Some(0),
+                latest_normalized_level: Some(0.03),
+            },
+        };
+
+        assert!(
+            microphone_state.should_pause_microphone_for_inactivity(
+                now,
+                quiet_microphone_snapshot
+            ),
+            "quiet 3% microphone peaks remain below the default microphone threshold"
+        );
+        assert!(
+            !system_audio_state
+                .should_pause_system_audio_for_inactivity(now, quiet_system_audio_snapshot),
+            "quiet 3% system-audio peaks should still count as active playback"
         );
     }
 

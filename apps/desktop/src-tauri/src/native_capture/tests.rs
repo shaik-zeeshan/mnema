@@ -3220,6 +3220,71 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
 
 #[cfg(target_os = "macos")]
 #[test]
+fn wake_recovery_keeps_system_audio_stream_attached_when_writer_was_paused() {
+    let mut runtime = running_screen_capture_runtime_fixture();
+    runtime.inactivity.set_family_paused_states(false, false, true);
+    runtime.system_audio_recording_file = None;
+    if let Some(outputs) = runtime.current_segment_output_files.as_mut() {
+        outputs.system_audio_file = None;
+        outputs.system_audio_files.clear();
+    }
+    runtime.current_segment_sources = Some(CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: false,
+    });
+
+    let expected_screen_file =
+        "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
+            .to_string();
+
+    let recovered = recover_screen_capture_after_wake_with_start_segment(
+        &mut runtime,
+        None,
+        |_segment_dir,
+         _screen_output,
+         system_audio_output_path,
+         sources,
+         _frame_rate,
+         _resolution,
+         _bitrate,
+         _microphone_device_id,
+         _frame_tx,
+         _microphone_output_path| {
+            assert_eq!(
+                sources,
+                &CaptureSources {
+                    screen: true,
+                    microphone: false,
+                    system_audio: true,
+                },
+                "the ScreenCaptureKit stream must keep system audio attached so activity can resume the paused writer"
+            );
+            assert!(
+                system_audio_output_path.is_none(),
+                "paused system-audio writer should not receive an output path during wake recovery"
+            );
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
+        },
+    )
+    .expect("wake recovery should restart screen capture");
+
+    assert!(recovered);
+    assert!(!runtime.inactivity.is_screen_paused());
+    assert!(runtime.inactivity.is_system_audio_paused());
+    assert!(runtime.system_audio_recording_file.is_none());
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        })
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn system_sleep_clears_live_screen_state_but_preserves_microphone_continuation() {
     let mut lifecycle = RecordingLifecycle::default();
     *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();

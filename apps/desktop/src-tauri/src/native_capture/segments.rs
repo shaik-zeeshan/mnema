@@ -2520,13 +2520,13 @@ where
         });
     };
 
+    let system_audio_writer_paused = runtime.inactivity.is_system_audio_paused();
     let screen_sources = CaptureSources {
         screen: true,
         microphone: false,
-        system_audio: requested_sources.system_audio
-            && !runtime.inactivity.is_system_audio_paused(),
+        system_audio: requested_sources.system_audio,
     };
-    let system_audio_planner = if screen_sources.system_audio {
+    let system_audio_planner = if screen_sources.system_audio && !system_audio_writer_paused {
         ensure_system_audio_planner_for_runtime(runtime, "recovering after system wake")?
     } else {
         None
@@ -2615,8 +2615,7 @@ where
     let next_index = next_emitted_segment_index(runtime.current_segment_index);
     let segment_dir = screen_planner.segment_dir(next_index);
     let screen_output_file = screen_planner.segment_screen_output(next_index);
-    let system_audio_output_path = screen_sources
-        .system_audio
+    let system_audio_output_path = (screen_sources.system_audio && !system_audio_writer_paused)
         .then(|| {
             system_audio_planner
                 .as_ref()
