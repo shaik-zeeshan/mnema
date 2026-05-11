@@ -931,14 +931,6 @@ fn push_exclusions<'a>(query: &mut QueryBuilder<'a, Sqlite>, context: &'a Retent
         }
         separated.push_unseparated(")");
     }
-    if !context.active_source_session_ids.is_empty() {
-        query.push(" AND capture_segments.source_session_id NOT IN (");
-        let mut separated = query.separated(", ");
-        for id in &context.active_source_session_ids {
-            separated.push_bind(id);
-        }
-        separated.push_unseparated(")");
-    }
 }
 
 async fn count_by_capture_segments(pool: &SqlitePool, table: &str, ids: &[i64]) -> Result<i64> {
@@ -1206,19 +1198,31 @@ async fn count_running_blocked_segments(
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT COUNT(DISTINCT capture_segments.id) AS count
          FROM capture_segments
-         LEFT JOIN frames ON frames.capture_segment_id = capture_segments.id
-         LEFT JOIN audio_segments ON audio_segments.capture_segment_id = capture_segments.id
-         INNER JOIN processing_jobs ON processing_jobs.status = ",
-    );
-    query.push_bind(ProcessingJobStatus::Running.as_str());
-    query.push(
-        " AND ((processing_jobs.subject_type = 'frame' AND processing_jobs.subject_id = frames.id)
-              OR (processing_jobs.subject_type = 'audio_segment' AND processing_jobs.subject_id = audio_segments.id))
          WHERE capture_segments.ended_at < ",
     );
     query.push_bind(cutoff);
     query.push(" AND capture_segments.status != 'recording'");
     push_exclusions(&mut query, context);
+    query.push(
+        " AND (
+            EXISTS (
+                SELECT 1 FROM processing_jobs
+                WHERE status = ",
+    );
+    query.push_bind(ProcessingJobStatus::Running.as_str());
+    query.push(
+        "         AND ((subject_type = 'frame' AND subject_id IN (SELECT id FROM frames WHERE frames.capture_segment_id = capture_segments.id))
+                  OR (subject_type = 'audio_segment' AND subject_id IN (SELECT id FROM audio_segments WHERE audio_segments.capture_segment_id = capture_segments.id)))
+            )
+            OR EXISTS (
+                SELECT 1 FROM frames
+                INNER JOIN frame_batches ON frame_batches.id = frames.frame_batch_id
+                INNER JOIN background_jobs ON background_jobs.id = frame_batches.finalize_job_id
+                WHERE frames.capture_segment_id = capture_segments.id
+                  AND background_jobs.status = 'running'
+            )
+        )",
+    );
     let count = query.build().fetch_one(pool).await?.get("count");
     Ok(count)
 }
@@ -1493,7 +1497,7 @@ mod tests {
                 "2026-05-02T00:00:00Z",
                 &RetentionCleanupContext {
                     active_capture_segment_ids: vec![2],
-                    active_source_session_ids: Vec::new(),
+                    active_source_session_ids: vec!["screen-source-1".to_string()],
                     save_directory: None,
                 },
             )
@@ -1806,6 +1810,61 @@ mod tests {
                         active_source_session_ids: Vec::new(),
                         save_directory: None,
                     },
+                )
+                .await
+                .expect("cleanup preview should succeed");
+
+            assert_eq!(summary.eligible_capture_segments, 0);
+            assert_eq!(summary.skipped_running_jobs, 1);
+        });
+    }
+
+    #[test]
+    fn cleanup_counts_running_finalize_jobs_as_running_blockers() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index, started_at, ended_at, status
+                 ) VALUES (
+                    1, 'capture-1', 'screen', 'expired-source', 1,
+                    '2026-05-01T00:00:00Z', '2026-05-01T00:05:00Z', 'completed'
+                 )",
+            )
+            .execute(&pool)
+            .await
+            .expect("segment should insert");
+            sqlx::query("INSERT INTO background_jobs (id, status) VALUES (10, 'running')")
+                .execute(&pool)
+                .await
+                .expect("background job should insert");
+            sqlx::query("INSERT INTO frame_batches (id, finalize_job_id) VALUES (20, 10)")
+                .execute(&pool)
+                .await
+                .expect("frame batch should insert");
+            sqlx::query(
+                "INSERT INTO frames (id, session_id, file_path, captured_at, capture_segment_id, frame_batch_id)
+                 VALUES (30, 'expired-source', '/tmp/expired.jpg', '2026-05-01T00:01:00Z', 1, 20)",
+            )
+            .execute(&pool)
+            .await
+            .expect("frame should insert");
+
+            let summary = CaptureRetentionStore::new(pool)
+                .preview_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext::default(),
                 )
                 .await
                 .expect("cleanup preview should succeed");
