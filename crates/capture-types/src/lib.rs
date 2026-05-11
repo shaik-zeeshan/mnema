@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn recording_settings_serializes_microphone_vad_adapter_as_camel_case_field() {
+    fn recording_settings_serializes_audio_speech_detection_and_omits_legacy_vad_adapter() {
         let settings = RecordingSettings {
             capture_screen: true,
             capture_microphone: true,
@@ -158,6 +158,7 @@ mod tests {
             ocr: default_ocr_settings(),
             transcription: default_audio_transcription_settings(),
             speaker_analysis: default_speaker_analysis_settings(),
+            audio_speech_detection: default_audio_speech_detection_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,
@@ -168,7 +169,8 @@ mod tests {
 
         let json = serde_json::to_value(&settings).expect("settings should serialize");
 
-        assert_eq!(json["microphoneVadAdapter"], "webrtc");
+        assert_eq!(json["audioSpeechDetection"]["detector"], "silero");
+        assert!(json.get("microphoneVadAdapter").is_none());
     }
 
     #[test]

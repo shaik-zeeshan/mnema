@@ -1105,10 +1105,13 @@ fn system_audio_speech_admission_for_app_handle(
     let payload = ::app_infra::SystemAudioSpeechActivityJobPayload {
         detector: settings.audio_speech_detection.detector,
         transcription_payload,
-        speaker_analysis_payload: speaker_analysis_admission_for_app_handle(app_handle).payload_json,
+        speaker_analysis_payload: speaker_analysis_admission_for_app_handle(app_handle)
+            .payload_json,
     };
     match serde_json::to_string(&payload) {
-        Ok(payload_json) => ::app_infra::SystemAudioSpeechActivityAdmission::available(payload_json),
+        Ok(payload_json) => {
+            ::app_infra::SystemAudioSpeechActivityAdmission::available(payload_json)
+        }
         Err(error) => {
             super::debug_log::log(format!(
                 "failed to serialize system-audio speech admission payload: {error}"
@@ -1215,7 +1218,8 @@ pub(super) fn persist_committed_audio_segments(
         let mut persisted_any = false;
         let transcription_admission = transcription_admission_for_app_handle(&app_handle);
         let speaker_admission = speaker_analysis_admission_for_app_handle(&app_handle);
-        let system_audio_speech_admission = system_audio_speech_admission_for_app_handle(&app_handle);
+        let system_audio_speech_admission =
+            system_audio_speech_admission_for_app_handle(&app_handle);
         for segment in segments {
             match infra
                 .upsert_audio_segment_and_maybe_enqueue_processing(

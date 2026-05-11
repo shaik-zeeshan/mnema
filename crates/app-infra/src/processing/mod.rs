@@ -23,12 +23,12 @@ pub use runtime::{ProcessingJobRunOutcome, ProcessingRuntime};
 pub use speaker_analysis::{
     SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend, HELPER_TIMEOUT_SECONDS_OPTION,
 };
-pub use system_audio_speech_activity::{
-    SystemAudioSpeechActivityJobPayload, SystemAudioSpeechActivityProcessorBackend,
-    SystemAudioSpeechActivityResult,
-};
 pub use store::{
     FocusedFrameWindow, FrameProcessingJob, PersonProfile, ProcessingJobCompletion,
     ProcessingModelCleanupLock, ProcessingStore, SegmentWorkspaceOcrReference, SpeakerClusterView,
     SpeakerTurnView, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
+};
+pub use system_audio_speech_activity::{
+    SystemAudioSpeechActivityJobPayload, SystemAudioSpeechActivityProcessorBackend,
+    SystemAudioSpeechActivityResult,
 };

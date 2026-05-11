@@ -2904,7 +2904,9 @@ fn system_audio_speech_admission_for_current_settings(
     };
 
     match serde_json::to_string(&payload) {
-        Ok(payload_json) => ::app_infra::SystemAudioSpeechActivityAdmission::available(payload_json),
+        Ok(payload_json) => {
+            ::app_infra::SystemAudioSpeechActivityAdmission::available(payload_json)
+        }
         Err(error) => {
             crate::native_capture::debug_log::log_error(format!(
                 "failed to serialize system-audio speech activity payload: {error}"

@@ -1228,7 +1228,9 @@ fn start_native_capture_inner(
                 );
                 return Err(CaptureErrorResponse {
                     code: "speaker_analysis_model_unavailable".to_string(),
-                    message: format!("failed to verify speaker analysis model availability: {error}"),
+                    message: format!(
+                        "failed to verify speaker analysis model availability: {error}"
+                    ),
                 });
             }
         }

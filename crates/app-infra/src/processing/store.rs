@@ -9,6 +9,7 @@ use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, T
 
 use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
 
+use super::SystemAudioSpeechActivityJobPayload;
 use super::{
     AudioTranscriptionJobPayload, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary,
     NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingResult,
@@ -16,7 +17,6 @@ use super::{
     AUDIO_TRANSCRIPTION_PROCESSOR, OCR_PROCESSOR, SPEAKER_ANALYSIS_PROCESSOR,
     SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
-use super::SystemAudioSpeechActivityJobPayload;
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
     "processing job was marked failed during startup recovery after the app shut down while it was running";
@@ -1289,7 +1289,11 @@ impl ProcessingStore {
                 .structured_payload_json
                 .as_deref()
                 .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
-                .and_then(|payload| payload.get("speechDetected").and_then(|value| value.as_bool()))
+                .and_then(|payload| {
+                    payload
+                        .get("speechDetected")
+                        .and_then(|value| value.as_bool())
+                })
                 .unwrap_or(false);
             if speech_detected {
                 let payload = SystemAudioSpeechActivityJobPayload::from_job(&job)?;

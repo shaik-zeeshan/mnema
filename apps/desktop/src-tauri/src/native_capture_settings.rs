@@ -1,6 +1,6 @@
 use capture_types::{
-    default_appearance, default_audio_transcription_settings, default_developer_options_enabled,
-    default_audio_speech_detection_settings,
+    default_appearance, default_audio_speech_detection_settings,
+    default_audio_transcription_settings, default_developer_options_enabled,
     default_follow_timeline_live, default_idle_timeout_seconds,
     default_microphone_activity_sensitivity, default_native_capture_debug_logging_enabled,
     default_ocr_settings, default_ocr_tesseract_char_whitelist,
@@ -8,12 +8,11 @@ use capture_types::{
     default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
     default_preview_cache_ttl_seconds, default_speaker_analysis_model_id,
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
-    default_system_audio_activity_sensitivity, default_video_bitrate, AudioTranscriptionProvider,
-    AudioSpeechDetectionSettings, AudioSpeechDetector, AudioTranscriptionSettings,
+    default_system_audio_activity_sensitivity, default_video_bitrate, AudioSpeechDetectionSettings,
+    AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
-    SpeakerAnalysisSettings, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
-    VideoBitrateSettings,
+    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
+    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -807,6 +806,7 @@ pub(crate) fn persist_recording_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use capture_types::default_inactivity_activity_mode;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1012,6 +1012,7 @@ mod tests {
                 ocr: default_ocr_settings(),
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
+                audio_speech_detection: default_audio_speech_detection_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1065,6 +1066,7 @@ mod tests {
                 ocr,
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
+                audio_speech_detection: default_audio_speech_detection_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1134,6 +1136,7 @@ mod tests {
                 ocr: ocr_settings,
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
+                audio_speech_detection: default_audio_speech_detection_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1177,6 +1180,7 @@ mod tests {
                 ocr: default_ocr_settings(),
                 transcription,
                 speaker_analysis: default_speaker_analysis_settings(),
+                audio_speech_detection: default_audio_speech_detection_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1270,6 +1274,7 @@ mod tests {
             ocr: default_ocr_settings(),
             transcription: default_audio_transcription_settings(),
             speaker_analysis: default_speaker_analysis_settings(),
+            audio_speech_detection: default_audio_speech_detection_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

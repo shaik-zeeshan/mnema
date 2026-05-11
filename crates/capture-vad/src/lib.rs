@@ -2,8 +2,8 @@ mod silero_vad;
 mod webrtc_vad;
 
 use self::webrtc_vad::WebrtcVadAdapter;
-use capture_types::MicrophoneVadAdapter;
 pub use capture_types::AudioSpeechDetector;
+use capture_types::MicrophoneVadAdapter;
 use silero_vad::{SileroVadAdapter, SileroVadLoadError};
 use std::collections::HashSet;
 use std::fmt;
@@ -373,12 +373,14 @@ pub struct AudioSpeechDetectorRuntime {
 impl AudioSpeechDetectorRuntime {
     pub fn new(configured_detector: AudioSpeechDetector) -> Result<Self, MicrophoneVadError> {
         let silero_adapter = match configured_detector {
-            AudioSpeechDetector::Silero => Some(SileroVadAdapter::load_default().map_err(
-                |error| MicrophoneVadError::AdapterUnavailable {
-                    adapter: EffectiveMicrophoneVadAdapter::Silero,
-                    reason: error.to_string(),
-                },
-            )?),
+            AudioSpeechDetector::Silero => {
+                Some(SileroVadAdapter::load_default().map_err(|error| {
+                    MicrophoneVadError::AdapterUnavailable {
+                        adapter: EffectiveMicrophoneVadAdapter::Silero,
+                        reason: error.to_string(),
+                    }
+                })?)
+            }
             AudioSpeechDetector::Webrtc | AudioSpeechDetector::Off => None,
         };
 
