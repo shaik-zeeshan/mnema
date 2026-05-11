@@ -247,6 +247,10 @@ impl AppInfra {
         self.database.pool()
     }
 
+    pub fn base_dir(&self) -> &Path {
+        self.database.base_dir()
+    }
+
     #[cfg(test)]
     pub(crate) fn jobs(&self) -> &JobStore {
         &self.jobs
@@ -1738,6 +1742,18 @@ mod tests {
                 .await
                 .expect("database should re-initialize");
             assert!(!second.migrations_ran());
+        });
+    }
+
+    #[test]
+    fn app_infra_reports_initialized_base_dir() {
+        run_async_test(async {
+            let dir = TestDir::new("base-dir");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            assert_eq!(infra.base_dir(), dir.path());
         });
     }
 

@@ -3192,8 +3192,7 @@ fn spawn_retention_cleanup_worker(
                 .lock()
                 .map(|guard| guard.settings.retention_policy)
                 .unwrap_or(SettingsRetentionPolicy::Never);
-            let context =
-                retention_context_for_app(&app_handle, &infra, settings_state.inner()).await;
+            let context = retention_context_for_app(&app_handle, &infra).await;
             let _ = infra
                 .capture_retention()
                 .retry_pending_file_tombstones(&context)
@@ -3656,12 +3655,8 @@ fn active_capture_segment_refs_for_sources(
 async fn retention_context_for_app(
     app_handle: &tauri::AppHandle,
     infra: &::app_infra::AppInfra,
-    settings: &crate::native_capture::RecordingSettingsState,
 ) -> ::app_infra::RetentionCleanupContext {
-    let save_directory = settings
-        .lock()
-        .ok()
-        .map(|guard| guard.settings.save_directory.clone());
+    let save_directory = Some(infra.base_dir().display().to_string());
     let mut active_capture_segment_refs = Vec::new();
     if let Some(state) = app_handle.try_state::<crate::native_capture::NativeCaptureState>() {
         if let Ok(lifecycle) = state.lock() {
@@ -3726,14 +3721,7 @@ pub async fn preview_retention_cleanup(
 ) -> Result<::app_infra::RetentionCleanupSummary, String> {
     let policy =
         retention_policy_from_settings(settings, request.and_then(|request| request.policy));
-    let context = retention_context_for_app(
-        &app_handle,
-        &infra,
-        app_handle
-            .state::<crate::native_capture::RecordingSettingsState>()
-            .inner(),
-    )
-    .await;
+    let context = retention_context_for_app(&app_handle, &infra).await;
     Arc::clone(&*infra)
         .capture_retention()
         .preview_cleanup(
@@ -3752,14 +3740,7 @@ pub async fn run_retention_cleanup_now(
     settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
 ) -> Result<::app_infra::RetentionCleanupSummary, String> {
     let policy = retention_policy_from_settings(settings, None);
-    let context = retention_context_for_app(
-        &app_handle,
-        &infra,
-        app_handle
-            .state::<crate::native_capture::RecordingSettingsState>()
-            .inner(),
-    )
-    .await;
+    let context = retention_context_for_app(&app_handle, &infra).await;
     let summary = Arc::clone(&*infra)
         .capture_retention()
         .run_cleanup(
