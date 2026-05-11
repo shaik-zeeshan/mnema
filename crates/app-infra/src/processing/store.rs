@@ -2745,7 +2745,14 @@ async fn clear_audio_transcription_and_speaker_analysis_for_audio_segment(
 ) -> Result<()> {
     sqlx::query(
         "DELETE FROM processing_results \
-         WHERE subject_type = ?1 AND subject_id = ?2 AND processor IN (?3, ?4)",
+         WHERE job_id IN (\
+            SELECT id \
+            FROM processing_jobs \
+            WHERE subject_type = ?1 \
+              AND subject_id = ?2 \
+              AND processor IN (?3, ?4) \
+              AND status IN ('completed', 'failed')\
+         )",
     )
     .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
     .bind(audio_segment_id)
@@ -2756,7 +2763,10 @@ async fn clear_audio_transcription_and_speaker_analysis_for_audio_segment(
 
     sqlx::query(
         "DELETE FROM processing_jobs \
-         WHERE subject_type = ?1 AND subject_id = ?2 AND processor IN (?3, ?4)",
+         WHERE subject_type = ?1 \
+           AND subject_id = ?2 \
+           AND processor IN (?3, ?4) \
+           AND status IN ('completed', 'failed')",
     )
     .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
     .bind(audio_segment_id)

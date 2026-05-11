@@ -427,8 +427,6 @@ impl AudioSpeechDetectorRuntime {
             let remaining_samples = pcm.len() - processed_samples;
             let actual_frame_samples = remaining_samples.min(frame_samples);
             let frame_start_ms = (processed_samples as u64 * 1_000) / target_rate_hz as u64;
-            let frame_end_ms =
-                ((processed_samples + actual_frame_samples) as u64 * 1_000) / target_rate_hz as u64;
             let raw_chunk = &pcm[processed_samples..processed_samples + actual_frame_samples];
             let chunk = match self.configured_detector {
                 AudioSpeechDetector::Webrtc if actual_frame_samples < frame_samples => {
@@ -464,14 +462,12 @@ impl AudioSpeechDetectorRuntime {
                 AudioSpeechDetector::Off => false,
             };
 
-            if speech {
-                active_start_ms.get_or_insert(frame_start_ms);
-            } else if let Some(start_ms) = active_start_ms.take() {
-                speech_ranges.push(SpeechRangeMs {
-                    start_ms,
-                    end_ms: frame_end_ms,
-                });
-            }
+            record_speech_frame_decision(
+                &mut speech_ranges,
+                &mut active_start_ms,
+                speech,
+                frame_start_ms,
+            );
             processed_samples += actual_frame_samples;
         }
 
@@ -490,6 +486,22 @@ impl AudioSpeechDetectorRuntime {
             processed_duration_ms: (samples.len() as u64 * 1_000) / sample_rate_hz.max(1) as u64,
             timing_reliable: true,
         })
+    }
+}
+
+fn record_speech_frame_decision(
+    speech_ranges: &mut Vec<SpeechRangeMs>,
+    active_start_ms: &mut Option<u64>,
+    speech: bool,
+    frame_start_ms: u64,
+) {
+    if speech {
+        active_start_ms.get_or_insert(frame_start_ms);
+    } else if let Some(start_ms) = active_start_ms.take() {
+        speech_ranges.push(SpeechRangeMs {
+            start_ms,
+            end_ms: frame_start_ms,
+        });
     }
 }
 
@@ -830,6 +842,24 @@ mod tests {
             }]
         );
         assert_eq!(outcome.processed_duration_ms, 20);
+    }
+
+    #[test]
+    fn speech_range_ends_at_first_non_speech_frame_start() {
+        let mut speech_ranges = Vec::new();
+        let mut active_start_ms = None;
+
+        record_speech_frame_decision(&mut speech_ranges, &mut active_start_ms, true, 0);
+        record_speech_frame_decision(&mut speech_ranges, &mut active_start_ms, false, 30);
+
+        assert_eq!(active_start_ms, None);
+        assert_eq!(
+            speech_ranges,
+            vec![SpeechRangeMs {
+                start_ms: 0,
+                end_ms: 30
+            }]
+        );
     }
 
     #[test]
