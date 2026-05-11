@@ -316,7 +316,9 @@ fn open_or_focus_settings_window_to_tab(app: &tauri::AppHandle, tab: &str) -> Re
     let path = settings_tab_path(tab)?;
     let config = AppWindow::Settings.config();
     let tab = normalize_settings_tab(tab).ok_or_else(|| format!("unknown settings tab: {tab}"))?;
-    let payload = OpenSettingsTabPayload { tab: tab.to_string() };
+    let payload = OpenSettingsTabPayload {
+        tab: tab.to_string(),
+    };
 
     if let Some(existing) = app.get_webview_window(config.label) {
         let _ = existing.show();
@@ -596,7 +598,10 @@ mod tests {
             settings_tab_path("transcription").as_deref(),
             Ok("/settings?tab=processing")
         );
-        assert_eq!(settings_tab_path("audio").as_deref(), Ok("/settings?tab=audio"));
+        assert_eq!(
+            settings_tab_path("audio").as_deref(),
+            Ok("/settings?tab=audio")
+        );
         assert!(settings_tab_path("../developer").is_err());
     }
 

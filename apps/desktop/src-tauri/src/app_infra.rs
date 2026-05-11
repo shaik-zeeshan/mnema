@@ -68,15 +68,35 @@ impl std::error::Error for AppInfraInitializeError {}
 
 #[derive(Debug)]
 enum AppInfraDirectoryLockError {
-    Contended { path: PathBuf, source: std::io::Error },
+    Contended {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     Other(String),
+}
+
+impl AppInfraDirectoryLockError {
+    fn from_try_lock_error(path: PathBuf, source: std::io::Error) -> Self {
+        if is_app_infra_lock_contended_error(&source) {
+            Self::Contended { path, source }
+        } else {
+            Self::Other(format!(
+                "failed to acquire app infrastructure lock at {}: {source}",
+                path.display()
+            ))
+        }
+    }
 }
 
 impl std::fmt::Display for AppInfraDirectoryLockError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Contended { path, source } => {
-                write!(f, "app infrastructure lock is already held at {}: {source}", path.display())
+                write!(
+                    f,
+                    "app infrastructure lock is already held at {}: {source}",
+                    path.display()
+                )
             }
             Self::Other(message) => f.write_str(message),
         }
@@ -84,6 +104,17 @@ impl std::fmt::Display for AppInfraDirectoryLockError {
 }
 
 impl std::error::Error for AppInfraDirectoryLockError {}
+
+fn is_app_infra_lock_contended_error(source: &std::io::Error) -> bool {
+    let contended = fs2::lock_contended_error();
+    match (source.raw_os_error(), contended.raw_os_error()) {
+        (Some(source_code), Some(contended_code)) => source_code == contended_code,
+        _ => {
+            source.kind() == std::io::ErrorKind::WouldBlock
+                && contended.kind() == std::io::ErrorKind::WouldBlock
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct BackgroundWorkersControl {
@@ -2453,11 +2484,9 @@ impl AppInfraDirectoryLock {
             ))
         })?;
 
-        file.try_lock_exclusive()
-            .map_err(|source| AppInfraDirectoryLockError::Contended {
-                path: path.clone(),
-                source,
-            })?;
+        file.try_lock_exclusive().map_err(|source| {
+            AppInfraDirectoryLockError::from_try_lock_error(path.clone(), source)
+        })?;
 
         Ok(Self { _file: file, path })
     }
@@ -4860,15 +4889,44 @@ mod tests {
             .expect("first app infra directory lock should succeed");
 
         let mapped = AppInfraDirectoryLock::acquire(dir.path()).map_err(|error| match error {
-            AppInfraDirectoryLockError::Contended { .. } => {
-                AppInfraInitializeError::AlreadyRunning
-            }
+            AppInfraDirectoryLockError::Contended { .. } => AppInfraInitializeError::AlreadyRunning,
             AppInfraDirectoryLockError::Other(message) => AppInfraInitializeError::Other(message),
         });
 
         assert!(matches!(
             mapped,
             Err(AppInfraInitializeError::AlreadyRunning)
+        ));
+    }
+
+    #[test]
+    fn app_infra_directory_lock_non_contention_error_maps_to_other() {
+        let path = PathBuf::from("/tmp/mnema-lock-test/.app-infra.lock");
+        let error = AppInfraDirectoryLockError::from_try_lock_error(
+            path.clone(),
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+        );
+
+        assert!(matches!(
+            error,
+            AppInfraDirectoryLockError::Other(message)
+                if message.contains("failed to acquire app infrastructure lock")
+                    && message.contains(&path.display().to_string())
+        ));
+    }
+
+    #[test]
+    fn app_infra_directory_lock_contended_error_maps_to_contended() {
+        let path = PathBuf::from("/tmp/mnema-lock-test/.app-infra.lock");
+        let error = AppInfraDirectoryLockError::from_try_lock_error(
+            path.clone(),
+            fs2::lock_contended_error(),
+        );
+
+        assert!(matches!(
+            error,
+            AppInfraDirectoryLockError::Contended { path: error_path, .. }
+                if error_path == path
         ));
     }
 
