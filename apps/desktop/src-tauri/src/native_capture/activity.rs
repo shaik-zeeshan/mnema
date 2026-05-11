@@ -92,13 +92,19 @@ fn process_pending_microphone_vad_frames(runtime: &mut NativeCaptureRuntime) {
         match runtime.microphone_vad.process_pcm_frame(vad_frame) {
             Ok(outcome) => {
                 if outcome.vad_speech_detected {
-                    microphone_capture::record_microphone_vad_tail_speech();
+                    microphone_capture::record_microphone_vad_speech_event(
+                        microphone_capture::MicrophoneVadSpeechEvent {
+                            media_start_secs: frame.media_start_secs,
+                            media_end_secs: frame.media_end_secs,
+                        },
+                    );
                 }
             }
             Err(error) => {
                 super::debug_log::log_warn(format!(
                     "failed to process microphone VAD PCM frame: {error}"
                 ));
+                microphone_capture::disable_microphone_vad_boundary_trim_for_current_output();
                 break;
             }
         }

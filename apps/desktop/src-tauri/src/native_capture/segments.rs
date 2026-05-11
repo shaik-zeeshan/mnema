@@ -296,6 +296,83 @@ pub(super) fn empty_output_files() -> CaptureOutputFiles {
 }
 
 #[cfg(target_os = "macos")]
+pub(super) fn apply_microphone_output_finalization(
+    output_files: Option<&mut CaptureOutputFiles>,
+    finalization: &microphone_capture::MicrophoneOutputFinalization,
+    source_sessions: Option<&SourceSessions>,
+    schedule: Option<&SegmentSchedule>,
+    segment_index: u64,
+) {
+    let Some(output_files) = output_files else {
+        return;
+    };
+
+    let Some(mut output_file) = finalization.output_file.clone() else {
+        output_files.microphone_file = None;
+        output_files.microphone_files.clear();
+        return;
+    };
+
+    if finalization.trim_start_offset_ms > 0 {
+        if let (Some(source_session), Some(schedule)) = (
+            source_sessions.and_then(|sessions| sessions.microphone.as_ref()),
+            schedule,
+        ) {
+            let base_started_at = audio_segment_started_at_unix_ms_for_file(
+                source_session,
+                segment_index,
+                schedule,
+                &output_file,
+            );
+            let shifted_started_at =
+                base_started_at.saturating_add(finalization.trim_start_offset_ms);
+            if let Some(shifted) =
+                timestamped_microphone_output_file(&output_file, shifted_started_at)
+            {
+                if shifted != output_file {
+                    if let Err(error) = std::fs::rename(&output_file, &shifted) {
+                        super::debug_log::log(format!(
+                            "failed to rename trimmed microphone output {} to {}: {}",
+                            output_file, shifted, error
+                        ));
+                    } else {
+                        output_file = shifted;
+                    }
+                }
+            }
+        }
+    }
+
+    output_files.microphone_file = Some(output_file.clone());
+    output_files.microphone_files.clear();
+    output_files.microphone_files.push(output_file);
+}
+
+#[cfg(target_os = "macos")]
+fn timestamped_microphone_output_file(file_path: &str, started_at_unix_ms: u64) -> Option<String> {
+    let path = Path::new(file_path);
+    let parent = path.parent();
+    let stem = path.file_stem()?.to_str()?;
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    let base_stem = stem
+        .rsplit_once('-')
+        .filter(|(_, suffix)| suffix.parse::<u64>().is_ok())
+        .map(|(base, _)| base)
+        .unwrap_or(stem);
+    let file_name = match extension {
+        Some(extension) => format!("{base_stem}-{started_at_unix_ms}.{extension}"),
+        None => format!("{base_stem}-{started_at_unix_ms}"),
+    };
+    Some(
+        parent
+            .map(|parent| parent.join(&file_name))
+            .unwrap_or_else(|| PathBuf::from(file_name))
+            .to_string_lossy()
+            .to_string(),
+    )
+}
+
+#[cfg(target_os = "macos")]
 fn audio_only_output_files(
     output_files: Option<&CaptureOutputFiles>,
     include_microphone: bool,
@@ -1144,7 +1221,7 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
     let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
     let mut finalized_microphone_outputs = None;
     if let Some(session) = runtime.active_microphone_session.as_mut() {
-        session.pause_output_file_for_inactivity_with_tail_activity_mode(
+        let finalization = session.pause_output_file_for_inactivity_with_tail_activity_mode(
             runtime.inactivity.idle_timeout_seconds,
             runtime.inactivity.microphone_activity_threshold(),
             microphone_tail_activity_mode,
@@ -1154,10 +1231,20 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
             let mut microphone_outputs = empty_output_files();
             microphone_outputs.microphone_file = output_files.microphone_file.clone();
             microphone_outputs.microphone_files = output_files.microphone_files.clone();
+            apply_microphone_output_finalization(
+                Some(&mut microphone_outputs),
+                &finalization,
+                runtime.source_sessions.as_ref(),
+                runtime.segment_schedule.as_ref(),
+                runtime.current_segment_index,
+            );
             finalize_capture_outputs(
                 Some(&mut microphone_outputs),
                 None,
-                microphone_recording_file.as_deref(),
+                finalization
+                    .output_file
+                    .as_deref()
+                    .or(microphone_recording_file.as_deref()),
                 None,
                 Some(&CaptureSources {
                     screen: false,
@@ -3047,8 +3134,17 @@ pub(super) fn stop_capture_runtime(
         let mut first_error: Option<CaptureErrorResponse> = None;
 
         if let Some(session) = runtime.active_microphone_session.as_mut() {
-            if let Err(error) = session.stop() {
-                first_error = Some(error);
+            match session.stop_returning_finalization() {
+                Ok(finalization) => apply_microphone_output_finalization(
+                    current_segment_output_files.as_mut(),
+                    &finalization,
+                    runtime.source_sessions.as_ref(),
+                    runtime.segment_schedule.as_ref(),
+                    runtime.current_segment_index,
+                ),
+                Err(error) => {
+                    first_error = Some(error);
+                }
             }
             runtime.active_microphone_session = None;
         }

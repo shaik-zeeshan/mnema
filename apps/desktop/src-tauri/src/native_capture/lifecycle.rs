@@ -15,15 +15,15 @@ use super::runtime::{
     stopped_session_from_runtime, NativeCaptureRuntime,
 };
 use super::segments::{
-    cleanup_failed_segment_dirs, create_segment_output_dirs, empty_output_files,
-    handle_inactivity_resume_error, pause_microphone_for_inactivity_with_app_handle,
-    pause_runtime_for_inactivity_with_app_handle, pause_screen_for_inactivity_with_app_handle,
-    pause_system_audio_for_inactivity_with_app_handle, plan_live_rotation_segment,
-    reanchor_active_segment_timing, recover_from_segment_finalize_error,
-    recover_screen_capture_after_wake, resume_microphone_from_inactivity,
-    resume_runtime_from_inactivity, resume_screen_from_inactivity,
-    resume_system_audio_from_inactivity, start_capture_runtime, start_segment,
-    stop_active_sessions_after_failure, stop_capture_runtime,
+    apply_microphone_output_finalization, cleanup_failed_segment_dirs, create_segment_output_dirs,
+    empty_output_files, handle_inactivity_resume_error,
+    pause_microphone_for_inactivity_with_app_handle, pause_runtime_for_inactivity_with_app_handle,
+    pause_screen_for_inactivity_with_app_handle, pause_system_audio_for_inactivity_with_app_handle,
+    plan_live_rotation_segment, reanchor_active_segment_timing,
+    recover_from_segment_finalize_error, recover_screen_capture_after_wake,
+    resume_microphone_from_inactivity, resume_runtime_from_inactivity,
+    resume_screen_from_inactivity, resume_system_audio_from_inactivity, start_capture_runtime,
+    start_segment, stop_active_sessions_after_failure, stop_capture_runtime,
 };
 use capture_runtime::RuntimeSignal;
 use capture_types::{
@@ -609,22 +609,34 @@ impl RecordingLifecycle {
                         .microphone_file(next_index)
                         .to_string_lossy()
                         .to_string();
-                    if session.rotate_output_file(&microphone_output_file).is_err() {
-                        cleanup_failed_segment_dirs(
-                            &segment_dir,
-                            microphone_audio_dir,
-                            system_audio_dir,
-                        );
-                        cleanup_unusable_segment_artifacts(
-                            Some(&next_segment_outputs),
-                            next_recording_file.as_deref(),
-                            next_microphone_recording_file.as_deref(),
-                            next_system_audio_recording_file.as_deref(),
-                        );
-                        stop_active_sessions_after_failure(&mut self.runtime);
-                        mark_runtime_session_failed(&mut self.runtime);
-                        return TickOutcome::StopLoop;
-                    }
+                    let mic_finalization = match session
+                        .rotate_output_file_returning_finalization(&microphone_output_file)
+                    {
+                        Ok(finalization) => finalization,
+                        Err(_) => {
+                            cleanup_failed_segment_dirs(
+                                &segment_dir,
+                                microphone_audio_dir,
+                                system_audio_dir,
+                            );
+                            cleanup_unusable_segment_artifacts(
+                                Some(&next_segment_outputs),
+                                next_recording_file.as_deref(),
+                                next_microphone_recording_file.as_deref(),
+                                next_system_audio_recording_file.as_deref(),
+                            );
+                            stop_active_sessions_after_failure(&mut self.runtime);
+                            mark_runtime_session_failed(&mut self.runtime);
+                            return TickOutcome::StopLoop;
+                        }
+                    };
+                    apply_microphone_output_finalization(
+                        previous_segment_output_files.as_mut(),
+                        &mic_finalization,
+                        self.runtime.source_sessions.as_ref(),
+                        self.runtime.segment_schedule.as_ref(),
+                        self.runtime.current_segment_index,
+                    );
                     set_current_microphone_output_file(
                         &mut next_segment_outputs,
                         microphone_output_file.clone(),
@@ -640,22 +652,34 @@ impl RecordingLifecycle {
                     .microphone_file(next_index)
                     .to_string_lossy()
                     .to_string();
-                if session.rotate_output_file(&microphone_output_file).is_err() {
-                    cleanup_failed_segment_dirs(
-                        &segment_dir,
-                        microphone_audio_dir,
-                        system_audio_dir,
-                    );
-                    cleanup_unusable_segment_artifacts(
-                        Some(&next_segment_outputs),
-                        next_recording_file.as_deref(),
-                        next_microphone_recording_file.as_deref(),
-                        next_system_audio_recording_file.as_deref(),
-                    );
-                    stop_active_sessions_after_failure(&mut self.runtime);
-                    mark_runtime_session_failed(&mut self.runtime);
-                    return TickOutcome::StopLoop;
-                }
+                let mic_finalization = match session
+                    .rotate_output_file_returning_finalization(&microphone_output_file)
+                {
+                    Ok(finalization) => finalization,
+                    Err(_) => {
+                        cleanup_failed_segment_dirs(
+                            &segment_dir,
+                            microphone_audio_dir,
+                            system_audio_dir,
+                        );
+                        cleanup_unusable_segment_artifacts(
+                            Some(&next_segment_outputs),
+                            next_recording_file.as_deref(),
+                            next_microphone_recording_file.as_deref(),
+                            next_system_audio_recording_file.as_deref(),
+                        );
+                        stop_active_sessions_after_failure(&mut self.runtime);
+                        mark_runtime_session_failed(&mut self.runtime);
+                        return TickOutcome::StopLoop;
+                    }
+                };
+                apply_microphone_output_finalization(
+                    previous_segment_output_files.as_mut(),
+                    &mic_finalization,
+                    self.runtime.source_sessions.as_ref(),
+                    self.runtime.segment_schedule.as_ref(),
+                    self.runtime.current_segment_index,
+                );
                 set_current_microphone_output_file(
                     &mut next_segment_outputs,
                     microphone_output_file.clone(),

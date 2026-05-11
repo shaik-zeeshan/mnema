@@ -16,6 +16,80 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
+pub fn trim_audio_file_to_m4a(
+    input: &str,
+    output: &str,
+    start_secs: f64,
+    end_secs: f64,
+) -> Result<(), CaptureErrorResponse> {
+    if !start_secs.is_finite() || !end_secs.is_finite() || end_secs < start_secs {
+        return Err(CaptureErrorResponse {
+            code: "invalid_audio_trim_range".to_string(),
+            message: "Invalid audio trim range".to_string(),
+        });
+    }
+
+    let duration = (end_secs - start_secs).max(0.0);
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            &format!("{start_secs:.6}"),
+            "-t",
+            &format!("{duration:.6}"),
+            "-i",
+            input,
+            "-vn",
+            "-c:a",
+            "aac",
+            output,
+        ])
+        .status()
+        .map_err(|error| CaptureErrorResponse {
+            code: "audio_trim_unavailable".to_string(),
+            message: format!("Failed to launch audio trim exporter: {error}"),
+        })?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(output);
+        return Err(CaptureErrorResponse {
+            code: "audio_trim_failed".to_string(),
+            message: format!("Audio trim exporter failed with status {status}"),
+        });
+    }
+
+    match validate_trimmed_audio_output_file(output) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(output);
+            Err(error)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn validate_trimmed_audio_output_file(output: &str) -> Result<(), CaptureErrorResponse> {
+    let _autorelease_pool = AutoreleasePoolPage::push();
+    let url = cidre::ns::Url::with_fs_path_str(output, false);
+    let file = cidre::av::AudioFile::open_read(&url).map_err(|error| CaptureErrorResponse {
+        code: "audio_trim_failed".to_string(),
+        message: format!("Trimmed audio output is not readable: {error}"),
+    })?;
+
+    if file.len() <= 0 {
+        return Err(CaptureErrorResponse {
+            code: "audio_trim_failed".to_string(),
+            message: "Trimmed audio output contains no audio frames".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 trait AvailabilityValue<T> {
     fn into_option(self) -> Option<&'static T>;
 }
@@ -1277,6 +1351,37 @@ mod tests {
             channels_per_frame: 2,
             bits_per_channel,
         }
+    }
+
+    fn bytes_from_hex(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("valid hex byte"))
+            .collect()
+    }
+
+    #[test]
+    fn trim_validation_rejects_header_only_m4a_without_audio_tracks() {
+        let path = std::env::temp_dir().join(format!(
+            "mnema-header-only-trim-output-{}.m4a",
+            std::process::id()
+        ));
+        let header_only_m4a = bytes_from_hex(
+            "0000001c667479704d344120000002004d34412069736f6d69736f320000000866726565000000086d646174000000d66d6f6f760000006c6d766864000000000000000000000000000003e800000000000100000100000000000000000000000001000000000000000000000000000000010000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000200000062756474610000005a6d657461000000000000002168646c7200000000000000006d6469726170706c0000000000000000000000002d696c737400000025a9746f6f0000001d6461746100000001000000004c61766636322e31322e313030",
+        );
+        std::fs::write(&path, header_only_m4a).expect("header-only m4a should be written");
+
+        let error = validate_trimmed_audio_output_file(path.to_string_lossy().as_ref())
+            .expect_err("header-only m4a must be rejected");
+
+        assert_eq!(error.code, "audio_trim_failed");
+        assert!(
+            error.message.contains("not readable") || error.message.contains("no audio frames"),
+            "unexpected error: {}",
+            error.message
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
