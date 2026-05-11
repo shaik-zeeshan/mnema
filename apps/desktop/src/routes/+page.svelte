@@ -1077,6 +1077,13 @@
         await applySelectedAudioSpeakerAnalysisJob(id, gen, job);
         return;
       }
+      if (job.processor === SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR) {
+        const shouldContinue = await applySelectedSystemAudioSpeechActivityJob(id, gen, job);
+        if (shouldContinue && selectedAudioTranscriptIsCurrent(id, gen)) {
+          await loadSelectedAudioSegmentTranscript(id, gen);
+        }
+        return;
+      }
       selectedAudioTranscriptStatus = "error";
       selectedAudioTranscriptError = `Unexpected audio processing job: ${job.processor}`;
     } catch (err) {
@@ -1258,6 +1265,63 @@
     }
   }
 
+  async function applySelectedSystemAudioSpeechActivityJob(
+    id: number,
+    gen: number,
+    job: ProcessingJobDto,
+  ): Promise<boolean> {
+    if (!selectedAudioTranscriptIsCurrent(id, gen)) return false;
+
+    if (processingJobIsPending(job)) {
+      selectedAudioTranscriptStatus = "running";
+      selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
+      selectedAudioSpeakerTurns = [];
+      selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
+      selectedAudioSpeakerTurnsNotice = null;
+      selectedAudioTranscriptError = null;
+      scheduleSelectedAudioTranscriptPoll(id, job.id, gen);
+      return false;
+    }
+
+    clearSelectedAudioTranscriptPoll();
+
+    if (job.status === "failed") {
+      selectedAudioTranscriptStatus = "error";
+      selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
+      selectedAudioSpeakerTurns = [];
+      selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
+      selectedAudioSpeakerTurnsNotice = null;
+      selectedAudioTranscriptError = job.lastError ?? "Speech detection failed";
+      return false;
+    }
+
+    const speechResult = await invoke<ProcessingResultDto | null>("get_processing_result", {
+      request: { jobId: job.id } satisfies GetProcessingResultRequest,
+    });
+    if (!selectedAudioTranscriptIsCurrent(id, gen)) return false;
+
+    const speechPayload = parseSystemAudioSpeechActivityPayload(
+      speechResult?.structuredPayloadJson ?? null,
+    );
+    if (speechPayload?.speechDetected === false) {
+      selectedAudioTranscriptStatus = "empty";
+      selectedAudioTranscriptText = null;
+      selectedAudioTranscriptSegments = [];
+      selectedAudioSpeakerTurns = [];
+      selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerAnalysisFailedJobId = null;
+      selectedAudioSpeakerTurnsNotice = null;
+      selectedAudioTranscriptError = null;
+      return false;
+    }
+
+    return true;
+  }
+
   async function applySelectedAudioTranscriptJob(
     id: number,
     gen: number,
@@ -1337,7 +1401,10 @@
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
 
       if (selectedAudioSegment?.source === "systemAudio") {
-        const speechJob = latestProcessingJobForProcessor(jobs, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR);
+        const speechJob = latestProcessingJobForProcessor(
+          jobs,
+          SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+        );
         if (!speechJob) {
           clearSelectedAudioTranscriptPoll();
           selectedAudioTranscriptStatus = "missing";
@@ -1346,28 +1413,12 @@
           selectedAudioTranscriptError = null;
           return;
         }
-        if (processingJobIsPending(speechJob)) {
-          selectedAudioTranscriptStatus = "running";
-          selectedAudioTranscriptText = null;
-          selectedAudioTranscriptSegments = [];
-          selectedAudioTranscriptError = null;
-          scheduleSelectedAudioTranscriptPoll(id, gen, speechJob.id);
-          return;
-        }
-        if (speechJob.status === "failed") {
-          selectedAudioTranscriptStatus = "error";
-          selectedAudioTranscriptError = speechJob.lastError ?? "Speech detection failed";
-          return;
-        }
-        const speechResult = await invoke<ProcessingResultDto | null>("get_processing_result", {
-          request: { jobId: speechJob.id } satisfies GetProcessingResultRequest,
-        });
-        const speechPayload = parseSystemAudioSpeechActivityPayload(speechResult?.structuredPayloadJson ?? null);
-        if (speechPayload?.speechDetected === false) {
-          selectedAudioTranscriptStatus = "empty";
-          selectedAudioTranscriptText = null;
-          selectedAudioTranscriptSegments = [];
-          selectedAudioTranscriptError = null;
+        const shouldContinue = await applySelectedSystemAudioSpeechActivityJob(
+          id,
+          gen,
+          speechJob,
+        );
+        if (!shouldContinue) {
           return;
         }
       }
@@ -1474,6 +1525,17 @@
       selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = null;
       selectedAudioTranscriptRerunError = null;
+      if (result.job.processor === SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR) {
+        const shouldContinue = await applySelectedSystemAudioSpeechActivityJob(
+          id,
+          gen,
+          result.job,
+        );
+        if (shouldContinue && selectedAudioTranscriptIsCurrent(id, gen)) {
+          await loadSelectedAudioSegmentTranscript(id, gen);
+        }
+        return;
+      }
       await applySelectedAudioTranscriptJob(id, gen, result.job);
     } catch (err) {
       if (selectedAudioSegmentId !== id) return;
