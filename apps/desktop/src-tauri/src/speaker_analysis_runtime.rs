@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use speaker_analysis::{
     providers::sherpa_onnx::{analyze_sherpa_request_blocking, SherpaOnnxSpeakerAnalysisProvider},
-    SpeakerAnalysisOutput, SpeakerAnalysisProvider, SpeakerAnalysisRequest, SpeakerAnalysisResult,
+    SpeakerAnalysisError, SpeakerAnalysisOutput, SpeakerAnalysisProvider, SpeakerAnalysisRequest,
+    SpeakerAnalysisResult,
 };
 
 const SPEAKER_ANALYSIS_HELPER_ENV: &str = "MNEMA_SPEAKER_ANALYSIS_HELPER";
@@ -105,19 +106,21 @@ fn run_sherpa_analysis_subprocess(
     models_dir: &Path,
     request: &SpeakerAnalysisRequest,
 ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
-    let current_exe = std::env::current_exe().map_err(|error| {
-        speaker_analysis::SpeakerAnalysisError::Analysis(format!(
-            "failed to locate Mnema executable for speaker-analysis helper: {error}"
-        ))
-    })?;
+    let current_exe =
+        std::env::current_exe().map_err(|error| SpeakerAnalysisError::Subprocess {
+            stage: "locate_executable".to_string(),
+            message: format!(
+                "failed to locate Mnema executable for speaker-analysis helper: {error}"
+            ),
+        })?;
     let payload = SpeakerAnalysisHelperPayload {
         request: request.clone(),
     };
-    let request_json = serde_json::to_vec(&payload).map_err(|error| {
-        speaker_analysis::SpeakerAnalysisError::Analysis(format!(
-            "failed to serialize speaker-analysis helper request: {error}"
-        ))
-    })?;
+    let request_json =
+        serde_json::to_vec(&payload).map_err(|error| SpeakerAnalysisError::Subprocess {
+            stage: "serialize_request".to_string(),
+            message: format!("failed to serialize speaker-analysis helper request: {error}"),
+        })?;
 
     let mut child = Command::new(current_exe)
         .env(SPEAKER_ANALYSIS_HELPER_ENV, "1")
@@ -127,48 +130,70 @@ fn run_sherpa_analysis_subprocess(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| {
-            speaker_analysis::SpeakerAnalysisError::Analysis(format!(
-                "failed to spawn Mnema speaker-analysis helper: {error}"
-            ))
+        .map_err(|error| SpeakerAnalysisError::Subprocess {
+            stage: "spawn_helper".to_string(),
+            message: format!("failed to spawn Mnema speaker-analysis helper: {error}"),
         })?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(&request_json).map_err(|error| {
-            speaker_analysis::SpeakerAnalysisError::Analysis(format!(
-                "failed to write speaker-analysis helper stdin: {error}"
-            ))
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| SpeakerAnalysisError::Subprocess {
+            stage: "write_stdin".to_string(),
+            message: "speaker-analysis helper stdin was unavailable".to_string(),
         })?;
-    }
+    stdin
+        .write_all(&request_json)
+        .map_err(|error| SpeakerAnalysisError::Subprocess {
+            stage: "write_stdin".to_string(),
+            message: format!("failed to write speaker-analysis helper stdin: {error}"),
+        })?;
+    drop(stdin);
 
-    let output = child.wait_with_output().map_err(|error| {
-        speaker_analysis::SpeakerAnalysisError::Analysis(format!(
-            "failed waiting for speaker-analysis helper: {error}"
-        ))
-    })?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| SpeakerAnalysisError::Subprocess {
+            stage: "wait".to_string(),
+            message: format!("failed waiting for speaker-analysis helper: {error}"),
+        })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = trimmed_stderr(&output.stderr);
         #[cfg(unix)]
         {
             use std::os::unix::process::ExitStatusExt;
             if let Some(signal) = output.status.signal() {
-                return Err(speaker_analysis::SpeakerAnalysisError::Analysis(format!(
-                    "speaker-analysis helper crashed with signal {signal}: {stderr}"
-                )));
+                return Err(SpeakerAnalysisError::Subprocess {
+                    stage: "helper_signal".to_string(),
+                    message: format!(
+                        "speaker-analysis helper crashed with signal {signal}: {stderr}"
+                    ),
+                });
             }
         }
 
-        return Err(speaker_analysis::SpeakerAnalysisError::Analysis(format!(
-            "speaker-analysis helper exited with status {:?}: {}",
-            output.status.code(),
-            stderr.trim()
-        )));
+        return Err(SpeakerAnalysisError::Subprocess {
+            stage: "helper_exit".to_string(),
+            message: format!(
+                "speaker-analysis helper exited with status {:?}: {}",
+                output.status.code(),
+                stderr
+            ),
+        });
     }
 
-    serde_json::from_slice(&output.stdout).map_err(|error| {
-        speaker_analysis::SpeakerAnalysisError::Analysis(format!(
-            "failed to parse speaker-analysis helper response: {error}"
-        ))
+    serde_json::from_slice(&output.stdout).map_err(|error| SpeakerAnalysisError::MalformedOutput {
+        message: format!(
+            "stage parse_stdout: failed to parse speaker-analysis helper response: {error}"
+        ),
     })
+}
+
+fn trimmed_stderr(stderr: &[u8]) -> String {
+    let trimmed = String::from_utf8_lossy(stderr).trim().to_string();
+    if trimmed.is_empty() {
+        "<empty stderr>".to_string()
+    } else {
+        trimmed
+    }
 }

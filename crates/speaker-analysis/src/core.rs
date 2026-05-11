@@ -11,6 +11,16 @@ pub enum SpeakerAnalysisError {
     Analysis(String),
     #[error("invalid speaker analysis request: {0}")]
     InvalidRequest(String),
+    #[error("speaker analysis model is missing: {model_kind} model at {path}")]
+    MissingModel { model_kind: String, path: PathBuf },
+    #[error("speaker analysis audio decode failed for {path}: {message}")]
+    AudioDecode { path: PathBuf, message: String },
+    #[error("speaker analysis runtime failed during {stage}: {message}")]
+    Runtime { stage: String, message: String },
+    #[error("speaker analysis subprocess failed during {stage}: {message}")]
+    Subprocess { stage: String, message: String },
+    #[error("speaker analysis helper returned malformed output: {message}")]
+    MalformedOutput { message: String },
 }
 
 pub type SpeakerAnalysisResult<T> = std::result::Result<T, SpeakerAnalysisError>;

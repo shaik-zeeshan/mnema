@@ -45,6 +45,10 @@ _Avoid_: transcript blob, transcription result, speech text
 Background work that recognizes speech for one **Audio Segment**.
 _Avoid_: transcription task, transcript worker item, speech job
 
+**Speaker Analysis Job**:
+Local diarization and optional recognition work for one microphone **Audio Segment**.
+_Avoid_: speaker task, diarization worker item, speaker recognition task
+
 **Audio Transcription Provider**:
 A local speech recognition option used by an **Audio Transcription Job** to produce an **Audio Transcription**.
 _Avoid_: cloud transcription service, transcription engine, ASR backend
@@ -114,6 +118,12 @@ _Avoid_: purge, vacuum, file cleanup
 - A dashboard `timeline_data_changed` retention event should prune loaded rows older than the cutoff and preserve the active retained item when possible.
 - A microphone **Audio Segment** becomes eligible for an **Audio Transcription Job** when the **Recording Lifecycle** commits it, even if the eventual transcript is empty.
 - An **Audio Transcription Job** operates on exactly one **Audio Segment**.
+- A **Speaker Analysis Job** operates on exactly one microphone **Audio Segment**.
+- A **Speaker Analysis Job** can complete successfully with no speaker turns.
+- Too-short, silent, or valid no-speaker audio produces a successful empty speaker-analysis result, not a failed **Speaker Analysis Job**.
+- Missing speaker models, audio decode failures, speaker runtime failures, subprocess failures, malformed helper output, and persistence failures are **Speaker Analysis Job** failures.
+- Successful **Speaker Analysis Job** diagnostics live in result provenance.
+- Failed **Speaker Analysis Job** diagnostics live in `processing_jobs.last_error`.
 - An **Audio Transcription Job** uses exactly one **Audio Transcription Provider**.
 - V1 **Audio Transcription Provider** values are local-only: `local_whisper`, `apple_speech_on_device`, and `parakeet`.
 - V1 `local_whisper` **Audio Transcription Model** choices are `tiny`, `base`, `small`, and `medium`, with `base` as the default.

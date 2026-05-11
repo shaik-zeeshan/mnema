@@ -40,6 +40,8 @@
     ReprocessAudioSegmentTranscriptionRequest,
     ReprocessCapturedFrameOcrRequest,
     PersonProfileDto,
+    SpeakerAnalysisSkipReason,
+    SpeakerAnalysisStructuredPayload,
     SpeakerClusterDto,
     SpeakerTurnDto,
     TranscriptionSegment,
@@ -336,6 +338,7 @@
   let selectedAudioTranscriptSegments = $state<TranscriptionSegment[]>([]);
   let selectedAudioSpeakerTurns = $state<SpeakerTurnDto[]>([]);
   let selectedAudioSpeakerTurnsError = $state<string | null>(null);
+  let selectedAudioSpeakerTurnsNotice = $state<string | null>(null);
   let selectedAudioSpeakerClusters = $state<SpeakerClusterDto[]>([]);
   let selectedAudioSpeakerAnalysisRunning = $state(false);
   let personProfiles = $state<PersonProfileDto[]>([]);
@@ -411,6 +414,7 @@
     speakerActionsOpenIndex = null;
     speakerCorrectionError = null;
     selectedAudioSpeakerTurnsError = null;
+    selectedAudioSpeakerTurnsNotice = null;
     selectedAudioTranscriptModelLabel = null;
     selectedAudioTranscriptError = null;
 
@@ -592,7 +596,11 @@
     speakerNameDrafts = { ...speakerNameDrafts, [group.clusterId]: speakerPersistedName(group) };
   }
 
-  async function loadSelectedAudioSpeakerTurns(id: number, gen: number): Promise<void> {
+  async function loadSelectedAudioSpeakerTurns(
+    id: number,
+    gen: number,
+    speakerJobId: number | null = null,
+  ): Promise<void> {
     try {
       const [turns, profiles] = await Promise.all([
         invoke<SpeakerTurnDto[]>("list_speaker_turns", {
@@ -604,16 +612,25 @@
       selectedAudioSpeakerTurns = turns;
       personProfiles = profiles;
       selectedAudioSpeakerTurnsError = null;
+      selectedAudioSpeakerTurnsNotice = null;
       const sessionId = turns[0]?.sessionId;
       selectedAudioSpeakerClusters = sessionId
         ? await invoke<SpeakerClusterDto[]>("list_speaker_clusters", {
             request: { sessionId },
           })
         : [];
+      if (
+        turns.length === 0 &&
+        speakerJobId != null &&
+        selectedAudioTranscriptStatus === "success"
+      ) {
+        selectedAudioSpeakerTurnsNotice = await loadSpeakerAnalysisEmptyNotice(speakerJobId);
+      }
     } catch (err) {
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerClusters = [];
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
     }
   }
@@ -622,6 +639,33 @@
     const id = selectedAudioSegmentId;
     if (id == null) return;
     await loadSelectedAudioSpeakerTurns(id, selectedAudioTranscriptGeneration);
+  }
+
+  async function loadSpeakerAnalysisEmptyNotice(jobId: number): Promise<string> {
+    const result = await invoke<ProcessingResultDto | null>("get_processing_result", {
+      request: { jobId } satisfies GetProcessingResultRequest,
+    });
+    const skipReason = parseSpeakerAnalysisSkipReason(result?.structuredPayloadJson ?? null);
+    if (skipReason === "too_short") {
+      return "Speaker analysis skipped: audio segment is too short.";
+    }
+    if (skipReason === "silent") {
+      return "Speaker analysis skipped: no speech-level audio detected.";
+    }
+    return "No speaker turns found.";
+  }
+
+  function parseSpeakerAnalysisSkipReason(
+    structuredPayloadJson: string | null,
+  ): SpeakerAnalysisSkipReason | null {
+    if (!structuredPayloadJson) return null;
+    try {
+      const parsed = JSON.parse(structuredPayloadJson) as SpeakerAnalysisStructuredPayload;
+      const skipReason = parsed.metadata?.provenance?.skipReason;
+      return skipReason === "too_short" || skipReason === "silent" ? skipReason : null;
+    } catch {
+      return null;
+    }
   }
 
   function latestProcessingJobForProcessor(
@@ -1002,6 +1046,7 @@
     if (processingJobIsPending(job)) {
       selectedAudioSpeakerAnalysisRunning = true;
       selectedAudioSpeakerTurnsError = null;
+      selectedAudioSpeakerTurnsNotice = null;
       scheduleSelectedAudioTranscriptPoll(id, job.id, gen);
       return;
     }
@@ -1012,11 +1057,12 @@
     if (job.status === "failed") {
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerClusters = [];
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioSpeakerTurnsError = job.lastError ?? "Speaker analysis failed";
       return;
     }
 
-    await loadSelectedAudioSpeakerTurns(id, gen);
+    await loadSelectedAudioSpeakerTurns(id, gen, job.id);
   }
 
   async function waitForSelectedAudioSpeakerAnalysisIfNeeded(
@@ -1035,6 +1081,7 @@
     } catch (err) {
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioSpeakerTurnsError = typeof err === "string" ? err : JSON.stringify(err);
     }
   }
@@ -1057,6 +1104,7 @@
       selectedAudioTranscriptSegments = [];
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = null;
       scheduleSelectedAudioTranscriptPoll(id, job.id, gen);
       return;
@@ -1070,6 +1118,7 @@
       selectedAudioTranscriptSegments = [];
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = job.lastError ?? "Transcription job failed";
       return;
     }
@@ -1085,6 +1134,7 @@
       selectedAudioTranscriptSegments = [];
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = "Transcription result not available";
       return;
     }
@@ -1138,6 +1188,7 @@
       selectedAudioTranscriptSegments = [];
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = typeof err === "string" ? err : JSON.stringify(err);
     }
   }
@@ -1187,6 +1238,7 @@
       selectedAudioTranscriptSegments = [];
       selectedAudioSpeakerTurns = [];
       selectedAudioSpeakerAnalysisRunning = false;
+      selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = null;
       selectedAudioTranscriptRerunError = null;
       await applySelectedAudioTranscriptJob(id, gen, result.job);
@@ -5241,6 +5293,9 @@
         {/if}
         {#if selectedAudioSpeakerTurnsError}
           <p class="audio-drawer__transcript-error">{selectedAudioSpeakerTurnsError}</p>
+        {/if}
+        {#if selectedAudioSpeakerTurnsNotice && !selectedAudioSpeakerTurnsError}
+          <p class="audio-drawer__transcript-empty">{selectedAudioSpeakerTurnsNotice}</p>
         {/if}
       {:else if selectedAudioTranscriptStatus === "empty"}
         <p class="audio-drawer__transcript-empty">No speech detected in this segment.</p>

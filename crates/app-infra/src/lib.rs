@@ -1581,6 +1581,117 @@ mod tests {
         job
     }
 
+    #[test]
+    fn completed_empty_speaker_analysis_persists_without_turns_or_clusters() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-analysis-empty-success");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-empty-session",
+                    1,
+                    "/tmp/speaker-empty.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("audio segment should insert");
+            let mut output = speaker_analysis::SpeakerAnalysisOutput::new(
+                speaker_analysis::SpeakerAnalysisMetadata {
+                    provider: "mock_speaker".to_string(),
+                    model_id: Some("voice-model".to_string()),
+                    session_id: "speaker-empty-session".to_string(),
+                    audio_segment_id: segment.id,
+                    provenance: Default::default(),
+                },
+            );
+            output
+                .metadata
+                .provenance
+                .insert("skipReason".to_string(), serde_json::json!("silent"));
+
+            let job = complete_speaker_output(&infra, &segment, output).await;
+            let completed = infra
+                .get_processing_job(job.id)
+                .await
+                .expect("job lookup should succeed")
+                .expect("job should exist");
+            assert_eq!(completed.status, ProcessingJobStatus::Completed);
+            assert!(infra
+                .get_processing_result_for_job(job.id)
+                .await
+                .expect("result lookup should succeed")
+                .is_some());
+            assert!(infra
+                .list_speaker_turns_for_audio_segment(segment.id)
+                .await
+                .expect("turns should list")
+                .is_empty());
+            assert!(infra
+                .list_speaker_clusters_for_session("speaker-empty-session")
+                .await
+                .expect("clusters should list")
+                .is_empty());
+        });
+    }
+
+    #[test]
+    fn failed_speaker_analysis_records_error_and_clears_stale_result() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-analysis-failed-clears-result");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "speaker-fail-session",
+                    1,
+                    "/tmp/speaker-fail.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("audio segment should insert");
+            let output = speaker_analysis_output_for_segment(
+                "speaker-fail-session",
+                segment.id,
+                "speaker_00",
+                &[1.0, 0.0],
+                Some("hello"),
+            );
+            let job = complete_speaker_output(&infra, &segment, output).await;
+            assert!(infra
+                .get_processing_result_for_job(job.id)
+                .await
+                .expect("stale result lookup should succeed")
+                .is_some());
+
+            infra
+                .mark_processing_job_running(job.id)
+                .await
+                .expect("speaker job should rerun");
+            let failed = infra
+                .mark_processing_job_failed(job.id, Some("subprocess failed during helper_exit"))
+                .await
+                .expect("speaker job should fail");
+
+            assert_eq!(failed.status, ProcessingJobStatus::Failed);
+            assert_eq!(
+                failed.last_error.as_deref(),
+                Some("subprocess failed during helper_exit")
+            );
+            assert!(infra
+                .get_processing_result_for_job(job.id)
+                .await
+                .expect("failed result lookup should succeed")
+                .is_none());
+        });
+    }
+
     #[derive(Clone, Default)]
     struct CapturingSpeakerAnalysisProvider {
         requests: Arc<Mutex<Vec<speaker_analysis::SpeakerAnalysisRequest>>>,
