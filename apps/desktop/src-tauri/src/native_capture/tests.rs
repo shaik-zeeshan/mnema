@@ -543,6 +543,79 @@ fn trimmed_microphone_finalization_keeps_segment_index_in_timestamped_filename()
 
 #[cfg(target_os = "macos")]
 #[test]
+fn microphone_finalization_preserves_prior_rotated_outputs() {
+    let first_file = "/tmp/microphone-native-session-microphone-segment-0001-1000.m4a".to_string();
+    let current_file =
+        "/tmp/microphone-native-session-microphone-segment-0001-2000.m4a".to_string();
+    let finalized_file =
+        "/tmp/microphone-native-session-microphone-segment-0001-2000-final.m4a".to_string();
+    let finalization = capture_microphone::MicrophoneOutputFinalization {
+        source_file: Some(current_file.clone()),
+        output_file: Some(finalized_file.clone()),
+        speech_detected: true,
+        trim_start_offset_ms: 0,
+        discard_reason: None,
+    };
+    let mut output_files = CaptureOutputFiles {
+        screen_file: None,
+        screen_files: Vec::new(),
+        microphone_file: Some(current_file.clone()),
+        microphone_files: vec![first_file.clone(), current_file],
+        system_audio_file: None,
+        system_audio_files: Vec::new(),
+    };
+
+    apply_microphone_output_finalization(
+        Some(&mut output_files),
+        &finalization,
+        Some(&independent_source_sessions_fixture()),
+        Some(&SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        1,
+    );
+
+    assert_eq!(output_files.microphone_file, Some(finalized_file.clone()));
+    assert_eq!(
+        output_files.microphone_files,
+        vec![first_file, finalized_file]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn discarded_microphone_finalization_preserves_prior_rotated_outputs() {
+    let first_file = "/tmp/microphone-native-session-microphone-segment-0001-1000.m4a".to_string();
+    let current_file =
+        "/tmp/microphone-native-session-microphone-segment-0001-2000.m4a".to_string();
+    let finalization = capture_microphone::MicrophoneOutputFinalization {
+        source_file: Some(current_file.clone()),
+        output_file: None,
+        speech_detected: false,
+        trim_start_offset_ms: 0,
+        discard_reason: Some("no_vad_speech".to_string()),
+    };
+    let mut output_files = CaptureOutputFiles {
+        screen_file: None,
+        screen_files: Vec::new(),
+        microphone_file: Some(current_file.clone()),
+        microphone_files: vec![first_file.clone(), current_file],
+        system_audio_file: None,
+        system_audio_files: Vec::new(),
+    };
+
+    apply_microphone_output_finalization(
+        Some(&mut output_files),
+        &finalization,
+        Some(&independent_source_sessions_fixture()),
+        Some(&SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        1,
+    );
+
+    assert_eq!(output_files.microphone_file, Some(first_file.clone()));
+    assert_eq!(output_files.microphone_files, vec![first_file]);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn audio_segment_start_uses_reanchored_session_timing_for_contiguous_late_segment() {
     let mut runtime = NativeCaptureRuntime {
         current_segment_index: 5,

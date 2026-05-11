@@ -307,11 +307,16 @@ pub(super) fn apply_microphone_output_finalization(
         return;
     };
 
-    let Some(mut output_file) = finalization.output_file.clone() else {
-        output_files.microphone_file = None;
-        output_files.microphone_files.clear();
+    let Some(original_output_file) = finalization.output_file.as_deref() else {
+        let current_file = output_files.microphone_file.clone();
+        output_files.microphone_files.retain(|file| {
+            Some(file.as_str()) != current_file.as_deref()
+                && Some(file.as_str()) != finalization.source_file.as_deref()
+        });
+        output_files.microphone_file = output_files.microphone_files.last().cloned();
         return;
     };
+    let mut output_file = original_output_file.to_string();
 
     if finalization.trim_start_offset_ms > 0 {
         if let (Some(source_session), Some(schedule)) = (
@@ -344,8 +349,18 @@ pub(super) fn apply_microphone_output_finalization(
     }
 
     output_files.microphone_file = Some(output_file.clone());
-    output_files.microphone_files.clear();
-    output_files.microphone_files.push(output_file);
+    if let Some(existing) = output_files.microphone_files.iter_mut().rfind(|file| {
+        file.as_str() == original_output_file
+            || Some(file.as_str()) == finalization.source_file.as_deref()
+    }) {
+        *existing = output_file;
+    } else if !output_files
+        .microphone_files
+        .iter()
+        .any(|file| file == &output_file)
+    {
+        output_files.microphone_files.push(output_file);
+    }
 }
 
 #[cfg(target_os = "macos")]

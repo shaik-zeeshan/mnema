@@ -274,7 +274,7 @@ fn current_microphone_vad_boundary_trim_disabled_sequence() -> u64 {
     MICROPHONE_VAD_BOUNDARY_TRIM_DISABLED_SEQUENCE.load(Ordering::Relaxed)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn current_microphone_vad_speech_boundaries() -> MicrophoneVadSpeechBoundaryState {
     *microphone_vad_speech_boundaries()
         .lock()
