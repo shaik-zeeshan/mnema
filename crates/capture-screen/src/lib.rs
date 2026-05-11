@@ -104,6 +104,15 @@ impl std::fmt::Debug for ScreenFrameExportConfig {
 pub struct ScreenCaptureSessionOptions {
     pub frame_export: Option<ScreenFrameExportConfig>,
     pub system_audio_inactivity_tail_trim_seconds: u64,
+    pub system_audio_writer_active: Option<bool>,
+}
+
+#[cfg(target_os = "macos")]
+fn system_audio_writer_active_for_options(
+    sources: &ScreenCaptureSources,
+    options: &ScreenCaptureSessionOptions,
+) -> bool {
+    sources.system_audio && options.system_audio_writer_active.unwrap_or(true)
 }
 
 fn even_dimension(value: u32) -> u32 {
@@ -2774,16 +2783,18 @@ pub fn start_capture_session_with_options(
     video_bitrate_bps: Option<u32>,
     options: ScreenCaptureSessionOptions,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
+    let system_audio_writer_active = system_audio_writer_active_for_options(sources, &options);
     let backend = if sources.screen && supports_screen_capture_kit_backend() {
         "ScreenCaptureKit"
     } else {
         "AVFoundation"
     };
     capture_runtime::debug_log!(
-        "[capture-screen] starting {backend} capture session at {} (sources: screen={}, system_audio={}, frame_rate={}, resolution={:?}, video_bitrate_bps={:?})",
+        "[capture-screen] starting {backend} capture session at {} (sources: screen={}, system_audio={}, system_audio_writer_active={}, frame_rate={}, resolution={:?}, video_bitrate_bps={:?})",
         session_dir.display(),
         sources.screen,
         sources.system_audio,
+        system_audio_writer_active,
         screen_frame_rate,
         screen_resolution,
         video_bitrate_bps
@@ -2986,6 +2997,8 @@ fn start_screen_capture_kit_session(
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     use cidre::{api, ns, sc};
 
+    let system_audio_writer_active = system_audio_writer_active_for_options(sources, &options);
+
     if !api::version!(macos = 15.0) {
         let error = CaptureErrorResponse {
             code: "screen_capture_kit_unsupported".to_string(),
@@ -3011,12 +3024,15 @@ fn start_screen_capture_kit_session(
             .map(Path::to_path_buf)
             .unwrap_or_else(|| session_dir.join("screen.mov"));
         let output_file_str = output_file.to_string_lossy().to_string();
-        let system_audio_output_file_str = system_audio_output_path
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let system_audio_output_file = system_audio_writer_active
+            .then(|| system_audio_output_path.map(|p| p.to_string_lossy().to_string()))
+            .flatten();
 
+        let active_system_audio_output_path = system_audio_writer_active
+            .then_some(system_audio_output_path)
+            .flatten();
         let mut output_files =
-            output_files_for_session(&session_dir, system_audio_output_path, sources);
+            output_files_for_session(&session_dir, active_system_audio_output_path, sources);
         if sources.screen && screen_output_file.is_some() {
             output_files.screen_file = Some(output_file_str.clone());
             output_files.screen_files = vec![output_file_str.clone()];
@@ -3085,11 +3101,9 @@ fn start_screen_capture_kit_session(
             ScStreamOutputDelegate::with(stream_output_context_for_segment(
                 session_dir,
                 &output_file_str,
-                sources
-                    .system_audio
-                    .then_some(system_audio_output_file_str.as_str()),
+                system_audio_output_file.as_deref(),
                 sources,
-                sources.system_audio,
+                system_audio_writer_active,
                 video_bitrate_bps,
                 options.frame_export.clone(),
                 options.system_audio_inactivity_tail_trim_seconds,
@@ -3145,10 +3159,7 @@ fn start_screen_capture_kit_session(
                 }),
             },
             recording_file: output_file_str,
-            system_audio_recording_file: sources
-                .system_audio
-                .then(|| system_audio_output_path.map(|p| p.to_string_lossy().to_string()))
-                .flatten(),
+            system_audio_recording_file: system_audio_output_file,
             output_files,
         })
     })();
@@ -4806,6 +4817,27 @@ mod tests {
         assert!(context.system_audio_output_file.is_none());
         assert!(context.system_audio_writer.is_none());
         assert_eq!(context.system_audio_inactivity_tail_buffer_seconds, 3);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_audio_writer_active_can_be_disabled_while_stream_source_stays_enabled() {
+        let sources = ScreenCaptureSources {
+            screen: true,
+            system_audio: true,
+        };
+
+        assert!(system_audio_writer_active_for_options(
+            &sources,
+            &ScreenCaptureSessionOptions::default()
+        ));
+        assert!(!system_audio_writer_active_for_options(
+            &sources,
+            &ScreenCaptureSessionOptions {
+                system_audio_writer_active: Some(false),
+                ..Default::default()
+            }
+        ));
     }
 
     #[cfg(target_os = "macos")]

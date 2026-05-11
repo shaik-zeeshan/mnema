@@ -610,6 +610,7 @@ fn capture_session_options(
             }),
         }),
         system_audio_inactivity_tail_trim_seconds,
+        system_audio_writer_active: None,
     }
 }
 
@@ -1949,17 +1950,18 @@ where
         return Ok(());
     }
 
-    // Start only screen-family sources; audio sessions remain untouched.
-    // When audio is paused, system_audio must also be suppressed since it
-    // belongs to the audio family even though the capture backend shares the
-    // screen session.
+    // Start only screen-family sources; microphone sessions remain untouched.
+    // Keep the ScreenCaptureKit audio stream attached for requested system audio
+    // even when the writer is paused; otherwise there is no activity signal to
+    // trigger system-audio resume.
     let screen_only_sources = CaptureSources {
         screen: sources.screen,
         microphone: false,
-        system_audio: sources.system_audio && !runtime.inactivity.is_system_audio_paused(),
+        system_audio: sources.system_audio,
     };
 
-    let system_audio_planner = if screen_only_sources.system_audio {
+    let system_audio_writer_paused = runtime.inactivity.is_system_audio_paused();
+    let system_audio_planner = if screen_only_sources.system_audio && !system_audio_writer_paused {
         ensure_system_audio_planner_for_runtime(runtime, "resuming screen from inactivity")?
     } else {
         None
@@ -1968,8 +1970,8 @@ where
     let next_index = next_emitted_segment_index(runtime.current_segment_index);
     let segment_dir = screen_planner.segment_dir(next_index);
     let screen_output_file = screen_planner.segment_screen_output(next_index);
-    let system_audio_output_path = screen_only_sources
-        .system_audio
+    let system_audio_output_path = (screen_only_sources.system_audio
+        && !system_audio_writer_paused)
         .then(|| {
             system_audio_planner
                 .as_ref()
@@ -2651,6 +2653,11 @@ fn start_segment_with_inactivity_tail_trim_seconds(
             screen: sources.screen,
             system_audio: sources.system_audio,
         };
+        let mut screen_options =
+            capture_session_options(frame_artifact_tx, inactivity_tail_trim_seconds);
+        if sources.system_audio && system_audio_output_path.is_none() {
+            screen_options.system_audio_writer_active = Some(false);
+        }
         let screen_capture = match capture_screen::start_capture_session_with_options(
             session_dir,
             screen_output_file,
@@ -2659,7 +2666,7 @@ fn start_segment_with_inactivity_tail_trim_seconds(
             screen_frame_rate,
             screen_resolution,
             effective_screen_bitrate_bps,
-            capture_session_options(frame_artifact_tx, inactivity_tail_trim_seconds),
+            screen_options,
         ) {
             Ok(screen_capture) => screen_capture,
             Err(error) => {

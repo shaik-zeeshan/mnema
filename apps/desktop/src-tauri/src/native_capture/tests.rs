@@ -5199,7 +5199,7 @@ fn screen_paused_with_system_audio_runtime_fixture(audio_paused: bool) -> Native
 
 #[cfg(target_os = "macos")]
 #[test]
-fn resume_screen_suppresses_system_audio_when_audio_paused() {
+fn resume_screen_keeps_system_audio_stream_when_audio_writer_paused() {
     let mut runtime = screen_paused_with_system_audio_runtime_fixture(true);
     runtime.system_audio_planner = Some(SegmentPlanner::with_date_prefix(
         "/tmp/native-capture-tests",
@@ -5224,14 +5224,13 @@ fn resume_screen_suppresses_system_audio_when_audio_paused() {
          _mic,
          _tx,
          _mic_path| {
-            // system_audio must be suppressed because audio family is paused
             assert!(
-                !sources.system_audio,
-                "system_audio should be false when audio is paused"
+                sources.system_audio,
+                "system_audio stream should stay enabled so audio activity can resume the writer"
             );
             assert!(
                 system_audio_output_path.is_none(),
-                "system_audio output path should be omitted when audio is paused"
+                "system_audio output path should be omitted while the writer is paused"
             );
             assert!(!sources.microphone);
             assert!(sources.screen);
@@ -5263,7 +5262,7 @@ fn resume_screen_from_inactivity_does_not_require_system_audio_metadata_when_aud
         |_, _, system_audio_output_path, sources, _, _, _, _, _, _| {
             assert!(sources.screen);
             assert!(!sources.microphone);
-            assert!(!sources.system_audio);
+            assert!(sources.system_audio);
             assert!(system_audio_output_path.is_none());
 
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
@@ -8079,7 +8078,7 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn resume_screen_from_inactivity_skips_dated_system_audio_path_when_audio_paused() {
+fn resume_screen_from_inactivity_keeps_system_audio_stream_when_writer_paused() {
     let expected_date_prefix = current_date_prefix();
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
@@ -8145,10 +8144,13 @@ fn resume_screen_from_inactivity_skips_dated_system_audio_path_when_audio_paused
             );
             assert!(sources.screen);
             assert!(!sources.microphone);
-            assert!(!sources.system_audio);
+            assert!(
+                sources.system_audio,
+                "paused writer still needs the SCK audio stream for activity detection"
+            );
             assert!(
                 system_audio_output_path.is_none(),
-                "paused screen-only resume should not pass a dated system-audio path"
+                "paused writer should not allocate a system-audio output path until activity resumes it"
             );
 
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
@@ -8159,4 +8161,12 @@ fn resume_screen_from_inactivity_skips_dated_system_audio_path_when_audio_paused
     assert!(runtime.system_audio_planner.is_some());
     assert!(runtime.system_audio_recording_file.is_none());
     assert!(runtime.inactivity.is_any_audio_paused());
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        })
+    );
 }
