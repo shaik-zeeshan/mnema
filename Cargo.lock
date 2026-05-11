@@ -134,6 +134,7 @@ dependencies = [
  "audio-transcription",
  "capture-runtime",
  "capture-screen",
+ "chrono",
  "cidre",
  "image",
  "ocr",

@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use chrono::{Local, LocalResult, NaiveDate, Offset, TimeZone};
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
-use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime, UtcOffset};
+use time::{format_description::well_known::Rfc3339, Date, Duration, OffsetDateTime, UtcOffset};
 
 use crate::{processing::ProcessingJobStatus, Result};
 
@@ -639,17 +640,41 @@ impl CaptureRetentionStore {
 }
 
 pub fn cutoff_ended_before(policy: RetentionPolicy, local_now: OffsetDateTime) -> Option<String> {
+    cutoff_ended_before_with_midnight_offset(policy, local_now, local_midnight_offset)
+}
+
+fn cutoff_ended_before_with_midnight_offset(
+    policy: RetentionPolicy,
+    local_now: OffsetDateTime,
+    resolve_midnight_offset: impl FnOnce(Date) -> Option<UtcOffset>,
+) -> Option<String> {
     let days = policy.retention_days()?;
     let cutoff_date = local_now.date() - Duration::days(days - 1);
+    let cutoff_offset = resolve_midnight_offset(cutoff_date).unwrap_or_else(|| local_now.offset());
     let cutoff = cutoff_date
         .midnight()
-        .assume_offset(local_now.offset())
+        .assume_offset(cutoff_offset)
         .to_offset(UtcOffset::UTC);
     Some(
         cutoff
             .format(&Rfc3339)
             .expect("RFC3339 formatting should succeed"),
     )
+}
+
+fn local_midnight_offset(date: Date) -> Option<UtcOffset> {
+    let local_date = NaiveDate::from_ymd_opt(
+        date.year(),
+        u32::from(u8::from(date.month())),
+        u32::from(date.day()),
+    )?;
+    let local_midnight = local_date.and_hms_opt(0, 0, 0)?;
+    let offset_seconds = match Local.from_local_datetime(&local_midnight) {
+        LocalResult::Single(datetime) => datetime.offset().fix().local_minus_utc(),
+        LocalResult::Ambiguous(earliest, _) => earliest.offset().fix().local_minus_utc(),
+        LocalResult::None => return None,
+    };
+    UtcOffset::from_whole_seconds(offset_seconds).ok()
 }
 
 async fn file_paths_for_segments(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<SegmentFilePath>> {
@@ -1297,17 +1322,35 @@ mod tests {
 
     #[test]
     fn day_policy_keeps_local_calendar_cutoff() {
-        let cutoff = cutoff_ended_before(RetentionPolicy::Days7, rfc3339("2026-05-10T12:34:56Z"));
+        let cutoff = cutoff_ended_before_with_midnight_offset(
+            RetentionPolicy::Days7,
+            rfc3339("2026-05-10T12:34:56Z"),
+            |_| Some(UtcOffset::UTC),
+        );
 
         assert_eq!(cutoff.as_deref(), Some("2026-05-04T00:00:00Z"));
     }
 
     #[test]
     fn day_policy_converts_local_calendar_cutoff_to_utc() {
-        let cutoff =
-            cutoff_ended_before(RetentionPolicy::Days7, rfc3339("2026-05-10T12:34:56-07:00"));
+        let cutoff = cutoff_ended_before_with_midnight_offset(
+            RetentionPolicy::Days7,
+            rfc3339("2026-05-10T12:34:56-07:00"),
+            |_| Some(UtcOffset::from_hms(-7, 0, 0).expect("test offset should be valid")),
+        );
 
         assert_eq!(cutoff.as_deref(), Some("2026-05-04T07:00:00Z"));
+    }
+
+    #[test]
+    fn day_policy_uses_cutoff_dates_local_offset() {
+        let cutoff = cutoff_ended_before_with_midnight_offset(
+            RetentionPolicy::Days14,
+            rfc3339("2026-03-15T12:34:56-07:00"),
+            |_| Some(UtcOffset::from_hms(-8, 0, 0).expect("test offset should be valid")),
+        );
+
+        assert_eq!(cutoff.as_deref(), Some("2026-03-02T08:00:00Z"));
     }
 
     async fn create_retention_cleanup_tables(pool: &SqlitePool) {
