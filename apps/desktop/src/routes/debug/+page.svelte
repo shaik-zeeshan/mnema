@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import type {
@@ -790,6 +791,49 @@
     scrollRegion?.scrollTo({ top: 0, behavior: "auto" });
   });
 
+  let initialTabFocusDone = false;
+  let initialTabFocusScheduled = false;
+
+  $effect(() => {
+    activeTab;
+    if (initialTabFocusDone || initialTabFocusScheduled || typeof document === "undefined") return;
+    initialTabFocusScheduled = true;
+    void tick().then(() => {
+      initialTabFocusScheduled = false;
+      if (initialTabFocusDone) return;
+      document.getElementById(`debug-tab-${activeTab}`)?.focus({ preventScroll: true });
+      initialTabFocusDone = true;
+    });
+  });
+
+  function handleDebugTabKeydown(event: KeyboardEvent): void {
+    const focusedTab = event.target instanceof Element
+      ? event.target.closest<HTMLElement>('[role="tab"]')
+      : null;
+    const focusedTabId = focusedTab?.id?.replace(/^debug-tab-/, "") ?? null;
+    const focusedIndex = debugTabs.findIndex((tab) => tab.id === focusedTabId);
+    const currentIndex = focusedIndex >= 0
+      ? focusedIndex
+      : debugTabs.findIndex((tab) => tab.id === activeTab);
+    if (currentIndex === -1) return;
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % debugTabs.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + debugTabs.length) % debugTabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = debugTabs.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const nextTab = debugTabs[nextIndex];
+    activeTab = nextTab.id;
+    document.getElementById(`debug-tab-${nextTab.id}`)?.focus();
+  }
+
   // ─── Jobs pagination ─────────────────────────────────────────────────────
   // Recent-jobs can grow unbounded; render a fixed-size window. The selected
   // job detail panel is rendered outside the paginated list so the user can
@@ -838,7 +882,7 @@
      pinned head of the dedicated Debug window matches `.page-header`'s
      bottom divider. The chip card itself keeps its own border. -->
 <div class="debug-tabs-wrap">
-<div class="debug-tabs" role="tablist" aria-label="Debug sections">
+<div class="debug-tabs" role="tablist" aria-label="Debug sections" tabindex="-1" onkeydown={handleDebugTabKeydown}>
     {#each debugTabs as tab (tab.id)}
       <button
         type="button"
@@ -849,6 +893,7 @@
         tabindex={activeTab === tab.id ? 0 : -1}
         class="debug-tabs__btn"
         class:debug-tabs__btn--active={activeTab === tab.id}
+        onkeydown={handleDebugTabKeydown}
         onclick={() => (activeTab = tab.id)}
       >
         {tab.label}
@@ -868,7 +913,7 @@
 
 <!-- ── Recording status ─────────────────────────────────────────────────── -->
 {#if activeTab === "session"}
-<section class="card" id="debug-panel-session" aria-labelledby="debug-tab-session">
+<div class="card" id="debug-panel-session" role="tabpanel" aria-labelledby="debug-tab-session" tabindex="0">
   <h2 class="card__title">Session</h2>
 
   <div class="session-status" class:session-status--recording={isCapturing}>
@@ -978,12 +1023,12 @@
       {loadingStop ? "Stopping…" : "Stop Recording"}
     </button>
   </div>
-</section>
+</div>
 {/if}
 
 <!-- ── Runtime sources ──────────────────────────────────────────────────── -->
 {#if activeTab === "runtime"}
-<section class="card card--debug" id="debug-panel-runtime" aria-labelledby="debug-tab-runtime">
+<div class="card card--debug" id="debug-panel-runtime" role="tabpanel" aria-labelledby="debug-tab-runtime" tabindex="0">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Runtime Sources
@@ -1102,12 +1147,12 @@
   {:else}
     <p class="empty">runtime status only available while a session is active</p>
   {/if}
-</section>
+</div>
 {/if}
 
 <!-- ── System probe ──────────────────────────────────────────────────────── -->
 {#if activeTab === "probe"}
-<section class="card" id="debug-panel-probe" aria-labelledby="debug-tab-probe">
+<div class="card" id="debug-panel-probe" role="tabpanel" aria-labelledby="debug-tab-probe" tabindex="0">
   <h2 class="card__title">System Probe</h2>
   <div class="probe-grid">
     <div class="probe-block">
@@ -1186,12 +1231,12 @@
       {/if}
     </div>
   </div>
-</section>
+</div>
 {/if}
 
 <!-- ── Native idle debug ─────────────────────────────────────────────────── -->
 {#if activeTab === "inactivity"}
-<section class="card card--debug" id="debug-panel-inactivity" aria-labelledby="debug-tab-inactivity">
+<div class="card card--debug" id="debug-panel-inactivity" role="tabpanel" aria-labelledby="debug-tab-inactivity" tabindex="0">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Inactivity Policy
@@ -1464,12 +1509,12 @@
   {:else}
     <p class="empty">—</p>
   {/if}
-</section>
+</div>
 {/if}
 
 <!-- ── App Infra / Background Jobs ───────────────────────────────────────── -->
 {#if activeTab === "infra"}
-<section class="card card--debug" id="debug-panel-infra" aria-labelledby="debug-tab-infra">
+<div class="card card--debug" id="debug-panel-infra" role="tabpanel" aria-labelledby="debug-tab-infra" tabindex="0">
   <h2 class="card__title">
     <span class="card__num">05</span>
     <span class="debug-tag">dbg</span>
@@ -1517,12 +1562,12 @@
   {:else}
     <p class="empty">—</p>
   {/if}
-</section>
+</div>
 {/if}
 
 <!-- ── Hidden segment workspace classifier ───────────────────────────────── -->
 {#if activeTab === "workspaces"}
-<section class="card card--debug" id="debug-panel-workspaces" aria-labelledby="debug-tab-workspaces">
+<div class="card card--debug" id="debug-panel-workspaces" role="tabpanel" aria-labelledby="debug-tab-workspaces" tabindex="0">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Segment Workspace Cleanup
@@ -1639,12 +1684,12 @@
   {:else}
     <p class="empty">enter a hidden segment workspace path to classify</p>
   {/if}
-</section>
+</div>
 {/if}
 
 <!-- ── Background Jobs ───────────────────────────────────────────────────── -->
 {#if activeTab === "jobs"}
-<section class="card card--debug" id="debug-panel-jobs" aria-labelledby="debug-tab-jobs">
+<div class="card card--debug" id="debug-panel-jobs" role="tabpanel" aria-labelledby="debug-tab-jobs" tabindex="0">
   <h2 class="card__title">
     <span class="card__num">06</span>
     <span class="debug-tag">dbg</span>
@@ -1808,7 +1853,7 @@
       </ul>
     {/if}
   {/if}
-</section>
+</div>
 {/if}
 
 <!-- ── Error display ─────────────────────────────────────────────────────── -->

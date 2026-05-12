@@ -8,6 +8,7 @@
   import SelectMenu from "$lib/components/Select.svelte";
   import ScreenResolutionControl from "$lib/components/ScreenResolutionControl.svelte";
   import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
+  import { isShortcutSuppressedTarget } from "$lib/keyboard";
   import { theme } from "$lib/theme.svelte";
   import type {
     ActivityMode,
@@ -56,6 +57,10 @@
     { id: "done", label: "Ready" },
   ];
   const railSteps = steps.filter((step) => step.id !== "about" && step.id !== "done");
+  const processingTabs: { id: ProcessingPanel; label: string }[] = [
+    { id: "ocr", label: "OCR" },
+    { id: "transcription", label: "Transcription" },
+  ];
 
   const activityModeOptions = [
     { value: "system_input_only", label: "Input only", description: "Keyboard and pointer activity keep recording active." },
@@ -778,10 +783,49 @@
     return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
   }
 
+  function handleProcessingTabKeydown(event: KeyboardEvent): void {
+    const focusedTab = event.target instanceof Element
+      ? event.target.closest<HTMLElement>('[role="tab"]')
+      : null;
+    const focusedTabId = focusedTab?.id?.replace(/^processing-tab-/, "") ?? null;
+    const focusedIndex = processingTabs.findIndex((tab) => tab.id === focusedTabId);
+    const currentIndex = focusedIndex >= 0
+      ? focusedIndex
+      : processingTabs.findIndex((tab) => tab.id === activeProcessingPanel);
+    if (currentIndex === -1) return;
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % processingTabs.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + processingTabs.length) % processingTabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = processingTabs.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const nextTab = processingTabs[nextIndex];
+    activeProcessingPanel = nextTab.id;
+    document.getElementById(`processing-tab-${nextTab.id}`)?.focus();
+  }
+
   function handleKeydown(e: KeyboardEvent): void {
-    const target = e.target as HTMLElement | null;
-    const tag = target?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+    if (
+      e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey &&
+      e.key === "ArrowLeft" &&
+      canGoBack &&
+      !isShortcutSuppressedTarget(e.target)
+    ) {
+      e.preventDefault();
+      previousStep();
+      return;
+    }
+    if (isShortcutSuppressedTarget(e.target)) return;
     if (e.key === "Enter" && !e.shiftKey && activeStep !== "done" && canGoNext) {
       e.preventDefault();
       void nextStep();
@@ -1081,29 +1125,29 @@
                 </div>
               </header>
 
-              <div class="process-tabs" role="tablist" aria-label="Processing settings">
-                <button
-                  type="button"
-                  class="process-tab"
-                  class:process-tab--active={activeProcessingPanel === "ocr"}
-                  role="tab"
-                  aria-selected={activeProcessingPanel === "ocr"}
-                  aria-controls="processing-panel-ocr"
-                  onclick={() => { activeProcessingPanel = "ocr"; }}
-                >
-                  OCR
-                </button>
-                <button
-                  type="button"
-                  class="process-tab"
-                  class:process-tab--active={activeProcessingPanel === "transcription"}
-                  role="tab"
-                  aria-selected={activeProcessingPanel === "transcription"}
-                  aria-controls="processing-panel-transcription"
-                  onclick={() => { activeProcessingPanel = "transcription"; }}
-                >
-                  Transcription
-                </button>
+              <div
+                class="process-tabs"
+                role="tablist"
+                aria-label="Processing settings"
+                tabindex="-1"
+                onkeydown={handleProcessingTabKeydown}
+              >
+                {#each processingTabs as tab (tab.id)}
+                  <button
+                    type="button"
+                    id={`processing-tab-${tab.id}`}
+                    class="process-tab"
+                    class:process-tab--active={activeProcessingPanel === tab.id}
+                    role="tab"
+                    aria-selected={activeProcessingPanel === tab.id}
+                    aria-controls={`processing-panel-${tab.id}`}
+                    tabindex={activeProcessingPanel === tab.id ? 0 : -1}
+                    onkeydown={handleProcessingTabKeydown}
+                    onclick={() => { activeProcessingPanel = tab.id; }}
+                  >
+                    {tab.label}
+                  </button>
+                {/each}
               </div>
 
               {#if requiresOcrAvailability && selectedOcrDownloadRunning}
@@ -1118,7 +1162,13 @@
 
               <div class="processing-grid">
                 {#if activeProcessingPanel === "ocr"}
-                <div class="settings-group" id="processing-panel-ocr" role="tabpanel" aria-label="OCR settings">
+                <div
+                  class="settings-group"
+                  id="processing-panel-ocr"
+                  role="tabpanel"
+                  aria-labelledby="processing-tab-ocr"
+                  tabindex="0"
+                >
                   <span class="group-label">OCR</span>
                   <div class="settings-stack">
                     <Switch
@@ -1279,7 +1329,13 @@
                 {/if}
 
                 {#if activeProcessingPanel === "transcription"}
-                <div class="settings-group" id="processing-panel-transcription" role="tabpanel" aria-label="Transcription settings">
+                <div
+                  class="settings-group"
+                  id="processing-panel-transcription"
+                  role="tabpanel"
+                  aria-labelledby="processing-tab-transcription"
+                  tabindex="0"
+                >
                   <span class="group-label">Audio transcription</span>
                   <div class="settings-stack">
                     <Switch

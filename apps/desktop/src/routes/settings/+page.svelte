@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from "$app/stores";
+  import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { ask } from "@tauri-apps/plugin-dialog";
@@ -268,6 +269,66 @@
     }
   });
 
+  let initialTabFocusDone = false;
+  let initialTabFocusScheduled = false;
+  let initialTabFocusAttempts = 0;
+  let initialTabFocusTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function isDocumentFocusStillAtEntry(): boolean {
+    if (typeof document === "undefined") return false;
+    const activeElement = document.activeElement;
+    return activeElement === null || activeElement === document.body;
+  }
+
+  function tryFocusInitialSettingsTab(): void {
+    if (initialTabFocusDone || typeof document === "undefined") return;
+    if (!isDocumentFocusStillAtEntry()) {
+      initialTabFocusDone = true;
+      return;
+    }
+
+    const activeTabElement = document.getElementById(`settings-tab-${activeTab}`);
+    if (activeTabElement instanceof HTMLElement) {
+      activeTabElement.focus({ preventScroll: true });
+      if (document.activeElement === activeTabElement) {
+        initialTabFocusDone = true;
+        return;
+      }
+    }
+
+    if (initialTabFocusAttempts >= 8) return;
+    initialTabFocusAttempts += 1;
+    scheduleInitialSettingsTabFocus(50);
+  }
+
+  function scheduleInitialSettingsTabFocus(delayMs = 0): void {
+    if (initialTabFocusDone || initialTabFocusScheduled || typeof window === "undefined") return;
+    initialTabFocusScheduled = true;
+    initialTabFocusTimer = setTimeout(() => {
+      initialTabFocusScheduled = false;
+      initialTabFocusTimer = null;
+      void tick().then(tryFocusInitialSettingsTab);
+    }, delayMs);
+  }
+
+  $effect(() => {
+    activeTab;
+    scheduleInitialSettingsTabFocus();
+  });
+
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const onWindowFocus = () => scheduleInitialSettingsTabFocus();
+    window.addEventListener("focus", onWindowFocus);
+    return () => {
+      window.removeEventListener("focus", onWindowFocus);
+      if (initialTabFocusTimer !== null) {
+        clearTimeout(initialTabFocusTimer);
+        initialTabFocusTimer = null;
+      }
+    };
+  });
+
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
     { id: "capture",    label: "Capture",     description: "Sources, segments, inactivity" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
@@ -299,7 +360,14 @@
   // We use a roving-tabindex (only the active tab is tabbable) so screen
   // reader users can land on the tablist and step through tabs naturally.
   function handleTabKeydown(event: KeyboardEvent) {
-    const currentIndex = tabs.findIndex((t) => t.id === activeTab);
+    const focusedTab = event.target instanceof Element
+      ? event.target.closest<HTMLElement>('[role="tab"]')
+      : null;
+    const focusedTabId = focusedTab?.id?.replace(/^settings-tab-/, "") ?? null;
+    const focusedIndex = tabs.findIndex((t) => t.id === focusedTabId);
+    const currentIndex = focusedIndex >= 0
+      ? focusedIndex
+      : tabs.findIndex((t) => t.id === activeTab);
     if (currentIndex === -1) return;
     let nextIndex: number | null = null;
     if (event.key === "ArrowRight" || event.key === "ArrowDown") {
@@ -313,6 +381,7 @@
     }
     if (nextIndex === null) return;
     event.preventDefault();
+    event.stopPropagation();
     const nextTab = tabs[nextIndex];
     activeTab = nextTab.id;
     // Move DOM focus to the newly-active tab so the roving tabindex stays
@@ -1768,6 +1837,7 @@
         aria-controls="settings-panel-{tab.id}"
         id="settings-tab-{tab.id}"
         tabindex={activeTab === tab.id ? 0 : -1}
+        onkeydown={handleTabKeydown}
         onclick={() => { activeTab = tab.id; }}
         title={tab.description}
         type="button"
