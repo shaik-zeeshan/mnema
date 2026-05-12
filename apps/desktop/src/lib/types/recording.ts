@@ -36,6 +36,21 @@ export interface RecordingSettings {
 	developerOptionsEnabled: boolean;
 }
 
+export interface KeyboardBindingsSettings {
+	schemaVersion: number;
+	globalShortcuts: GlobalShortcutsSettings;
+}
+
+export interface GlobalShortcutsSettings {
+	enabled: boolean;
+	bindings: GlobalShortcutBindings;
+}
+
+export interface GlobalShortcutBindings {
+	toggleRecording: string;
+	toggleMainWindow: string;
+}
+
 export type VideoBitratePreset = "low" | "medium" | "high";
 
 export type VideoBitrate =

@@ -2,6 +2,7 @@
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { tick, type Snippet } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
   import { closeCurrentWindow, isDedicatedSurfaceWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
@@ -263,6 +264,7 @@
       );
     }
 
+    rows.push(GLOBAL_SHORTCUTS.toggleMainWindow);
     rows.push(GLOBAL_SHORTCUTS.openSettings);
 
     if (devEnabled) {
@@ -430,6 +432,11 @@
 
     if (action.type === "toggleRecording") {
       void toggleRecordingShortcut();
+      return;
+    }
+
+    if (action.type === "toggleMainWindow") {
+      void invoke("toggle_main_window_visibility_command");
       return;
     }
 

@@ -248,9 +248,11 @@ fn ensure_window_allowed(
 }
 
 fn show_and_focus_window(window: &WebviewWindow) {
+    set_regular_activation_policy(window.app_handle());
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
+    refresh_activation_policy(window.app_handle());
 }
 
 pub(crate) fn open_main_window(app: &tauri::AppHandle) -> Result<(), String> {
@@ -397,11 +399,59 @@ fn apply_macos_rounded_content_view(window: &WebviewWindow, radius: f64) {
     }
 }
 
-fn focus_main_window(app: &tauri::AppHandle) {
+fn focus_main_window_if_visible(app: &tauri::AppHandle) {
     if let Some(main) = app.get_webview_window(AppWindow::Main.config().label) {
-        show_and_focus_window(&main);
+        if main.is_visible().unwrap_or(false) {
+            show_and_focus_window(&main);
+        }
     }
 }
+
+fn hide_main_window(window: &WebviewWindow) {
+    let _ = window.hide();
+    refresh_activation_policy(window.app_handle());
+}
+
+pub(crate) fn toggle_main_window_visibility(app: &tauri::AppHandle) {
+    let config = AppWindow::Main.config();
+    if let Some(main) = app.get_webview_window(config.label) {
+        let visible = main.is_visible().unwrap_or(false);
+        let focused = main.is_focused().unwrap_or(false);
+        if visible && focused {
+            hide_main_window(&main);
+        } else {
+            show_and_focus_window(&main);
+        }
+        return;
+    }
+
+    let _ = open_main_window(app);
+}
+
+#[cfg(target_os = "macos")]
+fn set_regular_activation_policy(app: &tauri::AppHandle) {
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_regular_activation_policy(_app: &tauri::AppHandle) {}
+
+#[cfg(target_os = "macos")]
+fn refresh_activation_policy(app: &tauri::AppHandle) {
+    let has_visible_window = app
+        .webview_windows()
+        .values()
+        .any(|window| window.is_visible().unwrap_or(false));
+    let policy = if has_visible_window {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    };
+    let _ = app.set_activation_policy(policy);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn refresh_activation_policy(_app: &tauri::AppHandle) {}
 
 pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
     let exit_state = app.state::<AppExitCoordinatorState>();
@@ -476,7 +526,7 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
     match AppWindow::from_label(window.label()) {
         Some(AppWindow::Onboarding) => window.close().map_err(|err| err.to_string()),
         Some(AppWindow::Settings | AppWindow::Debug) => {
-            focus_main_window(window.app_handle());
+            focus_main_window_if_visible(window.app_handle());
             window.close().map_err(|err| err.to_string())
         }
         Some(AppWindow::Main) => Err("main window cannot be closed from this command".into()),
@@ -484,7 +534,22 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
     }
 }
 
-pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &WindowEvent) {
+pub fn handle_window_event(
+    app: &tauri::AppHandle,
+    label: &str,
+    event: &WindowEvent,
+    window: Option<&WebviewWindow>,
+) {
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        if AppWindow::from_label(label) == Some(AppWindow::Main) {
+            api.prevent_close();
+            if let Some(window) = window {
+                hide_main_window(window);
+            }
+        }
+        return;
+    }
+
     if !matches!(event, WindowEvent::Destroyed) {
         return;
     }
@@ -502,10 +567,11 @@ pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &WindowEv
     };
 
     match action {
-        DestroyedWindowAction::FocusMainWindow => focus_main_window(app),
+        DestroyedWindowAction::FocusMainWindow => focus_main_window_if_visible(app),
         DestroyedWindowAction::ExitApp => request_graceful_exit(app),
         DestroyedWindowAction::None => {}
     }
+    refresh_activation_policy(app);
 }
 
 pub fn open_startup_window(
@@ -548,6 +614,11 @@ pub fn open_debug_window(
 #[tauri::command]
 pub fn close_current_window(window: WebviewWindow) -> Result<(), String> {
     close_window(window)
+}
+
+#[tauri::command]
+pub fn toggle_main_window_visibility_command(app: tauri::AppHandle) {
+    toggle_main_window_visibility(&app);
 }
 
 #[tauri::command]
