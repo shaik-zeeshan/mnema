@@ -43,6 +43,12 @@ pub struct KeyboardBindingsRuntime {
 
 pub type KeyboardBindingsState = Mutex<KeyboardBindingsRuntime>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalShortcutAction {
+    ToggleRecording,
+    ToggleMainWindow,
+}
+
 impl KeyboardBindingsSettings {
     fn defaults() -> Self {
         Self {
@@ -193,6 +199,35 @@ fn parse_registered_shortcuts(settings: &KeyboardBindingsSettings) -> Vec<Shortc
     .collect()
 }
 
+fn global_shortcut_action(
+    settings: &KeyboardBindingsSettings,
+    shortcut: &Shortcut,
+    onboarding_complete: bool,
+) -> Option<GlobalShortcutAction> {
+    if !onboarding_complete || !settings.global_shortcuts.enabled {
+        return None;
+    }
+
+    let toggle_recording =
+        Shortcut::try_from(settings.global_shortcuts.bindings.toggle_recording.as_str()).ok()?;
+    let toggle_main_window = Shortcut::try_from(
+        settings
+            .global_shortcuts
+            .bindings
+            .toggle_main_window
+            .as_str(),
+    )
+    .ok()?;
+
+    if shortcut == &toggle_recording {
+        Some(GlobalShortcutAction::ToggleRecording)
+    } else if shortcut == &toggle_main_window {
+        Some(GlobalShortcutAction::ToggleMainWindow)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn initialize(app: &tauri::AppHandle) {
     let settings = current_settings(app);
     if let Err(error) = refresh_global_shortcuts(app, &settings) {
@@ -248,29 +283,16 @@ pub(crate) fn handle_global_shortcut(
     }
 
     let settings = current_settings(app);
-    if !settings.global_shortcuts.enabled {
-        return;
-    }
-
-    let Ok(toggle_recording) =
-        Shortcut::try_from(settings.global_shortcuts.bindings.toggle_recording.as_str())
-    else {
-        return;
-    };
-    let Ok(toggle_main_window) = Shortcut::try_from(
-        settings
-            .global_shortcuts
-            .bindings
-            .toggle_main_window
-            .as_str(),
-    ) else {
-        return;
-    };
-
-    if shortcut == &toggle_recording {
-        handle_toggle_recording(app);
-    } else if shortcut == &toggle_main_window {
-        crate::windows::toggle_main_window_visibility(app);
+    match global_shortcut_action(
+        &settings,
+        shortcut,
+        crate::windows::is_onboarding_complete(app),
+    ) {
+        Some(GlobalShortcutAction::ToggleRecording) => handle_toggle_recording(app),
+        Some(GlobalShortcutAction::ToggleMainWindow) => {
+            crate::windows::toggle_main_window_visibility(app);
+        }
+        None => {}
     }
 }
 
@@ -433,6 +455,56 @@ mod tests {
         assert_eq!(
             settings.global_shortcuts.bindings.toggle_main_window,
             TOGGLE_RECORDING_DEFAULT
+        );
+    }
+
+    #[test]
+    fn shortcut_actions_are_blocked_before_onboarding_completes() {
+        let settings = KeyboardBindingsSettings::defaults();
+        let toggle_recording =
+            Shortcut::try_from(settings.global_shortcuts.bindings.toggle_recording.as_str())
+                .expect("default toggle recording shortcut should parse");
+        let toggle_main_window = Shortcut::try_from(
+            settings
+                .global_shortcuts
+                .bindings
+                .toggle_main_window
+                .as_str(),
+        )
+        .expect("default toggle main window shortcut should parse");
+
+        assert_eq!(
+            global_shortcut_action(&settings, &toggle_recording, false),
+            None
+        );
+        assert_eq!(
+            global_shortcut_action(&settings, &toggle_main_window, false),
+            None
+        );
+    }
+
+    #[test]
+    fn shortcut_actions_resolve_after_onboarding_completes() {
+        let settings = KeyboardBindingsSettings::defaults();
+        let toggle_recording =
+            Shortcut::try_from(settings.global_shortcuts.bindings.toggle_recording.as_str())
+                .expect("default toggle recording shortcut should parse");
+        let toggle_main_window = Shortcut::try_from(
+            settings
+                .global_shortcuts
+                .bindings
+                .toggle_main_window
+                .as_str(),
+        )
+        .expect("default toggle main window shortcut should parse");
+
+        assert_eq!(
+            global_shortcut_action(&settings, &toggle_recording, true),
+            Some(GlobalShortcutAction::ToggleRecording)
+        );
+        assert_eq!(
+            global_shortcut_action(&settings, &toggle_main_window, true),
+            Some(GlobalShortcutAction::ToggleMainWindow)
         );
     }
 }
