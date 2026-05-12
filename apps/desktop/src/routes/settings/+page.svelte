@@ -2415,7 +2415,7 @@
   {/if}
 
   {#if activeTab === "processing"}
-    <div role="tabpanel" id="settings-panel-processing-ocr" aria-labelledby="settings-tab-processing" tabindex="0">
+    <div role="tabpanel" id="settings-panel-processing" aria-labelledby="settings-tab-processing" tabindex="0">
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
@@ -2702,11 +2702,7 @@
       </p>
     </div>
     </section>
-    </div>
-  {/if}
 
-  {#if activeTab === "processing"}
-    <div role="tabpanel" id="settings-panel-processing-transcription" aria-labelledby="settings-tab-processing" tabindex="0">
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
@@ -2958,11 +2954,7 @@
         {/if}
       </div>
     </section>
-    </div>
-  {/if}
 
-  {#if activeTab === "processing"}
-    <div role="tabpanel" id="settings-panel-processing-speakers" aria-labelledby="settings-tab-processing" tabindex="0">
     <section class="card card--speaker">
       <div class="card__header">
         <div class="card__heading">
