@@ -911,6 +911,7 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
             status: equivalence_status,
             error: row.get("equivalence_error"),
         },
+        metadata_snapshot: None,
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })

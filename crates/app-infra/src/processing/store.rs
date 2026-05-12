@@ -123,8 +123,13 @@ impl ProcessingStore {
     }
 
     pub async fn insert_frame(&self, frame: &NewFrame) -> Result<Frame> {
-        let frame_id = insert_frame_record(&self.pool, frame).await?;
-        self.get_required_frame(frame_id).await
+        let mut transaction = self.pool.begin().await?;
+        let frame_id = insert_frame_record_in_transaction(&mut transaction, frame).await?;
+        let frame = get_frame_optional(&mut *transaction, frame_id)
+            .await?
+            .ok_or(AppInfraError::FrameNotFound(frame_id))?;
+        transaction.commit().await?;
+        Ok(frame)
     }
 
     pub async fn upsert_audio_segment(&self, segment: &NewAudioSegment) -> Result<AudioSegment> {
@@ -141,7 +146,7 @@ impl ProcessingStore {
         transaction: &mut Transaction<'_, Sqlite>,
         frame: &NewFrame,
     ) -> Result<Frame> {
-        let frame_id = insert_frame_record(&mut **transaction, frame).await?;
+        let frame_id = insert_frame_record_in_transaction(transaction, frame).await?;
         get_frame_optional(&mut **transaction, frame_id)
             .await?
             .ok_or(AppInfraError::FrameNotFound(frame_id))
@@ -479,9 +484,11 @@ impl ProcessingStore {
         }
 
         let mut query_builder = QueryBuilder::<Sqlite>::new(
-            "SELECT id, session_id, file_path, captured_at, width, height, \
+            "SELECT frames.id, session_id, file_path, captured_at, width, height, \
                     equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
-                    created_at, updated_at FROM frames",
+                    frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                    frames.created_at, frames.updated_at FROM frames \
+             LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id",
         );
 
         let mut has_where_clause = false;
@@ -494,14 +501,14 @@ impl ProcessingStore {
 
         if let Some(before_id) = before_id {
             query_builder.push(if has_where_clause {
-                " AND id < "
+                " AND frames.id < "
             } else {
-                " WHERE id < "
+                " WHERE frames.id < "
             });
             query_builder.push_bind(before_id);
         }
 
-        query_builder.push(" ORDER BY id DESC");
+        query_builder.push(" ORDER BY frames.id DESC");
 
         match (limit, offset) {
             (Some(limit), Some(offset)) => {
@@ -2575,10 +2582,16 @@ mod tests {
     }
 }
 
-async fn insert_frame_record<'e, E>(executor: E, frame: &NewFrame) -> Result<i64>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
+async fn insert_frame_record_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    frame: &NewFrame,
+) -> Result<i64> {
+    let metadata_snapshot_id = if let Some(snapshot) = &frame.metadata_snapshot {
+        Some(upsert_frame_metadata_snapshot_in_transaction(transaction, snapshot).await?)
+    } else {
+        None
+    };
+
     let result = sqlx::query(
         "INSERT INTO frames (
             session_id,
@@ -2591,8 +2604,9 @@ where
             equivalence_version,
             equivalence_status,
             equivalence_error,
-            capture_segment_id
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            capture_segment_id,
+            metadata_snapshot_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     )
     .bind(&frame.session_id)
     .bind(&frame.file_path)
@@ -2611,10 +2625,35 @@ where
     )
     .bind(frame.equivalence.error.as_deref())
     .bind(frame.capture_segment_id)
-    .execute(executor)
+    .bind(metadata_snapshot_id)
+    .execute(&mut **transaction)
     .await?;
 
     Ok(result.last_insert_rowid())
+}
+
+async fn upsert_frame_metadata_snapshot_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    snapshot: &capture_metadata::FrameMetadataSnapshot,
+) -> Result<i64> {
+    let hash = snapshot.normalized_hash();
+    let json = snapshot.normalized_json();
+    sqlx::query(
+        "INSERT INTO frame_metadata_snapshots (normalized_hash, snapshot_json) \
+         VALUES (?1, ?2) \
+         ON CONFLICT(normalized_hash) DO NOTHING",
+    )
+    .bind(&hash)
+    .bind(&json)
+    .execute(&mut **transaction)
+    .await?;
+
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM frame_metadata_snapshots WHERE normalized_hash = ?1",
+    )
+    .bind(&hash)
+    .fetch_one(&mut **transaction)
+    .await?)
 }
 
 async fn insert_processing_job_record<'e, E>(
@@ -2714,11 +2753,13 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let row = sqlx::query(
-        "SELECT id, session_id, file_path, captured_at, width, height, \
+        "SELECT frames.id, session_id, file_path, captured_at, width, height, \
                 equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
-                created_at, updated_at \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at \
          FROM frames \
-         WHERE id = ?1",
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE frames.id = ?1",
     )
     .bind(frame_id)
     .fetch_optional(executor)
@@ -2852,6 +2893,13 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
         })
         .transpose()?;
 
+    let metadata_snapshot = row
+        .try_get::<Option<String>, _>("metadata_snapshot_json")
+        .ok()
+        .flatten()
+        .map(|json| serde_json::from_str(&json))
+        .transpose()?;
+
     Ok(Frame {
         id: row.get("id"),
         session_id: row.get("session_id"),
@@ -2866,6 +2914,7 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
             status: equivalence_status,
             error: row.get("equivalence_error"),
         },
+        metadata_snapshot,
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })

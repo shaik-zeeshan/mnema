@@ -7,6 +7,7 @@ members = [
     "crates/ocr",
     "crates/capture-runtime",
     "crates/capture-microphone",
+    "crates/capture-metadata",
     "crates/capture-screen",
     "crates/capture-types",
     "crates/capture-vad",

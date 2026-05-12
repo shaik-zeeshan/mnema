@@ -40,6 +40,7 @@ audio-transcription = { path = "../../../crates/audio-transcription", features =
 speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["sherpa-onnx"] }
 ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }
 capture-types = { path = "../../../crates/capture-types" }
+capture-metadata = { path = "../../../crates/capture-metadata" }
 capture-runtime = { path = "../../../crates/capture-runtime" }
 capture-screen = { path = "../../../crates/capture-screen" }
 capture-microphone = { path = "../../../crates/capture-microphone" }

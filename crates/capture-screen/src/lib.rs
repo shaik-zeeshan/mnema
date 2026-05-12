@@ -70,6 +70,43 @@ pub use equivalence::{
 pub type ScreenFrameArtifactHandler =
     std::sync::Arc<dyn Fn(ScreenFrameArtifact) + Send + Sync + 'static>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrivacyContentFilter {
+    pub display_id: u32,
+    pub excluded_bundle_ids: Vec<String>,
+    pub excluded_window_ids: Vec<u32>,
+}
+
+impl PrivacyContentFilter {
+    pub fn key(&self) -> capture_metadata::PrivacyFilterKey {
+        capture_metadata::PrivacyFilterKey::new(
+            self.display_id,
+            self.excluded_bundle_ids.clone(),
+            self.excluded_window_ids.clone(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrivacyFilterApplyErrorKind {
+    DisplayUnavailable,
+    FilterUpdateFailed,
+    UnsupportedPlatform,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrivacyFilterApplyError {
+    pub kind: PrivacyFilterApplyErrorKind,
+    pub message: String,
+}
+
+pub fn privacy_filter_changed(
+    previous: Option<&PrivacyContentFilter>,
+    next: &PrivacyContentFilter,
+) -> bool {
+    previous.map(PrivacyContentFilter::key).as_ref() != Some(&next.key())
+}
+
 pub const SCREEN_SEGMENT_FRAME_INDEX_VERSION: u32 = 1;
 const SCREEN_SEGMENT_FRAME_INDEX_MAGIC: &[u8; 4] = b"SFI1";
 const SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN: usize = 12;
@@ -105,6 +142,7 @@ pub struct ScreenCaptureSessionOptions {
     pub frame_export: Option<ScreenFrameExportConfig>,
     pub system_audio_inactivity_tail_trim_seconds: u64,
     pub system_audio_writer_active: Option<bool>,
+    pub initial_privacy_filter: Option<PrivacyContentFilter>,
 }
 
 #[cfg(target_os = "macos")]
@@ -2152,6 +2190,7 @@ struct ScreenCaptureKitCaptureSession {
     frame_export: Option<ScreenFrameExportConfig>,
     system_audio_inactivity_tail_buffer_seconds: u64,
     lifecycle_state: Arc<Mutex<ScreenCaptureKitLifecycleState>>,
+    privacy_filter_key: Option<capture_metadata::PrivacyFilterKey>,
 }
 
 #[cfg(target_os = "macos")]
@@ -2224,6 +2263,19 @@ impl ActiveCaptureSession {
             }
         }
     }
+
+    fn update_privacy_filter(
+        &mut self,
+        filter: PrivacyContentFilter,
+    ) -> Result<(), PrivacyFilterApplyError> {
+        match &mut self.backend {
+            CaptureBackendSession::ScreenCaptureKit(session) => session.update_privacy_filter(filter),
+            CaptureBackendSession::AvFoundation(_) => Err(PrivacyFilterApplyError {
+                kind: PrivacyFilterApplyErrorKind::UnsupportedPlatform,
+                message: "Privacy content filters require ScreenCaptureKit".to_string(),
+            }),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2275,6 +2327,40 @@ impl AvFoundationCaptureSession {
 
 #[cfg(target_os = "macos")]
 impl ScreenCaptureKitCaptureSession {
+    fn update_privacy_filter(
+        &mut self,
+        filter: PrivacyContentFilter,
+    ) -> Result<(), PrivacyFilterApplyError> {
+        let next_key = filter.key();
+        if self.privacy_filter_key.as_ref() == Some(&next_key) {
+            return Ok(());
+        }
+        let content_filter = build_screen_capture_kit_content_filter(&filter)?;
+        let (tx, rx) = mpsc::channel();
+        self.stream.update_content_filter_ch(&content_filter, move |error| {
+            let result = error
+                .map(|error| {
+                    PrivacyFilterApplyError {
+                        kind: PrivacyFilterApplyErrorKind::FilterUpdateFailed,
+                        message: format!("Failed to update ScreenCaptureKit content filter: {error}"),
+                    }
+                })
+                .map_or(Ok(()), Err);
+            let _ = tx.send(result);
+        });
+        match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(Ok(())) => {
+                self.privacy_filter_key = Some(next_key);
+                Ok(())
+            }
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(PrivacyFilterApplyError {
+                kind: PrivacyFilterApplyErrorKind::FilterUpdateFailed,
+                message: "Timed out updating ScreenCaptureKit content filter".to_string(),
+            }),
+        }
+    }
+
     fn is_stream_live(&self) -> bool {
         self.lifecycle_state
             .lock()
@@ -2554,6 +2640,135 @@ impl ScreenCaptureKitCaptureSession {
             output_files,
         })
     }
+}
+
+#[cfg(target_os = "macos")]
+fn build_screen_capture_kit_content_filter(
+    privacy_filter: &PrivacyContentFilter,
+) -> Result<cidre::arc::R<cidre::sc::ContentFilter>, PrivacyFilterApplyError> {
+    let (content_tx, content_rx) = mpsc::channel();
+    cidre::sc::ShareableContent::current_with_ch(move |content, error| {
+        let result = match (content, error) {
+            (Some(content), None) => Ok(content.retained()),
+            (_, Some(error)) => Err(PrivacyFilterApplyError {
+                kind: PrivacyFilterApplyErrorKind::DisplayUnavailable,
+                message: format!("Failed to query ScreenCaptureKit shareable content: {error}"),
+            }),
+            _ => Err(PrivacyFilterApplyError {
+                kind: PrivacyFilterApplyErrorKind::DisplayUnavailable,
+                message: "No ScreenCaptureKit shareable content available".to_string(),
+            }),
+        };
+        let _ = content_tx.send(result);
+    });
+    let content = content_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| PrivacyFilterApplyError {
+            kind: PrivacyFilterApplyErrorKind::DisplayUnavailable,
+            message: "Timed out querying ScreenCaptureKit shareable content".to_string(),
+        })??;
+
+    let displays = content.displays();
+    let display = if privacy_filter.display_id == 0 {
+        displays.first()
+    } else {
+        displays
+            .iter()
+            .find(|display| display.display_id().0 == privacy_filter.display_id)
+    }
+    .ok_or_else(|| PrivacyFilterApplyError {
+        kind: PrivacyFilterApplyErrorKind::DisplayUnavailable,
+        message: format!(
+            "No ScreenCaptureKit display available for privacy filter display {}",
+            privacy_filter.display_id
+        ),
+    })?;
+
+    let windows = content.windows();
+    let apps = content.apps();
+    let requested_bundle_ids: std::collections::BTreeSet<_> =
+        privacy_filter.excluded_bundle_ids.iter().cloned().collect();
+    let mut resolved_bundle_ids = std::collections::BTreeSet::new();
+    let mut excluded_apps = Vec::new();
+    for app in apps.iter() {
+        let bundle_id = app.bundle_id().to_string();
+        if requested_bundle_ids.contains(&bundle_id) && resolved_bundle_ids.insert(bundle_id) {
+            excluded_apps.push(app.retained());
+        }
+    }
+    for window in windows.iter() {
+        let Some(app) = window.owning_app() else {
+            continue;
+        };
+        let bundle_id = app.bundle_id().to_string();
+        if requested_bundle_ids.contains(&bundle_id) && resolved_bundle_ids.insert(bundle_id) {
+            excluded_apps.push(app.retained());
+        }
+    }
+    let unresolved_bundle_ids: Vec<_> = requested_bundle_ids
+        .difference(&resolved_bundle_ids)
+        .cloned()
+        .collect();
+    if !unresolved_bundle_ids.is_empty() {
+        capture_runtime::debug_log!(
+            "privacy filter requested bundle ids not present in ScreenCaptureKit content: {:?}",
+            unresolved_bundle_ids
+        );
+    }
+    let app_array = cidre::ns::Array::from_slice_retained(&excluded_apps);
+
+    let has_requested_window_exclusions = !privacy_filter.excluded_window_ids.is_empty();
+    let excluded_windows: Vec<_> = windows
+        .iter()
+        .filter(|window| {
+            if privacy_filter.excluded_window_ids.contains(&window.id()) {
+                return true;
+            }
+            if has_requested_window_exclusions {
+                return window
+                    .owning_app()
+                    .map(|app| requested_bundle_ids.contains(&app.bundle_id().to_string()))
+                    .unwrap_or(false);
+            }
+            false
+        })
+        .map(|window| window.retained())
+        .collect();
+    let requested_window_ids: std::collections::BTreeSet<_> =
+        privacy_filter.excluded_window_ids.iter().copied().collect();
+    let resolved_window_ids: std::collections::BTreeSet<_> =
+        excluded_windows.iter().map(|window| window.id()).collect();
+    let unresolved_window_ids: Vec<_> = requested_window_ids
+        .difference(&resolved_window_ids)
+        .copied()
+        .collect();
+    if !unresolved_window_ids.is_empty() {
+        capture_runtime::debug_log!(
+            "privacy filter requested window ids not present in ScreenCaptureKit content: {:?}",
+            unresolved_window_ids
+        );
+    }
+    let window_array = cidre::ns::Array::from_slice_retained(&excluded_windows);
+
+    if excluded_apps.is_empty() || has_requested_window_exclusions {
+        if has_requested_window_exclusions && !excluded_apps.is_empty() {
+            capture_runtime::debug_log!(
+                "privacy filter using window exclusion union for mixed bundle/window request: bundles={:?}, windows={:?}",
+                privacy_filter.excluded_bundle_ids,
+                privacy_filter.excluded_window_ids
+            );
+        }
+        return Ok(cidre::sc::ContentFilter::with_display_excluding_windows(
+            display,
+            &window_array,
+        ));
+    }
+
+    Ok(cidre::sc::ContentFilter::with_display_excluding_apps_excepting_windows(
+        display,
+        &app_array,
+        &cidre::ns::Array::new(),
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -3018,7 +3233,7 @@ fn start_screen_capture_kit_session(
     video_bitrate_bps: Option<u32>,
     options: ScreenCaptureSessionOptions,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
-    use cidre::{api, ns, sc};
+    use cidre::{api, sc};
 
     let system_audio_writer_active = system_audio_writer_active_for_options(sources, &options);
 
@@ -3098,8 +3313,16 @@ fn start_screen_capture_kit_session(
             message: "No display available for ScreenCaptureKit capture".to_string(),
         })?;
 
-        let excluded_windows = ns::Array::<sc::Window>::new();
-        let filter = sc::ContentFilter::with_display_excluding_windows(display, &excluded_windows);
+        let initial_privacy_filter = options.initial_privacy_filter.clone();
+        let excluded_windows = cidre::ns::Array::<sc::Window>::new();
+        let filter = if let Some(initial_privacy_filter) = &initial_privacy_filter {
+            build_screen_capture_kit_content_filter(initial_privacy_filter).map_err(|error| CaptureErrorResponse {
+                code: "privacy_filter_apply_failed".to_string(),
+                message: error.message,
+            })?
+        } else {
+            sc::ContentFilter::with_display_excluding_windows(display, &excluded_windows)
+        };
 
         let stream_resolution = resolve_stream_resolution(
             screen_resolution,
@@ -3179,6 +3402,7 @@ fn start_screen_capture_kit_session(
                     system_audio_inactivity_tail_buffer_seconds: options
                         .system_audio_inactivity_tail_trim_seconds,
                     lifecycle_state,
+                    privacy_filter_key: initial_privacy_filter.map(|filter| filter.key()),
                 }),
             },
             recording_file: output_file_str,
@@ -3546,6 +3770,31 @@ pub fn rotate_screen_capture_session(
             message: "This capture backend requires full restart for segment rotation".to_string(),
         }),
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn update_active_privacy_filter(
+    _active_session: &mut Option<ActiveCaptureSession>,
+    _filter: PrivacyContentFilter,
+) -> Result<(), PrivacyFilterApplyError> {
+    Err(PrivacyFilterApplyError {
+        kind: PrivacyFilterApplyErrorKind::UnsupportedPlatform,
+        message: "Privacy content filters require ScreenCaptureKit".to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub fn update_active_privacy_filter(
+    active_session: &mut Option<ActiveCaptureSession>,
+    filter: PrivacyContentFilter,
+) -> Result<(), PrivacyFilterApplyError> {
+    let Some(session) = active_session.as_mut() else {
+        return Err(PrivacyFilterApplyError {
+            kind: PrivacyFilterApplyErrorKind::FilterUpdateFailed,
+            message: "Missing active screen capture session for privacy filter update".to_string(),
+        });
+    };
+    session.update_privacy_filter(filter)
 }
 
 /// Finalize and disable the system-audio writer for an active ScreenCaptureKit

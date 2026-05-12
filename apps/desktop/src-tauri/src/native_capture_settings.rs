@@ -1,18 +1,19 @@
 use capture_types::{
     default_appearance, default_audio_speech_detection_settings,
     default_audio_transcription_settings, default_developer_options_enabled,
-    default_follow_timeline_live, default_idle_timeout_seconds,
+    default_follow_timeline_live, default_idle_timeout_seconds, default_metadata_settings,
     default_microphone_activity_sensitivity, default_native_capture_debug_logging_enabled,
     default_ocr_settings, default_ocr_tesseract_char_whitelist,
     default_ocr_tesseract_page_segmentation_mode, default_ocr_tesseract_preprocess_mode,
     default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
-    default_preview_cache_ttl_seconds, default_speaker_analysis_model_id,
+    default_preview_cache_ttl_seconds, default_privacy_settings, default_speaker_analysis_model_id,
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
     default_system_audio_activity_sensitivity, default_video_bitrate, AudioSpeechDetectionSettings,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
-    CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
-    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    BrowserTitleRuleMatchType, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
+    RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
+    SpeakerAnalysisSettings, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
+    VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -89,6 +90,8 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
+        metadata: default_metadata_settings(),
+        privacy: default_privacy_settings(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -246,6 +249,58 @@ fn validate_audio_speech_detection_settings(
     }
 
     Ok(value)
+}
+
+fn validate_privacy_settings(
+    value: capture_types::PrivacySettings,
+) -> Result<capture_types::PrivacySettings, CaptureErrorResponse> {
+    let capture_types::PrivacySettings {
+        excluded_apps,
+        excluded_website_rules,
+        browser_title_rules,
+        private_browser_exclusion_enabled,
+    } = value;
+
+    let excluded_website_rules = excluded_website_rules
+        .into_iter()
+        .map(|rule| {
+            let mut parsed =
+                capture_metadata::parse_website_rule(rule.id, rule.enabled, &rule.pattern);
+            if rule.host.is_some()
+                || rule.path_prefix.is_some()
+                || rule.port.is_some()
+                || rule.include_subdomains
+            {
+                parsed.host = rule.host.or(parsed.host);
+                parsed.include_subdomains = rule.include_subdomains || parsed.include_subdomains;
+                parsed.path_prefix = rule.path_prefix.or(parsed.path_prefix);
+                parsed.port = rule.port.or(parsed.port);
+            }
+            parsed
+        })
+        .collect();
+
+    for rule in &browser_title_rules {
+        if rule.enabled
+            && rule.match_type == BrowserTitleRuleMatchType::Regex
+            && !capture_metadata::title_rule_is_valid(rule)
+        {
+            return Err(CaptureErrorResponse {
+                code: "invalid_recording_settings".to_string(),
+                message: format!(
+                    "Enabled browser title regex rule '{}' is invalid",
+                    rule.pattern
+                ),
+            });
+        }
+    }
+
+    Ok(capture_types::PrivacySettings {
+        excluded_apps,
+        excluded_website_rules,
+        browser_title_rules,
+        private_browser_exclusion_enabled,
+    })
 }
 
 fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> SpeakerAnalysisSettings {
@@ -548,6 +603,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
     let transcription = validate_audio_transcription_settings(request.transcription)?;
     let audio_speech_detection =
         validate_audio_speech_detection_settings(request.audio_speech_detection, &transcription)?;
+    let privacy = validate_privacy_settings(request.privacy)?;
     let speaker_analysis = validate_speaker_analysis_settings(request.speaker_analysis);
     let microphone_activity_sensitivity = validate_audio_activity_sensitivity(
         "microphoneActivitySensitivity",
@@ -588,6 +644,8 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         transcription,
         speaker_analysis,
         audio_speech_detection: audio_speech_detection.clone(),
+        metadata: request.metadata,
+        privacy,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -639,6 +697,8 @@ fn load_recording_settings_from_path_with_resolution_support(
             transcription: parsed.transcription,
             speaker_analysis: parsed.speaker_analysis,
             audio_speech_detection: parsed.audio_speech_detection,
+            metadata: parsed.metadata,
+            privacy: parsed.privacy,
             pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
             idle_timeout_seconds: parsed.idle_timeout_seconds,
             microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -1013,6 +1073,8 @@ mod tests {
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
+                metadata: default_metadata_settings(),
+                privacy: default_privacy_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1067,6 +1129,8 @@ mod tests {
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
+                metadata: default_metadata_settings(),
+                privacy: default_privacy_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1137,6 +1201,8 @@ mod tests {
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
+                metadata: default_metadata_settings(),
+                privacy: default_privacy_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1181,6 +1247,8 @@ mod tests {
                 transcription,
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
+                metadata: default_metadata_settings(),
+                privacy: default_privacy_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1275,6 +1343,8 @@ mod tests {
             transcription: default_audio_transcription_settings(),
             speaker_analysis: default_speaker_analysis_settings(),
             audio_speech_detection: default_audio_speech_detection_settings(),
+            metadata: default_metadata_settings(),
+            privacy: default_privacy_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

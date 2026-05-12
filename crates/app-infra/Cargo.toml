@@ -9,6 +9,7 @@ audio-transcription = { path = "../audio-transcription" }
 speaker-analysis = { path = "../speaker-analysis" }
 ocr = { path = "../ocr" }
 capture-screen = { path = "../capture-screen" }
+capture-metadata = { path = "../capture-metadata" }
 capture-runtime = { path = "../capture-runtime" }
 capture-types = { path = "../capture-types" }
 capture-vad = { path = "../capture-vad" }

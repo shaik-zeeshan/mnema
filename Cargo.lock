@@ -132,6 +132,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "audio-transcription",
+ "capture-metadata",
  "capture-runtime",
  "capture-screen",
  "capture-types",
@@ -805,6 +806,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "capture-metadata"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "url",
+]
+
+[[package]]
 name = "capture-microphone"
 version = "0.1.0"
 dependencies = [
@@ -826,6 +838,7 @@ dependencies = [
 name = "capture-screen"
 version = "0.1.0"
 dependencies = [
+ "capture-metadata",
  "capture-runtime",
  "capture-types",
  "capture-writers",
@@ -840,6 +853,7 @@ dependencies = [
 name = "capture-types"
 version = "0.1.0"
 dependencies = [
+ "capture-metadata",
  "serde",
  "serde_json",
 ]
@@ -3485,6 +3499,7 @@ dependencies = [
  "audio-transcription",
  "base64 0.22.1",
  "bzip2 0.6.1",
+ "capture-metadata",
  "capture-microphone",
  "capture-runtime",
  "capture-screen",

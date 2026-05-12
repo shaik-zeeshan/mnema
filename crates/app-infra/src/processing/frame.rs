@@ -80,6 +80,7 @@ pub struct Frame {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub equivalence: FrameEquivalence,
+    pub metadata_snapshot: Option<capture_metadata::FrameMetadataSnapshot>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -100,6 +101,7 @@ pub struct NewFrame {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub equivalence: FrameEquivalence,
+    pub metadata_snapshot: Option<capture_metadata::FrameMetadataSnapshot>,
     pub capture_segment_id: Option<i64>,
 }
 
@@ -122,6 +124,7 @@ impl NewFrame {
                 status: None,
                 error: None,
             },
+            metadata_snapshot: None,
             capture_segment_id: None,
         }
     }
@@ -139,6 +142,14 @@ impl NewFrame {
 
     pub fn with_capture_segment_id(mut self, capture_segment_id: i64) -> Self {
         self.capture_segment_id = Some(capture_segment_id);
+        self
+    }
+
+    pub fn with_metadata_snapshot(
+        mut self,
+        snapshot: capture_metadata::FrameMetadataSnapshot,
+    ) -> Self {
+        self.metadata_snapshot = Some(snapshot);
         self
     }
 }

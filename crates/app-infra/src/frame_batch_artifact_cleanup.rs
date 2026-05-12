@@ -220,6 +220,7 @@ mod tests {
                 status: None,
                 error: None,
             },
+            metadata_snapshot: None,
             created_at: String::new(),
             updated_at: String::new(),
         }

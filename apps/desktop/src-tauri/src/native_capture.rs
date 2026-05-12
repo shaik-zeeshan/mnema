@@ -4,6 +4,8 @@ pub(crate) mod debug_log;
 #[path = "native_capture_inactivity.rs"]
 pub(crate) mod inactivity;
 mod lifecycle;
+#[path = "native_capture_metadata.rs"]
+pub(crate) mod metadata;
 mod microphone;
 #[path = "native_capture_output.rs"]
 pub(crate) mod output;
@@ -95,6 +97,38 @@ pub struct AppNotification {
     pub action: Option<AppNotificationAction>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivacyAppCandidate {
+    pub bundle_id: String,
+    pub display_name: String,
+    pub running: bool,
+    pub icon_path: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckBrowserUrlSupportRequest {
+    pub bundle_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserUrlSupportResponse {
+    pub bundle_id: String,
+    pub supported: bool,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturePrivacyDebugResponse {
+    pub metadata_enabled: bool,
+    pub browser_url_mode: capture_metadata::BrowserUrlMode,
+    pub private_browser_exclusion_enabled: bool,
+    pub privacy_debug: metadata::CapturePrivacyDebugInfo,
+}
+
 #[derive(Debug, Default)]
 pub struct AppNotificationsRuntime {
     notifications: Vec<AppNotification>,
@@ -123,6 +157,79 @@ impl AppNotificationsRuntime {
 }
 
 pub type AppNotificationsState = Mutex<AppNotificationsRuntime>;
+pub use metadata::CaptureMetadataState;
+
+#[tauri::command]
+pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
+    let mut candidates = vec![PrivacyAppCandidate {
+        bundle_id: "com.shaikzeeshan.mnema".to_string(),
+        display_name: "Mnema".to_string(),
+        running: true,
+        icon_path: None,
+    }];
+
+    #[cfg(target_os = "macos")]
+    {
+        candidates.extend(
+            [
+                ("com.1password.1password", "1Password"),
+                ("org.signal.Signal", "Signal"),
+                ("com.apple.Notes", "Notes"),
+                ("com.apple.mail", "Mail"),
+                ("com.apple.MobileSMS", "Messages"),
+                ("net.whatsapp.WhatsApp", "WhatsApp"),
+            ]
+            .into_iter()
+            .map(|(bundle_id, display_name)| PrivacyAppCandidate {
+                bundle_id: bundle_id.to_string(),
+                display_name: display_name.to_string(),
+                running: false,
+                icon_path: None,
+            }),
+        );
+    }
+
+    Ok(candidates)
+}
+
+#[tauri::command]
+pub async fn check_browser_url_support(
+    request: CheckBrowserUrlSupportRequest,
+) -> Result<BrowserUrlSupportResponse, String> {
+    const SUPPORTED: &[&str] = &[
+        "com.apple.Safari",
+        "com.google.Chrome",
+        "com.google.Chrome.canary",
+        "com.microsoft.edgemac",
+        "org.mozilla.firefox",
+        "com.brave.Browser",
+        "company.thebrowser.Browser",
+        "net.imput.helium",
+    ];
+    let supported = SUPPORTED.contains(&request.bundle_id.as_str());
+    Ok(BrowserUrlSupportResponse {
+        bundle_id: request.bundle_id,
+        supported,
+        warning: (!supported).then(|| {
+            "URL metadata support is unknown for this browser; browsing will still be recorded."
+                .to_string()
+        }),
+    })
+}
+
+#[tauri::command]
+pub fn get_capture_privacy_debug(
+    metadata_state: tauri::State<'_, CaptureMetadataState>,
+    settings_state: tauri::State<'_, RecordingSettingsState>,
+) -> CapturePrivacyDebugResponse {
+    let settings = current_recording_settings(settings_state.inner());
+    CapturePrivacyDebugResponse {
+        metadata_enabled: settings.metadata.enabled,
+        browser_url_mode: settings.metadata.browser_url_mode,
+        private_browser_exclusion_enabled: settings.privacy.private_browser_exclusion_enabled,
+        privacy_debug: metadata::capture_privacy_debug_info(metadata_state.inner()),
+    }
+}
 
 fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
@@ -1714,6 +1821,12 @@ pub fn stop_native_capture(
             return Err(error);
         }
     };
+    if let Some(metadata_state) = app_handle.try_state::<CaptureMetadataState>() {
+        metadata::mark_applied_privacy_decision(
+            metadata_state.inner(),
+            capture_metadata::PrivacyFilterDecision::default(),
+        );
+    }
 
     debug_log::log_info(format!(
         "stopped native capture successfully (session_id='{}', requested_sources={}, finalized_outputs={})",

@@ -2583,6 +2583,48 @@ mod tests {
     }
 
     #[test]
+    fn frame_metadata_snapshots_are_deduped_and_linked() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-frame-metadata");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let snapshot = capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.App".to_string()),
+                app_name: Some("Example".to_string()),
+                window_title: Some("Private Project".to_string()),
+                browser_url: Some("https://example.com/private".to_string()),
+                display_id: Some(1),
+                metadata_redaction_reason: None,
+            };
+
+            let first = infra
+                .insert_frame(
+                    &test_frame("session-metadata", "frame-a.png")
+                        .with_metadata_snapshot(snapshot.clone()),
+                )
+                .await
+                .expect("frame should persist");
+            let second = infra
+                .insert_frame(
+                    &test_frame("session-metadata", "frame-b.png")
+                        .with_metadata_snapshot(snapshot.clone()),
+                )
+                .await
+                .expect("second frame should persist");
+
+            assert_eq!(first.metadata_snapshot.as_ref(), Some(&snapshot));
+            assert_eq!(second.metadata_snapshot.as_ref(), Some(&snapshot));
+
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frame_metadata_snapshots")
+                .fetch_one(infra.pool())
+                .await
+                .expect("snapshot count should load");
+            assert_eq!(count, 1);
+        });
+    }
+
+    #[test]
     fn audio_segments_upsert_is_idempotent_and_lists_overlapping_ranges() {
         run_async_test(async {
             let dir = TestDir::new("audio-segments");

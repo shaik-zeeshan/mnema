@@ -51,6 +51,7 @@ pub fn run() {
         .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
         .manage(native_capture::SystemWakeNotifierState::default())
         .manage(native_capture::RecordingSettingsState::default())
+        .manage(native_capture::CaptureMetadataState::default())
         .manage(native_capture::AppNotificationsState::default())
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
         .manage(speaker_analysis_models::SpeakerAnalysisModelDownloadState::default())
@@ -147,6 +148,9 @@ pub fn run() {
             native_capture::get_app_notifications,
             native_capture::clear_app_notification,
             native_capture::clear_app_notifications,
+            native_capture::list_privacy_app_candidates,
+            native_capture::check_browser_url_support,
+            native_capture::get_capture_privacy_debug,
             native_capture::get_recording_settings,
             native_capture::update_recording_settings,
             native_capture::get_native_capture_debug_log_status,

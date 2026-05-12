@@ -42,6 +42,10 @@
     MicrophoneDisconnectPolicy,
     MicrophoneAutoDisconnectTransitionFailedEvent,
     RetentionPolicy,
+    BrowserUrlMode,
+    ExcludedAppEntry,
+    WebsiteRule,
+    BrowserTitleRule,
     SpeakerAnalysisModelDownloadProgress,
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
@@ -57,6 +61,7 @@
     | "transcription"
     | "speaker"
     | "developer"
+    | "privacy"
     | "audio";
 
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
@@ -133,6 +138,16 @@
   // Timeline behavior draft
   let draftFollowTimelineLive = $state(false);
   let draftRetentionPolicy = $state<RetentionPolicy>("never");
+  let draftMetadataEnabled = $state(true);
+  let draftBrowserUrlMode = $state<BrowserUrlMode>("sanitized");
+  let draftExcludedApps = $state<ExcludedAppEntry[]>([]);
+  let draftWebsiteRules = $state<WebsiteRule[]>([]);
+  let draftBrowserTitleRules = $state<BrowserTitleRule[]>([]);
+  let draftPrivateBrowserExclusionEnabled = $state(false);
+  let privacyAppCandidates = $state<ExcludedAppEntry[]>([]);
+  let selectedPrivacyCandidateBundleId = $state("");
+  let websiteRuleDraft = $state("");
+  let titleRuleDraft = $state("");
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
   let retentionCleanupRunning = $state(false);
   let retentionCleanupError = $state<string | null>(null);
@@ -239,6 +254,7 @@
   type SettingsTab =
     | "capture"
     | "video"
+    | "privacy"
     | "audio"
     | "processing"
     | "storage"
@@ -270,6 +286,7 @@
 
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
     { id: "capture",    label: "Capture",     description: "Sources, segments, inactivity" },
+    { id: "privacy",    label: "Privacy",     description: "Metadata and exclusions" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
     { id: "audio",      label: "Audio",       description: "Microphone devices & disconnects" },
     { id: "processing", label: "Processing",  description: "OCR, transcription, speakers" },
@@ -280,6 +297,7 @@
 
   function normalizeSettingsTab(value: string | null | undefined): SettingsTab | null {
     if (value === "capture" || value === "behavior") return "capture";
+    if (value === "privacy" || value === "metadata") return "privacy";
     if (value === "video") return "video";
     if (value === "audio" || value === "microphone") return "audio";
     if (value === "processing" || value === "ocr" || value === "transcription" || value === "speakers") return "processing";
@@ -407,6 +425,12 @@
     draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
     draftFollowTimelineLive = s.followTimelineLive ?? false;
     draftRetentionPolicy = s.retentionPolicy ?? "never";
+    draftMetadataEnabled = s.metadata?.enabled ?? true;
+    draftBrowserUrlMode = s.metadata?.browserUrlMode ?? "sanitized";
+    draftExcludedApps = [...(s.privacy?.excludedApps ?? [])];
+    draftWebsiteRules = [...(s.privacy?.excludedWebsiteRules ?? [])];
+    draftBrowserTitleRules = [...(s.privacy?.browserTitleRules ?? [])];
+    draftPrivateBrowserExclusionEnabled = s.privacy?.privateBrowserExclusionEnabled ?? true;
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
     draftAppearance = s.appearance ?? "system";
     draftOcrEnabled = s.ocr?.enabled ?? true;
@@ -498,6 +522,16 @@
       audioSpeechDetection: {
         detector: draftMicrophoneVadAdapter,
       },
+      metadata: {
+        enabled: draftMetadataEnabled,
+        browserUrlMode: draftBrowserUrlMode,
+      },
+      privacy: {
+        excludedApps: draftExcludedApps,
+        excludedWebsiteRules: draftWebsiteRules,
+        browserTitleRules: draftBrowserTitleRules,
+        privateBrowserExclusionEnabled: draftPrivateBrowserExclusionEnabled,
+      },
       nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
       previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
       followTimelineLive: draftFollowTimelineLive,
@@ -558,6 +592,88 @@
       },
       disconnectPolicy: draftDisconnectPolicy,
     };
+  }
+
+  function makeDraftId(prefix: string): string {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async function loadPrivacyAppCandidates() {
+    try {
+      const candidates = await invoke<Array<{ bundleId: string; displayName: string; running: boolean; iconPath: string | null }>>("list_privacy_app_candidates");
+      privacyAppCandidates = candidates.map((candidate) => ({
+        id: makeDraftId("app-candidate"),
+        enabled: true,
+        bundleId: candidate.bundleId,
+        displayName: candidate.displayName,
+      }));
+    } catch {
+      privacyAppCandidates = [];
+    }
+  }
+
+  function addSelectedPrivacyApp() {
+    const candidate = privacyAppCandidates.find((item) => item.bundleId === selectedPrivacyCandidateBundleId);
+    if (!candidate || draftExcludedApps.some((item) => item.bundleId === candidate.bundleId)) return;
+    draftExcludedApps = [
+      ...draftExcludedApps,
+      { ...candidate, id: makeDraftId("excluded-app"), enabled: true },
+    ];
+    selectedPrivacyCandidateBundleId = "";
+  }
+
+  function removePrivacyApp(id: string) {
+    draftExcludedApps = draftExcludedApps.filter((item) => item.id !== id);
+  }
+
+  function addWebsiteRule() {
+    const pattern = websiteRuleDraft.trim();
+    if (!pattern) return;
+    draftWebsiteRules = [
+      ...draftWebsiteRules,
+      {
+        id: makeDraftId("website"),
+        enabled: true,
+        pattern,
+        host: null,
+        includeSubdomains: pattern.startsWith("*."),
+        pathPrefix: null,
+        port: null,
+      },
+    ];
+    websiteRuleDraft = "";
+  }
+
+  function removeWebsiteRule(id: string) {
+    draftWebsiteRules = draftWebsiteRules.filter((item) => item.id !== id);
+  }
+
+  function addTitleRule() {
+    const pattern = titleRuleDraft.trim();
+    if (!pattern) return;
+    draftBrowserTitleRules = [
+      ...draftBrowserTitleRules,
+      { id: makeDraftId("title"), enabled: true, matchType: "substring", pattern },
+    ];
+    titleRuleDraft = "";
+  }
+
+  function removeTitleRule(id: string) {
+    draftBrowserTitleRules = draftBrowserTitleRules.filter((item) => item.id !== id);
+  }
+
+  async function setBrowserUrlMode(mode: string) {
+    if (mode === draftBrowserUrlMode) return;
+    if (mode === "full") {
+      const ok = await ask("Full URL metadata stores query strings and fragments. Continue?", {
+        title: "Enable full URL metadata",
+        kind: "warning",
+        okLabel: "Enable",
+        cancelLabel: "Cancel",
+      });
+      if (!ok) return;
+    }
+    draftBrowserUrlMode = mode as BrowserUrlMode;
   }
 
   // Snapshots are stable JSON strings derived from the very same payload
@@ -1549,6 +1665,7 @@
     loadSpeakerModelStatus();
     loadDebugLogStatus();
     loadGeneralLogStatus();
+    loadPrivacyAppCandidates();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -1692,6 +1809,12 @@
         <path d="m8 9-4 3 4 3" />
         <path d="m16 9 4 3-4 3" />
         <path d="m14 5-4 14" />
+      </svg>
+    {:else if kind === "privacy"}
+      <svg viewBox="0 0 24 24">
+        <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6Z" />
+        <path d="M9 12h6" />
+        <path d="M12 9v6" />
       </svg>
     {:else if kind === "audio"}
       <svg viewBox="0 0 24 24">
@@ -1853,6 +1976,108 @@
 
 <!-- ── Recording details (split into focused cards) ────────────────────── -->
 {#if !loadingRecSettings}
+  {#if activeTab === "privacy"}
+    <div role="tabpanel" id="settings-panel-privacy" aria-labelledby="settings-tab-privacy" tabindex="0">
+      <section class="card">
+        <div class="card__header">
+          <div class="card__heading">
+            {@render settingsCardIcon("privacy")}
+            <div>
+              <h2 class="card__title">Privacy</h2>
+              <p class="card__subtitle">Frame metadata and recording exclusions.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <span class="group-label">Metadata</span>
+          <div class="settings-stack">
+            <Switch
+              bind:checked={draftMetadataEnabled}
+              label="Capture frame context"
+              description="Store app, window, and supported browser context with frames"
+            />
+            <SelectMenu
+              value={draftBrowserUrlMode}
+              onValueChange={setBrowserUrlMode}
+              label="Browser URL mode"
+              options={[
+                { value: "off", label: "Off" },
+                { value: "sanitized", label: "Sanitized" },
+                { value: "full", label: "Full" },
+              ]}
+              disabled={!draftMetadataEnabled}
+            />
+          </div>
+          <p class="group-hint">Sanitized URLs keep scheme, host, port, and path while dropping query strings and fragments.</p>
+        </div>
+
+        <div class="settings-group">
+          <span class="group-label">Excluded Apps</span>
+          <div class="settings-row">
+            <SelectMenu
+              value={selectedPrivacyCandidateBundleId}
+              onValueChange={(value) => { selectedPrivacyCandidateBundleId = value; }}
+              options={privacyAppCandidates.map((item) => ({ value: item.bundleId, label: item.displayName }))}
+              placeholder="Choose an app"
+            />
+            <button class="btn btn--secondary btn--sm" type="button" onclick={addSelectedPrivacyApp}>Add</button>
+          </div>
+          <div class="settings-list">
+            {#each draftExcludedApps as app (app.id)}
+              <div class="settings-list-item">
+                <Switch bind:checked={app.enabled} label={app.displayName} description={app.bundleId} />
+                <button class="btn btn--ghost btn--sm" type="button" onclick={() => removePrivacyApp(app.id)}>Remove</button>
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <span class="group-label">Website Exclusions</span>
+          <div class="settings-row">
+            <input class="text-input" bind:value={websiteRuleDraft} placeholder="example.com/private" />
+            <button class="btn btn--secondary btn--sm" type="button" onclick={addWebsiteRule}>Add</button>
+          </div>
+          <p class="group-hint">Website and title exclusions are best-effort and require metadata support for the active browser.</p>
+          <div class="settings-list">
+            {#each draftWebsiteRules as rule (rule.id)}
+              <div class="settings-list-item">
+                <Switch bind:checked={rule.enabled} label={rule.pattern} description="Website rule" />
+                <button class="btn btn--ghost btn--sm" type="button" onclick={() => removeWebsiteRule(rule.id)}>Remove</button>
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <span class="group-label">Browser Titles</span>
+          <div class="settings-row">
+            <input class="text-input" bind:value={titleRuleDraft} placeholder="private title text" />
+            <button class="btn btn--secondary btn--sm" type="button" onclick={addTitleRule}>Add</button>
+          </div>
+          <div class="settings-list">
+            {#each draftBrowserTitleRules as rule (rule.id)}
+              <div class="settings-list-item">
+                <Switch bind:checked={rule.enabled} label={rule.pattern} description={rule.matchType === "regex" ? "Regex title rule" : "Substring title rule"} />
+                <button class="btn btn--ghost btn--sm" type="button" onclick={() => removeTitleRule(rule.id)}>Remove</button>
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <Switch
+            bind:checked={draftPrivateBrowserExclusionEnabled}
+            disabled={!draftMetadataEnabled}
+            label="Hide private browser windows"
+            description="Best-effort private/incognito detection from browser metadata and window titles"
+          />
+        </div>
+      </section>
+    </div>
+  {/if}
+
   {#if activeTab === "video"}
     <div role="tabpanel" id="settings-panel-video" aria-labelledby="settings-tab-video" tabindex="0">
     <!-- ── Card: Video Output ─────────────────────── -->
@@ -3972,6 +4197,31 @@
     display: flex;
     gap: 8px;
     align-items: center;
+  }
+
+  .settings-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: end;
+  }
+
+  .settings-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .settings-list-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
   }
 
   .text-input {

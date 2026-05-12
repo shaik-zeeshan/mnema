@@ -683,6 +683,7 @@ pub struct FrameDto {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub equivalence_hint: Option<String>,
+    pub metadata: Option<capture_metadata::FrameMetadataSnapshot>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -929,6 +930,7 @@ impl From<::app_infra::Frame> for FrameDto {
             width: frame.width,
             height: frame.height,
             equivalence_hint: frame.equivalence.hint,
+            metadata: frame.metadata_snapshot,
             created_at: frame.created_at,
             updated_at: frame.updated_at,
         }
@@ -2367,6 +2369,7 @@ fn ocr_enabled_for_settings(settings: &crate::native_capture::RecordingSettingsS
 pub async fn persist_screen_frame_artifact(
     infra: &::app_infra::AppInfra,
     settings: &crate::native_capture::RecordingSettingsState,
+    metadata_snapshot: Option<capture_metadata::FrameMetadataSnapshot>,
     session_id: &str,
     artifact: ScreenFrameArtifact,
 ) -> ::app_infra::Result<::app_infra::CapturedFramePipelineResult> {
@@ -2387,6 +2390,9 @@ pub async fn persist_screen_frame_artifact(
             .await?
     {
         frame = frame.with_capture_segment_id(capture_segment_id);
+    }
+    if let Some(metadata_snapshot) = metadata_snapshot {
+        frame = frame.with_metadata_snapshot(metadata_snapshot);
     }
 
     if let (Some(width), Some(height)) = (width, height) {
@@ -5034,6 +5040,7 @@ mod tests {
             },
             created_at: String::new(),
             updated_at: String::new(),
+            metadata_snapshot: None,
         };
         let related_frames = vec![::app_infra::Frame {
             id: 1,
@@ -5052,6 +5059,7 @@ mod tests {
             },
             created_at: String::new(),
             updated_at: String::new(),
+            metadata_snapshot: None,
         }];
 
         let offset_seconds = estimate_frame_preview_offset_seconds(&frame, &related_frames);
@@ -5099,6 +5107,7 @@ mod tests {
             },
             created_at: String::new(),
             updated_at: String::new(),
+            metadata_snapshot: None,
         };
 
         let offset = indexed_frame_preview_offset(&frame, &video_path)
@@ -5141,6 +5150,7 @@ mod tests {
             },
             created_at: String::new(),
             updated_at: String::new(),
+            metadata_snapshot: None,
         };
 
         let offset = indexed_frame_preview_offset(&frame, &video_path)
@@ -5186,6 +5196,7 @@ mod tests {
             },
             created_at: String::new(),
             updated_at: String::new(),
+            metadata_snapshot: None,
         };
 
         capture_runtime::configure_debug_log(true, Some(log_path.clone()));
@@ -5697,6 +5708,7 @@ mod tests {
             let persisted = persist_screen_frame_artifact(
                 &infra,
                 &settings,
+                None,
                 "session-artifact",
                 ScreenFrameArtifact {
                     file_path: "/tmp/frame-artifact.png".to_string(),
@@ -5751,6 +5763,7 @@ mod tests {
             let persisted = persist_screen_frame_artifact(
                 &infra,
                 &settings,
+                None,
                 "session-artifact-quarantined",
                 ScreenFrameArtifact {
                     file_path: "/tmp/frame-artifact-quarantined.png".to_string(),

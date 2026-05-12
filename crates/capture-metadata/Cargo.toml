@@ -1,11 +1,11 @@
 [package]
-name = "capture-types"
+name = "capture-metadata"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-capture-metadata = { path = "../capture-metadata" }
+regex = "1"
 serde = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
 serde_json = "1"
+sha2 = "0.10"
+url = "2"

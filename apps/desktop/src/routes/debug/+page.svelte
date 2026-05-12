@@ -49,6 +49,40 @@
   let idleDebug = $state<IdleDebugInfo | null>(null);
   let idleDebugError = $state<string | null>(null);
 
+  type PrivacyFilterDecision = {
+    excludedBundleIds: string[];
+    excludedWindowIds: number[];
+    matchedRuleIds: string[];
+    metadataRedactionReason: string | null;
+    privacyFilterApplied: boolean;
+  };
+
+  type CapturePrivacyDebugInfo = {
+    metadataEnabled: boolean;
+    browserUrlMode: string;
+    privateBrowserExclusionEnabled: boolean;
+    privacyDebug: {
+      latestSnapshot: {
+        appBundleId: string | null;
+        appName: string | null;
+        windowTitle: string | null;
+        browserUrl: string | null;
+        displayId: number | null;
+        metadataRedactionReason: string | null;
+      } | null;
+      latestDecision: PrivacyFilterDecision;
+      latestAppliedDecision: PrivacyFilterDecision;
+      websitePrivacyHoldBundleIds: string[];
+      currentlyExcludedBundleIds: string[];
+      currentlyExcludedWindowIds: number[];
+      privacyFilterApplied: boolean;
+      metadataRedactionReason: string | null;
+    };
+  };
+
+  let privacyDebug = $state<CapturePrivacyDebugInfo | null>(null);
+  let privacyDebugError = $state<string | null>(null);
+
   async function fetchIdleDebug() {
     // Skip the round-trip when the page is hidden or no capture session is active —
     // the debug panel is only meaningful while recording (or briefly after stop).
@@ -60,6 +94,21 @@
     } catch (err) {
       idleDebugError = typeof err === "string" ? err : JSON.stringify(err);
     }
+  }
+
+  async function fetchCapturePrivacyDebug() {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    try {
+      privacyDebug = await invoke<CapturePrivacyDebugInfo>("get_capture_privacy_debug");
+      privacyDebugError = null;
+    } catch (err) {
+      privacyDebugError = typeof err === "string" ? err : JSON.stringify(err);
+    }
+  }
+
+  function formatDebugList(values: Array<string | number> | null | undefined): string {
+    if (!values || values.length === 0) return "none";
+    return values.join(", ");
   }
 
   function formatIdleMs(ms: number | null | undefined): string {
@@ -375,8 +424,12 @@
 
   $effect(() => {
     fetchIdleDebug();
+    fetchCapturePrivacyDebug();
 
-    const idleDebugInterval = setInterval(fetchIdleDebug, 2000);
+    const idleDebugInterval = setInterval(() => {
+      fetchIdleDebug();
+      fetchCapturePrivacyDebug();
+    }, 1000);
 
     return () => {
       clearInterval(idleDebugInterval);
@@ -988,7 +1041,7 @@
     <span class="debug-tag">dbg</span>
     Runtime Sources
     <span class="idle-note">capture session · writer · activity</span>
-    <button class="btn btn--ghost btn--sm" onclick={fetchIdleDebug}>↻</button>
+    <button class="btn btn--ghost btn--sm" onclick={() => { fetchIdleDebug(); fetchCapturePrivacyDebug(); }}>↻</button>
   </h2>
 
   {#if idleDebug && idleDebug.runtimeSources}
@@ -1101,6 +1154,72 @@
     <p class="debug-err">{idleDebugError}</p>
   {:else}
     <p class="empty">runtime status only available while a session is active</p>
+  {/if}
+</section>
+
+<section class="card card--debug" id="debug-panel-privacy" aria-labelledby="debug-tab-runtime">
+  <h2 class="card__title">
+    <span class="debug-tag">dbg</span>
+    Privacy Filter
+    <span class="idle-note">last successfully applied ScreenCaptureKit exclusions</span>
+    <button class="btn btn--ghost btn--sm" onclick={fetchCapturePrivacyDebug}>↻</button>
+  </h2>
+
+  {#if privacyDebugError}
+    <p class="debug-err">{privacyDebugError}</p>
+  {:else if privacyDebug}
+    <ul class="kv-list">
+      <li>
+        <span class="kv-key kv-key--wide">filter</span>
+        <span class={privacyDebug.privacyDebug.privacyFilterApplied ? "badge badge--warn badge--sm" : "badge badge--ok badge--sm"}>
+          {privacyDebug.privacyDebug.privacyFilterApplied ? "active" : "empty"}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">metadata</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.metadataEnabled ? "enabled" : "disabled"} · URL {privacyDebug.browserUrlMode}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">private windows</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.privateBrowserExclusionEnabled ? "enabled" : "disabled"}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">reason</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.privacyDebug.metadataRedactionReason ?? "none"}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">applied bundles</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.currentlyExcludedBundleIds)}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">applied windows</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.currentlyExcludedWindowIds)}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">website hold</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.websitePrivacyHoldBundleIds)}</span>
+      </li>
+    </ul>
+
+    <div class="privacy-debug-grid">
+      <div>
+        <div class="idle-section-label">evaluated decision</div>
+        <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestDecision, null, 2)}</p>
+      </div>
+      <div>
+        <div class="idle-section-label">applied decision</div>
+        <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestAppliedDecision, null, 2)}</p>
+      </div>
+    </div>
+
+    <div class="idle-section-label">latest metadata snapshot</div>
+    {#if privacyDebug.privacyDebug.latestSnapshot}
+      <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestSnapshot, null, 2)}</p>
+    {:else}
+      <p class="empty">no metadata snapshot captured yet</p>
+    {/if}
+  {:else}
+    <p class="empty">privacy filter status has not loaded yet</p>
   {/if}
 </section>
 {/if}
@@ -2354,6 +2473,38 @@
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 10px;
     color: var(--app-text);
+  }
+
+  .privacy-debug-list {
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+  }
+
+  .privacy-debug-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .privacy-debug-json {
+    margin: 4px 0 0;
+    padding: 8px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 10px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 760px) {
+    .privacy-debug-grid {
+      grid-template-columns: 1fr;
+    }
   }
 
   /* ── Idle debug sub-sections ────────────────────────── */

@@ -15,6 +15,15 @@ export interface AppInfraStatus {
 	jobCounts: JobCounts;
 }
 
+export interface FrameMetadataSnapshot {
+	appBundleId: string | null;
+	appName: string | null;
+	windowTitle: string | null;
+	browserUrl: string | null;
+	displayId: number | null;
+	metadataRedactionReason: string | null;
+}
+
 export interface FrameDto {
 	id: number;
 	sessionId: string;
@@ -25,6 +34,7 @@ export interface FrameDto {
 	ocrText: string | null;
 	processorVersion: string | null;
 	equivalenceHint: string | null;
+	metadata: FrameMetadataSnapshot | null;
 	createdAt: string;
 	updatedAt: string;
 }

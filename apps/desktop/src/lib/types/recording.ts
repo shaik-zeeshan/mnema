@@ -7,6 +7,44 @@ export type AppearanceSetting = "system" | "light" | "dark";
 export type AudioSpeechDetector = "silero" | "webrtc" | "off";
 export type MicrophoneVadAdapter = AudioSpeechDetector;
 export type RetentionPolicy = "never" | "days_7" | "days_14" | "days_30";
+export type BrowserUrlMode = "off" | "sanitized" | "full";
+export type BrowserTitleRuleMatchType = "substring" | "regex";
+
+export interface MetadataSettings {
+	enabled: boolean;
+	browserUrlMode: BrowserUrlMode;
+}
+
+export interface ExcludedAppEntry {
+	id: string;
+	enabled: boolean;
+	bundleId: string;
+	displayName: string;
+}
+
+export interface WebsiteRule {
+	id: string;
+	enabled: boolean;
+	pattern: string;
+	host: string | null;
+	includeSubdomains: boolean;
+	pathPrefix: string | null;
+	port: number | null;
+}
+
+export interface BrowserTitleRule {
+	id: string;
+	enabled: boolean;
+	matchType: BrowserTitleRuleMatchType;
+	pattern: string;
+}
+
+export interface PrivacySettings {
+	excludedApps: ExcludedAppEntry[];
+	excludedWebsiteRules: WebsiteRule[];
+	browserTitleRules: BrowserTitleRule[];
+	privateBrowserExclusionEnabled: boolean;
+}
 
 export interface RecordingSettings {
 	captureScreen: boolean;
@@ -26,6 +64,8 @@ export interface RecordingSettings {
 	systemAudioActivitySensitivity: number;
 	microphoneVadAdapter?: MicrophoneVadAdapter;
 	audioSpeechDetection: AudioSpeechDetectionSettings;
+	metadata: MetadataSettings;
+	privacy: PrivacySettings;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
 	retentionPolicy: RetentionPolicy;

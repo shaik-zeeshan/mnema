@@ -41,6 +41,7 @@ use super::NativeCaptureState;
 // non-blocking.
 const FRAME_ARTIFACT_BUFFER_CAPACITY: usize = 64;
 const SEGMENT_LOOP_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const PRIVACY_FILTER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[cfg(target_os = "macos")]
 fn persist_capture_session_started(
@@ -706,10 +707,12 @@ pub(super) fn recover_from_segment_finalize_error(
 fn capture_session_options(
     frame_artifact_tx: Option<mpsc::Sender<FrameArtifactMessage>>,
     system_audio_inactivity_tail_trim_seconds: u64,
+    initial_privacy_filter: Option<capture_screen::PrivacyContentFilter>,
 ) -> capture_screen::ScreenCaptureSessionOptions {
     let Some(frame_artifact_tx) = frame_artifact_tx else {
         return capture_screen::ScreenCaptureSessionOptions {
             system_audio_inactivity_tail_trim_seconds,
+            initial_privacy_filter,
             ..Default::default()
         };
     };
@@ -717,6 +720,7 @@ fn capture_session_options(
     if !capture_screen::supports_frame_export() {
         return capture_screen::ScreenCaptureSessionOptions {
             system_audio_inactivity_tail_trim_seconds,
+            initial_privacy_filter,
             ..Default::default()
         };
     }
@@ -736,7 +740,62 @@ fn capture_session_options(
         }),
         system_audio_inactivity_tail_trim_seconds,
         system_audio_writer_active: None,
+        initial_privacy_filter,
     }
+}
+
+fn privacy_filter_from_decision(
+    decision: capture_metadata::PrivacyFilterDecision,
+) -> Option<capture_screen::PrivacyContentFilter> {
+    decision
+        .privacy_filter_applied
+        .then_some(capture_screen::PrivacyContentFilter {
+            display_id: 0,
+            excluded_bundle_ids: decision.excluded_bundle_ids,
+            excluded_window_ids: decision.excluded_window_ids,
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn refresh_and_apply_privacy_filter(
+    app_handle: &tauri::AppHandle,
+    runtime: &mut NativeCaptureRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    if !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
+        return Ok(());
+    }
+    let settings = app_handle
+        .state::<crate::native_capture::RecordingSettingsState>()
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .clone();
+    let decision = crate::native_capture::metadata::refresh_metadata_state(
+        app_handle
+            .state::<crate::native_capture::CaptureMetadataState>()
+            .inner(),
+        &settings.metadata,
+        &settings.privacy,
+    );
+    let filter = privacy_filter_from_decision(decision.clone()).unwrap_or(
+        capture_screen::PrivacyContentFilter {
+            display_id: 0,
+            excluded_bundle_ids: Vec::new(),
+            excluded_window_ids: Vec::new(),
+        },
+    );
+    capture_screen::update_active_privacy_filter(&mut runtime.active_screen_session, filter)
+        .map_err(|error| CaptureErrorResponse {
+            code: "privacy_filter_apply_failed".to_string(),
+            message: error.message,
+        })?;
+    crate::native_capture::metadata::mark_applied_privacy_decision(
+        app_handle
+            .state::<crate::native_capture::CaptureMetadataState>()
+            .inner(),
+        decision,
+    );
+    Ok(())
 }
 
 fn spawn_frame_artifact_worker(
@@ -756,6 +815,11 @@ fn spawn_frame_artifact_worker(
                         app_handle
                             .state::<crate::native_capture::RecordingSettingsState>()
                             .inner(),
+                        crate::native_capture::metadata::latest_frame_metadata_snapshot(
+                            app_handle
+                                .state::<crate::native_capture::CaptureMetadataState>()
+                                .inner(),
+                        ),
                         &session_id,
                         artifact,
                     )
@@ -2028,6 +2092,7 @@ pub(super) fn resume_screen_from_inactivity(
                 tail_trim_seconds,
                 microphone_activity_threshold,
                 microphone_tail_activity_mode,
+                None,
             )
         },
     )
@@ -2821,6 +2886,7 @@ pub(super) fn resume_runtime_from_inactivity(
                 tail_trim_seconds,
                 microphone_activity_threshold,
                 microphone_tail_activity_mode,
+                None,
             )
         },
     )
@@ -2891,6 +2957,7 @@ pub(super) fn start_segment(
         0,
         0.0,
         microphone_capture::MicrophoneInactivityTailTrimActivityMode::PeakLevel,
+        None,
     )
 }
 
@@ -2909,6 +2976,7 @@ fn start_segment_with_inactivity_tail_trim_seconds(
     inactivity_tail_trim_seconds: u64,
     microphone_activity_threshold: f32,
     microphone_tail_activity_mode: microphone_capture::MicrophoneInactivityTailTrimActivityMode,
+    initial_privacy_filter: Option<capture_screen::PrivacyContentFilter>,
 ) -> Result<
     (
         CaptureOutputFiles,
@@ -2940,8 +3008,11 @@ fn start_segment_with_inactivity_tail_trim_seconds(
             screen: sources.screen,
             system_audio: sources.system_audio,
         };
-        let mut screen_options =
-            capture_session_options(frame_artifact_tx, inactivity_tail_trim_seconds);
+        let mut screen_options = capture_session_options(
+            frame_artifact_tx,
+            inactivity_tail_trim_seconds,
+            initial_privacy_filter,
+        );
         if sources.system_audio && system_audio_output_path.is_none() {
             screen_options.system_audio_writer_active = Some(false);
         }
@@ -3042,57 +3113,92 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
     };
     let stop = control.stop.clone();
 
-    thread::spawn(move || loop {
-        let sleep_duration = {
-            let capture_state = app_handle.state::<NativeCaptureState>();
-            let runtime = match capture_state.lock() {
-                Ok(runtime) => runtime,
-                Err(_) => break,
-            };
-            let runtime = runtime.runtime();
+    thread::spawn(move || {
+        let mut last_privacy_filter_poll = std::time::Instant::now() - PRIVACY_FILTER_POLL_INTERVAL;
+        loop {
+            let sleep_duration = {
+                let capture_state = app_handle.state::<NativeCaptureState>();
+                let runtime = match capture_state.lock() {
+                    Ok(runtime) => runtime,
+                    Err(_) => break,
+                };
+                let runtime = runtime.runtime();
 
-            if !runtime.is_running {
+                if !runtime.is_running {
+                    break;
+                }
+
+                let Some(schedule) = runtime.segment_schedule.as_ref() else {
+                    break;
+                };
+                let Some(clock) = runtime.capture_clock.as_ref() else {
+                    break;
+                };
+
+                segment_loop_sleep_duration(schedule, clock)
+            };
+
+            if !sleep_duration.is_zero() {
+                thread::sleep(sleep_duration);
+            }
+
+            if stop.load(Ordering::Relaxed) {
                 break;
             }
 
-            let Some(schedule) = runtime.segment_schedule.as_ref() else {
-                break;
+            let capture_state = app_handle.state::<NativeCaptureState>();
+            let mut runtime = match capture_state.lock() {
+                Ok(runtime) => runtime,
+                Err(_) => break,
             };
-            let Some(clock) = runtime.capture_clock.as_ref() else {
+
+            if !runtime.runtime().is_running || stop.load(Ordering::Relaxed) {
                 break;
-            };
+            }
 
-            segment_loop_sleep_duration(schedule, clock)
-        };
+            if last_privacy_filter_poll.elapsed() >= PRIVACY_FILTER_POLL_INTERVAL {
+                last_privacy_filter_poll = std::time::Instant::now();
+                if let Err(error) =
+                    refresh_and_apply_privacy_filter(&app_handle, runtime.runtime_mut())
+                {
+                    super::debug_log::log(format!(
+                "privacy filter update failed; disabling screen/system-audio capture: [{}] {}",
+                error.code, error.message
+            ));
+                    let active_session = &mut runtime.runtime_mut().active_screen_session;
+                    let _ =
+                        capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
+                            active_session,
+                            inactivity_tail_trim_seconds: 0,
+                        });
+                    runtime.runtime_mut().recording_file = None;
+                    runtime.runtime_mut().system_audio_recording_file = None;
+                    if let Some(current) = runtime.runtime_mut().current_segment_sources.as_mut() {
+                        current.screen = false;
+                        current.system_audio = false;
+                    }
+                    if !runtime
+                        .runtime()
+                        .requested_sources
+                        .as_ref()
+                        .is_some_and(|sources| sources.microphone)
+                    {
+                        break;
+                    }
+                }
+            }
 
-        if !sleep_duration.is_zero() {
-            thread::sleep(sleep_duration);
-        }
+            match runtime.tick_inactivity(&app_handle) {
+                TickOutcome::Continue => {}
+                TickOutcome::SkipRotation => continue,
+                TickOutcome::StopLoop => break,
+            }
 
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-
-        let capture_state = app_handle.state::<NativeCaptureState>();
-        let mut runtime = match capture_state.lock() {
-            Ok(runtime) => runtime,
-            Err(_) => break,
-        };
-
-        if !runtime.runtime().is_running || stop.load(Ordering::Relaxed) {
-            break;
-        }
-
-        match runtime.tick_inactivity(&app_handle) {
-            TickOutcome::Continue => {}
-            TickOutcome::SkipRotation => continue,
-            TickOutcome::StopLoop => break,
-        }
-
-        match runtime.tick_rotation(&app_handle) {
-            TickOutcome::Continue => {}
-            TickOutcome::SkipRotation => continue,
-            TickOutcome::StopLoop => break,
+            match runtime.tick_rotation(&app_handle) {
+                TickOutcome::Continue => {}
+                TickOutcome::SkipRotation => continue,
+                TickOutcome::StopLoop => break,
+            }
         }
     });
 
@@ -3207,6 +3313,13 @@ pub(super) fn start_capture_runtime(
             let initial_microphone_vad = MicrophoneVadRuntime::new(settings.microphone_vad_adapter);
             let microphone_tail_activity_mode =
                 microphone_tail_trim_activity_mode_for_vad(&initial_microphone_vad);
+            let initial_privacy_decision =
+                crate::native_capture::metadata::initial_privacy_decision(
+                    &settings.metadata,
+                    &settings.privacy,
+                );
+            let initial_privacy_filter =
+                privacy_filter_from_decision(initial_privacy_decision.clone());
 
             let (
                 segment_outputs,
@@ -3229,7 +3342,14 @@ pub(super) fn start_capture_runtime(
                 inactivity_tail_trim_seconds,
                 microphone_activity_threshold,
                 microphone_tail_activity_mode,
+                initial_privacy_filter,
             )?;
+            crate::native_capture::metadata::mark_applied_privacy_decision(
+                app_handle
+                    .state::<crate::native_capture::CaptureMetadataState>()
+                    .inner(),
+                initial_privacy_decision,
+            );
 
             let output_files = empty_output_files();
             let segment_loop_control = spawn_segment_loop(app_handle.clone());
