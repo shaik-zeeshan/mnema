@@ -75,11 +75,11 @@
     display: inline-flex;
     align-items: center;
     gap: 2px;
-    width: min(100%, 360px);
-    padding: 3px;
+    width: 100%;
+    padding: 4px;
     border: 1px solid var(--app-border);
-    border-radius: 999px;
-    background: var(--app-surface-raised);
+    border-radius: 4px;
+    background: var(--app-surface);
   }
 
   .theme-mode__button {
@@ -91,12 +91,13 @@
     justify-content: center;
     gap: 6px;
     border: 1px solid transparent;
-    border-radius: 999px;
+    border-radius: 3px;
     color: var(--app-text-muted);
     background: transparent;
     font: inherit;
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 700;
+    letter-spacing: 0.04em;
     cursor: pointer;
     padding: 0 10px;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
@@ -104,7 +105,7 @@
 
   .theme-mode__button:hover:not(:disabled) {
     background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
+    border-color: var(--app-border-hover);
     color: var(--app-text);
   }
 
@@ -114,9 +115,20 @@
   }
 
   .theme-mode__button--active {
-    color: var(--app-text-strong);
+    color: var(--app-accent-strong);
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
+  }
+
+  .theme-mode__button--active:hover:not(:disabled) {
+    color: var(--app-accent);
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent);
+  }
+
+  .theme-mode__button--active .theme-mode__icon,
+  .theme-mode__button--active .theme-mode__label {
+    color: inherit;
   }
 
   .theme-mode__button:disabled {
@@ -152,6 +164,7 @@
     height: 30px;
     padding: 2px;
     gap: 2px;
+    border-radius: 999px;
     border-color: var(--app-icon-border-hover);
     background: var(--app-surface-raised);
   }
@@ -162,6 +175,7 @@
     min-width: 28px;
     height: 24px;
     padding: 0;
+    border-radius: 999px;
     color: var(--app-icon-fg);
   }
 
@@ -172,14 +186,42 @@
   }
 
   .theme-mode--compact .theme-mode__button--active {
-    background: var(--app-icon-bg-active);
-    border-color: var(--app-icon-border-active);
-    color: var(--app-icon-fg-hover);
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent);
+  }
+
+  .theme-mode--compact .theme-mode__button--active:hover:not(:disabled) {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent);
+    color: var(--app-accent);
   }
 
   .theme-mode--compact .theme-mode__icon,
   .theme-mode--compact .theme-mode__icon svg {
     width: 16px;
     height: 16px;
+  }
+
+  :global([data-theme="light"]) .theme-mode__button--active,
+  :global([data-theme="light"]) .theme-mode__button--active:hover:not(:disabled) {
+    color: var(--app-accent-strong);
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+  }
+
+  :global([data-theme="light"]) .theme-mode__button--active:hover:not(:disabled) {
+    border-color: var(--app-accent);
+  }
+
+  :global([data-theme="light"]) .theme-mode--compact .theme-mode__button--active,
+  :global([data-theme="light"]) .theme-mode--compact .theme-mode__button--active:hover:not(:disabled) {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent-strong);
+  }
+
+  :global([data-theme="light"]) .theme-mode--compact .theme-mode__button--active:hover:not(:disabled) {
+    border-color: var(--app-accent);
   }
 </style>
