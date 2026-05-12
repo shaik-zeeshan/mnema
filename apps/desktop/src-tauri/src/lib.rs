@@ -1,11 +1,13 @@
 mod app_infra;
 mod audio_transcription_models;
 mod general_app_log;
+mod keyboard_bindings;
 mod managed_storage_layout;
 mod native_capture;
 mod ocr_models;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
+mod status_bar;
 mod windows;
 
 use tauri::Manager;
@@ -43,6 +45,17 @@ fn should_forward_window_event(event: &tauri::WindowEvent, webview_window_found:
     matches!(event, tauri::WindowEvent::Destroyed) || webview_window_found
 }
 
+fn should_start_graceful_exit_for_exit_request(
+    code: Option<i32>,
+    graceful_exit_in_progress: bool,
+) -> bool {
+    if graceful_exit_in_progress {
+        return code.is_none();
+    }
+
+    code.is_none() || code == Some(0)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -53,6 +66,8 @@ pub fn run() {
         .manage(native_capture::MetadataNotifierState::default())
         .manage(native_capture::RecordingSettingsState::default())
         .manage(native_capture::CaptureMetadataState::default())
+        .manage(status_bar::StatusBarState::default())
+        .manage(keyboard_bindings::KeyboardBindingsState::default())
         .manage(native_capture::AppNotificationsState::default())
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
         .manage(speaker_analysis_models::SpeakerAnalysisModelDownloadState::default())
@@ -77,13 +92,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(keyboard_bindings::handle_global_shortcut)
+                .build(),
+        )
         .on_window_event(|window, event| {
             let webview_window = window.get_webview_window(window.label());
             if !should_forward_window_event(event, webview_window.is_some()) {
                 return;
             }
 
-            windows::handle_window_event(&window.app_handle(), window.label(), event);
+            windows::handle_window_event(
+                &window.app_handle(),
+                window.label(),
+                event,
+                webview_window.as_ref(),
+            );
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
@@ -164,11 +189,16 @@ pub fn run() {
             windows::open_settings_window_to_tab,
             windows::open_debug_window,
             windows::close_current_window,
+            windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,
+            keyboard_bindings::get_keyboard_bindings_settings,
+            keyboard_bindings::update_keyboard_bindings_settings,
         ])
         .setup(|app| {
             native_capture::initialize_recording_settings_from_disk(app.handle());
+            status_bar::initialize(app.handle())?;
+            keyboard_bindings::initialize(app.handle());
             native_capture::install_panic_hook();
             if let Err(error) = app_infra::initialize(app) {
                 match error {
@@ -200,10 +230,30 @@ pub fn run() {
             if onboarding_complete {
                 native_capture::maybe_auto_start_native_capture(app.handle());
             }
+            status_bar::refresh(app.handle());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                if should_start_graceful_exit_for_exit_request(
+                    code,
+                    windows::is_graceful_exit_in_progress(app_handle),
+                ) {
+                    api.prevent_exit();
+                    windows::request_graceful_exit(app_handle);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => {
+                let _ = windows::open_main_window(app_handle);
+            }
+            _ => {}
+        });
 }
 
 pub fn maybe_run_speaker_analysis_helper_and_exit() {
@@ -212,7 +262,9 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_app_log_target, should_forward_window_event};
+    use super::{
+        is_app_log_target, should_forward_window_event, should_start_graceful_exit_for_exit_request,
+    };
 
     #[test]
     fn app_log_filter_keeps_only_our_targets() {
@@ -240,6 +292,34 @@ mod tests {
         assert!(!should_forward_window_event(
             &tauri::WindowEvent::Focused(true),
             false,
+        ));
+    }
+
+    #[test]
+    fn user_exit_requests_start_graceful_exit() {
+        assert!(should_start_graceful_exit_for_exit_request(None, false));
+    }
+
+    #[test]
+    fn zero_exit_code_requests_start_graceful_exit_when_not_already_exiting() {
+        assert!(should_start_graceful_exit_for_exit_request(Some(0), false));
+    }
+
+    #[test]
+    fn final_zero_exit_code_request_is_allowed_after_graceful_exit_started() {
+        assert!(!should_start_graceful_exit_for_exit_request(Some(0), true));
+    }
+
+    #[test]
+    fn repeated_user_exit_request_is_prevented_while_graceful_exit_is_running() {
+        assert!(should_start_graceful_exit_for_exit_request(None, true));
+    }
+
+    #[test]
+    fn restart_exit_code_is_not_rewritten_as_a_normal_graceful_quit() {
+        assert!(!should_start_graceful_exit_for_exit_request(
+            Some(tauri::RESTART_EXIT_CODE),
+            false
         ));
     }
 }

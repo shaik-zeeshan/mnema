@@ -14,6 +14,7 @@
 ## Boundaries
 - Svelte UI lives in `apps/desktop/src`. The shell is `apps/desktop/src/routes/+layout.svelte`, the dashboard is `apps/desktop/src/routes/+page.svelte`, and settings live in `apps/desktop/src/routes/settings/+page.svelte`.
 - Tauri startup and command registration live in `apps/desktop/src-tauri/src/lib.rs`; keep new `#[tauri::command]` functions wired there and keep frontend `invoke(...)` names in sync.
+- The macOS status-bar/tray menu is Rust-owned in `apps/desktop/src-tauri/src/status_bar.rs`; keep it as a native Tauri `TrayIconBuilder`/`Menu`/`CheckMenuItem` surface rather than adding a Svelte tray UI or AppKit/Swift layer. Its stable menu IDs use the `tray_*` prefix, and the template icon asset is `apps/desktop/src-tauri/icons/tray-template.png`.
 - The owning seam for native capture is `apps/desktop/src-tauri/src/native_capture/lifecycle.rs` (**Recording Lifecycle**); Tauri command handlers and background hooks should stay thin adapters over that module rather than orchestrating `NativeCaptureRuntime` directly.
 - `crates/app-infra` owns SQLite, embedded sqlx migrations, background jobs, frame batches, and the OCR/processing pipeline.
 - `crates/capture-types` owns serde types shared across frontend, Tauri, and native layers.
@@ -25,7 +26,7 @@
 - In production desktop packaging, the SPA entry can arrive as `"/index.html"` instead of `"/"`; route-gating logic in the shell should normalize static-entry paths before deciding whether a surface is the main route.
 - Tauri expects Vite on port `1420` with HMR on `1421`; `apps/desktop/vite.config.js` hard-pins those ports and ignores `src-tauri/**` in the watcher.
 - The Tauri bundle identifier is `com.shaikzeeshan.mnema`; changing it changes the app identity used for Tauri/macOS config and cache directories.
-- Recording settings persist to `recording-settings.json` under Tauri `app_config_dir()` when available. App infra state lives directly under `<saveDirectory>`, with SQLite at `<saveDirectory>/db/app.sqlite3`; changing `saveDirectory` changes that DB location on the next app start.
+- Recording settings persist to `recording-settings.json` under Tauri `app_config_dir()` when available. Keyboard shortcut preferences persist separately to `keyboard-bindings.json` under Tauri `app_config_dir()` and are Rust-owned in `apps/desktop/src-tauri/src/keyboard_bindings.rs`; global shortcut registration should stay there rather than in Svelte. App infra state lives directly under `<saveDirectory>`, with SQLite at `<saveDirectory>/db/app.sqlite3`; changing `saveDirectory` changes that DB location on the next app start.
 - Native capture output is date-organized under `<saveDirectory>/recordings/YYYY/MM/DD/`. Screen recordings are saved as `<session>-segment-####.mov`, while audio stays separate under `<saveDirectory>/recordings/YYYY/MM/DD/audio/<session>/segment-####/`. Hidden per-segment workspace directories under the same date folder hold temporary screen capture artifacts and exported JPEG frames.
 - Hidden segment workspace cleanup safety depends on the sibling visible segment `<session>-segment-####.mov`: if that file is missing or unopenable, app-infra preserves non-empty hidden workspaces for fallback/debugging, but empty/no-reference hidden workspaces are safe to remove. Existing stale safe workspaces can be repaired headlessly with `cargo run -p app-infra --bin repair_hidden_segment_workspaces -- <saveDirectory>`, and the desktop Tauri app also runs this repair once at startup plus every 5 minutes in the background.
 - Hidden segment workspace repair now treats an existing-but-unopenable sibling segment `.mov` (for example, a file missing `moov`) the same as a missing visible segment for cleanup safety, so broken visible segments preserve hidden frame fallbacks instead of deleting the only preview source.
@@ -50,6 +51,7 @@
 - Audio speech detection settings are shared under `audioSpeechDetection.detector` (`silero`, `webrtc`, `off`). Legacy `microphoneVadAdapter` may be read for compatibility, but saves/runtime normalization should use the shared setting; detector selection is exact and should not silently fall back from Silero to WebRTC.
 - Inactivity activity mode is fixed to `system_input_or_screen_or_audio`. Legacy `activityMode` / `inactivityActivityMode` values can be deserialized, but settings validation should normalize saved/runtime settings to the fixed policy.
 - System-audio transcription is gated by the `system_audio_speech_activity` processing job. System-audio segment commit should enqueue that job, not direct transcription; speech-activity completion may enqueue/requeue missing or failed `audio_transcription` jobs and keep speaker analysis chained through the transcription payload.
+- Status-bar source toggles update persisted next-recording `RecordingSettings` only while stopped. The tray and frontend stay synchronized through `native_capture_session_changed` for start/stop session state and `recording_settings_changed` for settings changes.
 
 ## Verification
 - UI-only changes: `bun run check`.
@@ -57,6 +59,7 @@
 - Tauri wiring or cross-crate Rust changes: run `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
 - Cross-stack or settings/storage changes: run both `bun run check` and `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
 - Focused tests in `apps/desktop/src-tauri/src/lib.rs` may need `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib <test-filter>`; without `--lib`, filtered Tauri tests may not run as expected.
+- Status-bar menu model changes: run `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib status_bar`.
 - Verifying the `audio-transcription` crate's `local-whisper` feature requires `cmake` in `PATH`, because `whisper-rs-sys` builds bundled `whisper.cpp`/GGML artifacts.
 
 ## Workflow

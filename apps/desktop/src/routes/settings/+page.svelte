@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from "$app/stores";
+  import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { ask } from "@tauri-apps/plugin-dialog";
@@ -49,6 +50,7 @@
     SpeakerAnalysisModelDownloadProgress,
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
+    KeyboardBindingsSettings,
   } from "$lib/types";
 
   type CardIconKind =
@@ -88,6 +90,7 @@
 
   let captureSupport = $state<CaptureSupport | null>(null);
   let recordingSettings = $state<RecordingSettings | null>(null);
+  let keyboardBindingsSettings = $state<KeyboardBindingsSettings | null>(null);
   let micState = $state<MicrophoneControllerState | null>(null);
 
   // Recording settings drafts
@@ -98,6 +101,7 @@
   let draftFrameRate = $state(1);
   let draftSaveDirectory = $state("");
   let draftAutoStart = $state(false);
+  let draftGlobalShortcutsEnabled = $state(true);
 
   // Resolution drafts
   let draftResolutionMode = $state<ResolutionMode>("original");
@@ -241,11 +245,14 @@
   // Loading / error state
   let loadingRecSettings = $state(false);
   let savingRecSettings = $state(false);
+  let savingKeyboardBindings = $state(false);
   let loadingMicState = $state(false);
   let savingMicSettings = $state(false);
   let recError = $state<string | null>(null);
+  let keyboardBindingsError = $state<string | null>(null);
   let micError = $state<string | null>(null);
   let recSaved = $state(false);
+  let keyboardBindingsSaved = $state(false);
   let micSaved = $state(false);
 
   // ─── Tabs ─────────────────────────────────────────────────────────────────
@@ -284,6 +291,66 @@
     }
   });
 
+  let initialTabFocusDone = false;
+  let initialTabFocusScheduled = false;
+  let initialTabFocusAttempts = 0;
+  let initialTabFocusTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function isDocumentFocusStillAtEntry(): boolean {
+    if (typeof document === "undefined") return false;
+    const activeElement = document.activeElement;
+    return activeElement === null || activeElement === document.body;
+  }
+
+  function tryFocusInitialSettingsTab(): void {
+    if (initialTabFocusDone || typeof document === "undefined") return;
+    if (!isDocumentFocusStillAtEntry()) {
+      initialTabFocusDone = true;
+      return;
+    }
+
+    const activeTabElement = document.getElementById(`settings-tab-${activeTab}`);
+    if (activeTabElement instanceof HTMLElement) {
+      activeTabElement.focus({ preventScroll: true });
+      if (document.activeElement === activeTabElement) {
+        initialTabFocusDone = true;
+        return;
+      }
+    }
+
+    if (initialTabFocusAttempts >= 8) return;
+    initialTabFocusAttempts += 1;
+    scheduleInitialSettingsTabFocus(50);
+  }
+
+  function scheduleInitialSettingsTabFocus(delayMs = 0): void {
+    if (initialTabFocusDone || initialTabFocusScheduled || typeof window === "undefined") return;
+    initialTabFocusScheduled = true;
+    initialTabFocusTimer = setTimeout(() => {
+      initialTabFocusScheduled = false;
+      initialTabFocusTimer = null;
+      void tick().then(tryFocusInitialSettingsTab);
+    }, delayMs);
+  }
+
+  $effect(() => {
+    activeTab;
+    scheduleInitialSettingsTabFocus();
+  });
+
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const onWindowFocus = () => scheduleInitialSettingsTabFocus();
+    window.addEventListener("focus", onWindowFocus);
+    return () => {
+      window.removeEventListener("focus", onWindowFocus);
+      if (initialTabFocusTimer !== null) {
+        clearTimeout(initialTabFocusTimer);
+        initialTabFocusTimer = null;
+      }
+    };
+  });
+
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
     { id: "capture",    label: "Capture",     description: "Sources, segments, inactivity" },
     { id: "privacy",    label: "Privacy",     description: "Metadata and exclusions" },
@@ -317,7 +384,14 @@
   // We use a roving-tabindex (only the active tab is tabbable) so screen
   // reader users can land on the tablist and step through tabs naturally.
   function handleTabKeydown(event: KeyboardEvent) {
-    const currentIndex = tabs.findIndex((t) => t.id === activeTab);
+    const focusedTab = event.target instanceof Element
+      ? event.target.closest<HTMLElement>('[role="tab"]')
+      : null;
+    const focusedTabId = focusedTab?.id?.replace(/^settings-tab-/, "") ?? null;
+    const focusedIndex = tabs.findIndex((t) => t.id === focusedTabId);
+    const currentIndex = focusedIndex >= 0
+      ? focusedIndex
+      : tabs.findIndex((t) => t.id === activeTab);
     if (currentIndex === -1) return;
     let nextIndex: number | null = null;
     if (event.key === "ArrowRight" || event.key === "ArrowDown") {
@@ -331,6 +405,7 @@
     }
     if (nextIndex === null) return;
     event.preventDefault();
+    event.stopPropagation();
     const nextTab = tabs[nextIndex];
     activeTab = nextTab.id;
     // Move DOM focus to the newly-active tab so the roving tabindex stays
@@ -354,8 +429,10 @@
   const MIC_AUTOSAVE_DEBOUNCE_MS = 250;
 
   let lastSavedRecSnapshot = $state<string | null>(null);
+  let lastSavedKeyboardBindingsSnapshot = $state<string | null>(null);
   let lastSavedMicSnapshot = $state<string | null>(null);
   let recAutoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let keyboardBindingsAutoSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let micAutoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Capture-support fetch lifecycle: tracks whether the in-flight request
@@ -497,6 +574,11 @@
     lastSavedRecSnapshot = buildRecSnapshot();
   }
 
+  function syncKeyboardBindingsDrafts(s: KeyboardBindingsSettings) {
+    draftGlobalShortcutsEnabled = s.globalShortcuts.enabled;
+    lastSavedKeyboardBindingsSnapshot = buildKeyboardBindingsSnapshot();
+  }
+
   function syncMicDrafts(s: MicrophoneControllerState) {
     draftPreferenceMode = s.preference.mode;
     draftDeviceId = s.preference.deviceId ?? null;
@@ -581,6 +663,26 @@
       videoBitrate: draftBitrateMode === "custom"
         ? { mode: "custom" as const, preset: null, customMbps: draftCustomMbps! }
         : { mode: "preset" as const, preset: draftBitratePreset, customMbps: null },
+    };
+  }
+
+  function buildKeyboardBindingsRequest(): KeyboardBindingsSettings {
+    const current = keyboardBindingsSettings ?? {
+      schemaVersion: 1,
+      globalShortcuts: {
+        enabled: true,
+        bindings: {
+          toggleRecording: "CommandOrControl+Alt+R",
+          toggleMainWindow: "CommandOrControl+Alt+M",
+        },
+      },
+    };
+    return {
+      ...current,
+      globalShortcuts: {
+        ...current.globalShortcuts,
+        enabled: draftGlobalShortcutsEnabled,
+      },
     };
   }
 
@@ -683,6 +785,10 @@
   // spurious snapshot churn that the auto-save guard would have to filter.
   function buildRecSnapshot(): string {
     return JSON.stringify(buildRecRequest());
+  }
+
+  function buildKeyboardBindingsSnapshot(): string {
+    return JSON.stringify(buildKeyboardBindingsRequest());
   }
 
   function buildMicSnapshot(): string {
@@ -803,6 +909,17 @@
       recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
       loadingRecSettings = false;
+    }
+  }
+
+  async function loadKeyboardBindingsSettings() {
+    keyboardBindingsError = null;
+    try {
+      const s = await invoke<KeyboardBindingsSettings>("get_keyboard_bindings_settings");
+      keyboardBindingsSettings = s;
+      syncKeyboardBindingsDrafts(s);
+    } catch (err) {
+      keyboardBindingsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     }
   }
 
@@ -1191,6 +1308,25 @@
     }
   }
 
+  async function saveKeyboardBindingsSettings() {
+    savingKeyboardBindings = true;
+    keyboardBindingsError = null;
+    keyboardBindingsSaved = false;
+    try {
+      const updated = await invoke<KeyboardBindingsSettings>("update_keyboard_bindings_settings", {
+        request: buildKeyboardBindingsRequest(),
+      });
+      keyboardBindingsSettings = updated;
+      syncKeyboardBindingsDrafts(updated);
+      keyboardBindingsSaved = true;
+      setTimeout(() => { keyboardBindingsSaved = false; }, 2200);
+    } catch (err) {
+      keyboardBindingsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      savingKeyboardBindings = false;
+    }
+  }
+
   async function loadMicState() {
     loadingMicState = true;
     micError = null;
@@ -1246,6 +1382,21 @@
       if (recSaveBlocked || savingRecSettings) return;
       if (buildRecSnapshot() === lastSavedRecSnapshot) return;
       void saveRecordingSettings();
+    }, RECORDING_AUTOSAVE_DEBOUNCE_MS);
+  });
+
+  $effect(() => {
+    if (keyboardBindingsSettings === null || lastSavedKeyboardBindingsSnapshot === null) return;
+    const current = buildKeyboardBindingsSnapshot();
+    if (current === lastSavedKeyboardBindingsSnapshot) return;
+    if (savingKeyboardBindings) return;
+
+    if (keyboardBindingsAutoSaveTimer !== null) clearTimeout(keyboardBindingsAutoSaveTimer);
+    keyboardBindingsAutoSaveTimer = setTimeout(() => {
+      keyboardBindingsAutoSaveTimer = null;
+      if (savingKeyboardBindings) return;
+      if (buildKeyboardBindingsSnapshot() === lastSavedKeyboardBindingsSnapshot) return;
+      void saveKeyboardBindingsSettings();
     }, RECORDING_AUTOSAVE_DEBOUNCE_MS);
   });
 
@@ -1659,6 +1810,7 @@
   $effect(() => {
     loadCaptureSupport();
     loadRecordingSettings();
+    loadKeyboardBindingsSettings();
     loadMicState();
     loadOcrModelStatus();
     loadTranscriptionModelStatus();
@@ -1744,6 +1896,7 @@
 
     return () => {
       destroyed = true;
+      if (keyboardBindingsAutoSaveTimer !== null) clearTimeout(keyboardBindingsAutoSaveTimer);
       unlistenControllerChanged?.();
       unlistenAutoDisconnectFailure?.();
       unlistenRecordingSettingsChanged?.();
@@ -1834,13 +1987,13 @@
       <h1 class="page-header__title">Settings</h1>
     </div>
     <div class="page-header__status" aria-live="polite">
-      {#if recError || micError}
+      {#if recError || keyboardBindingsError || micError}
         <span class="page-header__status-text page-header__status-text--error">save failed</span>
       {:else if recSaveBlocked || micApplyBlocked}
         <span class="page-header__status-text page-header__status-text--blocked">resolve issues</span>
-      {:else if savingRecSettings || savingMicSettings}
+      {:else if savingRecSettings || savingKeyboardBindings || savingMicSettings}
         <span class="page-header__status-text page-header__status-text--saving">saving</span>
-      {:else if recSaved || micSaved}
+      {:else if recSaved || keyboardBindingsSaved || micSaved}
         <span class="page-header__status-text page-header__status-text--ok">saved</span>
       {:else}
         <span class="page-header__status-text">auto-save on</span>
@@ -1891,6 +2044,7 @@
         aria-controls="settings-panel-{tab.id}"
         id="settings-tab-{tab.id}"
         tabindex={activeTab === tab.id ? 0 : -1}
+        onkeydown={handleTabKeydown}
         onclick={() => { activeTab = tab.id; }}
         title={tab.description}
         type="button"
@@ -1968,6 +2122,20 @@
         formatValue={(v) => v >= 60 ? `${Math.floor(v/60)}m ${v%60}s` : `${v}s`}
       />
       <p class="group-hint">How long each recording segment is before a new one starts.</p>
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <div class="settings-group">
+      <span class="group-label">Keyboard</span>
+      <Switch
+        bind:checked={draftGlobalShortcutsEnabled}
+        label="Global shortcuts"
+        description="Use system-wide shortcuts to show Mnema and start or stop recording while it is in the background"
+      />
+      <p class="group-hint">
+        Show or hide Mnema with <strong>⌥⌘M</strong>. Start or stop recording with <strong>⌥⌘R</strong>.
+      </p>
     </div>
   {/if}
 </section>
@@ -2380,8 +2548,6 @@
         description="Begin capturing immediately when the app opens"
       />
     </div>
-
-    <div class="settings-divider"></div>
 
     <div class="settings-group">
       <span class="group-label">Retention</span>
@@ -3455,6 +3621,14 @@
         <span class="inline-error__icon">⚠</span>
         <span class="inline-error__msg">{recError}</span>
         <button class="btn btn--ghost btn--sm" onclick={() => recError = null}>×</button>
+      </div>
+    {/if}
+
+    {#if keyboardBindingsError}
+      <div class="inline-error">
+        <span class="inline-error__icon">⚠</span>
+        <span class="inline-error__msg">{keyboardBindingsError}</span>
+        <button class="btn btn--ghost btn--sm" onclick={() => keyboardBindingsError = null}>×</button>
       </div>
     {/if}
 

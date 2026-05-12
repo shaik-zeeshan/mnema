@@ -17,6 +17,17 @@
   } from "$lib/capture-controls.svelte";
   import { developerOptions } from "$lib/developer-options.svelte";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
+  import {
+    getFocusableElements,
+    isShortcutSuppressedTarget,
+    matchShortcut,
+    trapTabKey,
+    type ShortcutDefinition,
+  } from "$lib/keyboard";
+  import {
+    setKeyboardHelpGroups,
+    type KeyboardHelpGroup,
+  } from "$lib/keyboard-help.svelte";
   import type {
     AudioSegmentDto,
     AudioSegmentMediaDto,
@@ -135,6 +146,138 @@
   // full frame list.
   const TIMELINE_FALLBACK_VIEWPORT_WIDTH = 2560;
 
+  const DASHBOARD_SHORTCUTS = {
+    olderFrame: {
+      id: "dashboard.olderFrame",
+      label: "Older frame",
+      bindings: [{ key: "ArrowLeft" }],
+      kind: "behavior",
+      scope: "dashboard",
+    },
+    newerFrame: {
+      id: "dashboard.newerFrame",
+      label: "Newer frame",
+      bindings: [{ key: "ArrowRight" }],
+      kind: "behavior",
+      scope: "dashboard",
+    },
+    olderFrameFast: {
+      id: "dashboard.olderFrameFast",
+      label: "10 frames older",
+      bindings: [{ key: "ArrowLeft", shift: true }],
+      kind: "behavior",
+      scope: "dashboard",
+    },
+    newerFrameFast: {
+      id: "dashboard.newerFrameFast",
+      label: "10 frames newer",
+      bindings: [{ key: "ArrowRight", shift: true }],
+      kind: "behavior",
+      scope: "dashboard",
+    },
+    openJumpPicker: {
+      id: "dashboard.openJumpPicker",
+      label: "Open jump picker",
+      bindings: [{ key: "J" }],
+      kind: "command",
+      scope: "dashboard",
+    },
+    jumpLatest: {
+      id: "dashboard.jumpLatest",
+      label: "Jump to latest",
+      bindings: [{ key: "L" }],
+      kind: "command",
+      scope: "dashboard",
+    },
+    toggleOcr: {
+      id: "dashboard.toggleOcr",
+      label: "Toggle OCR panel",
+      bindings: [{ key: "O" }],
+      kind: "command",
+      scope: "dashboard",
+    },
+    refreshTimeline: {
+      id: "dashboard.refreshTimeline",
+      label: "Refresh timeline",
+      bindings: [{ key: "R" }],
+      kind: "command",
+      scope: "dashboard",
+    },
+    copyFrame: {
+      id: "dashboard.copyFrame",
+      label: "Copy active frame image",
+      bindings: [{ key: "C" }],
+      kind: "command",
+      scope: "dashboard",
+    },
+    downloadFrame: {
+      id: "dashboard.downloadFrame",
+      label: "Download active frame image",
+      bindings: [{ key: "D" }],
+      kind: "command",
+      scope: "dashboard",
+    },
+    closeSurface: {
+      id: "dashboard.closeSurface",
+      label: "Close the top open surface",
+      bindings: [{ key: "Escape" }],
+      kind: "behavior",
+      scope: "dashboard",
+    },
+  } satisfies Record<string, ShortcutDefinition>;
+
+  const AUDIO_DRAWER_SHORTCUTS = {
+    playPause: {
+      id: "audioDrawer.playPause",
+      label: "Play or pause",
+      bindings: [{ key: "Space" }],
+      kind: "command",
+      scope: "audioDrawer",
+    },
+    seekBack: {
+      id: "audioDrawer.seekBack",
+      label: "Seek back 5 seconds",
+      bindings: [{ key: "ArrowLeft" }],
+      kind: "command",
+      scope: "audioDrawer",
+    },
+    seekForward: {
+      id: "audioDrawer.seekForward",
+      label: "Seek forward 5 seconds",
+      bindings: [{ key: "ArrowRight" }],
+      kind: "command",
+      scope: "audioDrawer",
+    },
+    seekBackFast: {
+      id: "audioDrawer.seekBackFast",
+      label: "Seek back 30 seconds",
+      bindings: [{ key: "ArrowLeft", shift: true }],
+      kind: "command",
+      scope: "audioDrawer",
+    },
+    seekForwardFast: {
+      id: "audioDrawer.seekForwardFast",
+      label: "Seek forward 30 seconds",
+      bindings: [{ key: "ArrowRight", shift: true }],
+      kind: "command",
+      scope: "audioDrawer",
+    },
+    close: {
+      id: "audioDrawer.close",
+      label: "Close speaker actions or audio drawer",
+      bindings: [{ key: "Escape" }],
+      kind: "behavior",
+      scope: "audioDrawer",
+    },
+    trapFocus: {
+      id: "audioDrawer.trapFocus",
+      label: "Move through audio drawer controls",
+      bindings: [{ key: "Tab" }],
+      kind: "behavior",
+      scope: "audioDrawer",
+    },
+  } satisfies Record<string, ShortcutDefinition>;
+
   type AudioSegmentSource = "microphone" | "systemAudio";
   type TrimmedTimelineFrames = {
     frames: FrameDto[];
@@ -235,6 +378,9 @@
   let frameActionStatusTimer: ReturnType<typeof setTimeout> | null = null;
   let frameActionStatusHovered = $state(false);
   let stageActionsMenuOpen = $state(false);
+  let stageActionsOpenedByKeyboard = false;
+  let stageActionsTriggerEl = $state<HTMLButtonElement | null>(null);
+  let stageActionsMenuEl = $state<HTMLDivElement | null>(null);
   let activePreviewFetchGeneration = 0;
   let activePreviewFetchTimer: ReturnType<typeof setTimeout> | null = null;
   let lastTimelineScrollSample = { left: 0, at: 0 };
@@ -259,6 +405,9 @@
   }
 
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
+  const activePreviewPath = $derived(
+    timelineActive ? previewCache.get(timelineActive.id) ?? null : null,
+  );
   const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
   let lastPreviewReuseFrameId = $state<number | null>(null);
   let timelineActiveDuplicateOf = $state<FrameDto | null>(null);
@@ -354,6 +503,8 @@
   } | null>(null);
   let speakerNameDrafts = $state<Record<number, string>>({});
   let speakerActionsOpenIndex = $state<number | null>(null);
+  let speakerActionsPopoverEl = $state<HTMLDivElement | null>(null);
+  let speakerActionsReturnFocusEl: HTMLElement | null = null;
   let selectedAudioTranscriptModelLabel = $state<string | null>(null);
   let selectedAudioTranscriptError = $state<string | null>(null);
   let selectedAudioTranscriptRerunLoading = $state(false);
@@ -891,12 +1042,33 @@
   function toggleSpeakerActions(index: number, event: MouseEvent): void {
     event.preventDefault();
     event.stopPropagation();
+    speakerActionsReturnFocusEl = event.currentTarget as HTMLElement;
     speakerActionsOpenIndex = speakerActionsOpenIndex === index ? null : index;
   }
 
   function closeSpeakerActions(): void {
     speakerActionsOpenIndex = null;
   }
+
+  $effect(() => {
+    if (speakerActionsOpenIndex == null) return;
+    let cancelled = false;
+    void tick().then(() => {
+      if (cancelled || speakerActionsOpenIndex == null) return;
+      const first = getFocusableElements(speakerActionsPopoverEl)[0] ?? speakerActionsPopoverEl;
+      first?.focus({ preventScroll: true });
+    });
+    return () => {
+      cancelled = true;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        speakerActionsPopoverEl?.contains(active)
+      ) {
+        speakerActionsReturnFocusEl?.focus({ preventScroll: true });
+      }
+    };
+  });
 
   function onSpeakerLineClick(group: SpeakerTranscriptGroup): void {
     closeSpeakerActions();
@@ -1770,6 +1942,13 @@
     const target = event.target;
     if (!(target instanceof Node)) return;
     if (audioDrawerEl?.contains(target)) return;
+    if (speakerActionsOpenIndex != null) {
+      if (target instanceof Element && target.closest(".timeline-rail__audio-bar")) {
+        rememberSuppressedAudioSegmentBarClick();
+      }
+      closeSpeakerActions();
+      return;
+    }
     if (target instanceof Element && target.closest(".timeline-rail__audio-bar")) {
       rememberSuppressedAudioSegmentBarClick();
     }
@@ -1780,6 +1959,10 @@
     if (selectedAudioSegmentId == null) return;
     const target = event.target;
     if (target instanceof Node && audioDrawerEl?.contains(target)) return;
+    if (speakerActionsOpenIndex != null) {
+      closeSpeakerActions();
+      return;
+    }
     closeAudioDrawer();
   }
 
@@ -1830,17 +2013,37 @@
   // so we can return focus there on close. Recomputed on each open transition.
   let audioDrawerReturnFocusEl: HTMLElement | null = null;
 
-  function getAudioDrawerFocusable(): HTMLElement[] {
-    if (!audioDrawerEl) return [];
-    const sel =
-      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
-    return Array.from(audioDrawerEl.querySelectorAll<HTMLElement>(sel)).filter(
-      (el) => el.offsetParent !== null || el === document.activeElement,
+  function closeAudioDrawer() {
+    selectedAudioSegmentId = null;
+  }
+
+  function seekAudioBySeconds(deltaSeconds: number): void {
+    const el = audioEl;
+    if (!el) return;
+    const duration = Number.isFinite(audioDuration) && audioDuration > 0
+      ? audioDuration
+      : Number.isFinite(el.duration) && el.duration > 0
+        ? el.duration
+        : Infinity;
+    const nextTime = Math.max(0, Math.min(duration, el.currentTime + deltaSeconds));
+    if (!Number.isFinite(nextTime)) return;
+    el.currentTime = nextTime;
+    audioCurrentTime = nextTime;
+  }
+
+  function isAudioDrawerSpaceSuppressedTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.closest(
+        'button, input, textarea, select, [contenteditable="true"], [role="button"], [role="slider"], [data-shortcuts-ignore]',
+      ),
     );
   }
 
-  function closeAudioDrawer() {
-    selectedAudioSegmentId = null;
+  function isAudioDrawerRangeTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    const input = target.closest("input");
+    return input instanceof HTMLInputElement && input.type === "range";
   }
 
   function onAudioDrawerKeydown(e: KeyboardEvent) {
@@ -1855,25 +2058,39 @@
       closeAudioDrawer();
       return;
     }
-    if (e.key !== "Tab") return;
-    const focusable = getAudioDrawerFocusable();
-    if (focusable.length === 0) {
+
+    if (
+      matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.playPause, "other") &&
+      !isAudioDrawerSpaceSuppressedTarget(e.target)
+    ) {
       e.preventDefault();
-      audioDrawerEl?.focus();
+      togglePlayPause();
       return;
     }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement as HTMLElement | null;
-    if (e.shiftKey) {
-      if (active === first || !audioDrawerEl?.contains(active)) {
-        e.preventDefault();
-        last.focus();
-      }
-    } else if (active === last) {
+
+    if (
+      !isAudioDrawerRangeTarget(e.target) &&
+      (
+        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBack, "other") ||
+        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBackFast, "other") ||
+        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekForward, "other") ||
+        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekForwardFast, "other")
+      )
+    ) {
       e.preventDefault();
-      first.focus();
+      if (matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBackFast, "other")) {
+        seekAudioBySeconds(-30);
+      } else if (matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekForwardFast, "other")) {
+        seekAudioBySeconds(30);
+      } else if (matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBack, "other")) {
+        seekAudioBySeconds(-5);
+      } else {
+        seekAudioBySeconds(5);
+      }
+      return;
     }
+
+    trapTabKey(e, audioDrawerEl);
   }
 
   // Track the open/close transition: capture return-focus target on open,
@@ -2425,13 +2642,68 @@
     }
   }
 
-  function onStageActionsToggle(event: Event) {
-    stageActionsMenuOpen = (event.currentTarget as HTMLDetailsElement | null)?.open ?? false;
+  function openFrameActions(openedByKeyboard = false): void {
+    if (!activePreviewPath) return;
+    stageActionsOpenedByKeyboard = openedByKeyboard;
+    stageActionsMenuOpen = true;
+  }
+
+  function closeFrameActions(): void {
+    stageActionsMenuOpen = false;
+  }
+
+  function toggleFrameActions(openedByKeyboard = false): void {
+    if (stageActionsMenuOpen) {
+      closeFrameActions();
+      return;
+    }
+    openFrameActions(openedByKeyboard);
+  }
+
+  function onFrameActionsTriggerKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter" || event.key === " ") {
+      stageActionsOpenedByKeyboard = true;
+    }
+  }
+
+  function onFrameActionsPointerDownOutside(event: PointerEvent): void {
+    if (!stageActionsMenuOpen) return;
+    const target = event.target as Node | null;
+    if (!target) return;
+    if (stageActionsTriggerEl?.contains(target)) return;
+    if (stageActionsMenuEl?.contains(target)) return;
+    closeFrameActions();
   }
 
   $effect(() => {
     return () => {
       clearFrameActionStatusTimer();
+    };
+  });
+
+  $effect(() => {
+    if (!activePreviewPath) {
+      stageActionsMenuOpen = false;
+    }
+  });
+
+  $effect(() => {
+    if (!stageActionsMenuOpen) return;
+    let cancelled = false;
+    void tick().then(() => {
+      if (cancelled || !stageActionsMenuOpen || !stageActionsOpenedByKeyboard) return;
+      getFocusableElements(stageActionsMenuEl)[0]?.focus({ preventScroll: true });
+    });
+    return () => {
+      cancelled = true;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        (stageActionsOpenedByKeyboard && (!active || active === document.body)) ||
+        (active && stageActionsMenuEl?.contains(active))
+      ) {
+        stageActionsTriggerEl?.focus({ preventScroll: true });
+      }
+      stageActionsOpenedByKeyboard = false;
     };
   });
 
@@ -3138,10 +3410,10 @@
     let handled = true;
     switch (event.key) {
       case "ArrowLeft":
-        timelineJump(1);
+        timelineJump(event.shiftKey ? 10 : 1);
         break;
       case "ArrowRight":
-        timelineJump(-1);
+        timelineJump(event.shiftKey ? -10 : -1);
         break;
       case "PageUp":
         timelineJump(-10);
@@ -3162,24 +3434,118 @@
   }
 
   function isTimelineShortcutSuppressedTarget(target: EventTarget | null): boolean {
-    if (!(target instanceof Element)) return false;
-    return Boolean(
-      target.closest(
-        'input, textarea, select, button, audio, video, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="spinbutton"], [role="slider"], [role="combobox"], [role="switch"], [role="menuitem"], [data-shortcuts-ignore], .timeline__picker, .audio-drawer',
-      ),
-    );
+    return isShortcutSuppressedTarget(target, [
+      ".timeline__picker",
+      ".timeline__stage-action-menu",
+      ".audio-drawer",
+      ".audio-drawer__speaker-popover",
+    ]);
   }
 
   // Page-level timeline shortcuts: ArrowLeft/ArrowRight move the active frame
   // even when the thin rail itself does not have focus. Interactive surfaces
   // keep their own keyboard behavior (calendar navigation, buttons, audio
   // scrubbing, text selection, etc.).
-  function onTimelineWindowKeyDown(event: KeyboardEvent) {
+  function closeDashboardTopSurface(): boolean {
+    if (speakerActionsOpenIndex != null) {
+      closeSpeakerActions();
+      return true;
+    }
+    if (selectedAudioSegmentId != null) {
+      closeAudioDrawer();
+      return true;
+    }
+    if (pickerOpen) {
+      pickerOpen = false;
+      return true;
+    }
+    if (stageActionsMenuOpen) {
+      closeFrameActions();
+      return true;
+    }
+    return false;
+  }
+
+  function dashboardShortcutMatches(
+    event: KeyboardEvent,
+    definition: ShortcutDefinition,
+  ): boolean {
+    return matchShortcut(event, definition, "other");
+  }
+
+  function isShortcutHelpKey(event: KeyboardEvent): boolean {
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+    return (
+      (!event.shiftKey && event.key === "/") ||
+      (event.shiftKey && event.key === "?")
+    );
+  }
+
+  function closeDashboardSurfacesForShortcutHelp(): void {
+    if (speakerActionsOpenIndex != null) closeSpeakerActions();
+    if (selectedAudioSegmentId != null) closeAudioDrawer();
+    if (pickerOpen) pickerOpen = false;
+    if (stageActionsMenuOpen) closeFrameActions();
+  }
+
+  function onDashboardWindowKeyDown(event: KeyboardEvent) {
     if (event.defaultPrevented) return;
-    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (isShortcutHelpKey(event) && !isShortcutSuppressedTarget(event.target)) {
+      closeDashboardSurfacesForShortcutHelp();
+      return;
+    }
+
+    if (event.key === "Escape") {
+      if (closeDashboardTopSurface()) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (isTimelineShortcutSuppressedTarget(event.target)) return;
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    onTimelineKeyDown(event);
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      onTimelineKeyDown(event);
+      return;
+    }
+
+    if (event.shiftKey) return;
+
+    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.openJumpPicker)) {
+      event.preventDefault();
+      if (!pickerOpen) togglePicker();
+      return;
+    }
+    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.jumpLatest)) {
+      if (!showJumpToLatestButton || timelineLoading || timelineLoadingMore || pickerJumping) return;
+      event.preventDefault();
+      void jumpToLatestFrame();
+      return;
+    }
+    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.toggleOcr)) {
+      if (!timelineActive) return;
+      event.preventDefault();
+      void toggleOcrForActiveFrame();
+      return;
+    }
+    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.refreshTimeline)) {
+      if (timelineLoading || timelineLoadingMore || audioSegmentsLoading) return;
+      event.preventDefault();
+      void refreshTimelineAndDashboard();
+      return;
+    }
+    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.copyFrame)) {
+      if (!activePreviewPath) return;
+      event.preventDefault();
+      void copyActiveFrameImage();
+      return;
+    }
+    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.downloadFrame)) {
+      if (!activePreviewPath) return;
+      event.preventDefault();
+      void downloadActiveFrameImage();
+    }
   }
 
   function timelineJump(delta: number) {
@@ -3932,6 +4298,21 @@
     !!timelineActive && !!ocrSourceFrame && ocrSourceFrame.id !== timelineActive.id,
   );
 
+  const ocrToggleTitle = $derived(
+    `${!ocrEnabled && !ocrVisible ? ocrReadOnlyTooltip : ocrError ??
+      (ocrVisible
+        ? "Hide OCR data for the active frame"
+        : ocrStatus === "success"
+          ? `${ocrObservations.length} text region${ocrObservations.length === 1 ? "" : "s"} detected${ocrUsingEarlierFrame ? ` (reused from frame ${ocrSourceFrame?.id})` : ""}${ocrProviderLabel ? ` · ${ocrProviderLabel}` : ""}`
+          : ocrStatus === "empty"
+            ? ocrUsingEarlierFrame
+              ? `no text detected (reused from frame ${ocrSourceFrame?.id})`
+              : "no text detected"
+            : ocrStatus === "missing"
+              ? "no OCR data for this frame"
+              : "Show OCR data for the active frame")} (O)`,
+  );
+
   // ─── Date / time jump picker ──────────────────────────────────────────────
   // A custom Bits UI calendar + time list that lets the user jump the
   // timeline to a specific local date (and optionally a specific minute).
@@ -4511,6 +4892,95 @@
     await loadTimelinePage(true);
   }
 
+  $effect(() => {
+    const timelineRows: KeyboardHelpGroup["rows"] = [];
+    if (timelineFrames.length > 0) {
+      timelineRows.push(
+        DASHBOARD_SHORTCUTS.olderFrame,
+        DASHBOARD_SHORTCUTS.newerFrame,
+        DASHBOARD_SHORTCUTS.olderFrameFast,
+        DASHBOARD_SHORTCUTS.newerFrameFast,
+      );
+    }
+    timelineRows.push(
+      {
+        ...DASHBOARD_SHORTCUTS.openJumpPicker,
+        enabled: !pickerOpen,
+      },
+      {
+        ...DASHBOARD_SHORTCUTS.jumpLatest,
+        enabled: showJumpToLatestButton && !timelineLoading && !timelineLoadingMore && !pickerJumping,
+      },
+      {
+        ...DASHBOARD_SHORTCUTS.refreshTimeline,
+        enabled: !timelineLoading && !timelineLoadingMore && !audioSegmentsLoading,
+      },
+      DASHBOARD_SHORTCUTS.closeSurface,
+    );
+
+    const frameRows: KeyboardHelpGroup["rows"] = [
+      {
+        ...DASHBOARD_SHORTCUTS.toggleOcr,
+        label: ocrVisible ? "Hide OCR panel" : "Show OCR panel",
+        enabled: timelineActive != null,
+      },
+      {
+        ...DASHBOARD_SHORTCUTS.copyFrame,
+        enabled: activePreviewPath != null,
+      },
+      {
+        ...DASHBOARD_SHORTCUTS.downloadFrame,
+        enabled: activePreviewPath != null,
+      },
+    ];
+
+    const groups: KeyboardHelpGroup[] = [
+      {
+        id: "dashboard.timeline",
+        title: "Timeline",
+        rows: timelineRows,
+      },
+      {
+        id: "dashboard.frame",
+        title: "Frame",
+        rows: frameRows,
+      },
+    ];
+
+    if (selectedAudioSegment != null) {
+      groups.push({
+        id: "dashboard.audio",
+        title: "Audio Drawer",
+        rows: [
+          {
+            ...AUDIO_DRAWER_SHORTCUTS.playPause,
+            enabled: selectedAudioSrc != null,
+          },
+          {
+            ...AUDIO_DRAWER_SHORTCUTS.seekBack,
+            enabled: selectedAudioSrc != null,
+          },
+          {
+            ...AUDIO_DRAWER_SHORTCUTS.seekForward,
+            enabled: selectedAudioSrc != null,
+          },
+          {
+            ...AUDIO_DRAWER_SHORTCUTS.seekBackFast,
+            enabled: selectedAudioSrc != null,
+          },
+          {
+            ...AUDIO_DRAWER_SHORTCUTS.seekForwardFast,
+            enabled: selectedAudioSrc != null,
+          },
+          AUDIO_DRAWER_SHORTCUTS.close,
+          AUDIO_DRAWER_SHORTCUTS.trapFocus,
+        ],
+      });
+    }
+
+    return setKeyboardHelpGroups("dashboard", groups);
+  });
+
   // ─── Recording controls ──────────────────────────────────────────────────
   // Mirrors the debug page: bootstrap the shared `captureSession` store via
   // `get_capture_permissions`, load `recording_settings` so a fresh start
@@ -4663,12 +5133,17 @@
 <svelte:window
   onpointerdown={(event) => {
     onPickerPointerDownOutside(event);
+    onFrameActionsPointerDownOutside(event);
     const target = event.target;
-    if (!(target instanceof Element) || !target.closest(".audio-drawer__speaker-popover")) {
+    if (
+      !(target instanceof Element) ||
+      (!target.closest(".audio-drawer__speaker-popover") &&
+        !target.closest(".audio-drawer__speaker-chip"))
+    ) {
       closeSpeakerActions();
     }
   }}
-  onkeydown={onTimelineWindowKeyDown}
+  onkeydown={onDashboardWindowKeyDown}
 />
 <section class="timeline" onwheel={onTimelineWheel}>
   <header class="timeline__bar">
@@ -4685,6 +5160,8 @@
           bind:this={pickerTriggerEl}
           aria-haspopup="dialog"
           aria-expanded={pickerOpen}
+          aria-controls="timeline-jump-picker"
+          title="Jump to date and time (J)"
         >
           <span class="timeline__jump-icon">▣</span>
           <span class="timeline__jump-label">{triggerLabel}</span>
@@ -4694,15 +5171,16 @@
             class="btn btn--ghost btn--sm timeline__jump-latest"
             onclick={jumpToLatestFrame}
             disabled={timelineLoading || timelineLoadingMore || pickerJumping}
-            title="Jump to latest frame"
+            title="Jump to latest frame (L)"
           >latest</button>
         {/if}
         {#if pickerOpen}
           <div
             class="timeline__picker"
+            id="timeline-jump-picker"
             style={pickerStyle}
             role="dialog"
-            aria-modal="true"
+            aria-modal="false"
             aria-label="Jump to date and time"
             tabindex="-1"
             bind:this={pickerEl}
@@ -4797,18 +5275,7 @@
         class:timeline__ocr-btn--success={ocrStatus === "success"}
         onclick={toggleOcrForActiveFrame}
         disabled={!timelineActive}
-        title={!ocrEnabled && !ocrVisible ? ocrReadOnlyTooltip : ocrError ??
-          (ocrVisible
-            ? "Hide OCR data for the active frame"
-            : ocrStatus === "success"
-              ? `${ocrObservations.length} text region${ocrObservations.length === 1 ? "" : "s"} detected${ocrUsingEarlierFrame ? ` (reused from frame ${ocrSourceFrame?.id})` : ""}${ocrProviderLabel ? ` · ${ocrProviderLabel}` : ""}`
-              : ocrStatus === "empty"
-                ? ocrUsingEarlierFrame
-                  ? `no text detected (reused from frame ${ocrSourceFrame?.id})`
-                  : "no text detected"
-                : ocrStatus === "missing"
-                  ? "no OCR data for this frame"
-                  : "Show OCR data for the active frame")}
+        title={ocrToggleTitle}
         aria-label={ocrVisible
           ? "Hide OCR data for active frame"
           : "Show OCR data for active frame"}
@@ -4842,6 +5309,7 @@
         class="btn btn--ghost btn--sm"
         onclick={refreshTimelineAndDashboard}
         disabled={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
+        title="Refresh dashboard timeline (R)"
       >refresh</button>
     </div>
   </header>
@@ -4888,29 +5356,48 @@
         </div>
       {/if}
       {#if previewUrl}
-        <details class="timeline__stage-actions" open={stageActionsMenuOpen} ontoggle={onStageActionsToggle}>
-          <summary
+        <div
+          class="timeline__stage-actions"
+          class:timeline__stage-actions--open={stageActionsMenuOpen}
+        >
+          <button
+            type="button"
             class="btn btn--ghost btn--sm timeline__stage-action-trigger"
             aria-label="Frame actions"
-            title="Frame actions"
-          >⋯</summary>
-          <div class="timeline__stage-action-menu">
-            <button
-              type="button"
-              class="timeline__stage-action-menu-item"
-              onclick={copyActiveFrameImage}
-              aria-label="Copy active frame image"
-              title="Copy image"
-            >copy</button>
-            <button
-              type="button"
-              class="timeline__stage-action-menu-item"
-              onclick={downloadActiveFrameImage}
-              aria-label="Download active frame image"
-              title="Download image"
-            >download</button>
-          </div>
-        </details>
+            aria-haspopup="dialog"
+            aria-expanded={stageActionsMenuOpen}
+            aria-controls="timeline-stage-action-menu"
+            title="Frame actions (C copy, D download)"
+            bind:this={stageActionsTriggerEl}
+            onkeydown={onFrameActionsTriggerKeydown}
+            onpointerdown={() => { stageActionsOpenedByKeyboard = false; }}
+            onclick={() => toggleFrameActions(stageActionsOpenedByKeyboard)}
+          >⋯</button>
+          {#if stageActionsMenuOpen}
+            <div
+              id="timeline-stage-action-menu"
+              class="timeline__stage-action-menu"
+              role="group"
+              aria-label="Frame actions"
+              bind:this={stageActionsMenuEl}
+            >
+              <button
+                type="button"
+                class="timeline__stage-action-menu-item"
+                onclick={copyActiveFrameImage}
+                aria-label="Copy active frame image"
+                title="Copy image (C)"
+              >copy</button>
+              <button
+                type="button"
+                class="timeline__stage-action-menu-item"
+                onclick={downloadActiveFrameImage}
+                aria-label="Download active frame image"
+                title="Download image (D)"
+              >download</button>
+            </div>
+          {/if}
+        </div>
         <div
           class="timeline__preview"
           role="img"
@@ -5444,10 +5931,12 @@
               >
                 {#if speakerActionsOpenIndex === index}
                   <div
+                    id={`speaker-actions-${group.clusterId}`}
                     class="audio-drawer__speaker-popover"
                     role="dialog"
                     tabindex="-1"
                     aria-label={`Speaker actions for ${speakerDisplayLabel(group)}`}
+                    bind:this={speakerActionsPopoverEl}
                     onpointerdown={(event) => event.stopPropagation()}
                   >
                     <div class="audio-drawer__speaker-popover-row audio-drawer__speaker-popover-row--name">
@@ -5551,6 +6040,7 @@
                     class:audio-drawer__speaker-chip--open={speakerActionsOpenIndex === index}
                     aria-haspopup="dialog"
                     aria-expanded={speakerActionsOpenIndex === index}
+                    aria-controls={`speaker-actions-${group.clusterId}`}
                     title="Edit speaker"
                     onclick={(event) => toggleSpeakerActions(index, event)}
                   >
@@ -7112,7 +7602,7 @@
     z-index: 2;
   }
 
-  .timeline__stage-actions[open] {
+  .timeline__stage-actions--open {
     z-index: 3;
   }
 
@@ -7146,10 +7636,6 @@
       transform 0.12s;
   }
 
-  .timeline__stage-action-trigger::-webkit-details-marker {
-    display: none;
-  }
-
   .timeline__stage-action-trigger:hover {
     background: color-mix(in srgb, var(--app-surface-hover) 88%, transparent);
     border-color: var(--app-border-hover);
@@ -7168,7 +7654,7 @@
       0 10px 24px rgba(0, 0, 0, 0.26);
   }
 
-  .timeline__stage-actions[open] > .timeline__stage-action-trigger {
+  .timeline__stage-actions--open > .timeline__stage-action-trigger {
     background: color-mix(in srgb, var(--app-surface-hover) 92%, transparent);
     border-color: var(--app-border-hover);
     color: var(--app-text);
@@ -8160,7 +8646,7 @@
 
   :global([data-theme="light"]) .timeline__stage-action-trigger:hover,
   :global([data-theme="light"]) .timeline__stage-action-trigger:focus-visible,
-  :global([data-theme="light"]) .timeline__stage-actions[open] > .timeline__stage-action-trigger {
+  :global([data-theme="light"]) .timeline__stage-actions--open > .timeline__stage-action-trigger {
     background: color-mix(in srgb, var(--app-surface-hover) 94%, transparent);
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);

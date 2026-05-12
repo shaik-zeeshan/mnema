@@ -2,6 +2,7 @@
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { tick, type Snippet } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
   import { closeCurrentWindow, isDedicatedSurfaceWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
@@ -25,7 +26,20 @@
     initAppNotifications,
     type AppNotification,
   } from "$lib/notifications.svelte";
-  import { getGlobalShortcutAction } from "$lib/global-shortcuts";
+  import {
+    GLOBAL_SHORTCUTS,
+    getGlobalShortcutAction,
+    type GlobalShortcutId,
+  } from "$lib/global-shortcuts";
+  import {
+    formatShortcut,
+    getFocusableElements,
+    isShortcutSuppressedTarget,
+    trapTabKey,
+    type KeyboardPlatform,
+    type ShortcutDefinition,
+  } from "$lib/keyboard";
+  import { keyboardHelp, type KeyboardHelpGroup } from "$lib/keyboard-help.svelte";
   interface Props {
     children: Snippet;
   }
@@ -39,10 +53,15 @@
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const showMainTitlebar = $derived(isMainRoute);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
-  const canShowShortcutsHelp = !showDedicatedTitlebar;
-  let windowPlatform = $state<"macos" | "windows" | "other">("other");
+  const isMainWindow = $derived(!showDedicatedTitlebar);
+  const canShowShortcutsHelp = $derived(isMainWindow && isMainRoute);
+  let windowPlatform = $state<KeyboardPlatform>("other");
   let notificationsOpen = $state(false);
+  let notificationsOpenedByKeyboard = false;
+  let notificationsButtonEl = $state<HTMLButtonElement | null>(null);
+  let notificationsPopoverEl = $state<HTMLDivElement | null>(null);
   let shortcutsHelpOpen = $state(false);
+  let shortcutsHelpPanelEl = $state<HTMLDivElement | null>(null);
   let shortcutsHelpCloseEl = $state<HTMLButtonElement | null>(null);
   let shortcutsHelpReturnFocusEl: HTMLElement | null = null;
   let chromeAppearance = $state<AppearanceSetting>("system");
@@ -273,35 +292,88 @@
       : `${lane.label}: disabled — click to include in next recording`;
   }
 
-  const primaryShortcutLabel = $derived(windowPlatform === "macos" ? "⌘" : "Ctrl");
+  const canUseGlobalShortcuts = $derived(isMainWindow && isMainRoute);
+  const canToggleSourcesByShortcut = $derived(
+    canUseGlobalShortcuts && !isCapturing && !captureLoadingSettings,
+  );
+  const canToggleRecordingByShortcut = $derived(
+    isCapturing ? !captureLoadingStop : !captureLoadingStart && !captureLoadingSettings,
+  );
 
-  function sourceShortcutFor(key: SourceLane["key"]): string {
-    if (key === "screen") return "1";
-    if (key === "microphone") return "2";
-    return "3";
+  function sourceShortcutIdFor(key: SourceLane["key"]): GlobalShortcutId {
+    if (key === "screen") return "toggleSourceScreen";
+    if (key === "microphone") return "toggleSourceMicrophone";
+    return "toggleSourceSystemAudio";
   }
 
-  function isShortcutSuppressedTarget(target: EventTarget | null): boolean {
-    if (!(target instanceof Element)) return false;
-    return Boolean(
-      target.closest(
-        'input, textarea, select, button, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="spinbutton"], [role="slider"], [role="combobox"], [role="switch"], [role="menuitem"], [data-shortcuts-ignore]',
-      ),
-    );
+  function shortcutDisplay(id: GlobalShortcutId): string {
+    return formatShortcut(GLOBAL_SHORTCUTS[id].bindings[0], windowPlatform).join("");
   }
+
+  function shortcutWithLabel(
+    definition: ShortcutDefinition,
+    label: string,
+  ): ShortcutDefinition {
+    return { ...definition, label };
+  }
+
+  const globalShortcutHelpGroup = $derived.by<KeyboardHelpGroup>(() => {
+    const rows: KeyboardHelpGroup["rows"] = [];
+
+    if (canToggleRecordingByShortcut) {
+      rows.push(
+        shortcutWithLabel(
+          GLOBAL_SHORTCUTS.toggleRecording,
+          isCapturing ? "Stop recording" : "Start recording",
+        ),
+      );
+    }
+
+    rows.push(GLOBAL_SHORTCUTS.toggleMainWindow);
+    rows.push(GLOBAL_SHORTCUTS.openSettings);
+
+    if (devEnabled) {
+      rows.push(GLOBAL_SHORTCUTS.openDebug);
+    }
+
+    if (canToggleSourcesByShortcut) {
+      rows.push(
+        GLOBAL_SHORTCUTS.toggleSourceScreen,
+        GLOBAL_SHORTCUTS.toggleSourceMicrophone,
+        GLOBAL_SHORTCUTS.toggleSourceSystemAudio,
+      );
+    }
+
+    rows.push(GLOBAL_SHORTCUTS.toggleShortcutsHelp, GLOBAL_SHORTCUTS.closeShortcutsHelp);
+
+    return {
+      id: "global",
+      title: "Global",
+      rows,
+    };
+  });
+
+  const shortcutHelpGroups = $derived.by<KeyboardHelpGroup[]>(() => {
+    const groups = [globalShortcutHelpGroup, ...keyboardHelp.contextualGroups]
+      .map((group) => ({
+        ...group,
+        rows: group.rows.filter((row) => row.enabled !== false),
+      }))
+      .filter((group) => group.rows.length > 0);
+    return groups;
+  });
 
   async function toggleRecordingShortcut(): Promise<void> {
-    if (captureControls.loadingStart || captureControls.loadingStop) return;
+    if (!canToggleRecordingByShortcut) return;
     if (isCapturing) {
       await stopCapture();
       return;
     }
-    if (captureControls.loadingSettings) return;
     await startCapture();
   }
 
   async function toggleSourceShortcut(key: SourceLane["key"]): Promise<void> {
-    if (isCapturing || captureControls.loadingSettings) return;
+    if (!canToggleSourcesByShortcut || sourceSelection.isSaving(key)) return;
     await toggleSourceSelected(key);
   }
 
@@ -311,6 +383,39 @@
     if (!captureControls.isRunning) {
       await startCapture();
     }
+  }
+
+  function openNotifications(openedByKeyboard = false): void {
+    if (!hasNotifications) return;
+    notificationsOpenedByKeyboard = openedByKeyboard;
+    notificationsOpen = true;
+  }
+
+  function closeNotifications(): void {
+    notificationsOpen = false;
+  }
+
+  function toggleNotifications(openedByKeyboard = false): void {
+    if (notificationsOpen) {
+      closeNotifications();
+      return;
+    }
+    openNotifications(openedByKeyboard);
+  }
+
+  function onNotificationsButtonKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter" || event.key === " ") {
+      notificationsOpenedByKeyboard = true;
+    }
+  }
+
+  function onWindowPointerDown(event: PointerEvent): void {
+    if (!notificationsOpen) return;
+    const target = event.target as Node | null;
+    if (!target) return;
+    if (notificationsPopoverEl?.contains(target)) return;
+    if (notificationsButtonEl?.contains(target)) return;
+    closeNotifications();
   }
 
   function closeShortcutsHelp(): void {
@@ -323,16 +428,72 @@
 
   function toggleShortcutsHelp(): void {
     if (!canShowShortcutsHelp) return;
-    shortcutsHelpOpen = !shortcutsHelpOpen;
+    const willOpen = !shortcutsHelpOpen;
+    if (willOpen) {
+      closeNotifications();
+    }
+    shortcutsHelpOpen = willOpen;
+  }
+
+  function isDedicatedWindowCloseSuppressedTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    return Boolean(target.closest([
+      "input",
+      "textarea",
+      "select",
+      '[contenteditable="true"]',
+      '[role="textbox"]',
+      '[role="searchbox"]',
+      '[role="combobox"]',
+      "[data-shortcuts-ignore]",
+    ].join(", ")));
+  }
+
+  function closeDedicatedWindowOnEscape(event: KeyboardEvent): boolean {
+    if (!showDedicatedTitlebar || (!isSettings && !isDebug)) return false;
+    if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return false;
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false;
+    if (isDedicatedWindowCloseSuppressedTarget(event.target)) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+    void closeCurrentWindow();
+    return true;
+  }
+
+  function onShortcutsHelpKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeShortcutsHelp();
+      return;
+    }
+    trapTabKey(event, shortcutsHelpPanelEl);
   }
 
   function handleGlobalShortcutKeydown(event: KeyboardEvent): void {
+    if (closeDedicatedWindowOnEscape(event)) return;
+
     const action = getGlobalShortcutAction(event, {
       devEnabled,
+      isIdle: canToggleSourcesByShortcut,
+      isMainRoute,
+      isMainWindow,
       isShortcutSuppressedTarget: isShortcutSuppressedTarget(event.target),
       shortcutsHelpOpen,
-    });
-    if (!action) return;
+    }, windowPlatform);
+    if (!action) {
+      if (
+        event.key === "Escape" &&
+        !shortcutsHelpOpen &&
+        notificationsOpen
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeNotifications();
+      }
+      return;
+    }
 
     event.preventDefault();
 
@@ -344,6 +505,11 @@
 
     if (action.type === "toggleRecording") {
       void toggleRecordingShortcut();
+      return;
+    }
+
+    if (action.type === "toggleMainWindow") {
+      void invoke("toggle_main_window_visibility_command");
       return;
     }
 
@@ -366,11 +532,19 @@
   }
 
   $effect(() => {
+    if (shortcutsHelpOpen && !canShowShortcutsHelp) {
+      shortcutsHelpOpen = false;
+    }
+  });
+
+  $effect(() => {
     if (!shortcutsHelpOpen || !canShowShortcutsHelp) return;
     shortcutsHelpReturnFocusEl = document.activeElement as HTMLElement | null;
     let cancelled = false;
     void tick().then(() => {
-      if (!cancelled) shortcutsHelpCloseEl?.focus({ preventScroll: true });
+      if (cancelled) return;
+      const first = getFocusableElements(shortcutsHelpPanelEl)[0] ?? shortcutsHelpCloseEl;
+      first?.focus({ preventScroll: true });
     });
     return () => {
       cancelled = true;
@@ -384,9 +558,29 @@
       }
     };
   });
+
+  $effect(() => {
+    if (!notificationsOpen) return;
+    let cancelled = false;
+    void tick().then(() => {
+      if (cancelled || !notificationsOpen || !notificationsOpenedByKeyboard) return;
+      getFocusableElements(notificationsPopoverEl)[0]?.focus({ preventScroll: true });
+    });
+    return () => {
+      cancelled = true;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        (notificationsOpenedByKeyboard && (!active || active === document.body)) ||
+        (active && notificationsPopoverEl?.contains(active))
+      ) {
+        notificationsButtonEl?.focus({ preventScroll: true });
+      }
+      notificationsOpenedByKeyboard = false;
+    };
+  });
 </script>
 
-<svelte:window onkeydown={handleGlobalShortcutKeydown} />
+<svelte:window onkeydown={handleGlobalShortcutKeydown} onpointerdown={onWindowPointerDown} />
 <svelte:body class:dedicated-surface-window={showDedicatedTitlebar} />
 
 <div
@@ -421,7 +615,7 @@
             class="titlebar__record titlebar__record--stop"
             onclick={stopCapture}
             disabled={captureLoadingStop}
-            title={`Stop recording (${primaryShortcutLabel}R)`}
+            title={`Stop recording (${shortcutDisplay("toggleRecording")})`}
             aria-label="Stop recording"
           >
             <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
@@ -433,7 +627,7 @@
             class="titlebar__record titlebar__record--start"
             onclick={startCapture}
             disabled={captureLoadingStart || captureLoadingSettings}
-            title={`Start recording (${primaryShortcutLabel}R)`}
+            title={`Start recording (${shortcutDisplay("toggleRecording")})`}
             aria-label="Start recording"
           >
             <span class="titlebar__record-glyph" aria-hidden="true">●</span>
@@ -525,7 +719,7 @@
             <button
               type="button"
               class="titlebar__source titlebar__source--toggle titlebar__source--{lane.key} titlebar__source--{state}"
-              title={`${selectTitleFor(lane, state)} (${sourceShortcutFor(lane.key)})`}
+              title={`${selectTitleFor(lane, state)} (${shortcutDisplay(sourceShortcutIdFor(lane.key))})`}
               aria-label={selectTitleFor(lane, state)}
               aria-pressed={state === "selected"}
               disabled={sourceSelection.isSaving(lane.key) || captureControls.loadingSettings}
@@ -602,12 +796,16 @@
         {#if hasNotifications}
           <div class="titlebar__notifications">
             <button
+              bind:this={notificationsButtonEl}
               type="button"
               class="titlebar__settings titlebar__notifications-button"
               aria-label="Open notifications"
               aria-expanded={notificationsOpen}
+              aria-controls="notification-popover"
               title="Notifications"
-              onclick={() => notificationsOpen = !notificationsOpen}
+              onkeydown={onNotificationsButtonKeydown}
+              onpointerdown={() => { notificationsOpenedByKeyboard = false; }}
+              onclick={() => toggleNotifications(notificationsOpenedByKeyboard)}
             >
               <svg
                 class="titlebar__settings-icon"
@@ -627,7 +825,13 @@
               <span class="titlebar__notification-dot" aria-hidden="true">{notificationCount}</span>
             </button>
             {#if notificationsOpen}
-              <div class="notification-popover" role="dialog" aria-label="Notifications">
+              <div
+                id="notification-popover"
+                class="notification-popover"
+                role="dialog"
+                aria-label="Notifications"
+                bind:this={notificationsPopoverEl}
+              >
                 <div class="notification-popover__head">
                   <span>Notifications</span>
                   <button type="button" class="notification-popover__clear" onclick={() => void clearAppNotifications()}>
@@ -669,7 +873,7 @@
           type="button"
           class="titlebar__settings"
           aria-label="Open settings"
-          title={`Settings (${primaryShortcutLabel},)`}
+          title={`Settings (${shortcutDisplay("openSettings")})`}
           onclick={() => void openSettingsWindow()}
         >
           <svg
@@ -699,7 +903,7 @@
             type="button"
             class="titlebar__settings"
             aria-label="Open debug"
-            title={`Debug (${primaryShortcutLabel}D)`}
+            title={`Debug (${shortcutDisplay("openDebug")})`}
             onclick={() => void openDebugWindow()}
           >
             <svg
@@ -771,6 +975,9 @@
         role="dialog"
         aria-modal="true"
         aria-labelledby="shortcut-help-title"
+        tabindex="-1"
+        bind:this={shortcutsHelpPanelEl}
+        onkeydown={onShortcutsHelpKeydown}
       >
         <header class="shortcut-help__header">
           <div>
@@ -786,42 +993,25 @@
           >×</button>
         </header>
 
-        <dl class="shortcut-help__list">
-          <div class="shortcut-help__row">
-            <dt><kbd>{primaryShortcutLabel}</kbd><kbd>R</kbd></dt>
-            <dd>{isCapturing ? "Stop recording" : "Start recording"}</dd>
-          </div>
-          <div class="shortcut-help__row">
-            <dt><kbd>{primaryShortcutLabel}</kbd><kbd>,</kbd></dt>
-            <dd>Open settings</dd>
-          </div>
-          {#if devEnabled}
-            <div class="shortcut-help__row">
-              <dt><kbd>{primaryShortcutLabel}</kbd><kbd>D</kbd></dt>
-              <dd>Open debug</dd>
-            </div>
-          {/if}
-          <div class="shortcut-help__row">
-            <dt><kbd>1</kbd></dt>
-            <dd>Toggle screen for the next recording</dd>
-          </div>
-          <div class="shortcut-help__row">
-            <dt><kbd>2</kbd></dt>
-            <dd>Toggle microphone for the next recording</dd>
-          </div>
-          <div class="shortcut-help__row">
-            <dt><kbd>3</kbd></dt>
-            <dd>Toggle system audio for the next recording</dd>
-          </div>
-          <div class="shortcut-help__row">
-            <dt><kbd>?</kbd></dt>
-            <dd>Show or hide this panel</dd>
-          </div>
-          <div class="shortcut-help__row">
-            <dt><kbd>Esc</kbd></dt>
-            <dd>Close this panel</dd>
-          </div>
-        </dl>
+        <div class="shortcut-help__groups">
+          {#each shortcutHelpGroups as group (group.id)}
+            <section class="shortcut-help__group" aria-labelledby={`shortcut-help-group-${group.id}`}>
+              <h3 id={`shortcut-help-group-${group.id}`}>{group.title}</h3>
+              <dl class="shortcut-help__list">
+                {#each group.rows as row (row.id)}
+                  <div class="shortcut-help__row">
+                    <dt>
+                      {#each formatShortcut(row.bindings[0], windowPlatform) as token}
+                        <kbd>{token}</kbd>
+                      {/each}
+                    </dt>
+                    <dd>{row.label}</dd>
+                  </div>
+                {/each}
+              </dl>
+            </section>
+          {/each}
+        </div>
 
         <p class="shortcut-help__note">
           Shortcuts pause while focus is inside inputs, sliders, selects, text areas, or buttons.
@@ -1742,7 +1932,9 @@
   }
 
   .shortcut-help__panel {
-    width: min(460px, 100%);
+    width: min(560px, 100%);
+    max-height: min(680px, calc(100vh - 48px));
+    overflow-y: auto;
     border: 1px solid var(--app-border-strong);
     border-radius: 18px;
     background: var(--app-surface);
@@ -1793,6 +1985,25 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
     outline: none;
+  }
+
+  .shortcut-help__groups {
+    display: grid;
+    gap: 14px;
+  }
+
+  .shortcut-help__group {
+    display: grid;
+    gap: 8px;
+  }
+
+  .shortcut-help__group h3 {
+    color: var(--app-text-muted);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    line-height: 1;
+    text-transform: uppercase;
   }
 
   .shortcut-help__list {
