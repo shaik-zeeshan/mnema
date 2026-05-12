@@ -98,6 +98,7 @@
 
   async function fetchCapturePrivacyDebug() {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    if (!session?.isRunning) return;
     try {
       privacyDebug = await invoke<CapturePrivacyDebugInfo>("get_capture_privacy_debug");
       privacyDebugError = null;
@@ -429,7 +430,7 @@
     const idleDebugInterval = setInterval(() => {
       fetchIdleDebug();
       fetchCapturePrivacyDebug();
-    }, 1000);
+    }, 2000);
 
     return () => {
       clearInterval(idleDebugInterval);

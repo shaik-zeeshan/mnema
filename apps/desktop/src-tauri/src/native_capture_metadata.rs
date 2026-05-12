@@ -265,9 +265,18 @@ fn metadata_collection_plan(
         collect_active_window: true,
         collect_browser_url: metadata.browser_url_mode != BrowserUrlMode::Off
             || has_enabled_website_rules(privacy),
-        collect_visible_browser_windows: privacy.private_browser_exclusion_enabled
-            || has_enabled_browser_title_rules(privacy),
+        collect_visible_browser_windows: has_enabled_browser_title_rules(privacy),
     }
+}
+
+fn active_private_browser_detected(
+    privacy: &PrivacySettings,
+    bundle_id: Option<&str>,
+    window_title: Option<&str>,
+) -> bool {
+    privacy.private_browser_exclusion_enabled
+        && bundle_id.is_some_and(is_known_browser_bundle)
+        && window_title.is_some_and(is_private_browser_title)
 }
 
 fn collect_active_window_metadata(
@@ -322,19 +331,28 @@ try
         let snapshot_browser_url = raw_browser_url
             .as_deref()
             .and_then(|url| sanitize_url(url, metadata.browser_url_mode));
-        let visible_browser_windows = if plan.collect_visible_browser_windows {
-            visible_browser_windows()
-        } else {
-            Vec::new()
-        };
-        let private_browser_window_id = visible_browser_windows
-            .iter()
-            .find(|window| is_private_browser_title(&window.title))
-            .map(|window| window.window_id);
-        let private_browser_ambiguous_bundle_id = window_title
-            .as_deref()
-            .filter(|title| is_private_browser_title(title))
-            .and(bundle_id.clone());
+        let active_private_browser =
+            active_private_browser_detected(privacy, bundle_id.as_deref(), window_title.as_deref());
+        let visible_browser_windows =
+            if plan.collect_visible_browser_windows || active_private_browser {
+                visible_browser_windows()
+            } else {
+                Vec::new()
+            };
+        let private_browser_window_id = privacy
+            .private_browser_exclusion_enabled
+            .then(|| {
+                visible_browser_windows
+                    .iter()
+                    .find(|window| is_private_browser_title(&window.title))
+                    .map(|window| window.window_id)
+            })
+            .flatten();
+        let private_browser_ambiguous_bundle_id = active_private_browser.then(|| {
+            bundle_id
+                .clone()
+                .expect("active private browser requires a known browser bundle id")
+        });
         let snapshot = Some(FrameMetadataSnapshot {
             app_bundle_id: bundle_id.clone(),
             app_name,
@@ -727,7 +745,35 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_privacy_rules_request_their_platform_probes() {
+    fn private_browser_detection_does_not_request_all_window_probe_by_default() {
+        let metadata = MetadataSettings {
+            enabled: true,
+            browser_url_mode: BrowserUrlMode::Off,
+        };
+        let privacy = PrivacySettings::default();
+
+        assert_eq!(
+            metadata_collection_plan(&metadata, &privacy),
+            MetadataCollectionPlan {
+                collect_active_window: true,
+                collect_browser_url: false,
+                collect_visible_browser_windows: false,
+            }
+        );
+        assert!(active_private_browser_detected(
+            &privacy,
+            Some("com.google.Chrome"),
+            Some("New Incognito Tab - Google Chrome"),
+        ));
+        assert!(!active_private_browser_detected(
+            &privacy,
+            Some("com.apple.finder"),
+            Some("New Incognito Tab - Google Chrome"),
+        ));
+    }
+
+    #[test]
+    fn dynamic_privacy_rules_request_required_platform_probes() {
         let metadata = MetadataSettings {
             enabled: true,
             browser_url_mode: BrowserUrlMode::Off,
@@ -751,10 +797,6 @@ mod tests {
         assert!(metadata_collection_plan(&metadata, &website_privacy).collect_browser_url);
         assert!(
             metadata_collection_plan(&metadata, &title_privacy).collect_visible_browser_windows
-        );
-        assert!(
-            metadata_collection_plan(&metadata, &PrivacySettings::default())
-                .collect_visible_browser_windows
         );
     }
 }
