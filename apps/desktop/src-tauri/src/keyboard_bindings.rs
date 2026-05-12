@@ -64,11 +64,13 @@ impl KeyboardBindingsSettings {
         let toggle_recording = sanitized_binding(
             self.global_shortcuts.bindings.toggle_recording,
             &defaults.global_shortcuts.bindings.toggle_recording,
+            &[&defaults.global_shortcuts.bindings.toggle_main_window],
             &mut seen,
         );
         let toggle_main_window = sanitized_binding(
             self.global_shortcuts.bindings.toggle_main_window,
             &defaults.global_shortcuts.bindings.toggle_main_window,
+            &[&defaults.global_shortcuts.bindings.toggle_recording],
             &mut seen,
         );
 
@@ -85,20 +87,39 @@ impl KeyboardBindingsSettings {
     }
 }
 
-fn sanitized_binding(value: String, fallback: &str, seen: &mut HashSet<String>) -> String {
+fn sanitized_binding(
+    value: String,
+    fallback: &str,
+    alternate_fallbacks: &[&str],
+    seen: &mut HashSet<String>,
+) -> String {
     let trimmed = value.trim();
-    let shortcut = Shortcut::try_from(trimmed)
-        .ok()
-        .and_then(|shortcut| seen.insert(shortcut.to_string()).then_some(shortcut));
+    let shortcut = unique_shortcut(trimmed, seen);
 
     if let Some(shortcut) = shortcut {
-        return shortcut.to_string();
+        return shortcut;
     }
 
-    if let Ok(fallback_shortcut) = Shortcut::try_from(fallback) {
-        seen.insert(fallback_shortcut.to_string());
+    for candidate in std::iter::once(fallback).chain(alternate_fallbacks.iter().copied()) {
+        if reserve_shortcut(candidate, seen) {
+            return candidate.to_string();
+        }
     }
+
     fallback.to_string()
+}
+
+fn unique_shortcut(value: &str, seen: &mut HashSet<String>) -> Option<String> {
+    Shortcut::try_from(value).ok().and_then(|shortcut| {
+        let shortcut = shortcut.to_string();
+        seen.insert(shortcut.clone()).then_some(shortcut)
+    })
+}
+
+fn reserve_shortcut(value: &str, seen: &mut HashSet<String>) -> bool {
+    Shortcut::try_from(value)
+        .ok()
+        .is_some_and(|shortcut| seen.insert(shortcut.to_string()))
 }
 
 fn keyboard_bindings_file_path(app: &tauri::AppHandle) -> PathBuf {
@@ -201,9 +222,12 @@ fn refresh_global_shortcuts(
     let mut registered = Vec::new();
     for shortcut in shortcuts {
         let shortcut_string = shortcut.to_string();
-        app.global_shortcut()
-            .register(shortcut)
-            .map_err(|error| format!("failed to register '{shortcut_string}': {error}"))?;
+        if let Err(error) = app.global_shortcut().register(shortcut) {
+            let state = app.state::<KeyboardBindingsState>();
+            let mut runtime = state.lock().expect("keyboard bindings state poisoned");
+            runtime.registered_shortcuts = registered;
+            return Err(format!("failed to register '{shortcut_string}': {error}"));
+        }
         registered.push(shortcut_string);
     }
 
@@ -385,6 +409,30 @@ mod tests {
         assert_eq!(
             settings.global_shortcuts.bindings.toggle_main_window,
             TOGGLE_MAIN_WINDOW_DEFAULT
+        );
+    }
+
+    #[test]
+    fn invalid_binding_uses_alternate_default_when_primary_fallback_is_taken() {
+        let settings = KeyboardBindingsSettings {
+            schema_version: 1,
+            global_shortcuts: GlobalShortcutSettings {
+                enabled: true,
+                bindings: GlobalShortcutBindings {
+                    toggle_recording: TOGGLE_MAIN_WINDOW_DEFAULT.to_string(),
+                    toggle_main_window: "also bad".to_string(),
+                },
+            },
+        }
+        .sanitized();
+
+        assert_eq!(
+            Shortcut::try_from(settings.global_shortcuts.bindings.toggle_recording.as_str()).ok(),
+            Shortcut::try_from(TOGGLE_MAIN_WINDOW_DEFAULT).ok(),
+        );
+        assert_eq!(
+            settings.global_shortcuts.bindings.toggle_main_window,
+            TOGGLE_RECORDING_DEFAULT
         );
     }
 }

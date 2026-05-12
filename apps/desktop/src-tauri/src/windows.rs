@@ -431,10 +431,44 @@ pub(crate) fn toggle_main_window_visibility(app: &tauri::AppHandle) {
 #[cfg(target_os = "macos")]
 fn set_regular_activation_policy(app: &tauri::AppHandle) {
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    restore_macos_app_icon();
 }
 
 #[cfg(not(target_os = "macos"))]
 fn set_regular_activation_policy(_app: &tauri::AppHandle) {}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn restore_macos_app_icon() {
+    use cocoa::{
+        appkit::{NSApp, NSApplication, NSImage},
+        base::{id, nil},
+        foundation::{NSData, NSUInteger},
+    };
+    use objc::{msg_send, sel, sel_impl};
+    use std::ffi::c_void;
+
+    const APP_ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
+
+    unsafe {
+        let data = NSData::dataWithBytes_length_(
+            nil,
+            APP_ICON_BYTES.as_ptr().cast::<c_void>(),
+            APP_ICON_BYTES.len() as NSUInteger,
+        );
+        if data == nil {
+            return;
+        }
+
+        let icon: id = NSImage::initWithData_(NSImage::alloc(nil), data);
+        if icon == nil {
+            return;
+        }
+
+        NSApp().setApplicationIconImage_(icon);
+        let _: () = msg_send![icon, release];
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn refresh_activation_policy(app: &tauri::AppHandle) {
