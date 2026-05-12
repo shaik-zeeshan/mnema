@@ -60,4 +60,5 @@
 - Verifying the `audio-transcription` crate's `local-whisper` feature requires `cmake` in `PATH`, because `whisper-rs-sys` builds bundled `whisper.cpp`/GGML artifacts.
 
 ## Workflow
+- For desktop confirmations, alerts, and file dialogs, use Tauri dialog APIs/plugins (for example `@tauri-apps/plugin-dialog` in Svelte) instead of browser-native `window.confirm`, `window.alert`, or ad hoc browser dialogs.
 - When new repo-specific behavior, commands, structure, or gotchas are discovered during a change, ask the user whether that context should also be added to `AGENTS.md`.
