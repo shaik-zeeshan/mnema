@@ -9,6 +9,7 @@ pub(crate) mod metadata;
 mod microphone;
 #[path = "native_capture_output.rs"]
 pub(crate) mod output;
+mod privacy;
 mod runtime;
 mod segments;
 #[path = "native_capture_settings.rs"]

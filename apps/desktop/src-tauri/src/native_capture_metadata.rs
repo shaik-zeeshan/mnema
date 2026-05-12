@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
-#[cfg(target_os = "macos")]
 use tauri::Manager;
 
 #[derive(Debug, Clone, Default)]
@@ -32,6 +32,22 @@ impl CaptureMetadataRuntime {
 }
 
 pub type CaptureMetadataState = Mutex<CaptureMetadataRuntime>;
+
+pub(super) type FrameMetadataSnapshotProvider =
+    Arc<dyn Fn() -> Option<FrameMetadataSnapshot> + Send + Sync + 'static>;
+
+pub(super) fn frame_metadata_snapshot_provider(
+    app_handle: &tauri::AppHandle,
+) -> FrameMetadataSnapshotProvider {
+    let app_handle = app_handle.clone();
+    Arc::new(move || {
+        latest_frame_metadata_snapshot(
+            app_handle
+                .state::<crate::native_capture::CaptureMetadataState>()
+                .inner(),
+        )
+    })
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,14 +149,6 @@ pub fn refresh_metadata_state(
     runtime.latest_snapshot = snapshot;
     runtime.latest_decision = decision.clone();
     decision
-}
-
-pub fn initial_privacy_decision(
-    state: &CaptureMetadataState,
-    metadata: &MetadataSettings,
-    privacy: &PrivacySettings,
-) -> PrivacyFilterDecision {
-    refresh_metadata_state(state, metadata, privacy)
 }
 
 #[cfg(target_os = "macos")]
@@ -602,7 +610,7 @@ mod tests {
         };
 
         let state = CaptureMetadataState::default();
-        let decision = initial_privacy_decision(&state, &metadata, &privacy);
+        let decision = refresh_metadata_state(&state, &metadata, &privacy);
         let runtime = state.lock().expect("capture metadata state should lock");
 
         assert_eq!(decision.excluded_bundle_ids, vec!["com.secret"]);
