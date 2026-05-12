@@ -683,7 +683,6 @@ pub struct FrameDto {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub equivalence_hint: Option<String>,
-    pub metadata: Option<capture_metadata::FrameMetadataSnapshot>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -930,7 +929,6 @@ impl From<::app_infra::Frame> for FrameDto {
             width: frame.width,
             height: frame.height,
             equivalence_hint: frame.equivalence.hint,
-            metadata: frame.metadata_snapshot,
             created_at: frame.created_at,
             updated_at: frame.updated_at,
         }
@@ -4708,6 +4706,41 @@ mod tests {
             .build()
             .expect("test runtime should build")
             .block_on(test);
+    }
+
+    #[test]
+    fn frame_dto_omits_metadata_snapshot_from_bulk_timeline_payloads() {
+        let frame = ::app_infra::Frame {
+            id: 7,
+            session_id: "session-metadata".to_string(),
+            file_path: "/tmp/frame.png".to_string(),
+            captured_at: "2026-05-12T10:00:00Z".to_string(),
+            width: Some(1440),
+            height: Some(900),
+            equivalence: ::app_infra::FrameEquivalence {
+                hint: Some("hint".to_string()),
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            created_at: "2026-05-12T10:00:00Z".to_string(),
+            updated_at: "2026-05-12T10:00:00Z".to_string(),
+            metadata_snapshot: Some(capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.Browser".to_string()),
+                app_name: Some("Browser".to_string()),
+                window_title: Some("Sensitive Project".to_string()),
+                browser_url: Some("https://example.com/private".to_string()),
+                display_id: Some(1),
+                metadata_redaction_reason: None,
+            }),
+        };
+
+        let value = serde_json::to_value(FrameDto::from(frame)).expect("dto should serialize");
+
+        assert!(value.get("metadata").is_none());
+        assert!(!value.to_string().contains("Sensitive Project"));
+        assert!(!value.to_string().contains("https://example.com/private"));
     }
 
     struct TestVideoPreviewExtractorGuard;

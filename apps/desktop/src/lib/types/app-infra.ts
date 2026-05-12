@@ -34,7 +34,6 @@ export interface FrameDto {
 	ocrText: string | null;
 	processorVersion: string | null;
 	equivalenceHint: string | null;
-	metadata: FrameMetadataSnapshot | null;
 	createdAt: string;
 	updatedAt: string;
 }

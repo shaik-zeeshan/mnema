@@ -793,13 +793,29 @@ fn privacy_filter_from_decision(
 }
 
 #[cfg(target_os = "macos")]
-fn refresh_and_apply_privacy_filter(
-    app_handle: &tauri::AppHandle,
-    runtime: &mut NativeCaptureRuntime,
-) -> Result<(), CaptureErrorResponse> {
-    if !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
-        return Ok(());
+struct PrivacyFilterUpdate {
+    decision: capture_metadata::PrivacyFilterDecision,
+    filter: capture_screen::PrivacyContentFilter,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+struct InitialPrivacyFilter {
+    decision: capture_metadata::PrivacyFilterDecision,
+    filter: Option<capture_screen::PrivacyContentFilter>,
+}
+
+#[cfg(target_os = "macos")]
+fn empty_privacy_filter() -> capture_screen::PrivacyContentFilter {
+    capture_screen::PrivacyContentFilter {
+        display_id: 0,
+        excluded_bundle_ids: Vec::new(),
+        excluded_window_ids: Vec::new(),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn collect_initial_privacy_filter(app_handle: &tauri::AppHandle) -> InitialPrivacyFilter {
     let settings = app_handle
         .state::<crate::native_capture::RecordingSettingsState>()
         .lock()
@@ -813,24 +829,48 @@ fn refresh_and_apply_privacy_filter(
         &settings.metadata,
         &settings.privacy,
     );
-    let filter = privacy_filter_from_decision(decision.clone()).unwrap_or(
-        capture_screen::PrivacyContentFilter {
-            display_id: 0,
-            excluded_bundle_ids: Vec::new(),
-            excluded_window_ids: Vec::new(),
-        },
-    );
-    capture_screen::update_active_privacy_filter(&mut runtime.active_screen_session, filter)
-        .map_err(|error| CaptureErrorResponse {
-            code: "privacy_filter_apply_failed".to_string(),
-            message: error.message,
-        })?;
+    let filter = privacy_filter_from_decision(decision.clone());
+    InitialPrivacyFilter { decision, filter }
+}
+
+#[cfg(target_os = "macos")]
+fn mark_privacy_decision_applied(
+    app_handle: &tauri::AppHandle,
+    decision: capture_metadata::PrivacyFilterDecision,
+) {
     crate::native_capture::metadata::mark_applied_privacy_decision(
         app_handle
             .state::<crate::native_capture::CaptureMetadataState>()
             .inner(),
         decision,
     );
+}
+
+#[cfg(target_os = "macos")]
+fn collect_privacy_filter_update(app_handle: &tauri::AppHandle) -> PrivacyFilterUpdate {
+    let current = collect_initial_privacy_filter(app_handle);
+    let filter = current.filter.unwrap_or_else(empty_privacy_filter);
+    PrivacyFilterUpdate {
+        decision: current.decision,
+        filter,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_privacy_filter_update(
+    app_handle: &tauri::AppHandle,
+    runtime: &mut NativeCaptureRuntime,
+    update: PrivacyFilterUpdate,
+) -> Result<(), CaptureErrorResponse> {
+    if !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
+        return Ok(());
+    }
+    capture_screen::update_active_privacy_filter(&mut runtime.active_screen_session, update.filter)
+        .map_err(|error| CaptureErrorResponse {
+            code: "privacy_filter_apply_failed".to_string(),
+            message: error.message,
+        })?;
+    mark_privacy_decision_applied(app_handle, update.decision);
     Ok(())
 }
 
@@ -2098,6 +2138,7 @@ pub(super) fn resume_screen_from_inactivity(
     let microphone_activity_threshold = runtime.inactivity.microphone_activity_threshold();
     let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
     let metadata_snapshot_provider = app_handle.map(frame_metadata_snapshot_provider);
+    let initial_privacy_filter = app_handle.map(collect_initial_privacy_filter);
     resume_screen_from_inactivity_with_start_segment(
         runtime,
         app_handle,
@@ -2111,7 +2152,7 @@ pub(super) fn resume_screen_from_inactivity(
               microphone_device_id,
               frame_artifact_tx,
               microphone_output_path| {
-            start_segment_with_inactivity_tail_trim_seconds(
+            let started_segment = start_segment_with_inactivity_tail_trim_seconds(
                 segment_dir,
                 screen_output_file,
                 system_audio_output_path,
@@ -2126,8 +2167,14 @@ pub(super) fn resume_screen_from_inactivity(
                 tail_trim_seconds,
                 microphone_activity_threshold,
                 microphone_tail_activity_mode,
-                None,
-            )
+                initial_privacy_filter
+                    .as_ref()
+                    .and_then(|initial| initial.filter.clone()),
+            )?;
+            if let (Some(app_handle), Some(initial)) = (app_handle, initial_privacy_filter) {
+                mark_privacy_decision_applied(app_handle, initial.decision);
+            }
+            Ok(started_segment)
         },
     )
 }
@@ -2187,6 +2234,11 @@ where
     let _ = clock;
 
     if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
+        if let Some(app_handle) = app_handle {
+            let privacy_filter_update = collect_privacy_filter_update(app_handle);
+            apply_privacy_filter_update(app_handle, runtime, privacy_filter_update)?;
+        }
+
         let next_index = next_emitted_segment_index(runtime.current_segment_index);
         let segment_dir = screen_planner.segment_dir(next_index);
         let screen_output_file = screen_planner.segment_screen_output(next_index);
@@ -2841,6 +2893,7 @@ pub(super) fn recover_screen_capture_after_wake(
     app_handle: Option<&tauri::AppHandle>,
 ) -> Result<bool, CaptureErrorResponse> {
     let metadata_snapshot_provider = app_handle.map(frame_metadata_snapshot_provider);
+    let initial_privacy_filter = app_handle.map(collect_initial_privacy_filter);
     recover_screen_capture_after_wake_with_start_segment(
         runtime,
         app_handle,
@@ -2854,7 +2907,7 @@ pub(super) fn recover_screen_capture_after_wake(
               microphone_device_id,
               frame_artifact_tx,
               microphone_output_path| {
-            start_segment_with_inactivity_tail_trim_seconds(
+            let started_segment = start_segment_with_inactivity_tail_trim_seconds(
                 segment_dir,
                 screen_output_file,
                 system_audio_output_path,
@@ -2869,8 +2922,14 @@ pub(super) fn recover_screen_capture_after_wake(
                 0,
                 0.0,
                 microphone_capture::MicrophoneInactivityTailTrimActivityMode::PeakLevel,
-                None,
-            )
+                initial_privacy_filter
+                    .as_ref()
+                    .and_then(|initial| initial.filter.clone()),
+            )?;
+            if let (Some(app_handle), Some(initial)) = (app_handle, initial_privacy_filter) {
+                mark_privacy_decision_applied(app_handle, initial.decision);
+            }
+            Ok(started_segment)
         },
     )
 }
@@ -2988,7 +3047,8 @@ pub(super) fn handle_inactivity_resume_error(
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn start_segment(
+pub(super) fn start_segment_with_current_privacy_filter(
+    app_handle: &tauri::AppHandle,
     session_dir: &Path,
     screen_output_file: Option<&Path>,
     system_audio_output_path: Option<&Path>,
@@ -2999,18 +3059,9 @@ pub(super) fn start_segment(
     microphone_device_id: Option<&str>,
     frame_artifact_tx: Option<mpsc::Sender<FrameArtifactMessage>>,
     microphone_output_path: Option<&Path>,
-) -> Result<
-    (
-        CaptureOutputFiles,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<capture_screen::ActiveCaptureSession>,
-        Option<microphone_capture::AvFoundationMicrophoneCaptureSession>,
-    ),
-    CaptureErrorResponse,
-> {
-    start_segment_with_inactivity_tail_trim_seconds(
+) -> Result<StartedSegmentState, CaptureErrorResponse> {
+    let initial_privacy_filter = collect_initial_privacy_filter(app_handle);
+    let started_segment = start_segment_with_inactivity_tail_trim_seconds(
         session_dir,
         screen_output_file,
         system_audio_output_path,
@@ -3020,13 +3071,15 @@ pub(super) fn start_segment(
         effective_screen_bitrate_bps,
         microphone_device_id,
         frame_artifact_tx,
-        None,
+        Some(frame_metadata_snapshot_provider(app_handle)),
         microphone_output_path,
         0,
         0.0,
         microphone_capture::MicrophoneInactivityTailTrimActivityMode::PeakLevel,
-        None,
-    )
+        initial_privacy_filter.filter,
+    )?;
+    mark_privacy_decision_applied(app_handle, initial_privacy_filter.decision);
+    Ok(started_segment)
 }
 
 #[cfg(target_os = "macos")]
@@ -3216,6 +3269,14 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 break;
             }
 
+            let privacy_filter_update =
+                if last_privacy_filter_poll.elapsed() >= PRIVACY_FILTER_POLL_INTERVAL {
+                    last_privacy_filter_poll = std::time::Instant::now();
+                    Some(collect_privacy_filter_update(&app_handle))
+                } else {
+                    None
+                };
+
             let capture_state = app_handle.state::<NativeCaptureState>();
             let mut runtime = match capture_state.lock() {
                 Ok(runtime) => runtime,
@@ -3226,11 +3287,12 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 break;
             }
 
-            if last_privacy_filter_poll.elapsed() >= PRIVACY_FILTER_POLL_INTERVAL {
-                last_privacy_filter_poll = std::time::Instant::now();
-                if let Err(error) =
-                    refresh_and_apply_privacy_filter(&app_handle, runtime.runtime_mut())
-                {
+            if let Some(privacy_filter_update) = privacy_filter_update {
+                if let Err(error) = apply_privacy_filter_update(
+                    &app_handle,
+                    runtime.runtime_mut(),
+                    privacy_filter_update,
+                ) {
                     super::debug_log::log(format!(
                 "privacy filter update failed; disabling screen/system-audio capture: [{}] {}",
                 error.code, error.message

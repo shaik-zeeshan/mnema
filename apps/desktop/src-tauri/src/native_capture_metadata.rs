@@ -1,13 +1,20 @@
+use capture_metadata::MetadataSettings;
 use capture_metadata::{
-    evaluate_privacy, sanitize_url, website_rule_matches, BrowserUrlMode, FrameMetadataSnapshot,
-    MetadataContext, PrivacyFilterDecision, PrivacySettings,
+    active_private_browser_detected, apply_metadata_redaction, apply_website_privacy_hold,
+    evaluate_privacy, is_known_browser_bundle, is_private_browser_title, metadata_collection_plan,
+    sanitize_url, select_frontmost_pid_window, static_app_privacy_decision, BrowserUrlProbeCache,
+    FrameMetadataSnapshot, MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot,
+    PrivacyFilterDecision, PrivacySettings, RawWindowInfo,
 };
-use capture_types::MetadataSettings;
 use std::collections::BTreeSet;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
 use std::sync::Mutex;
+use std::time::Instant;
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 
 #[derive(Debug, Clone, Default)]
 pub struct CaptureMetadataRuntime {
@@ -15,6 +22,7 @@ pub struct CaptureMetadataRuntime {
     latest_decision: PrivacyFilterDecision,
     latest_applied_decision: PrivacyFilterDecision,
     website_privacy_hold_bundle_ids: BTreeSet<String>,
+    browser_url_probe_cache: BrowserUrlProbeCache,
 }
 
 impl CaptureMetadataRuntime {
@@ -83,7 +91,12 @@ pub fn refresh_metadata_state(
     metadata: &MetadataSettings,
     privacy: &PrivacySettings,
 ) -> PrivacyFilterDecision {
-    let active = collect_active_window_metadata(metadata, privacy);
+    let browser_url_probe_cache = state
+        .lock()
+        .expect("capture metadata state poisoned")
+        .browser_url_probe_cache
+        .clone();
+    let active = collect_active_window_metadata(metadata, privacy, &browser_url_probe_cache);
     let mut snapshot = metadata.enabled.then(|| active.snapshot.clone()).flatten();
     let context = if metadata.enabled {
         active.context
@@ -107,128 +120,11 @@ pub fn refresh_metadata_state(
     if let Some(snapshot) = snapshot.as_mut() {
         apply_metadata_redaction(snapshot, privacy, &context, &decision);
     }
+    if let Some(browser_url_probe_cache) = active.browser_url_probe_cache {
+        runtime.browser_url_probe_cache = browser_url_probe_cache;
+    }
     runtime.latest_snapshot = snapshot;
     runtime.latest_decision = decision.clone();
-    decision
-}
-
-fn apply_website_privacy_hold(
-    held_bundle_ids: &mut BTreeSet<String>,
-    metadata_enabled: bool,
-    privacy: &PrivacySettings,
-    context: &MetadataContext,
-    decision: &mut PrivacyFilterDecision,
-) {
-    if !metadata_enabled || !has_enabled_website_rules(privacy) {
-        held_bundle_ids.clear();
-        return;
-    }
-
-    if let Some(active_bundle_id) = context
-        .active_bundle_id
-        .as_deref()
-        .filter(|bundle_id| is_known_browser_bundle(bundle_id))
-    {
-        if let Some(active_url) = context.active_url.as_deref() {
-            let matched_website_rule = privacy
-                .excluded_website_rules
-                .iter()
-                .any(|rule| website_rule_matches(rule, active_url));
-            if matched_website_rule {
-                held_bundle_ids.insert(active_bundle_id.to_string());
-            } else {
-                held_bundle_ids.remove(active_bundle_id);
-            }
-        }
-    }
-
-    for bundle_id in held_bundle_ids.iter() {
-        if !decision
-            .excluded_bundle_ids
-            .iter()
-            .any(|excluded| excluded == bundle_id)
-        {
-            decision.excluded_bundle_ids.push(bundle_id.clone());
-        }
-    }
-
-    if !held_bundle_ids.is_empty() {
-        decision.excluded_bundle_ids.sort();
-        decision.excluded_bundle_ids.dedup();
-        decision.privacy_filter_applied = true;
-        decision
-            .metadata_redaction_reason
-            .get_or_insert_with(|| "website_rule".to_string());
-    }
-}
-
-fn has_enabled_website_rules(privacy: &PrivacySettings) -> bool {
-    privacy
-        .excluded_website_rules
-        .iter()
-        .any(|rule| rule.enabled)
-}
-
-fn has_enabled_browser_title_rules(privacy: &PrivacySettings) -> bool {
-    privacy.browser_title_rules.iter().any(|rule| rule.enabled)
-}
-
-fn apply_metadata_redaction(
-    snapshot: &mut FrameMetadataSnapshot,
-    privacy: &PrivacySettings,
-    context: &MetadataContext,
-    decision: &PrivacyFilterDecision,
-) {
-    let Some(bundle_id) = snapshot.app_bundle_id.as_deref() else {
-        return;
-    };
-    let decision_excludes_snapshot_bundle = decision
-        .excluded_bundle_ids
-        .iter()
-        .any(|excluded| excluded == bundle_id);
-    let active_private_snapshot = privacy.private_browser_exclusion_enabled
-        && (snapshot
-            .window_title
-            .as_deref()
-            .is_some_and(is_private_browser_title)
-            || context
-                .private_browser_ambiguous_bundle_id
-                .as_deref()
-                .is_some_and(|private_bundle_id| private_bundle_id == bundle_id));
-    if !decision_excludes_snapshot_bundle && !active_private_snapshot {
-        return;
-    }
-    let reason = if active_private_snapshot {
-        "private_browser".to_string()
-    } else {
-        decision
-            .metadata_redaction_reason
-            .clone()
-            .unwrap_or_else(|| "privacy_filter".to_string())
-    };
-    snapshot.metadata_redaction_reason = Some(reason);
-    snapshot.window_title = None;
-    snapshot.browser_url = None;
-}
-
-pub fn static_app_privacy_decision(privacy: &PrivacySettings) -> PrivacyFilterDecision {
-    let mut decision = PrivacyFilterDecision::default();
-    for app in &privacy.excluded_apps {
-        if app.enabled && !app.bundle_id.trim().is_empty() {
-            decision
-                .excluded_bundle_ids
-                .push(app.bundle_id.trim().to_string());
-            decision.matched_rule_ids.push(app.id.clone());
-        }
-    }
-    decision.excluded_bundle_ids.sort();
-    decision.excluded_bundle_ids.dedup();
-    decision.matched_rule_ids.sort();
-    decision.matched_rule_ids.dedup();
-    decision.privacy_filter_applied = !decision.excluded_bundle_ids.is_empty();
-    decision.metadata_redaction_reason = decision
-        .privacy_filter_applied
-        .then(|| "excluded_app".to_string());
     decision
 }
 
@@ -240,94 +136,145 @@ pub fn initial_privacy_decision(
     refresh_metadata_state(state, metadata, privacy)
 }
 
+#[cfg(target_os = "macos")]
+pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
+    use cidre::ns;
+
+    let mut center = ns::Workspace::shared().notification_center();
+    let did_activate_guard = center.add_observer_guard(
+        ns::workspace::notification::did_activate_app(),
+        None,
+        None,
+        {
+            let app_handle = app_handle.clone();
+            move |_notification| {
+                refresh_metadata_from_app_settings(&app_handle);
+            }
+        },
+    );
+    let active_space_guard = center.add_observer_guard(
+        ns::workspace::notification::active_space_did_change(),
+        None,
+        None,
+        {
+            let app_handle = app_handle.clone();
+            move |_notification| {
+                refresh_metadata_from_app_settings(&app_handle);
+            }
+        },
+    );
+
+    replace_metadata_notifier_guards(
+        app_handle
+            .state::<crate::native_capture::MetadataNotifierState>()
+            .inner(),
+        vec![did_activate_guard, active_space_guard],
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_metadata_notifier(_app_handle: tauri::AppHandle) {}
+
+#[cfg(target_os = "macos")]
+fn refresh_metadata_from_app_settings(app_handle: &tauri::AppHandle) {
+    let settings = app_handle
+        .state::<crate::native_capture::RecordingSettingsState>()
+        .lock()
+        .expect("recording settings state poisoned")
+        .settings
+        .clone();
+    refresh_metadata_state(
+        app_handle
+            .state::<crate::native_capture::CaptureMetadataState>()
+            .inner(),
+        &settings.metadata,
+        &settings.privacy,
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn replace_metadata_notifier_guards(
+    slot: &crate::native_capture::MetadataNotifierState,
+    guards: Vec<cidre::ns::NotificationGuard>,
+) {
+    slot.replace(guards);
+}
+
 #[derive(Debug, Clone)]
 struct ActiveWindowMetadata {
     snapshot: Option<FrameMetadataSnapshot>,
     context: MetadataContext,
+    browser_url_probe_cache: Option<BrowserUrlProbeCache>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct MetadataCollectionPlan {
-    collect_active_window: bool,
-    collect_browser_url: bool,
-    collect_visible_browser_windows: bool,
-}
-
-fn metadata_collection_plan(
-    metadata: &MetadataSettings,
-    privacy: &PrivacySettings,
-) -> MetadataCollectionPlan {
-    if !metadata.enabled {
-        return MetadataCollectionPlan::default();
-    }
-
-    MetadataCollectionPlan {
-        collect_active_window: true,
-        collect_browser_url: metadata.browser_url_mode != BrowserUrlMode::Off
-            || has_enabled_website_rules(privacy),
-        collect_visible_browser_windows: has_enabled_browser_title_rules(privacy),
-    }
-}
-
-fn active_private_browser_detected(
-    privacy: &PrivacySettings,
+#[cfg(target_os = "macos")]
+fn browser_url_probe_for_active_bundle(
     bundle_id: Option<&str>,
-    window_title: Option<&str>,
-) -> bool {
-    privacy.private_browser_exclusion_enabled
-        && bundle_id.is_some_and(is_known_browser_bundle)
-        && window_title.is_some_and(is_private_browser_title)
+    plan: MetadataCollectionPlan,
+    cache: &BrowserUrlProbeCache,
+    now: Instant,
+) -> (Option<String>, Option<BrowserUrlProbeCache>) {
+    let Some(bundle_id) = bundle_id.filter(|bundle_id| is_known_browser_bundle(bundle_id)) else {
+        return (None, None);
+    };
+    if plan.collect_browser_url_for_privacy {
+        let raw_url = active_browser_url(bundle_id);
+        return (
+            raw_url.clone(),
+            Some(BrowserUrlProbeCache::from_probe(
+                Some(bundle_id.to_string()),
+                raw_url,
+                now,
+            )),
+        );
+    }
+    if !plan.collect_browser_url_for_metadata {
+        return (None, None);
+    }
+    if let Some(cached_url) = cache.cached_url_for(bundle_id, now) {
+        return (cached_url, None);
+    }
+    let raw_url = active_browser_url(bundle_id);
+    (
+        raw_url.clone(),
+        Some(BrowserUrlProbeCache::from_probe(
+            Some(bundle_id.to_string()),
+            raw_url,
+            now,
+        )),
+    )
 }
 
 fn collect_active_window_metadata(
     metadata: &MetadataSettings,
     privacy: &PrivacySettings,
+    browser_url_probe_cache: &BrowserUrlProbeCache,
 ) -> ActiveWindowMetadata {
     let plan = metadata_collection_plan(metadata, privacy);
     if !plan.collect_active_window && !plan.collect_visible_browser_windows {
         return ActiveWindowMetadata {
             snapshot: None,
             context: MetadataContext::default(),
+            browser_url_probe_cache: None,
         };
     }
 
     #[cfg(target_os = "macos")]
     {
-        let output = if plan.collect_active_window {
-            let script = r#"tell application "System Events"
-	set frontProc to first application process whose frontmost is true
-	set appName to name of frontProc
-	set bundleId to bundle identifier of frontProc
-set windowTitle to ""
-try
-  set windowTitle to name of front window of frontProc
-	end try
-	return bundleId & linefeed & appName & linefeed & windowTitle
-	end tell"#;
-            run_osascript(script)
+        let active_window = if plan.collect_active_window {
+            collect_native_active_window_snapshot()
         } else {
-            String::new()
+            NativeActiveWindowSnapshot::default()
         };
-        let mut lines = output.lines();
-        let bundle_id = lines
-            .next()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string);
-        let app_name = lines
-            .next()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string);
-        let window_title = lines
-            .next()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string);
-        let raw_browser_url = plan
-            .collect_browser_url
-            .then(|| bundle_id.as_deref().and_then(active_browser_url))
-            .flatten();
+        let bundle_id = active_window.bundle_id.clone();
+        let app_name = active_window.app_name.clone();
+        let window_title = active_window.window_title.clone();
+        let (raw_browser_url, browser_url_probe_cache) = browser_url_probe_for_active_bundle(
+            bundle_id.as_deref(),
+            plan,
+            browser_url_probe_cache,
+            Instant::now(),
+        );
         let snapshot_browser_url = raw_browser_url
             .as_deref()
             .and_then(|url| sanitize_url(url, metadata.browser_url_mode));
@@ -368,7 +315,11 @@ try
             private_browser_window_id,
             private_browser_ambiguous_bundle_id,
         };
-        return ActiveWindowMetadata { snapshot, context };
+        return ActiveWindowMetadata {
+            snapshot,
+            context,
+            browser_url_probe_cache,
+        };
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -379,31 +330,156 @@ try
         ActiveWindowMetadata {
             snapshot: None,
             context: MetadataContext::default(),
+            browser_url_probe_cache: None,
         }
     }
 }
 
-fn is_known_browser_bundle(bundle_id: &str) -> bool {
-    matches!(
+#[cfg(target_os = "macos")]
+fn collect_native_active_window_snapshot() -> NativeActiveWindowSnapshot {
+    let Some((pid, bundle_id, app_name)) = frontmost_running_app_snapshot() else {
+        return NativeActiveWindowSnapshot::default();
+    };
+    let windows = copy_on_screen_window_infos();
+    let active_window = select_frontmost_pid_window(&windows, pid);
+    NativeActiveWindowSnapshot {
         bundle_id,
-        "com.apple.Safari"
-            | "com.google.Chrome"
-            | "com.google.Chrome.canary"
-            | "com.microsoft.edgemac"
-            | "org.mozilla.firefox"
-            | "com.brave.Browser"
-            | "company.thebrowser.Browser"
-            | "net.imput.helium"
-    )
+        app_name,
+        pid: Some(pid),
+        window_id: active_window.map(|window| window.window_id),
+        window_title: active_window.and_then(|window| window.title.clone()),
+    }
 }
 
-fn is_private_browser_title(title: &str) -> bool {
-    const PRIVATE_TITLE_PATTERNS: &[&str] =
-        &["incognito", "private browsing", "inprivate", "(private)"];
-    let title = title.to_ascii_lowercase();
-    PRIVATE_TITLE_PATTERNS
+#[cfg(target_os = "macos")]
+fn frontmost_running_app_snapshot() -> Option<(i32, Option<String>, Option<String>)> {
+    let running_apps = cidre::ns::Workspace::shared().running_apps();
+    running_apps.iter().find(|app| app.is_active()).map(|app| {
+        (
+            app.pid(),
+            app.bundle_id()
+                .map(|bundle_id| bundle_id.to_string())
+                .filter(|value| !value.trim().is_empty()),
+            app.localized_name()
+                .map(|name| name.to_string())
+                .filter(|value| !value.trim().is_empty()),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn copy_on_screen_window_infos() -> Vec<RawWindowInfo> {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+    use core_graphics::window::{
+        copy_window_info, kCGWindowBounds, kCGWindowLayer, kCGWindowListExcludeDesktopElements,
+        kCGWindowListOptionOnScreenOnly, kCGWindowName, kCGWindowNumber, kCGWindowOwnerPID,
+    };
+
+    let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+    let Some(window_info) = copy_window_info(options, 0) else {
+        return Vec::new();
+    };
+
+    window_info
         .iter()
-        .any(|pattern| title.contains(pattern))
+        .filter_map(|value| unsafe {
+            let dict = CFDictionary::<CFString, CFType>::wrap_under_get_rule(
+                *value as core_foundation::dictionary::CFDictionaryRef,
+            );
+            let owner_pid =
+                cf_i64(&dict, kCGWindowOwnerPID).and_then(|value| i32::try_from(value).ok())?;
+            let window_id =
+                cf_i64(&dict, kCGWindowNumber).and_then(|value| u32::try_from(value).ok())?;
+            let layer = cf_i64(&dict, kCGWindowLayer)?;
+            let (width, height) = cf_bounds_size(&dict, kCGWindowBounds)?;
+            Some(RawWindowInfo {
+                owner_pid,
+                window_id,
+                layer,
+                width,
+                height,
+                title: cf_string(&dict, kCGWindowName),
+            })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn cf_i64(
+    dict: &core_foundation::dictionary::CFDictionary<
+        core_foundation::string::CFString,
+        core_foundation::base::CFType,
+    >,
+    key: core_foundation::string::CFStringRef,
+) -> Option<i64> {
+    use core_foundation::base::TCFType;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+
+    let key = unsafe { CFString::wrap_under_get_rule(key) };
+    let value = dict.find(&key)?;
+    let number = unsafe { CFNumber::wrap_under_get_rule(value.as_CFTypeRef() as _) };
+    number.to_i64()
+}
+
+#[cfg(target_os = "macos")]
+fn cf_string(
+    dict: &core_foundation::dictionary::CFDictionary<
+        core_foundation::string::CFString,
+        core_foundation::base::CFType,
+    >,
+    key: core_foundation::string::CFStringRef,
+) -> Option<String> {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+
+    let key = unsafe { CFString::wrap_under_get_rule(key) };
+    let value = dict.find(&key)?;
+    let string = unsafe { CFString::wrap_under_get_rule(value.as_CFTypeRef() as _) };
+    let string = string.to_string();
+    (!string.trim().is_empty()).then_some(string)
+}
+
+#[cfg(target_os = "macos")]
+fn cf_bounds_size(
+    dict: &core_foundation::dictionary::CFDictionary<
+        core_foundation::string::CFString,
+        core_foundation::base::CFType,
+    >,
+    key: core_foundation::string::CFStringRef,
+) -> Option<(f64, f64)> {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+
+    let key = unsafe { CFString::wrap_under_get_rule(key) };
+    let value = dict.find(&key)?;
+    let bounds = unsafe {
+        CFDictionary::<CFString, CFType>::wrap_under_get_rule(
+            value.as_CFTypeRef() as core_foundation::dictionary::CFDictionaryRef
+        )
+    };
+    Some((cf_f64(&bounds, "Width")?, cf_f64(&bounds, "Height")?))
+}
+
+#[cfg(target_os = "macos")]
+fn cf_f64(
+    dict: &core_foundation::dictionary::CFDictionary<
+        core_foundation::string::CFString,
+        core_foundation::base::CFType,
+    >,
+    key: &str,
+) -> Option<f64> {
+    use core_foundation::base::TCFType;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+
+    let key = CFString::new(key);
+    let value = dict.find(&key)?;
+    let number = unsafe { CFNumber::wrap_under_get_rule(value.as_CFTypeRef() as _) };
+    number.to_f64()
 }
 
 #[cfg(target_os = "macos")]
@@ -519,125 +595,7 @@ fn run_osascript(script: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capture_metadata::{parse_website_rule, FrameMetadataSnapshot, MetadataContext};
-
-    fn website_privacy(pattern: &str) -> PrivacySettings {
-        PrivacySettings {
-            excluded_website_rules: vec![parse_website_rule("website-rule", true, pattern)],
-            ..PrivacySettings::default()
-        }
-    }
-
-    #[test]
-    fn website_privacy_hold_keeps_browser_excluded_after_leaving_browser() {
-        let privacy = website_privacy("*.infinityapp.in");
-        let mut held_bundle_ids = BTreeSet::new();
-        let mut decision = PrivacyFilterDecision::default();
-        let browser_context = MetadataContext {
-            active_bundle_id: Some("net.imput.helium".to_string()),
-            active_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
-            ..MetadataContext::default()
-        };
-
-        apply_website_privacy_hold(
-            &mut held_bundle_ids,
-            true,
-            &privacy,
-            &browser_context,
-            &mut decision,
-        );
-        assert_eq!(decision.excluded_bundle_ids, vec!["net.imput.helium"]);
-
-        let mut decision = PrivacyFilterDecision::default();
-        let non_browser_context = MetadataContext {
-            active_bundle_id: Some("com.apple.finder".to_string()),
-            ..MetadataContext::default()
-        };
-
-        apply_website_privacy_hold(
-            &mut held_bundle_ids,
-            true,
-            &privacy,
-            &non_browser_context,
-            &mut decision,
-        );
-
-        assert_eq!(decision.excluded_bundle_ids, vec!["net.imput.helium"]);
-        assert!(decision.privacy_filter_applied);
-        assert_eq!(
-            decision.metadata_redaction_reason.as_deref(),
-            Some("website_rule")
-        );
-    }
-
-    #[test]
-    fn website_privacy_hold_clears_after_successful_non_matching_browser_probe() {
-        let privacy = website_privacy("*.infinityapp.in");
-        let mut held_bundle_ids = BTreeSet::from(["net.imput.helium".to_string()]);
-        let mut decision = PrivacyFilterDecision::default();
-        let browser_context = MetadataContext {
-            active_bundle_id: Some("net.imput.helium".to_string()),
-            active_url: Some("https://example.com/".to_string()),
-            ..MetadataContext::default()
-        };
-
-        apply_website_privacy_hold(
-            &mut held_bundle_ids,
-            true,
-            &privacy,
-            &browser_context,
-            &mut decision,
-        );
-
-        assert!(held_bundle_ids.is_empty());
-        assert!(decision.excluded_bundle_ids.is_empty());
-        assert!(!decision.privacy_filter_applied);
-    }
-
-    #[test]
-    fn active_excluded_browser_metadata_redacts_title_and_url() {
-        let mut snapshot = FrameMetadataSnapshot {
-            app_bundle_id: Some("net.imput.helium".to_string()),
-            app_name: Some("Helium".to_string()),
-            window_title: Some("Infinity - Helium".to_string()),
-            browser_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
-            display_id: None,
-            metadata_redaction_reason: None,
-        };
-        let decision = PrivacyFilterDecision {
-            excluded_bundle_ids: vec!["net.imput.helium".to_string()],
-            metadata_redaction_reason: Some("website_rule".to_string()),
-            privacy_filter_applied: true,
-            ..PrivacyFilterDecision::default()
-        };
-
-        apply_metadata_redaction(
-            &mut snapshot,
-            &PrivacySettings::default(),
-            &MetadataContext::default(),
-            &decision,
-        );
-
-        assert_eq!(
-            snapshot.metadata_redaction_reason.as_deref(),
-            Some("website_rule")
-        );
-        assert!(snapshot.window_title.is_none());
-        assert!(snapshot.browser_url.is_none());
-    }
-
-    #[test]
-    fn private_browser_title_matching_covers_common_browser_labels() {
-        assert!(is_private_browser_title(
-            "Example Site - Mozilla Firefox — (Private Browsing)"
-        ));
-        assert!(is_private_browser_title(
-            "New Incognito Tab - Google Chrome"
-        ));
-        assert!(is_private_browser_title("Bank - Microsoft Edge InPrivate"));
-        assert!(is_private_browser_title("Example - Safari (Private)"));
-        assert!(!is_private_browser_title("Example Site - Helium"));
-    }
+    use capture_metadata::{parse_website_rule, BrowserUrlMode};
 
     #[test]
     fn initial_privacy_decision_includes_static_apps_when_metadata_is_disabled() {
@@ -669,30 +627,6 @@ mod tests {
     }
 
     #[test]
-    fn metadata_disabled_skips_all_platform_collection() {
-        let metadata = MetadataSettings {
-            enabled: false,
-            browser_url_mode: BrowserUrlMode::Sanitized,
-        };
-        let privacy = PrivacySettings {
-            private_browser_exclusion_enabled: true,
-            excluded_website_rules: vec![parse_website_rule("website-rule", true, "example.com")],
-            browser_title_rules: vec![capture_metadata::BrowserTitleRule {
-                id: "title-rule".to_string(),
-                enabled: true,
-                match_type: capture_metadata::BrowserTitleRuleMatchType::Substring,
-                pattern: "secret".to_string(),
-            }],
-            ..PrivacySettings::default()
-        };
-
-        assert_eq!(
-            metadata_collection_plan(&metadata, &privacy),
-            MetadataCollectionPlan::default()
-        );
-    }
-
-    #[test]
     fn refresh_with_metadata_disabled_keeps_static_privacy_without_snapshot() {
         let state = CaptureMetadataState::default();
         let metadata = MetadataSettings {
@@ -721,82 +655,5 @@ mod tests {
         );
         assert!(runtime.latest_snapshot.is_none());
         assert_eq!(runtime.latest_decision, decision);
-    }
-
-    #[test]
-    fn metadata_collection_plan_avoids_unused_browser_and_window_probes() {
-        let metadata = MetadataSettings {
-            enabled: true,
-            browser_url_mode: BrowserUrlMode::Off,
-        };
-        let privacy = PrivacySettings {
-            private_browser_exclusion_enabled: false,
-            ..PrivacySettings::default()
-        };
-
-        assert_eq!(
-            metadata_collection_plan(&metadata, &privacy),
-            MetadataCollectionPlan {
-                collect_active_window: true,
-                collect_browser_url: false,
-                collect_visible_browser_windows: false,
-            }
-        );
-    }
-
-    #[test]
-    fn private_browser_detection_does_not_request_all_window_probe_by_default() {
-        let metadata = MetadataSettings {
-            enabled: true,
-            browser_url_mode: BrowserUrlMode::Off,
-        };
-        let privacy = PrivacySettings::default();
-
-        assert_eq!(
-            metadata_collection_plan(&metadata, &privacy),
-            MetadataCollectionPlan {
-                collect_active_window: true,
-                collect_browser_url: false,
-                collect_visible_browser_windows: false,
-            }
-        );
-        assert!(active_private_browser_detected(
-            &privacy,
-            Some("com.google.Chrome"),
-            Some("New Incognito Tab - Google Chrome"),
-        ));
-        assert!(!active_private_browser_detected(
-            &privacy,
-            Some("com.apple.finder"),
-            Some("New Incognito Tab - Google Chrome"),
-        ));
-    }
-
-    #[test]
-    fn dynamic_privacy_rules_request_required_platform_probes() {
-        let metadata = MetadataSettings {
-            enabled: true,
-            browser_url_mode: BrowserUrlMode::Off,
-        };
-        let website_privacy = PrivacySettings {
-            private_browser_exclusion_enabled: false,
-            excluded_website_rules: vec![parse_website_rule("website-rule", true, "example.com")],
-            ..PrivacySettings::default()
-        };
-        let title_privacy = PrivacySettings {
-            private_browser_exclusion_enabled: false,
-            browser_title_rules: vec![capture_metadata::BrowserTitleRule {
-                id: "title-rule".to_string(),
-                enabled: true,
-                match_type: capture_metadata::BrowserTitleRuleMatchType::Substring,
-                pattern: "secret".to_string(),
-            }],
-            ..PrivacySettings::default()
-        };
-
-        assert!(metadata_collection_plan(&metadata, &website_privacy).collect_browser_url);
-        assert!(
-            metadata_collection_plan(&metadata, &title_privacy).collect_visible_browser_windows
-        );
     }
 }

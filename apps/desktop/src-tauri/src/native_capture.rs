@@ -61,10 +61,34 @@ pub use settings::RecordingSettingsState;
 pub(crate) use settings::current_recording_settings as read_recording_settings;
 
 #[cfg(target_os = "macos")]
-pub type SystemWakeNotifierState = std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>;
+#[derive(Default)]
+pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>);
 
 #[cfg(not(target_os = "macos"))]
-pub type SystemWakeNotifierState = std::sync::Mutex<Vec<()>>;
+#[derive(Default)]
+pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<()>>);
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+pub struct MetadataNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>);
+
+#[cfg(not(target_os = "macos"))]
+#[derive(Default)]
+pub struct MetadataNotifierState(std::sync::Mutex<Vec<()>>);
+
+#[cfg(target_os = "macos")]
+impl MetadataNotifierState {
+    pub(crate) fn replace(&self, guards: Vec<cidre::ns::NotificationGuard>) {
+        *self.0.lock().expect("metadata notifier state poisoned") = guards;
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl MetadataNotifierState {
+    pub(crate) fn replace(&self, guards: Vec<()>) {
+        *self.0.lock().expect("metadata notifier state poisoned") = guards;
+    }
+}
 
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 #[cfg(target_os = "macos")]
@@ -157,7 +181,7 @@ impl AppNotificationsRuntime {
 }
 
 pub type AppNotificationsState = Mutex<AppNotificationsRuntime>;
-pub use metadata::CaptureMetadataState;
+pub use metadata::{start_metadata_notifier, CaptureMetadataState};
 
 #[tauri::command]
 pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
@@ -767,6 +791,7 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
 
     let notifier_state = app_handle.state::<SystemWakeNotifierState>();
     let mut notifier_slot = notifier_state
+        .0
         .lock()
         .expect("system wake notifier state poisoned");
     notifier_slot.clear();

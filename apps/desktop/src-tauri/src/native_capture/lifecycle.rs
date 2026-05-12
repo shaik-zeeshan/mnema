@@ -23,7 +23,8 @@ use super::segments::{
     recover_from_segment_finalize_error, recover_screen_capture_after_wake,
     resume_microphone_from_inactivity, resume_runtime_from_inactivity,
     resume_screen_from_inactivity, resume_system_audio_from_inactivity, start_capture_runtime,
-    start_segment, stop_active_sessions_after_failure, stop_capture_runtime,
+    start_segment_with_current_privacy_filter, stop_active_sessions_after_failure,
+    stop_capture_runtime,
 };
 use capture_runtime::RuntimeSignal;
 use capture_types::{
@@ -561,7 +562,8 @@ impl RecordingLifecycle {
                 .then(|| system_audio_output_path.as_deref())
                 .flatten();
 
-            let started_segment = start_segment(
+            let started_segment = start_segment_with_current_privacy_filter(
+                app_handle,
                 &segment_dir,
                 Some(&screen_output_file),
                 legacy_system_audio_path,
