@@ -13,16 +13,37 @@
     onChange?: (value: AppearanceSetting) => void | Promise<void>;
   } = $props();
 
+  let pending = $state(false);
+
   const options: { value: AppearanceSetting; label: string; shortLabel: string }[] = [
     { value: "system", label: "System theme", shortLabel: "System" },
     { value: "light", label: "Light theme", shortLabel: "Light" },
     { value: "dark", label: "Dark theme", shortLabel: "Dark" },
   ];
 
-  function select(next: AppearanceSetting) {
-    if (disabled || next === value) return;
-    value = next;
-    void onChange?.(next);
+  async function select(next: AppearanceSetting) {
+    if (disabled || pending || next === value) return;
+
+    if (!onChange) {
+      value = next;
+      return;
+    }
+
+    const previous = value;
+    pending = true;
+    try {
+      await onChange(next);
+      if (value === previous) {
+        value = next;
+      }
+    } catch (err) {
+      if (value === next) {
+        value = previous;
+      }
+      console.error("Failed to update theme mode", err);
+    } finally {
+      pending = false;
+    }
   }
 </script>
 
@@ -35,7 +56,7 @@
       aria-label={option.label}
       aria-pressed={value === option.value}
       title={option.label}
-      disabled={disabled}
+      disabled={disabled || pending}
       onclick={() => select(option.value)}
     >
       <span class="theme-mode__icon" aria-hidden="true">
