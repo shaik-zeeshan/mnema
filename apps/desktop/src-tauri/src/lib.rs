@@ -45,6 +45,17 @@ fn should_forward_window_event(event: &tauri::WindowEvent, webview_window_found:
     matches!(event, tauri::WindowEvent::Destroyed) || webview_window_found
 }
 
+fn should_start_graceful_exit_for_exit_request(
+    code: Option<i32>,
+    graceful_exit_in_progress: bool,
+) -> bool {
+    if graceful_exit_in_progress {
+        return code.is_none();
+    }
+
+    code.is_none() || code == Some(0)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -219,11 +230,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
-            tauri::RunEvent::ExitRequested {
-                code: None, api, ..
-            } => {
-                api.prevent_exit();
-                windows::request_graceful_exit(app_handle);
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                if should_start_graceful_exit_for_exit_request(
+                    code,
+                    windows::is_graceful_exit_in_progress(app_handle),
+                ) {
+                    api.prevent_exit();
+                    windows::request_graceful_exit(app_handle);
+                }
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {
@@ -242,7 +256,9 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_app_log_target, should_forward_window_event};
+    use super::{
+        is_app_log_target, should_forward_window_event, should_start_graceful_exit_for_exit_request,
+    };
 
     #[test]
     fn app_log_filter_keeps_only_our_targets() {
@@ -270,6 +286,34 @@ mod tests {
         assert!(!should_forward_window_event(
             &tauri::WindowEvent::Focused(true),
             false,
+        ));
+    }
+
+    #[test]
+    fn user_exit_requests_start_graceful_exit() {
+        assert!(should_start_graceful_exit_for_exit_request(None, false));
+    }
+
+    #[test]
+    fn zero_exit_code_requests_start_graceful_exit_when_not_already_exiting() {
+        assert!(should_start_graceful_exit_for_exit_request(Some(0), false));
+    }
+
+    #[test]
+    fn final_zero_exit_code_request_is_allowed_after_graceful_exit_started() {
+        assert!(!should_start_graceful_exit_for_exit_request(Some(0), true));
+    }
+
+    #[test]
+    fn repeated_user_exit_request_is_prevented_while_graceful_exit_is_running() {
+        assert!(should_start_graceful_exit_for_exit_request(None, true));
+    }
+
+    #[test]
+    fn restart_exit_code_is_not_rewritten_as_a_normal_graceful_quit() {
+        assert!(!should_start_graceful_exit_for_exit_request(
+            Some(tauri::RESTART_EXIT_CODE),
+            false
         ));
     }
 }

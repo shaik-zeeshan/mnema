@@ -78,6 +78,10 @@ impl AppExitCoordinatorState {
     fn begin_exit(&self) -> bool {
         !self.exit_requested.swap(true, Ordering::SeqCst)
     }
+
+    fn is_exit_requested(&self) -> bool {
+        self.exit_requested.load(Ordering::SeqCst)
+    }
 }
 
 struct AppWindowConfig {
@@ -508,6 +512,10 @@ pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
 
         app_handle.exit(0);
     });
+}
+
+pub(crate) fn is_graceful_exit_in_progress(app: &tauri::AppHandle) -> bool {
+    app.state::<AppExitCoordinatorState>().is_exit_requested()
 }
 
 fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
