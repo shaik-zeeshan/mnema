@@ -14,6 +14,7 @@
 ## Boundaries
 - Svelte UI lives in `apps/desktop/src`. The shell is `apps/desktop/src/routes/+layout.svelte`, the dashboard is `apps/desktop/src/routes/+page.svelte`, and settings live in `apps/desktop/src/routes/settings/+page.svelte`.
 - Tauri startup and command registration live in `apps/desktop/src-tauri/src/lib.rs`; keep new `#[tauri::command]` functions wired there and keep frontend `invoke(...)` names in sync.
+- The macOS status-bar/tray menu is Rust-owned in `apps/desktop/src-tauri/src/status_bar.rs`; keep it as a native Tauri `TrayIconBuilder`/`Menu`/`CheckMenuItem` surface rather than adding a Svelte tray UI or AppKit/Swift layer. Its stable menu IDs use the `tray_*` prefix, and the template icon asset is `apps/desktop/src-tauri/icons/tray-template.png`.
 - The owning seam for native capture is `apps/desktop/src-tauri/src/native_capture/lifecycle.rs` (**Recording Lifecycle**); Tauri command handlers and background hooks should stay thin adapters over that module rather than orchestrating `NativeCaptureRuntime` directly.
 - `crates/app-infra` owns SQLite, embedded sqlx migrations, background jobs, frame batches, and the OCR/processing pipeline.
 - `crates/capture-types` owns serde types shared across frontend, Tauri, and native layers.
@@ -50,6 +51,7 @@
 - Audio speech detection settings are shared under `audioSpeechDetection.detector` (`silero`, `webrtc`, `off`). Legacy `microphoneVadAdapter` may be read for compatibility, but saves/runtime normalization should use the shared setting; detector selection is exact and should not silently fall back from Silero to WebRTC.
 - Inactivity activity mode is fixed to `system_input_or_screen_or_audio`. Legacy `activityMode` / `inactivityActivityMode` values can be deserialized, but settings validation should normalize saved/runtime settings to the fixed policy.
 - System-audio transcription is gated by the `system_audio_speech_activity` processing job. System-audio segment commit should enqueue that job, not direct transcription; speech-activity completion may enqueue/requeue missing or failed `audio_transcription` jobs and keep speaker analysis chained through the transcription payload.
+- Status-bar source toggles update persisted next-recording `RecordingSettings` only while stopped. The tray and frontend stay synchronized through `native_capture_session_changed` for start/stop session state and `recording_settings_changed` for settings changes.
 
 ## Verification
 - UI-only changes: `bun run check`.
@@ -57,6 +59,7 @@
 - Tauri wiring or cross-crate Rust changes: run `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
 - Cross-stack or settings/storage changes: run both `bun run check` and `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
 - Focused tests in `apps/desktop/src-tauri/src/lib.rs` may need `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib <test-filter>`; without `--lib`, filtered Tauri tests may not run as expected.
+- Status-bar menu model changes: run `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib status_bar`.
 - Verifying the `audio-transcription` crate's `local-whisper` feature requires `cmake` in `PATH`, because `whisper-rs-sys` builds bundled `whisper.cpp`/GGML artifacts.
 
 ## Workflow

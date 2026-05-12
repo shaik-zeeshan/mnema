@@ -253,6 +253,14 @@ fn show_and_focus_window(window: &WebviewWindow) {
     let _ = window.set_focus();
 }
 
+pub(crate) fn open_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    open_or_focus_window(app, AppWindow::Main, None)
+}
+
+pub(crate) fn open_onboarding_window(app: &tauri::AppHandle) -> Result<(), String> {
+    open_or_focus_window(app, AppWindow::Onboarding, None)
+}
+
 fn open_or_focus_window(
     app: &tauri::AppHandle,
     window: AppWindow,
@@ -395,7 +403,7 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
-fn request_graceful_exit(app: &tauri::AppHandle) {
+pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
     let exit_state = app.state::<AppExitCoordinatorState>();
     if !exit_state.begin_exit() {
         return;
@@ -420,6 +428,32 @@ fn request_graceful_exit(app: &tauri::AppHandle) {
             }
         }
 
+        let stop_app_handle = app_handle.clone();
+        match tauri::async_runtime::spawn_blocking(move || {
+            if crate::native_capture::current_native_capture_session(&stop_app_handle).is_running {
+                Some(crate::native_capture::stop_native_capture_from_app_handle(
+                    &stop_app_handle,
+                ))
+            } else {
+                None
+            }
+        })
+        .await
+        {
+            Ok(Some(Ok(_))) => crate::native_capture::debug_log::log_info(
+                "stopped active native capture during graceful app exit",
+            ),
+            Ok(Some(Err(error))) => crate::native_capture::debug_log::log_error(format!(
+                "failed to stop active native capture during graceful app exit: [{}] {}",
+                error.code, error.message
+            )),
+            Ok(None) => {}
+            Err(error) => {
+                crate::native_capture::debug_log::log_error(format!(
+                    "failed to join native capture stop during graceful app exit: {error}"
+                ));
+            }
+        }
         crate::native_capture::debug_log::log_info(
             "stopping background workers before terminating",
         );
@@ -488,6 +522,11 @@ pub fn open_startup_window(
     }
 }
 
+pub(crate) fn is_onboarding_complete(app: &tauri::AppHandle) -> bool {
+    let store = app.state::<OnboardingStateStore>();
+    current_onboarding_state(app, store.inner()).is_complete()
+}
+
 #[tauri::command]
 pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     open_or_focus_window(&app, AppWindow::Settings, None)
@@ -531,6 +570,7 @@ pub fn complete_onboarding(
 
     persist_onboarding_state(&app, state.inner(), OnboardingState::completed_now())?;
     open_or_focus_window(&app, AppWindow::Main, None)?;
+    crate::status_bar::refresh(&app);
     window.close().map_err(|err| err.to_string())
 }
 

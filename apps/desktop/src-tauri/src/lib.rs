@@ -6,6 +6,7 @@ mod native_capture;
 mod ocr_models;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
+mod status_bar;
 mod windows;
 
 use tauri::Manager;
@@ -51,6 +52,7 @@ pub fn run() {
         .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
         .manage(native_capture::SystemWakeNotifierState::default())
         .manage(native_capture::RecordingSettingsState::default())
+        .manage(status_bar::StatusBarState::default())
         .manage(native_capture::AppNotificationsState::default())
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
         .manage(speaker_analysis_models::SpeakerAnalysisModelDownloadState::default())
@@ -164,6 +166,7 @@ pub fn run() {
         ])
         .setup(|app| {
             native_capture::initialize_recording_settings_from_disk(app.handle());
+            status_bar::initialize(app.handle())?;
             native_capture::install_panic_hook();
             if let Err(error) = app_infra::initialize(app) {
                 match error {
@@ -194,6 +197,7 @@ pub fn run() {
             if onboarding_complete {
                 native_capture::maybe_auto_start_native_capture(app.handle());
             }
+            status_bar::refresh(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())

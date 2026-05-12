@@ -3496,6 +3496,7 @@ dependencies = [
  "core-graphics 0.25.0",
  "fs2",
  "futures-util",
+ "image",
  "objc",
  "ocr",
  "reqwest 0.12.28",
