@@ -247,6 +247,12 @@ fn ensure_window_allowed(
     }
 }
 
+fn show_and_focus_window(window: &WebviewWindow) {
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+}
+
 fn open_or_focus_window(
     app: &tauri::AppHandle,
     window: AppWindow,
@@ -256,9 +262,7 @@ fn open_or_focus_window(
 
     let config = window.config();
     if let Some(existing) = app.get_webview_window(config.label) {
-        let _ = existing.show();
-        let _ = existing.unminimize();
-        let _ = existing.set_focus();
+        show_and_focus_window(&existing);
         return Ok(());
     }
 
@@ -284,6 +288,8 @@ fn open_or_focus_window(
     if let Some(radius) = config.macos_corner_radius {
         apply_macos_rounded_content_view(&built, radius);
     }
+
+    show_and_focus_window(&built);
 
     Ok(())
 }
@@ -321,9 +327,7 @@ fn open_or_focus_settings_window_to_tab(app: &tauri::AppHandle, tab: &str) -> Re
     };
 
     if let Some(existing) = app.get_webview_window(config.label) {
-        let _ = existing.show();
-        let _ = existing.unminimize();
-        let _ = existing.set_focus();
+        show_and_focus_window(&existing);
         existing
             .emit(OPEN_SETTINGS_TAB_EVENT, payload)
             .map_err(|err| err.to_string())?;
@@ -345,6 +349,8 @@ fn open_or_focus_settings_window_to_tab(app: &tauri::AppHandle, tab: &str) -> Re
     if let Some(radius) = config.macos_corner_radius {
         apply_macos_rounded_content_view(&built, radius);
     }
+
+    show_and_focus_window(&built);
 
     Ok(())
 }
@@ -385,9 +391,7 @@ fn apply_macos_rounded_content_view(window: &WebviewWindow, radius: f64) {
 
 fn focus_main_window(app: &tauri::AppHandle) {
     if let Some(main) = app.get_webview_window(AppWindow::Main.config().label) {
-        let _ = main.show();
-        let _ = main.unminimize();
-        let _ = main.set_focus();
+        show_and_focus_window(&main);
     }
 }
 
