@@ -248,11 +248,11 @@ fn ensure_window_allowed(
 }
 
 fn show_and_focus_window(window: &WebviewWindow) {
-    set_regular_activation_policy(window.app_handle());
+    show_macos_dock_icon(window.app_handle());
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
-    refresh_activation_policy(window.app_handle());
+    refresh_macos_dock_icon_visibility(window.app_handle());
 }
 
 pub(crate) fn open_main_window(app: &tauri::AppHandle) -> Result<(), String> {
@@ -409,7 +409,7 @@ fn focus_main_window_if_visible(app: &tauri::AppHandle) {
 
 fn hide_main_window(window: &WebviewWindow) {
     let _ = window.hide();
-    refresh_activation_policy(window.app_handle());
+    refresh_macos_dock_icon_visibility(window.app_handle());
 }
 
 pub(crate) fn toggle_main_window_visibility(app: &tauri::AppHandle) {
@@ -429,63 +429,26 @@ pub(crate) fn toggle_main_window_visibility(app: &tauri::AppHandle) {
 }
 
 #[cfg(target_os = "macos")]
-fn set_regular_activation_policy(app: &tauri::AppHandle) {
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    restore_macos_app_icon();
+fn show_macos_dock_icon(app: &tauri::AppHandle) {
+    // Tauri's Dock visibility path debounces rapid hide/show transitions that
+    // can otherwise leave duplicate Dock icons on macOS.
+    let _ = app.set_dock_visibility(true);
 }
 
 #[cfg(not(target_os = "macos"))]
-fn set_regular_activation_policy(_app: &tauri::AppHandle) {}
+fn show_macos_dock_icon(_app: &tauri::AppHandle) {}
 
 #[cfg(target_os = "macos")]
-#[allow(deprecated)]
-fn restore_macos_app_icon() {
-    use cocoa::{
-        appkit::{NSApp, NSApplication, NSImage},
-        base::{id, nil},
-        foundation::{NSData, NSUInteger},
-    };
-    use objc::{msg_send, sel, sel_impl};
-    use std::ffi::c_void;
-
-    const APP_ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
-
-    unsafe {
-        let data = NSData::dataWithBytes_length_(
-            nil,
-            APP_ICON_BYTES.as_ptr().cast::<c_void>(),
-            APP_ICON_BYTES.len() as NSUInteger,
-        );
-        if data == nil {
-            return;
-        }
-
-        let icon: id = NSImage::initWithData_(NSImage::alloc(nil), data);
-        if icon == nil {
-            return;
-        }
-
-        NSApp().setApplicationIconImage_(icon);
-        let _: () = msg_send![icon, release];
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn refresh_activation_policy(app: &tauri::AppHandle) {
+fn refresh_macos_dock_icon_visibility(app: &tauri::AppHandle) {
     let has_visible_window = app
         .webview_windows()
         .values()
         .any(|window| window.is_visible().unwrap_or(false));
-    let policy = if has_visible_window {
-        tauri::ActivationPolicy::Regular
-    } else {
-        tauri::ActivationPolicy::Accessory
-    };
-    let _ = app.set_activation_policy(policy);
+    let _ = app.set_dock_visibility(has_visible_window);
 }
 
 #[cfg(not(target_os = "macos"))]
-fn refresh_activation_policy(_app: &tauri::AppHandle) {}
+fn refresh_macos_dock_icon_visibility(_app: &tauri::AppHandle) {}
 
 pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
     let exit_state = app.state::<AppExitCoordinatorState>();
@@ -605,7 +568,7 @@ pub fn handle_window_event(
         DestroyedWindowAction::ExitApp => request_graceful_exit(app),
         DestroyedWindowAction::None => {}
     }
-    refresh_activation_policy(app);
+    refresh_macos_dock_icon_visibility(app);
 }
 
 pub fn open_startup_window(
