@@ -248,9 +248,19 @@ fn ensure_window_allowed(
 }
 
 fn show_and_focus_window(window: &WebviewWindow) {
+    set_regular_activation_policy(window.app_handle());
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
+    refresh_activation_policy(window.app_handle());
+}
+
+pub(crate) fn open_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    open_or_focus_window(app, AppWindow::Main, None)
+}
+
+pub(crate) fn open_onboarding_window(app: &tauri::AppHandle) -> Result<(), String> {
+    open_or_focus_window(app, AppWindow::Onboarding, None)
 }
 
 fn open_or_focus_window(
@@ -389,13 +399,95 @@ fn apply_macos_rounded_content_view(window: &WebviewWindow, radius: f64) {
     }
 }
 
-fn focus_main_window(app: &tauri::AppHandle) {
+fn focus_main_window_if_visible(app: &tauri::AppHandle) {
     if let Some(main) = app.get_webview_window(AppWindow::Main.config().label) {
-        show_and_focus_window(&main);
+        if main.is_visible().unwrap_or(false) {
+            show_and_focus_window(&main);
+        }
     }
 }
 
-fn request_graceful_exit(app: &tauri::AppHandle) {
+fn hide_main_window(window: &WebviewWindow) {
+    let _ = window.hide();
+    refresh_activation_policy(window.app_handle());
+}
+
+pub(crate) fn toggle_main_window_visibility(app: &tauri::AppHandle) {
+    let config = AppWindow::Main.config();
+    if let Some(main) = app.get_webview_window(config.label) {
+        let visible = main.is_visible().unwrap_or(false);
+        let focused = main.is_focused().unwrap_or(false);
+        if visible && focused {
+            hide_main_window(&main);
+        } else {
+            show_and_focus_window(&main);
+        }
+        return;
+    }
+
+    let _ = open_main_window(app);
+}
+
+#[cfg(target_os = "macos")]
+fn set_regular_activation_policy(app: &tauri::AppHandle) {
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    restore_macos_app_icon();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_regular_activation_policy(_app: &tauri::AppHandle) {}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn restore_macos_app_icon() {
+    use cocoa::{
+        appkit::{NSApp, NSApplication, NSImage},
+        base::{id, nil},
+        foundation::{NSData, NSUInteger},
+    };
+    use objc::{msg_send, sel, sel_impl};
+    use std::ffi::c_void;
+
+    const APP_ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
+
+    unsafe {
+        let data = NSData::dataWithBytes_length_(
+            nil,
+            APP_ICON_BYTES.as_ptr().cast::<c_void>(),
+            APP_ICON_BYTES.len() as NSUInteger,
+        );
+        if data == nil {
+            return;
+        }
+
+        let icon: id = NSImage::initWithData_(NSImage::alloc(nil), data);
+        if icon == nil {
+            return;
+        }
+
+        NSApp().setApplicationIconImage_(icon);
+        let _: () = msg_send![icon, release];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn refresh_activation_policy(app: &tauri::AppHandle) {
+    let has_visible_window = app
+        .webview_windows()
+        .values()
+        .any(|window| window.is_visible().unwrap_or(false));
+    let policy = if has_visible_window {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    };
+    let _ = app.set_activation_policy(policy);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn refresh_activation_policy(_app: &tauri::AppHandle) {}
+
+pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
     let exit_state = app.state::<AppExitCoordinatorState>();
     if !exit_state.begin_exit() {
         return;
@@ -420,6 +512,32 @@ fn request_graceful_exit(app: &tauri::AppHandle) {
             }
         }
 
+        let stop_app_handle = app_handle.clone();
+        match tauri::async_runtime::spawn_blocking(move || {
+            if crate::native_capture::current_native_capture_session(&stop_app_handle).is_running {
+                Some(crate::native_capture::stop_native_capture_from_app_handle(
+                    &stop_app_handle,
+                ))
+            } else {
+                None
+            }
+        })
+        .await
+        {
+            Ok(Some(Ok(_))) => crate::native_capture::debug_log::log_info(
+                "stopped active native capture during graceful app exit",
+            ),
+            Ok(Some(Err(error))) => crate::native_capture::debug_log::log_error(format!(
+                "failed to stop active native capture during graceful app exit: [{}] {}",
+                error.code, error.message
+            )),
+            Ok(None) => {}
+            Err(error) => {
+                crate::native_capture::debug_log::log_error(format!(
+                    "failed to join native capture stop during graceful app exit: {error}"
+                ));
+            }
+        }
         crate::native_capture::debug_log::log_info(
             "stopping background workers before terminating",
         );
@@ -442,7 +560,7 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
     match AppWindow::from_label(window.label()) {
         Some(AppWindow::Onboarding) => window.close().map_err(|err| err.to_string()),
         Some(AppWindow::Settings | AppWindow::Debug) => {
-            focus_main_window(window.app_handle());
+            focus_main_window_if_visible(window.app_handle());
             window.close().map_err(|err| err.to_string())
         }
         Some(AppWindow::Main) => Err("main window cannot be closed from this command".into()),
@@ -450,7 +568,22 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
     }
 }
 
-pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &WindowEvent) {
+pub fn handle_window_event(
+    app: &tauri::AppHandle,
+    label: &str,
+    event: &WindowEvent,
+    window: Option<&WebviewWindow>,
+) {
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        if AppWindow::from_label(label) == Some(AppWindow::Main) {
+            api.prevent_close();
+            if let Some(window) = window {
+                hide_main_window(window);
+            }
+        }
+        return;
+    }
+
     if !matches!(event, WindowEvent::Destroyed) {
         return;
     }
@@ -468,10 +601,11 @@ pub fn handle_window_event(app: &tauri::AppHandle, label: &str, event: &WindowEv
     };
 
     match action {
-        DestroyedWindowAction::FocusMainWindow => focus_main_window(app),
+        DestroyedWindowAction::FocusMainWindow => focus_main_window_if_visible(app),
         DestroyedWindowAction::ExitApp => request_graceful_exit(app),
         DestroyedWindowAction::None => {}
     }
+    refresh_activation_policy(app);
 }
 
 pub fn open_startup_window(
@@ -486,6 +620,11 @@ pub fn open_startup_window(
         open_or_focus_window(app, AppWindow::Onboarding, None)?;
         Ok(false)
     }
+}
+
+pub(crate) fn is_onboarding_complete(app: &tauri::AppHandle) -> bool {
+    let store = app.state::<OnboardingStateStore>();
+    current_onboarding_state(app, store.inner()).is_complete()
 }
 
 #[tauri::command]
@@ -512,6 +651,11 @@ pub fn close_current_window(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn toggle_main_window_visibility_command(app: tauri::AppHandle) {
+    toggle_main_window_visibility(&app);
+}
+
+#[tauri::command]
 pub fn get_onboarding_state(
     app: tauri::AppHandle,
     state: tauri::State<'_, OnboardingStateStore>,
@@ -531,6 +675,7 @@ pub fn complete_onboarding(
 
     persist_onboarding_state(&app, state.inner(), OnboardingState::completed_now())?;
     open_or_focus_window(&app, AppWindow::Main, None)?;
+    crate::status_bar::refresh(&app);
     window.close().map_err(|err| err.to_string())
 }
 

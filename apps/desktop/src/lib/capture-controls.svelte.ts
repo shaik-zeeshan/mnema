@@ -32,6 +32,7 @@ const _state = $state<{
 });
 
 const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
+const NATIVE_CAPTURE_SESSION_CHANGED_EVENT = "native_capture_session_changed";
 let _settingsSyncInitialized = false;
 
 function serializeError(err: unknown): string {
@@ -125,6 +126,26 @@ function initRecordingSettingsSync(): void {
     _state.recordingSettings = event.payload;
     _state.error = null;
   });
+
+  void listen<CaptureSession>(NATIVE_CAPTURE_SESSION_CHANGED_EVENT, (event) => {
+    applyCaptureSession(event.payload);
+  });
+}
+
+function applyCaptureSession(session: CaptureSession): void {
+  const wasRunning = captureControls.isRunning;
+  setSession(session);
+  if (wasRunning !== session.isRunning) {
+    _state.sessionGeneration += 1;
+  }
+  _state.loadingStart = false;
+  _state.loadingStop = false;
+  _state.error = null;
+  if (session.isRunning) {
+    void refreshRuntimeSources();
+  } else {
+    _state.runtimeSources = null;
+  }
 }
 
 export async function startCapture(): Promise<void> {
@@ -142,9 +163,7 @@ export async function startCapture(): Promise<void> {
         },
       },
     );
-    _state.sessionGeneration += 1;
-    setSession(result.session);
-    void refreshRuntimeSources();
+    applyCaptureSession(result.session);
   } catch (err) {
     _state.error = serializeError(err);
   } finally {
@@ -158,9 +177,7 @@ export async function stopCapture(): Promise<void> {
   _state.error = null;
   try {
     const result = await invoke<{ session: CaptureSession }>("stop_native_capture");
-    _state.sessionGeneration += 1;
-    setSession(result.session);
-    _state.runtimeSources = null;
+    applyCaptureSession(result.session);
   } catch (err) {
     _state.error = serializeError(err);
   } finally {

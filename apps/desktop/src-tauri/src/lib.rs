@@ -1,11 +1,13 @@
 mod app_infra;
 mod audio_transcription_models;
 mod general_app_log;
+mod keyboard_bindings;
 mod managed_storage_layout;
 mod native_capture;
 mod ocr_models;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
+mod status_bar;
 mod windows;
 
 use tauri::Manager;
@@ -51,6 +53,8 @@ pub fn run() {
         .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
         .manage(native_capture::SystemWakeNotifierState::default())
         .manage(native_capture::RecordingSettingsState::default())
+        .manage(status_bar::StatusBarState::default())
+        .manage(keyboard_bindings::KeyboardBindingsState::default())
         .manage(native_capture::AppNotificationsState::default())
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
         .manage(speaker_analysis_models::SpeakerAnalysisModelDownloadState::default())
@@ -75,13 +79,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(keyboard_bindings::handle_global_shortcut)
+                .build(),
+        )
         .on_window_event(|window, event| {
             let webview_window = window.get_webview_window(window.label());
             if !should_forward_window_event(event, webview_window.is_some()) {
                 return;
             }
 
-            windows::handle_window_event(&window.app_handle(), window.label(), event);
+            windows::handle_window_event(
+                &window.app_handle(),
+                window.label(),
+                event,
+                webview_window.as_ref(),
+            );
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
@@ -159,11 +173,16 @@ pub fn run() {
             windows::open_settings_window_to_tab,
             windows::open_debug_window,
             windows::close_current_window,
+            windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,
+            keyboard_bindings::get_keyboard_bindings_settings,
+            keyboard_bindings::update_keyboard_bindings_settings,
         ])
         .setup(|app| {
             native_capture::initialize_recording_settings_from_disk(app.handle());
+            status_bar::initialize(app.handle())?;
+            keyboard_bindings::initialize(app.handle());
             native_capture::install_panic_hook();
             if let Err(error) = app_infra::initialize(app) {
                 match error {
@@ -194,10 +213,27 @@ pub fn run() {
             if onboarding_complete {
                 native_capture::maybe_auto_start_native_capture(app.handle());
             }
+            status_bar::refresh(app.handle());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } => {
+                api.prevent_exit();
+                windows::request_graceful_exit(app_handle);
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => {
+                let _ = windows::open_main_window(app_handle);
+            }
+            _ => {}
+        });
 }
 
 pub fn maybe_run_speaker_analysis_helper_and_exit() {

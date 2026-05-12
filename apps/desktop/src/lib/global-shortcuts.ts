@@ -10,6 +10,7 @@ export type GlobalShortcutId =
   | "toggleRecording"
   | "openSettings"
   | "openDebug"
+  | "toggleMainWindow"
   | "toggleSourceScreen"
   | "toggleSourceMicrophone"
   | "toggleSourceSystemAudio"
@@ -20,6 +21,7 @@ export type GlobalShortcutAction =
   | { type: "closeShortcutsHelp" }
   | { type: "toggleShortcutsHelp" }
   | { type: "toggleRecording" }
+  | { type: "toggleMainWindow" }
   | { type: "openSettings" }
   | { type: "openDebug" }
   | { type: "toggleSource"; source: SourceShortcutKey };
@@ -42,7 +44,14 @@ export const GLOBAL_SHORTCUTS: Record<GlobalShortcutId, ShortcutDefinition> = {
   toggleRecording: {
     id: "toggleRecording",
     label: "Start or stop recording",
-    bindings: [{ key: "R", primary: true }],
+    bindings: [{ key: "R", primary: true, alt: true }],
+    kind: "command",
+    scope: "global",
+  },
+  toggleMainWindow: {
+    id: "toggleMainWindow",
+    label: "Show or hide Mnema",
+    bindings: [{ key: "M", primary: true, alt: true }],
     kind: "command",
     scope: "global",
   },
@@ -125,6 +134,10 @@ export function getGlobalShortcutAction(
 
   if (matchShortcut(event, GLOBAL_SHORTCUTS.toggleRecording, platform)) {
     return { type: "toggleRecording" };
+  }
+
+  if (matchShortcut(event, GLOBAL_SHORTCUTS.toggleMainWindow, platform)) {
+    return { type: "toggleMainWindow" };
   }
 
   if (matchShortcut(event, GLOBAL_SHORTCUTS.openSettings, platform)) {
