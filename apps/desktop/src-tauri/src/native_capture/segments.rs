@@ -43,6 +43,22 @@ const FRAME_ARTIFACT_BUFFER_CAPACITY: usize = 64;
 const SEGMENT_LOOP_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const PRIVACY_FILTER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+type FrameMetadataSnapshotProvider =
+    Arc<dyn Fn() -> Option<capture_metadata::FrameMetadataSnapshot> + Send + Sync + 'static>;
+
+fn frame_metadata_snapshot_provider(
+    app_handle: &tauri::AppHandle,
+) -> FrameMetadataSnapshotProvider {
+    let app_handle = app_handle.clone();
+    Arc::new(move || {
+        crate::native_capture::metadata::latest_frame_metadata_snapshot(
+            app_handle
+                .state::<crate::native_capture::CaptureMetadataState>()
+                .inner(),
+        )
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn persist_capture_session_started(
     app_handle: &tauri::AppHandle,
@@ -149,15 +165,27 @@ pub(super) enum FrameArtifactForwardingResult {
 }
 
 pub(crate) enum FrameArtifactMessage {
-    Artifact(capture_screen::ScreenFrameArtifact),
+    Artifact(FrameArtifactEnvelope),
     Flush(std::sync::mpsc::SyncSender<()>),
+}
+
+pub(crate) struct FrameArtifactEnvelope {
+    pub artifact: capture_screen::ScreenFrameArtifact,
+    pub metadata_snapshot: Option<capture_metadata::FrameMetadataSnapshot>,
 }
 
 #[cfg(test)]
 impl FrameArtifactMessage {
     pub(super) fn unwrap_artifact(self) -> capture_screen::ScreenFrameArtifact {
         match self {
-            Self::Artifact(artifact) => artifact,
+            Self::Artifact(envelope) => envelope.artifact,
+            Self::Flush(_) => panic!("expected Artifact, got Flush"),
+        }
+    }
+
+    pub(super) fn unwrap_artifact_envelope(self) -> FrameArtifactEnvelope {
+        match self {
+            Self::Artifact(envelope) => envelope,
             Self::Flush(_) => panic!("expected Artifact, got Flush"),
         }
     }
@@ -166,8 +194,12 @@ impl FrameArtifactMessage {
 pub(super) fn try_forward_frame_artifact(
     frame_artifact_tx: &mpsc::Sender<FrameArtifactMessage>,
     artifact: capture_screen::ScreenFrameArtifact,
+    metadata_snapshot: Option<capture_metadata::FrameMetadataSnapshot>,
 ) -> FrameArtifactForwardingResult {
-    match frame_artifact_tx.blocking_send(FrameArtifactMessage::Artifact(artifact)) {
+    match frame_artifact_tx.blocking_send(FrameArtifactMessage::Artifact(FrameArtifactEnvelope {
+        artifact,
+        metadata_snapshot,
+    })) {
         Ok(()) => FrameArtifactForwardingResult::Enqueued,
         Err(_) => FrameArtifactForwardingResult::ReceiverClosed,
     }
@@ -706,6 +738,7 @@ pub(super) fn recover_from_segment_finalize_error(
 
 fn capture_session_options(
     frame_artifact_tx: Option<mpsc::Sender<FrameArtifactMessage>>,
+    metadata_snapshot_provider: Option<FrameMetadataSnapshotProvider>,
     system_audio_inactivity_tail_trim_seconds: u64,
     initial_privacy_filter: Option<capture_screen::PrivacyContentFilter>,
 ) -> capture_screen::ScreenCaptureSessionOptions {
@@ -728,7 +761,10 @@ fn capture_session_options(
     capture_screen::ScreenCaptureSessionOptions {
         frame_export: Some(capture_screen::ScreenFrameExportConfig {
             on_frame_exported: Arc::new(move |artifact| {
-                match try_forward_frame_artifact(&frame_artifact_tx, artifact) {
+                let metadata_snapshot = metadata_snapshot_provider
+                    .as_ref()
+                    .and_then(|provider| provider());
+                match try_forward_frame_artifact(&frame_artifact_tx, artifact, metadata_snapshot) {
                     FrameArtifactForwardingResult::Enqueued => {}
                     FrameArtifactForwardingResult::ReceiverClosed => {
                         super::debug_log::log(
@@ -809,19 +845,15 @@ fn spawn_frame_artifact_worker(
     tauri::async_runtime::spawn(async move {
         while let Some(message) = rx.recv().await {
             match message {
-                FrameArtifactMessage::Artifact(artifact) => {
+                FrameArtifactMessage::Artifact(envelope) => {
                     if let Err(error) = crate::app_infra::persist_screen_frame_artifact(
                         infra.as_ref(),
                         app_handle
                             .state::<crate::native_capture::RecordingSettingsState>()
                             .inner(),
-                        crate::native_capture::metadata::latest_frame_metadata_snapshot(
-                            app_handle
-                                .state::<crate::native_capture::CaptureMetadataState>()
-                                .inner(),
-                        ),
+                        envelope.metadata_snapshot,
                         &session_id,
-                        artifact,
+                        envelope.artifact,
                     )
                     .await
                     {
@@ -2065,6 +2097,7 @@ pub(super) fn resume_screen_from_inactivity(
     let tail_trim_seconds = runtime.inactivity.idle_timeout_seconds;
     let microphone_activity_threshold = runtime.inactivity.microphone_activity_threshold();
     let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
+    let metadata_snapshot_provider = app_handle.map(frame_metadata_snapshot_provider);
     resume_screen_from_inactivity_with_start_segment(
         runtime,
         app_handle,
@@ -2088,6 +2121,7 @@ pub(super) fn resume_screen_from_inactivity(
                 effective_screen_bitrate_bps,
                 microphone_device_id,
                 frame_artifact_tx,
+                metadata_snapshot_provider,
                 microphone_output_path,
                 tail_trim_seconds,
                 microphone_activity_threshold,
@@ -2806,7 +2840,39 @@ pub(super) fn recover_screen_capture_after_wake(
     runtime: &mut NativeCaptureRuntime,
     app_handle: Option<&tauri::AppHandle>,
 ) -> Result<bool, CaptureErrorResponse> {
-    recover_screen_capture_after_wake_with_start_segment(runtime, app_handle, start_segment)
+    let metadata_snapshot_provider = app_handle.map(frame_metadata_snapshot_provider);
+    recover_screen_capture_after_wake_with_start_segment(
+        runtime,
+        app_handle,
+        move |segment_dir,
+              screen_output_file,
+              system_audio_output_path,
+              sources,
+              screen_frame_rate,
+              screen_resolution,
+              effective_screen_bitrate_bps,
+              microphone_device_id,
+              frame_artifact_tx,
+              microphone_output_path| {
+            start_segment_with_inactivity_tail_trim_seconds(
+                segment_dir,
+                screen_output_file,
+                system_audio_output_path,
+                sources,
+                screen_frame_rate,
+                screen_resolution,
+                effective_screen_bitrate_bps,
+                microphone_device_id,
+                frame_artifact_tx,
+                metadata_snapshot_provider,
+                microphone_output_path,
+                0,
+                0.0,
+                microphone_capture::MicrophoneInactivityTailTrimActivityMode::PeakLevel,
+                None,
+            )
+        },
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -2882,6 +2948,7 @@ pub(super) fn resume_runtime_from_inactivity(
                 effective_screen_bitrate_bps,
                 microphone_device_id,
                 frame_artifact_tx,
+                None,
                 microphone_output_path,
                 tail_trim_seconds,
                 microphone_activity_threshold,
@@ -2953,6 +3020,7 @@ pub(super) fn start_segment(
         effective_screen_bitrate_bps,
         microphone_device_id,
         frame_artifact_tx,
+        None,
         microphone_output_path,
         0,
         0.0,
@@ -2972,6 +3040,7 @@ fn start_segment_with_inactivity_tail_trim_seconds(
     effective_screen_bitrate_bps: Option<u32>,
     microphone_device_id: Option<&str>,
     frame_artifact_tx: Option<mpsc::Sender<FrameArtifactMessage>>,
+    metadata_snapshot_provider: Option<FrameMetadataSnapshotProvider>,
     microphone_output_path: Option<&Path>,
     inactivity_tail_trim_seconds: u64,
     microphone_activity_threshold: f32,
@@ -3010,6 +3079,7 @@ fn start_segment_with_inactivity_tail_trim_seconds(
         };
         let mut screen_options = capture_session_options(
             frame_artifact_tx,
+            metadata_snapshot_provider,
             inactivity_tail_trim_seconds,
             initial_privacy_filter,
         );
@@ -3315,6 +3385,9 @@ pub(super) fn start_capture_runtime(
                 microphone_tail_trim_activity_mode_for_vad(&initial_microphone_vad);
             let initial_privacy_decision =
                 crate::native_capture::metadata::initial_privacy_decision(
+                    app_handle
+                        .state::<crate::native_capture::CaptureMetadataState>()
+                        .inner(),
                     &settings.metadata,
                     &settings.privacy,
                 );
@@ -3338,6 +3411,7 @@ pub(super) fn start_capture_runtime(
                 effective_screen_bitrate_bps,
                 microphone_device_id_for_capture.as_deref(),
                 frame_artifact_tx.clone(),
+                Some(frame_metadata_snapshot_provider(&app_handle)),
                 first_microphone_output_path.as_deref(),
                 inactivity_tail_trim_seconds,
                 microphone_activity_threshold,

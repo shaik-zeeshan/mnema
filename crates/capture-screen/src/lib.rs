@@ -2269,7 +2269,9 @@ impl ActiveCaptureSession {
         filter: PrivacyContentFilter,
     ) -> Result<(), PrivacyFilterApplyError> {
         match &mut self.backend {
-            CaptureBackendSession::ScreenCaptureKit(session) => session.update_privacy_filter(filter),
+            CaptureBackendSession::ScreenCaptureKit(session) => {
+                session.update_privacy_filter(filter)
+            }
             CaptureBackendSession::AvFoundation(_) => Err(PrivacyFilterApplyError {
                 kind: PrivacyFilterApplyErrorKind::UnsupportedPlatform,
                 message: "Privacy content filters require ScreenCaptureKit".to_string(),
@@ -2337,17 +2339,18 @@ impl ScreenCaptureKitCaptureSession {
         }
         let content_filter = build_screen_capture_kit_content_filter(&filter)?;
         let (tx, rx) = mpsc::channel();
-        self.stream.update_content_filter_ch(&content_filter, move |error| {
-            let result = error
-                .map(|error| {
-                    PrivacyFilterApplyError {
+        self.stream
+            .update_content_filter_ch(&content_filter, move |error| {
+                let result = error
+                    .map(|error| PrivacyFilterApplyError {
                         kind: PrivacyFilterApplyErrorKind::FilterUpdateFailed,
-                        message: format!("Failed to update ScreenCaptureKit content filter: {error}"),
-                    }
-                })
-                .map_or(Ok(()), Err);
-            let _ = tx.send(result);
-        });
+                        message: format!(
+                            "Failed to update ScreenCaptureKit content filter: {error}"
+                        ),
+                    })
+                    .map_or(Ok(()), Err);
+                let _ = tx.send(result);
+            });
         match rx.recv_timeout(Duration::from_secs(2)) {
             Ok(Ok(())) => {
                 self.privacy_filter_key = Some(next_key);
@@ -2764,11 +2767,13 @@ fn build_screen_capture_kit_content_filter(
         ));
     }
 
-    Ok(cidre::sc::ContentFilter::with_display_excluding_apps_excepting_windows(
-        display,
-        &app_array,
-        &cidre::ns::Array::new(),
-    ))
+    Ok(
+        cidre::sc::ContentFilter::with_display_excluding_apps_excepting_windows(
+            display,
+            &app_array,
+            &cidre::ns::Array::new(),
+        ),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -3316,9 +3321,11 @@ fn start_screen_capture_kit_session(
         let initial_privacy_filter = options.initial_privacy_filter.clone();
         let excluded_windows = cidre::ns::Array::<sc::Window>::new();
         let filter = if let Some(initial_privacy_filter) = &initial_privacy_filter {
-            build_screen_capture_kit_content_filter(initial_privacy_filter).map_err(|error| CaptureErrorResponse {
-                code: "privacy_filter_apply_failed".to_string(),
-                message: error.message,
+            build_screen_capture_kit_content_filter(initial_privacy_filter).map_err(|error| {
+                CaptureErrorResponse {
+                    code: "privacy_filter_apply_failed".to_string(),
+                    message: error.message,
+                }
             })?
         } else {
             sc::ContentFilter::with_display_excluding_windows(display, &excluded_windows)

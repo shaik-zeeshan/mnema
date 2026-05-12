@@ -170,7 +170,9 @@ pub fn parse_website_rule(id: impl Into<String>, enabled: bool, pattern: &str) -
         .as_ref()
         .and_then(Url::host_str)
         .map(str::to_ascii_lowercase);
-    let include_subdomains = raw_host.as_deref().is_some_and(|host| host.starts_with("*."));
+    let include_subdomains = raw_host
+        .as_deref()
+        .is_some_and(|host| host.starts_with("*."));
     let host = raw_host.map(|host| host.trim_start_matches("*.").to_string());
     let path_prefix = parsed
         .as_ref()
@@ -247,7 +249,10 @@ pub fn title_rule_matches(rule: &BrowserTitleRule, title: &str) -> bool {
     }
 }
 
-pub fn evaluate_privacy(settings: &PrivacySettings, context: &MetadataContext) -> PrivacyFilterDecision {
+pub fn evaluate_privacy(
+    settings: &PrivacySettings,
+    context: &MetadataContext,
+) -> PrivacyFilterDecision {
     let mut bundle_ids = BTreeSet::new();
     let mut window_ids = BTreeSet::new();
     let mut rule_ids = BTreeSet::new();
@@ -261,7 +266,9 @@ pub fn evaluate_privacy(settings: &PrivacySettings, context: &MetadataContext) -
         }
     }
 
-    if let (Some(active_bundle), Some(active_url)) = (&context.active_bundle_id, &context.active_url) {
+    if let (Some(active_bundle), Some(active_url)) =
+        (&context.active_bundle_id, &context.active_url)
+    {
         for rule in &settings.excluded_website_rules {
             if website_rule_matches(rule, active_url) {
                 bundle_ids.insert(active_bundle.clone());
@@ -325,7 +332,10 @@ mod tests {
     #[test]
     fn sanitizes_urls() {
         assert_eq!(
-            sanitize_url("https://Example.com:8443/a/b?q=1#frag", BrowserUrlMode::Sanitized),
+            sanitize_url(
+                "https://Example.com:8443/a/b?q=1#frag",
+                BrowserUrlMode::Sanitized
+            ),
             Some("https://example.com:8443/a/b".to_string())
         );
         assert_eq!(
@@ -341,10 +351,19 @@ mod tests {
     #[test]
     fn matches_website_rules() {
         let wildcard = parse_website_rule("w", true, "*.example.com/private");
-        assert!(website_rule_matches(&wildcard, "https://a.example.com/private/x"));
-        assert!(website_rule_matches(&wildcard, "https://example.com/private/x"));
+        assert!(website_rule_matches(
+            &wildcard,
+            "https://a.example.com/private/x"
+        ));
+        assert!(website_rule_matches(
+            &wildcard,
+            "https://example.com/private/x"
+        ));
         let port = parse_website_rule("p", true, "localhost:5173/app");
-        assert!(website_rule_matches(&port, "http://localhost:5173/app/%7Bsecret%7D"));
+        assert!(website_rule_matches(
+            &port,
+            "http://localhost:5173/app/%7Bsecret%7D"
+        ));
         assert!(!website_rule_matches(&port, "http://localhost:5174/app"));
         let unnormalized = WebsiteRule {
             id: "raw".into(),
@@ -420,9 +439,15 @@ mod tests {
                 private_browser_ambiguous_bundle_id: Some("com.browser".into()),
             },
         );
-        assert_eq!(decision.excluded_bundle_ids, vec!["com.browser", "com.secret"]);
+        assert_eq!(
+            decision.excluded_bundle_ids,
+            vec!["com.browser", "com.secret"]
+        );
         assert_eq!(decision.excluded_window_ids, vec![7, 9]);
-        assert_eq!(decision.metadata_redaction_reason.as_deref(), Some("excluded_app"));
+        assert_eq!(
+            decision.metadata_redaction_reason.as_deref(),
+            Some("excluded_app")
+        );
     }
 
     #[test]

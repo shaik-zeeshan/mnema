@@ -6,15 +6,15 @@ mod session;
 
 use serde::Serialize;
 
+pub use capture_metadata::{
+    BrowserTitleRule, BrowserTitleRuleMatchType, BrowserUrlMode, ExcludedAppEntry,
+    MetadataSettings, PrivacySettings, WebsiteRule,
+};
 pub use inactivity::*;
 pub use logs::*;
 pub use microphone::*;
 pub use recording::*;
 pub use session::*;
-pub use capture_metadata::{
-    BrowserTitleRule, BrowserTitleRuleMatchType, BrowserUrlMode, ExcludedAppEntry,
-    MetadataSettings, PrivacySettings, WebsiteRule,
-};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -83,14 +83,18 @@ pub fn refresh_metadata_state(
     metadata: &MetadataSettings,
     privacy: &PrivacySettings,
 ) -> PrivacyFilterDecision {
-    let active = collect_active_window_metadata(metadata.browser_url_mode);
+    let active = collect_active_window_metadata(metadata, privacy);
     let mut snapshot = metadata.enabled.then(|| active.snapshot.clone()).flatten();
     let context = if metadata.enabled {
         active.context
     } else {
         MetadataContext::default()
     };
-    let mut decision = evaluate_privacy(privacy, &context);
+    let mut decision = if metadata.enabled {
+        evaluate_privacy(privacy, &context)
+    } else {
+        static_app_privacy_decision(privacy)
+    };
 
     let mut runtime = state.lock().expect("capture metadata state poisoned");
     apply_website_privacy_hold(
@@ -165,6 +169,10 @@ fn has_enabled_website_rules(privacy: &PrivacySettings) -> bool {
         .any(|rule| rule.enabled)
 }
 
+fn has_enabled_browser_title_rules(privacy: &PrivacySettings) -> bool {
+    privacy.browser_title_rules.iter().any(|rule| rule.enabled)
+}
+
 fn apply_metadata_redaction(
     snapshot: &mut FrameMetadataSnapshot,
     privacy: &PrivacySettings,
@@ -225,10 +233,11 @@ pub fn static_app_privacy_decision(privacy: &PrivacySettings) -> PrivacyFilterDe
 }
 
 pub fn initial_privacy_decision(
-    _metadata: &MetadataSettings,
+    state: &CaptureMetadataState,
+    metadata: &MetadataSettings,
     privacy: &PrivacySettings,
 ) -> PrivacyFilterDecision {
-    static_app_privacy_decision(privacy)
+    refresh_metadata_state(state, metadata, privacy)
 }
 
 #[derive(Debug, Clone)]
@@ -237,20 +246,59 @@ struct ActiveWindowMetadata {
     context: MetadataContext,
 }
 
-fn collect_active_window_metadata(url_mode: BrowserUrlMode) -> ActiveWindowMetadata {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct MetadataCollectionPlan {
+    collect_active_window: bool,
+    collect_browser_url: bool,
+    collect_visible_browser_windows: bool,
+}
+
+fn metadata_collection_plan(
+    metadata: &MetadataSettings,
+    privacy: &PrivacySettings,
+) -> MetadataCollectionPlan {
+    if !metadata.enabled {
+        return MetadataCollectionPlan::default();
+    }
+
+    MetadataCollectionPlan {
+        collect_active_window: true,
+        collect_browser_url: metadata.browser_url_mode != BrowserUrlMode::Off
+            || has_enabled_website_rules(privacy),
+        collect_visible_browser_windows: privacy.private_browser_exclusion_enabled
+            || has_enabled_browser_title_rules(privacy),
+    }
+}
+
+fn collect_active_window_metadata(
+    metadata: &MetadataSettings,
+    privacy: &PrivacySettings,
+) -> ActiveWindowMetadata {
+    let plan = metadata_collection_plan(metadata, privacy);
+    if !plan.collect_active_window && !plan.collect_visible_browser_windows {
+        return ActiveWindowMetadata {
+            snapshot: None,
+            context: MetadataContext::default(),
+        };
+    }
+
     #[cfg(target_os = "macos")]
     {
-        let script = r#"tell application "System Events"
-set frontProc to first application process whose frontmost is true
-set appName to name of frontProc
-set bundleId to bundle identifier of frontProc
+        let output = if plan.collect_active_window {
+            let script = r#"tell application "System Events"
+	set frontProc to first application process whose frontmost is true
+	set appName to name of frontProc
+	set bundleId to bundle identifier of frontProc
 set windowTitle to ""
 try
   set windowTitle to name of front window of frontProc
-end try
-return bundleId & linefeed & appName & linefeed & windowTitle
-end tell"#;
-        let output = run_osascript(script);
+	end try
+	return bundleId & linefeed & appName & linefeed & windowTitle
+	end tell"#;
+            run_osascript(script)
+        } else {
+            String::new()
+        };
         let mut lines = output.lines();
         let bundle_id = lines
             .next()
@@ -267,11 +315,18 @@ end tell"#;
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(str::to_string);
-        let browser_url = bundle_id
+        let raw_browser_url = plan
+            .collect_browser_url
+            .then(|| bundle_id.as_deref().and_then(active_browser_url))
+            .flatten();
+        let snapshot_browser_url = raw_browser_url
             .as_deref()
-            .and_then(active_browser_url)
-            .and_then(|url| sanitize_url(&url, url_mode));
-        let visible_browser_windows = visible_browser_windows();
+            .and_then(|url| sanitize_url(url, metadata.browser_url_mode));
+        let visible_browser_windows = if plan.collect_visible_browser_windows {
+            visible_browser_windows()
+        } else {
+            Vec::new()
+        };
         let private_browser_window_id = visible_browser_windows
             .iter()
             .find(|window| is_private_browser_title(&window.title))
@@ -284,13 +339,13 @@ end tell"#;
             app_bundle_id: bundle_id.clone(),
             app_name,
             window_title,
-            browser_url: browser_url.clone(),
+            browser_url: snapshot_browser_url,
             display_id: None,
             metadata_redaction_reason: None,
         });
         let context = MetadataContext {
             active_bundle_id: bundle_id.clone(),
-            active_url: browser_url,
+            active_url: raw_browser_url,
             visible_browser_windows,
             private_browser_window_id,
             private_browser_ambiguous_bundle_id,
@@ -300,7 +355,9 @@ end tell"#;
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = url_mode;
+        let _ = metadata;
+        let _ = privacy;
+        let _ = plan;
         ActiveWindowMetadata {
             snapshot: None,
             context: MetadataContext::default(),
@@ -580,12 +637,124 @@ mod tests {
             ..PrivacySettings::default()
         };
 
-        let decision = initial_privacy_decision(&metadata, &privacy);
+        let state = CaptureMetadataState::default();
+        let decision = initial_privacy_decision(&state, &metadata, &privacy);
+        let runtime = state.lock().expect("capture metadata state should lock");
 
         assert_eq!(decision.excluded_bundle_ids, vec!["com.secret"]);
         assert_eq!(
             decision.metadata_redaction_reason.as_deref(),
             Some("excluded_app")
+        );
+        assert_eq!(runtime.latest_decision, decision);
+        assert!(runtime.latest_snapshot.is_none());
+    }
+
+    #[test]
+    fn metadata_disabled_skips_all_platform_collection() {
+        let metadata = MetadataSettings {
+            enabled: false,
+            browser_url_mode: BrowserUrlMode::Sanitized,
+        };
+        let privacy = PrivacySettings {
+            private_browser_exclusion_enabled: true,
+            excluded_website_rules: vec![parse_website_rule("website-rule", true, "example.com")],
+            browser_title_rules: vec![capture_metadata::BrowserTitleRule {
+                id: "title-rule".to_string(),
+                enabled: true,
+                match_type: capture_metadata::BrowserTitleRuleMatchType::Substring,
+                pattern: "secret".to_string(),
+            }],
+            ..PrivacySettings::default()
+        };
+
+        assert_eq!(
+            metadata_collection_plan(&metadata, &privacy),
+            MetadataCollectionPlan::default()
+        );
+    }
+
+    #[test]
+    fn refresh_with_metadata_disabled_keeps_static_privacy_without_snapshot() {
+        let state = CaptureMetadataState::default();
+        let metadata = MetadataSettings {
+            enabled: false,
+            browser_url_mode: BrowserUrlMode::Sanitized,
+        };
+        let privacy = PrivacySettings {
+            excluded_apps: vec![capture_metadata::ExcludedAppEntry {
+                id: "app-rule".to_string(),
+                enabled: true,
+                bundle_id: "com.example.Secret".to_string(),
+                display_name: "Secret".to_string(),
+            }],
+            private_browser_exclusion_enabled: true,
+            excluded_website_rules: vec![parse_website_rule("website-rule", true, "example.com")],
+            ..PrivacySettings::default()
+        };
+
+        let decision = refresh_metadata_state(&state, &metadata, &privacy);
+        let runtime = state.lock().expect("capture metadata state should lock");
+
+        assert_eq!(decision.excluded_bundle_ids, vec!["com.example.Secret"]);
+        assert_eq!(
+            decision.metadata_redaction_reason.as_deref(),
+            Some("excluded_app")
+        );
+        assert!(runtime.latest_snapshot.is_none());
+        assert_eq!(runtime.latest_decision, decision);
+    }
+
+    #[test]
+    fn metadata_collection_plan_avoids_unused_browser_and_window_probes() {
+        let metadata = MetadataSettings {
+            enabled: true,
+            browser_url_mode: BrowserUrlMode::Off,
+        };
+        let privacy = PrivacySettings {
+            private_browser_exclusion_enabled: false,
+            ..PrivacySettings::default()
+        };
+
+        assert_eq!(
+            metadata_collection_plan(&metadata, &privacy),
+            MetadataCollectionPlan {
+                collect_active_window: true,
+                collect_browser_url: false,
+                collect_visible_browser_windows: false,
+            }
+        );
+    }
+
+    #[test]
+    fn dynamic_privacy_rules_request_their_platform_probes() {
+        let metadata = MetadataSettings {
+            enabled: true,
+            browser_url_mode: BrowserUrlMode::Off,
+        };
+        let website_privacy = PrivacySettings {
+            private_browser_exclusion_enabled: false,
+            excluded_website_rules: vec![parse_website_rule("website-rule", true, "example.com")],
+            ..PrivacySettings::default()
+        };
+        let title_privacy = PrivacySettings {
+            private_browser_exclusion_enabled: false,
+            browser_title_rules: vec![capture_metadata::BrowserTitleRule {
+                id: "title-rule".to_string(),
+                enabled: true,
+                match_type: capture_metadata::BrowserTitleRuleMatchType::Substring,
+                pattern: "secret".to_string(),
+            }],
+            ..PrivacySettings::default()
+        };
+
+        assert!(metadata_collection_plan(&metadata, &website_privacy).collect_browser_url);
+        assert!(
+            metadata_collection_plan(&metadata, &title_privacy).collect_visible_browser_windows
+        );
+        assert!(
+            metadata_collection_plan(&metadata, &PrivacySettings::default())
+                .collect_visible_browser_windows
         );
     }
 }

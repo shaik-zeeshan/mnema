@@ -201,7 +201,6 @@ pub async fn check_browser_url_support(
         "com.google.Chrome",
         "com.google.Chrome.canary",
         "com.microsoft.edgemac",
-        "org.mozilla.firefox",
         "com.brave.Browser",
         "company.thebrowser.Browser",
         "net.imput.helium",

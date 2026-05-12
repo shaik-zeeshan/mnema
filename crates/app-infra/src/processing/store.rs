@@ -2648,12 +2648,12 @@ async fn upsert_frame_metadata_snapshot_in_transaction(
     .execute(&mut **transaction)
     .await?;
 
-    Ok(sqlx::query_scalar(
-        "SELECT id FROM frame_metadata_snapshots WHERE normalized_hash = ?1",
+    Ok(
+        sqlx::query_scalar("SELECT id FROM frame_metadata_snapshots WHERE normalized_hash = ?1")
+            .bind(&hash)
+            .fetch_one(&mut **transaction)
+            .await?,
     )
-    .bind(&hash)
-    .fetch_one(&mut **transaction)
-    .await?)
 }
 
 async fn insert_processing_job_record<'e, E>(

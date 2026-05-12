@@ -38,7 +38,7 @@ use super::segments::{
 };
 use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
-    FrameArtifactForwardingResult, FrameArtifactMessage,
+    FrameArtifactEnvelope, FrameArtifactForwardingResult, FrameArtifactMessage,
 };
 use super::settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
@@ -2862,6 +2862,20 @@ fn microphone_auto_disconnect_transition_failed_event_has_expected_payload() {
 }
 
 #[test]
+fn firefox_browser_url_support_is_reported_unknown() {
+    run_async_test(async {
+        let response = super::check_browser_url_support(super::CheckBrowserUrlSupportRequest {
+            bundle_id: "org.mozilla.firefox".to_string(),
+        })
+        .await
+        .expect("browser URL support check should succeed");
+
+        assert!(!response.supported);
+        assert!(response.warning.is_some());
+    });
+}
+
+#[test]
 fn mark_runtime_session_stopped_clears_frame_artifact_worker() {
     let (tx, _rx) = mpsc::channel::<FrameArtifactMessage>(1);
     let mut runtime = NativeCaptureRuntime {
@@ -2894,6 +2908,7 @@ fn try_forward_frame_artifact_enqueues_when_capacity_available() {
                 },
             ),
         },
+        None,
     );
 
     assert_eq!(result, FrameArtifactForwardingResult::Enqueued);
@@ -2903,6 +2918,41 @@ fn try_forward_frame_artifact_enqueues_when_capacity_available() {
         .expect("frame should be queued")
         .unwrap_artifact();
     assert_eq!(queued.file_path, "/tmp/frame-1.png");
+}
+
+#[test]
+fn try_forward_frame_artifact_enqueues_metadata_snapshot_with_artifact() {
+    let (tx, mut rx) = mpsc::channel::<FrameArtifactMessage>(1);
+    let snapshot = capture_metadata::FrameMetadataSnapshot {
+        app_bundle_id: Some("com.example.App".to_string()),
+        app_name: Some("Example".to_string()),
+        window_title: Some("Original Window".to_string()),
+        browser_url: None,
+        display_id: None,
+        metadata_redaction_reason: None,
+    };
+
+    let result = try_forward_frame_artifact(
+        &tx,
+        capture_screen::ScreenFrameArtifact {
+            file_path: "/tmp/frame-1.png".to_string(),
+            captured_at_unix_ms: 1,
+            width: None,
+            height: None,
+            captured_frame_equivalence:
+                capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
+        },
+        Some(snapshot.clone()),
+    );
+
+    assert_eq!(result, FrameArtifactForwardingResult::Enqueued);
+
+    let queued = rx
+        .try_recv()
+        .expect("frame should be queued")
+        .unwrap_artifact_envelope();
+    assert_eq!(queued.artifact.file_path, "/tmp/frame-1.png");
+    assert_eq!(queued.metadata_snapshot, Some(snapshot));
 }
 
 #[test]
@@ -2919,6 +2969,7 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_frame_equivalence:
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
+        None,
     );
     let second = try_forward_frame_artifact(
         &tx,
@@ -2930,6 +2981,7 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_frame_equivalence:
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
+        None,
     );
 
     assert_eq!(first, FrameArtifactForwardingResult::Enqueued);
@@ -2961,6 +3013,7 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
             captured_frame_equivalence:
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
+        None,
     );
 
     assert_eq!(first, FrameArtifactForwardingResult::Enqueued);
@@ -2976,6 +3029,7 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
                 captured_frame_equivalence:
                     capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
+            None,
         )
     });
 
@@ -3022,6 +3076,7 @@ fn try_forward_frame_artifact_reports_closed_receiver() {
             captured_frame_equivalence:
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
+        None,
     );
 
     assert_eq!(result, FrameArtifactForwardingResult::ReceiverClosed);
@@ -3033,8 +3088,8 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
 
     // Enqueue two frame artifacts before the flush.
     for i in 1..=2 {
-        tx.try_send(FrameArtifactMessage::Artifact(
-            capture_screen::ScreenFrameArtifact {
+        tx.try_send(FrameArtifactMessage::Artifact(FrameArtifactEnvelope {
+            artifact: capture_screen::ScreenFrameArtifact {
                 file_path: format!("/tmp/frame-{i}.png"),
                 captured_at_unix_ms: i,
                 width: None,
@@ -3042,7 +3097,8 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
                 captured_frame_equivalence:
                     capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
-        ))
+            metadata_snapshot: None,
+        }))
         .expect("channel should have capacity");
     }
 
@@ -3055,13 +3111,13 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
         tauri::async_runtime::block_on(async {
             while let Some(message) = rx.recv().await {
                 match message {
-                    FrameArtifactMessage::Artifact(artifact) => {
+                    FrameArtifactMessage::Artifact(envelope) => {
                         // Simulate some processing latency.
                         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         seen_for_consumer
                             .lock()
                             .expect("seen state should lock")
-                            .push(artifact.file_path);
+                            .push(envelope.artifact.file_path);
                     }
                     FrameArtifactMessage::Flush(response_tx) => {
                         let _ = response_tx.send(());
