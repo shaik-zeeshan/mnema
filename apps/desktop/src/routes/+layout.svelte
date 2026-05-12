@@ -15,6 +15,9 @@
     toggleSourceSelected,
   } from "$lib/capture-controls.svelte";
   import { initTheme } from "$lib/theme.svelte";
+  import { theme, persistAppearance } from "$lib/theme.svelte";
+  import ThemeModeControl from "$lib/components/ThemeModeControl.svelte";
+  import type { AppearanceSetting } from "$lib/types";
   import {
     appNotifications,
     clearAppNotification,
@@ -42,6 +45,8 @@
   let shortcutsHelpOpen = $state(false);
   let shortcutsHelpCloseEl = $state<HTMLButtonElement | null>(null);
   let shortcutsHelpReturnFocusEl: HTMLElement | null = null;
+  let chromeAppearance = $state<AppearanceSetting>("system");
+  let savingChromeAppearance = $state(false);
 
   $effect(() => {
     if (typeof navigator === "undefined") return;
@@ -77,6 +82,19 @@
   // SPA-only setup.
   initTheme();
   initAppNotifications();
+
+  $effect(() => {
+    chromeAppearance = theme.appearance;
+  });
+
+  async function setChromeAppearance(next: AppearanceSetting): Promise<void> {
+    savingChromeAppearance = true;
+    try {
+      await persistAppearance(next);
+    } finally {
+      savingChromeAppearance = false;
+    }
+  }
 
   $effect(() => {
     loadDeveloperOptions();
@@ -558,6 +576,12 @@
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
         </button>
+        <ThemeModeControl
+          bind:value={chromeAppearance}
+          compact
+          disabled={!theme.loaded || savingChromeAppearance}
+          onChange={setChromeAppearance}
+        />
         {#if devEnabled}
           <button
             type="button"
@@ -599,6 +623,12 @@
   <header class="surface-titlebar">
     <div class="surface-titlebar__drag" data-tauri-drag-region></div>
     <div class="surface-titlebar__actions">
+      <ThemeModeControl
+        bind:value={chromeAppearance}
+        compact
+        disabled={!theme.loaded || savingChromeAppearance}
+        onChange={setChromeAppearance}
+      />
       <button
         type="button"
         class="surface-titlebar__close"

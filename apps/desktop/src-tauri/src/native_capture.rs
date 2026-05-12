@@ -74,8 +74,7 @@ const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcripti
 const OCR_UNAVAILABLE_NOTIFICATION_ID: &str = "ocr-unavailable";
 const SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID: &str = "speech-detector-unavailable";
 const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-unavailable";
-const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
-const OCR_SETTINGS_TAB_ID: &str = "ocr";
+const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[allow(dead_code)]
@@ -196,7 +195,7 @@ fn audio_transcription_unavailable_notification(
         ),
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),
+            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
         }),
     }
 }
@@ -209,7 +208,7 @@ fn speech_detector_unavailable_notification(created_at_unix_ms: u64) -> AppNotif
         message: "The selected speech detector is unavailable. Choose an available detector before starting this recording.".to_string(),
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),
+            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
         }),
     }
 }
@@ -222,7 +221,7 @@ fn speaker_analysis_unavailable_notification(created_at_unix_ms: u64) -> AppNoti
         message: "The selected speaker analysis model is unavailable. Install or choose an available model before starting this recording.".to_string(),
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),
+            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
         }),
     }
 }
@@ -377,7 +376,7 @@ fn ocr_unavailable_notification(
         ),
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: OCR_SETTINGS_TAB_ID.to_string(),
+            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
         }),
     }
 }

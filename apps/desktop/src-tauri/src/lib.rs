@@ -9,6 +9,7 @@ mod speaker_analysis_runtime;
 mod windows;
 
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_log::{Target, TargetKind, WEBVIEW_TARGET};
 
 pub(crate) const APP_LOG_FILE_NAME: &str = "rust";
@@ -26,6 +27,8 @@ const APP_LOG_TARGET_PREFIXES: &[&str] = &[
     "capture_types",
     WEBVIEW_TARGET,
 ];
+const ALREADY_RUNNING_MESSAGE: &str =
+    "Mnema is already running. Close the existing Mnema window before opening it again.";
 
 fn is_app_log_target(target: &str) -> bool {
     APP_LOG_TARGET_PREFIXES.iter().any(|prefix| {
@@ -162,7 +165,22 @@ pub fn run() {
         .setup(|app| {
             native_capture::initialize_recording_settings_from_disk(app.handle());
             native_capture::install_panic_hook();
-            app_infra::initialize(app).map_err(std::io::Error::other)?;
+            if let Err(error) = app_infra::initialize(app) {
+                match error {
+                    app_infra::AppInfraInitializeError::AlreadyRunning => {
+                        app.dialog()
+                            .message(ALREADY_RUNNING_MESSAGE)
+                            .kind(MessageDialogKind::Warning)
+                            .title("Mnema is already running")
+                            .blocking_show();
+                        app.handle().exit(0);
+                        return Ok(());
+                    }
+                    app_infra::AppInfraInitializeError::Other(message) => {
+                        return Err(std::io::Error::other(message).into());
+                    }
+                }
+            }
             native_capture::maybe_push_audio_transcription_unavailable_startup_warning(
                 app.handle(),
             );

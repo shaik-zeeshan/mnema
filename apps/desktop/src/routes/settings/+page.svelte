@@ -7,6 +7,7 @@
   import Slider from "$lib/components/Slider.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
+  import ThemeModeControl from "$lib/components/ThemeModeControl.svelte";
   import { setDeveloperOptionsEnabled } from "$lib/developer-options.svelte";
   import { setAppearance } from "$lib/theme.svelte";
   import type {
@@ -45,6 +46,18 @@
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
   } from "$lib/types";
+
+  type CardIconKind =
+    | "capture"
+    | "video"
+    | "storage"
+    | "appearance"
+    | "inactivity"
+    | "processing"
+    | "transcription"
+    | "speaker"
+    | "developer"
+    | "audio";
 
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
@@ -226,12 +239,10 @@
   type SettingsTab =
     | "capture"
     | "video"
+    | "audio"
+    | "processing"
     | "storage"
-    | "behavior"
-    | "microphone"
-    | "ocr"
-    | "transcription"
-    | "speakers"
+    | "appearance"
     | "developer";
 
   let activeTab = $state<SettingsTab>("capture");
@@ -251,33 +262,35 @@
 
   $effect(() => {
     const requestedTab = $page.url.searchParams.get("tab");
-    if (isSettingsTab(requestedTab)) {
-      activeTab = requestedTab;
+    const normalizedTab = normalizeSettingsTab(requestedTab);
+    if (normalizedTab) {
+      activeTab = normalizedTab;
     }
   });
 
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
-    { id: "capture",    label: "Capture",     description: "Sources & segments" },
+    { id: "capture",    label: "Capture",     description: "Sources, segments, inactivity" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
-    { id: "storage",    label: "Storage",     description: "Save path, startup, appearance" },
-    { id: "behavior",   label: "Behavior",    description: "Inactivity, timeline" },
-    { id: "microphone", label: "Microphone",  description: "Devices & disconnect policy" },
-    { id: "ocr",        label: "OCR & Cache", description: "Recognition & previews" },
-    { id: "transcription", label: "Transcription", description: "Local speech-to-text models" },
-    { id: "speakers", label: "Speakers", description: "Diarization & voice profiles" },
+    { id: "audio",      label: "Audio",       description: "Microphone devices & disconnects" },
+    { id: "processing", label: "Processing",  description: "OCR, transcription, speakers" },
+    { id: "storage",    label: "Storage",     description: "Save path, retention, cache" },
+    { id: "appearance", label: "Appearance",  description: "Theme and timeline display" },
     { id: "developer",  label: "Developer",   description: "Debug toggles & logs" },
   ];
 
+  function normalizeSettingsTab(value: string | null | undefined): SettingsTab | null {
+    if (value === "capture" || value === "behavior") return "capture";
+    if (value === "video") return "video";
+    if (value === "audio" || value === "microphone") return "audio";
+    if (value === "processing" || value === "ocr" || value === "transcription" || value === "speakers") return "processing";
+    if (value === "storage") return "storage";
+    if (value === "appearance") return "appearance";
+    if (value === "developer") return "developer";
+    return null;
+  }
+
   function isSettingsTab(value: string | null | undefined): value is SettingsTab {
-    return value === "capture"
-      || value === "video"
-      || value === "storage"
-      || value === "behavior"
-      || value === "microphone"
-      || value === "ocr"
-      || value === "transcription"
-      || value === "speakers"
-      || value === "developer";
+    return normalizeSettingsTab(value) !== null;
   }
 
   // Keyboard navigation for the tablist follows the WAI-ARIA Authoring
@@ -306,6 +319,11 @@
     // visually and assistively accurate.
     const el = document.getElementById(`settings-tab-${nextTab.id}`);
     el?.focus();
+  }
+
+  function handleSettingsTabEvent(tab: string): void {
+    const normalizedTab = normalizeSettingsTab(tab);
+    if (normalizedTab) activeTab = normalizedTab;
   }
 
   // ─── Auto-save plumbing ──────────────────────────────────────────────────
@@ -591,6 +609,13 @@
   }
 
   async function deleteDebugLog() {
+    const ok = await ask("Delete the native capture debug log file?", {
+      title: "Delete native capture debug log",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
     deletingDebugLog = true;
     debugLogError = null;
     debugLogDeleted = false;
@@ -630,6 +655,13 @@
   }
 
   async function deleteGeneralLog() {
+    const ok = await ask("Delete the general application log file?", {
+      title: "Delete general application log",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
     deletingGeneralLog = true;
     generalLogError = null;
     generalLogDeleted = false;
@@ -707,12 +739,20 @@
     }
   }
 
-  function requestDeleteUnusedOcrModels() {
-    confirmingDeleteUnusedOcrModels = true;
+  async function requestDeleteUnusedOcrModels() {
+    const ok = await ask("Delete unused OCR model files?", {
+      title: "Delete unused OCR models",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    confirmingDeleteUnusedOcrModels = false;
     deleteUnusedOcrModelsMessage = null;
     deleteUnusedOcrModelsError = null;
     deletedUnusedOcrModelLabels = [];
     skippedUnusedOcrModelLabels = [];
+    await deleteUnusedOcrModels();
   }
 
   async function deleteUnusedOcrModels() {
@@ -867,6 +907,13 @@
 
   async function deleteSelectedSpeakerModel() {
     if (!selectedSpeakerModel?.modelId) return;
+    const ok = await ask(`Delete ${selectedSpeakerModel.displayName}?`, {
+      title: "Delete speaker model",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
     deletingSpeakerModel = true;
     speakerModelDeleteMessage = null;
     speakerDownloadError = null;
@@ -893,12 +940,20 @@
     }
   }
 
-  function requestDeleteUnusedTranscriptionModels() {
-    confirmingDeleteUnusedTranscriptionModels = true;
+  async function requestDeleteUnusedTranscriptionModels() {
+    const ok = await ask("Delete unused transcription model files?", {
+      title: "Delete unused transcription models",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    confirmingDeleteUnusedTranscriptionModels = false;
     deleteUnusedTranscriptionModelsMessage = null;
     deleteUnusedTranscriptionModelsError = null;
     deletedUnusedTranscriptionModelLabels = [];
     skippedUnusedTranscriptionModelLabels = [];
+    await deleteUnusedTranscriptionModels();
   }
 
   async function deleteUnusedTranscriptionModels() {
@@ -1002,6 +1057,13 @@
   }
 
   async function runRetentionCleanupNow() {
+    const ok = await ask("Run retention cleanup now? This can delete captured data that matches the current retention policy.", {
+      title: "Run cleanup now",
+      kind: "warning",
+      okLabel: "Run cleanup",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
     retentionCleanupRunning = true;
     retentionCleanupError = null;
     try {
@@ -1527,9 +1589,7 @@
     });
 
     listen<{ tab: string }>("open_settings_tab", (event) => {
-      if (isSettingsTab(event.payload.tab)) {
-        activeTab = event.payload.tab;
-      }
+      handleSettingsTabEvent(event.payload.tab);
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenOpenSettingsTab = fn;
@@ -1577,6 +1637,72 @@
     };
   });
 </script>
+
+{#snippet settingsCardIcon(kind: CardIconKind)}
+  <span class="card-icon" aria-hidden="true">
+    {#if kind === "capture"}
+      <svg viewBox="0 0 24 24">
+        <rect x="3" y="5" width="18" height="12" rx="2" />
+        <path d="M8 21h8" />
+        <path d="M12 17v4" />
+      </svg>
+    {:else if kind === "video"}
+      <svg viewBox="0 0 24 24">
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <path d="m10 9 5 3-5 3Z" />
+      </svg>
+    {:else if kind === "storage"}
+      <svg viewBox="0 0 24 24">
+        <ellipse cx="12" cy="6" rx="7" ry="3" />
+        <path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6" />
+        <path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3" />
+      </svg>
+    {:else if kind === "appearance"}
+      <svg viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8" />
+        <path d="M12 4a8 8 0 0 0 0 16Z" />
+      </svg>
+    {:else if kind === "inactivity"}
+      <svg viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8" />
+        <path d="M12 7v5l3 2" />
+      </svg>
+    {:else if kind === "processing"}
+      <svg viewBox="0 0 24 24">
+        <path d="M7 4H5a1 1 0 0 0-1 1v2" />
+        <path d="M17 4h2a1 1 0 0 1 1 1v2" />
+        <path d="M7 20H5a1 1 0 0 1-1-1v-2" />
+        <path d="M17 20h2a1 1 0 0 0 1-1v-2" />
+        <path d="M8 10h8" />
+        <path d="M8 14h5" />
+      </svg>
+    {:else if kind === "transcription"}
+      <svg viewBox="0 0 24 24">
+        <path d="M4 12h2l2-5 3 10 2-6 2 3h5" />
+        <path d="M5 20h14" />
+      </svg>
+    {:else if kind === "speaker"}
+      <svg viewBox="0 0 24 24">
+        <path d="M11 5 7 9H4v6h3l4 4Z" />
+        <path d="M15 9a4 4 0 0 1 0 6" />
+        <path d="M18 6a8 8 0 0 1 0 12" />
+      </svg>
+    {:else if kind === "developer"}
+      <svg viewBox="0 0 24 24">
+        <path d="m8 9-4 3 4 3" />
+        <path d="m16 9 4 3-4 3" />
+        <path d="m14 5-4 14" />
+      </svg>
+    {:else if kind === "audio"}
+      <svg viewBox="0 0 24 24">
+        <rect x="9" y="3" width="6" height="11" rx="3" />
+        <path d="M5 11a7 7 0 0 0 14 0" />
+        <path d="M12 18v3" />
+        <path d="M9 21h6" />
+      </svg>
+    {/if}
+  </span>
+{/snippet}
 
 <!-- ── Page intro ──────────────────────────────────────────────────────── -->
 <header class="page-header">
@@ -1668,7 +1794,7 @@
 <section class="card">
   <div class="card__header">
     <div class="card__heading">
-      <span class="card__index">01</span>
+      {@render settingsCardIcon("capture")}
       <div>
         <h2 id="card-capture" class="card__title">Capture</h2>
         <p class="card__subtitle">What gets recorded and how often segments roll over.</p>
@@ -1733,7 +1859,7 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          <span class="card__index">02</span>
+          {@render settingsCardIcon("video")}
           <div>
             <h2 id="card-video" class="card__title">Video Output</h2>
             <p class="card__subtitle">Frame rate, resolution &amp; bitrate.</p>
@@ -1999,7 +2125,7 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          <span class="card__index">03</span>
+          {@render settingsCardIcon("storage")}
           <div>
             <h2 id="card-storage" class="card__title">Storage &amp; Startup</h2>
             <p class="card__subtitle">Where files are saved and when capture begins.</p>
@@ -2060,50 +2186,50 @@
       {/if}
     </div>
 
-    <div class="settings-divider"></div>
-
-    <!-- ── Appearance ──────────────────────────────────────────
-         Theme runtime lives in `$lib/theme.svelte`; saving these
-         settings persists `appearance` and the save handler also calls
-         `setAppearance(...)` so the chrome, dashboard, and settings page
-         flip to the new theme immediately without a reload. -->
-    <div class="settings-group">
-      <span class="group-label">Appearance</span>
-      <RadioGroup
-        bind:value={draftAppearance}
-        options={[
-          {
-            value: "system",
-            label: "System",
-            description: "Follow the operating system theme automatically. Switches between Light and Dark when macOS does.",
-          },
-          {
-            value: "light",
-            label: "Light",
-            description: "Bright, high-contrast palette. Pinned regardless of the OS theme.",
-          },
-          {
-            value: "dark",
-            label: "Dark",
-            description: "Low-light palette tuned for long sessions. Pinned regardless of the OS theme.",
-          },
-        ]}
-      />
-      <p class="group-hint">
-        Theme switches immediately when you pick a new option — settings auto-save in the background.
-      </p>
-    </div>
     </section>
     </div>
   {/if}
 
-  {#if activeTab === "behavior"}
-    <div role="tabpanel" id="settings-panel-behavior" aria-labelledby="settings-tab-behavior" tabindex="0">
+  {#if activeTab === "appearance"}
+    <div role="tabpanel" id="settings-panel-appearance" aria-labelledby="settings-tab-appearance" tabindex="0">
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          {@render settingsCardIcon("appearance")}
+          <div>
+            <h2 class="card__title">Appearance</h2>
+            <p class="card__subtitle">Theme selection and timeline display behavior.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <span class="group-label">Theme</span>
+        <ThemeModeControl bind:value={draftAppearance} />
+        <p class="group-hint">Theme switches immediately when saved and is also available from every titlebar.</p>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Timeline</span>
+        <Switch
+          bind:checked={draftFollowTimelineLive}
+          label="Follow live recording"
+          description="Keep the timeline pinned to the latest captured data while recording"
+        />
+      </div>
+    </section>
+    </div>
+  {/if}
+
+  {#if activeTab === "capture"}
+    <div role="tabpanel" id="settings-panel-capture-inactivity" aria-labelledby="settings-tab-capture" tabindex="0">
     <!-- ── Card: Inactivity ─────────────────────── -->
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          <span class="card__index">04</span>
+          {@render settingsCardIcon("inactivity")}
           <div>
             <h2 id="card-inactivity" class="card__title">Inactivity</h2>
             <p class="card__subtitle">Pause &amp; resume rules when you step away.</p>
@@ -2285,39 +2411,15 @@
     </div>
     </section>
 
-    <!-- ── Card: Timeline (sibling card inside the Behavior tab) ── -->
-    <section class="card">
-      <div class="card__header">
-        <div class="card__heading">
-          <span class="card__index">04b</span>
-          <div>
-            <h2 class="card__title">Timeline</h2>
-            <p class="card__subtitle">How the dashboard timeline tracks newly captured frames.</p>
-          </div>
-        </div>
-      </div>
-
-    <div class="settings-group">
-      <span class="group-label">Timeline</span>
-      <Switch
-        bind:checked={draftFollowTimelineLive}
-        label="Follow latest frame automatically"
-        description="Keep the dashboard timeline pinned to the newest frame as new frames arrive"
-      />
-      <p class="group-hint">
-        When disabled, the currently selected frame stays selected until you scrub or click a different frame.
-      </p>
-    </div>
-    </section>
     </div>
   {/if}
 
-  {#if activeTab === "ocr"}
-    <div role="tabpanel" id="settings-panel-ocr" aria-labelledby="settings-tab-ocr" tabindex="0">
+  {#if activeTab === "processing"}
+    <div role="tabpanel" id="settings-panel-processing" aria-labelledby="settings-tab-processing" tabindex="0">
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          <span class="card__index">06</span>
+          {@render settingsCardIcon("processing")}
           <div>
             <h2 class="card__title">OCR &amp; Previews</h2>
             <p class="card__subtitle">Choose the OCR engine, inspect model availability, and tune preview caching.</p>
@@ -2600,15 +2702,11 @@
       </p>
     </div>
     </section>
-    </div>
-  {/if}
 
-  {#if activeTab === "transcription"}
-    <div role="tabpanel" id="settings-panel-transcription" aria-labelledby="settings-tab-transcription" tabindex="0">
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          <span class="card__index">07</span>
+          {@render settingsCardIcon("transcription")}
           <div>
             <h2 class="card__title">Transcription</h2>
             <p class="card__subtitle">Local speech-to-text provider and model setup for microphone audio.</p>
@@ -2856,15 +2954,11 @@
         {/if}
       </div>
     </section>
-    </div>
-  {/if}
 
-  {#if activeTab === "speakers"}
-    <div role="tabpanel" id="settings-panel-speakers" aria-labelledby="settings-tab-speakers" tabindex="0">
     <section class="card card--speaker">
       <div class="card__header">
         <div class="card__heading">
-          <span class="card__index">08</span>
+          {@render settingsCardIcon("speaker")}
           <div>
             <h2 class="card__title">Speaker analysis</h2>
             <p class="card__subtitle">Anonymous diarization first; saved-person recognition only when you explicitly opt in.</p>
@@ -2985,7 +3079,7 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          <span class="card__index">08</span>
+          {@render settingsCardIcon("developer")}
           <div>
             <h2 class="card__title">Developer &amp; Logs</h2>
             <p class="card__subtitle">Debug surfaces, native capture diagnostics, and log files.</p>
@@ -3152,12 +3246,12 @@
 {/if}
 
 <!-- ── Microphone settings ───────────────────────────────────────────────── -->
-{#if activeTab === "microphone"}
-<div role="tabpanel" id="settings-panel-microphone" aria-labelledby="settings-tab-microphone" tabindex="0">
+{#if activeTab === "audio"}
+<div role="tabpanel" id="settings-panel-audio" aria-labelledby="settings-tab-audio" tabindex="0">
 <section class="card">
   <div class="card__header">
     <div class="card__heading">
-      <span class="card__index">06</span>
+      {@render settingsCardIcon("audio")}
       <div>
         <h2 id="card-mic" class="card__title">Microphone Controller</h2>
         <p class="card__subtitle">Choose the active device and how disconnects are handled.</p>
@@ -3581,22 +3675,41 @@
     min-width: 0;
   }
 
-  .card__index {
+  .card-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     min-width: 28px;
     height: 22px;
     padding: 0 6px;
-    background: var(--app-accent-bg);
     border: 1px solid var(--app-accent-border);
     border-radius: 3px;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
+    background: var(--app-accent-bg);
     color: var(--app-accent);
-    flex-shrink: 0;
+    flex: 0 0 auto;
     margin-top: 1px;
+  }
+
+  .card-icon svg {
+    width: 13px;
+    height: 13px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .card:hover .card-icon {
+    border-color: var(--app-accent-border);
+    color: var(--app-accent);
+  }
+
+  .card--speaker .card-icon {
+    border-color: var(--app-accent-border);
+    color: var(--app-accent);
+    background: var(--app-accent-bg);
   }
 
   .card__title {
@@ -4640,11 +4753,6 @@
   :global([data-theme="light"]) .card {
     background: var(--app-surface);
     border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .card__index {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
   }
   :global([data-theme="light"]) .card__title {
     color: var(--app-text-strong);

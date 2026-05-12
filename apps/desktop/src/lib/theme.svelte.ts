@@ -94,6 +94,18 @@ export function setAppearance(appearance: AppearanceSetting): void {
   recompute();
 }
 
+export async function persistAppearance(appearance: AppearanceSetting): Promise<RecordingSettings> {
+  const current = await invoke<RecordingSettings>("get_recording_settings");
+  const updated = await invoke<RecordingSettings>("update_recording_settings", {
+    request: {
+      ...current,
+      appearance,
+    },
+  });
+  setAppearance(updated.appearance ?? DEFAULT_APPEARANCE);
+  return updated;
+}
+
 /**
  * Best-effort load of the persisted appearance from recording settings.
  * Failures are swallowed; the UI keeps its current (or default `system`)
