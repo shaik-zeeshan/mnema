@@ -100,6 +100,7 @@ const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcripti
 const OCR_UNAVAILABLE_NOTIFICATION_ID: &str = "ocr-unavailable";
 const SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID: &str = "speech-detector-unavailable";
 const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-unavailable";
+const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recovery-restart-required";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -220,16 +221,7 @@ pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, S
 pub async fn check_browser_url_support(
     request: CheckBrowserUrlSupportRequest,
 ) -> Result<BrowserUrlSupportResponse, String> {
-    const SUPPORTED: &[&str] = &[
-        "com.apple.Safari",
-        "com.google.Chrome",
-        "com.google.Chrome.canary",
-        "com.microsoft.edgemac",
-        "com.brave.Browser",
-        "company.thebrowser.Browser",
-        "net.imput.helium",
-    ];
-    let supported = SUPPORTED.contains(&request.bundle_id.as_str());
+    let supported = capture_metadata::browser_url_metadata_supported(&request.bundle_id);
     Ok(BrowserUrlSupportResponse {
         bundle_id: request.bundle_id,
         supported,
@@ -283,6 +275,27 @@ fn push_app_notification(
         runtime.push_session_notification(notification)
     };
     emit_app_notifications_changed(app_handle, &notifications);
+}
+
+pub(super) fn push_privacy_recovery_restart_required_notification(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
+        debug_log::log_warn(
+            "app notifications state unavailable while reporting privacy recovery restart requirement",
+        );
+        return;
+    };
+    push_app_notification(
+        app_handle,
+        state.inner(),
+        AppNotification {
+            id: PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID.to_string(),
+            severity: "warning".to_string(),
+            title: "Screen capture paused for privacy".to_string(),
+            message: "Screen and system audio capture were paused after privacy filter recovery failed. Stop and start recording to resume those sources.".to_string(),
+            created_at_unix_ms: runtime::now_unix_ms(),
+            action: None,
+        },
+    );
 }
 
 fn should_warn_audio_transcription_unavailable_at_start(settings: &RecordingSettings) -> bool {

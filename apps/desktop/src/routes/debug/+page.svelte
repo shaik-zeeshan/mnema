@@ -73,6 +73,7 @@
       latestDecision: PrivacyFilterDecision;
       latestAppliedDecision: PrivacyFilterDecision;
       websitePrivacyHoldBundleIds: string[];
+      websitePrivacyHolds: Array<{ bundleId: string; reason: string }>;
       currentlyExcludedBundleIds: string[];
       currentlyExcludedWindowIds: number[];
       privacyFilterApplied: boolean;
@@ -1199,6 +1200,12 @@
       <li>
         <span class="kv-key kv-key--wide">website hold</span>
         <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.websitePrivacyHoldBundleIds)}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">hold reasons</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">
+          {formatDebugList(privacyDebug.privacyDebug.websitePrivacyHolds.map((hold) => `${hold.bundleId}: ${hold.reason}`))}
+        </span>
       </li>
     </ul>
 

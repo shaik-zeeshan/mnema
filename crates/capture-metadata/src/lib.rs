@@ -1,7 +1,7 @@
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -215,15 +215,17 @@ pub fn metadata_collection_plan(
     metadata: &MetadataSettings,
     privacy: &PrivacySettings,
 ) -> MetadataCollectionPlan {
-    if !metadata.enabled {
-        return MetadataCollectionPlan::default();
-    }
+    let collect_browser_url_for_privacy = has_enabled_website_rules(privacy);
+    let collect_visible_browser_windows = has_enabled_browser_title_rules(privacy);
+    let collect_active_window_for_privacy =
+        collect_browser_url_for_privacy || privacy.private_browser_exclusion_enabled;
 
     MetadataCollectionPlan {
-        collect_active_window: true,
-        collect_browser_url_for_metadata: metadata.browser_url_mode != BrowserUrlMode::Off,
-        collect_browser_url_for_privacy: has_enabled_website_rules(privacy),
-        collect_visible_browser_windows: has_enabled_browser_title_rules(privacy),
+        collect_active_window: metadata.enabled || collect_active_window_for_privacy,
+        collect_browser_url_for_metadata: metadata.enabled
+            && metadata.browser_url_mode != BrowserUrlMode::Off,
+        collect_browser_url_for_privacy,
+        collect_visible_browser_windows,
     }
 }
 
@@ -238,19 +240,80 @@ pub fn has_enabled_browser_title_rules(privacy: &PrivacySettings) -> bool {
     privacy.browser_title_rules.iter().any(|rule| rule.enabled)
 }
 
-pub fn is_known_browser_bundle(bundle_id: &str) -> bool {
-    matches!(
-        bundle_id,
-        "com.apple.Safari"
-            | "com.google.Chrome"
-            | "com.google.Chrome.canary"
-            | "com.microsoft.edgemac"
-            | "org.mozilla.firefox"
-            | "com.brave.Browser"
-            | "company.thebrowser.Browser"
-            | "net.imput.helium"
-    )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrowserAppDescriptor {
+    pub bundle_id: &'static str,
+    pub display_name: &'static str,
+    pub url_script_app_name: Option<&'static str>,
 }
+
+pub const KNOWN_BROWSER_APPS: &[BrowserAppDescriptor] = &[
+    BrowserAppDescriptor {
+        bundle_id: "com.apple.Safari",
+        display_name: "Safari",
+        url_script_app_name: Some("Safari"),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.google.Chrome",
+        display_name: "Google Chrome",
+        url_script_app_name: Some("Google Chrome"),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.google.Chrome.canary",
+        display_name: "Google Chrome Canary",
+        url_script_app_name: Some("Google Chrome Canary"),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.microsoft.edgemac",
+        display_name: "Microsoft Edge",
+        url_script_app_name: Some("Microsoft Edge"),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "org.mozilla.firefox",
+        display_name: "Firefox",
+        url_script_app_name: None,
+    },
+    BrowserAppDescriptor {
+        bundle_id: "com.brave.Browser",
+        display_name: "Brave Browser",
+        url_script_app_name: Some("Brave Browser"),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "company.thebrowser.Browser",
+        display_name: "Arc",
+        url_script_app_name: Some("Arc"),
+    },
+    BrowserAppDescriptor {
+        bundle_id: "net.imput.helium",
+        display_name: "Helium",
+        url_script_app_name: Some("Helium"),
+    },
+];
+
+pub fn known_browser_app(bundle_id: &str) -> Option<&'static BrowserAppDescriptor> {
+    KNOWN_BROWSER_APPS
+        .iter()
+        .find(|browser| browser.bundle_id == bundle_id)
+}
+
+pub fn is_known_browser_bundle(bundle_id: &str) -> bool {
+    known_browser_app(bundle_id).is_some()
+}
+
+pub fn browser_url_script_app_name(bundle_id: &str) -> Option<&'static str> {
+    known_browser_app(bundle_id).and_then(|browser| browser.url_script_app_name)
+}
+
+pub fn browser_url_metadata_supported(bundle_id: &str) -> bool {
+    browser_url_script_app_name(bundle_id).is_some()
+}
+
+pub const REDACTION_REASON_EXCLUDED_APP: &str = "excluded_app";
+pub const REDACTION_REASON_WEBSITE_RULE: &str = "website_rule";
+pub const REDACTION_REASON_WEBSITE_RULE_URL_UNAVAILABLE: &str = "website_rule_url_unavailable";
+pub const REDACTION_REASON_TITLE_RULE: &str = "title_rule";
+pub const REDACTION_REASON_PRIVATE_BROWSER: &str = "private_browser";
+pub const REDACTION_REASON_PRIVACY_FILTER: &str = "privacy_filter";
 
 pub fn is_private_browser_title(title: &str) -> bool {
     const PRIVATE_TITLE_PATTERNS: &[&str] =
@@ -271,36 +334,14 @@ pub fn active_private_browser_detected(
         && window_title.is_some_and(is_private_browser_title)
 }
 
-pub fn static_app_privacy_decision(privacy: &PrivacySettings) -> PrivacyFilterDecision {
-    let mut decision = PrivacyFilterDecision::default();
-    for app in &privacy.excluded_apps {
-        if app.enabled && !app.bundle_id.trim().is_empty() {
-            decision
-                .excluded_bundle_ids
-                .push(app.bundle_id.trim().to_string());
-            decision.matched_rule_ids.push(app.id.clone());
-        }
-    }
-    decision.excluded_bundle_ids.sort();
-    decision.excluded_bundle_ids.dedup();
-    decision.matched_rule_ids.sort();
-    decision.matched_rule_ids.dedup();
-    decision.privacy_filter_applied = !decision.excluded_bundle_ids.is_empty();
-    decision.metadata_redaction_reason = decision
-        .privacy_filter_applied
-        .then(|| "excluded_app".to_string());
-    decision
-}
-
 pub fn apply_website_privacy_hold(
-    held_bundle_ids: &mut BTreeSet<String>,
-    metadata_enabled: bool,
+    held_bundle_reasons: &mut BTreeMap<String, String>,
     privacy: &PrivacySettings,
     context: &MetadataContext,
     decision: &mut PrivacyFilterDecision,
 ) {
-    if !metadata_enabled || !has_enabled_website_rules(privacy) {
-        held_bundle_ids.clear();
+    if !has_enabled_website_rules(privacy) {
+        held_bundle_reasons.clear();
         return;
     }
 
@@ -319,16 +360,22 @@ pub fn apply_website_privacy_hold(
                 .iter()
                 .any(|rule| website_rule_matches(rule, active_url));
             if matched_website_rule {
-                held_bundle_ids.insert(active_bundle_id.to_string());
+                held_bundle_reasons.insert(
+                    active_bundle_id.to_string(),
+                    REDACTION_REASON_WEBSITE_RULE.to_string(),
+                );
             } else if !active_private_browser {
-                held_bundle_ids.remove(active_bundle_id);
+                held_bundle_reasons.remove(active_bundle_id);
             }
         } else {
-            held_bundle_ids.insert(active_bundle_id.to_string());
+            held_bundle_reasons.insert(
+                active_bundle_id.to_string(),
+                REDACTION_REASON_WEBSITE_RULE_URL_UNAVAILABLE.to_string(),
+            );
         }
     }
 
-    for bundle_id in held_bundle_ids.iter() {
+    for bundle_id in held_bundle_reasons.keys() {
         if !decision
             .excluded_bundle_ids
             .iter()
@@ -338,13 +385,17 @@ pub fn apply_website_privacy_hold(
         }
     }
 
-    if !held_bundle_ids.is_empty() {
+    if !held_bundle_reasons.is_empty() {
         decision.excluded_bundle_ids.sort();
         decision.excluded_bundle_ids.dedup();
         decision.privacy_filter_applied = true;
-        decision
-            .metadata_redaction_reason
-            .get_or_insert_with(|| "website_rule".to_string());
+        decision.metadata_redaction_reason.get_or_insert_with(|| {
+            held_bundle_reasons
+                .values()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| REDACTION_REASON_WEBSITE_RULE.to_string())
+        });
     }
 }
 
@@ -374,12 +425,12 @@ pub fn apply_metadata_redaction(
         return;
     }
     let reason = if active_private_snapshot {
-        "private_browser".to_string()
+        REDACTION_REASON_PRIVATE_BROWSER.to_string()
     } else {
         decision
             .metadata_redaction_reason
             .clone()
-            .unwrap_or_else(|| "privacy_filter".to_string())
+            .unwrap_or_else(|| REDACTION_REASON_PRIVACY_FILTER.to_string())
     };
     snapshot.metadata_redaction_reason = Some(reason);
     snapshot.window_title = None;
@@ -507,7 +558,7 @@ pub fn evaluate_privacy(
         if app.enabled && !app.bundle_id.trim().is_empty() {
             bundle_ids.insert(app.bundle_id.trim().to_string());
             rule_ids.insert(app.id.clone());
-            redaction_reason.get_or_insert_with(|| "excluded_app".to_string());
+            redaction_reason.get_or_insert_with(|| REDACTION_REASON_EXCLUDED_APP.to_string());
         }
     }
 
@@ -518,7 +569,7 @@ pub fn evaluate_privacy(
             if website_rule_matches(rule, active_url) {
                 bundle_ids.insert(active_bundle.clone());
                 rule_ids.insert(rule.id.clone());
-                redaction_reason.get_or_insert_with(|| "website_rule".to_string());
+                redaction_reason.get_or_insert_with(|| REDACTION_REASON_WEBSITE_RULE.to_string());
             }
         }
     }
@@ -528,7 +579,7 @@ pub fn evaluate_privacy(
             if title_rule_matches(rule, &window.title) {
                 window_ids.insert(window.window_id);
                 rule_ids.insert(rule.id.clone());
-                redaction_reason.get_or_insert_with(|| "title_rule".to_string());
+                redaction_reason.get_or_insert_with(|| REDACTION_REASON_TITLE_RULE.to_string());
             }
         }
     }
@@ -536,7 +587,7 @@ pub fn evaluate_privacy(
     if settings.private_browser_exclusion_enabled {
         if let Some(window_id) = context.private_browser_window_id {
             window_ids.insert(window_id);
-            redaction_reason.get_or_insert_with(|| "private_browser".to_string());
+            redaction_reason.get_or_insert_with(|| REDACTION_REASON_PRIVATE_BROWSER.to_string());
         }
     }
 
@@ -691,7 +742,7 @@ mod tests {
         assert_eq!(decision.excluded_window_ids, vec![7, 9]);
         assert_eq!(
             decision.metadata_redaction_reason.as_deref(),
-            Some("excluded_app")
+            Some(REDACTION_REASON_EXCLUDED_APP)
         );
     }
 
@@ -714,7 +765,7 @@ mod tests {
         assert_eq!(decision.excluded_window_ids, vec![9]);
         assert_eq!(
             decision.metadata_redaction_reason.as_deref(),
-            Some("private_browser")
+            Some(REDACTION_REASON_PRIVATE_BROWSER)
         );
     }
 
@@ -735,7 +786,7 @@ mod tests {
     #[test]
     fn website_privacy_hold_keeps_browser_excluded_after_leaving_browser() {
         let privacy = website_privacy("*.infinityapp.in");
-        let mut held_bundle_ids = BTreeSet::new();
+        let mut held_bundle_reasons = BTreeMap::new();
         let mut decision = PrivacyFilterDecision::default();
         let browser_context = MetadataContext {
             active_bundle_id: Some("net.imput.helium".to_string()),
@@ -744,8 +795,7 @@ mod tests {
         };
 
         apply_website_privacy_hold(
-            &mut held_bundle_ids,
-            true,
+            &mut held_bundle_reasons,
             &privacy,
             &browser_context,
             &mut decision,
@@ -759,8 +809,7 @@ mod tests {
         };
 
         apply_website_privacy_hold(
-            &mut held_bundle_ids,
-            true,
+            &mut held_bundle_reasons,
             &privacy,
             &non_browser_context,
             &mut decision,
@@ -770,14 +819,17 @@ mod tests {
         assert!(decision.privacy_filter_applied);
         assert_eq!(
             decision.metadata_redaction_reason.as_deref(),
-            Some("website_rule")
+            Some(REDACTION_REASON_WEBSITE_RULE)
         );
     }
 
     #[test]
     fn website_privacy_hold_clears_after_successful_non_matching_browser_probe() {
         let privacy = website_privacy("*.infinityapp.in");
-        let mut held_bundle_ids = BTreeSet::from(["net.imput.helium".to_string()]);
+        let mut held_bundle_reasons = BTreeMap::from([(
+            "net.imput.helium".to_string(),
+            REDACTION_REASON_WEBSITE_RULE.to_string(),
+        )]);
         let mut decision = PrivacyFilterDecision::default();
         let browser_context = MetadataContext {
             active_bundle_id: Some("net.imput.helium".to_string()),
@@ -786,14 +838,13 @@ mod tests {
         };
 
         apply_website_privacy_hold(
-            &mut held_bundle_ids,
-            true,
+            &mut held_bundle_reasons,
             &privacy,
             &browser_context,
             &mut decision,
         );
 
-        assert!(held_bundle_ids.is_empty());
+        assert!(held_bundle_reasons.is_empty());
         assert!(decision.excluded_bundle_ids.is_empty());
         assert!(!decision.privacy_filter_applied);
     }
@@ -801,7 +852,7 @@ mod tests {
     #[test]
     fn website_privacy_hold_excludes_known_browser_when_url_probe_is_unknown() {
         let privacy = website_privacy("*.infinityapp.in");
-        let mut held_bundle_ids = BTreeSet::new();
+        let mut held_bundle_reasons = BTreeMap::new();
         let mut decision = PrivacyFilterDecision::default();
         let browser_context = MetadataContext {
             active_bundle_id: Some("net.imput.helium".to_string()),
@@ -810,25 +861,33 @@ mod tests {
         };
 
         apply_website_privacy_hold(
-            &mut held_bundle_ids,
-            true,
+            &mut held_bundle_reasons,
             &privacy,
             &browser_context,
             &mut decision,
         );
 
+        assert_eq!(
+            held_bundle_reasons
+                .get("net.imput.helium")
+                .map(String::as_str),
+            Some(REDACTION_REASON_WEBSITE_RULE_URL_UNAVAILABLE)
+        );
         assert_eq!(decision.excluded_bundle_ids, vec!["net.imput.helium"]);
         assert!(decision.privacy_filter_applied);
         assert_eq!(
             decision.metadata_redaction_reason.as_deref(),
-            Some("website_rule")
+            Some(REDACTION_REASON_WEBSITE_RULE_URL_UNAVAILABLE)
         );
     }
 
     #[test]
     fn website_privacy_hold_survives_private_browser_activation() {
         let privacy = website_privacy("*.infinityapp.in");
-        let mut held_bundle_ids = BTreeSet::from(["net.imput.helium".to_string()]);
+        let mut held_bundle_reasons = BTreeMap::from([(
+            "net.imput.helium".to_string(),
+            REDACTION_REASON_WEBSITE_RULE.to_string(),
+        )]);
         let private_browser_context = MetadataContext {
             active_bundle_id: Some("net.imput.helium".to_string()),
             active_url: Some("https://example.com/".to_string()),
@@ -839,16 +898,17 @@ mod tests {
         let mut decision = evaluate_privacy(&privacy, &private_browser_context);
 
         apply_website_privacy_hold(
-            &mut held_bundle_ids,
-            true,
+            &mut held_bundle_reasons,
             &privacy,
             &private_browser_context,
             &mut decision,
         );
 
         assert_eq!(
-            held_bundle_ids,
-            BTreeSet::from(["net.imput.helium".to_string()])
+            held_bundle_reasons
+                .get("net.imput.helium")
+                .map(String::as_str),
+            Some(REDACTION_REASON_WEBSITE_RULE)
         );
         assert_eq!(decision.excluded_bundle_ids, vec!["net.imput.helium"]);
         assert_eq!(decision.excluded_window_ids, vec![9]);
@@ -867,7 +927,7 @@ mod tests {
         };
         let decision = PrivacyFilterDecision {
             excluded_bundle_ids: vec!["net.imput.helium".to_string()],
-            metadata_redaction_reason: Some("website_rule".to_string()),
+            metadata_redaction_reason: Some(REDACTION_REASON_WEBSITE_RULE.to_string()),
             privacy_filter_applied: true,
             ..PrivacyFilterDecision::default()
         };
@@ -881,7 +941,7 @@ mod tests {
 
         assert_eq!(
             snapshot.metadata_redaction_reason.as_deref(),
-            Some("website_rule")
+            Some(REDACTION_REASON_WEBSITE_RULE)
         );
         assert!(snapshot.window_title.is_none());
         assert!(snapshot.browser_url.is_none());
@@ -901,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_disabled_skips_all_platform_collection() {
+    fn metadata_disabled_still_collects_minimum_privacy_context() {
         let metadata = MetadataSettings {
             enabled: false,
             browser_url_mode: BrowserUrlMode::Sanitized,
@@ -914,6 +974,34 @@ mod tests {
                 enabled: true,
                 match_type: BrowserTitleRuleMatchType::Substring,
                 pattern: "secret".to_string(),
+            }],
+            ..PrivacySettings::default()
+        };
+
+        assert_eq!(
+            metadata_collection_plan(&metadata, &privacy),
+            MetadataCollectionPlan {
+                collect_active_window: true,
+                collect_browser_url_for_metadata: false,
+                collect_browser_url_for_privacy: true,
+                collect_visible_browser_windows: true,
+            }
+        );
+    }
+
+    #[test]
+    fn metadata_disabled_with_static_privacy_only_skips_platform_collection() {
+        let metadata = MetadataSettings {
+            enabled: false,
+            browser_url_mode: BrowserUrlMode::Sanitized,
+        };
+        let privacy = PrivacySettings {
+            private_browser_exclusion_enabled: false,
+            excluded_apps: vec![ExcludedAppEntry {
+                id: "app-rule".to_string(),
+                enabled: true,
+                bundle_id: "com.example.Secret".to_string(),
+                display_name: "Secret".to_string(),
             }],
             ..PrivacySettings::default()
         };
@@ -1147,6 +1235,14 @@ mod tests {
             Some("com.apple.finder"),
             Some("New Incognito Tab - Google Chrome"),
         ));
+    }
+
+    #[test]
+    fn browser_support_registry_distinguishes_browser_detection_from_url_support() {
+        assert!(is_known_browser_bundle("org.mozilla.firefox"));
+        assert!(!browser_url_metadata_supported("org.mozilla.firefox"));
+        assert!(browser_url_metadata_supported("com.google.Chrome"));
+        assert!(!is_known_browser_bundle("com.apple.finder"));
     }
 
     #[test]

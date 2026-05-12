@@ -1,12 +1,12 @@
 use capture_metadata::MetadataSettings;
 use capture_metadata::{
     active_private_browser_detected, apply_metadata_redaction, apply_website_privacy_hold,
-    evaluate_privacy, is_known_browser_bundle, is_private_browser_title, metadata_collection_plan,
-    sanitize_url, select_frontmost_pid_window, static_app_privacy_decision, BrowserUrlProbeCache,
-    FrameMetadataSnapshot, MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot,
-    PrivacyFilterDecision, PrivacySettings, RawWindowInfo,
+    browser_url_script_app_name, evaluate_privacy, is_known_browser_bundle,
+    is_private_browser_title, metadata_collection_plan, sanitize_url, select_frontmost_pid_window,
+    BrowserUrlProbeCache, FrameMetadataSnapshot, MetadataCollectionPlan, MetadataContext,
+    NativeActiveWindowSnapshot, PrivacyFilterDecision, PrivacySettings, RawWindowInfo,
 };
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 #[cfg(target_os = "macos")]
@@ -21,7 +21,7 @@ pub struct CaptureMetadataRuntime {
     latest_snapshot: Option<FrameMetadataSnapshot>,
     latest_decision: PrivacyFilterDecision,
     latest_applied_decision: PrivacyFilterDecision,
-    website_privacy_hold_bundle_ids: BTreeSet<String>,
+    website_privacy_hold_bundle_reasons: BTreeMap<String, String>,
     browser_url_probe_cache: BrowserUrlProbeCache,
 }
 
@@ -40,10 +40,18 @@ pub struct CapturePrivacyDebugInfo {
     pub latest_decision: PrivacyFilterDecision,
     pub latest_applied_decision: PrivacyFilterDecision,
     pub website_privacy_hold_bundle_ids: Vec<String>,
+    pub website_privacy_holds: Vec<WebsitePrivacyHoldDebugInfo>,
     pub currently_excluded_bundle_ids: Vec<String>,
     pub currently_excluded_window_ids: Vec<u32>,
     pub privacy_filter_applied: bool,
     pub metadata_redaction_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsitePrivacyHoldDebugInfo {
+    pub bundle_id: String,
+    pub reason: String,
 }
 
 pub fn latest_frame_metadata_snapshot(
@@ -62,9 +70,17 @@ pub fn capture_privacy_debug_info(state: &CaptureMetadataState) -> CapturePrivac
         latest_decision: runtime.latest_decision.clone(),
         latest_applied_decision: runtime.latest_applied_decision.clone(),
         website_privacy_hold_bundle_ids: runtime
-            .website_privacy_hold_bundle_ids
-            .iter()
+            .website_privacy_hold_bundle_reasons
+            .keys()
             .cloned()
+            .collect(),
+        website_privacy_holds: runtime
+            .website_privacy_hold_bundle_reasons
+            .iter()
+            .map(|(bundle_id, reason)| WebsitePrivacyHoldDebugInfo {
+                bundle_id: bundle_id.clone(),
+                reason: reason.clone(),
+            })
             .collect(),
         currently_excluded_bundle_ids: runtime.latest_applied_decision.excluded_bundle_ids.clone(),
         currently_excluded_window_ids: runtime.latest_applied_decision.excluded_window_ids.clone(),
@@ -98,21 +114,12 @@ pub fn refresh_metadata_state(
         .clone();
     let active = collect_active_window_metadata(metadata, privacy, &browser_url_probe_cache);
     let mut snapshot = metadata.enabled.then(|| active.snapshot.clone()).flatten();
-    let context = if metadata.enabled {
-        active.context
-    } else {
-        MetadataContext::default()
-    };
-    let mut decision = if metadata.enabled {
-        evaluate_privacy(privacy, &context)
-    } else {
-        static_app_privacy_decision(privacy)
-    };
+    let context = active.context;
+    let mut decision = evaluate_privacy(privacy, &context);
 
     let mut runtime = state.lock().expect("capture metadata state poisoned");
     apply_website_privacy_hold(
-        &mut runtime.website_privacy_hold_bundle_ids,
-        metadata.enabled,
+        &mut runtime.website_privacy_hold_bundle_reasons,
         privacy,
         &context,
         &mut decision,
@@ -484,17 +491,6 @@ fn cf_f64(
 
 #[cfg(target_os = "macos")]
 fn visible_browser_windows() -> Vec<capture_metadata::BrowserWindowContext> {
-    const BROWSER_BUNDLES: &[&str] = &[
-        "com.apple.Safari",
-        "com.google.Chrome",
-        "com.google.Chrome.canary",
-        "com.microsoft.edgemac",
-        "org.mozilla.firefox",
-        "com.brave.Browser",
-        "company.thebrowser.Browser",
-        "net.imput.helium",
-    ];
-
     let (tx, rx) = mpsc::channel();
     cidre::sc::ShareableContent::current_with_ch(move |content, error| {
         let result = match (content, error) {
@@ -514,7 +510,7 @@ fn visible_browser_windows() -> Vec<capture_metadata::BrowserWindowContext> {
         .filter_map(|window| {
             let app = window.owning_app()?;
             let bundle_id = app.bundle_id().to_string();
-            if !BROWSER_BUNDLES.contains(&bundle_id.as_str()) {
+            if !is_known_browser_bundle(&bundle_id) {
                 return None;
             }
             let title = window
@@ -531,16 +527,7 @@ fn visible_browser_windows() -> Vec<capture_metadata::BrowserWindowContext> {
 
 #[cfg(target_os = "macos")]
 fn active_browser_url(bundle_id: &str) -> Option<String> {
-    let app = match bundle_id {
-        "com.apple.Safari" => "Safari",
-        "com.google.Chrome" => "Google Chrome",
-        "com.google.Chrome.canary" => "Google Chrome Canary",
-        "com.microsoft.edgemac" => "Microsoft Edge",
-        "com.brave.Browser" => "Brave Browser",
-        "company.thebrowser.Browser" => "Arc",
-        "net.imput.helium" => "Helium",
-        _ => return None,
-    };
+    let app = browser_url_script_app_name(bundle_id)?;
     let script = format!(
         r#"tell application "{app}"
 try
@@ -595,7 +582,7 @@ fn run_osascript(script: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capture_metadata::{parse_website_rule, BrowserUrlMode};
+    use capture_metadata::BrowserUrlMode;
 
     #[test]
     fn initial_privacy_decision_includes_static_apps_when_metadata_is_disabled() {
@@ -610,6 +597,7 @@ mod tests {
                 bundle_id: "com.secret".to_string(),
                 display_name: "Secret".to_string(),
             }],
+            private_browser_exclusion_enabled: false,
             ..PrivacySettings::default()
         };
 
@@ -640,8 +628,7 @@ mod tests {
                 bundle_id: "com.example.Secret".to_string(),
                 display_name: "Secret".to_string(),
             }],
-            private_browser_exclusion_enabled: true,
-            excluded_website_rules: vec![parse_website_rule("website-rule", true, "example.com")],
+            private_browser_exclusion_enabled: false,
             ..PrivacySettings::default()
         };
 

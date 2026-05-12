@@ -6,9 +6,9 @@ use super::output::{
 };
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
-    ensure_system_audio_planner_for_runtime, mark_runtime_session_failed,
-    microphone_planner_for_runtime, refresh_runtime_planner_dates, screen_planner_for_runtime,
-    system_audio_planner_for_runtime,
+    current_segment_sources_for_runtime, ensure_system_audio_planner_for_runtime,
+    mark_runtime_session_failed, microphone_planner_for_runtime, refresh_runtime_planner_dates,
+    screen_planner_for_runtime, system_audio_planner_for_runtime,
 };
 use super::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
@@ -429,12 +429,16 @@ impl RecordingLifecycle {
             mark_runtime_session_failed(&mut self.runtime);
             return TickOutcome::StopLoop;
         };
-        let active_sources = active_sources_for_inactivity_paused_state(
-            &sources,
-            self.runtime.inactivity.screen_paused,
-            self.runtime.inactivity.microphone_paused,
-            self.runtime.inactivity.system_audio_paused,
-        )
+        let active_sources = if self.runtime.privacy_capture_suspension.is_some() {
+            current_segment_sources_for_runtime(&self.runtime)
+        } else {
+            active_sources_for_inactivity_paused_state(
+                &sources,
+                self.runtime.inactivity.screen_paused,
+                self.runtime.inactivity.microphone_paused,
+                self.runtime.inactivity.system_audio_paused,
+            )
+        }
         .unwrap_or(CaptureSources {
             screen: false,
             microphone: false,

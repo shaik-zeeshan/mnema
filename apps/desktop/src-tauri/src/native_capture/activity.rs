@@ -386,6 +386,10 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
         // Screen "writer active": session attached and not paused; the screen
         // writer is implicit in the session lifetime.
         let screen_writer = screen_session && !runtime.inactivity.is_screen_paused();
+        let privacy_suspension_reason = runtime
+            .privacy_capture_suspension
+            .as_ref()
+            .map(|suspension| suspension.reason.clone());
 
         RuntimeSourcesStatus {
             screen: RuntimeSourceStatus {
@@ -395,7 +399,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
                 writer_active: Some(screen_writer),
                 output_path: runtime.recording_file.clone(),
                 reason: if requested_screen {
-                    None
+                    privacy_suspension_reason.clone()
                 } else {
                     Some("not_requested".to_string())
                 },
@@ -419,7 +423,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
                 writer_active: Some(sys_writer),
                 output_path: runtime.system_audio_recording_file.clone(),
                 reason: if requested_sys {
-                    None
+                    privacy_suspension_reason
                 } else {
                     Some("not_requested".to_string())
                 },
