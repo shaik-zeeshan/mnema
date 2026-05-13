@@ -36,7 +36,7 @@ use super::segments::{
     pause_system_audio_for_inactivity, plan_live_rotation_segment,
     process_inactivity_audio_transitions_for_snapshot, reanchor_active_segment_timing,
     recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
-    resume_runtime_from_inactivity_with_start_segment, resume_screen_from_inactivity,
+    resume_runtime_from_inactivity, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
     segment_loop_sleep_duration, StartedSegmentState,
 };
@@ -3231,15 +3231,8 @@ fn flush_frame_artifacts_is_noop_when_channel_closed() {
 fn inactivity_resume_soft_pause_is_noop_without_family_pause_state() {
     let mut runtime = paused_runtime_fixture();
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!(
-                "legacy soft-resume should not restart segments when no per-family pause is active"
-            )
-        },
-    )
-    .expect("soft-resume should tolerate legacy paused state without restart");
+    resume_runtime_from_inactivity(&mut runtime)
+        .expect("soft-resume should tolerate legacy paused state without restart");
 
     assert!(runtime.is_running);
     assert_eq!(runtime.runtime_state, RuntimeState::Running);
@@ -3253,11 +3246,7 @@ fn inactivity_resume_soft_pause_is_noop_without_family_pause_state() {
 #[test]
 fn inactivity_resume_soft_pause_clears_paused_state_without_restarting_outputs() {
     let mut runtime = paused_runtime_fixture();
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| panic!("soft-resume should not restart outputs"),
-    )
-    .expect("legacy soft-resume should succeed");
+    resume_runtime_from_inactivity(&mut runtime).expect("legacy soft-resume should succeed");
 
     assert!(runtime.is_running);
     assert_eq!(runtime.runtime_state, RuntimeState::Running);
@@ -3819,13 +3808,8 @@ fn inactivity_resume_no_longer_requires_planner_for_legacy_soft_resume() {
     let mut runtime = paused_runtime_fixture();
     runtime.segment_planner = None;
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("legacy soft-resume should not need planner restart machinery")
-        },
-    )
-    .expect("legacy soft-resume should succeed without planner");
+    resume_runtime_from_inactivity(&mut runtime)
+        .expect("legacy soft-resume should succeed without planner");
 
     assert!(runtime.is_running);
     assert_eq!(runtime.runtime_state, RuntimeState::Running);
@@ -3853,16 +3837,7 @@ fn inactivity_resume_sets_current_segment_sources_from_requested() {
     ));
     assert!(runtime.current_segment_sources.is_none());
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov".to_string();
-
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
-        },
-    )
-    .expect("resume should succeed");
+    resume_runtime_from_inactivity(&mut runtime).expect("resume should succeed");
 
     assert_eq!(
         runtime.current_segment_sources,
@@ -3918,13 +3893,8 @@ fn inactivity_resume_with_paused_audio_refreshes_sources_without_planning_system
         ..Default::default()
     };
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("paused-audio refresh should not restart the segment")
-        },
-    )
-    .expect("paused-audio refresh should be a tolerant no-op");
+    resume_runtime_from_inactivity(&mut runtime)
+        .expect("paused-audio refresh should be a tolerant no-op");
 
     assert!(runtime.system_audio_planner.is_none());
     assert!(runtime.inactivity.is_paused);
@@ -3984,13 +3954,8 @@ fn inactivity_resume_does_not_restart_or_plan_dedicated_outputs_for_legacy_soft_
         ..Default::default()
     };
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("legacy soft-resume should not plan new output files")
-        },
-    )
-    .expect("legacy soft-resume should succeed without dedicated planning");
+    resume_runtime_from_inactivity(&mut runtime)
+        .expect("legacy soft-resume should succeed without dedicated planning");
 
     assert_eq!(
         runtime.current_segment_sources,
@@ -6252,16 +6217,7 @@ fn inactivity_resume_sets_current_segment_sources_via_active_sources_helper() {
     let mut runtime = paused_runtime_fixture();
     assert!(runtime.current_segment_sources.is_none());
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/native-session-resume-segment-0002/screen.mov".to_string();
-
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
-        },
-    )
-    .expect("resume should succeed");
+    resume_runtime_from_inactivity(&mut runtime).expect("resume should succeed");
 
     // For legacy resume both family flags are false, so the helper returns
     // the full requested set — same as the old behavior.
@@ -6283,11 +6239,8 @@ fn inactivity_resume_soft_resume_preserves_segment_index_when_schedule_has_advan
 
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| panic!("legacy soft-resume should not create a new segment"),
-    )
-    .expect("soft-resume should preserve current segment numbering");
+    resume_runtime_from_inactivity(&mut runtime)
+        .expect("soft-resume should preserve current segment numbering");
 
     assert_eq!(runtime.current_segment_index, 4);
 }
@@ -6306,13 +6259,7 @@ fn inactivity_resume_soft_resume_preserves_segment_boundary_timing() {
 
     std::thread::sleep(std::time::Duration::from_millis(70));
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("legacy soft-resume should not restart segment outputs")
-        },
-    )
-    .expect("resume should succeed");
+    resume_runtime_from_inactivity(&mut runtime).expect("resume should succeed");
 
     let sources = runtime
         .requested_sources
@@ -8489,13 +8436,7 @@ fn resume_runtime_from_inactivity_soft_resume_keeps_existing_segment_without_res
         "2026/04/16",
     ));
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("legacy soft-resume should not restart the existing segment")
-        },
-    )
-    .expect("legacy soft-resume should succeed");
+    resume_runtime_from_inactivity(&mut runtime).expect("legacy soft-resume should succeed");
 
     assert!(!runtime.inactivity.is_paused);
     assert_eq!(runtime.current_segment_index, 1);

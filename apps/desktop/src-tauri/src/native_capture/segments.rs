@@ -3226,24 +3226,9 @@ pub(super) fn recover_screen_capture_after_wake(
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn resume_runtime_from_inactivity_with_start_segment<F>(
+pub(super) fn resume_runtime_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
-    _start_segment_fn: F,
-) -> Result<(), CaptureErrorResponse>
-where
-    F: FnOnce(
-        &Path,
-        Option<&Path>,
-        Option<&Path>,
-        &CaptureSources,
-        u32,
-        &capture_types::ScreenResolution,
-        Option<u32>,
-        Option<&str>,
-        Option<mpsc::Sender<FrameArtifactMessage>>,
-        Option<&Path>,
-    ) -> Result<StartedSegmentState, CaptureErrorResponse>,
-{
+) -> Result<(), CaptureErrorResponse> {
     if !runtime.inactivity.is_paused {
         return Ok(());
     }
@@ -3274,46 +3259,6 @@ where
     };
 
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn resume_runtime_from_inactivity(
-    runtime: &mut NativeCaptureRuntime,
-) -> Result<(), CaptureErrorResponse> {
-    let tail_trim_seconds = runtime.inactivity.idle_timeout_seconds;
-    let microphone_activity_threshold = runtime.inactivity.microphone_activity_threshold();
-    let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
-    resume_runtime_from_inactivity_with_start_segment(
-        runtime,
-        move |segment_dir,
-              screen_output_file,
-              system_audio_output_path,
-              sources,
-              screen_frame_rate,
-              screen_resolution,
-              effective_screen_bitrate_bps,
-              microphone_device_id,
-              frame_artifact_tx,
-              microphone_output_path| {
-            start_segment_with_inactivity_tail_trim_seconds(
-                segment_dir,
-                screen_output_file,
-                system_audio_output_path,
-                sources,
-                screen_frame_rate,
-                screen_resolution,
-                effective_screen_bitrate_bps,
-                microphone_device_id,
-                frame_artifact_tx,
-                None,
-                microphone_output_path,
-                tail_trim_seconds,
-                microphone_activity_threshold,
-                microphone_tail_activity_mode,
-                None,
-            )
-        },
-    )
 }
 
 #[cfg(target_os = "macos")]
