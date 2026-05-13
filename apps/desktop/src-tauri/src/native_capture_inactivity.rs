@@ -47,6 +47,7 @@ const MIN_MICROPHONE_ACTIVITY_THRESHOLD: f32 = 0.01;
 const MAX_MICROPHONE_ACTIVITY_THRESHOLD: f32 = 0.15;
 const MIN_SYSTEM_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.002;
 const MAX_SYSTEM_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.05;
+const SCREEN_RESUME_MIN_PAUSED_MS: u64 = 2_000;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ActivitySourceIdle {
@@ -109,6 +110,7 @@ pub(crate) struct InactivityState {
     pub last_activity_monotonic_ms: u64,
     pub last_microphone_activity_monotonic_ms: Option<u64>,
     pub last_system_audio_activity_monotonic_ms: Option<u64>,
+    pub screen_paused_at_monotonic_ms: Option<u64>,
     pub screen_paused: bool,
     pub microphone_paused: bool,
     pub system_audio_paused: bool,
@@ -126,6 +128,7 @@ impl Default for InactivityState {
             last_activity_monotonic_ms: 0,
             last_microphone_activity_monotonic_ms: None,
             last_system_audio_activity_monotonic_ms: None,
+            screen_paused_at_monotonic_ms: None,
             screen_paused: false,
             microphone_paused: false,
             system_audio_paused: false,
@@ -148,6 +151,7 @@ impl InactivityState {
             last_activity_monotonic_ms: now_monotonic_ms,
             last_microphone_activity_monotonic_ms: None,
             last_system_audio_activity_monotonic_ms: None,
+            screen_paused_at_monotonic_ms: None,
             screen_paused: false,
             microphone_paused: false,
             system_audio_paused: false,
@@ -162,9 +166,16 @@ impl InactivityState {
         system_audio_paused: bool,
     ) {
         self.screen_paused = screen_paused;
+        if !screen_paused {
+            self.screen_paused_at_monotonic_ms = None;
+        }
         self.microphone_paused = microphone_paused;
         self.system_audio_paused = system_audio_paused;
         self.is_paused = screen_paused || microphone_paused || system_audio_paused;
+    }
+
+    pub(crate) fn mark_screen_pause_started(&mut self, now_monotonic_ms: u64) {
+        self.screen_paused_at_monotonic_ms = Some(now_monotonic_ms);
     }
 
     fn has_legacy_global_pause_state(&self) -> bool {
@@ -479,11 +490,22 @@ impl InactivityState {
         if !self.enabled || !self.is_screen_paused() || !snapshot.screen_activity_enabled {
             return false;
         }
+        if !self.screen_resume_guard_elapsed(now_monotonic_ms) {
+            return false;
+        }
 
         self.evaluate_screen_policy_for_snapshot(now_monotonic_ms, snapshot)
             .effective_idle
             .idle_ms
             < self.idle_timeout_ms()
+    }
+
+    fn screen_resume_guard_elapsed(&self, now_monotonic_ms: u64) -> bool {
+        self.screen_paused_at_monotonic_ms
+            .map(|paused_at| {
+                now_monotonic_ms.saturating_sub(paused_at) >= SCREEN_RESUME_MIN_PAUSED_MS
+            })
+            .unwrap_or(true)
     }
 
     pub(crate) fn should_pause_microphone_for_inactivity(
@@ -774,6 +796,7 @@ mod tests {
             30_500,
             ActivitySnapshot {
                 system_input_idle_ms: Some(10_000),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: None,
                 ..empty_activity_snapshot()
             }
@@ -784,6 +807,7 @@ mod tests {
             31_000,
             ActivitySnapshot {
                 system_input_idle_ms: Some(10_000),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: None,
                 ..empty_activity_snapshot()
             }
@@ -792,10 +816,35 @@ mod tests {
             31_000,
             ActivitySnapshot {
                 system_input_idle_ms: Some(2_000),
+                screen_activity_enabled: true,
                 screen_activity_idle_ms: None,
                 ..empty_activity_snapshot()
             }
         ));
+    }
+
+    #[test]
+    fn screen_resume_waits_for_pause_guard_window() {
+        let mut state = inactivity_state_fixture(InactivityActivityMode::SystemInputOrScreen, 50);
+        state.set_family_paused_states(true, false, false);
+        state.mark_screen_pause_started(20_000);
+
+        let active_snapshot = ActivitySnapshot {
+            system_input_idle_ms: Some(0),
+            screen_activity_enabled: true,
+            screen_activity_idle_ms: Some(0),
+            microphone_activity: empty_audio_activity(),
+            system_audio_activity: empty_audio_activity(),
+        };
+
+        assert!(
+            !state.should_resume_screen_from_inactivity(21_999, active_snapshot),
+            "screen activity immediately after a soft pause should not churn outputs back on"
+        );
+        assert!(state.should_resume_screen_from_inactivity(22_000, active_snapshot));
+
+        state.set_family_paused_states(false, false, false);
+        assert_eq!(state.screen_paused_at_monotonic_ms, None);
     }
 
     #[test]

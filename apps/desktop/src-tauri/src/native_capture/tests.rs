@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+use super::activity::should_poll_screen_activity;
 use super::activity::{
     current_activity_snapshot, current_activity_snapshot_for_debug, idle_debug_activity_sources,
     idle_debug_family_fields, lock_runtime_for_idle_debug,
@@ -1956,6 +1958,23 @@ fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources(
 
     assert!(snapshot.microphone_activity.enabled);
     assert!(snapshot.system_audio_activity.enabled);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn screen_activity_polling_skips_live_screen_streams() {
+    assert!(
+        should_poll_screen_activity(true, false),
+        "running capture without a live screen stream still needs display polling"
+    );
+    assert!(
+        should_poll_screen_activity(false, true),
+        "stopped capture can only refresh screen activity through display polling"
+    );
+    assert!(
+        !should_poll_screen_activity(true, true),
+        "live ScreenCaptureKit streams already provide activity samples, including soft-paused outputs"
+    );
 }
 
 #[test]

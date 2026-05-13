@@ -2089,11 +2089,7 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
             )
         });
 
-        runtime.inactivity.set_family_paused_states(
-            true,
-            runtime.inactivity.microphone_paused,
-            runtime.inactivity.system_audio_paused,
-        );
+        mark_screen_paused_for_inactivity(runtime);
 
         return Ok(());
     }
@@ -2131,11 +2127,7 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
                         runtime.inactivity.system_audio_paused,
                     )
                 });
-                runtime.inactivity.set_family_paused_states(
-                    true,
-                    runtime.inactivity.microphone_paused,
-                    runtime.inactivity.system_audio_paused,
-                );
+                mark_screen_paused_for_inactivity(runtime);
                 return Err(error);
             }
         };
@@ -2192,11 +2184,7 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
                 } else {
                     runtime.current_segment_output_files = None;
                 }
-                runtime.inactivity.set_family_paused_states(
-                    true,
-                    runtime.inactivity.microphone_paused,
-                    runtime.inactivity.system_audio_paused,
-                );
+                mark_screen_paused_for_inactivity(runtime);
                 return Err(error);
             }
         }
@@ -2254,13 +2242,21 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
         runtime.current_segment_output_files = None;
     }
 
+    mark_screen_paused_for_inactivity(runtime);
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mark_screen_paused_for_inactivity(runtime: &mut NativeCaptureRuntime) {
     runtime.inactivity.set_family_paused_states(
         true,
         runtime.inactivity.microphone_paused,
         runtime.inactivity.system_audio_paused,
     );
-
-    Ok(())
+    runtime
+        .inactivity
+        .mark_screen_pause_started(now_monotonic_marker_ms());
 }
 
 #[cfg(target_os = "macos")]
