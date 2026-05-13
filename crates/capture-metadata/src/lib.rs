@@ -226,8 +226,9 @@ pub fn metadata_collection_plan(
     privacy: &PrivacySettings,
 ) -> MetadataCollectionPlan {
     let collect_browser_url_for_privacy = has_enabled_website_rules(privacy);
-    let collect_visible_windows =
-        has_enabled_browser_title_rules(privacy) || has_enabled_website_rules(privacy);
+    let collect_visible_windows = has_enabled_browser_title_rules(privacy)
+        || has_enabled_website_rules(privacy)
+        || privacy.private_browser_exclusion_enabled;
     let collect_active_window_for_privacy = collect_browser_url_for_privacy
         || has_enabled_browser_title_rules(privacy)
         || privacy.private_browser_exclusion_enabled;
@@ -1995,7 +1996,7 @@ mod tests {
     }
 
     #[test]
-    fn private_browser_detection_does_not_request_all_window_probe_by_default() {
+    fn private_browser_exclusion_requests_visible_window_probe() {
         let metadata = MetadataSettings {
             enabled: true,
             browser_url_mode: BrowserUrlMode::Off,
@@ -2008,7 +2009,7 @@ mod tests {
                 collect_active_window: true,
                 collect_browser_url_for_metadata: false,
                 collect_browser_url_for_privacy: false,
-                collect_visible_windows: false,
+                collect_visible_windows: true,
             }
         );
         assert!(active_private_browser_detected(
