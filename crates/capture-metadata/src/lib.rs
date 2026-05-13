@@ -663,10 +663,16 @@ pub fn website_rule_matches(rule: &WebsiteRule, raw_url: &str) -> bool {
     if !rule.enabled {
         return false;
     }
-    if rule.host.is_none() {
-        let parsed = parse_website_rule(rule.id.clone(), rule.enabled, &rule.pattern);
-        return website_rule_matches(&parsed, raw_url);
-    }
+    let parsed_rule;
+    let rule = if rule.host.is_none() {
+        parsed_rule = parse_website_rule(rule.id.clone(), rule.enabled, &rule.pattern);
+        if parsed_rule.host.is_none() {
+            return false;
+        }
+        &parsed_rule
+    } else {
+        rule
+    };
     let Some(rule_host) = rule.host.as_deref().map(str::to_ascii_lowercase) else {
         return false;
     };
@@ -871,6 +877,24 @@ mod tests {
         };
         assert!(website_rule_matches(
             &unnormalized,
+            "https://example.com/private/page"
+        ));
+    }
+
+    #[test]
+    fn unparseable_website_rule_without_host_does_not_match() {
+        let unparseable = WebsiteRule {
+            id: "invalid".into(),
+            enabled: true,
+            pattern: "http://[::1".into(),
+            host: None,
+            include_subdomains: false,
+            path_prefix: None,
+            port: None,
+        };
+
+        assert!(!website_rule_matches(
+            &unparseable,
             "https://example.com/private/page"
         ));
     }
