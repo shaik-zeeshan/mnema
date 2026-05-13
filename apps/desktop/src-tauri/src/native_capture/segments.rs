@@ -824,6 +824,7 @@ fn explicit_privacy_suspension_sources(runtime: &NativeCaptureRuntime) -> Captur
 
 #[cfg(target_os = "macos")]
 fn suspend_screen_system_audio_for_privacy_failure(
+    app_handle: Option<&tauri::AppHandle>,
     runtime: &mut NativeCaptureRuntime,
     error: &CaptureErrorResponse,
 ) {
@@ -833,6 +834,10 @@ fn suspend_screen_system_audio_for_privacy_failure(
     });
     runtime.current_segment_sources = Some(explicit_privacy_suspension_sources(runtime));
     runtime.privacy_capture_suspension = Some(PrivacyCaptureSuspension::new(error));
+    commit_suspended_screen_system_outputs(app_handle, runtime);
+    runtime.recording_file = None;
+    runtime.system_audio_recording_file = None;
+    preserve_live_microphone_continuation_outputs(runtime);
 }
 
 #[cfg(target_os = "macos")]
@@ -3442,7 +3447,11 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                         "privacy filter update failed; suspending screen/system-audio capture: [{}] {}",
                         error.code, error.message
                     ));
-                    suspend_screen_system_audio_for_privacy_failure(runtime.runtime_mut(), &error);
+                    suspend_screen_system_audio_for_privacy_failure(
+                        Some(&app_handle),
+                        runtime.runtime_mut(),
+                        &error,
+                    );
                     if !runtime
                         .runtime()
                         .requested_sources
@@ -3517,7 +3526,7 @@ mod tests {
             message: "privacy update failed".to_string(),
         };
 
-        suspend_screen_system_audio_for_privacy_failure(&mut runtime, &error);
+        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error);
         commit_suspended_screen_system_outputs(None, &mut runtime);
         mark_runtime_session_failed(&mut runtime);
 
@@ -3571,7 +3580,7 @@ mod tests {
             message: "privacy update failed".to_string(),
         };
 
-        suspend_screen_system_audio_for_privacy_failure(&mut runtime, &error);
+        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error);
 
         assert_eq!(
             runtime.current_segment_sources,
@@ -3585,6 +3594,83 @@ mod tests {
             super::super::runtime::current_segment_sources_for_runtime(&runtime).is_none(),
             "explicit all-paused privacy suspension must not fall back to stale screen/system-audio outputs"
         );
+    }
+
+    #[test]
+    fn privacy_failure_with_active_microphone_detaches_suspended_screen_state() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_path = temp_dir.path().join("screen-segment.mov");
+        std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+            .expect("fake openable mov should be written");
+        let screen_path = screen_path.to_string_lossy().into_owned();
+        let microphone_path = temp_dir
+            .path()
+            .join("microphone.m4a")
+            .to_string_lossy()
+            .into_owned();
+
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: false,
+            }),
+            current_segment_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: false,
+            }),
+            output_files: Some(empty_output_files()),
+            current_segment_output_files: Some(CaptureOutputFiles {
+                screen_file: Some(screen_path.clone()),
+                screen_files: vec![screen_path.clone()],
+                microphone_file: Some(microphone_path.clone()),
+                microphone_files: vec![microphone_path.clone()],
+                system_audio_file: None,
+                system_audio_files: Vec::new(),
+            }),
+            recording_file: Some(screen_path.clone()),
+            microphone_recording_file: Some(microphone_path.clone()),
+            system_audio_recording_file: Some("/tmp/stale-system-audio.m4a".to_string()),
+            ..Default::default()
+        };
+        let error = CaptureErrorResponse {
+            code: "privacy_update_failed".to_string(),
+            message: "privacy update failed".to_string(),
+        };
+
+        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error);
+
+        assert!(runtime.recording_file.is_none());
+        assert!(runtime.system_audio_recording_file.is_none());
+        assert_eq!(
+            runtime.current_segment_sources,
+            Some(CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: false,
+            })
+        );
+
+        let current_outputs = runtime
+            .current_segment_output_files
+            .as_ref()
+            .expect("microphone continuation should remain current");
+        assert!(current_outputs.screen_file.is_none());
+        assert!(current_outputs.screen_files.is_empty());
+        assert_eq!(
+            current_outputs.microphone_file.as_deref(),
+            Some(microphone_path.as_str())
+        );
+        assert_eq!(current_outputs.microphone_files, vec![microphone_path]);
+
+        let committed = runtime
+            .output_files
+            .as_ref()
+            .expect("suspended screen output should be committed");
+        assert_eq!(committed.screen_file.as_deref(), Some(screen_path.as_str()));
+        assert_eq!(committed.screen_files, vec![screen_path]);
     }
 }
 
