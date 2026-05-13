@@ -263,21 +263,7 @@ fn validate_privacy_settings(
 
     let excluded_website_rules = excluded_website_rules
         .into_iter()
-        .map(|rule| {
-            let mut parsed =
-                capture_metadata::parse_website_rule(rule.id, rule.enabled, &rule.pattern);
-            if rule.host.is_some()
-                || rule.path_prefix.is_some()
-                || rule.port.is_some()
-                || rule.include_subdomains
-            {
-                parsed.host = rule.host.or(parsed.host);
-                parsed.include_subdomains = rule.include_subdomains || parsed.include_subdomains;
-                parsed.path_prefix = rule.path_prefix.or(parsed.path_prefix);
-                parsed.port = rule.port.or(parsed.port);
-            }
-            parsed
-        })
+        .map(|rule| capture_metadata::parse_website_rule(rule.id, rule.enabled, &rule.pattern))
         .collect();
 
     for rule in &browser_title_rules {
@@ -1046,6 +1032,32 @@ mod tests {
                 preset: ScreenResolutionPreset::P720
             }
         );
+    }
+
+    #[test]
+    fn validate_privacy_settings_derives_website_rule_fields_from_pattern() {
+        let mut privacy = default_privacy_settings();
+        privacy.excluded_website_rules = vec![capture_types::WebsiteRule {
+            id: "site".to_string(),
+            enabled: true,
+            pattern: "new.example.com/private".to_string(),
+            host: Some("old.example.com".to_string()),
+            include_subdomains: true,
+            path_prefix: Some("/old".to_string()),
+            port: Some(5173),
+        }];
+
+        let normalized = validate_privacy_settings(privacy).expect("privacy should validate");
+        let rule = normalized
+            .excluded_website_rules
+            .first()
+            .expect("website rule should be preserved");
+
+        assert_eq!(rule.pattern, "new.example.com/private");
+        assert_eq!(rule.host.as_deref(), Some("new.example.com"));
+        assert!(!rule.include_subdomains);
+        assert_eq!(rule.path_prefix.as_deref(), Some("/private"));
+        assert_eq!(rule.port, None);
     }
 
     #[test]
