@@ -125,6 +125,7 @@ impl FrameMetadataSnapshot {
 pub struct MetadataContext {
     pub active_bundle_id: Option<String>,
     pub active_window_id: Option<u32>,
+    pub active_privacy_window_id: Option<u32>,
     pub active_url: Option<String>,
     pub visible_browser_windows: Vec<BrowserWindowContext>,
     pub private_browser_window_id: Option<u32>,
@@ -345,6 +346,35 @@ pub fn active_private_browser_detected(
         && window_title.is_some_and(is_private_browser_title)
 }
 
+pub fn resolve_active_privacy_window_id(
+    active_bundle_id: Option<&str>,
+    active_window_id: Option<u32>,
+    active_window_title: Option<&str>,
+    visible_browser_windows: &[BrowserWindowContext],
+) -> Option<u32> {
+    let active_bundle_id =
+        active_bundle_id.filter(|bundle_id| is_known_browser_bundle(bundle_id))?;
+
+    if let Some(active_window_id) = active_window_id {
+        if visible_browser_windows.iter().any(|window| {
+            window.window_id == active_window_id
+                && window.bundle_id.as_deref() == Some(active_bundle_id)
+        }) {
+            return Some(active_window_id);
+        }
+    }
+
+    let active_window_title = active_window_title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())?;
+    let mut matches = visible_browser_windows.iter().filter(|window| {
+        window.bundle_id.as_deref() == Some(active_bundle_id)
+            && window.title.trim() == active_window_title
+    });
+    let matched = matches.next()?;
+    matches.next().is_none().then_some(matched.window_id)
+}
+
 pub fn apply_website_privacy_hold(
     held_bundle_reasons: &mut BTreeMap<String, String>,
     privacy: &PrivacySettings,
@@ -430,7 +460,7 @@ pub fn apply_unverified_visible_browser_window_privacy_guard(
         .visible_browser_windows
         .iter()
         .map(|window| window.window_id)
-        .chain(context.active_window_id)
+        .chain(context.active_privacy_window_id)
         .collect();
     verified_window_ids.retain(|window_id| visible_window_ids.contains(window_id));
 
@@ -443,28 +473,29 @@ pub fn apply_unverified_visible_browser_window_privacy_guard(
         .as_deref()
         .is_some_and(|private_bundle_id| Some(private_bundle_id) == active_known_browser_bundle);
 
-    if let (Some(active_window_id), Some(active_bundle_id)) =
-        (context.active_window_id, active_known_browser_bundle)
-    {
+    if let (Some(active_privacy_window_id), Some(active_bundle_id)) = (
+        context.active_privacy_window_id,
+        active_known_browser_bundle,
+    ) {
         if let Some(active_url) = context.active_url.as_deref() {
             let matched_website_rule = privacy
                 .excluded_website_rules
                 .iter()
                 .any(|rule| website_rule_matches(rule, active_url));
             if matched_website_rule || active_private_browser {
-                verified_window_ids.remove(&active_window_id);
+                verified_window_ids.remove(&active_privacy_window_id);
             } else {
                 let active_visible_browser_window =
                     context.visible_browser_windows.iter().any(|window| {
-                        window.window_id == active_window_id
+                        window.window_id == active_privacy_window_id
                             && window.bundle_id.as_deref() == Some(active_bundle_id)
                     });
                 if active_visible_browser_window {
-                    verified_window_ids.insert(active_window_id);
+                    verified_window_ids.insert(active_privacy_window_id);
                 }
             }
         } else {
-            verified_window_ids.remove(&active_window_id);
+            verified_window_ids.remove(&active_privacy_window_id);
         }
     }
 
@@ -859,6 +890,7 @@ mod tests {
             &MetadataContext {
                 active_bundle_id: Some("com.browser".into()),
                 active_window_id: Some(7),
+                active_privacy_window_id: Some(7),
                 active_url: Some("https://example.com/private".into()),
                 visible_browser_windows: vec![BrowserWindowContext {
                     window_id: 7,
@@ -1050,6 +1082,58 @@ mod tests {
     }
 
     #[test]
+    fn resolves_active_privacy_window_id_from_unique_visible_browser_title_match() {
+        let visible_windows = vec![
+            BrowserWindowContext {
+                window_id: 42,
+                bundle_id: Some("com.google.Chrome".to_string()),
+                title: "Example".to_string(),
+            },
+            BrowserWindowContext {
+                window_id: 43,
+                bundle_id: Some("com.apple.Safari".to_string()),
+                title: "Example".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            resolve_active_privacy_window_id(
+                Some("com.google.Chrome"),
+                Some(7),
+                Some("Example"),
+                &visible_windows,
+            ),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn active_privacy_window_resolution_stays_conservative_for_ambiguous_title_match() {
+        let visible_windows = vec![
+            BrowserWindowContext {
+                window_id: 42,
+                bundle_id: Some("com.google.Chrome".to_string()),
+                title: "Example".to_string(),
+            },
+            BrowserWindowContext {
+                window_id: 43,
+                bundle_id: Some("com.google.Chrome".to_string()),
+                title: "Example".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            resolve_active_privacy_window_id(
+                Some("com.google.Chrome"),
+                Some(7),
+                Some("Example"),
+                &visible_windows,
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn website_privacy_guard_excludes_unverified_visible_background_browser() {
         let privacy = website_privacy("*.infinityapp.in");
         let mut verified_window_ids = BTreeSet::new();
@@ -1095,6 +1179,57 @@ mod tests {
         let active_browser_context = MetadataContext {
             active_bundle_id: Some("com.google.Chrome".to_string()),
             active_window_id: Some(42),
+            active_privacy_window_id: Some(42),
+            active_url: Some("https://example.com/".to_string()),
+            visible_browser_windows: vec![browser_window.clone()],
+            ..MetadataContext::default()
+        };
+        let mut decision = PrivacyFilterDecision::default();
+
+        apply_unverified_visible_browser_window_privacy_guard(
+            &mut verified_window_ids,
+            &privacy,
+            &active_browser_context,
+            &mut decision,
+        );
+
+        assert_eq!(verified_window_ids, BTreeSet::from([42]));
+        assert!(decision.excluded_window_ids.is_empty());
+        assert!(!decision.privacy_filter_applied);
+
+        let background_context = MetadataContext {
+            active_bundle_id: Some("com.apple.finder".to_string()),
+            visible_browser_windows: vec![browser_window],
+            ..MetadataContext::default()
+        };
+        let mut decision = PrivacyFilterDecision::default();
+
+        apply_unverified_visible_browser_window_privacy_guard(
+            &mut verified_window_ids,
+            &privacy,
+            &background_context,
+            &mut decision,
+        );
+
+        assert_eq!(verified_window_ids, BTreeSet::from([42]));
+        assert!(decision.excluded_window_ids.is_empty());
+        assert!(!decision.privacy_filter_applied);
+    }
+
+    #[test]
+    fn website_privacy_guard_uses_resolved_privacy_window_id_after_mismatched_active_window_probe()
+    {
+        let privacy = website_privacy("*.infinityapp.in");
+        let mut verified_window_ids = BTreeSet::new();
+        let browser_window = BrowserWindowContext {
+            window_id: 42,
+            bundle_id: Some("com.google.Chrome".to_string()),
+            title: "Example".to_string(),
+        };
+        let active_browser_context = MetadataContext {
+            active_bundle_id: Some("com.google.Chrome".to_string()),
+            active_window_id: Some(7),
+            active_privacy_window_id: Some(42),
             active_url: Some("https://example.com/".to_string()),
             visible_browser_windows: vec![browser_window.clone()],
             ..MetadataContext::default()
@@ -1137,6 +1272,7 @@ mod tests {
         let context = MetadataContext {
             active_bundle_id: Some("net.imput.helium".to_string()),
             active_window_id: Some(42),
+            active_privacy_window_id: Some(42),
             active_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
             visible_browser_windows: vec![BrowserWindowContext {
                 window_id: 42,

@@ -3,9 +3,10 @@ use capture_metadata::{
     active_private_browser_detected, apply_metadata_redaction,
     apply_unverified_visible_browser_window_privacy_guard, apply_website_privacy_hold,
     browser_url_script_app_name, evaluate_privacy, is_known_browser_bundle,
-    is_private_browser_title, metadata_collection_plan, sanitize_url, select_frontmost_pid_window,
-    BrowserUrlProbeCache, FrameMetadataSnapshot, MetadataCollectionPlan, MetadataContext,
-    NativeActiveWindowSnapshot, PrivacyFilterDecision, PrivacySettings, RawWindowInfo,
+    is_private_browser_title, metadata_collection_plan, resolve_active_privacy_window_id,
+    sanitize_url, select_frontmost_pid_window, BrowserUrlProbeCache, FrameMetadataSnapshot,
+    MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot, PrivacyFilterDecision,
+    PrivacySettings, RawWindowInfo,
 };
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -330,6 +331,12 @@ fn collect_active_window_metadata(
                 .clone()
                 .expect("active private browser requires a known browser bundle id")
         });
+        let active_privacy_window_id = resolve_active_privacy_window_id(
+            bundle_id.as_deref(),
+            active_window.window_id,
+            window_title.as_deref(),
+            &visible_browser_windows,
+        );
         let snapshot = Some(FrameMetadataSnapshot {
             app_bundle_id: bundle_id.clone(),
             app_name,
@@ -342,6 +349,7 @@ fn collect_active_window_metadata(
         let context = MetadataContext {
             active_bundle_id: bundle_id.clone(),
             active_window_id: active_window.window_id,
+            active_privacy_window_id,
             active_url: raw_browser_url,
             visible_browser_windows,
             private_browser_window_id,
