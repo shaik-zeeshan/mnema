@@ -808,7 +808,7 @@
     if (!trimmed) return null;
     try {
       const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
-      let host = parsed.hostname.toLocaleLowerCase();
+      let host = parsed.hostname.toLowerCase();
       const includeSubdomains = host.startsWith("*.");
       if (includeSubdomains) host = host.slice(2);
       if (!host) return null;
