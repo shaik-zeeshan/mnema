@@ -2718,29 +2718,18 @@ fn build_screen_capture_kit_content_filter(
             unresolved_bundle_ids
         );
     }
-    let app_array = cidre::ns::Array::from_slice_retained(&excluded_apps);
-
     let has_requested_window_exclusions = !privacy_filter.excluded_window_ids.is_empty();
-    let excluded_windows: Vec<_> = windows
-        .iter()
-        .filter(|window| {
-            if privacy_filter.excluded_window_ids.contains(&window.id()) {
-                return true;
-            }
-            if has_requested_window_exclusions {
-                return window
-                    .owning_app()
-                    .map(|app| requested_bundle_ids.contains(&app.bundle_id().to_string()))
-                    .unwrap_or(false);
-            }
-            false
-        })
-        .map(|window| window.retained())
-        .collect();
     let requested_window_ids: std::collections::BTreeSet<_> =
         privacy_filter.excluded_window_ids.iter().copied().collect();
-    let resolved_window_ids: std::collections::BTreeSet<_> =
-        excluded_windows.iter().map(|window| window.id()).collect();
+    let requested_excluded_windows: Vec<_> = windows
+        .iter()
+        .filter(|window| requested_window_ids.contains(&window.id()))
+        .map(|window| window.retained())
+        .collect();
+    let resolved_window_ids: std::collections::BTreeSet<_> = requested_excluded_windows
+        .iter()
+        .map(|window| window.id())
+        .collect();
     let unresolved_window_ids: Vec<_> = requested_window_ids
         .difference(&resolved_window_ids)
         .copied()
@@ -2751,29 +2740,54 @@ fn build_screen_capture_kit_content_filter(
             unresolved_window_ids
         );
     }
-    let window_array = cidre::ns::Array::from_slice_retained(&excluded_windows);
 
-    if excluded_apps.is_empty() || has_requested_window_exclusions {
-        if has_requested_window_exclusions && !excluded_apps.is_empty() {
+    if !excluded_apps.is_empty() {
+        if has_requested_window_exclusions {
+            if !unresolved_window_ids.is_empty() {
+                return Err(PrivacyFilterApplyError {
+                    kind: PrivacyFilterApplyErrorKind::FilterUpdateFailed,
+                    message: format!(
+                        "Privacy filter could not resolve requested window ids for mixed app/window exclusion: {:?}",
+                        unresolved_window_ids
+                    ),
+                });
+            }
+            for window in &requested_excluded_windows {
+                let Some(app) = window.owning_app() else {
+                    return Err(PrivacyFilterApplyError {
+                        kind: PrivacyFilterApplyErrorKind::FilterUpdateFailed,
+                        message: format!(
+                            "Privacy filter could not resolve owning app for requested window id {}",
+                            window.id()
+                        ),
+                    });
+                };
+                let bundle_id = app.bundle_id().to_string();
+                if bundle_id.is_empty() || resolved_bundle_ids.insert(bundle_id) {
+                    excluded_apps.push(app.retained());
+                }
+            }
             capture_runtime::debug_log!(
-                "privacy filter using window exclusion union for mixed bundle/window request: bundles={:?}, windows={:?}",
+                "privacy filter promoted mixed bundle/window request to durable app exclusions: bundles={:?}, windows={:?}",
                 privacy_filter.excluded_bundle_ids,
                 privacy_filter.excluded_window_ids
             );
         }
-        return Ok(cidre::sc::ContentFilter::with_display_excluding_windows(
-            display,
-            &window_array,
-        ));
+        let app_array = cidre::ns::Array::from_slice_retained(&excluded_apps);
+        return Ok(
+            cidre::sc::ContentFilter::with_display_excluding_apps_excepting_windows(
+                display,
+                &app_array,
+                &cidre::ns::Array::new(),
+            ),
+        );
     }
 
-    Ok(
-        cidre::sc::ContentFilter::with_display_excluding_apps_excepting_windows(
-            display,
-            &app_array,
-            &cidre::ns::Array::new(),
-        ),
-    )
+    let window_array = cidre::ns::Array::from_slice_retained(&requested_excluded_windows);
+    Ok(cidre::sc::ContentFilter::with_display_excluding_windows(
+        display,
+        &window_array,
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -3110,6 +3124,25 @@ fn start_avfoundation_capture_session(
         };
         log_capture_error(
             "AVFoundation capture startup rejected unsupported screen resolution",
+            &error,
+        );
+        return Err(error);
+    }
+
+    if sources.screen
+        && options
+            .initial_privacy_filter
+            .as_ref()
+            .is_some_and(|filter| {
+                !filter.excluded_bundle_ids.is_empty() || !filter.excluded_window_ids.is_empty()
+            })
+    {
+        let error = CaptureErrorResponse {
+            code: "privacy_filter_unsupported".to_string(),
+            message: "Privacy content filters require ScreenCaptureKit".to_string(),
+        };
+        log_capture_error(
+            "AVFoundation capture startup rejected active privacy filter",
             &error,
         );
         return Err(error);

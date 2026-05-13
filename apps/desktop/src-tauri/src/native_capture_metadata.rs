@@ -122,6 +122,14 @@ pub fn mark_applied_privacy_decision(
         .latest_applied_decision = decision;
 }
 
+pub fn latest_applied_privacy_decision(state: &CaptureMetadataState) -> PrivacyFilterDecision {
+    state
+        .lock()
+        .expect("capture metadata state poisoned")
+        .latest_applied_decision
+        .clone()
+}
+
 pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
     let mut runtime = state.lock().expect("capture metadata state poisoned");
     runtime.latest_applied_decision = PrivacyFilterDecision::default();

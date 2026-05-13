@@ -26,7 +26,7 @@ impl InitialPrivacyFilter {
 #[cfg(target_os = "macos")]
 pub(super) struct PrivacyFilterUpdate {
     decision: capture_metadata::PrivacyFilterDecision,
-    filter: capture_screen::PrivacyContentFilter,
+    filter: Option<capture_screen::PrivacyContentFilter>,
 }
 
 #[cfg(target_os = "macos")]
@@ -66,7 +66,16 @@ pub(super) fn collect_initial_privacy_filter(
 #[cfg(target_os = "macos")]
 pub(super) fn collect_privacy_filter_update(app_handle: &tauri::AppHandle) -> PrivacyFilterUpdate {
     let current = collect_initial_privacy_filter(app_handle);
-    let filter = current.filter.unwrap_or_else(empty_privacy_filter);
+    let latest_applied = crate::native_capture::metadata::latest_applied_privacy_decision(
+        app_handle
+            .state::<crate::native_capture::CaptureMetadataState>()
+            .inner(),
+    );
+    let filter = current.filter.or_else(|| {
+        latest_applied
+            .privacy_filter_applied
+            .then_some(empty_privacy_filter())
+    });
     PrivacyFilterUpdate {
         decision: current.decision,
         filter,
@@ -83,7 +92,12 @@ pub(super) fn apply_privacy_filter_update(
         return Ok(());
     }
 
-    capture_screen::update_active_privacy_filter(&mut runtime.active_screen_session, update.filter)
+    let Some(filter) = update.filter else {
+        mark_privacy_decision_applied(app_handle, update.decision);
+        return Ok(());
+    };
+
+    capture_screen::update_active_privacy_filter(&mut runtime.active_screen_session, filter)
         .map_err(|error| CaptureErrorResponse {
             code: "privacy_filter_apply_failed".to_string(),
             message: error.message,

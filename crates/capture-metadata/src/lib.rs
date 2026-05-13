@@ -545,14 +545,15 @@ pub fn apply_metadata_redaction(
     context: &MetadataContext,
     decision: &PrivacyFilterDecision,
 ) {
-    let Some(bundle_id) = snapshot.app_bundle_id.as_deref() else {
-        return;
-    };
-    let decision_excludes_snapshot_bundle = decision
-        .excluded_bundle_ids
-        .iter()
-        .any(|excluded| excluded == bundle_id);
-    let snapshot_bundle_redaction_reason = decision.excluded_bundle_reasons.get(bundle_id).cloned();
+    let snapshot_bundle_id = snapshot.app_bundle_id.as_deref();
+    let decision_excludes_snapshot_bundle = snapshot_bundle_id.is_some_and(|bundle_id| {
+        decision
+            .excluded_bundle_ids
+            .iter()
+            .any(|excluded| excluded == bundle_id)
+    });
+    let snapshot_bundle_redaction_reason = snapshot_bundle_id
+        .and_then(|bundle_id| decision.excluded_bundle_reasons.get(bundle_id).cloned());
     let decision_excludes_snapshot_window = snapshot
         .window_id
         .is_some_and(|window_id| decision.excluded_window_ids.contains(&window_id));
@@ -568,7 +569,7 @@ pub fn apply_metadata_redaction(
             || context
                 .private_browser_ambiguous_bundle_id
                 .as_deref()
-                .is_some_and(|private_bundle_id| private_bundle_id == bundle_id));
+                .is_some_and(|private_bundle_id| Some(private_bundle_id) == snapshot_bundle_id));
     if !decision_excludes_snapshot_bundle
         && !decision_excludes_snapshot_window
         && !active_private_snapshot
@@ -745,6 +746,20 @@ pub fn evaluate_privacy(
     }
 
     if settings.private_browser_exclusion_enabled {
+        if let Some(active_private_bundle_id) = context.private_browser_ambiguous_bundle_id.clone()
+        {
+            if let Some(window_id) = context.active_privacy_window_id {
+                window_ids.insert(window_id);
+                window_reasons.insert(window_id, REDACTION_REASON_PRIVATE_BROWSER.to_string());
+            } else {
+                bundle_ids.insert(active_private_bundle_id.clone());
+                bundle_reasons.insert(
+                    active_private_bundle_id,
+                    REDACTION_REASON_PRIVATE_BROWSER.to_string(),
+                );
+            }
+            redaction_reason.get_or_insert_with(|| REDACTION_REASON_PRIVATE_BROWSER.to_string());
+        }
         if let Some(window_id) = context.private_browser_window_id {
             window_ids.insert(window_id);
             window_reasons.insert(window_id, REDACTION_REASON_PRIVATE_BROWSER.to_string());
@@ -922,13 +937,72 @@ mod tests {
             &settings,
             &MetadataContext {
                 private_browser_window_id: Some(9),
-                private_browser_ambiguous_bundle_id: Some("com.browser".into()),
                 ..MetadataContext::default()
             },
         );
 
         assert!(decision.excluded_bundle_ids.is_empty());
         assert_eq!(decision.excluded_window_ids, vec![9]);
+        assert_eq!(
+            decision.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_PRIVATE_BROWSER)
+        );
+    }
+
+    #[test]
+    fn active_private_browser_excludes_resolved_active_privacy_window() {
+        let settings = PrivacySettings {
+            private_browser_exclusion_enabled: true,
+            ..PrivacySettings::default()
+        };
+        let decision = evaluate_privacy(
+            &settings,
+            &MetadataContext {
+                active_privacy_window_id: Some(42),
+                private_browser_window_id: Some(9),
+                private_browser_ambiguous_bundle_id: Some("com.google.Chrome".into()),
+                ..MetadataContext::default()
+            },
+        );
+
+        assert!(decision.excluded_bundle_ids.is_empty());
+        assert_eq!(decision.excluded_window_ids, vec![9, 42]);
+        assert_eq!(
+            decision
+                .excluded_window_reasons
+                .get(&42)
+                .map(String::as_str),
+            Some(REDACTION_REASON_PRIVATE_BROWSER)
+        );
+        assert_eq!(
+            decision.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_PRIVATE_BROWSER)
+        );
+    }
+
+    #[test]
+    fn active_private_browser_excludes_bundle_when_window_cannot_be_resolved() {
+        let settings = PrivacySettings {
+            private_browser_exclusion_enabled: true,
+            ..PrivacySettings::default()
+        };
+        let decision = evaluate_privacy(
+            &settings,
+            &MetadataContext {
+                private_browser_ambiguous_bundle_id: Some("com.google.Chrome".into()),
+                ..MetadataContext::default()
+            },
+        );
+
+        assert_eq!(decision.excluded_bundle_ids, vec!["com.google.Chrome"]);
+        assert!(decision.excluded_window_ids.is_empty());
+        assert_eq!(
+            decision
+                .excluded_bundle_reasons
+                .get("com.google.Chrome")
+                .map(String::as_str),
+            Some(REDACTION_REASON_PRIVATE_BROWSER)
+        );
         assert_eq!(
             decision.metadata_redaction_reason.as_deref(),
             Some(REDACTION_REASON_PRIVATE_BROWSER)
@@ -1425,6 +1499,39 @@ mod tests {
         assert!(snapshot.window_title.is_none());
         assert!(snapshot.browser_url.is_none());
         assert!(!snapshot.normalized_json().contains("windowId"));
+    }
+
+    #[test]
+    fn bundleless_excluded_window_metadata_redacts_title_and_url() {
+        let mut snapshot = FrameMetadataSnapshot {
+            app_bundle_id: None,
+            app_name: Some("Unknown Browser".to_string()),
+            window_title: Some("Inbox - Gmail".to_string()),
+            window_id: Some(7),
+            browser_url: Some("https://mail.google.com/mail/u/0/".to_string()),
+            display_id: None,
+            metadata_redaction_reason: None,
+        };
+        let decision = PrivacyFilterDecision {
+            excluded_window_ids: vec![7],
+            metadata_redaction_reason: Some(REDACTION_REASON_TITLE_RULE.to_string()),
+            privacy_filter_applied: true,
+            ..PrivacyFilterDecision::default()
+        };
+
+        apply_metadata_redaction(
+            &mut snapshot,
+            &PrivacySettings::default(),
+            &MetadataContext::default(),
+            &decision,
+        );
+
+        assert_eq!(
+            snapshot.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_TITLE_RULE)
+        );
+        assert!(snapshot.window_title.is_none());
+        assert!(snapshot.browser_url.is_none());
     }
 
     #[test]
