@@ -134,6 +134,7 @@ pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
     let mut runtime = state.lock().expect("capture metadata state poisoned");
     runtime.latest_applied_decision = PrivacyFilterDecision::default();
     runtime.website_privacy_verified_window_ids.clear();
+    runtime.browser_url_probe_cache = BrowserUrlProbeCache::default();
 }
 
 pub fn refresh_metadata_state(
@@ -715,6 +716,29 @@ mod tests {
                 .get("net.imput.helium")
                 .map(String::as_str),
             Some("website_rule")
+        );
+    }
+
+    #[test]
+    fn reset_recording_session_privacy_state_clears_browser_url_probe_cache() {
+        let state = CaptureMetadataState::default();
+        {
+            let mut runtime = state.lock().expect("capture metadata state should lock");
+            runtime.browser_url_probe_cache = BrowserUrlProbeCache::from_probe(
+                Some("com.google.Chrome".to_string()),
+                Some("https://example.com/old-tab".to_string()),
+                Instant::now(),
+            );
+        }
+
+        reset_recording_session_privacy_state(&state);
+
+        let runtime = state.lock().expect("capture metadata state should lock");
+        assert_eq!(
+            runtime
+                .browser_url_probe_cache
+                .cached_url_for("com.google.Chrome", Instant::now()),
+            None
         );
     }
 }
