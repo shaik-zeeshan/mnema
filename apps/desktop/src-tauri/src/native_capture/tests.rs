@@ -2932,6 +2932,7 @@ fn try_forward_frame_artifact_enqueues_metadata_snapshot_with_artifact() {
         app_bundle_id: Some("com.example.App".to_string()),
         app_name: Some("Example".to_string()),
         window_title: Some("Original Window".to_string()),
+        window_id: None,
         browser_url: None,
         display_id: None,
         metadata_redaction_reason: None,

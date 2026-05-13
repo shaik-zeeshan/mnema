@@ -2593,6 +2593,7 @@ mod tests {
                 app_bundle_id: Some("com.example.App".to_string()),
                 app_name: Some("Example".to_string()),
                 window_title: Some("Private Project".to_string()),
+                window_id: None,
                 browser_url: Some("https://example.com/private".to_string()),
                 display_id: Some(1),
                 metadata_redaction_reason: None,

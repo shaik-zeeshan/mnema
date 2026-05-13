@@ -297,7 +297,7 @@ fn collect_active_window_metadata(
             active_private_browser_detected(privacy, bundle_id.as_deref(), window_title.as_deref());
         let visible_browser_windows =
             if plan.collect_visible_browser_windows || active_private_browser {
-                visible_browser_windows()
+                visible_title_rule_windows()
             } else {
                 Vec::new()
             };
@@ -319,6 +319,7 @@ fn collect_active_window_metadata(
             app_bundle_id: bundle_id.clone(),
             app_name,
             window_title,
+            window_id: active_window.window_id,
             browser_url: snapshot_browser_url,
             display_id: None,
             metadata_redaction_reason: None,
@@ -498,7 +499,7 @@ fn cf_f64(
 }
 
 #[cfg(target_os = "macos")]
-fn visible_browser_windows() -> Vec<capture_metadata::BrowserWindowContext> {
+fn visible_title_rule_windows() -> Vec<capture_metadata::BrowserWindowContext> {
     let (tx, rx) = mpsc::channel();
     cidre::sc::ShareableContent::current_with_ch(move |content, error| {
         let result = match (content, error) {
@@ -516,11 +517,6 @@ fn visible_browser_windows() -> Vec<capture_metadata::BrowserWindowContext> {
         .iter()
         .filter(|window| window.is_on_screen())
         .filter_map(|window| {
-            let app = window.owning_app()?;
-            let bundle_id = app.bundle_id().to_string();
-            if !is_known_browser_bundle(&bundle_id) {
-                return None;
-            }
             let title = window
                 .title()
                 .map(|title| title.to_string())
