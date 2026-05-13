@@ -47,6 +47,7 @@
     ExcludedAppEntry,
     WebsiteRule,
     BrowserTitleRule,
+    BrowserTitleRuleMatchType,
     SpeakerAnalysisModelDownloadProgress,
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
@@ -71,6 +72,18 @@
   const SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT = "speaker_analysis_model_download_progress";
   const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
   const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
+
+  type PrivacyAppCandidate = ExcludedAppEntry & {
+    running: boolean;
+    iconPath: string | null;
+  };
+
+  type ParsedWebsiteRule = {
+    host: string | null;
+    includeSubdomains: boolean;
+    pathPrefix: string | null;
+    port: number | null;
+  };
 
   type RetentionCleanupSummary = {
     policy: string;
@@ -148,10 +161,12 @@
   let draftWebsiteRules = $state<WebsiteRule[]>([]);
   let draftBrowserTitleRules = $state<BrowserTitleRule[]>([]);
   let draftPrivateBrowserExclusionEnabled = $state(false);
-  let privacyAppCandidates = $state<ExcludedAppEntry[]>([]);
-  let selectedPrivacyCandidateBundleId = $state("");
+  let privacyAppCandidates = $state<PrivacyAppCandidate[]>([]);
+  let privacyAppComboboxQuery = $state("");
+  let privacyAppComboboxOpen = $state(false);
   let websiteRuleDraft = $state("");
   let titleRuleDraft = $state("");
+  let titleRuleDraftMatchType = $state<BrowserTitleRuleMatchType>("substring");
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
   let retentionCleanupRunning = $state(false);
   let retentionCleanupError = $state<string | null>(null);
@@ -708,39 +723,143 @@
         enabled: true,
         bundleId: candidate.bundleId,
         displayName: candidate.displayName,
+        running: candidate.running,
+        iconPath: candidate.iconPath,
       }));
     } catch {
       privacyAppCandidates = [];
     }
   }
 
-  function addSelectedPrivacyApp() {
-    const candidate = privacyAppCandidates.find((item) => item.bundleId === selectedPrivacyCandidateBundleId);
+  const availablePrivacyAppCandidates = $derived(
+    privacyAppCandidates.filter((candidate) => (
+      !draftExcludedApps.some((item) => item.bundleId === candidate.bundleId)
+    ))
+  );
+
+  function normalizedSearchValue(value: string): string {
+    return value.trim().toLocaleLowerCase();
+  }
+
+  function privacyAppCandidateSearchText(candidate: PrivacyAppCandidate): string {
+    return normalizedSearchValue(`${candidate.displayName} ${candidate.bundleId}`);
+  }
+
+  const filteredPrivacyAppCandidates = $derived((() => {
+    const query = normalizedSearchValue(privacyAppComboboxQuery);
+    const candidates = availablePrivacyAppCandidates;
+    if (!query) return candidates.slice(0, 12);
+    return candidates
+      .filter((candidate) => privacyAppCandidateSearchText(candidate).includes(query))
+      .slice(0, 12);
+  })());
+
+  function addPrivacyAppCandidate(candidate: PrivacyAppCandidate | null) {
     if (!candidate || draftExcludedApps.some((item) => item.bundleId === candidate.bundleId)) return;
     draftExcludedApps = [
       ...draftExcludedApps,
-      { ...candidate, id: makeDraftId("excluded-app"), enabled: true },
+      {
+        id: makeDraftId("excluded-app"),
+        enabled: true,
+        bundleId: candidate.bundleId,
+        displayName: candidate.displayName,
+      },
     ];
-    selectedPrivacyCandidateBundleId = "";
+    privacyAppComboboxQuery = "";
+    privacyAppComboboxOpen = false;
+  }
+
+  function handlePrivacyAppComboboxInput() {
+    privacyAppComboboxOpen = true;
+  }
+
+  function handlePrivacyAppComboboxKeydown(event: KeyboardEvent) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addSelectedPrivacyApp();
+      return;
+    }
+    if (event.key === "Escape") {
+      privacyAppComboboxOpen = false;
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      privacyAppComboboxOpen = true;
+    }
+  }
+
+  function closePrivacyAppComboboxSoon() {
+    window.setTimeout(() => {
+      privacyAppComboboxOpen = false;
+    }, 120);
+  }
+
+  function addSelectedPrivacyApp() {
+    const candidate = privacyAppComboboxQuery.trim() ? filteredPrivacyAppCandidates[0] : null;
+    addPrivacyAppCandidate(candidate);
   }
 
   function removePrivacyApp(id: string) {
     draftExcludedApps = draftExcludedApps.filter((item) => item.id !== id);
   }
 
+  function parseWebsiteRuleDraft(pattern: string): ParsedWebsiteRule | null {
+    const trimmed = pattern.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+      let host = parsed.hostname.toLocaleLowerCase();
+      const includeSubdomains = host.startsWith("*.");
+      if (includeSubdomains) host = host.slice(2);
+      if (!host) return null;
+      const port = parsed.port ? Number.parseInt(parsed.port, 10) : null;
+      return {
+        host,
+        includeSubdomains,
+        pathPrefix: parsed.pathname && parsed.pathname !== "/" ? parsed.pathname : null,
+        port: Number.isInteger(port) ? port : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  const websiteRuleDraftError = $derived((() => {
+    if (!websiteRuleDraft.trim()) return null;
+    return parseWebsiteRuleDraft(websiteRuleDraft) ? null : "Enter a valid domain or URL.";
+  })());
+
+  function formatWebsiteRuleDescription(rule: WebsiteRule): string {
+    const parsed = rule.host
+      ? {
+          host: rule.host,
+          includeSubdomains: rule.includeSubdomains,
+          pathPrefix: rule.pathPrefix,
+          port: rule.port,
+        }
+      : parseWebsiteRuleDraft(rule.pattern);
+    if (!parsed?.host) return "Website rule";
+    const host = parsed.includeSubdomains ? `*.${parsed.host}` : parsed.host;
+    const parts = [host];
+    if (parsed.pathPrefix) parts.push(parsed.pathPrefix);
+    if (parsed.port) parts.push(`port ${parsed.port}`);
+    return parts.join(" ");
+  }
+
   function addWebsiteRule() {
     const pattern = websiteRuleDraft.trim();
-    if (!pattern) return;
+    const parsed = parseWebsiteRuleDraft(pattern);
+    if (!pattern || !parsed) return;
     draftWebsiteRules = [
       ...draftWebsiteRules,
       {
         id: makeDraftId("website"),
         enabled: true,
         pattern,
-        host: null,
-        includeSubdomains: pattern.startsWith("*."),
-        pathPrefix: null,
-        port: null,
+        host: parsed.host,
+        includeSubdomains: parsed.includeSubdomains,
+        pathPrefix: parsed.pathPrefix,
+        port: parsed.port,
       },
     ];
     websiteRuleDraft = "";
@@ -750,18 +869,62 @@
     draftWebsiteRules = draftWebsiteRules.filter((item) => item.id !== id);
   }
 
+  function titleRuleRegexError(pattern: string): string | null {
+    try {
+      new RegExp(pattern);
+      return null;
+    } catch {
+      return "Invalid regex pattern.";
+    }
+  }
+
+  const titleRuleDraftError = $derived((() => {
+    const pattern = titleRuleDraft.trim();
+    if (!pattern || titleRuleDraftMatchType !== "regex") return null;
+    return titleRuleRegexError(pattern);
+  })());
+
+  const titleRuleValidationErrors = $derived((() => (
+    draftBrowserTitleRules
+      .filter((rule) => rule.enabled && rule.matchType === "regex")
+      .map((rule) => {
+        const error = titleRuleRegexError(rule.pattern);
+        return error ? `Title regex "${rule.pattern}" is invalid.` : null;
+      })
+      .filter((error): error is string => Boolean(error))
+  ))());
+
+  function handleRuleDraftKeydown(event: KeyboardEvent, addRule: () => void) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    addRule();
+  }
+
   function addTitleRule() {
     const pattern = titleRuleDraft.trim();
-    if (!pattern) return;
+    if (!pattern || titleRuleDraftError) return;
     draftBrowserTitleRules = [
       ...draftBrowserTitleRules,
-      { id: makeDraftId("title"), enabled: true, matchType: "substring", pattern },
+      { id: makeDraftId("title"), enabled: true, matchType: titleRuleDraftMatchType, pattern },
     ];
     titleRuleDraft = "";
+    titleRuleDraftMatchType = "substring";
   }
 
   function removeTitleRule(id: string) {
     draftBrowserTitleRules = draftBrowserTitleRules.filter((item) => item.id !== id);
+  }
+
+  function updateTitleRuleMatchType(id: string, value: string) {
+    draftBrowserTitleRules = draftBrowserTitleRules.map((rule) => (
+      rule.id === id
+        ? { ...rule, matchType: value as BrowserTitleRuleMatchType }
+        : rule
+    ));
+  }
+
+  function formatTitleRuleDescription(rule: BrowserTitleRule): string {
+    return rule.matchType === "regex" ? "Regex title rule" : "Substring title rule";
   }
 
   async function setBrowserUrlMode(mode: string) {
@@ -1516,6 +1679,7 @@
     if (resolutionSupportPendingForNonOriginal) {
       errors.push("Wait for capture support to load before saving preset/custom resolution.");
     }
+    errors.push(...titleRuleValidationErrors);
     return errors;
   })());
 
@@ -2182,55 +2346,162 @@
 
         <div class="settings-group">
           <span class="group-label">Excluded Apps</span>
-          <div class="settings-row">
-            <SelectMenu
-              value={selectedPrivacyCandidateBundleId}
-              onValueChange={(value) => { selectedPrivacyCandidateBundleId = value; }}
-              options={privacyAppCandidates.map((item) => ({ value: item.bundleId, label: item.displayName }))}
-              placeholder="Choose an app"
+          <div class="app-combobox">
+            <input
+              class="text-input app-combobox__input"
+              role="combobox"
+              aria-expanded={privacyAppComboboxOpen}
+              aria-controls="privacy-app-combobox-list"
+              aria-autocomplete="list"
+              bind:value={privacyAppComboboxQuery}
+              placeholder="Search installed apps"
+              oninput={handlePrivacyAppComboboxInput}
+              onfocus={() => { privacyAppComboboxOpen = true; }}
+              onblur={closePrivacyAppComboboxSoon}
+              onkeydown={handlePrivacyAppComboboxKeydown}
             />
-            <button class="btn btn--secondary btn--sm" type="button" onclick={addSelectedPrivacyApp}>Add</button>
-          </div>
-          <div class="settings-list">
-            {#each draftExcludedApps as app (app.id)}
-              <div class="settings-list-item">
-                <Switch bind:checked={app.enabled} label={app.displayName} description={app.bundleId} />
-                <button class="btn btn--ghost btn--sm" type="button" onclick={() => removePrivacyApp(app.id)}>Remove</button>
+            {#if privacyAppComboboxOpen}
+              <div class="app-combobox__panel" id="privacy-app-combobox-list" role="listbox">
+                {#if filteredPrivacyAppCandidates.length > 0}
+                  {#each filteredPrivacyAppCandidates as candidate (candidate.bundleId)}
+                    <button
+                      class="app-combobox__option"
+                      type="button"
+                      role="option"
+                      aria-selected="false"
+                      onmousedown={(event) => event.preventDefault()}
+                      onclick={() => addPrivacyAppCandidate(candidate)}
+                    >
+                      <span class="app-combobox__option-main">
+                        <span class="app-combobox__name">{candidate.displayName}</span>
+                        <span class="app-combobox__bundle">{candidate.bundleId}</span>
+                      </span>
+                      {#if candidate.running}
+                        <span class="badge badge--ok badge--sm">Running</span>
+                      {/if}
+                    </button>
+                  {/each}
+                {:else}
+                  <span class="app-combobox__empty">No matching installed apps</span>
+                {/if}
               </div>
-            {/each}
+            {/if}
+          </div>
+          <p class="group-hint">Press Enter or choose a result to exclude it. Running apps are marked when they match an installed app bundle.</p>
+          <div class="settings-list">
+            {#if draftExcludedApps.length > 0}
+              {#each draftExcludedApps as app (app.id)}
+                <div class="settings-list-item">
+                  <Switch bind:checked={app.enabled} label={app.displayName} description={app.bundleId} />
+                  <button class="btn btn--ghost btn--sm" type="button" onclick={() => removePrivacyApp(app.id)}>Remove</button>
+                </div>
+              {/each}
+            {:else}
+              <p class="empty-state">No app exclusions.</p>
+            {/if}
           </div>
         </div>
 
         <div class="settings-group">
           <span class="group-label">Website Exclusions</span>
-          <div class="settings-row">
-            <input class="text-input" bind:value={websiteRuleDraft} placeholder="example.com/private" />
-            <button class="btn btn--secondary btn--sm" type="button" onclick={addWebsiteRule}>Add</button>
+          <div class="privacy-add-row">
+            <div class="rule-draft-field">
+              <input
+                class="text-input"
+                class:text-input--empty={Boolean(websiteRuleDraft.trim() && websiteRuleDraftError)}
+                bind:value={websiteRuleDraft}
+                placeholder="example.com/private"
+                onkeydown={(event) => handleRuleDraftKeydown(event, addWebsiteRule)}
+              />
+              {#if websiteRuleDraftError}
+                <span class="rule-draft-error">{websiteRuleDraftError}</span>
+              {/if}
+            </div>
+            <button
+              class="btn icon-add-button"
+              type="button"
+              aria-label="Add website exclusion"
+              disabled={!websiteRuleDraft.trim() || Boolean(websiteRuleDraftError)}
+              onclick={addWebsiteRule}
+            >+</button>
           </div>
           <p class="group-hint">Website and title exclusions are best-effort and require metadata support for the active browser.</p>
           <div class="settings-list">
-            {#each draftWebsiteRules as rule (rule.id)}
-              <div class="settings-list-item">
-                <Switch bind:checked={rule.enabled} label={rule.pattern} description="Website rule" />
-                <button class="btn btn--ghost btn--sm" type="button" onclick={() => removeWebsiteRule(rule.id)}>Remove</button>
-              </div>
-            {/each}
+            {#if draftWebsiteRules.length > 0}
+              {#each draftWebsiteRules as rule (rule.id)}
+                <div class="settings-list-item">
+                  <Switch bind:checked={rule.enabled} label={rule.pattern} description={formatWebsiteRuleDescription(rule)} />
+                  <button class="btn btn--ghost btn--sm" type="button" onclick={() => removeWebsiteRule(rule.id)}>Remove</button>
+                </div>
+              {/each}
+            {:else}
+              <p class="empty-state">No website exclusions.</p>
+            {/if}
           </div>
         </div>
 
         <div class="settings-group">
           <span class="group-label">Browser Titles</span>
-          <div class="settings-row">
-            <input class="text-input" bind:value={titleRuleDraft} placeholder="private title text" />
-            <button class="btn btn--secondary btn--sm" type="button" onclick={addTitleRule}>Add</button>
+          <div class="privacy-add-row privacy-add-row--title">
+            <SelectMenu
+              value={titleRuleDraftMatchType}
+              onValueChange={(value) => { titleRuleDraftMatchType = value as BrowserTitleRuleMatchType; }}
+              options={[
+                { value: "substring", label: "Substring" },
+                { value: "regex", label: "Regex" },
+              ]}
+            />
+            <div class="rule-draft-field">
+              <input
+                class="text-input"
+                class:text-input--empty={Boolean(titleRuleDraft.trim() && titleRuleDraftError)}
+                bind:value={titleRuleDraft}
+                placeholder={titleRuleDraftMatchType === "regex" ? "Project .* confidential" : "private title text"}
+                onkeydown={(event) => handleRuleDraftKeydown(event, addTitleRule)}
+              />
+              {#if titleRuleDraftError}
+                <span class="rule-draft-error">{titleRuleDraftError}</span>
+              {/if}
+            </div>
+            <button
+              class="btn icon-add-button"
+              type="button"
+              aria-label="Add title exclusion"
+              disabled={!titleRuleDraft.trim() || Boolean(titleRuleDraftError)}
+              onclick={addTitleRule}
+            >+</button>
           </div>
           <div class="settings-list">
-            {#each draftBrowserTitleRules as rule (rule.id)}
-              <div class="settings-list-item">
-                <Switch bind:checked={rule.enabled} label={rule.pattern} description={rule.matchType === "regex" ? "Regex title rule" : "Substring title rule"} />
-                <button class="btn btn--ghost btn--sm" type="button" onclick={() => removeTitleRule(rule.id)}>Remove</button>
+            {#if titleRuleValidationErrors.length > 0}
+              <div class="inline-validation">
+                {#each titleRuleValidationErrors as err}
+                  <p class="inline-validation__item">
+                    <span class="inline-validation__icon">!</span>
+                    <span>{err}</span>
+                  </p>
+                {/each}
               </div>
-            {/each}
+            {/if}
+            {#if draftBrowserTitleRules.length > 0}
+              {#each draftBrowserTitleRules as rule (rule.id)}
+                <div class="settings-list-item settings-list-item--rule">
+                  <Switch bind:checked={rule.enabled} label={rule.pattern} description={formatTitleRuleDescription(rule)} />
+                  <div class="rule-row-actions">
+                    <SelectMenu
+                      value={rule.matchType}
+                      onValueChange={(value) => updateTitleRuleMatchType(rule.id, value)}
+                      options={[
+                        { value: "substring", label: "Substring" },
+                        { value: "regex", label: "Regex" },
+                      ]}
+                    />
+                    <button class="btn btn--ghost btn--sm" type="button" onclick={() => removeTitleRule(rule.id)}>Remove</button>
+                  </div>
+                </div>
+              {/each}
+            {:else}
+              <p class="empty-state">No title exclusions.</p>
+            {/if}
           </div>
         </div>
 
@@ -4373,11 +4644,107 @@
     align-items: center;
   }
 
-  .settings-row {
+  .privacy-add-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) 34px;
     gap: 8px;
-    align-items: end;
+    align-items: start;
+  }
+
+  .privacy-add-row--title {
+    grid-template-columns: minmax(128px, 0.32fr) minmax(0, 1fr) 34px;
+  }
+
+  .app-combobox {
+    position: relative;
+    min-width: 0;
+  }
+
+  .app-combobox__input {
+    width: 100%;
+  }
+
+  .app-combobox__panel {
+    position: absolute;
+    z-index: 40;
+    top: calc(100% + 4px);
+    right: 0;
+    left: 0;
+    display: flex;
+    max-height: 240px;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    box-shadow: 0 12px 30px color-mix(in srgb, var(--app-bg) 34%, transparent);
+  }
+
+  .app-combobox__option {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .app-combobox__option:hover {
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+  }
+
+  .app-combobox__option-main {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .app-combobox__name {
+    overflow: hidden;
+    color: var(--app-text-strong);
+    font-size: 12px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-combobox__bundle {
+    overflow: hidden;
+    color: var(--app-text-faint);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-combobox__empty {
+    padding: 10px;
+    color: var(--app-text-faint);
+    font-size: 11px;
+    font-style: italic;
+  }
+
+  .rule-draft-field {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .rule-draft-error {
+    color: var(--app-warn);
+    font-size: 10px;
+    line-height: 1.4;
   }
 
   .settings-list {
@@ -4396,6 +4763,18 @@
     border: 1px solid var(--app-border);
     border-radius: 6px;
     background: var(--app-surface-subtle);
+  }
+
+  .settings-list-item--rule {
+    grid-template-columns: minmax(0, 1fr) minmax(150px, auto);
+  }
+
+  .rule-row-actions {
+    display: grid;
+    min-width: 150px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
   }
 
   .text-input {
@@ -4462,6 +4841,25 @@
   .btn--sm {
     padding: 3px 8px;
     font-size: 9px;
+  }
+
+  .icon-add-button {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    font-size: 18px;
+    line-height: 1;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .icon-add-button:not(:disabled):hover {
+    border-color: var(--app-accent);
+    background: color-mix(in srgb, var(--app-accent-bg) 76%, var(--app-surface-hover));
+    color: var(--app-accent-strong);
   }
 
   .saved-badge {
@@ -5211,6 +5609,21 @@
     color: var(--app-text-faint);
   }
 
+  :global([data-theme="light"]) .app-combobox__panel {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border-strong);
+    box-shadow: 0 10px 28px color-mix(in srgb, var(--app-bg) 16%, transparent);
+  }
+
+  :global([data-theme="light"]) .app-combobox__option:hover {
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-hover);
+  }
+
+  :global([data-theme="light"]) .rule-draft-error {
+    color: var(--app-warn);
+  }
+
   :global([data-theme="light"]) .btn--ghost {
     color: var(--app-text-muted);
     border-color: var(--app-border-strong);
@@ -5219,6 +5632,11 @@
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
+  }
+  :global([data-theme="light"]) .icon-add-button {
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    border-color: var(--app-accent-border);
   }
   :global([data-theme="light"]) .saved-badge {
     color: var(--app-accent-strong);

@@ -35,6 +35,9 @@ use settings::{
     current_native_capture_debug_logging_enabled, current_recording_settings,
     initialize_recording_settings_state_from_disk,
 };
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(target_os = "macos")]
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -188,35 +191,179 @@ pub use metadata::{start_metadata_notifier, CaptureMetadataState};
 
 #[tauri::command]
 pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
-    let mut candidates = vec![PrivacyAppCandidate {
-        bundle_id: "com.shaikzeeshan.mnema".to_string(),
-        display_name: "Mnema".to_string(),
-        running: true,
-        icon_path: None,
-    }];
+    let mut candidates = BTreeMap::new();
+    insert_privacy_app_candidate(
+        &mut candidates,
+        PrivacyAppCandidate {
+            bundle_id: "com.shaikzeeshan.mnema".to_string(),
+            display_name: "Mnema".to_string(),
+            running: true,
+            icon_path: None,
+        },
+    );
 
     #[cfg(target_os = "macos")]
     {
-        candidates.extend(
-            [
-                ("com.1password.1password", "1Password"),
-                ("org.signal.Signal", "Signal"),
-                ("com.apple.Notes", "Notes"),
-                ("com.apple.mail", "Mail"),
-                ("com.apple.MobileSMS", "Messages"),
-                ("net.whatsapp.WhatsApp", "WhatsApp"),
-            ]
-            .into_iter()
-            .map(|(bundle_id, display_name)| PrivacyAppCandidate {
-                bundle_id: bundle_id.to_string(),
-                display_name: display_name.to_string(),
-                running: false,
-                icon_path: None,
-            }),
-        );
+        let running_bundle_ids = running_privacy_app_bundle_ids();
+        add_installed_privacy_app_candidates(&mut candidates);
+        mark_running_privacy_app_candidates(&mut candidates, &running_bundle_ids);
     }
 
+    let mut candidates: Vec<_> = candidates.into_values().collect();
+    candidates.sort_by(|left, right| {
+        left.display_name
+            .to_ascii_lowercase()
+            .cmp(&right.display_name.to_ascii_lowercase())
+            .then_with(|| left.bundle_id.cmp(&right.bundle_id))
+    });
     Ok(candidates)
+}
+
+fn insert_privacy_app_candidate(
+    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
+    candidate: PrivacyAppCandidate,
+) {
+    let bundle_id = candidate.bundle_id.trim();
+    if bundle_id.is_empty() {
+        return;
+    }
+
+    let display_name = candidate.display_name.trim();
+    let candidate = PrivacyAppCandidate {
+        bundle_id: bundle_id.to_string(),
+        display_name: if display_name.is_empty() {
+            bundle_id.to_string()
+        } else {
+            display_name.to_string()
+        },
+        running: candidate.running,
+        icon_path: candidate.icon_path,
+    };
+
+    if let Some(existing) = candidates.get_mut(&candidate.bundle_id) {
+        existing.running |= candidate.running;
+        if candidate.running || existing.display_name == existing.bundle_id {
+            existing.display_name = candidate.display_name;
+        }
+        if existing.icon_path.is_none() {
+            existing.icon_path = candidate.icon_path;
+        }
+        return;
+    }
+
+    candidates.insert(candidate.bundle_id.clone(), candidate);
+}
+
+#[cfg(target_os = "macos")]
+fn running_privacy_app_bundle_ids() -> BTreeSet<String> {
+    let mut bundle_ids = BTreeSet::new();
+    let running_apps = cidre::ns::Workspace::shared().running_apps();
+    for app in running_apps.iter() {
+        let Some(bundle_id) = app.bundle_id().map(|value| value.to_string()) else {
+            continue;
+        };
+        if app
+            .bundle_url()
+            .and_then(|url| url.path())
+            .map(|path| path_has_app_extension(Path::new(&path.to_string())))
+            .unwrap_or(false)
+        {
+            bundle_ids.insert(bundle_id);
+        }
+    }
+    bundle_ids
+}
+
+#[cfg(target_os = "macos")]
+fn mark_running_privacy_app_candidates(
+    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
+    running_bundle_ids: &BTreeSet<String>,
+) {
+    for bundle_id in running_bundle_ids {
+        if let Some(candidate) = candidates.get_mut(bundle_id) {
+            candidate.running = true;
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn add_installed_privacy_app_candidates(candidates: &mut BTreeMap<String, PrivacyAppCandidate>) {
+    for root in privacy_app_search_roots() {
+        collect_privacy_apps_from_dir(&root, 0, candidates);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn privacy_app_search_roots() -> Vec<PathBuf> {
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
+    if let Some(home) = std::env::home_dir() {
+        roots.push(home.join("Applications"));
+    }
+    roots
+}
+
+#[cfg(target_os = "macos")]
+fn collect_privacy_apps_from_dir(
+    dir: &Path,
+    depth: usize,
+    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
+) {
+    const MAX_DEPTH: usize = 4;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let path = entry.path();
+        if path_has_app_extension(&path) {
+            if let Some(candidate) = privacy_app_candidate_from_bundle_path(&path) {
+                insert_privacy_app_candidate(candidates, candidate);
+            }
+            continue;
+        }
+
+        if depth < MAX_DEPTH {
+            collect_privacy_apps_from_dir(&path, depth + 1, candidates);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn privacy_app_candidate_from_bundle_path(path: &Path) -> Option<PrivacyAppCandidate> {
+    let path = path.to_str()?;
+    let ns_path = cidre::ns::String::with_str(path);
+    let bundle = cidre::ns::Bundle::with_path(&ns_path)?;
+    let bundle_id = bundle.bundle_id()?.to_string();
+    let display_name = Path::new(path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(&bundle_id)
+        .to_string();
+
+    Some(PrivacyAppCandidate {
+        bundle_id,
+        display_name,
+        running: false,
+        icon_path: None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn path_has_app_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
 }
 
 #[tauri::command]
