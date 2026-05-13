@@ -3,10 +3,10 @@ use capture_metadata::{
     active_private_browser_detected, apply_metadata_redaction,
     apply_unverified_visible_browser_window_privacy_guard, apply_website_privacy_hold,
     browser_url_script_app_name, evaluate_privacy, is_known_browser_bundle,
-    is_known_browser_window, metadata_collection_plan, resolve_active_privacy_window_id,
-    resolve_private_browser_window_id, sanitize_url, select_frontmost_pid_window,
-    BrowserUrlProbeCache, FrameMetadataSnapshot, MetadataCollectionPlan, MetadataContext,
-    NativeActiveWindowSnapshot, PrivacyFilterDecision, PrivacySettings, RawWindowInfo,
+    metadata_collection_plan, resolve_active_privacy_window_id, resolve_private_browser_window_id,
+    sanitize_url, select_frontmost_pid_window, BrowserUrlProbeCache, FrameMetadataSnapshot,
+    MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot, PrivacyFilterDecision,
+    PrivacySettings, RawWindowInfo,
 };
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -291,7 +291,7 @@ fn collect_active_window_metadata(
     browser_url_probe_cache: &BrowserUrlProbeCache,
 ) -> ActiveWindowMetadata {
     let plan = metadata_collection_plan(metadata, privacy);
-    if !plan.collect_active_window && !plan.collect_visible_browser_windows {
+    if !plan.collect_active_window && !plan.collect_visible_windows {
         return ActiveWindowMetadata {
             snapshot: None,
             context: MetadataContext::default(),
@@ -320,14 +320,13 @@ fn collect_active_window_metadata(
             .and_then(|url| sanitize_url(url, metadata.browser_url_mode));
         let active_private_browser =
             active_private_browser_detected(privacy, bundle_id.as_deref(), window_title.as_deref());
-        let visible_browser_windows =
-            if plan.collect_visible_browser_windows || active_private_browser {
-                visible_title_rule_windows()
-            } else {
-                Vec::new()
-            };
+        let visible_windows = if plan.collect_visible_windows || active_private_browser {
+            visible_window_contexts()
+        } else {
+            Vec::new()
+        };
         let private_browser_window_id =
-            resolve_private_browser_window_id(privacy, &visible_browser_windows);
+            resolve_private_browser_window_id(privacy, &visible_windows);
         let private_browser_ambiguous_bundle_id = active_private_browser.then(|| {
             bundle_id
                 .clone()
@@ -337,12 +336,12 @@ fn collect_active_window_metadata(
             bundle_id.as_deref(),
             active_window.window_id,
             window_title.as_deref(),
-            &visible_browser_windows,
+            &visible_windows,
         );
         let snapshot = Some(FrameMetadataSnapshot {
             app_bundle_id: bundle_id.clone(),
             app_name,
-            window_title,
+            window_title: window_title.clone(),
             window_id: active_window.window_id,
             browser_url: snapshot_browser_url,
             display_id: None,
@@ -351,9 +350,10 @@ fn collect_active_window_metadata(
         let context = MetadataContext {
             active_bundle_id: bundle_id.clone(),
             active_window_id: active_window.window_id,
+            active_window_title: window_title,
             active_privacy_window_id,
             active_url: raw_browser_url,
-            visible_browser_windows,
+            visible_windows,
             private_browser_window_id,
             private_browser_ambiguous_bundle_id,
         };
@@ -525,7 +525,7 @@ fn cf_f64(
 }
 
 #[cfg(target_os = "macos")]
-fn visible_title_rule_windows() -> Vec<capture_metadata::BrowserWindowContext> {
+fn visible_window_contexts() -> Vec<capture_metadata::WindowContext> {
     let (tx, rx) = mpsc::channel();
     cidre::sc::ShareableContent::current_with_ch(move |content, error| {
         let result = match (content, error) {
@@ -551,13 +551,12 @@ fn visible_title_rule_windows() -> Vec<capture_metadata::BrowserWindowContext> {
                 .title()
                 .map(|title| title.to_string())
                 .unwrap_or_default();
-            Some(capture_metadata::BrowserWindowContext {
+            Some(capture_metadata::WindowContext {
                 window_id: window.id(),
                 bundle_id,
                 title,
             })
         })
-        .filter(|window| is_known_browser_window(window))
         .collect()
 }
 

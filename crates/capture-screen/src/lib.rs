@@ -177,6 +177,42 @@ impl PrivacyFilterApplicationState {
     fn applied_filter_matches(&self, next: &Self) -> bool {
         self.applied_key == next.applied_key
     }
+
+    fn diagnostic_state_matches(&self, next: &Self) -> bool {
+        self.requested_key == next.requested_key
+            && self.applied_key == next.applied_key
+            && self.unresolved_bundle_ids == next.unresolved_bundle_ids
+            && self.unresolved_window_ids == next.unresolved_window_ids
+    }
+}
+
+fn should_log_privacy_filter_diagnostics(
+    previous: Option<&PrivacyFilterApplicationState>,
+    next: &PrivacyFilterApplicationState,
+) -> bool {
+    previous.map_or(true, |previous| !previous.diagnostic_state_matches(next))
+}
+
+fn log_privacy_filter_diagnostics(state: &PrivacyFilterApplicationState) {
+    if !state.unresolved_bundle_ids.is_empty() {
+        capture_runtime::debug_log!(
+            "privacy filter requested bundle ids not present in ScreenCaptureKit content: {:?}",
+            state.unresolved_bundle_ids
+        );
+    }
+    if !state.unresolved_window_ids.is_empty() {
+        capture_runtime::debug_log!(
+            "privacy filter requested window ids not present in ScreenCaptureKit content: {:?}",
+            state.unresolved_window_ids
+        );
+    }
+    if state.applied_key.strategy == PrivacyContentFilterStrategy::IncludingAppsExceptingWindows {
+        capture_runtime::debug_log!(
+            "privacy filter using mixed bundle/window request as included non-excluded apps except requested windows: bundles={:?}, windows={:?}",
+            state.requested_key.bundle_ids,
+            state.requested_key.window_ids
+        );
+    }
 }
 
 fn plan_privacy_content_filter(
@@ -2479,13 +2515,23 @@ impl ScreenCaptureKitCaptureSession {
             return Ok(());
         }
         let built_filter = build_screen_capture_kit_content_filter(&filter)?;
+        let should_log_diagnostics = should_log_privacy_filter_diagnostics(
+            self.privacy_filter_state.as_ref(),
+            &built_filter.state,
+        );
         if self
             .privacy_filter_state
             .as_ref()
             .is_some_and(|state| state.applied_filter_matches(&built_filter.state))
         {
+            if should_log_diagnostics {
+                log_privacy_filter_diagnostics(&built_filter.state);
+            }
             self.privacy_filter_state = Some(built_filter.state);
             return Ok(());
+        }
+        if should_log_diagnostics {
+            log_privacy_filter_diagnostics(&built_filter.state);
         }
         let (tx, rx) = mpsc::channel();
         self.stream
@@ -2867,18 +2913,6 @@ fn build_screen_capture_kit_content_filter(
         &available_apps,
         &available_windows,
     );
-    if !plan.unresolved_bundle_ids.is_empty() {
-        capture_runtime::debug_log!(
-            "privacy filter requested bundle ids not present in ScreenCaptureKit content: {:?}",
-            plan.unresolved_bundle_ids
-        );
-    }
-    if !plan.unresolved_window_ids.is_empty() {
-        capture_runtime::debug_log!(
-            "privacy filter requested window ids not present in ScreenCaptureKit content: {:?}",
-            plan.unresolved_window_ids
-        );
-    }
 
     let state = PrivacyFilterApplicationState::from_plan(privacy_filter, &plan);
     let requested_excluded_windows: Vec<_> = windows
@@ -2939,11 +2973,6 @@ fn build_screen_capture_kit_content_filter(
                     included_apps.push(app.retained());
                 }
             }
-            capture_runtime::debug_log!(
-                "privacy filter applying mixed bundle/window request as included non-excluded apps except requested windows: bundles={:?}, windows={:?}",
-                privacy_filter.excluded_bundle_ids,
-                privacy_filter.excluded_window_ids
-            );
             let app_array = cidre::ns::Array::from_slice_retained(&included_apps);
             let window_array = cidre::ns::Array::from_slice_retained(&requested_excluded_windows);
             cidre::sc::ContentFilter::with_display_including_apps_excepting_windows(
@@ -3531,6 +3560,7 @@ fn start_screen_capture_kit_session(
                         code: "privacy_filter_apply_failed".to_string(),
                         message: error.message,
                     })?;
+                log_privacy_filter_diagnostics(&built_filter.state);
                 (built_filter.filter, Some(built_filter.state))
             } else {
                 (
@@ -4581,6 +4611,72 @@ mod tests {
 
         assert!(resolved_state.satisfies_request(&requested.key()));
         assert!(!unresolved_state.applied_filter_matches(&resolved_state));
+    }
+
+    #[test]
+    fn repeated_unresolved_privacy_filter_plan_suppresses_duplicate_diagnostics() {
+        let requested = PrivacyContentFilter {
+            display_id: 0,
+            excluded_bundle_ids: vec!["com.secret".to_string()],
+            excluded_window_ids: vec![42],
+        };
+        let requested_bundle_ids = std::collections::BTreeSet::from(["com.secret".to_string()]);
+        let requested_window_ids = std::collections::BTreeSet::from([42]);
+        let plan = plan_privacy_content_filter(
+            &requested_bundle_ids,
+            &requested_window_ids,
+            &[],
+            &[PrivacyFilterAvailableWindow {
+                id: 42,
+                owning_bundle_id: Some("com.example.visible".to_string()),
+            }],
+        );
+        let previous = PrivacyFilterApplicationState::from_plan(&requested, &plan);
+        let next = PrivacyFilterApplicationState::from_plan(&requested, &plan);
+
+        assert!(should_log_privacy_filter_diagnostics(None, &next));
+        assert!(!should_log_privacy_filter_diagnostics(
+            Some(&previous),
+            &next
+        ));
+    }
+
+    #[test]
+    fn privacy_filter_diagnostics_log_when_unresolved_targets_change() {
+        let previous_request = PrivacyContentFilter {
+            display_id: 0,
+            excluded_bundle_ids: vec!["com.secret".to_string()],
+            excluded_window_ids: vec![42],
+        };
+        let next_request = PrivacyContentFilter {
+            display_id: 0,
+            excluded_bundle_ids: vec!["com.other-secret".to_string()],
+            excluded_window_ids: vec![42],
+        };
+        let requested_window_ids = std::collections::BTreeSet::from([42]);
+        let available_windows = vec![PrivacyFilterAvailableWindow {
+            id: 42,
+            owning_bundle_id: Some("com.example.visible".to_string()),
+        }];
+        let previous_plan = plan_privacy_content_filter(
+            &std::collections::BTreeSet::from(["com.secret".to_string()]),
+            &requested_window_ids,
+            &[],
+            &available_windows,
+        );
+        let next_plan = plan_privacy_content_filter(
+            &std::collections::BTreeSet::from(["com.other-secret".to_string()]),
+            &requested_window_ids,
+            &[],
+            &available_windows,
+        );
+        let previous = PrivacyFilterApplicationState::from_plan(&previous_request, &previous_plan);
+        let next = PrivacyFilterApplicationState::from_plan(&next_request, &next_plan);
+
+        assert!(should_log_privacy_filter_diagnostics(
+            Some(&previous),
+            &next
+        ));
     }
 
     #[test]
