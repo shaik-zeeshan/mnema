@@ -3,10 +3,10 @@ use capture_metadata::{
     active_private_browser_detected, apply_metadata_redaction,
     apply_unverified_visible_browser_window_privacy_guard, apply_website_privacy_hold,
     browser_url_script_app_name, evaluate_privacy, is_known_browser_bundle,
-    is_private_browser_title, metadata_collection_plan, resolve_active_privacy_window_id,
-    sanitize_url, select_frontmost_pid_window, BrowserUrlProbeCache, FrameMetadataSnapshot,
-    MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot, PrivacyFilterDecision,
-    PrivacySettings, RawWindowInfo,
+    is_known_browser_window, metadata_collection_plan, resolve_active_privacy_window_id,
+    resolve_private_browser_window_id, sanitize_url, select_frontmost_pid_window,
+    BrowserUrlProbeCache, FrameMetadataSnapshot, MetadataCollectionPlan, MetadataContext,
+    NativeActiveWindowSnapshot, PrivacyFilterDecision, PrivacySettings, RawWindowInfo,
 };
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -326,15 +326,8 @@ fn collect_active_window_metadata(
             } else {
                 Vec::new()
             };
-        let private_browser_window_id = privacy
-            .private_browser_exclusion_enabled
-            .then(|| {
-                visible_browser_windows
-                    .iter()
-                    .find(|window| is_private_browser_title(&window.title))
-                    .map(|window| window.window_id)
-            })
-            .flatten();
+        let private_browser_window_id =
+            resolve_private_browser_window_id(privacy, &visible_browser_windows);
         let private_browser_ambiguous_bundle_id = active_private_browser.then(|| {
             bundle_id
                 .clone()
@@ -564,6 +557,7 @@ fn visible_title_rule_windows() -> Vec<capture_metadata::BrowserWindowContext> {
                 title,
             })
         })
+        .filter(|window| is_known_browser_window(window))
         .collect()
 }
 

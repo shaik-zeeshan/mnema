@@ -310,6 +310,27 @@ pub fn is_known_browser_bundle(bundle_id: &str) -> bool {
     known_browser_app(bundle_id).is_some()
 }
 
+pub fn is_known_browser_window(window: &BrowserWindowContext) -> bool {
+    window
+        .bundle_id
+        .as_deref()
+        .is_some_and(is_known_browser_bundle)
+}
+
+pub fn resolve_private_browser_window_id(
+    privacy: &PrivacySettings,
+    visible_browser_windows: &[BrowserWindowContext],
+) -> Option<u32> {
+    if !privacy.private_browser_exclusion_enabled {
+        return None;
+    }
+
+    visible_browser_windows
+        .iter()
+        .find(|window| is_known_browser_window(window) && is_private_browser_title(&window.title))
+        .map(|window| window.window_id)
+}
+
 pub fn browser_url_script_app_name(bundle_id: &str) -> Option<&'static str> {
     known_browser_app(bundle_id).and_then(|browser| browser.url_script_app_name)
 }
@@ -736,7 +757,7 @@ pub fn evaluate_privacy(
 
     for rule in &settings.browser_title_rules {
         for window in &context.visible_browser_windows {
-            if title_rule_matches(rule, &window.title) {
+            if is_known_browser_window(window) && title_rule_matches(rule, &window.title) {
                 window_ids.insert(window.window_id);
                 window_reasons.insert(window.window_id, REDACTION_REASON_TITLE_RULE.to_string());
                 rule_ids.insert(rule.id.clone());
@@ -903,22 +924,22 @@ mod tests {
         let decision = evaluate_privacy(
             &settings,
             &MetadataContext {
-                active_bundle_id: Some("com.browser".into()),
+                active_bundle_id: Some("com.google.Chrome".into()),
                 active_window_id: Some(7),
                 active_privacy_window_id: Some(7),
                 active_url: Some("https://example.com/private".into()),
                 visible_browser_windows: vec![BrowserWindowContext {
                     window_id: 7,
-                    bundle_id: Some("com.browser".into()),
+                    bundle_id: Some("com.google.Chrome".into()),
                     title: "Vault".into(),
                 }],
                 private_browser_window_id: Some(9),
-                private_browser_ambiguous_bundle_id: Some("com.browser".into()),
+                private_browser_ambiguous_bundle_id: Some("com.google.Chrome".into()),
             },
         );
         assert_eq!(
             decision.excluded_bundle_ids,
-            vec!["com.browser", "com.secret"]
+            vec!["com.google.Chrome", "com.secret"]
         );
         assert_eq!(decision.excluded_window_ids, vec![7, 9]);
         assert_eq!(
@@ -1545,6 +1566,84 @@ mod tests {
         assert!(is_private_browser_title("Bank - Microsoft Edge InPrivate"));
         assert!(is_private_browser_title("Example - Safari (Private)"));
         assert!(!is_private_browser_title("Example Site - Helium"));
+    }
+
+    #[test]
+    fn private_browser_window_resolution_ignores_non_browser_titles() {
+        let privacy = PrivacySettings {
+            private_browser_exclusion_enabled: true,
+            ..PrivacySettings::default()
+        };
+        let visible_windows = vec![
+            BrowserWindowContext {
+                window_id: 7,
+                bundle_id: Some("com.apple.finder".to_string()),
+                title: "Incognito project notes".to_string(),
+            },
+            BrowserWindowContext {
+                window_id: 9,
+                bundle_id: Some("com.google.Chrome".to_string()),
+                title: "New Incognito Tab - Google Chrome".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            resolve_private_browser_window_id(&privacy, &visible_windows),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn private_browser_window_resolution_requires_known_browser_bundle() {
+        let privacy = PrivacySettings {
+            private_browser_exclusion_enabled: true,
+            ..PrivacySettings::default()
+        };
+        let visible_windows = vec![BrowserWindowContext {
+            window_id: 7,
+            bundle_id: Some("com.apple.finder".to_string()),
+            title: "Incognito project notes".to_string(),
+        }];
+
+        assert_eq!(
+            resolve_private_browser_window_id(&privacy, &visible_windows),
+            None
+        );
+    }
+
+    #[test]
+    fn browser_title_rules_ignore_non_browser_windows() {
+        let privacy = PrivacySettings {
+            private_browser_exclusion_enabled: false,
+            browser_title_rules: vec![BrowserTitleRule {
+                id: "title-rule".to_string(),
+                enabled: true,
+                match_type: BrowserTitleRuleMatchType::Substring,
+                pattern: "secret".to_string(),
+            }],
+            ..PrivacySettings::default()
+        };
+        let context = MetadataContext {
+            visible_browser_windows: vec![
+                BrowserWindowContext {
+                    window_id: 7,
+                    bundle_id: Some("com.apple.finder".to_string()),
+                    title: "Secret project notes".to_string(),
+                },
+                BrowserWindowContext {
+                    window_id: 9,
+                    bundle_id: Some("com.google.Chrome".to_string()),
+                    title: "Public dashboard".to_string(),
+                },
+            ],
+            ..MetadataContext::default()
+        };
+
+        let decision = evaluate_privacy(&privacy, &context);
+
+        assert!(decision.excluded_window_ids.is_empty());
+        assert!(decision.matched_rule_ids.is_empty());
+        assert!(!decision.privacy_filter_applied);
     }
 
     #[test]
