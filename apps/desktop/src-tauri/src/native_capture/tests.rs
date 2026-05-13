@@ -2729,6 +2729,43 @@ fn plan_live_rotation_segment_keeps_emitted_numbering_contiguous_when_schedule_j
 
 #[cfg(target_os = "macos")]
 #[test]
+fn plan_live_rotation_segment_skips_explicit_all_paused_sources() {
+    let runtime = NativeCaptureRuntime {
+        current_segment_index: 4,
+        ..Default::default()
+    };
+    let sources = CaptureSources {
+        screen: false,
+        microphone: false,
+        system_audio: false,
+    };
+    let screen_planner = SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-screen-live",
+        "2026/04/28",
+    );
+    let clock = CaptureClock::start_now();
+    let schedule = SegmentSchedule::new(std::time::Duration::from_millis(1));
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    assert!(
+        plan_live_rotation_segment(
+            &runtime,
+            &sources,
+            &screen_planner,
+            None,
+            None,
+            &schedule,
+            &clock
+        )
+        .is_none(),
+        "privacy suspension with all sources paused should preserve the explicit paused sentinel"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn rotation_seeds_missing_system_audio_planner_before_planning_output_path() {
     let mut runtime = NativeCaptureRuntime {
         current_segment_index: 4,

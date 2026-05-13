@@ -30,10 +30,10 @@ use super::lifecycle::TickOutcome;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
-    mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms, prefixed_capture_id,
-    refresh_runtime_planner_dates, reset_runtime_after_start_error, screen_planner_for_runtime,
-    should_recover_from_segment_finalize_error, NativeCaptureRuntime, PrivacyCaptureSuspension,
-    PrivacyCaptureSuspensionStatus, SegmentLoopControl,
+    has_any_capture_sources, mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms,
+    prefixed_capture_id, refresh_runtime_planner_dates, reset_runtime_after_start_error,
+    screen_planner_for_runtime, should_recover_from_segment_finalize_error, NativeCaptureRuntime,
+    PrivacyCaptureSuspension, PrivacyCaptureSuspensionStatus, SegmentLoopControl,
 };
 use super::NativeCaptureState;
 
@@ -666,6 +666,10 @@ pub(super) fn plan_live_rotation_segment(
     schedule: &SegmentSchedule,
     clock: &CaptureClock,
 ) -> Option<PlannedSegmentRotation> {
+    if !has_any_capture_sources(sources) {
+        return None;
+    }
+
     if !schedule.segment_duration_reached(clock.elapsed()) {
         return None;
     }
