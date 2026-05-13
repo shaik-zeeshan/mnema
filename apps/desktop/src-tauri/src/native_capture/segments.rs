@@ -18,9 +18,9 @@ use capture_types::{
 use capture_vad::MicrophoneVadRuntime;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::Manager;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc;
@@ -44,6 +44,7 @@ use super::NativeCaptureState;
 const FRAME_ARTIFACT_BUFFER_CAPACITY: usize = 64;
 const SEGMENT_LOOP_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const PRIVACY_FILTER_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const PRIVACY_FILTER_POLL_STOP_CHECK_INTERVAL: Duration = Duration::from_millis(50);
 
 #[cfg(target_os = "macos")]
 fn persist_capture_session_started(
@@ -645,6 +646,120 @@ pub(super) fn segment_loop_sleep_duration(
     schedule
         .sleep_until_next_boundary(clock)
         .min(SEGMENT_LOOP_IDLE_POLL_INTERVAL)
+}
+
+// Privacy metadata collection can run AppleScript, so the Recording Lifecycle
+// loop only consumes already-collected updates.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct LatestPrivacyFilterPollUpdate<T> {
+    update: Arc<Mutex<Option<T>>>,
+}
+
+#[cfg(target_os = "macos")]
+impl<T> Clone for LatestPrivacyFilterPollUpdate<T> {
+    fn clone(&self) -> Self {
+        Self {
+            update: Arc::clone(&self.update),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl<T> LatestPrivacyFilterPollUpdate<T> {
+    fn new() -> Self {
+        Self {
+            update: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn store(&self, update: T) -> bool {
+        let Ok(mut latest) = self.update.lock() else {
+            return false;
+        };
+        *latest = Some(update);
+        true
+    }
+
+    fn take(&self) -> Option<T> {
+        self.update.lock().ok().and_then(|mut latest| latest.take())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn privacy_filter_poll_runtime_should_continue(app_handle: &tauri::AppHandle) -> bool {
+    let capture_state = app_handle.state::<NativeCaptureState>();
+    capture_state
+        .lock()
+        .map(|runtime| {
+            let runtime = runtime.runtime();
+            runtime.is_running
+                && runtime.segment_schedule.is_some()
+                && runtime.capture_clock.is_some()
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn sleep_privacy_filter_poll_interval(stop: &AtomicBool) {
+    let started = Instant::now();
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= PRIVACY_FILTER_POLL_INTERVAL {
+            break;
+        }
+
+        thread::sleep(
+            PRIVACY_FILTER_POLL_INTERVAL
+                .saturating_sub(elapsed)
+                .min(PRIVACY_FILTER_POLL_STOP_CHECK_INTERVAL),
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_privacy_filter_poll_loop(
+    app_handle: tauri::AppHandle,
+    stop: Arc<AtomicBool>,
+) -> LatestPrivacyFilterPollUpdate<privacy::PrivacyFilterUpdate> {
+    let runtime_app_handle = app_handle.clone();
+    spawn_privacy_filter_poll_loop_with_collector(
+        stop,
+        move || privacy_filter_poll_runtime_should_continue(&runtime_app_handle),
+        move || privacy::collect_privacy_filter_update(&app_handle),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_privacy_filter_poll_loop_with_collector<T, ShouldContinue, Collect>(
+    stop: Arc<AtomicBool>,
+    mut should_continue: ShouldContinue,
+    mut collect: Collect,
+) -> LatestPrivacyFilterPollUpdate<T>
+where
+    T: Send + 'static,
+    ShouldContinue: FnMut() -> bool + Send + 'static,
+    Collect: FnMut() -> T + Send + 'static,
+{
+    let latest_update = LatestPrivacyFilterPollUpdate::new();
+    let worker_latest_update = latest_update.clone();
+    thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) && should_continue() {
+            let update = collect();
+            if stop.load(Ordering::Relaxed) || !should_continue() {
+                break;
+            }
+            if !worker_latest_update.store(update) {
+                break;
+            }
+            sleep_privacy_filter_poll_interval(&stop);
+        }
+    });
+    latest_update
 }
 
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
@@ -3374,111 +3489,104 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
         stop: Arc::new(AtomicBool::new(false)),
     };
     let stop = control.stop.clone();
+    let pending_privacy_filter_update =
+        spawn_privacy_filter_poll_loop(app_handle.clone(), stop.clone());
 
-    thread::spawn(move || {
-        let mut last_privacy_filter_poll = std::time::Instant::now() - PRIVACY_FILTER_POLL_INTERVAL;
-        loop {
-            let sleep_duration = {
-                let capture_state = app_handle.state::<NativeCaptureState>();
-                let runtime = match capture_state.lock() {
-                    Ok(runtime) => runtime,
-                    Err(_) => break,
-                };
-                let runtime = runtime.runtime();
-
-                if !runtime.is_running {
-                    break;
-                }
-
-                let Some(schedule) = runtime.segment_schedule.as_ref() else {
-                    break;
-                };
-                let Some(clock) = runtime.capture_clock.as_ref() else {
-                    break;
-                };
-
-                segment_loop_sleep_duration(schedule, clock)
-            };
-
-            if !sleep_duration.is_zero() {
-                thread::sleep(sleep_duration);
-            }
-
-            if stop.load(Ordering::Relaxed) {
-                break;
-            }
-
-            let privacy_filter_update =
-                if last_privacy_filter_poll.elapsed() >= PRIVACY_FILTER_POLL_INTERVAL {
-                    last_privacy_filter_poll = std::time::Instant::now();
-                    Some(privacy::collect_privacy_filter_update(&app_handle))
-                } else {
-                    None
-                };
-
+    thread::spawn(move || loop {
+        let sleep_duration = {
             let capture_state = app_handle.state::<NativeCaptureState>();
-            let mut runtime = match capture_state.lock() {
+            let runtime = match capture_state.lock() {
                 Ok(runtime) => runtime,
                 Err(_) => break,
             };
+            let runtime = runtime.runtime();
 
-            if !runtime.runtime().is_running || stop.load(Ordering::Relaxed) {
+            if !runtime.is_running {
                 break;
             }
 
-            if let Some(privacy_filter_update) = privacy_filter_update {
-                if runtime.runtime().privacy_capture_suspension.is_some() {
-                    match attempt_privacy_suspension_recovery(&app_handle, runtime.runtime_mut()) {
-                        PrivacySuspensionRecoveryOutcome::Recovered => {
-                            super::debug_log::log(
-                                "privacy filter recovered; restarted screen/system-audio capture",
-                            );
-                        }
-                        PrivacySuspensionRecoveryOutcome::RestartRequired => {}
-                        PrivacySuspensionRecoveryOutcome::RetryPending
-                        | PrivacySuspensionRecoveryOutcome::NotSuspended => {}
+            let Some(schedule) = runtime.segment_schedule.as_ref() else {
+                break;
+            };
+            let Some(clock) = runtime.capture_clock.as_ref() else {
+                break;
+            };
+
+            segment_loop_sleep_duration(schedule, clock)
+        };
+
+        if !sleep_duration.is_zero() {
+            thread::sleep(sleep_duration);
+        }
+
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let privacy_filter_update = pending_privacy_filter_update.take();
+
+        let capture_state = app_handle.state::<NativeCaptureState>();
+        let mut runtime = match capture_state.lock() {
+            Ok(runtime) => runtime,
+            Err(_) => break,
+        };
+
+        if !runtime.runtime().is_running || stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        if let Some(privacy_filter_update) = privacy_filter_update {
+            if runtime.runtime().privacy_capture_suspension.is_some() {
+                match attempt_privacy_suspension_recovery(&app_handle, runtime.runtime_mut()) {
+                    PrivacySuspensionRecoveryOutcome::Recovered => {
+                        super::debug_log::log(
+                            "privacy filter recovered; restarted screen/system-audio capture",
+                        );
                     }
-                } else if let Err(error) = privacy::apply_privacy_filter_update(
-                    &app_handle,
+                    PrivacySuspensionRecoveryOutcome::RestartRequired => {}
+                    PrivacySuspensionRecoveryOutcome::RetryPending
+                    | PrivacySuspensionRecoveryOutcome::NotSuspended => {}
+                }
+            } else if let Err(error) = privacy::apply_privacy_filter_update(
+                &app_handle,
+                runtime.runtime_mut(),
+                privacy_filter_update,
+            ) {
+                super::debug_log::log(format!(
+                    "privacy filter update failed; suspending screen/system-audio capture: [{}] {}",
+                    error.code, error.message
+                ));
+                suspend_screen_system_audio_for_privacy_failure(
+                    Some(&app_handle),
                     runtime.runtime_mut(),
-                    privacy_filter_update,
-                ) {
-                    super::debug_log::log(format!(
-                        "privacy filter update failed; suspending screen/system-audio capture: [{}] {}",
-                        error.code, error.message
-                    ));
-                    suspend_screen_system_audio_for_privacy_failure(
+                    &error,
+                );
+                if !runtime
+                    .runtime()
+                    .requested_sources
+                    .as_ref()
+                    .is_some_and(|sources| sources.microphone)
+                {
+                    commit_suspended_screen_system_outputs(
                         Some(&app_handle),
                         runtime.runtime_mut(),
-                        &error,
                     );
-                    if !runtime
-                        .runtime()
-                        .requested_sources
-                        .as_ref()
-                        .is_some_and(|sources| sources.microphone)
-                    {
-                        commit_suspended_screen_system_outputs(
-                            Some(&app_handle),
-                            runtime.runtime_mut(),
-                        );
-                        mark_runtime_session_failed(runtime.runtime_mut());
-                        break;
-                    }
+                    mark_runtime_session_failed(runtime.runtime_mut());
+                    break;
                 }
             }
+        }
 
-            match runtime.tick_inactivity(&app_handle) {
-                TickOutcome::Continue => {}
-                TickOutcome::SkipRotation => continue,
-                TickOutcome::StopLoop => break,
-            }
+        match runtime.tick_inactivity(&app_handle) {
+            TickOutcome::Continue => {}
+            TickOutcome::SkipRotation => continue,
+            TickOutcome::StopLoop => break,
+        }
 
-            match runtime.tick_rotation(&app_handle) {
-                TickOutcome::Continue => {}
-                TickOutcome::SkipRotation => continue,
-                TickOutcome::StopLoop => break,
-            }
+        match runtime.tick_rotation(&app_handle) {
+            TickOutcome::Continue => {}
+            TickOutcome::SkipRotation => continue,
+            TickOutcome::StopLoop => break,
         }
     });
 
@@ -3488,6 +3596,62 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_privacy_filter_poll_update_replaces_stale_update() {
+        let latest_update = LatestPrivacyFilterPollUpdate::new();
+
+        assert!(latest_update.store(1));
+        assert!(latest_update.store(2));
+
+        assert_eq!(latest_update.take(), Some(2));
+        assert_eq!(latest_update.take(), None);
+    }
+
+    #[test]
+    fn privacy_filter_poll_worker_does_not_block_latest_update_consumer() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (collector_started_tx, collector_started_rx) = std::sync::mpsc::channel();
+        let (release_collector_tx, release_collector_rx) = std::sync::mpsc::channel();
+        let latest_update = spawn_privacy_filter_poll_loop_with_collector(
+            Arc::clone(&stop),
+            || true,
+            move || {
+                let _ = collector_started_tx.send(());
+                release_collector_rx
+                    .recv()
+                    .expect("collector should be released by the test");
+                42
+            },
+        );
+
+        collector_started_rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("poll worker should start collection");
+
+        let started = Instant::now();
+        assert_eq!(latest_update.take(), None);
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "taking the latest privacy update must not wait for collection"
+        );
+
+        release_collector_tx
+            .send(())
+            .expect("collector release should be sent");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if latest_update.take() == Some(42) {
+                stop.store(true, Ordering::Relaxed);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "poll worker should publish the collected update"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     #[test]
     fn privacy_failure_without_microphone_commits_current_screen_output_before_runtime_failure() {
