@@ -3581,10 +3581,6 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                     .as_ref()
                     .is_some_and(|sources| sources.microphone)
                 {
-                    commit_suspended_screen_system_outputs(
-                        Some(&app_handle),
-                        runtime.runtime_mut(),
-                    );
                     mark_runtime_session_failed(runtime.runtime_mut());
                     break;
                 }
@@ -3765,7 +3761,10 @@ mod tests {
         };
 
         suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error);
-        commit_suspended_screen_system_outputs(None, &mut runtime);
+        assert!(
+            runtime.current_segment_output_files.is_none(),
+            "without microphone continuation, suspended screen/system outputs should already be committed and detached"
+        );
         mark_runtime_session_failed(&mut runtime);
 
         assert!(!runtime.is_running);
