@@ -2895,7 +2895,12 @@ fn firefox_browser_url_support_is_reported_unknown() {
         .expect("browser URL support check should succeed");
 
         assert!(!response.supported);
-        assert!(response.warning.is_some());
+        assert_eq!(
+            response.warning.as_deref(),
+            Some(
+                "URL metadata support is unknown for this browser. When website privacy rules are enabled, this browser may be redacted because its URL cannot be checked."
+            )
+        );
     });
 }
 

@@ -228,7 +228,7 @@ pub async fn check_browser_url_support(
         bundle_id: request.bundle_id,
         supported,
         warning: (!supported).then(|| {
-            "URL metadata support is unknown for this browser; browsing will still be recorded."
+            "URL metadata support is unknown for this browser. When website privacy rules are enabled, this browser may be redacted because its URL cannot be checked."
                 .to_string()
         }),
     })
