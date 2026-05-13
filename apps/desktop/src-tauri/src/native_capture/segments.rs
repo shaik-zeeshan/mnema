@@ -833,7 +833,7 @@ fn suspend_screen_system_audio_for_privacy_failure(
 
 #[cfg(target_os = "macos")]
 fn commit_suspended_screen_system_outputs(
-    app_handle: &tauri::AppHandle,
+    app_handle: Option<&tauri::AppHandle>,
     runtime: &mut NativeCaptureRuntime,
 ) {
     let Some(requested_sources) = runtime.requested_sources.as_ref() else {
@@ -864,7 +864,7 @@ fn commit_suspended_screen_system_outputs(
                 append_committed_segment_output_files(committed, &output_files);
             }
             persist_committed_audio_segments(
-                Some(app_handle),
+                app_handle,
                 runtime.source_sessions.as_ref(),
                 runtime.segment_schedule.as_ref(),
                 runtime.current_segment_index,
@@ -873,7 +873,7 @@ fn commit_suspended_screen_system_outputs(
         }
         Err(error) => {
             super::debug_log::log(format!(
-                "failed to finalize suspended screen/system-audio outputs before privacy recovery; continuing recovery: [{}] {}",
+                "failed to finalize suspended screen/system-audio outputs; continuing privacy handling: [{}] {}",
                 error.code, error.message
             ));
         }
@@ -984,7 +984,7 @@ fn attempt_privacy_suspension_recovery(
         }
     };
 
-    commit_suspended_screen_system_outputs(app_handle, runtime);
+    commit_suspended_screen_system_outputs(Some(app_handle), runtime);
     merge_live_microphone_continuation_into_segment_outputs(runtime, &mut segment_outputs);
     runtime.current_segment_index = next_index;
     runtime.current_segment_output_files = Some(segment_outputs);
@@ -3445,6 +3445,10 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                         .as_ref()
                         .is_some_and(|sources| sources.microphone)
                     {
+                        commit_suspended_screen_system_outputs(
+                            Some(&app_handle),
+                            runtime.runtime_mut(),
+                        );
                         mark_runtime_session_failed(runtime.runtime_mut());
                         break;
                     }
@@ -3466,6 +3470,64 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
     });
 
     control
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn privacy_failure_without_microphone_commits_current_screen_output_before_runtime_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_path = temp_dir.path().join("screen-segment.mov");
+        std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+            .expect("fake openable mov should be written");
+        let screen_path = screen_path.to_string_lossy().into_owned();
+
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: false,
+            }),
+            current_segment_sources: Some(CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: false,
+            }),
+            output_files: Some(empty_output_files()),
+            current_segment_output_files: Some(CaptureOutputFiles {
+                screen_file: Some(screen_path.clone()),
+                screen_files: vec![screen_path.clone()],
+                microphone_file: None,
+                microphone_files: Vec::new(),
+                system_audio_file: None,
+                system_audio_files: Vec::new(),
+            }),
+            recording_file: Some(screen_path.clone()),
+            ..Default::default()
+        };
+        let error = CaptureErrorResponse {
+            code: "privacy_update_failed".to_string(),
+            message: "privacy update failed".to_string(),
+        };
+
+        suspend_screen_system_audio_for_privacy_failure(&mut runtime, &error);
+        commit_suspended_screen_system_outputs(None, &mut runtime);
+        mark_runtime_session_failed(&mut runtime);
+
+        assert!(!runtime.is_running);
+        assert!(runtime.current_segment_output_files.is_none());
+        let output_files = runtime
+            .output_files
+            .expect("committed output files should be preserved after runtime failure");
+        assert_eq!(
+            output_files.screen_file.as_deref(),
+            Some(screen_path.as_str())
+        );
+        assert_eq!(output_files.screen_files, vec![screen_path]);
+    }
 }
 
 pub(super) fn start_capture_runtime(
