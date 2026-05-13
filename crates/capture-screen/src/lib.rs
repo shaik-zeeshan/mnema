@@ -2743,15 +2743,6 @@ fn build_screen_capture_kit_content_filter(
 
     if !excluded_apps.is_empty() {
         if has_requested_window_exclusions {
-            if !unresolved_window_ids.is_empty() {
-                return Err(PrivacyFilterApplyError {
-                    kind: PrivacyFilterApplyErrorKind::FilterUpdateFailed,
-                    message: format!(
-                        "Privacy filter could not resolve requested window ids for mixed app/window exclusion: {:?}",
-                        unresolved_window_ids
-                    ),
-                });
-            }
             for window in &requested_excluded_windows {
                 let Some(app) = window.owning_app() else {
                     return Err(PrivacyFilterApplyError {

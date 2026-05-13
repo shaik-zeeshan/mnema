@@ -234,6 +234,13 @@
     );
   }
 
+  function isPrivacySuspendedSource(src: {
+    requested: boolean;
+    reason: string | null;
+  }): boolean {
+    return src.requested && isPrivacySuspensionReason(src.reason);
+  }
+
   function formatSuspendedVisualSources(keys: SourceLane["key"][]): string {
     const labels = keys.map((key) => {
       if (key === "systemAudio") return "system audio";
@@ -250,14 +257,10 @@
     if (!rs) return null;
 
     const suspendedSources: SourceLane["key"][] = [];
-    if (rs.screen.requested && rs.screen.paused && isPrivacySuspensionReason(rs.screen.reason)) {
+    if (isPrivacySuspendedSource(rs.screen)) {
       suspendedSources.push("screen");
     }
-    if (
-      rs.systemAudio.requested &&
-      rs.systemAudio.paused &&
-      isPrivacySuspensionReason(rs.systemAudio.reason)
-    ) {
+    if (isPrivacySuspendedSource(rs.systemAudio)) {
       suspendedSources.push("systemAudio");
     }
     if (suspendedSources.length === 0) return null;
