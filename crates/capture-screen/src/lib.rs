@@ -111,7 +111,7 @@ pub fn privacy_filter_changed(
 enum PrivacyContentFilterStrategy {
     ExcludingWindows,
     ExcludingApps,
-    IncludingAppsExceptingWindows,
+    ExcludingAppWindowsAndWindows,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,7 +129,6 @@ struct PrivacyFilterAvailableWindow {
 struct PrivacyContentFilterPlan {
     strategy: PrivacyContentFilterStrategy,
     excluded_bundle_ids: std::collections::BTreeSet<String>,
-    included_bundle_ids: std::collections::BTreeSet<String>,
     excluded_window_ids: std::collections::BTreeSet<u32>,
     unresolved_bundle_ids: Vec<String>,
     unresolved_window_ids: Vec<u32>,
@@ -140,7 +139,6 @@ struct PrivacyFilterAppliedKey {
     display_id: u32,
     strategy: PrivacyContentFilterStrategy,
     excluded_bundle_ids: Vec<String>,
-    included_bundle_ids: Vec<String>,
     excluded_window_ids: Vec<u32>,
 }
 
@@ -160,7 +158,6 @@ impl PrivacyFilterApplicationState {
                 display_id: privacy_filter.display_id,
                 strategy: plan.strategy,
                 excluded_bundle_ids: plan.excluded_bundle_ids.iter().cloned().collect(),
-                included_bundle_ids: plan.included_bundle_ids.iter().cloned().collect(),
                 excluded_window_ids: plan.excluded_window_ids.iter().copied().collect(),
             },
             unresolved_bundle_ids: plan.unresolved_bundle_ids.clone(),
@@ -172,6 +169,7 @@ impl PrivacyFilterApplicationState {
         self.requested_key == *requested_key
             && self.unresolved_bundle_ids.is_empty()
             && self.unresolved_window_ids.is_empty()
+            && !self.requires_content_refresh()
     }
 
     fn applied_filter_matches(&self, next: &Self) -> bool {
@@ -183,6 +181,10 @@ impl PrivacyFilterApplicationState {
             && self.applied_key == next.applied_key
             && self.unresolved_bundle_ids == next.unresolved_bundle_ids
             && self.unresolved_window_ids == next.unresolved_window_ids
+    }
+
+    fn requires_content_refresh(&self) -> bool {
+        self.applied_key.strategy == PrivacyContentFilterStrategy::ExcludingAppWindowsAndWindows
     }
 }
 
@@ -206,11 +208,12 @@ fn log_privacy_filter_diagnostics(state: &PrivacyFilterApplicationState) {
             state.unresolved_window_ids
         );
     }
-    if state.applied_key.strategy == PrivacyContentFilterStrategy::IncludingAppsExceptingWindows {
+    if state.applied_key.strategy == PrivacyContentFilterStrategy::ExcludingAppWindowsAndWindows {
         capture_runtime::debug_log!(
-            "privacy filter using mixed bundle/window request as included non-excluded apps except requested windows: bundles={:?}, windows={:?}",
+            "privacy filter using mixed bundle/window request as excluded app windows plus requested windows: bundles={:?}, windows={:?}, resolved_windows={:?}",
             state.requested_key.bundle_ids,
-            state.requested_key.window_ids
+            state.requested_key.window_ids,
+            state.applied_key.excluded_window_ids
         );
     }
 }
@@ -239,7 +242,7 @@ fn plan_privacy_content_filter(
         .iter()
         .map(|window| window.id)
         .collect::<std::collections::BTreeSet<_>>();
-    let excluded_window_ids = requested_window_ids
+    let mut excluded_window_ids = requested_window_ids
         .intersection(&available_window_ids)
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
@@ -254,26 +257,25 @@ fn plan_privacy_content_filter(
     let has_bundle_exclusions = !excluded_bundle_ids.is_empty();
     let has_window_exclusions = !excluded_window_ids.is_empty();
     let strategy = if has_bundle_exclusions && has_window_exclusions {
-        PrivacyContentFilterStrategy::IncludingAppsExceptingWindows
+        for window in available_windows {
+            if window
+                .owning_bundle_id
+                .as_ref()
+                .is_some_and(|bundle_id| excluded_bundle_ids.contains(bundle_id))
+            {
+                excluded_window_ids.insert(window.id);
+            }
+        }
+        PrivacyContentFilterStrategy::ExcludingAppWindowsAndWindows
     } else if has_bundle_exclusions {
         PrivacyContentFilterStrategy::ExcludingApps
     } else {
         PrivacyContentFilterStrategy::ExcludingWindows
     };
-    let included_bundle_ids =
-        if strategy == PrivacyContentFilterStrategy::IncludingAppsExceptingWindows {
-            available_bundle_ids
-                .difference(requested_bundle_ids)
-                .cloned()
-                .collect()
-        } else {
-            std::collections::BTreeSet::new()
-        };
 
     PrivacyContentFilterPlan {
         strategy,
         excluded_bundle_ids,
-        included_bundle_ids,
         excluded_window_ids,
         unresolved_bundle_ids,
         unresolved_window_ids,
@@ -2951,37 +2953,8 @@ fn build_screen_capture_kit_content_filter(
                 &cidre::ns::Array::new(),
             )
         }
-        PrivacyContentFilterStrategy::IncludingAppsExceptingWindows => {
-            let mut included_apps = Vec::new();
-            let mut pushed_apps = std::collections::BTreeSet::new();
-            for app in apps.iter() {
-                let bundle_id = app.bundle_id().to_string();
-                if plan.included_bundle_ids.contains(&bundle_id)
-                    && pushed_apps.insert((app.process_id(), bundle_id))
-                {
-                    included_apps.push(app.retained());
-                }
-            }
-            for window in windows.iter() {
-                let Some(app) = window.owning_app() else {
-                    continue;
-                };
-                let bundle_id = app.bundle_id().to_string();
-                if plan.included_bundle_ids.contains(&bundle_id)
-                    && pushed_apps.insert((app.process_id(), bundle_id))
-                {
-                    included_apps.push(app.retained());
-                }
-            }
-            let app_array = cidre::ns::Array::from_slice_retained(&included_apps);
-            let window_array = cidre::ns::Array::from_slice_retained(&requested_excluded_windows);
-            cidre::sc::ContentFilter::with_display_including_apps_excepting_windows(
-                display,
-                &app_array,
-                &window_array,
-            )
-        }
-        PrivacyContentFilterStrategy::ExcludingWindows => {
+        PrivacyContentFilterStrategy::ExcludingWindows
+        | PrivacyContentFilterStrategy::ExcludingAppWindowsAndWindows => {
             let window_array = cidre::ns::Array::from_slice_retained(&requested_excluded_windows);
             cidre::sc::ContentFilter::with_display_excluding_windows(display, &window_array)
         }
@@ -4536,7 +4509,7 @@ mod tests {
     use std::process::Command;
 
     #[test]
-    fn mixed_app_and_window_privacy_plan_keeps_window_owner_included() {
+    fn mixed_app_and_window_privacy_plan_expands_excluded_app_windows() {
         let requested_bundle_ids = std::collections::BTreeSet::from(["com.secret".to_string()]);
         let requested_window_ids = std::collections::BTreeSet::from([42]);
         let available_apps = vec![
@@ -4547,10 +4520,20 @@ mod tests {
                 bundle_id: "com.google.Chrome".to_string(),
             },
         ];
-        let available_windows = vec![PrivacyFilterAvailableWindow {
-            id: 42,
-            owning_bundle_id: Some("com.google.Chrome".to_string()),
-        }];
+        let available_windows = vec![
+            PrivacyFilterAvailableWindow {
+                id: 7,
+                owning_bundle_id: Some("com.secret".to_string()),
+            },
+            PrivacyFilterAvailableWindow {
+                id: 42,
+                owning_bundle_id: Some("com.google.Chrome".to_string()),
+            },
+            PrivacyFilterAvailableWindow {
+                id: 99,
+                owning_bundle_id: Some("com.google.Chrome".to_string()),
+            },
+        ];
 
         let plan = plan_privacy_content_filter(
             &requested_bundle_ids,
@@ -4561,17 +4544,16 @@ mod tests {
 
         assert_eq!(
             plan.strategy,
-            PrivacyContentFilterStrategy::IncludingAppsExceptingWindows
+            PrivacyContentFilterStrategy::ExcludingAppWindowsAndWindows
         );
         assert_eq!(
             plan.excluded_bundle_ids,
             std::collections::BTreeSet::from(["com.secret".to_string()])
         );
         assert_eq!(
-            plan.included_bundle_ids,
-            std::collections::BTreeSet::from(["com.google.Chrome".to_string()])
+            plan.excluded_window_ids,
+            std::collections::BTreeSet::from([7, 42])
         );
-        assert_eq!(plan.excluded_window_ids, requested_window_ids);
     }
 
     #[test]
@@ -4609,7 +4591,7 @@ mod tests {
         );
         let resolved_state = PrivacyFilterApplicationState::from_plan(&requested, &resolved_plan);
 
-        assert!(resolved_state.satisfies_request(&requested.key()));
+        assert!(!resolved_state.satisfies_request(&requested.key()));
         assert!(!unresolved_state.applied_filter_matches(&resolved_state));
     }
 
