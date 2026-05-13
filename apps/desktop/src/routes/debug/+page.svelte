@@ -79,6 +79,11 @@
       currentlyExcludedWindowIds: number[];
       privacyFilterApplied: boolean;
       metadataRedactionReason: string | null;
+      accessibilityPermission: PermissionStatus;
+      privateBrowserDetectionMode: string;
+      privateBrowserDetectedWindowIds: number[];
+      privateBrowserStickyWindowIds: number[];
+      privateBrowserDetectionReasons: Record<string, string>;
     };
   };
 
@@ -1231,6 +1236,28 @@
         <span class="kv-val kv-val--mono">{privacyDebug.privateBrowserExclusionEnabled ? "enabled" : "disabled"}</span>
       </li>
       <li>
+        <span class="kv-key kv-key--wide">accessibility</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.privacyDebug.accessibilityPermission}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">private detector</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.privacyDebug.privateBrowserDetectionMode}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">detected private</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.privateBrowserDetectedWindowIds)}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">sticky private</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.privateBrowserStickyWindowIds)}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">private reasons</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">
+          {formatDebugList(Object.entries(privacyDebug.privacyDebug.privateBrowserDetectionReasons).map(([id, reason]) => `${id}: ${reason}`))}
+        </span>
+      </li>
+      <li>
         <span class="kv-key kv-key--wide">reason</span>
         <span class="kv-val kv-val--mono">{privacyDebug.privacyDebug.metadataRedactionReason ?? "none"}</span>
       </li>
@@ -1350,6 +1377,12 @@
             <span class="kv-key">sys-audio</span>
             <span class={permissionBadgeClass(permissions.systemAudio)}>
               {formatPermission(permissions.systemAudio)}
+            </span>
+          </li>
+          <li>
+            <span class="kv-key">access</span>
+            <span class={permissionBadgeClass(permissions.accessibility)}>
+              {formatPermission(permissions.accessibility)}
             </span>
           </li>
         </ul>

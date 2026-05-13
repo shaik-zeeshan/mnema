@@ -1,4 +1,4 @@
-export type PermissionStatus = "granted" | "denied" | "not_determined" | "restricted";
+export type PermissionStatus = "granted" | "denied" | "not_determined" | "restricted" | "unsupported" | "unknown";
 
 export interface SupportedSources {
 	screen: boolean;
@@ -16,6 +16,7 @@ export interface PermissionsMap {
 	screen: PermissionStatus;
 	microphone: PermissionStatus;
 	systemAudio: PermissionStatus;
+	accessibility: PermissionStatus;
 }
 
 export interface RequestedSources {

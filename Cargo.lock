@@ -3527,6 +3527,7 @@ dependencies = [
  "cidre",
  "cocoa",
  "core-foundation 0.10.1",
+ "core-foundation-sys",
  "core-graphics 0.25.0",
  "fs2",
  "futures-util",

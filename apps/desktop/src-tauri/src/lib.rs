@@ -170,6 +170,7 @@ pub fn run() {
             general_app_log::delete_general_app_log,
             native_capture::get_capture_support,
             native_capture::get_capture_permissions,
+            native_capture::request_accessibility_permission,
             native_capture::get_idle_debug,
             native_capture::get_app_notifications,
             native_capture::clear_app_notification,

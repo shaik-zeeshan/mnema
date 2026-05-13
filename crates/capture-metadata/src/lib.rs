@@ -129,7 +129,7 @@ pub struct MetadataContext {
     pub active_privacy_window_id: Option<u32>,
     pub active_url: Option<String>,
     pub visible_windows: Vec<WindowContext>,
-    pub private_browser_window_id: Option<u32>,
+    pub private_browser_window_ids: Vec<u32>,
     pub private_browser_ambiguous_bundle_id: Option<String>,
 }
 
@@ -137,6 +137,7 @@ pub struct MetadataContext {
 pub struct WindowContext {
     pub window_id: u32,
     pub bundle_id: Option<String>,
+    pub owner_pid: Option<i32>,
     pub title: String,
 }
 
@@ -324,14 +325,24 @@ pub fn resolve_private_browser_window_id(
     privacy: &PrivacySettings,
     visible_windows: &[WindowContext],
 ) -> Option<u32> {
+    resolve_private_browser_window_ids(privacy, visible_windows)
+        .into_iter()
+        .next()
+}
+
+pub fn resolve_private_browser_window_ids(
+    privacy: &PrivacySettings,
+    visible_windows: &[WindowContext],
+) -> Vec<u32> {
     if !privacy.private_browser_exclusion_enabled {
-        return None;
+        return Vec::new();
     }
 
     visible_windows
         .iter()
-        .find(|window| is_known_browser_window(window) && is_private_browser_title(&window.title))
+        .filter(|window| is_known_browser_window(window) && is_private_browser_title(&window.title))
         .map(|window| window.window_id)
+        .collect()
 }
 
 pub fn browser_url_script_app_name(bundle_id: &str) -> Option<&'static str> {
@@ -803,9 +814,9 @@ pub fn evaluate_privacy(
             }
             redaction_reason.get_or_insert_with(|| REDACTION_REASON_PRIVATE_BROWSER.to_string());
         }
-        if let Some(window_id) = context.private_browser_window_id {
-            window_ids.insert(window_id);
-            window_reasons.insert(window_id, REDACTION_REASON_PRIVATE_BROWSER.to_string());
+        for window_id in &context.private_browser_window_ids {
+            window_ids.insert(*window_id);
+            window_reasons.insert(*window_id, REDACTION_REASON_PRIVATE_BROWSER.to_string());
             redaction_reason.get_or_insert_with(|| REDACTION_REASON_PRIVATE_BROWSER.to_string());
         }
     }
@@ -972,9 +983,10 @@ mod tests {
                 visible_windows: vec![WindowContext {
                     window_id: 7,
                     bundle_id: Some("com.google.Chrome".into()),
+                    owner_pid: None,
                     title: "Vault".into(),
                 }],
-                private_browser_window_id: Some(9),
+                private_browser_window_ids: vec![9],
                 private_browser_ambiguous_bundle_id: Some("com.google.Chrome".into()),
             },
         );
@@ -998,7 +1010,7 @@ mod tests {
         let decision = evaluate_privacy(
             &settings,
             &MetadataContext {
-                private_browser_window_id: Some(9),
+                private_browser_window_ids: vec![9],
                 ..MetadataContext::default()
             },
         );
@@ -1012,6 +1024,54 @@ mod tests {
     }
 
     #[test]
+    fn private_browser_excludes_multiple_matched_windows() {
+        let settings = PrivacySettings {
+            private_browser_exclusion_enabled: true,
+            ..PrivacySettings::default()
+        };
+        let decision = evaluate_privacy(
+            &settings,
+            &MetadataContext {
+                private_browser_window_ids: vec![42, 9],
+                ..MetadataContext::default()
+            },
+        );
+
+        assert_eq!(decision.excluded_window_ids, vec![9, 42]);
+        assert_eq!(
+            decision.excluded_window_reasons.get(&9).map(String::as_str),
+            Some(REDACTION_REASON_PRIVATE_BROWSER)
+        );
+        assert_eq!(
+            decision
+                .excluded_window_reasons
+                .get(&42)
+                .map(String::as_str),
+            Some(REDACTION_REASON_PRIVATE_BROWSER)
+        );
+    }
+
+    #[test]
+    fn private_browser_exclusion_disabled_ignores_private_window_ids() {
+        let settings = PrivacySettings {
+            private_browser_exclusion_enabled: false,
+            ..PrivacySettings::default()
+        };
+        let decision = evaluate_privacy(
+            &settings,
+            &MetadataContext {
+                private_browser_window_ids: vec![9, 42],
+                private_browser_ambiguous_bundle_id: Some("com.google.Chrome".to_string()),
+                ..MetadataContext::default()
+            },
+        );
+
+        assert!(decision.excluded_bundle_ids.is_empty());
+        assert!(decision.excluded_window_ids.is_empty());
+        assert!(!decision.privacy_filter_applied);
+    }
+
+    #[test]
     fn active_private_browser_excludes_resolved_active_privacy_window() {
         let settings = PrivacySettings {
             private_browser_exclusion_enabled: true,
@@ -1021,7 +1081,7 @@ mod tests {
             &settings,
             &MetadataContext {
                 active_privacy_window_id: Some(42),
-                private_browser_window_id: Some(9),
+                private_browser_window_ids: vec![9],
                 private_browser_ambiguous_bundle_id: Some("com.google.Chrome".into()),
                 ..MetadataContext::default()
             },
@@ -1193,7 +1253,7 @@ mod tests {
         let private_browser_context = MetadataContext {
             active_bundle_id: Some("net.imput.helium".to_string()),
             active_url: Some("https://example.com/".to_string()),
-            private_browser_window_id: Some(9),
+            private_browser_window_ids: vec![9],
             private_browser_ambiguous_bundle_id: Some("net.imput.helium".to_string()),
             ..MetadataContext::default()
         };
@@ -1223,11 +1283,13 @@ mod tests {
             WindowContext {
                 window_id: 42,
                 bundle_id: Some("com.tinyspeck.slackmacgap".to_string()),
+                owner_pid: None,
                 title: "Example".to_string(),
             },
             WindowContext {
                 window_id: 43,
                 bundle_id: Some("com.apple.finder".to_string()),
+                owner_pid: None,
                 title: "Example".to_string(),
             },
         ];
@@ -1249,11 +1311,13 @@ mod tests {
             WindowContext {
                 window_id: 42,
                 bundle_id: Some("com.google.Chrome".to_string()),
+                owner_pid: None,
                 title: "Example".to_string(),
             },
             WindowContext {
                 window_id: 43,
                 bundle_id: Some("com.google.Chrome".to_string()),
+                owner_pid: None,
                 title: "Example".to_string(),
             },
         ];
@@ -1279,6 +1343,7 @@ mod tests {
             visible_windows: vec![WindowContext {
                 window_id: 42,
                 bundle_id: Some("com.google.Chrome".to_string()),
+                owner_pid: None,
                 title: "Dashboard".to_string(),
             }],
             ..MetadataContext::default()
@@ -1310,6 +1375,7 @@ mod tests {
         let browser_window = WindowContext {
             window_id: 42,
             bundle_id: Some("com.google.Chrome".to_string()),
+            owner_pid: None,
             title: "Example".to_string(),
         };
         let active_browser_context = MetadataContext {
@@ -1360,6 +1426,7 @@ mod tests {
         let browser_window = WindowContext {
             window_id: 42,
             bundle_id: Some("com.google.Chrome".to_string()),
+            owner_pid: None,
             title: "Example".to_string(),
         };
         let active_browser_context = MetadataContext {
@@ -1413,6 +1480,7 @@ mod tests {
             visible_windows: vec![WindowContext {
                 window_id: 42,
                 bundle_id: Some("net.imput.helium".to_string()),
+                owner_pid: None,
                 title: "Dashboard".to_string(),
             }],
             ..MetadataContext::default()
@@ -1619,11 +1687,13 @@ mod tests {
             WindowContext {
                 window_id: 7,
                 bundle_id: Some("com.apple.finder".to_string()),
+                owner_pid: None,
                 title: "Incognito project notes".to_string(),
             },
             WindowContext {
                 window_id: 9,
                 bundle_id: Some("com.google.Chrome".to_string()),
+                owner_pid: None,
                 title: "New Incognito Tab - Google Chrome".to_string(),
             },
         ];
@@ -1643,6 +1713,7 @@ mod tests {
         let visible_windows = vec![WindowContext {
             window_id: 7,
             bundle_id: Some("com.apple.finder".to_string()),
+            owner_pid: None,
             title: "Incognito project notes".to_string(),
         }];
 
@@ -1669,11 +1740,13 @@ mod tests {
                 WindowContext {
                     window_id: 7,
                     bundle_id: Some("com.apple.finder".to_string()),
+                    owner_pid: None,
                     title: "Secret project notes".to_string(),
                 },
                 WindowContext {
                     window_id: 9,
                     bundle_id: Some("com.google.Chrome".to_string()),
+                    owner_pid: None,
                     title: "Public dashboard".to_string(),
                 },
             ],

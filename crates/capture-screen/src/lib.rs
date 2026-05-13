@@ -2923,44 +2923,63 @@ fn build_screen_capture_kit_content_filter(
         .map(|window| window.retained())
         .collect();
 
-    let filter = match plan.strategy {
-        PrivacyContentFilterStrategy::ExcludingApps => {
-            let mut excluded_apps = Vec::new();
-            let mut pushed_apps = std::collections::BTreeSet::new();
-            for app in apps.iter() {
-                let bundle_id = app.bundle_id().to_string();
-                if plan.excluded_bundle_ids.contains(&bundle_id)
-                    && pushed_apps.insert((app.process_id(), bundle_id))
-                {
-                    excluded_apps.push(app.retained());
+    let filter = if requested_excluded_windows.is_empty() && plan.excluded_bundle_ids.is_empty() {
+        screen_capture_kit_no_exclusion_filter(display, &apps)
+    } else {
+        match plan.strategy {
+            PrivacyContentFilterStrategy::ExcludingApps => {
+                let mut excluded_apps = Vec::new();
+                let mut pushed_apps = std::collections::BTreeSet::new();
+                for app in apps.iter() {
+                    let bundle_id = app.bundle_id().to_string();
+                    if plan.excluded_bundle_ids.contains(&bundle_id)
+                        && pushed_apps.insert((app.process_id(), bundle_id))
+                    {
+                        excluded_apps.push(app.retained());
+                    }
                 }
-            }
-            for window in windows.iter() {
-                let Some(app) = window.owning_app() else {
-                    continue;
-                };
-                let bundle_id = app.bundle_id().to_string();
-                if plan.excluded_bundle_ids.contains(&bundle_id)
-                    && pushed_apps.insert((app.process_id(), bundle_id))
-                {
-                    excluded_apps.push(app.retained());
+                for window in windows.iter() {
+                    let Some(app) = window.owning_app() else {
+                        continue;
+                    };
+                    let bundle_id = app.bundle_id().to_string();
+                    if plan.excluded_bundle_ids.contains(&bundle_id)
+                        && pushed_apps.insert((app.process_id(), bundle_id))
+                    {
+                        excluded_apps.push(app.retained());
+                    }
                 }
+                let app_array = cidre::ns::Array::from_slice_retained(&excluded_apps);
+                cidre::sc::ContentFilter::with_display_excluding_apps_excepting_windows(
+                    display,
+                    &app_array,
+                    &cidre::ns::Array::new(),
+                )
             }
-            let app_array = cidre::ns::Array::from_slice_retained(&excluded_apps);
-            cidre::sc::ContentFilter::with_display_excluding_apps_excepting_windows(
-                display,
-                &app_array,
-                &cidre::ns::Array::new(),
-            )
-        }
-        PrivacyContentFilterStrategy::ExcludingWindows
-        | PrivacyContentFilterStrategy::ExcludingAppWindowsAndWindows => {
-            let window_array = cidre::ns::Array::from_slice_retained(&requested_excluded_windows);
-            cidre::sc::ContentFilter::with_display_excluding_windows(display, &window_array)
+            PrivacyContentFilterStrategy::ExcludingWindows
+            | PrivacyContentFilterStrategy::ExcludingAppWindowsAndWindows => {
+                let window_array =
+                    cidre::ns::Array::from_slice_retained(&requested_excluded_windows);
+                cidre::sc::ContentFilter::with_display_excluding_windows(display, &window_array)
+            }
         }
     };
 
     Ok(BuiltScreenCaptureKitContentFilter { filter, state })
+}
+
+#[cfg(target_os = "macos")]
+fn screen_capture_kit_no_exclusion_filter(
+    display: &cidre::sc::Display,
+    apps: &cidre::ns::Array<cidre::sc::RunningApp>,
+) -> cidre::arc::R<cidre::sc::ContentFilter> {
+    let included_apps: Vec<_> = apps.iter().map(|app| app.retained()).collect();
+    let app_array = cidre::ns::Array::from_slice_retained(&included_apps);
+    cidre::sc::ContentFilter::with_display_including_apps_excepting_windows(
+        display,
+        &app_array,
+        &cidre::ns::Array::new(),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -3525,7 +3544,6 @@ fn start_screen_capture_kit_session(
         })?;
 
         let initial_privacy_filter = options.initial_privacy_filter.clone();
-        let excluded_windows = cidre::ns::Array::<sc::Window>::new();
         let (filter, privacy_filter_state) =
             if let Some(initial_privacy_filter) = &initial_privacy_filter {
                 let built_filter = build_screen_capture_kit_content_filter(initial_privacy_filter)
@@ -3537,7 +3555,7 @@ fn start_screen_capture_kit_session(
                 (built_filter.filter, Some(built_filter.state))
             } else {
                 (
-                    sc::ContentFilter::with_display_excluding_windows(display, &excluded_windows),
+                    screen_capture_kit_no_exclusion_filter(display, &content.apps()),
                     None,
                 )
             };

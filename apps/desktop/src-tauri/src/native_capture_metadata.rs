@@ -3,7 +3,7 @@ use capture_metadata::{
     active_private_browser_detected, apply_metadata_redaction,
     apply_unverified_visible_browser_window_privacy_guard, apply_website_privacy_hold,
     browser_url_script_app_name, evaluate_privacy, is_known_browser_bundle,
-    metadata_collection_plan, resolve_active_privacy_window_id, resolve_private_browser_window_id,
+    metadata_collection_plan, resolve_active_privacy_window_id, resolve_private_browser_window_ids,
     sanitize_url, select_frontmost_pid_window, BrowserUrlProbeCache, FrameMetadataSnapshot,
     MetadataCollectionPlan, MetadataContext, NativeActiveWindowSnapshot, PrivacyFilterDecision,
     PrivacySettings, RawWindowInfo,
@@ -19,6 +19,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 use tauri::Manager;
 
+const PRIVATE_BROWSER_STICKY_REASON_PREFIX: &str = "sticky_";
+
 #[derive(Debug, Clone, Default)]
 pub struct CaptureMetadataRuntime {
     latest_snapshot: Option<FrameMetadataSnapshot>,
@@ -27,6 +29,9 @@ pub struct CaptureMetadataRuntime {
     website_privacy_hold_bundle_reasons: BTreeMap<String, String>,
     website_privacy_verified_window_ids: BTreeSet<u32>,
     browser_url_probe_cache: BrowserUrlProbeCache,
+    private_browser_sticky_window_reasons: BTreeMap<u32, String>,
+    latest_private_browser_detection:
+        crate::native_capture::private_browser::PrivateBrowserDetection,
 }
 
 impl CaptureMetadataRuntime {
@@ -65,6 +70,11 @@ pub struct CapturePrivacyDebugInfo {
     pub currently_excluded_window_ids: Vec<u32>,
     pub privacy_filter_applied: bool,
     pub metadata_redaction_reason: Option<String>,
+    pub accessibility_permission: capture_types::CapturePermissionState,
+    pub private_browser_detection_mode: String,
+    pub private_browser_detected_window_ids: Vec<u32>,
+    pub private_browser_sticky_window_ids: Vec<u32>,
+    pub private_browser_detection_reasons: BTreeMap<u32, String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -109,6 +119,23 @@ pub fn capture_privacy_debug_info(state: &CaptureMetadataState) -> CapturePrivac
             .latest_applied_decision
             .metadata_redaction_reason
             .clone(),
+        accessibility_permission: runtime
+            .latest_private_browser_detection
+            .accessibility_permission
+            .clone(),
+        private_browser_detection_mode: runtime.latest_private_browser_detection.mode.clone(),
+        private_browser_detected_window_ids: runtime
+            .latest_private_browser_detection
+            .detected_window_ids
+            .iter()
+            .copied()
+            .collect(),
+        private_browser_sticky_window_ids: runtime
+            .private_browser_sticky_window_reasons
+            .keys()
+            .copied()
+            .collect(),
+        private_browser_detection_reasons: runtime.latest_private_browser_detection.reasons.clone(),
     }
 }
 
@@ -135,6 +162,72 @@ pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
     runtime.latest_applied_decision = PrivacyFilterDecision::default();
     runtime.website_privacy_verified_window_ids.clear();
     runtime.browser_url_probe_cache = BrowserUrlProbeCache::default();
+    runtime.private_browser_sticky_window_reasons.clear();
+    runtime.latest_private_browser_detection =
+        crate::native_capture::private_browser::PrivateBrowserDetection::default();
+}
+
+fn update_private_browser_sticky_cache(
+    runtime: &mut CaptureMetadataRuntime,
+    privacy: &PrivacySettings,
+    context: &MetadataContext,
+) {
+    let visible_window_ids: BTreeSet<u32> = context
+        .visible_windows
+        .iter()
+        .map(|window| window.window_id)
+        .collect();
+    runtime
+        .private_browser_sticky_window_reasons
+        .retain(|window_id, _| visible_window_ids.contains(window_id));
+
+    let detection = crate::native_capture::private_browser::detect_private_browser_windows(
+        &context.visible_windows,
+    );
+    runtime.latest_private_browser_detection = detection.clone();
+
+    if !privacy.private_browser_exclusion_enabled {
+        runtime.private_browser_sticky_window_reasons.clear();
+        return;
+    }
+
+    for window_id in detection.detected_window_ids {
+        let reason = detection
+            .reasons
+            .get(&window_id)
+            .cloned()
+            .unwrap_or_else(|| "private_browser".to_string());
+        runtime
+            .private_browser_sticky_window_reasons
+            .insert(window_id, reason);
+    }
+}
+
+fn apply_sticky_private_browser_windows(
+    runtime: &CaptureMetadataRuntime,
+    privacy: &PrivacySettings,
+    decision: &mut PrivacyFilterDecision,
+) {
+    if !privacy.private_browser_exclusion_enabled {
+        return;
+    }
+    let mut window_ids: BTreeSet<u32> = decision.excluded_window_ids.iter().copied().collect();
+    for (window_id, reason) in &runtime.private_browser_sticky_window_reasons {
+        if window_ids.insert(*window_id) {
+            decision.excluded_window_ids.push(*window_id);
+        }
+        decision.excluded_window_reasons.insert(
+            *window_id,
+            format!("{PRIVATE_BROWSER_STICKY_REASON_PREFIX}{reason}"),
+        );
+        decision
+            .metadata_redaction_reason
+            .get_or_insert_with(|| capture_metadata::REDACTION_REASON_PRIVATE_BROWSER.to_string());
+    }
+    decision.excluded_window_ids.sort_unstable();
+    decision.excluded_window_ids.dedup();
+    decision.privacy_filter_applied =
+        !decision.excluded_bundle_ids.is_empty() || !decision.excluded_window_ids.is_empty();
 }
 
 pub fn refresh_metadata_state(
@@ -153,6 +246,8 @@ pub fn refresh_metadata_state(
     let mut decision = evaluate_privacy(privacy, &context);
 
     let mut runtime = state.lock().expect("capture metadata state poisoned");
+    update_private_browser_sticky_cache(&mut runtime, privacy, &context);
+    apply_sticky_private_browser_windows(&runtime, privacy, &mut decision);
     apply_website_privacy_hold(
         &mut runtime.website_privacy_hold_bundle_reasons,
         privacy,
@@ -325,8 +420,8 @@ fn collect_active_window_metadata(
         } else {
             Vec::new()
         };
-        let private_browser_window_id =
-            resolve_private_browser_window_id(privacy, &visible_windows);
+        let private_browser_window_ids =
+            resolve_private_browser_window_ids(privacy, &visible_windows);
         let private_browser_ambiguous_bundle_id = active_private_browser.then(|| {
             bundle_id
                 .clone()
@@ -354,7 +449,7 @@ fn collect_active_window_metadata(
             active_privacy_window_id,
             active_url: raw_browser_url,
             visible_windows,
-            private_browser_window_id,
+            private_browser_window_ids,
             private_browser_ambiguous_bundle_id,
         };
         return ActiveWindowMetadata {
@@ -547,6 +642,7 @@ fn visible_window_contexts() -> Vec<capture_metadata::WindowContext> {
                 .owning_app()
                 .map(|app| app.bundle_id().to_string())
                 .filter(|value| !value.trim().is_empty());
+            let owner_pid = window.owning_app().map(|app| app.process_id());
             let title = window
                 .title()
                 .map(|title| title.to_string())
@@ -554,6 +650,7 @@ fn visible_window_contexts() -> Vec<capture_metadata::WindowContext> {
             Some(capture_metadata::WindowContext {
                 window_id: window.id(),
                 bundle_id,
+                owner_pid,
                 title,
             })
         })
@@ -733,5 +830,84 @@ mod tests {
                 .cached_url_for("com.google.Chrome", Instant::now()),
             None
         );
+    }
+
+    #[test]
+    fn sticky_private_browser_cache_persists_across_weak_polls() {
+        let mut runtime = CaptureMetadataRuntime::default();
+        let privacy = PrivacySettings::default();
+        let private_context = MetadataContext {
+            visible_windows: vec![capture_metadata::WindowContext {
+                window_id: 9,
+                bundle_id: Some("com.google.Chrome".to_string()),
+                owner_pid: Some(123),
+                title: "Example - Incognito".to_string(),
+            }],
+            ..MetadataContext::default()
+        };
+
+        update_private_browser_sticky_cache(&mut runtime, &privacy, &private_context);
+        assert!(runtime
+            .private_browser_sticky_window_reasons
+            .contains_key(&9));
+
+        let weak_context = MetadataContext {
+            visible_windows: vec![capture_metadata::WindowContext {
+                window_id: 9,
+                bundle_id: Some("com.google.Chrome".to_string()),
+                owner_pid: Some(123),
+                title: "Example".to_string(),
+            }],
+            ..MetadataContext::default()
+        };
+        update_private_browser_sticky_cache(&mut runtime, &privacy, &weak_context);
+
+        let mut decision = PrivacyFilterDecision::default();
+        apply_sticky_private_browser_windows(&runtime, &privacy, &mut decision);
+        assert_eq!(decision.excluded_window_ids, vec![9]);
+        assert_eq!(
+            decision.excluded_window_reasons.get(&9).map(String::as_str),
+            Some("sticky_title_private_browser")
+        );
+    }
+
+    #[test]
+    fn sticky_private_browser_cache_purges_stale_window_ids() {
+        let mut runtime = CaptureMetadataRuntime::default();
+        runtime
+            .private_browser_sticky_window_reasons
+            .insert(9, "title_private_browser".to_string());
+        let privacy = PrivacySettings::default();
+        let context = MetadataContext {
+            visible_windows: vec![capture_metadata::WindowContext {
+                window_id: 42,
+                bundle_id: Some("com.google.Chrome".to_string()),
+                owner_pid: Some(123),
+                title: "Example".to_string(),
+            }],
+            ..MetadataContext::default()
+        };
+
+        update_private_browser_sticky_cache(&mut runtime, &privacy, &context);
+
+        assert!(!runtime
+            .private_browser_sticky_window_reasons
+            .contains_key(&9));
+    }
+
+    #[test]
+    fn reset_recording_session_privacy_state_clears_sticky_private_browser_cache() {
+        let state = CaptureMetadataState::default();
+        {
+            let mut runtime = state.lock().expect("capture metadata state should lock");
+            runtime
+                .private_browser_sticky_window_reasons
+                .insert(9, "title_private_browser".to_string());
+        }
+
+        reset_recording_session_privacy_state(&state);
+
+        let runtime = state.lock().expect("capture metadata state should lock");
+        assert!(runtime.private_browser_sticky_window_reasons.is_empty());
     }
 }

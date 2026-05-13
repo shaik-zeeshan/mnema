@@ -52,6 +52,8 @@
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
     KeyboardBindingsSettings,
+    GetPermissionsResponse,
+    PermissionStatus,
   } from "$lib/types";
 
   type CardIconKind =
@@ -164,6 +166,9 @@
   let privacyAppCandidates = $state<PrivacyAppCandidate[]>([]);
   let privacyAppComboboxQuery = $state("");
   let privacyAppComboboxOpen = $state(false);
+  let accessibilityPermission = $state<PermissionStatus | null>(null);
+  let requestingAccessibilityPermission = $state(false);
+  let accessibilityPermissionError = $state<string | null>(null);
   let websiteRuleDraft = $state("");
   let titleRuleDraft = $state("");
   let titleRuleDraftMatchType = $state<BrowserTitleRuleMatchType>("substring");
@@ -728,6 +733,28 @@
       }));
     } catch {
       privacyAppCandidates = [];
+    }
+  }
+
+  async function refreshAccessibilityPermission() {
+    try {
+      const response = await invoke<GetPermissionsResponse>("get_capture_permissions");
+      accessibilityPermission = response.permissions.accessibility;
+    } catch (err) {
+      accessibilityPermissionError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    }
+  }
+
+  async function requestAccessibilityPermission() {
+    requestingAccessibilityPermission = true;
+    accessibilityPermissionError = null;
+    try {
+      accessibilityPermission = await invoke<PermissionStatus>("request_accessibility_permission");
+      await refreshAccessibilityPermission();
+    } catch (err) {
+      accessibilityPermissionError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      requestingAccessibilityPermission = false;
     }
   }
 
@@ -1982,6 +2009,7 @@
     loadDebugLogStatus();
     loadGeneralLogStatus();
     loadPrivacyAppCandidates();
+    refreshAccessibilityPermission();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -2508,10 +2536,29 @@
         <div class="settings-group">
           <Switch
             bind:checked={draftPrivateBrowserExclusionEnabled}
-            disabled={!draftMetadataEnabled}
             label="Hide private browser windows"
-            description="Best-effort private/incognito detection from browser metadata and window titles"
+            description="Best-effort private/incognito detection from window titles and macOS Accessibility"
           />
+          {#if draftPrivateBrowserExclusionEnabled && accessibilityPermission !== "granted"}
+            <div class="permission-callout">
+              <div class="permission-callout__copy">
+                <span class="permission-callout__eyebrow">Optional Accessibility</span>
+                <strong>Private-browser protection is limited</strong>
+                <p>Mnema will keep recording and use title-based detection until Accessibility is enabled.</p>
+              </div>
+              <button
+                class="btn btn--ghost"
+                type="button"
+                onclick={requestAccessibilityPermission}
+                disabled={requestingAccessibilityPermission}
+              >
+                {requestingAccessibilityPermission ? "Requesting" : "Enable Accessibility"}
+              </button>
+            </div>
+            {#if accessibilityPermissionError}
+              <p class="group-hint group-hint--warn">Accessibility request failed: {accessibilityPermissionError}</p>
+            {/if}
+          {/if}
         </div>
       </section>
     </div>
