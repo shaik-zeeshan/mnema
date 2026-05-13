@@ -748,7 +748,21 @@ where
     let latest_update = LatestPrivacyFilterPollUpdate::new();
     let worker_latest_update = latest_update.clone();
     thread::spawn(move || {
-        while !stop.load(Ordering::Relaxed) && should_continue() {
+        let mut has_started = false;
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            if !should_continue() {
+                if has_started {
+                    break;
+                }
+                thread::sleep(PRIVACY_FILTER_POLL_STOP_CHECK_INTERVAL);
+                continue;
+            }
+
+            has_started = true;
             let update = collect();
             if stop.load(Ordering::Relaxed) || !should_continue() {
                 break;
@@ -3651,6 +3665,66 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn privacy_filter_poll_worker_survives_transient_not_ready_state() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(AtomicBool::new(false));
+        let (not_ready_checked_tx, not_ready_checked_rx) = std::sync::mpsc::channel();
+        let (collector_started_tx, collector_started_rx) = std::sync::mpsc::channel();
+        let latest_update = spawn_privacy_filter_poll_loop_with_collector(
+            Arc::clone(&stop),
+            {
+                let ready = Arc::clone(&ready);
+                move || {
+                    let is_ready = ready.load(Ordering::Relaxed);
+                    if !is_ready {
+                        let _ = not_ready_checked_tx.send(());
+                    }
+                    is_ready
+                }
+            },
+            move || {
+                let _ = collector_started_tx.send(());
+                42
+            },
+        );
+
+        not_ready_checked_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("poll worker should check readiness before the runtime is ready");
+        assert!(
+            collector_started_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "poll worker must not collect before the runtime is ready"
+        );
+
+        ready.store(true, Ordering::Relaxed);
+        assert!(
+            collector_started_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "poll worker should wait for a transient not-ready state instead of exiting"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut published_update = false;
+        loop {
+            if latest_update.take() == Some(42) {
+                published_update = true;
+                break;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        stop.store(true, Ordering::Relaxed);
+
+        assert!(
+            published_update,
+            "poll worker should publish the update after the runtime becomes ready"
+        );
     }
 
     #[test]
