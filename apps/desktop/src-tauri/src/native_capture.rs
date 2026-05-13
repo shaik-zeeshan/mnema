@@ -1987,10 +1987,7 @@ fn stop_native_capture_with_state(
         }
     };
     if let Some(metadata_state) = app_handle.try_state::<CaptureMetadataState>() {
-        metadata::mark_applied_privacy_decision(
-            metadata_state.inner(),
-            capture_metadata::PrivacyFilterDecision::default(),
-        );
+        metadata::reset_recording_session_privacy_state(metadata_state.inner());
     }
 
     debug_log::log_info(format!(

@@ -121,6 +121,12 @@ pub fn mark_applied_privacy_decision(
         .latest_applied_decision = decision;
 }
 
+pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
+    let mut runtime = state.lock().expect("capture metadata state poisoned");
+    runtime.latest_applied_decision = PrivacyFilterDecision::default();
+    runtime.website_privacy_verified_window_ids.clear();
+}
+
 pub fn refresh_metadata_state(
     state: &CaptureMetadataState,
     metadata: &MetadataSettings,
@@ -661,5 +667,38 @@ mod tests {
         );
         assert!(runtime.latest_snapshot.is_none());
         assert_eq!(runtime.latest_decision, decision);
+    }
+
+    #[test]
+    fn reset_recording_session_privacy_state_clears_verified_windows_but_preserves_website_holds() {
+        let state = CaptureMetadataState::default();
+        {
+            let mut runtime = state.lock().expect("capture metadata state should lock");
+            runtime.latest_applied_decision = PrivacyFilterDecision {
+                excluded_bundle_ids: vec!["net.imput.helium".to_string()],
+                privacy_filter_applied: true,
+                ..PrivacyFilterDecision::default()
+            };
+            runtime
+                .website_privacy_hold_bundle_reasons
+                .insert("net.imput.helium".to_string(), "website_rule".to_string());
+            runtime.website_privacy_verified_window_ids.insert(3740);
+        }
+
+        reset_recording_session_privacy_state(&state);
+
+        let runtime = state.lock().expect("capture metadata state should lock");
+        assert_eq!(
+            runtime.latest_applied_decision,
+            PrivacyFilterDecision::default()
+        );
+        assert!(runtime.website_privacy_verified_window_ids.is_empty());
+        assert_eq!(
+            runtime
+                .website_privacy_hold_bundle_reasons
+                .get("net.imput.helium")
+                .map(String::as_str),
+            Some("website_rule")
+        );
     }
 }
