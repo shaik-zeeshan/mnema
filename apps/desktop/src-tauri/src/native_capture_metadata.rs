@@ -1,12 +1,14 @@
 use capture_metadata::MetadataSettings;
 use capture_metadata::{
-    active_private_browser_detected, apply_metadata_redaction, apply_website_privacy_hold,
+    active_private_browser_detected, apply_metadata_redaction,
+    apply_unverified_visible_browser_window_privacy_guard, apply_website_privacy_hold,
     browser_url_script_app_name, evaluate_privacy, is_known_browser_bundle,
     is_private_browser_title, metadata_collection_plan, sanitize_url, select_frontmost_pid_window,
     BrowserUrlProbeCache, FrameMetadataSnapshot, MetadataCollectionPlan, MetadataContext,
     NativeActiveWindowSnapshot, PrivacyFilterDecision, PrivacySettings, RawWindowInfo,
 };
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 #[cfg(target_os = "macos")]
@@ -22,6 +24,7 @@ pub struct CaptureMetadataRuntime {
     latest_decision: PrivacyFilterDecision,
     latest_applied_decision: PrivacyFilterDecision,
     website_privacy_hold_bundle_reasons: BTreeMap<String, String>,
+    website_privacy_verified_window_ids: BTreeSet<u32>,
     browser_url_probe_cache: BrowserUrlProbeCache,
 }
 
@@ -136,6 +139,12 @@ pub fn refresh_metadata_state(
     let mut runtime = state.lock().expect("capture metadata state poisoned");
     apply_website_privacy_hold(
         &mut runtime.website_privacy_hold_bundle_reasons,
+        privacy,
+        &context,
+        &mut decision,
+    );
+    apply_unverified_visible_browser_window_privacy_guard(
+        &mut runtime.website_privacy_verified_window_ids,
         privacy,
         &context,
         &mut decision,
@@ -326,6 +335,7 @@ fn collect_active_window_metadata(
         });
         let context = MetadataContext {
             active_bundle_id: bundle_id.clone(),
+            active_window_id: active_window.window_id,
             active_url: raw_browser_url,
             visible_browser_windows,
             private_browser_window_id,
@@ -517,12 +527,17 @@ fn visible_title_rule_windows() -> Vec<capture_metadata::BrowserWindowContext> {
         .iter()
         .filter(|window| window.is_on_screen())
         .filter_map(|window| {
+            let bundle_id = window
+                .owning_app()
+                .map(|app| app.bundle_id().to_string())
+                .filter(|value| !value.trim().is_empty());
             let title = window
                 .title()
                 .map(|title| title.to_string())
                 .unwrap_or_default();
             Some(capture_metadata::BrowserWindowContext {
                 window_id: window.id(),
+                bundle_id,
                 title,
             })
         })

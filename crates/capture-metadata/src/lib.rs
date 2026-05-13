@@ -124,6 +124,7 @@ impl FrameMetadataSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetadataContext {
     pub active_bundle_id: Option<String>,
+    pub active_window_id: Option<u32>,
     pub active_url: Option<String>,
     pub visible_browser_windows: Vec<BrowserWindowContext>,
     pub private_browser_window_id: Option<u32>,
@@ -133,6 +134,7 @@ pub struct MetadataContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserWindowContext {
     pub window_id: u32,
+    pub bundle_id: Option<String>,
     pub title: String,
 }
 
@@ -222,7 +224,8 @@ pub fn metadata_collection_plan(
     privacy: &PrivacySettings,
 ) -> MetadataCollectionPlan {
     let collect_browser_url_for_privacy = has_enabled_website_rules(privacy);
-    let collect_visible_browser_windows = has_enabled_browser_title_rules(privacy);
+    let collect_visible_browser_windows =
+        has_enabled_browser_title_rules(privacy) || has_enabled_website_rules(privacy);
     let collect_active_window_for_privacy =
         collect_browser_url_for_privacy || privacy.private_browser_exclusion_enabled;
 
@@ -317,6 +320,8 @@ pub fn browser_url_metadata_supported(bundle_id: &str) -> bool {
 pub const REDACTION_REASON_EXCLUDED_APP: &str = "excluded_app";
 pub const REDACTION_REASON_WEBSITE_RULE: &str = "website_rule";
 pub const REDACTION_REASON_WEBSITE_RULE_URL_UNAVAILABLE: &str = "website_rule_url_unavailable";
+pub const REDACTION_REASON_WEBSITE_RULE_UNVERIFIED_VISIBLE_BROWSER: &str =
+    "website_rule_unverified_visible_browser";
 pub const REDACTION_REASON_TITLE_RULE: &str = "title_rule";
 pub const REDACTION_REASON_PRIVATE_BROWSER: &str = "private_browser";
 pub const REDACTION_REASON_PRIVACY_FILTER: &str = "privacy_filter";
@@ -406,6 +411,99 @@ pub fn apply_website_privacy_hold(
                 .next()
                 .cloned()
                 .unwrap_or_else(|| REDACTION_REASON_WEBSITE_RULE.to_string())
+        });
+    }
+}
+
+pub fn apply_unverified_visible_browser_window_privacy_guard(
+    verified_window_ids: &mut BTreeSet<u32>,
+    privacy: &PrivacySettings,
+    context: &MetadataContext,
+    decision: &mut PrivacyFilterDecision,
+) {
+    if !has_enabled_website_rules(privacy) {
+        verified_window_ids.clear();
+        return;
+    }
+
+    let visible_window_ids: BTreeSet<u32> = context
+        .visible_browser_windows
+        .iter()
+        .map(|window| window.window_id)
+        .chain(context.active_window_id)
+        .collect();
+    verified_window_ids.retain(|window_id| visible_window_ids.contains(window_id));
+
+    let active_known_browser_bundle = context
+        .active_bundle_id
+        .as_deref()
+        .filter(|bundle_id| is_known_browser_bundle(bundle_id));
+    let active_private_browser = context
+        .private_browser_ambiguous_bundle_id
+        .as_deref()
+        .is_some_and(|private_bundle_id| Some(private_bundle_id) == active_known_browser_bundle);
+
+    if let (Some(active_window_id), Some(active_bundle_id)) =
+        (context.active_window_id, active_known_browser_bundle)
+    {
+        if let Some(active_url) = context.active_url.as_deref() {
+            let matched_website_rule = privacy
+                .excluded_website_rules
+                .iter()
+                .any(|rule| website_rule_matches(rule, active_url));
+            if matched_website_rule || active_private_browser {
+                verified_window_ids.remove(&active_window_id);
+            } else {
+                let active_visible_browser_window =
+                    context.visible_browser_windows.iter().any(|window| {
+                        window.window_id == active_window_id
+                            && window.bundle_id.as_deref() == Some(active_bundle_id)
+                    });
+                if active_visible_browser_window {
+                    verified_window_ids.insert(active_window_id);
+                }
+            }
+        } else {
+            verified_window_ids.remove(&active_window_id);
+        }
+    }
+
+    for window in &context.visible_browser_windows {
+        let Some(bundle_id) = window.bundle_id.as_deref() else {
+            continue;
+        };
+        if !is_known_browser_bundle(bundle_id) {
+            continue;
+        }
+        if decision
+            .excluded_bundle_ids
+            .iter()
+            .any(|excluded| excluded == bundle_id)
+        {
+            continue;
+        }
+        if verified_window_ids.contains(&window.window_id) {
+            continue;
+        }
+        if !decision.excluded_window_ids.contains(&window.window_id) {
+            decision.excluded_window_ids.push(window.window_id);
+        }
+        decision.excluded_window_reasons.insert(
+            window.window_id,
+            REDACTION_REASON_WEBSITE_RULE_UNVERIFIED_VISIBLE_BROWSER.to_string(),
+        );
+    }
+
+    if context
+        .visible_browser_windows
+        .iter()
+        .any(|window| decision.excluded_window_ids.contains(&window.window_id))
+    {
+        decision.excluded_window_ids.sort_unstable();
+        decision.excluded_window_ids.dedup();
+        decision.privacy_filter_applied = true;
+        decision.metadata_redaction_reason.get_or_insert_with(|| {
+            REDACTION_REASON_WEBSITE_RULE_UNVERIFIED_VISIBLE_BROWSER.to_string()
         });
     }
 }
@@ -760,9 +858,11 @@ mod tests {
             &settings,
             &MetadataContext {
                 active_bundle_id: Some("com.browser".into()),
+                active_window_id: Some(7),
                 active_url: Some("https://example.com/private".into()),
                 visible_browser_windows: vec![BrowserWindowContext {
                     window_id: 7,
+                    bundle_id: Some("com.browser".into()),
                     title: "Vault".into(),
                 }],
                 private_browser_window_id: Some(9),
@@ -947,6 +1047,128 @@ mod tests {
         assert_eq!(decision.excluded_bundle_ids, vec!["net.imput.helium"]);
         assert_eq!(decision.excluded_window_ids, vec![9]);
         assert!(decision.privacy_filter_applied);
+    }
+
+    #[test]
+    fn website_privacy_guard_excludes_unverified_visible_background_browser() {
+        let privacy = website_privacy("*.infinityapp.in");
+        let mut verified_window_ids = BTreeSet::new();
+        let mut decision = PrivacyFilterDecision::default();
+        let context = MetadataContext {
+            active_bundle_id: Some("com.apple.finder".to_string()),
+            visible_browser_windows: vec![BrowserWindowContext {
+                window_id: 42,
+                bundle_id: Some("com.google.Chrome".to_string()),
+                title: "Dashboard".to_string(),
+            }],
+            ..MetadataContext::default()
+        };
+
+        apply_unverified_visible_browser_window_privacy_guard(
+            &mut verified_window_ids,
+            &privacy,
+            &context,
+            &mut decision,
+        );
+
+        assert_eq!(decision.excluded_window_ids, vec![42]);
+        assert_eq!(
+            decision
+                .excluded_window_reasons
+                .get(&42)
+                .map(String::as_str),
+            Some(REDACTION_REASON_WEBSITE_RULE_UNVERIFIED_VISIBLE_BROWSER)
+        );
+        assert!(decision.privacy_filter_applied);
+        assert!(verified_window_ids.is_empty());
+    }
+
+    #[test]
+    fn website_privacy_guard_keeps_window_clear_after_active_non_matching_probe() {
+        let privacy = website_privacy("*.infinityapp.in");
+        let mut verified_window_ids = BTreeSet::new();
+        let browser_window = BrowserWindowContext {
+            window_id: 42,
+            bundle_id: Some("com.google.Chrome".to_string()),
+            title: "Example".to_string(),
+        };
+        let active_browser_context = MetadataContext {
+            active_bundle_id: Some("com.google.Chrome".to_string()),
+            active_window_id: Some(42),
+            active_url: Some("https://example.com/".to_string()),
+            visible_browser_windows: vec![browser_window.clone()],
+            ..MetadataContext::default()
+        };
+        let mut decision = PrivacyFilterDecision::default();
+
+        apply_unverified_visible_browser_window_privacy_guard(
+            &mut verified_window_ids,
+            &privacy,
+            &active_browser_context,
+            &mut decision,
+        );
+
+        assert_eq!(verified_window_ids, BTreeSet::from([42]));
+        assert!(decision.excluded_window_ids.is_empty());
+        assert!(!decision.privacy_filter_applied);
+
+        let background_context = MetadataContext {
+            active_bundle_id: Some("com.apple.finder".to_string()),
+            visible_browser_windows: vec![browser_window],
+            ..MetadataContext::default()
+        };
+        let mut decision = PrivacyFilterDecision::default();
+
+        apply_unverified_visible_browser_window_privacy_guard(
+            &mut verified_window_ids,
+            &privacy,
+            &background_context,
+            &mut decision,
+        );
+
+        assert_eq!(verified_window_ids, BTreeSet::from([42]));
+        assert!(decision.excluded_window_ids.is_empty());
+        assert!(!decision.privacy_filter_applied);
+    }
+
+    #[test]
+    fn active_matching_website_reason_wins_over_unverified_visible_browser_guard() {
+        let privacy = website_privacy("*.infinityapp.in");
+        let context = MetadataContext {
+            active_bundle_id: Some("net.imput.helium".to_string()),
+            active_window_id: Some(42),
+            active_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
+            visible_browser_windows: vec![BrowserWindowContext {
+                window_id: 42,
+                bundle_id: Some("net.imput.helium".to_string()),
+                title: "Dashboard".to_string(),
+            }],
+            ..MetadataContext::default()
+        };
+        let mut decision = evaluate_privacy(&privacy, &context);
+        let mut verified_window_ids = BTreeSet::new();
+        apply_unverified_visible_browser_window_privacy_guard(
+            &mut verified_window_ids,
+            &privacy,
+            &context,
+            &mut decision,
+        );
+        let mut snapshot = FrameMetadataSnapshot {
+            app_bundle_id: Some("net.imput.helium".to_string()),
+            app_name: Some("Helium".to_string()),
+            window_title: Some("Dashboard".to_string()),
+            window_id: Some(42),
+            browser_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
+            display_id: None,
+            metadata_redaction_reason: None,
+        };
+
+        apply_metadata_redaction(&mut snapshot, &privacy, &context, &decision);
+
+        assert_eq!(
+            snapshot.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_WEBSITE_RULE)
+        );
     }
 
     #[test]
@@ -1391,6 +1613,9 @@ mod tests {
 
         assert!(
             metadata_collection_plan(&metadata, &website_privacy).collect_browser_url_for_privacy
+        );
+        assert!(
+            metadata_collection_plan(&metadata, &website_privacy).collect_visible_browser_windows
         );
         assert!(
             metadata_collection_plan(&metadata, &title_privacy).collect_visible_browser_windows
