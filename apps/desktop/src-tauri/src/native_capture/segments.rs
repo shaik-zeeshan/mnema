@@ -802,7 +802,7 @@ fn screen_system_output_files(
 }
 
 #[cfg(target_os = "macos")]
-fn active_microphone_only_sources(runtime: &NativeCaptureRuntime) -> Option<CaptureSources> {
+fn explicit_privacy_suspension_sources(runtime: &NativeCaptureRuntime) -> CaptureSources {
     let microphone_active = runtime
         .requested_sources
         .as_ref()
@@ -811,11 +811,11 @@ fn active_microphone_only_sources(runtime: &NativeCaptureRuntime) -> Option<Capt
         && (runtime.active_microphone_session.is_some()
             || runtime.microphone_recording_file.is_some());
 
-    microphone_active.then_some(CaptureSources {
+    CaptureSources {
         screen: false,
-        microphone: true,
+        microphone: microphone_active,
         system_audio: false,
-    })
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -827,7 +827,7 @@ fn suspend_screen_system_audio_for_privacy_failure(
         active_session: &mut runtime.active_screen_session,
         inactivity_tail_trim_seconds: 0,
     });
-    runtime.current_segment_sources = active_microphone_only_sources(runtime);
+    runtime.current_segment_sources = Some(explicit_privacy_suspension_sources(runtime));
     runtime.privacy_capture_suspension = Some(PrivacyCaptureSuspension::new(error));
 }
 
@@ -3527,6 +3527,60 @@ mod tests {
             Some(screen_path.as_str())
         );
         assert_eq!(output_files.screen_files, vec![screen_path]);
+    }
+
+    #[test]
+    fn privacy_failure_with_paused_microphone_keeps_suspended_sources_explicit() {
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            }),
+            current_segment_sources: Some(CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: true,
+            }),
+            current_segment_output_files: Some(CaptureOutputFiles {
+                screen_file: Some("/tmp/screen.mov".to_string()),
+                screen_files: vec!["/tmp/screen.mov".to_string()],
+                microphone_file: None,
+                microphone_files: Vec::new(),
+                system_audio_file: Some("/tmp/system-audio.m4a".to_string()),
+                system_audio_files: vec!["/tmp/system-audio.m4a".to_string()],
+            }),
+            recording_file: Some("/tmp/screen.mov".to_string()),
+            system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
+            inactivity: super::super::inactivity::InactivityState {
+                enabled: true,
+                idle_timeout_seconds: 10,
+                microphone_paused: true,
+                is_paused: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let error = CaptureErrorResponse {
+            code: "privacy_update_failed".to_string(),
+            message: "privacy update failed".to_string(),
+        };
+
+        suspend_screen_system_audio_for_privacy_failure(&mut runtime, &error);
+
+        assert_eq!(
+            runtime.current_segment_sources,
+            Some(CaptureSources {
+                screen: false,
+                microphone: false,
+                system_audio: false,
+            })
+        );
+        assert!(
+            super::super::runtime::current_segment_sources_for_runtime(&runtime).is_none(),
+            "explicit all-paused privacy suspension must not fall back to stale screen/system-audio outputs"
+        );
     }
 }
 
