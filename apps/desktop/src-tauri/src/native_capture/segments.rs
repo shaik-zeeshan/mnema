@@ -31,9 +31,10 @@ use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
     has_any_capture_sources, mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms,
-    prefixed_capture_id, refresh_runtime_planner_dates, reset_runtime_after_start_error,
-    screen_planner_for_runtime, should_recover_from_segment_finalize_error, NativeCaptureRuntime,
-    PrivacyCaptureSuspension, PrivacyCaptureSuspensionStatus, SegmentLoopControl,
+    prefixed_capture_id, privacy_suspended_sources_for_runtime_state,
+    refresh_runtime_planner_dates, reset_runtime_after_start_error, screen_planner_for_runtime,
+    should_recover_from_segment_finalize_error, NativeCaptureRuntime, PrivacyCaptureSuspension,
+    PrivacyCaptureSuspensionStatus, SegmentLoopControl,
 };
 use super::NativeCaptureState;
 
@@ -936,19 +937,32 @@ fn screen_system_output_files(
 
 #[cfg(target_os = "macos")]
 fn explicit_privacy_suspension_sources(runtime: &NativeCaptureRuntime) -> CaptureSources {
-    let microphone_active = runtime
-        .requested_sources
-        .as_ref()
-        .is_some_and(|sources| sources.microphone)
-        && !runtime.inactivity.is_microphone_paused()
-        && (runtime.active_microphone_session.is_some()
-            || runtime.microphone_recording_file.is_some());
+    privacy_suspended_sources_for_runtime_state(runtime, runtime.inactivity.is_microphone_paused())
+        .unwrap_or(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: false,
+        })
+}
 
-    CaptureSources {
-        screen: false,
-        microphone: microphone_active,
-        system_audio: false,
+#[cfg(target_os = "macos")]
+fn active_sources_for_runtime_pause_state(
+    runtime: &NativeCaptureRuntime,
+    requested_sources: &CaptureSources,
+    screen_paused: bool,
+    microphone_paused: bool,
+    system_audio_paused: bool,
+) -> Option<CaptureSources> {
+    if runtime.privacy_capture_suspension.is_some() {
+        return privacy_suspended_sources_for_runtime_state(runtime, microphone_paused);
     }
+
+    active_sources_for_inactivity_paused_state(
+        requested_sources,
+        screen_paused,
+        microphone_paused,
+        system_audio_paused,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -1856,7 +1870,8 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
         runtime.inactivity.system_audio_paused,
     );
 
-    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+    runtime.current_segment_sources = active_sources_for_runtime_pause_state(
+        runtime,
         runtime.requested_sources.as_ref().unwrap(),
         runtime.inactivity.screen_paused,
         true, // microphone is now paused
@@ -1997,7 +2012,8 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
         true,
     );
 
-    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+    runtime.current_segment_sources = active_sources_for_runtime_pause_state(
+        runtime,
         runtime.requested_sources.as_ref().unwrap(),
         runtime.inactivity.screen_paused,
         runtime.inactivity.microphone_paused,
@@ -2084,7 +2100,8 @@ pub(super) fn resume_microphone_from_inactivity(
         runtime.inactivity.system_audio_paused,
     );
 
-    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+    runtime.current_segment_sources = active_sources_for_runtime_pause_state(
+        runtime,
         &sources,
         runtime.inactivity.screen_paused,
         false, // microphone is now resumed
@@ -2164,7 +2181,8 @@ pub(super) fn resume_system_audio_from_inactivity(
         false,
     );
 
-    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+    runtime.current_segment_sources = active_sources_for_runtime_pause_state(
+        runtime,
         &sources,
         runtime.inactivity.screen_paused,
         runtime.inactivity.microphone_paused,
@@ -2219,7 +2237,8 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
         runtime.recording_file = None;
 
         runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-            active_sources_for_inactivity_paused_state(
+            active_sources_for_runtime_pause_state(
+                runtime,
                 sources,
                 true,
                 runtime.inactivity.microphone_paused,
@@ -2258,7 +2277,8 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
                 runtime.system_audio_recording_file = None;
                 runtime.current_segment_output_files = None;
                 runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-                    active_sources_for_inactivity_paused_state(
+                    active_sources_for_runtime_pause_state(
+                        runtime,
                         sources,
                         true, // screen is now stopped
                         runtime.inactivity.microphone_paused,
@@ -2298,7 +2318,8 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
                 runtime.recording_file = None;
                 runtime.system_audio_recording_file = None;
                 runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-                    active_sources_for_inactivity_paused_state(
+                    active_sources_for_runtime_pause_state(
+                        runtime,
                         sources,
                         true, // screen is now stopped
                         runtime.inactivity.microphone_paused,
@@ -2350,7 +2371,8 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
     // Recompute current_segment_sources: if audio is still active, the
     // audio-only subset becomes the active set; otherwise clear it.
     runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-        active_sources_for_inactivity_paused_state(
+        active_sources_for_runtime_pause_state(
+            runtime,
             sources,
             true, // screen is now paused
             runtime.inactivity.microphone_paused,
@@ -2804,7 +2826,7 @@ pub(super) fn pause_runtime_for_inactivity_with_app_handle(
     }
 
     runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-        active_sources_for_inactivity_paused_state(sources, true, true, sources.system_audio)
+        active_sources_for_runtime_pause_state(runtime, sources, true, true, sources.system_audio)
     });
     runtime.inactivity.is_paused = true;
 
@@ -2826,7 +2848,8 @@ fn refresh_current_segment_sources_for_pause_state(
     runtime: &mut NativeCaptureRuntime,
     requested_sources: &CaptureSources,
 ) {
-    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+    runtime.current_segment_sources = active_sources_for_runtime_pause_state(
+        runtime,
         requested_sources,
         runtime.inactivity.screen_paused,
         runtime.inactivity.microphone_paused,
@@ -3241,7 +3264,14 @@ where
     }
 
     runtime.inactivity.is_paused = false;
-    runtime.current_segment_sources = sources.clone().into();
+    runtime.current_segment_sources = if runtime.privacy_capture_suspension.is_some() {
+        privacy_suspended_sources_for_runtime_state(
+            runtime,
+            runtime.inactivity.is_microphone_paused(),
+        )
+    } else {
+        Some(sources)
+    };
 
     Ok(())
 }

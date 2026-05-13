@@ -16,6 +16,8 @@ use super::microphone::{
     should_reconnect_waiting_microphone_session,
 };
 use super::output::set_current_microphone_output_file;
+#[cfg(target_os = "macos")]
+use super::runtime::PrivacyCaptureSuspension;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, current_segment_sources_for_runtime,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
@@ -7106,6 +7108,112 @@ fn current_segment_sources_for_runtime_fallback_returns_all_when_nothing_paused(
     assert!(sources.screen);
     assert!(sources.microphone);
     assert!(sources.system_audio);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn current_segment_sources_for_runtime_masks_stale_screen_during_privacy_suspension() {
+    let privacy_error = CaptureErrorResponse {
+        code: "privacy_filter_apply_failed".to_string(),
+        message: "privacy filter application failed".to_string(),
+    };
+
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        microphone_recording_file: Some("/tmp/privacy-suspended-microphone.m4a".to_string()),
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::new(&privacy_error)),
+        ..Default::default()
+    };
+
+    let sources = current_segment_sources_for_runtime(&runtime)
+        .expect("live microphone continuation should remain active");
+
+    assert!(
+        !sources.screen,
+        "stale explicit sources must not re-enable suspended screen capture"
+    );
+    assert!(sources.microphone);
+    assert!(
+        !sources.system_audio,
+        "stale explicit sources must not re-enable suspended system audio"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn pause_microphone_for_inactivity_preserves_privacy_suspended_source_mask() {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let privacy_error = CaptureErrorResponse {
+        code: "privacy_filter_apply_failed".to_string(),
+        message: "privacy filter application failed".to_string(),
+    };
+    let microphone_file = "/tmp/privacy-suspended-microphone.m4a".to_string();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        current_segment_index: 1,
+        screen_frame_rate: 30,
+        screen_resolution: ScreenResolution::default(),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        recording_file: None,
+        microphone_recording_file: Some(microphone_file),
+        system_audio_recording_file: None,
+        active_screen_session: None,
+        active_microphone_session: None,
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::new(&privacy_error)),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    pause_microphone_for_inactivity(&mut runtime).expect("microphone pause should succeed");
+
+    if let Some(sources) = runtime.current_segment_sources.as_ref() {
+        assert!(
+            !sources.screen,
+            "screen must stay suspended while privacy recovery is active"
+        );
+        assert!(!sources.microphone, "microphone should be paused");
+        assert!(!sources.system_audio, "system audio must stay suspended");
+    }
+    assert!(
+        current_segment_sources_for_runtime(&runtime).is_none(),
+        "runtime source lookup must not reintroduce suspended screen capture"
+    );
+    assert!(runtime.privacy_capture_suspension.is_some());
 }
 
 // --- Slice 3b8: system_audio requires live screen session ---

@@ -397,6 +397,28 @@ pub(super) fn active_sources_for_inactivity_paused_state(
     has_any_capture_sources(&active_sources).then_some(active_sources)
 }
 
+#[cfg(target_os = "macos")]
+pub(super) fn privacy_suspended_sources_for_runtime_state(
+    runtime: &NativeCaptureRuntime,
+    microphone_paused: bool,
+) -> Option<CaptureSources> {
+    let microphone_active = runtime
+        .requested_sources
+        .as_ref()
+        .is_some_and(|sources| sources.microphone)
+        && !microphone_paused
+        && (runtime.active_microphone_session.is_some()
+            || runtime.microphone_recording_file.is_some());
+
+    let active_sources = CaptureSources {
+        screen: false,
+        microphone: microphone_active,
+        system_audio: false,
+    };
+
+    has_any_capture_sources(&active_sources).then_some(active_sources)
+}
+
 pub(super) fn screen_planner_for_runtime(
     runtime: &NativeCaptureRuntime,
 ) -> Option<&SegmentPlanner> {
@@ -593,6 +615,14 @@ pub(super) fn ensure_system_audio_planner_for_runtime(
 pub(super) fn current_segment_sources_for_runtime(
     runtime: &NativeCaptureRuntime,
 ) -> Option<CaptureSources> {
+    #[cfg(target_os = "macos")]
+    if runtime.privacy_capture_suspension.is_some() {
+        return privacy_suspended_sources_for_runtime_state(
+            runtime,
+            runtime.inactivity.is_microphone_paused(),
+        );
+    }
+
     if let Some(sources) = runtime.current_segment_sources.clone() {
         return has_any_capture_sources(&sources).then_some(sources);
     }
