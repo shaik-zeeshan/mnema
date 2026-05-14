@@ -2339,7 +2339,7 @@
       const label = runAppName ?? runBundleId ?? "Unknown app";
       const variant = frameCount === 1 ? "single" : "range";
       groups.push({
-        key: `${runIdentity}:${runStart}:${runEnd}`,
+        key: timelineAppGroupKey(runIdentity, frames, runEnd),
         bundleId: runBundleId,
         appName: runAppName,
         label,
@@ -2430,6 +2430,18 @@
   function timelineAppIdentity(bundleId: string | null, appName: string | null): string | null {
     if (bundleId) return `bundle:${bundleId}`;
     return appName ? `name:${appName.toLocaleLowerCase()}` : null;
+  }
+
+  function timelineAppGroupKey(
+    identity: string,
+    frames: FrameDto[],
+    runEnd: number,
+  ): string {
+    // New frames prepend at the rail head, shifting every absolute index.
+    // Anchor the keyed DOM node to the oldest frame in the run so existing
+    // app icons are updated in place instead of remounting their <img>.
+    const oldestFrameId = frames[runEnd]?.id;
+    return `${identity}:oldest:${oldestFrameId ?? runEnd}`;
   }
 
   function timelineAppIconFallback(
