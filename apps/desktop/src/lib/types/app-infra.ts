@@ -22,6 +22,7 @@ export interface FrameMetadataSnapshot {
 	browserUrl: string | null;
 	displayId: number | null;
 	metadataRedactionReason: string | null;
+	metadataRedactionSourceId: string | null;
 }
 
 export interface FrameDto {

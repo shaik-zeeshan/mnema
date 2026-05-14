@@ -107,6 +107,8 @@ pub struct FrameMetadataSnapshot {
     pub browser_url: Option<String>,
     pub display_id: Option<u32>,
     pub metadata_redaction_reason: Option<String>,
+    #[serde(default)]
+    pub metadata_redaction_source_id: Option<String>,
 }
 
 impl FrameMetadataSnapshot {
@@ -149,7 +151,11 @@ pub struct PrivacyFilterDecision {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub excluded_bundle_reasons: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub excluded_bundle_source_ids: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub excluded_window_reasons: BTreeMap<u32, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub excluded_window_source_ids: BTreeMap<u32, String>,
     pub matched_rule_ids: Vec<String>,
     pub metadata_redaction_reason: Option<String>,
     pub privacy_filter_applied: bool,
@@ -361,6 +367,60 @@ pub const REDACTION_REASON_WEBSITE_RULE_UNVERIFIED_VISIBLE_BROWSER: &str =
 pub const REDACTION_REASON_TITLE_RULE: &str = "title_rule";
 pub const REDACTION_REASON_PRIVATE_BROWSER: &str = "private_browser";
 pub const REDACTION_REASON_PRIVACY_FILTER: &str = "privacy_filter";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RedactionSource {
+    reason: &'static str,
+    source_id: Option<String>,
+    priority: u8,
+}
+
+impl RedactionSource {
+    fn excluded_app(source_id: impl Into<String>) -> Self {
+        Self {
+            reason: REDACTION_REASON_EXCLUDED_APP,
+            source_id: Some(source_id.into()),
+            priority: 1,
+        }
+    }
+
+    fn website_rule(source_id: impl Into<String>) -> Self {
+        Self {
+            reason: REDACTION_REASON_WEBSITE_RULE,
+            source_id: Some(source_id.into()),
+            priority: 2,
+        }
+    }
+
+    fn title_rule(source_id: impl Into<String>) -> Self {
+        Self {
+            reason: REDACTION_REASON_TITLE_RULE,
+            source_id: Some(source_id.into()),
+            priority: 3,
+        }
+    }
+
+    fn system(reason: &'static str) -> Self {
+        Self {
+            reason,
+            source_id: None,
+            priority: 4,
+        }
+    }
+}
+
+fn apply_redaction_source<T: Ord>(
+    targets: &mut BTreeMap<T, RedactionSource>,
+    target: T,
+    source: RedactionSource,
+) {
+    match targets.get(&target) {
+        Some(existing) if existing.priority >= source.priority => {}
+        _ => {
+            targets.insert(target, source);
+        }
+    }
+}
 
 pub fn is_private_browser_title(title: &str) -> bool {
     const PRIVATE_TITLE_PATTERNS: &[&str] =
@@ -587,12 +647,18 @@ pub fn apply_metadata_redaction(
     });
     let snapshot_bundle_redaction_reason = snapshot_bundle_id
         .and_then(|bundle_id| decision.excluded_bundle_reasons.get(bundle_id).cloned());
+    let snapshot_bundle_redaction_source_id = snapshot_bundle_id
+        .and_then(|bundle_id| decision.excluded_bundle_source_ids.get(bundle_id).cloned());
     let decision_excludes_snapshot_window = snapshot
         .window_id
         .is_some_and(|window_id| decision.excluded_window_ids.contains(&window_id));
     let snapshot_window_redaction_reason = snapshot
         .window_id
         .and_then(|window_id| decision.excluded_window_reasons.get(&window_id))
+        .cloned();
+    let snapshot_window_redaction_source_id = snapshot
+        .window_id
+        .and_then(|window_id| decision.excluded_window_source_ids.get(&window_id))
         .cloned();
     let active_private_snapshot = privacy.private_browser_exclusion_enabled
         && (snapshot
@@ -609,15 +675,23 @@ pub fn apply_metadata_redaction(
     {
         return;
     }
-    let reason = if active_private_snapshot {
-        REDACTION_REASON_PRIVATE_BROWSER.to_string()
+    let (reason, source_id) = if active_private_snapshot {
+        (REDACTION_REASON_PRIVATE_BROWSER.to_string(), None)
+    } else if let Some(reason) = snapshot_window_redaction_reason {
+        (reason, snapshot_window_redaction_source_id)
+    } else if let Some(reason) = snapshot_bundle_redaction_reason {
+        (reason, snapshot_bundle_redaction_source_id)
     } else {
-        snapshot_window_redaction_reason
-            .or(snapshot_bundle_redaction_reason)
-            .or_else(|| decision.metadata_redaction_reason.clone())
-            .unwrap_or_else(|| REDACTION_REASON_PRIVACY_FILTER.to_string())
+        (
+            decision
+                .metadata_redaction_reason
+                .clone()
+                .unwrap_or_else(|| REDACTION_REASON_PRIVACY_FILTER.to_string()),
+            None,
+        )
     };
     snapshot.metadata_redaction_reason = Some(reason);
+    snapshot.metadata_redaction_source_id = source_id;
     snapshot.window_title = None;
     snapshot.browser_url = None;
 }
@@ -740,18 +814,19 @@ pub fn evaluate_privacy(
     settings: &PrivacySettings,
     context: &MetadataContext,
 ) -> PrivacyFilterDecision {
-    let mut bundle_ids = BTreeSet::new();
-    let mut window_ids = BTreeSet::new();
-    let mut bundle_reasons = BTreeMap::new();
-    let mut window_reasons = BTreeMap::new();
+    let mut bundle_sources = BTreeMap::new();
+    let mut window_sources = BTreeMap::new();
     let mut rule_ids = BTreeSet::new();
     let mut redaction_reason = None;
 
     for app in &settings.excluded_apps {
         if app.enabled && !app.bundle_id.trim().is_empty() {
             let bundle_id = app.bundle_id.trim().to_string();
-            bundle_ids.insert(bundle_id.clone());
-            bundle_reasons.insert(bundle_id, REDACTION_REASON_EXCLUDED_APP.to_string());
+            apply_redaction_source(
+                &mut bundle_sources,
+                bundle_id,
+                RedactionSource::excluded_app(app.id.clone()),
+            );
             rule_ids.insert(app.id.clone());
             redaction_reason.get_or_insert_with(|| REDACTION_REASON_EXCLUDED_APP.to_string());
         }
@@ -762,10 +837,10 @@ pub fn evaluate_privacy(
     {
         for rule in &settings.excluded_website_rules {
             if website_rule_matches(rule, active_url) {
-                bundle_ids.insert(active_bundle.clone());
-                bundle_reasons.insert(
+                apply_redaction_source(
+                    &mut bundle_sources,
                     active_bundle.clone(),
-                    REDACTION_REASON_WEBSITE_RULE.to_string(),
+                    RedactionSource::website_rule(rule.id.clone()),
                 );
                 rule_ids.insert(rule.id.clone());
                 redaction_reason.get_or_insert_with(|| REDACTION_REASON_WEBSITE_RULE.to_string());
@@ -776,8 +851,11 @@ pub fn evaluate_privacy(
     for rule in &settings.browser_title_rules {
         for window in &context.visible_windows {
             if title_rule_matches(rule, &window.title) {
-                window_ids.insert(window.window_id);
-                window_reasons.insert(window.window_id, REDACTION_REASON_TITLE_RULE.to_string());
+                apply_redaction_source(
+                    &mut window_sources,
+                    window.window_id,
+                    RedactionSource::title_rule(rule.id.clone()),
+                );
                 rule_ids.insert(rule.id.clone());
                 redaction_reason.get_or_insert_with(|| REDACTION_REASON_TITLE_RULE.to_string());
             }
@@ -788,13 +866,19 @@ pub fn evaluate_privacy(
             .is_some_and(|title| title_rule_matches(rule, title))
         {
             if let Some(window_id) = context.active_privacy_window_id {
-                window_ids.insert(window_id);
-                window_reasons.insert(window_id, REDACTION_REASON_TITLE_RULE.to_string());
+                apply_redaction_source(
+                    &mut window_sources,
+                    window_id,
+                    RedactionSource::title_rule(rule.id.clone()),
+                );
                 rule_ids.insert(rule.id.clone());
                 redaction_reason.get_or_insert_with(|| REDACTION_REASON_TITLE_RULE.to_string());
             } else if let Some(bundle_id) = context.active_bundle_id.clone() {
-                bundle_ids.insert(bundle_id.clone());
-                bundle_reasons.insert(bundle_id, REDACTION_REASON_TITLE_RULE.to_string());
+                apply_redaction_source(
+                    &mut bundle_sources,
+                    bundle_id,
+                    RedactionSource::title_rule(rule.id.clone()),
+                );
                 rule_ids.insert(rule.id.clone());
                 redaction_reason.get_or_insert_with(|| REDACTION_REASON_TITLE_RULE.to_string());
             }
@@ -805,30 +889,67 @@ pub fn evaluate_privacy(
         if let Some(active_private_bundle_id) = context.private_browser_ambiguous_bundle_id.clone()
         {
             if let Some(window_id) = context.active_privacy_window_id {
-                window_ids.insert(window_id);
-                window_reasons.insert(window_id, REDACTION_REASON_PRIVATE_BROWSER.to_string());
+                apply_redaction_source(
+                    &mut window_sources,
+                    window_id,
+                    RedactionSource::system(REDACTION_REASON_PRIVATE_BROWSER),
+                );
             } else {
-                bundle_ids.insert(active_private_bundle_id.clone());
-                bundle_reasons.insert(
+                apply_redaction_source(
+                    &mut bundle_sources,
                     active_private_bundle_id,
-                    REDACTION_REASON_PRIVATE_BROWSER.to_string(),
+                    RedactionSource::system(REDACTION_REASON_PRIVATE_BROWSER),
                 );
             }
             redaction_reason.get_or_insert_with(|| REDACTION_REASON_PRIVATE_BROWSER.to_string());
         }
         for window_id in &context.private_browser_window_ids {
-            window_ids.insert(*window_id);
-            window_reasons.insert(*window_id, REDACTION_REASON_PRIVATE_BROWSER.to_string());
+            apply_redaction_source(
+                &mut window_sources,
+                *window_id,
+                RedactionSource::system(REDACTION_REASON_PRIVATE_BROWSER),
+            );
             redaction_reason.get_or_insert_with(|| REDACTION_REASON_PRIVATE_BROWSER.to_string());
         }
     }
 
+    let excluded_bundle_ids = bundle_sources.keys().cloned().collect::<Vec<_>>();
+    let excluded_window_ids = window_sources.keys().cloned().collect::<Vec<_>>();
+    let excluded_bundle_reasons = bundle_sources
+        .iter()
+        .map(|(bundle_id, source)| (bundle_id.clone(), source.reason.to_string()))
+        .collect();
+    let excluded_window_reasons = window_sources
+        .iter()
+        .map(|(window_id, source)| (*window_id, source.reason.to_string()))
+        .collect();
+    let excluded_bundle_source_ids = bundle_sources
+        .iter()
+        .filter_map(|(bundle_id, source)| {
+            source
+                .source_id
+                .as_ref()
+                .map(|source_id| (bundle_id.clone(), source_id.clone()))
+        })
+        .collect();
+    let excluded_window_source_ids = window_sources
+        .iter()
+        .filter_map(|(window_id, source)| {
+            source
+                .source_id
+                .as_ref()
+                .map(|source_id| (*window_id, source_id.clone()))
+        })
+        .collect();
+
     PrivacyFilterDecision {
-        privacy_filter_applied: !bundle_ids.is_empty() || !window_ids.is_empty(),
-        excluded_bundle_ids: bundle_ids.into_iter().collect(),
-        excluded_window_ids: window_ids.into_iter().collect(),
-        excluded_bundle_reasons: bundle_reasons,
-        excluded_window_reasons: window_reasons,
+        privacy_filter_applied: !excluded_bundle_ids.is_empty() || !excluded_window_ids.is_empty(),
+        excluded_bundle_ids,
+        excluded_window_ids,
+        excluded_bundle_reasons,
+        excluded_bundle_source_ids,
+        excluded_window_reasons,
+        excluded_window_source_ids,
         matched_rule_ids: rule_ids.into_iter().collect(),
         metadata_redaction_reason: redaction_reason,
     }
@@ -1503,6 +1624,7 @@ mod tests {
             browser_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
             display_id: None,
             metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
         };
 
         apply_metadata_redaction(&mut snapshot, &privacy, &context, &decision);
@@ -1523,6 +1645,7 @@ mod tests {
             browser_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
             display_id: None,
             metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
         };
         let decision = PrivacyFilterDecision {
             excluded_bundle_ids: vec!["net.imput.helium".to_string()],
@@ -1578,6 +1701,7 @@ mod tests {
             browser_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
             display_id: None,
             metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
         };
 
         apply_metadata_redaction(
@@ -1600,6 +1724,430 @@ mod tests {
     }
 
     #[test]
+    fn website_rule_source_id_is_persisted_after_redaction() {
+        let privacy = PrivacySettings {
+            excluded_website_rules: vec![parse_website_rule(
+                "website-1778659985506-5bb1ir",
+                true,
+                "https://dashboard.infinityapp.in",
+            )],
+            ..PrivacySettings::default()
+        };
+        let context = MetadataContext {
+            active_bundle_id: Some("net.imput.helium".to_string()),
+            active_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
+            ..MetadataContext::default()
+        };
+        let decision = evaluate_privacy(&privacy, &context);
+        let mut snapshot = FrameMetadataSnapshot {
+            app_bundle_id: Some("net.imput.helium".to_string()),
+            app_name: Some("Helium".to_string()),
+            window_title: Some("Infinity - Helium".to_string()),
+            window_id: None,
+            browser_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
+            display_id: None,
+            metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
+        };
+
+        apply_metadata_redaction(&mut snapshot, &privacy, &context, &decision);
+
+        assert_eq!(
+            snapshot.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_WEBSITE_RULE)
+        );
+        assert_eq!(
+            snapshot.metadata_redaction_source_id.as_deref(),
+            Some("website-1778659985506-5bb1ir")
+        );
+    }
+
+    #[test]
+    fn title_rule_source_id_is_persisted_after_redaction() {
+        let privacy = PrivacySettings {
+            private_browser_exclusion_enabled: false,
+            browser_title_rules: vec![BrowserTitleRule {
+                id: "title-rule-123".to_string(),
+                enabled: true,
+                match_type: BrowserTitleRuleMatchType::Substring,
+                pattern: "secret".to_string(),
+            }],
+            ..PrivacySettings::default()
+        };
+        let context = MetadataContext {
+            visible_windows: vec![WindowContext {
+                window_id: 7,
+                bundle_id: Some("com.google.Chrome".to_string()),
+                owner_pid: None,
+                title: "Secret dashboard".to_string(),
+            }],
+            ..MetadataContext::default()
+        };
+        let decision = evaluate_privacy(&privacy, &context);
+        let mut snapshot = FrameMetadataSnapshot {
+            app_bundle_id: Some("com.google.Chrome".to_string()),
+            app_name: Some("Google Chrome".to_string()),
+            window_title: Some("Secret dashboard".to_string()),
+            window_id: Some(7),
+            browser_url: Some("https://example.com/".to_string()),
+            display_id: None,
+            metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
+        };
+
+        apply_metadata_redaction(&mut snapshot, &privacy, &context, &decision);
+
+        assert_eq!(
+            snapshot.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_TITLE_RULE)
+        );
+        assert_eq!(
+            snapshot.metadata_redaction_source_id.as_deref(),
+            Some("title-rule-123")
+        );
+    }
+
+    #[test]
+    fn excluded_app_source_id_is_persisted_after_redaction() {
+        let privacy = PrivacySettings {
+            excluded_apps: vec![ExcludedAppEntry {
+                id: "excluded-app-123".to_string(),
+                enabled: true,
+                bundle_id: "com.secret.App".to_string(),
+                display_name: "Secret".to_string(),
+            }],
+            ..PrivacySettings::default()
+        };
+        let decision = evaluate_privacy(&privacy, &MetadataContext::default());
+        let mut snapshot = FrameMetadataSnapshot {
+            app_bundle_id: Some("com.secret.App".to_string()),
+            app_name: Some("Secret".to_string()),
+            window_title: Some("Private notes".to_string()),
+            window_id: None,
+            browser_url: None,
+            display_id: None,
+            metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
+        };
+
+        apply_metadata_redaction(
+            &mut snapshot,
+            &privacy,
+            &MetadataContext::default(),
+            &decision,
+        );
+
+        assert_eq!(
+            snapshot.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_EXCLUDED_APP)
+        );
+        assert_eq!(
+            snapshot.metadata_redaction_source_id.as_deref(),
+            Some("excluded-app-123")
+        );
+    }
+
+    #[test]
+    fn different_redaction_source_ids_produce_different_normalized_hashes() {
+        let first = FrameMetadataSnapshot {
+            app_bundle_id: Some("net.imput.helium".to_string()),
+            app_name: Some("Helium".to_string()),
+            window_title: None,
+            window_id: Some(42),
+            browser_url: None,
+            display_id: None,
+            metadata_redaction_reason: Some(REDACTION_REASON_WEBSITE_RULE.to_string()),
+            metadata_redaction_source_id: Some("website-a".to_string()),
+        };
+        let second = FrameMetadataSnapshot {
+            metadata_redaction_source_id: Some("website-b".to_string()),
+            ..first.clone()
+        };
+
+        assert_ne!(first.normalized_hash(), second.normalized_hash());
+        assert!(!first.normalized_json().contains("windowId"));
+    }
+
+    #[test]
+    fn redaction_source_precedence_uses_title_then_website_then_app() {
+        let privacy = PrivacySettings {
+            excluded_apps: vec![ExcludedAppEntry {
+                id: "app-source".to_string(),
+                enabled: true,
+                bundle_id: "net.imput.helium".to_string(),
+                display_name: "Helium".to_string(),
+            }],
+            excluded_website_rules: vec![parse_website_rule(
+                "website-source",
+                true,
+                "https://dashboard.infinityapp.in",
+            )],
+            browser_title_rules: vec![BrowserTitleRule {
+                id: "title-source".to_string(),
+                enabled: true,
+                match_type: BrowserTitleRuleMatchType::Substring,
+                pattern: "dashboard".to_string(),
+            }],
+            private_browser_exclusion_enabled: false,
+        };
+        let context = MetadataContext {
+            active_bundle_id: Some("net.imput.helium".to_string()),
+            active_window_id: Some(7),
+            active_window_title: Some("Dashboard".to_string()),
+            active_privacy_window_id: Some(7),
+            active_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
+            visible_windows: vec![WindowContext {
+                window_id: 7,
+                bundle_id: Some("net.imput.helium".to_string()),
+                owner_pid: None,
+                title: "Dashboard".to_string(),
+            }],
+            ..MetadataContext::default()
+        };
+        let decision = evaluate_privacy(&privacy, &context);
+        let mut snapshot = FrameMetadataSnapshot {
+            app_bundle_id: Some("net.imput.helium".to_string()),
+            app_name: Some("Helium".to_string()),
+            window_title: Some("Dashboard".to_string()),
+            window_id: Some(7),
+            browser_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
+            display_id: None,
+            metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
+        };
+
+        apply_metadata_redaction(&mut snapshot, &privacy, &context, &decision);
+
+        assert_eq!(
+            snapshot.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_TITLE_RULE)
+        );
+        assert_eq!(
+            snapshot.metadata_redaction_source_id.as_deref(),
+            Some("title-source")
+        );
+
+        let context_without_title = MetadataContext {
+            active_window_title: Some("Public".to_string()),
+            visible_windows: vec![WindowContext {
+                title: "Public".to_string(),
+                ..context.visible_windows[0].clone()
+            }],
+            ..context
+        };
+        let decision = evaluate_privacy(&privacy, &context_without_title);
+        let mut snapshot = FrameMetadataSnapshot {
+            app_bundle_id: Some("net.imput.helium".to_string()),
+            app_name: Some("Helium".to_string()),
+            window_title: Some("Public".to_string()),
+            window_id: Some(7),
+            browser_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
+            display_id: None,
+            metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
+        };
+
+        apply_metadata_redaction(&mut snapshot, &privacy, &context_without_title, &decision);
+
+        assert_eq!(
+            snapshot.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_WEBSITE_RULE)
+        );
+        assert_eq!(
+            snapshot.metadata_redaction_source_id.as_deref(),
+            Some("website-source")
+        );
+    }
+
+    #[test]
+    fn equal_precedence_redaction_sources_preserve_first_matching_rule() {
+        let privacy = PrivacySettings {
+            excluded_website_rules: vec![
+                parse_website_rule("website-first", true, "https://dashboard.infinityapp.in"),
+                parse_website_rule("website-second", true, "*.infinityapp.in"),
+            ],
+            browser_title_rules: vec![
+                BrowserTitleRule {
+                    id: "title-first".to_string(),
+                    enabled: true,
+                    match_type: BrowserTitleRuleMatchType::Substring,
+                    pattern: "dash".to_string(),
+                },
+                BrowserTitleRule {
+                    id: "title-second".to_string(),
+                    enabled: true,
+                    match_type: BrowserTitleRuleMatchType::Substring,
+                    pattern: "dashboard".to_string(),
+                },
+            ],
+            private_browser_exclusion_enabled: false,
+            ..PrivacySettings::default()
+        };
+        let context = MetadataContext {
+            active_bundle_id: Some("net.imput.helium".to_string()),
+            active_window_title: Some("Dashboard".to_string()),
+            active_privacy_window_id: Some(7),
+            active_url: Some("https://dashboard.infinityapp.in/app/dashboard".to_string()),
+            visible_windows: vec![WindowContext {
+                window_id: 7,
+                bundle_id: Some("net.imput.helium".to_string()),
+                owner_pid: None,
+                title: "Dashboard".to_string(),
+            }],
+            ..MetadataContext::default()
+        };
+        let decision = evaluate_privacy(&privacy, &context);
+
+        assert_eq!(
+            decision
+                .excluded_bundle_source_ids
+                .get("net.imput.helium")
+                .map(String::as_str),
+            Some("website-first")
+        );
+        assert_eq!(
+            decision
+                .excluded_window_source_ids
+                .get(&7)
+                .map(String::as_str),
+            Some("title-first")
+        );
+    }
+
+    #[test]
+    fn system_redactions_do_not_persist_source_ids() {
+        let private_privacy = PrivacySettings::default();
+        let private_context = MetadataContext {
+            private_browser_window_ids: vec![7],
+            ..MetadataContext::default()
+        };
+        let private_decision = evaluate_privacy(&private_privacy, &private_context);
+        let mut private_snapshot = FrameMetadataSnapshot {
+            app_bundle_id: Some("com.google.Chrome".to_string()),
+            app_name: Some("Google Chrome".to_string()),
+            window_title: Some("New Incognito Tab - Google Chrome".to_string()),
+            window_id: Some(7),
+            browser_url: None,
+            display_id: None,
+            metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
+        };
+
+        apply_metadata_redaction(
+            &mut private_snapshot,
+            &private_privacy,
+            &private_context,
+            &private_decision,
+        );
+
+        assert_eq!(
+            private_snapshot.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_PRIVATE_BROWSER)
+        );
+        assert_eq!(private_snapshot.metadata_redaction_source_id, None);
+
+        let website_privacy = website_privacy("*.infinityapp.in");
+        let mut held_bundle_reasons = BTreeMap::new();
+        let mut held_decision = PrivacyFilterDecision::default();
+        let held_context = MetadataContext {
+            active_bundle_id: Some("net.imput.helium".to_string()),
+            active_url: None,
+            ..MetadataContext::default()
+        };
+        apply_website_privacy_hold(
+            &mut held_bundle_reasons,
+            &website_privacy,
+            &held_context,
+            &mut held_decision,
+        );
+        let mut unavailable_snapshot = FrameMetadataSnapshot {
+            app_bundle_id: Some("net.imput.helium".to_string()),
+            app_name: Some("Helium".to_string()),
+            window_title: Some("Unknown".to_string()),
+            window_id: None,
+            browser_url: None,
+            display_id: None,
+            metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
+        };
+
+        apply_metadata_redaction(
+            &mut unavailable_snapshot,
+            &website_privacy,
+            &held_context,
+            &held_decision,
+        );
+
+        assert_eq!(
+            unavailable_snapshot.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_WEBSITE_RULE_URL_UNAVAILABLE)
+        );
+        assert_eq!(unavailable_snapshot.metadata_redaction_source_id, None);
+
+        let mut verified_window_ids = BTreeSet::new();
+        let mut unverified_decision = PrivacyFilterDecision::default();
+        let unverified_context = MetadataContext {
+            active_bundle_id: Some("com.apple.finder".to_string()),
+            visible_windows: vec![WindowContext {
+                window_id: 42,
+                bundle_id: Some("com.google.Chrome".to_string()),
+                owner_pid: None,
+                title: "Dashboard".to_string(),
+            }],
+            ..MetadataContext::default()
+        };
+        apply_unverified_visible_browser_window_privacy_guard(
+            &mut verified_window_ids,
+            &website_privacy,
+            &unverified_context,
+            &mut unverified_decision,
+        );
+        let mut unverified_snapshot = FrameMetadataSnapshot {
+            app_bundle_id: Some("com.google.Chrome".to_string()),
+            app_name: Some("Google Chrome".to_string()),
+            window_title: Some("Dashboard".to_string()),
+            window_id: Some(42),
+            browser_url: None,
+            display_id: None,
+            metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
+        };
+
+        apply_metadata_redaction(
+            &mut unverified_snapshot,
+            &website_privacy,
+            &unverified_context,
+            &unverified_decision,
+        );
+
+        assert_eq!(
+            unverified_snapshot.metadata_redaction_reason.as_deref(),
+            Some(REDACTION_REASON_WEBSITE_RULE_UNVERIFIED_VISIBLE_BROWSER)
+        );
+        assert_eq!(unverified_snapshot.metadata_redaction_source_id, None);
+    }
+
+    #[test]
+    fn old_snapshot_json_without_redaction_source_id_deserializes_as_none() {
+        let snapshot: FrameMetadataSnapshot = serde_json::from_str(
+            r#"{
+                "appBundleId": "net.imput.helium",
+                "appName": "Helium",
+                "windowTitle": null,
+                "browserUrl": null,
+                "displayId": null,
+                "metadataRedactionReason": "website_rule"
+            }"#,
+        )
+        .expect("old snapshot JSON should deserialize");
+
+        assert_eq!(snapshot.metadata_redaction_source_id, None);
+        assert!(snapshot
+            .normalized_json()
+            .contains(r#""metadataRedactionSourceId":null"#));
+    }
+
+    #[test]
     fn active_excluded_window_metadata_redacts_title_and_url() {
         let mut snapshot = FrameMetadataSnapshot {
             app_bundle_id: Some("net.imput.helium".to_string()),
@@ -1609,6 +2157,7 @@ mod tests {
             browser_url: Some("https://mail.google.com/mail/u/0/".to_string()),
             display_id: None,
             metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
         };
         let decision = PrivacyFilterDecision {
             excluded_window_ids: vec![7],
@@ -1643,6 +2192,7 @@ mod tests {
             browser_url: Some("https://mail.google.com/mail/u/0/".to_string()),
             display_id: None,
             metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
         };
         let decision = PrivacyFilterDecision {
             excluded_window_ids: vec![7],

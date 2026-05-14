@@ -3674,7 +3674,9 @@ mod tests {
 
         ready.store(true, Ordering::Relaxed);
         assert!(
-            collector_started_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            collector_started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .is_ok(),
             "poll worker should wait for a transient not-ready state instead of exiting"
         );
 

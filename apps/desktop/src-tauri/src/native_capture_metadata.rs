@@ -444,6 +444,7 @@ fn collect_active_window_metadata(
             browser_url: snapshot_browser_url,
             display_id: None,
             metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
         });
         let context = MetadataContext {
             active_bundle_id: bundle_id.clone(),
