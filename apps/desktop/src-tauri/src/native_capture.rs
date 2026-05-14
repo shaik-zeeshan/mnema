@@ -465,13 +465,12 @@ fn maybe_push_private_browser_accessibility_limited_start_warning(
     app_handle: &tauri::AppHandle,
     state: &AppNotificationsState,
     settings: &RecordingSettings,
+    sources: &CaptureSources,
 ) {
-    if !settings.privacy.private_browser_exclusion_enabled {
-        return;
-    }
-    if matches!(
+    if !should_warn_private_browser_accessibility_limited_at_start(
+        settings,
+        sources,
         private_browser::accessibility_permission_state(),
-        CapturePermissionState::Granted
     ) {
         return;
     }
@@ -489,6 +488,16 @@ fn maybe_push_private_browser_accessibility_limited_start_warning(
             }),
         },
     );
+}
+
+fn should_warn_private_browser_accessibility_limited_at_start(
+    settings: &RecordingSettings,
+    sources: &CaptureSources,
+    accessibility_permission: CapturePermissionState,
+) -> bool {
+    settings.privacy.private_browser_exclusion_enabled
+        && sources.screen
+        && !matches!(accessibility_permission, CapturePermissionState::Granted)
 }
 
 pub(crate) fn push_warning_app_notification(
@@ -1746,6 +1755,7 @@ fn start_native_capture_inner(
         &app_handle,
         app_notifications_state.inner(),
         &settings,
+        &requested_sources_for_log,
     );
 
     if let Some(notice) = runtime.take_microphone_vad_fallback_notification() {
