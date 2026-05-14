@@ -458,13 +458,24 @@ pub fn resolve_active_privacy_window_id(
         }
     }
 
-    let active_window_title = active_window_title
+    if let Some(active_window_title) = active_window_title
         .map(str::trim)
-        .filter(|title| !title.is_empty())?;
-    let mut matches = visible_windows.iter().filter(|window| {
-        window.bundle_id.as_deref() == Some(active_bundle_id)
-            && window.title.trim() == active_window_title
-    });
+        .filter(|title| !title.is_empty())
+    {
+        let mut matches = visible_windows.iter().filter(|window| {
+            window.bundle_id.as_deref() == Some(active_bundle_id)
+                && window.title.trim() == active_window_title
+        });
+        if let Some(matched) = matches.next() {
+            if matches.next().is_none() {
+                return Some(matched.window_id);
+            }
+        }
+    }
+
+    let mut matches = visible_windows
+        .iter()
+        .filter(|window| window.bundle_id.as_deref() == Some(active_bundle_id));
     let matched = matches.next()?;
     matches.next().is_none().then_some(matched.window_id)
 }
@@ -499,10 +510,9 @@ pub fn apply_website_privacy_hold(
                     if !decision.excluded_window_ids.contains(&window_id) {
                         decision.excluded_window_ids.push(window_id);
                     }
-                    decision.excluded_window_reasons.insert(
-                        window_id,
-                        REDACTION_REASON_WEBSITE_RULE.to_string(),
-                    );
+                    decision
+                        .excluded_window_reasons
+                        .insert(window_id, REDACTION_REASON_WEBSITE_RULE.to_string());
                     decision
                         .excluded_window_source_ids
                         .insert(window_id, rule.id.clone());
@@ -1155,10 +1165,7 @@ mod tests {
                 private_browser_ambiguous_bundle_id: Some("com.google.Chrome".into()),
             },
         );
-        assert_eq!(
-            decision.excluded_bundle_ids,
-            vec!["com.secret"]
-        );
+        assert_eq!(decision.excluded_bundle_ids, vec!["com.secret"]);
         assert_eq!(decision.excluded_window_ids, vec![7, 9]);
         assert_eq!(
             decision.metadata_redaction_reason.as_deref(),
@@ -1629,6 +1636,46 @@ mod tests {
             &mut decision,
         );
 
+        assert_eq!(verified_window_ids, BTreeSet::from([42]));
+        assert!(decision.excluded_window_ids.is_empty());
+        assert!(!decision.privacy_filter_applied);
+    }
+
+    #[test]
+    fn website_privacy_guard_trusts_unique_active_browser_window_after_safe_url_probe() {
+        let privacy = website_privacy("*.infinityapp.in");
+        let mut verified_window_ids = BTreeSet::new();
+        let browser_window = WindowContext {
+            window_id: 42,
+            bundle_id: Some("com.google.Chrome".to_string()),
+            owner_pid: None,
+            title: "Different ScreenCaptureKit title".to_string(),
+        };
+        let active_privacy_window_id = resolve_active_privacy_window_id(
+            Some("com.google.Chrome"),
+            Some(7),
+            Some("Different CGWindow title"),
+            std::slice::from_ref(&browser_window),
+        );
+        let active_browser_context = MetadataContext {
+            active_bundle_id: Some("com.google.Chrome".to_string()),
+            active_window_id: Some(7),
+            active_window_title: Some("Different CGWindow title".to_string()),
+            active_privacy_window_id,
+            active_url: Some("https://example.com/".to_string()),
+            visible_windows: vec![browser_window.clone()],
+            ..MetadataContext::default()
+        };
+        let mut decision = PrivacyFilterDecision::default();
+
+        apply_unverified_visible_browser_window_privacy_guard(
+            &mut verified_window_ids,
+            &privacy,
+            &active_browser_context,
+            &mut decision,
+        );
+
+        assert_eq!(active_privacy_window_id, Some(42));
         assert_eq!(verified_window_ids, BTreeSet::from([42]));
         assert!(decision.excluded_window_ids.is_empty());
         assert!(!decision.privacy_filter_applied);
