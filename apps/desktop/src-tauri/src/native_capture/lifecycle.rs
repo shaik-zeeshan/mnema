@@ -302,10 +302,13 @@ impl RecordingLifecycle {
             }
         }
 
-        if self
-            .runtime
-            .inactivity
-            .should_resume_screen_from_inactivity(now, activity_snapshot)
+        let privacy_suspended = self.runtime.privacy_capture_suspension.is_some();
+
+        if !privacy_suspended
+            && self
+                .runtime
+                .inactivity
+                .should_resume_screen_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_screen_from_inactivity(&mut self.runtime, Some(app_handle)) {
                 if handle_inactivity_resume_error(&mut self.runtime, error) {
@@ -325,10 +328,11 @@ impl RecordingLifecycle {
             }
         }
 
-        if self
-            .runtime
-            .inactivity
-            .should_pause_screen_for_inactivity(now, activity_snapshot)
+        if !privacy_suspended
+            && self
+                .runtime
+                .inactivity
+                .should_pause_screen_for_inactivity(now, activity_snapshot)
         {
             if let Err(error) =
                 pause_screen_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))

@@ -970,17 +970,24 @@ fn suspend_screen_system_audio_for_privacy_failure(
     app_handle: Option<&tauri::AppHandle>,
     runtime: &mut NativeCaptureRuntime,
     error: &CaptureErrorResponse,
-) {
-    let _ = capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
-        active_session: &mut runtime.active_screen_session,
-        inactivity_tail_trim_seconds: 0,
-    });
+) -> Result<(), CaptureErrorResponse> {
+    if let Err(stop_error) =
+        capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
+            active_session: &mut runtime.active_screen_session,
+            inactivity_tail_trim_seconds: 0,
+        })
+    {
+        if capture_screen::should_preserve_runtime_on_stop_error(&stop_error) {
+            return Err(stop_error);
+        }
+    }
     runtime.current_segment_sources = Some(explicit_privacy_suspension_sources(runtime));
     runtime.privacy_capture_suspension = Some(PrivacyCaptureSuspension::new(error));
     commit_suspended_screen_system_outputs(app_handle, runtime);
     runtime.recording_file = None;
     runtime.system_audio_recording_file = None;
     preserve_live_microphone_continuation_outputs(runtime);
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -3545,11 +3552,21 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                     "privacy filter update failed; suspending screen/system-audio capture: [{}] {}",
                     error.code, error.message
                 ));
-                suspend_screen_system_audio_for_privacy_failure(
+                if let Err(stop_error) = suspend_screen_system_audio_for_privacy_failure(
                     Some(&app_handle),
                     runtime.runtime_mut(),
                     &error,
-                );
+                ) {
+                    super::debug_log::log(format!(
+                        "privacy failure suspension could not stop screen/system-audio capture; preserving runtime state: [{}] {}",
+                        stop_error.code, stop_error.message
+                    ));
+                    if !capture_screen::should_preserve_runtime_on_stop_error(&stop_error) {
+                        mark_runtime_session_failed(runtime.runtime_mut());
+                        break;
+                    }
+                    continue;
+                }
                 if !runtime
                     .runtime()
                     .requested_sources
@@ -3737,7 +3754,8 @@ mod tests {
             message: "privacy update failed".to_string(),
         };
 
-        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error);
+        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error)
+            .expect("privacy suspension should succeed");
         assert!(
             runtime.current_segment_output_files.is_none(),
             "without microphone continuation, suspended screen/system outputs should already be committed and detached"
@@ -3794,7 +3812,8 @@ mod tests {
             message: "privacy update failed".to_string(),
         };
 
-        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error);
+        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error)
+            .expect("privacy suspension should succeed");
 
         assert_eq!(
             runtime.current_segment_sources,
@@ -3854,7 +3873,8 @@ mod tests {
             message: "privacy update failed".to_string(),
         };
 
-        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error);
+        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error)
+            .expect("privacy suspension should succeed");
 
         assert!(runtime.recording_file.is_none());
         assert!(runtime.system_audio_recording_file.is_none());

@@ -541,8 +541,8 @@ where
         mutate(&mut settings, &mut history)?;
         settings.privacy =
             crate::native_capture::settings::validate_privacy_settings(settings.privacy)?;
-        persist_history_to_path(&history_path, &history)?;
         crate::native_capture::settings::persist_recording_settings(&app_handle, &settings)?;
+        persist_history_to_path(&history_path, &history)?;
 
         settings_runtime.settings = settings.clone();
         history_runtime.file = history;

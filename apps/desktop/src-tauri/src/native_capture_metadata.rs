@@ -159,6 +159,8 @@ pub fn latest_applied_privacy_decision(state: &CaptureMetadataState) -> PrivacyF
 
 pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
     let mut runtime = state.lock().expect("capture metadata state poisoned");
+    runtime.latest_snapshot = None;
+    runtime.latest_decision = PrivacyFilterDecision::default();
     runtime.latest_applied_decision = PrivacyFilterDecision::default();
     runtime.website_privacy_hold_bundle_reasons.clear();
     runtime.website_privacy_verified_window_ids.clear();
@@ -801,6 +803,18 @@ mod tests {
         let state = CaptureMetadataState::default();
         {
             let mut runtime = state.lock().expect("capture metadata state should lock");
+            runtime.latest_snapshot = Some(FrameMetadataSnapshot {
+                app_bundle_id: Some("net.imput.helium".to_string()),
+                app_name: Some("Helium".to_string()),
+                window_title: Some("Private window".to_string()),
+                browser_url: Some("https://secret.example".to_string()),
+                ..FrameMetadataSnapshot::default()
+            });
+            runtime.latest_decision = PrivacyFilterDecision {
+                excluded_bundle_ids: vec!["net.imput.helium".to_string()],
+                privacy_filter_applied: true,
+                ..PrivacyFilterDecision::default()
+            };
             runtime.latest_applied_decision = PrivacyFilterDecision {
                 excluded_bundle_ids: vec!["net.imput.helium".to_string()],
                 privacy_filter_applied: true,
@@ -815,6 +829,8 @@ mod tests {
         reset_recording_session_privacy_state(&state);
 
         let runtime = state.lock().expect("capture metadata state should lock");
+        assert!(runtime.latest_snapshot.is_none());
+        assert_eq!(runtime.latest_decision, PrivacyFilterDecision::default());
         assert_eq!(
             runtime.latest_applied_decision,
             PrivacyFilterDecision::default()
