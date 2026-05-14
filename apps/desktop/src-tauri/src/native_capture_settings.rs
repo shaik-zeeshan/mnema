@@ -281,12 +281,28 @@ pub(crate) fn validate_privacy_settings(
         }
     }
 
+    let mut seen_app_bundle_ids = std::collections::BTreeSet::new();
+    let excluded_apps = excluded_apps
+        .into_iter()
+        .filter_map(|mut app| {
+            app.bundle_id = canonicalize_app_bundle_id(&app.bundle_id);
+            if app.bundle_id.is_empty() || !seen_app_bundle_ids.insert(app.bundle_id.clone()) {
+                return None;
+            }
+            Some(app)
+        })
+        .collect();
+
     Ok(capture_types::PrivacySettings {
         excluded_apps,
         excluded_website_rules,
         browser_title_rules,
         private_browser_exclusion_enabled,
     })
+}
+
+pub(crate) fn canonicalize_app_bundle_id(bundle_id: &str) -> String {
+    bundle_id.trim().to_ascii_lowercase()
 }
 
 fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> SpeakerAnalysisSettings {
@@ -838,6 +854,13 @@ pub(crate) fn persist_recording_settings(
     settings: &RecordingSettings,
 ) -> Result<(), CaptureErrorResponse> {
     let file_path = recording_settings_file_path(app_handle);
+    persist_recording_settings_to_path(&file_path, settings)
+}
+
+pub(crate) fn persist_recording_settings_to_path(
+    file_path: &Path,
+    settings: &RecordingSettings,
+) -> Result<(), CaptureErrorResponse> {
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| CaptureErrorResponse {
             code: "io_error".to_string(),
@@ -1066,6 +1089,31 @@ mod tests {
         assert!(!rule.include_subdomains);
         assert_eq!(rule.path_prefix.as_deref(), Some("/private"));
         assert_eq!(rule.port, None);
+    }
+
+    #[test]
+    fn validate_privacy_settings_canonicalizes_and_dedupes_app_bundle_ids() {
+        let mut privacy = default_privacy_settings();
+        privacy.excluded_apps = vec![
+            capture_metadata::ExcludedAppEntry {
+                id: "app-a".to_string(),
+                enabled: true,
+                bundle_id: " com.apple.Safari ".to_string(),
+                display_name: "Safari".to_string(),
+            },
+            capture_metadata::ExcludedAppEntry {
+                id: "app-b".to_string(),
+                enabled: true,
+                bundle_id: "com.apple.safari".to_string(),
+                display_name: "Safari duplicate".to_string(),
+            },
+        ];
+
+        let normalized = validate_privacy_settings(privacy).expect("privacy should validate");
+
+        assert_eq!(normalized.excluded_apps.len(), 1);
+        assert_eq!(normalized.excluded_apps[0].id, "app-a");
+        assert_eq!(normalized.excluded_apps[0].bundle_id, "com.apple.safari");
     }
 
     #[test]

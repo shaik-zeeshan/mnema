@@ -136,7 +136,10 @@ fn fingerprint(parts: &[&str]) -> String {
 }
 
 fn app_fingerprint(bundle_id: &str) -> String {
-    fingerprint(&["excluded_app", &bundle_id.trim().to_ascii_lowercase()])
+    fingerprint(&[
+        "excluded_app",
+        &crate::native_capture::settings::canonicalize_app_bundle_id(bundle_id),
+    ])
 }
 
 fn website_descriptor(rule: &WebsiteRule) -> String {
@@ -477,17 +480,22 @@ pub fn initialize(app_handle: &tauri::AppHandle) {
         .lock()
         .expect("recording settings state poisoned");
     let mut history = load_history_from_path(&history_path);
+    let original_history = history.clone();
     let changed = reconcile_privacy_sources(&mut history, &mut settings_runtime.settings.privacy);
 
     if changed {
-        if let Err(error) = persist_history_to_path(&history_path, &history) {
-            eprintln!("failed to persist privacy redaction history during startup: {error:?}");
-        }
-        if let Err(error) = crate::native_capture::settings::persist_recording_settings(
-            app_handle,
+        let settings_path =
+            crate::native_capture::settings::recording_settings_file_path(app_handle);
+        if let Err(error) = persist_privacy_files_to_paths(
+            &settings_path,
+            &history_path,
             &settings_runtime.settings,
+            &history,
+            &original_history,
         ) {
-            eprintln!("failed to persist reconciled recording settings during startup: {error:?}");
+            eprintln!(
+                "failed to persist reconciled privacy redaction settings during startup: {error:?}"
+            );
         }
     }
 
@@ -495,6 +503,25 @@ pub fn initialize(app_handle: &tauri::AppHandle) {
         .lock()
         .expect("privacy redaction source state poisoned")
         .file = history;
+}
+
+fn persist_privacy_files_to_paths(
+    settings_path: &Path,
+    history_path: &Path,
+    settings: &RecordingSettings,
+    history: &PrivacyRedactionSourcesFile,
+    previous_history: &PrivacyRedactionSourcesFile,
+) -> Result<(), CaptureErrorResponse> {
+    persist_history_to_path(history_path, history)?;
+    if let Err(error) =
+        crate::native_capture::settings::persist_recording_settings_to_path(settings_path, settings)
+    {
+        if let Err(rollback_error) = persist_history_to_path(history_path, previous_history) {
+            eprintln!("failed to roll back privacy redaction history after settings write failure: {rollback_error:?}");
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn emit_privacy_mutation(
@@ -537,12 +564,20 @@ where
             .expect("privacy redaction source state poisoned");
         let mut settings = settings_runtime.settings.clone();
         let mut history = history_runtime.file.clone();
+        let original_history = history.clone();
 
         mutate(&mut settings, &mut history)?;
         settings.privacy =
             crate::native_capture::settings::validate_privacy_settings(settings.privacy)?;
-        crate::native_capture::settings::persist_recording_settings(&app_handle, &settings)?;
-        persist_history_to_path(&history_path, &history)?;
+        let settings_path =
+            crate::native_capture::settings::recording_settings_file_path(&app_handle);
+        persist_privacy_files_to_paths(
+            &settings_path,
+            &history_path,
+            &settings,
+            &history,
+            &original_history,
+        )?;
 
         settings_runtime.settings = settings.clone();
         history_runtime.file = history;
@@ -560,7 +595,7 @@ pub fn add_privacy_excluded_app(
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
     with_privacy_mutation(app_handle, false, |settings, history| {
-        let bundle_id = bundle_id.trim().to_string();
+        let bundle_id = crate::native_capture::settings::canonicalize_app_bundle_id(&bundle_id);
         let display_name = display_name.trim().to_string();
         if bundle_id.is_empty() || display_name.is_empty() {
             return Err(err(
@@ -568,12 +603,9 @@ pub fn add_privacy_excluded_app(
                 "App bundle and display name are required",
             ));
         }
-        if settings
-            .privacy
-            .excluded_apps
-            .iter()
-            .any(|app| app.bundle_id == bundle_id)
-        {
+        if settings.privacy.excluded_apps.iter().any(|app| {
+            crate::native_capture::settings::canonicalize_app_bundle_id(&app.bundle_id) == bundle_id
+        }) {
             return Ok(());
         }
         let source_id = new_source_id("excluded-app");
@@ -891,6 +923,8 @@ pub fn restore_privacy_redaction_source(
                     display_name,
                     enabled,
                 } => {
+                    let bundle_id =
+                        crate::native_capture::settings::canonicalize_app_bundle_id(&bundle_id);
                     let fp = app_fingerprint(&bundle_id);
                     if active_fingerprint_exists(
                         history,
@@ -1202,5 +1236,85 @@ mod tests {
             website_fingerprint(&shorthand),
             website_fingerprint(&explicit)
         );
+    }
+
+    #[test]
+    fn privacy_file_pair_does_not_persist_settings_when_history_write_fails() {
+        let dir = TestDir::new("history-write-fails");
+        let settings_path = dir.path.join("recording-settings.json");
+        let history_path = dir.path.join("privacy-redaction-sources.json");
+        std::fs::create_dir_all(&history_path).expect("history path directory should be created");
+
+        let settings = crate::native_capture::settings::default_recording_settings();
+        let history = PrivacyRedactionSourcesFile::default();
+        let previous_history = PrivacyRedactionSourcesFile::default();
+
+        let result = persist_privacy_files_to_paths(
+            &settings_path,
+            &history_path,
+            &settings,
+            &history,
+            &previous_history,
+        );
+
+        assert!(result.is_err());
+        assert!(!settings_path.exists());
+    }
+
+    #[test]
+    fn privacy_file_pair_rolls_back_history_when_settings_write_fails() {
+        let dir = TestDir::new("settings-write-fails");
+        let settings_path = dir.path.join("recording-settings.json");
+        std::fs::create_dir_all(&settings_path).expect("settings path directory should be created");
+        let history_path = dir.path.join("privacy-redaction-sources.json");
+        let now = now_rfc3339();
+
+        let mut previous_history = PrivacyRedactionSourcesFile::default();
+        previous_history.sources.insert(
+            "excluded-app-old".to_string(),
+            PrivacyRedactionSourceRecord {
+                source_kind: PrivacyRedactionSourceKind::ExcludedApp,
+                label: Some("Old".to_string()),
+                detail: Some("com.example.old".to_string()),
+                fingerprint: Some(app_fingerprint("com.example.old")),
+                label_forgotten: false,
+                restore_payload: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                deleted_at: None,
+            },
+        );
+        persist_history_to_path(&history_path, &previous_history)
+            .expect("previous history should persist");
+
+        let mut history = PrivacyRedactionSourcesFile::default();
+        history.sources.insert(
+            "excluded-app-new".to_string(),
+            PrivacyRedactionSourceRecord {
+                source_kind: PrivacyRedactionSourceKind::ExcludedApp,
+                label: Some("New".to_string()),
+                detail: Some("com.example.new".to_string()),
+                fingerprint: Some(app_fingerprint("com.example.new")),
+                label_forgotten: false,
+                restore_payload: None,
+                created_at: now.clone(),
+                updated_at: now,
+                deleted_at: None,
+            },
+        );
+        let settings = crate::native_capture::settings::default_recording_settings();
+
+        let result = persist_privacy_files_to_paths(
+            &settings_path,
+            &history_path,
+            &settings,
+            &history,
+            &previous_history,
+        );
+
+        assert!(result.is_err());
+        let rolled_back = load_history_from_path(&history_path);
+        assert!(rolled_back.sources.contains_key("excluded-app-old"));
+        assert!(!rolled_back.sources.contains_key("excluded-app-new"));
     }
 }
