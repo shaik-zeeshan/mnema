@@ -790,12 +790,14 @@ pub fn evaluate_privacy(
             if let Some(window_id) = context.active_privacy_window_id {
                 window_ids.insert(window_id);
                 window_reasons.insert(window_id, REDACTION_REASON_TITLE_RULE.to_string());
+                rule_ids.insert(rule.id.clone());
+                redaction_reason.get_or_insert_with(|| REDACTION_REASON_TITLE_RULE.to_string());
             } else if let Some(bundle_id) = context.active_bundle_id.clone() {
                 bundle_ids.insert(bundle_id.clone());
                 bundle_reasons.insert(bundle_id, REDACTION_REASON_TITLE_RULE.to_string());
+                rule_ids.insert(rule.id.clone());
+                redaction_reason.get_or_insert_with(|| REDACTION_REASON_TITLE_RULE.to_string());
             }
-            rule_ids.insert(rule.id.clone());
-            redaction_reason.get_or_insert_with(|| REDACTION_REASON_TITLE_RULE.to_string());
         }
     }
 
@@ -1818,6 +1820,33 @@ mod tests {
         );
         assert_eq!(decision.matched_rule_ids, vec!["title-rule"]);
         assert!(decision.privacy_filter_applied);
+    }
+
+    #[test]
+    fn active_title_rule_without_exclusion_target_does_not_report_match() {
+        let privacy = PrivacySettings {
+            private_browser_exclusion_enabled: false,
+            browser_title_rules: vec![BrowserTitleRule {
+                id: "title-rule".to_string(),
+                enabled: true,
+                match_type: BrowserTitleRuleMatchType::Substring,
+                pattern: "secret".to_string(),
+            }],
+            ..PrivacySettings::default()
+        };
+        let context = MetadataContext {
+            active_window_title: Some("Secret workspace".to_string()),
+            visible_windows: Vec::new(),
+            ..MetadataContext::default()
+        };
+
+        let decision = evaluate_privacy(&privacy, &context);
+
+        assert!(decision.excluded_bundle_ids.is_empty());
+        assert!(decision.excluded_window_ids.is_empty());
+        assert!(decision.matched_rule_ids.is_empty());
+        assert_eq!(decision.metadata_redaction_reason, None);
+        assert!(!decision.privacy_filter_applied);
     }
 
     #[test]

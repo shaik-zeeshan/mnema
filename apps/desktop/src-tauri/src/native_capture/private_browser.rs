@@ -278,8 +278,9 @@ fn ax_copy_array_attribute(
     use core_foundation::array::CFArray;
     use core_foundation::base::{CFType, TCFType};
     let value = ax_copy_attribute(element, attribute)?;
-    let value_ref = value.as_CFTypeRef() as core_foundation_sys::array::CFArrayRef;
-    std::mem::forget(value);
+    let array = value.downcast_into::<CFArray>()?;
+    let value_ref = array.as_CFTypeRef() as core_foundation_sys::array::CFArrayRef;
+    std::mem::forget(array);
     Some(unsafe { CFArray::<CFType>::wrap_under_create_rule(value_ref) })
 }
 

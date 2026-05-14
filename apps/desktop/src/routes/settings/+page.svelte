@@ -834,10 +834,14 @@
     const trimmed = pattern.trim();
     if (!trimmed) return null;
     try {
-      const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+      const normalized = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
+      const wildcardHostMatch = normalized.match(/^([a-z][a-z\d+\-.]*:\/\/)\*\./i);
+      const includeSubdomains = Boolean(wildcardHostMatch);
+      const parseablePattern = wildcardHostMatch
+        ? `${wildcardHostMatch[1]}${normalized.slice(wildcardHostMatch[0].length)}`
+        : normalized;
+      const parsed = new URL(parseablePattern);
       let host = parsed.hostname.toLowerCase();
-      const includeSubdomains = host.startsWith("*.");
-      if (includeSubdomains) host = host.slice(2);
       if (!host) return null;
       const port = parsed.port ? Number.parseInt(parsed.port, 10) : null;
       return {

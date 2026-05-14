@@ -2971,15 +2971,9 @@ fn build_screen_capture_kit_content_filter(
 #[cfg(target_os = "macos")]
 fn screen_capture_kit_no_exclusion_filter(
     display: &cidre::sc::Display,
-    apps: &cidre::ns::Array<cidre::sc::RunningApp>,
+    _apps: &cidre::ns::Array<cidre::sc::RunningApp>,
 ) -> cidre::arc::R<cidre::sc::ContentFilter> {
-    let included_apps: Vec<_> = apps.iter().map(|app| app.retained()).collect();
-    let app_array = cidre::ns::Array::from_slice_retained(&included_apps);
-    cidre::sc::ContentFilter::with_display_including_apps_excepting_windows(
-        display,
-        &app_array,
-        &cidre::ns::Array::new(),
-    )
+    cidre::sc::ContentFilter::with_display_excluding_windows(display, &cidre::ns::Array::new())
 }
 
 #[cfg(target_os = "macos")]

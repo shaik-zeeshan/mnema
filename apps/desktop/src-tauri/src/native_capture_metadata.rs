@@ -160,6 +160,7 @@ pub fn latest_applied_privacy_decision(state: &CaptureMetadataState) -> PrivacyF
 pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
     let mut runtime = state.lock().expect("capture metadata state poisoned");
     runtime.latest_applied_decision = PrivacyFilterDecision::default();
+    runtime.website_privacy_hold_bundle_reasons.clear();
     runtime.website_privacy_verified_window_ids.clear();
     runtime.browser_url_probe_cache = BrowserUrlProbeCache::default();
     runtime.private_browser_sticky_window_reasons.clear();
@@ -177,9 +178,11 @@ fn update_private_browser_sticky_cache(
         .iter()
         .map(|window| window.window_id)
         .collect();
-    runtime
-        .private_browser_sticky_window_reasons
-        .retain(|window_id, _| visible_window_ids.contains(window_id));
+    if !visible_window_ids.is_empty() {
+        runtime
+            .private_browser_sticky_window_reasons
+            .retain(|window_id, _| visible_window_ids.contains(window_id));
+    }
 
     let detection = crate::native_capture::private_browser::detect_private_browser_windows(
         &context.visible_windows,
@@ -777,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_recording_session_privacy_state_clears_verified_windows_but_preserves_website_holds() {
+    fn reset_recording_session_privacy_state_clears_verified_windows_and_website_holds() {
         let state = CaptureMetadataState::default();
         {
             let mut runtime = state.lock().expect("capture metadata state should lock");
@@ -800,13 +803,7 @@ mod tests {
             PrivacyFilterDecision::default()
         );
         assert!(runtime.website_privacy_verified_window_ids.is_empty());
-        assert_eq!(
-            runtime
-                .website_privacy_hold_bundle_reasons
-                .get("net.imput.helium")
-                .map(String::as_str),
-            Some("website_rule")
-        );
+        assert!(runtime.website_privacy_hold_bundle_reasons.is_empty());
     }
 
     #[test]
@@ -891,6 +888,25 @@ mod tests {
         update_private_browser_sticky_cache(&mut runtime, &privacy, &context);
 
         assert!(!runtime
+            .private_browser_sticky_window_reasons
+            .contains_key(&9));
+    }
+
+    #[test]
+    fn sticky_private_browser_cache_survives_empty_visible_window_poll() {
+        let mut runtime = CaptureMetadataRuntime::default();
+        runtime
+            .private_browser_sticky_window_reasons
+            .insert(9, "title_private_browser".to_string());
+        let privacy = PrivacySettings::default();
+        let context = MetadataContext {
+            visible_windows: Vec::new(),
+            ..MetadataContext::default()
+        };
+
+        update_private_browser_sticky_cache(&mut runtime, &privacy, &context);
+
+        assert!(runtime
             .private_browser_sticky_window_reasons
             .contains_key(&9));
     }
