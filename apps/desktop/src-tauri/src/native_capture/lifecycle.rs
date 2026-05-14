@@ -6,9 +6,9 @@ use super::output::{
 };
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
-    ensure_system_audio_planner_for_runtime, mark_runtime_session_failed,
-    microphone_planner_for_runtime, refresh_runtime_planner_dates, screen_planner_for_runtime,
-    system_audio_planner_for_runtime,
+    current_segment_sources_for_runtime, ensure_system_audio_planner_for_runtime,
+    mark_runtime_session_failed, microphone_planner_for_runtime, refresh_runtime_planner_dates,
+    screen_planner_for_runtime, system_audio_planner_for_runtime,
 };
 use super::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
@@ -23,7 +23,8 @@ use super::segments::{
     recover_from_segment_finalize_error, recover_screen_capture_after_wake,
     resume_microphone_from_inactivity, resume_runtime_from_inactivity,
     resume_screen_from_inactivity, resume_system_audio_from_inactivity, start_capture_runtime,
-    start_segment, stop_active_sessions_after_failure, stop_capture_runtime,
+    start_segment_with_current_privacy_filter, stop_active_sessions_after_failure,
+    stop_capture_runtime,
 };
 use capture_runtime::RuntimeSignal;
 use capture_types::{
@@ -301,10 +302,13 @@ impl RecordingLifecycle {
             }
         }
 
-        if self
-            .runtime
-            .inactivity
-            .should_resume_screen_from_inactivity(now, activity_snapshot)
+        let privacy_suspended = self.runtime.privacy_capture_suspension.is_some();
+
+        if !privacy_suspended
+            && self
+                .runtime
+                .inactivity
+                .should_resume_screen_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_screen_from_inactivity(&mut self.runtime, Some(app_handle)) {
                 if handle_inactivity_resume_error(&mut self.runtime, error) {
@@ -324,10 +328,11 @@ impl RecordingLifecycle {
             }
         }
 
-        if self
-            .runtime
-            .inactivity
-            .should_pause_screen_for_inactivity(now, activity_snapshot)
+        if !privacy_suspended
+            && self
+                .runtime
+                .inactivity
+                .should_pause_screen_for_inactivity(now, activity_snapshot)
         {
             if let Err(error) =
                 pause_screen_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))
@@ -428,12 +433,16 @@ impl RecordingLifecycle {
             mark_runtime_session_failed(&mut self.runtime);
             return TickOutcome::StopLoop;
         };
-        let active_sources = active_sources_for_inactivity_paused_state(
-            &sources,
-            self.runtime.inactivity.screen_paused,
-            self.runtime.inactivity.microphone_paused,
-            self.runtime.inactivity.system_audio_paused,
-        )
+        let active_sources = if self.runtime.privacy_capture_suspension.is_some() {
+            current_segment_sources_for_runtime(&self.runtime)
+        } else {
+            active_sources_for_inactivity_paused_state(
+                &sources,
+                self.runtime.inactivity.screen_paused,
+                self.runtime.inactivity.microphone_paused,
+                self.runtime.inactivity.system_audio_paused,
+            )
+        }
         .unwrap_or(CaptureSources {
             screen: false,
             microphone: false,
@@ -561,7 +570,8 @@ impl RecordingLifecycle {
                 .then(|| system_audio_output_path.as_deref())
                 .flatten();
 
-            let started_segment = start_segment(
+            let started_segment = start_segment_with_current_privacy_filter(
+                app_handle,
                 &segment_dir,
                 Some(&screen_output_file),
                 legacy_system_audio_path,

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CapturePermissionState {
     Granted,
@@ -32,6 +32,7 @@ pub struct CapturePermissions {
     pub screen: CapturePermissionState,
     pub microphone: CapturePermissionState,
     pub system_audio: CapturePermissionState,
+    pub accessibility: CapturePermissionState,
 }
 
 #[derive(Debug, Clone, Serialize)]

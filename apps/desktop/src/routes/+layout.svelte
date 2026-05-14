@@ -183,6 +183,11 @@
     key: "screen" | "microphone" | "systemAudio";
     label: string;
   };
+  type PrivacyVisualCaptureStatus = {
+    modifier: "retrying" | "restart-required";
+    label: string;
+    detail: string;
+  };
   const sourceLanes: SourceLane[] = [
     { key: "screen", label: "Screen" },
     { key: "microphone", label: "Microphone" },
@@ -221,6 +226,69 @@
             : "off";
     return `${lane.label}: ${verb}`;
   }
+
+  function isPrivacySuspensionReason(reason: string | null): boolean {
+    return (
+      reason === "privacy_filter_apply_failed" ||
+      reason === "privacy_recovery_restart_required"
+    );
+  }
+
+  function isPrivacySuspendedSource(src: {
+    requested: boolean;
+    reason: string | null;
+  }): boolean {
+    return src.requested && isPrivacySuspensionReason(src.reason);
+  }
+
+  function formatSuspendedVisualSources(keys: SourceLane["key"][]): string {
+    const labels = keys.map((key) => {
+      if (key === "systemAudio") return "system audio";
+      return key;
+    });
+    if (labels.length === 0) return "visual capture";
+    if (labels.length === 1) return labels[0];
+    return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+  }
+
+  const privacyVisualCaptureStatus = $derived.by<PrivacyVisualCaptureStatus | null>(() => {
+    if (!isCapturing) return null;
+    const rs = captureControls.runtimeSources;
+    if (!rs) return null;
+
+    const suspendedSources: SourceLane["key"][] = [];
+    if (isPrivacySuspendedSource(rs.screen)) {
+      suspendedSources.push("screen");
+    }
+    if (isPrivacySuspendedSource(rs.systemAudio)) {
+      suspendedSources.push("systemAudio");
+    }
+    if (suspendedSources.length === 0) return null;
+
+    const reason = suspendedSources
+      .map((key) => rs[key].reason)
+      .find((value) => value === "privacy_recovery_restart_required")
+      ?? "privacy_filter_apply_failed";
+    const sources = formatSuspendedVisualSources(suspendedSources);
+    const suffix = rs.microphone.requested
+      ? " Microphone can keep recording."
+      : "";
+
+    if (reason === "privacy_recovery_restart_required") {
+      return {
+        modifier: "restart-required",
+        label: `Restart recording to resume ${sources}`,
+        detail: `Privacy filter recovery failed. Stop and start recording to resume ${sources}.${suffix}`,
+      };
+    }
+
+    return {
+      modifier: "retrying",
+      label: `Privacy filter failed; retrying ${sources}`,
+      detail: `Mnema stopped ${sources} because the privacy filter could not be applied. It is retrying recovery.${suffix}`,
+    };
+  });
+
   function selectTitleFor(lane: SourceLane, state: SelectState): string {
     return state === "selected"
       ? `${lane.label}: enabled — click to skip on next recording`
@@ -310,6 +378,14 @@
   async function toggleSourceShortcut(key: SourceLane["key"]): Promise<void> {
     if (!canToggleSourcesByShortcut || sourceSelection.isSaving(key)) return;
     await toggleSourceSelected(key);
+  }
+
+  async function restartCaptureForPrivacyRecovery(): Promise<void> {
+    if (captureLoadingStart || captureLoadingStop || !isCapturing) return;
+    await stopCapture();
+    if (!captureControls.isRunning) {
+      await startCapture();
+    }
   }
 
   function openNotifications(openedByKeyboard = false): void {
@@ -672,6 +748,45 @@
             </button>
           {/if}
         {/each}
+        {#if privacyVisualCaptureStatus}
+          <span
+            class="titlebar__privacy-warning titlebar__privacy-warning--{privacyVisualCaptureStatus.modifier}"
+            title={privacyVisualCaptureStatus.detail}
+            aria-label={privacyVisualCaptureStatus.detail}
+            aria-live="polite"
+            role="status"
+          >
+            <svg
+              class="titlebar__privacy-warning-icon"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+              <path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+            </svg>
+            <span class="titlebar__privacy-warning-label">{privacyVisualCaptureStatus.label}</span>
+            {#if privacyVisualCaptureStatus.modifier === "restart-required"}
+              <button
+                type="button"
+                class="titlebar__privacy-warning-action"
+                title={privacyVisualCaptureStatus.detail}
+                aria-label={privacyVisualCaptureStatus.detail}
+                disabled={captureLoadingStart || captureLoadingStop}
+                onclick={restartCaptureForPrivacyRecovery}
+              >
+                Restart
+              </button>
+            {/if}
+          </span>
+        {/if}
       {/if}
     </div>
 
@@ -1470,6 +1585,60 @@
     background: var(--app-surface-hover);
     opacity: 1;
   }
+
+  .titlebar__privacy-warning {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: min(380px, 34vw);
+    height: 22px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--app-warn-border);
+    background: var(--app-warn-bg);
+    color: var(--app-warn);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .titlebar__privacy-warning--restart-required {
+    border-color: var(--app-danger-border);
+    background: var(--app-danger-bg-soft);
+    color: var(--app-danger-text);
+  }
+  .titlebar__privacy-warning-icon {
+    flex: 0 0 auto;
+  }
+  .titlebar__privacy-warning-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .titlebar__privacy-warning-action {
+    flex: 0 0 auto;
+    height: 16px;
+    padding: 0 6px;
+    border-radius: 3px;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .titlebar__privacy-warning-action:hover:not(:disabled) {
+    background: color-mix(in srgb, currentColor 14%, transparent);
+  }
+  .titlebar__privacy-warning-action:disabled {
+    cursor: progress;
+    opacity: 0.55;
+  }
+
   /* Diagonal slash glyph used when a source is unselected (idle) or
      forcibly off (live). Drawn as a thin rotated bar so it reads as
      "muted/skipped" without bringing in another SVG. */

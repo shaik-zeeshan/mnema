@@ -4,9 +4,13 @@ pub(crate) mod debug_log;
 #[path = "native_capture_inactivity.rs"]
 pub(crate) mod inactivity;
 mod lifecycle;
+#[path = "native_capture_metadata.rs"]
+pub(crate) mod metadata;
 mod microphone;
 #[path = "native_capture_output.rs"]
 pub(crate) mod output;
+mod privacy;
+mod private_browser;
 mod runtime;
 mod segments;
 #[path = "native_capture_settings.rs"]
@@ -32,12 +36,16 @@ use settings::{
     current_native_capture_debug_logging_enabled, current_recording_settings,
     initialize_recording_settings_state_from_disk,
 };
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(target_os = "macos")]
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
-use tauri::{Emitter, Manager};
+use tauri::{path::BaseDirectory, Emitter, Manager};
 
 pub use capture_types::IdleDebugInfo;
 pub(crate) use debug_log::install_panic_hook;
@@ -59,10 +67,34 @@ pub use settings::RecordingSettingsState;
 pub(crate) use settings::current_recording_settings as read_recording_settings;
 
 #[cfg(target_os = "macos")]
-pub type SystemWakeNotifierState = std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>;
+#[derive(Default)]
+pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>);
 
 #[cfg(not(target_os = "macos"))]
-pub type SystemWakeNotifierState = std::sync::Mutex<Vec<()>>;
+#[derive(Default)]
+pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<()>>);
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+pub struct MetadataNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>);
+
+#[cfg(not(target_os = "macos"))]
+#[derive(Default)]
+pub struct MetadataNotifierState(std::sync::Mutex<Vec<()>>);
+
+#[cfg(target_os = "macos")]
+impl MetadataNotifierState {
+    pub(crate) fn replace(&self, guards: Vec<cidre::ns::NotificationGuard>) {
+        *self.0.lock().expect("metadata notifier state poisoned") = guards;
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl MetadataNotifierState {
+    pub(crate) fn replace(&self, guards: Vec<()>) {
+        *self.0.lock().expect("metadata notifier state poisoned") = guards;
+    }
+}
 
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 #[cfg(target_os = "macos")]
@@ -75,7 +107,13 @@ const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcripti
 const OCR_UNAVAILABLE_NOTIFICATION_ID: &str = "ocr-unavailable";
 const SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID: &str = "speech-detector-unavailable";
 const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-unavailable";
+const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recovery-restart-required";
+const PRIVATE_BROWSER_ACCESSIBILITY_LIMITED_NOTIFICATION_ID: &str =
+    "private-browser-accessibility-limited";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
+const PRIVACY_SETTINGS_TAB_ID: &str = "privacy";
+#[cfg(target_os = "macos")]
+const APP_ICON_CACHE_DIR: &str = "app-icons";
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[allow(dead_code)]
@@ -94,6 +132,53 @@ pub struct AppNotification {
     pub created_at_unix_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<AppNotificationAction>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivacyAppCandidate {
+    pub bundle_id: String,
+    pub display_name: String,
+    pub running: bool,
+    pub icon_path: Option<String>,
+    #[serde(skip)]
+    pub bundle_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveAppIconsRequest {
+    pub bundle_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppIconResolution {
+    pub bundle_id: String,
+    pub icon_path: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckBrowserUrlSupportRequest {
+    pub bundle_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserUrlSupportResponse {
+    pub bundle_id: String,
+    pub supported: bool,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturePrivacyDebugResponse {
+    pub metadata_enabled: bool,
+    pub browser_url_mode: capture_metadata::BrowserUrlMode,
+    pub private_browser_exclusion_enabled: bool,
+    pub privacy_debug: metadata::CapturePrivacyDebugInfo,
 }
 
 #[derive(Debug, Default)]
@@ -124,6 +209,527 @@ impl AppNotificationsRuntime {
 }
 
 pub type AppNotificationsState = Mutex<AppNotificationsRuntime>;
+pub use metadata::{start_metadata_notifier, CaptureMetadataState};
+
+#[tauri::command]
+pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
+    let mut candidates = BTreeMap::new();
+    insert_privacy_app_candidate(
+        &mut candidates,
+        PrivacyAppCandidate {
+            bundle_id: "com.shaikzeeshan.mnema".to_string(),
+            display_name: "Mnema".to_string(),
+            running: true,
+            icon_path: None,
+            #[cfg(target_os = "macos")]
+            bundle_path: main_bundle_path(),
+            #[cfg(not(target_os = "macos"))]
+            bundle_path: None,
+        },
+    );
+
+    #[cfg(target_os = "macos")]
+    {
+        let running_candidates = running_privacy_app_candidates();
+        add_installed_privacy_app_candidates(&mut candidates);
+        merge_running_privacy_app_candidates(&mut candidates, running_candidates);
+    }
+
+    let mut candidates: Vec<_> = candidates.into_values().collect();
+    candidates.sort_by(|left, right| {
+        left.display_name
+            .to_ascii_lowercase()
+            .cmp(&right.display_name.to_ascii_lowercase())
+            .then_with(|| left.bundle_id.cmp(&right.bundle_id))
+    });
+    Ok(candidates)
+}
+
+#[tauri::command]
+pub async fn resolve_app_icons(
+    app_handle: tauri::AppHandle,
+    request: ResolveAppIconsRequest,
+) -> Result<Vec<AppIconResolution>, String> {
+    let requested_bundle_ids: BTreeSet<String> = request
+        .bundle_ids
+        .into_iter()
+        .map(|bundle_id| bundle_id.trim().to_string())
+        .filter(|bundle_id| !bundle_id.is_empty())
+        .collect();
+
+    if requested_bundle_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut candidates = BTreeMap::new();
+        for bundle_id in &requested_bundle_ids {
+            insert_privacy_app_candidate(
+                &mut candidates,
+                PrivacyAppCandidate {
+                    bundle_id: bundle_id.clone(),
+                    display_name: bundle_id.clone(),
+                    running: false,
+                    icon_path: None,
+                    bundle_path: app_icon_bundle_path(bundle_id),
+                },
+            );
+        }
+        materialize_app_candidate_icons(&app_handle, &mut candidates);
+
+        let icons = requested_bundle_ids
+            .into_iter()
+            .map(|bundle_id| AppIconResolution {
+                icon_path: candidates
+                    .get(&bundle_id)
+                    .and_then(|candidate| candidate.icon_path.clone()),
+                bundle_id,
+            })
+            .collect();
+        Ok(icons)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app_handle;
+        Ok(requested_bundle_ids
+            .into_iter()
+            .map(|bundle_id| AppIconResolution {
+                bundle_id,
+                icon_path: None,
+            })
+            .collect())
+    }
+}
+
+fn insert_privacy_app_candidate(
+    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
+    candidate: PrivacyAppCandidate,
+) {
+    let bundle_id = candidate.bundle_id.trim();
+    if bundle_id.is_empty() {
+        return;
+    }
+
+    let display_name = candidate.display_name.trim();
+    let candidate = PrivacyAppCandidate {
+        bundle_id: bundle_id.to_string(),
+        display_name: if display_name.is_empty() {
+            bundle_id.to_string()
+        } else {
+            display_name.to_string()
+        },
+        running: candidate.running,
+        icon_path: candidate.icon_path,
+        bundle_path: candidate.bundle_path,
+    };
+
+    if let Some(existing) = candidates.get_mut(&candidate.bundle_id) {
+        existing.running |= candidate.running;
+        if candidate.running || existing.display_name == existing.bundle_id {
+            existing.display_name = candidate.display_name;
+        }
+        if existing.icon_path.is_none() {
+            existing.icon_path = candidate.icon_path;
+        }
+        if existing.bundle_path.is_none() {
+            existing.bundle_path = candidate.bundle_path;
+        }
+        return;
+    }
+
+    candidates.insert(candidate.bundle_id.clone(), candidate);
+}
+
+#[cfg(target_os = "macos")]
+fn running_privacy_app_candidates() -> Vec<PrivacyAppCandidate> {
+    let mut candidates = Vec::new();
+    let running_apps = cidre::ns::Workspace::shared().running_apps();
+    for app in running_apps.iter() {
+        let Some(bundle_id) = app.bundle_id().map(|value| value.to_string()) else {
+            continue;
+        };
+        let Some(bundle_path) = app
+            .bundle_url()
+            .and_then(|url| url.path())
+            .map(|path| PathBuf::from(path.to_string()))
+            .filter(|path| path_has_app_extension(path))
+        else {
+            continue;
+        };
+        let display_name = app
+            .localized_name()
+            .map(|name| name.to_string())
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                bundle_path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.trim().is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| bundle_id.clone());
+        candidates.push(PrivacyAppCandidate {
+            bundle_id,
+            display_name,
+            running: true,
+            icon_path: None,
+            bundle_path: Some(bundle_path),
+        });
+    }
+    candidates
+}
+
+fn mark_running_privacy_app_candidates(
+    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
+    running_bundle_ids: &BTreeSet<String>,
+) {
+    for bundle_id in running_bundle_ids {
+        if let Some(candidate) = candidates.get_mut(bundle_id) {
+            candidate.running = true;
+        }
+    }
+}
+
+fn merge_running_privacy_app_candidates(
+    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
+    running_candidates: impl IntoIterator<Item = PrivacyAppCandidate>,
+) {
+    let running_bundle_ids = running_candidates
+        .into_iter()
+        .map(|candidate| {
+            let bundle_id = candidate.bundle_id.clone();
+            insert_privacy_app_candidate(candidates, candidate);
+            bundle_id
+        })
+        .collect::<BTreeSet<_>>();
+    mark_running_privacy_app_candidates(candidates, &running_bundle_ids);
+}
+
+#[cfg(target_os = "macos")]
+fn add_installed_privacy_app_candidates(candidates: &mut BTreeMap<String, PrivacyAppCandidate>) {
+    for root in privacy_app_search_roots() {
+        collect_privacy_apps_from_dir(&root, 0, candidates);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn privacy_app_search_roots() -> Vec<PathBuf> {
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
+    if let Some(home) = std::env::home_dir() {
+        roots.push(home.join("Applications"));
+    }
+    roots
+}
+
+#[cfg(target_os = "macos")]
+fn collect_privacy_apps_from_dir(
+    dir: &Path,
+    depth: usize,
+    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
+) {
+    const MAX_DEPTH: usize = 4;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let path = entry.path();
+        if path_has_app_extension(&path) {
+            if let Some(candidate) = privacy_app_candidate_from_bundle_path(&path) {
+                insert_privacy_app_candidate(candidates, candidate);
+            }
+            continue;
+        }
+
+        if depth < MAX_DEPTH {
+            collect_privacy_apps_from_dir(&path, depth + 1, candidates);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn privacy_app_candidate_from_bundle_path(path: &Path) -> Option<PrivacyAppCandidate> {
+    let path = path.to_str()?;
+    let ns_path = cidre::ns::String::with_str(path);
+    let bundle = cidre::ns::Bundle::with_path(&ns_path)?;
+    let bundle_id = bundle.bundle_id()?.to_string();
+    let display_name = Path::new(path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(&bundle_id)
+        .to_string();
+
+    Some(PrivacyAppCandidate {
+        bundle_id,
+        display_name,
+        running: false,
+        icon_path: None,
+        bundle_path: Some(PathBuf::from(path)),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn path_has_app_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+}
+
+#[cfg(target_os = "macos")]
+fn main_bundle_path() -> Option<PathBuf> {
+    let bundle_path = cidre::ns::Bundle::main().bundle_path().to_string();
+    (!bundle_path.trim().is_empty()).then(|| PathBuf::from(bundle_path))
+}
+
+#[cfg(target_os = "macos")]
+fn app_icon_bundle_path(bundle_id: &str) -> Option<PathBuf> {
+    macos_application_bundle_path_for_bundle_id(bundle_id).or_else(|| {
+        (bundle_id == "com.shaikzeeshan.mnema")
+            .then(main_bundle_path)
+            .flatten()
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn macos_application_bundle_path_for_bundle_id(bundle_id: &str) -> Option<PathBuf> {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSString;
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::ffi::CStr;
+    use std::os::raw::c_char;
+
+    if bundle_id.trim().is_empty() {
+        return None;
+    }
+
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    cidre::ns::try_catch(|| unsafe {
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace == nil {
+            return None;
+        }
+
+        let ns_bundle_id = NSString::alloc(nil).init_str(bundle_id);
+        let app_url: id = msg_send![workspace, URLForApplicationWithBundleIdentifier: ns_bundle_id];
+        if app_url == nil {
+            return None;
+        }
+
+        let path: id = msg_send![app_url, path];
+        if path == nil {
+            return None;
+        }
+
+        let raw_path: *const c_char = msg_send![path, UTF8String];
+        if raw_path.is_null() {
+            return None;
+        }
+
+        let path = CStr::from_ptr(raw_path).to_string_lossy().into_owned();
+        (!path.trim().is_empty()).then(|| PathBuf::from(path))
+    })
+    .ok()
+    .flatten()
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_app_icon_cache_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let cache_dir = app_handle
+        .path()
+        .resolve(APP_ICON_CACHE_DIR, BaseDirectory::AppCache)
+        .map_err(|error| format!("failed to resolve app icon cache directory: {error}"))?;
+    std::fs::create_dir_all(&cache_dir).map_err(|error| {
+        format!(
+            "failed to create app icon cache directory {}: {error}",
+            cache_dir.display()
+        )
+    })?;
+    app_handle
+        .asset_protocol_scope()
+        .allow_directory(&cache_dir, true)
+        .map_err(|error| {
+            format!(
+                "failed to allow app icon cache directory {} in asset scope: {error}",
+                cache_dir.display()
+            )
+        })?;
+    Ok(cache_dir)
+}
+
+#[cfg(target_os = "macos")]
+fn materialize_app_candidate_icons(
+    app_handle: &tauri::AppHandle,
+    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
+) {
+    let Ok(cache_dir) = ensure_app_icon_cache_dir(app_handle) else {
+        return;
+    };
+
+    for candidate in candidates.values_mut() {
+        let Some(bundle_path) = candidate.bundle_path.as_deref() else {
+            continue;
+        };
+        let Some(icon_path) = app_icon_cache_path(&cache_dir, &candidate.bundle_id) else {
+            continue;
+        };
+        let cached_icon_available = icon_path
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+        if cached_icon_available || write_macos_app_icon_png(bundle_path, &icon_path).is_ok() {
+            candidate.icon_path = Some(icon_path.to_string_lossy().to_string());
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn app_icon_cache_path(cache_dir: &Path, bundle_id: &str) -> Option<PathBuf> {
+    let file_stem = sanitize_app_icon_file_stem(bundle_id);
+    if file_stem.is_empty() {
+        return None;
+    }
+    Some(cache_dir.join(format!("{file_stem}.png")))
+}
+
+#[cfg(target_os = "macos")]
+fn sanitize_app_icon_file_stem(bundle_id: &str) -> String {
+    bundle_id
+        .trim()
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                Some(ch)
+            } else if ch.is_whitespace() || matches!(ch, '/' | ':' | '\\') {
+                Some('_')
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn write_macos_app_icon_png(bundle_path: &Path, output_path: &Path) -> Result<(), String> {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::{NSData, NSDictionary, NSSize, NSString, NSUInteger};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    const NS_PNG_FILE_TYPE: NSUInteger = 4;
+    const ICON_POINT_SIZE: f64 = 64.0;
+
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    let bundle_path = bundle_path.to_string_lossy();
+
+    let png_bytes = match cidre::ns::try_catch(|| unsafe {
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace == nil {
+            return Err("failed to access NSWorkspace while loading app icon".to_string());
+        }
+
+        let ns_bundle_path = NSString::alloc(nil).init_str(&bundle_path);
+        let icon: id = msg_send![workspace, iconForFile: ns_bundle_path];
+        if icon == nil {
+            return Err(format!("failed to load app icon for {}", bundle_path));
+        }
+
+        let _: () = msg_send![icon, setSize: NSSize::new(ICON_POINT_SIZE, ICON_POINT_SIZE)];
+        let tiff_data: id = msg_send![icon, TIFFRepresentation];
+        if tiff_data == nil {
+            return Err(format!(
+                "failed to render app icon TIFF for {}",
+                bundle_path
+            ));
+        }
+
+        let bitmap_rep: id = msg_send![class!(NSBitmapImageRep), imageRepWithData: tiff_data];
+        if bitmap_rep == nil {
+            return Err(format!(
+                "failed to decode app icon bitmap for {}",
+                bundle_path
+            ));
+        }
+
+        let properties = NSDictionary::dictionary(nil);
+        let png_data: id = msg_send![
+            bitmap_rep,
+            representationUsingType: NS_PNG_FILE_TYPE
+            properties: properties
+        ];
+        if png_data == nil {
+            return Err(format!("failed to encode app icon PNG for {}", bundle_path));
+        }
+
+        let len = png_data.length();
+        let bytes = png_data.bytes();
+        if bytes.is_null() || len == 0 {
+            return Err(format!("app icon PNG was empty for {}", bundle_path));
+        }
+        Ok(std::slice::from_raw_parts(bytes.cast::<u8>(), len as usize).to_vec())
+    }) {
+        Ok(result) => result?,
+        Err(exception) => {
+            let name = format!("{}", &**exception.name());
+            let reason = exception
+                .reason()
+                .map(|reason| format!("{}", reason.as_ref()))
+                .unwrap_or_else(|| "unknown reason".to_string());
+            return Err(format!(
+                "ObjC exception while loading app icon for {}: {} - {}",
+                bundle_path, name, reason
+            ));
+        }
+    };
+
+    std::fs::write(output_path, png_bytes).map_err(|error| {
+        format!(
+            "failed to write app icon {}: {error}",
+            output_path.display()
+        )
+    })
+}
+
+#[tauri::command]
+pub async fn check_browser_url_support(
+    request: CheckBrowserUrlSupportRequest,
+) -> Result<BrowserUrlSupportResponse, String> {
+    let supported = capture_metadata::browser_url_metadata_supported(&request.bundle_id);
+    Ok(BrowserUrlSupportResponse {
+        bundle_id: request.bundle_id,
+        supported,
+        warning: (!supported).then(|| {
+            "URL metadata support is unknown for this browser. When website privacy rules are enabled, this browser may be redacted because its URL cannot be checked."
+                .to_string()
+        }),
+    })
+}
+
+#[tauri::command]
+pub fn get_capture_privacy_debug(
+    metadata_state: tauri::State<'_, CaptureMetadataState>,
+    settings_state: tauri::State<'_, RecordingSettingsState>,
+) -> CapturePrivacyDebugResponse {
+    let settings = current_recording_settings(settings_state.inner());
+    CapturePrivacyDebugResponse {
+        metadata_enabled: settings.metadata.enabled,
+        browser_url_mode: settings.metadata.browser_url_mode,
+        private_browser_exclusion_enabled: settings.privacy.private_browser_exclusion_enabled,
+        privacy_debug: metadata::capture_privacy_debug_info(metadata_state.inner()),
+    }
+}
 
 fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
@@ -133,7 +739,10 @@ pub(super) fn emit_audio_segments_changed(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(AUDIO_SEGMENTS_CHANGED_EVENT, ());
 }
 
-fn emit_recording_settings_changed(app_handle: &tauri::AppHandle, settings: &RecordingSettings) {
+pub(crate) fn emit_recording_settings_changed(
+    app_handle: &tauri::AppHandle,
+    settings: &RecordingSettings,
+) {
     let _ = app_handle.emit(RECORDING_SETTINGS_CHANGED_EVENT, settings);
 }
 
@@ -161,6 +770,66 @@ fn push_app_notification(
         runtime.push_session_notification(notification)
     };
     emit_app_notifications_changed(app_handle, &notifications);
+}
+
+pub(super) fn push_privacy_recovery_restart_required_notification(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
+        debug_log::log_warn(
+            "app notifications state unavailable while reporting privacy recovery restart requirement",
+        );
+        return;
+    };
+    push_app_notification(
+        app_handle,
+        state.inner(),
+        AppNotification {
+            id: PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID.to_string(),
+            severity: "warning".to_string(),
+            title: "Screen capture paused for privacy".to_string(),
+            message: "Screen and system audio capture were paused after privacy filter recovery failed. Stop and start recording to resume those sources.".to_string(),
+            created_at_unix_ms: runtime::now_unix_ms(),
+            action: None,
+        },
+    );
+}
+
+fn maybe_push_private_browser_accessibility_limited_start_warning(
+    app_handle: &tauri::AppHandle,
+    state: &AppNotificationsState,
+    settings: &RecordingSettings,
+    sources: &CaptureSources,
+) {
+    if !should_warn_private_browser_accessibility_limited_at_start(
+        settings,
+        sources,
+        private_browser::accessibility_permission_state(),
+    ) {
+        return;
+    }
+    push_app_notification(
+        app_handle,
+        state,
+        AppNotification {
+            id: PRIVATE_BROWSER_ACCESSIBILITY_LIMITED_NOTIFICATION_ID.to_string(),
+            severity: "warning".to_string(),
+            title: "Private browser detection is limited".to_string(),
+            message: "Mnema will keep recording and use title-based private-window detection until Accessibility is enabled.".to_string(),
+            created_at_unix_ms: runtime::now_unix_ms(),
+            action: Some(AppNotificationAction::OpenSettingsTab {
+                tab: PRIVACY_SETTINGS_TAB_ID.to_string(),
+            }),
+        },
+    );
+}
+
+fn should_warn_private_browser_accessibility_limited_at_start(
+    settings: &RecordingSettings,
+    sources: &CaptureSources,
+    accessibility_permission: CapturePermissionState,
+) -> bool {
+    settings.privacy.private_browser_exclusion_enabled
+        && sources.screen
+        && !matches!(accessibility_permission, CapturePermissionState::Granted)
 }
 
 pub(crate) fn push_warning_app_notification(
@@ -694,6 +1363,7 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
 
     let notifier_state = app_handle.state::<SystemWakeNotifierState>();
     let mut notifier_slot = notifier_state
+        .0
         .lock()
         .expect("system wake notifier state poisoned");
     notifier_slot.clear();
@@ -716,6 +1386,7 @@ struct CapturePermissionsSnapshot {
     screen: &'static str,
     microphone: &'static str,
     system_audio: &'static str,
+    accessibility: &'static str,
 }
 
 fn capture_support_log_snapshot_state() -> &'static std::sync::Mutex<Option<CaptureSupportSnapshot>>
@@ -776,6 +1447,8 @@ fn update_recording_settings_request_from_settings(
         transcription: settings.transcription,
         speaker_analysis: settings.speaker_analysis,
         audio_speech_detection: settings.audio_speech_detection,
+        metadata: settings.metadata,
+        privacy: settings.privacy,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -1050,6 +1723,7 @@ fn log_capture_permissions_if_changed(permissions: &CapturePermissions) {
         screen: permission_state_label(&permissions.screen),
         microphone: permission_state_label(&permissions.microphone),
         system_audio: permission_state_label(&permissions.system_audio),
+        accessibility: permission_state_label(&permissions.accessibility),
     };
     let mut last_snapshot = capture_permissions_log_snapshot_state()
         .lock()
@@ -1062,8 +1736,8 @@ fn log_capture_permissions_if_changed(permissions: &CapturePermissions) {
     *last_snapshot = Some(snapshot.clone());
 
     debug_log::log(format!(
-        "observed native capture permissions (screen={}, microphone={}, system_audio={})",
-        snapshot.screen, snapshot.microphone, snapshot.system_audio
+        "observed native capture permissions (screen={}, microphone={}, system_audio={}, accessibility={})",
+        snapshot.screen, snapshot.microphone, snapshot.system_audio, snapshot.accessibility
     ));
 }
 
@@ -1409,6 +2083,12 @@ fn start_native_capture_inner(
         app_notifications_state.inner(),
         &settings,
     );
+    maybe_push_private_browser_accessibility_limited_start_warning(
+        &app_handle,
+        app_notifications_state.inner(),
+        &settings,
+        &requested_sources_for_log,
+    );
 
     if let Some(notice) = runtime.take_microphone_vad_fallback_notification() {
         let message = format!(
@@ -1479,6 +2159,7 @@ pub fn get_capture_permissions(
         screen: capture_screen::screen_permission_state(),
         microphone: microphone_capture::microphone_permission_state(),
         system_audio: capture_screen::system_audio_permission_state(),
+        accessibility: private_browser::accessibility_permission_state(),
     };
 
     log_capture_permissions_if_changed(&permissions);
@@ -1487,6 +2168,11 @@ pub fn get_capture_permissions(
         permissions,
         session: runtime.session(),
     }
+}
+
+#[tauri::command]
+pub fn request_accessibility_permission() -> CapturePermissionState {
+    private_browser::request_accessibility_permission()
 }
 
 #[tauri::command]
@@ -1597,6 +2283,13 @@ pub(crate) fn apply_recording_settings_update_from_app_handle(
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
     let state = app_handle.state::<RecordingSettingsState>();
     let update = apply_recording_settings_update(app_handle, state.inner(), request)?;
+    finish_recording_settings_update(app_handle, update)
+}
+
+fn finish_recording_settings_update(
+    app_handle: &tauri::AppHandle,
+    update: settings::AppliedRecordingSettingsUpdate,
+) -> Result<RecordingSettings, CaptureErrorResponse> {
     let settings = update.settings;
     let previous_settings = update.previous_settings;
     let previous_save_directory = update.previous_save_directory;
@@ -1759,8 +2452,8 @@ pub fn update_recording_settings(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let _ = state;
-    apply_recording_settings_update_from_app_handle(&app_handle, request)
+    let update = apply_recording_settings_update(&app_handle, state.inner(), request)?;
+    finish_recording_settings_update(&app_handle, update)
 }
 
 #[tauri::command]
@@ -1839,6 +2532,9 @@ fn stop_native_capture_with_state(
             return Err(error);
         }
     };
+    if let Some(metadata_state) = app_handle.try_state::<CaptureMetadataState>() {
+        metadata::reset_recording_session_privacy_state(metadata_state.inner());
+    }
 
     debug_log::log_info(format!(
         "stopped native capture successfully (session_id='{}', requested_sources={}, finalized_outputs={})",

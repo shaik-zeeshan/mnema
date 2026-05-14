@@ -4,6 +4,7 @@ use super::output::{
     set_current_system_audio_output_file,
 };
 use super::settings::compute_effective_screen_bitrate_bps;
+use super::{metadata, privacy};
 use capture_microphone as microphone_capture;
 use capture_runtime::{
     parse_audio_restart_started_at_unix_ms, CaptureClock, RuntimeController, RuntimeSignal,
@@ -17,9 +18,9 @@ use capture_types::{
 use capture_vad::MicrophoneVadRuntime;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::Manager;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc;
@@ -29,9 +30,11 @@ use super::lifecycle::TickOutcome;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
-    mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms, prefixed_capture_id,
+    has_any_capture_sources, mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms,
+    prefixed_capture_id, privacy_suspended_sources_for_runtime_state,
     refresh_runtime_planner_dates, reset_runtime_after_start_error, screen_planner_for_runtime,
-    should_recover_from_segment_finalize_error, NativeCaptureRuntime, SegmentLoopControl,
+    should_recover_from_segment_finalize_error, NativeCaptureRuntime, PrivacyCaptureSuspension,
+    PrivacyCaptureSuspensionStatus, SegmentLoopControl,
 };
 use super::NativeCaptureState;
 
@@ -41,6 +44,8 @@ use super::NativeCaptureState;
 // non-blocking.
 const FRAME_ARTIFACT_BUFFER_CAPACITY: usize = 64;
 const SEGMENT_LOOP_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const PRIVACY_FILTER_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const PRIVACY_FILTER_POLL_STOP_CHECK_INTERVAL: Duration = Duration::from_millis(50);
 
 #[cfg(target_os = "macos")]
 fn persist_capture_session_started(
@@ -148,15 +153,27 @@ pub(super) enum FrameArtifactForwardingResult {
 }
 
 pub(crate) enum FrameArtifactMessage {
-    Artifact(capture_screen::ScreenFrameArtifact),
+    Artifact(FrameArtifactEnvelope),
     Flush(std::sync::mpsc::SyncSender<()>),
+}
+
+pub(crate) struct FrameArtifactEnvelope {
+    pub artifact: capture_screen::ScreenFrameArtifact,
+    pub metadata_snapshot: Option<capture_metadata::FrameMetadataSnapshot>,
 }
 
 #[cfg(test)]
 impl FrameArtifactMessage {
     pub(super) fn unwrap_artifact(self) -> capture_screen::ScreenFrameArtifact {
         match self {
-            Self::Artifact(artifact) => artifact,
+            Self::Artifact(envelope) => envelope.artifact,
+            Self::Flush(_) => panic!("expected Artifact, got Flush"),
+        }
+    }
+
+    pub(super) fn unwrap_artifact_envelope(self) -> FrameArtifactEnvelope {
+        match self {
+            Self::Artifact(envelope) => envelope,
             Self::Flush(_) => panic!("expected Artifact, got Flush"),
         }
     }
@@ -165,8 +182,12 @@ impl FrameArtifactMessage {
 pub(super) fn try_forward_frame_artifact(
     frame_artifact_tx: &mpsc::Sender<FrameArtifactMessage>,
     artifact: capture_screen::ScreenFrameArtifact,
+    metadata_snapshot: Option<capture_metadata::FrameMetadataSnapshot>,
 ) -> FrameArtifactForwardingResult {
-    match frame_artifact_tx.blocking_send(FrameArtifactMessage::Artifact(artifact)) {
+    match frame_artifact_tx.blocking_send(FrameArtifactMessage::Artifact(FrameArtifactEnvelope {
+        artifact,
+        metadata_snapshot,
+    })) {
         Ok(()) => FrameArtifactForwardingResult::Enqueued,
         Err(_) => FrameArtifactForwardingResult::ReceiverClosed,
     }
@@ -628,6 +649,134 @@ pub(super) fn segment_loop_sleep_duration(
         .min(SEGMENT_LOOP_IDLE_POLL_INTERVAL)
 }
 
+// Privacy metadata collection can run AppleScript, so the Recording Lifecycle
+// loop only consumes already-collected updates.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct LatestPrivacyFilterPollUpdate<T> {
+    update: Arc<Mutex<Option<T>>>,
+}
+
+#[cfg(target_os = "macos")]
+impl<T> Clone for LatestPrivacyFilterPollUpdate<T> {
+    fn clone(&self) -> Self {
+        Self {
+            update: Arc::clone(&self.update),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl<T> LatestPrivacyFilterPollUpdate<T> {
+    fn new() -> Self {
+        Self {
+            update: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn store(&self, update: T) -> bool {
+        let Ok(mut latest) = self.update.lock() else {
+            return false;
+        };
+        *latest = Some(update);
+        true
+    }
+
+    fn take(&self) -> Option<T> {
+        self.update.lock().ok().and_then(|mut latest| latest.take())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn privacy_filter_poll_runtime_should_continue(app_handle: &tauri::AppHandle) -> bool {
+    let capture_state = app_handle.state::<NativeCaptureState>();
+    capture_state
+        .lock()
+        .map(|runtime| {
+            let runtime = runtime.runtime();
+            runtime.is_running
+                && runtime.segment_schedule.is_some()
+                && runtime.capture_clock.is_some()
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn sleep_privacy_filter_poll_interval(stop: &AtomicBool) {
+    let started = Instant::now();
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= PRIVACY_FILTER_POLL_INTERVAL {
+            break;
+        }
+
+        thread::sleep(
+            PRIVACY_FILTER_POLL_INTERVAL
+                .saturating_sub(elapsed)
+                .min(PRIVACY_FILTER_POLL_STOP_CHECK_INTERVAL),
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_privacy_filter_poll_loop(
+    app_handle: tauri::AppHandle,
+    stop: Arc<AtomicBool>,
+) -> LatestPrivacyFilterPollUpdate<privacy::PrivacyFilterUpdate> {
+    let runtime_app_handle = app_handle.clone();
+    spawn_privacy_filter_poll_loop_with_collector(
+        stop,
+        move || privacy_filter_poll_runtime_should_continue(&runtime_app_handle),
+        move || privacy::collect_privacy_filter_update(&app_handle),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_privacy_filter_poll_loop_with_collector<T, ShouldContinue, Collect>(
+    stop: Arc<AtomicBool>,
+    mut should_continue: ShouldContinue,
+    mut collect: Collect,
+) -> LatestPrivacyFilterPollUpdate<T>
+where
+    T: Send + 'static,
+    ShouldContinue: FnMut() -> bool + Send + 'static,
+    Collect: FnMut() -> T + Send + 'static,
+{
+    let latest_update = LatestPrivacyFilterPollUpdate::new();
+    let worker_latest_update = latest_update.clone();
+    thread::spawn(move || {
+        let mut has_started = false;
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            if !should_continue() {
+                if has_started {
+                    break;
+                }
+                thread::sleep(PRIVACY_FILTER_POLL_STOP_CHECK_INTERVAL);
+                continue;
+            }
+
+            has_started = true;
+            let update = collect();
+            if stop.load(Ordering::Relaxed) || !should_continue() {
+                break;
+            }
+            if !worker_latest_update.store(update) {
+                break;
+            }
+            sleep_privacy_filter_poll_interval(&stop);
+        }
+    });
+    latest_update
+}
+
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(super) struct PlannedSegmentRotation {
     pub(super) next_index: u64,
@@ -647,6 +796,10 @@ pub(super) fn plan_live_rotation_segment(
     schedule: &SegmentSchedule,
     clock: &CaptureClock,
 ) -> Option<PlannedSegmentRotation> {
+    if !has_any_capture_sources(sources) {
+        return None;
+    }
+
     if !schedule.segment_duration_reached(clock.elapsed()) {
         return None;
     }
@@ -705,11 +858,14 @@ pub(super) fn recover_from_segment_finalize_error(
 
 fn capture_session_options(
     frame_artifact_tx: Option<mpsc::Sender<FrameArtifactMessage>>,
+    metadata_snapshot_provider: Option<metadata::FrameMetadataSnapshotProvider>,
     system_audio_inactivity_tail_trim_seconds: u64,
+    initial_privacy_filter: Option<capture_screen::PrivacyContentFilter>,
 ) -> capture_screen::ScreenCaptureSessionOptions {
     let Some(frame_artifact_tx) = frame_artifact_tx else {
         return capture_screen::ScreenCaptureSessionOptions {
             system_audio_inactivity_tail_trim_seconds,
+            initial_privacy_filter,
             ..Default::default()
         };
     };
@@ -717,6 +873,7 @@ fn capture_session_options(
     if !capture_screen::supports_frame_export() {
         return capture_screen::ScreenCaptureSessionOptions {
             system_audio_inactivity_tail_trim_seconds,
+            initial_privacy_filter,
             ..Default::default()
         };
     }
@@ -724,7 +881,10 @@ fn capture_session_options(
     capture_screen::ScreenCaptureSessionOptions {
         frame_export: Some(capture_screen::ScreenFrameExportConfig {
             on_frame_exported: Arc::new(move |artifact| {
-                match try_forward_frame_artifact(&frame_artifact_tx, artifact) {
+                let metadata_snapshot = metadata_snapshot_provider
+                    .as_ref()
+                    .and_then(|provider| provider());
+                match try_forward_frame_artifact(&frame_artifact_tx, artifact, metadata_snapshot) {
                     FrameArtifactForwardingResult::Enqueued => {}
                     FrameArtifactForwardingResult::ReceiverClosed => {
                         super::debug_log::log(
@@ -736,7 +896,275 @@ fn capture_session_options(
         }),
         system_audio_inactivity_tail_trim_seconds,
         system_audio_writer_active: None,
+        initial_privacy_filter,
     }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivacySuspensionRecoveryOutcome {
+    NotSuspended,
+    RetryPending,
+    RestartRequired,
+    Recovered,
+}
+
+#[cfg(target_os = "macos")]
+fn screen_system_output_files(
+    output_files: Option<&CaptureOutputFiles>,
+    include_screen: bool,
+    include_system_audio: bool,
+) -> Option<CaptureOutputFiles> {
+    let output_files = output_files?;
+    let mut selected = empty_output_files();
+
+    if include_screen {
+        selected.screen_file = output_files.screen_file.clone();
+        selected.screen_files = output_files.screen_files.clone();
+    }
+
+    if include_system_audio {
+        selected.system_audio_file = output_files.system_audio_file.clone();
+        selected.system_audio_files = output_files.system_audio_files.clone();
+    }
+
+    (selected.screen_file.is_some()
+        || !selected.screen_files.is_empty()
+        || selected.system_audio_file.is_some()
+        || !selected.system_audio_files.is_empty())
+    .then_some(selected)
+}
+
+#[cfg(target_os = "macos")]
+fn explicit_privacy_suspension_sources(runtime: &NativeCaptureRuntime) -> CaptureSources {
+    privacy_suspended_sources_for_runtime_state(runtime, runtime.inactivity.is_microphone_paused())
+        .unwrap_or(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: false,
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn active_sources_for_runtime_pause_state(
+    runtime: &NativeCaptureRuntime,
+    requested_sources: &CaptureSources,
+    screen_paused: bool,
+    microphone_paused: bool,
+    system_audio_paused: bool,
+) -> Option<CaptureSources> {
+    if runtime.privacy_capture_suspension.is_some() {
+        return privacy_suspended_sources_for_runtime_state(runtime, microphone_paused);
+    }
+
+    active_sources_for_inactivity_paused_state(
+        requested_sources,
+        screen_paused,
+        microphone_paused,
+        system_audio_paused,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn suspend_screen_system_audio_for_privacy_failure(
+    app_handle: Option<&tauri::AppHandle>,
+    runtime: &mut NativeCaptureRuntime,
+    error: &CaptureErrorResponse,
+) -> Result<(), CaptureErrorResponse> {
+    if let Err(stop_error) =
+        capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
+            active_session: &mut runtime.active_screen_session,
+            inactivity_tail_trim_seconds: 0,
+        })
+    {
+        if capture_screen::should_preserve_runtime_on_stop_error(&stop_error) {
+            return Err(stop_error);
+        }
+    }
+    runtime.current_segment_sources = Some(explicit_privacy_suspension_sources(runtime));
+    runtime.privacy_capture_suspension = Some(PrivacyCaptureSuspension::new(error));
+    commit_suspended_screen_system_outputs(app_handle, runtime);
+    runtime.recording_file = None;
+    runtime.system_audio_recording_file = None;
+    preserve_live_microphone_continuation_outputs(runtime);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn commit_suspended_screen_system_outputs(
+    app_handle: Option<&tauri::AppHandle>,
+    runtime: &mut NativeCaptureRuntime,
+) {
+    let Some(requested_sources) = runtime.requested_sources.as_ref() else {
+        return;
+    };
+    let commit_sources = CaptureSources {
+        screen: requested_sources.screen,
+        microphone: false,
+        system_audio: requested_sources.system_audio,
+    };
+    let Some(mut output_files) = screen_system_output_files(
+        runtime.current_segment_output_files.as_ref(),
+        commit_sources.screen,
+        commit_sources.system_audio,
+    ) else {
+        return;
+    };
+
+    match finalize_capture_outputs(
+        Some(&mut output_files),
+        runtime.recording_file.as_deref(),
+        None,
+        runtime.system_audio_recording_file.as_deref(),
+        Some(&commit_sources),
+    ) {
+        Ok(()) => {
+            if let Some(committed) = runtime.output_files.as_mut() {
+                append_committed_segment_output_files(committed, &output_files);
+            }
+            persist_committed_audio_segments(
+                app_handle,
+                runtime.source_sessions.as_ref(),
+                runtime.segment_schedule.as_ref(),
+                runtime.current_segment_index,
+                Some(&output_files),
+            );
+        }
+        Err(error) => {
+            super::debug_log::log(format!(
+                "failed to finalize suspended screen/system-audio outputs; continuing privacy handling: [{}] {}",
+                error.code, error.message
+            ));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn attempt_privacy_suspension_recovery(
+    app_handle: &tauri::AppHandle,
+    runtime: &mut NativeCaptureRuntime,
+) -> PrivacySuspensionRecoveryOutcome {
+    let Some(suspension) = runtime.privacy_capture_suspension.as_ref() else {
+        return PrivacySuspensionRecoveryOutcome::NotSuspended;
+    };
+    if !suspension.can_retry() {
+        return PrivacySuspensionRecoveryOutcome::RestartRequired;
+    }
+
+    let Some(requested_sources) = runtime.requested_sources.clone() else {
+        return PrivacySuspensionRecoveryOutcome::RestartRequired;
+    };
+    let recover_sources = CaptureSources {
+        screen: requested_sources.screen && !runtime.inactivity.is_screen_paused(),
+        microphone: false,
+        system_audio: requested_sources.system_audio
+            && !runtime.inactivity.is_screen_paused()
+            && !runtime.inactivity.is_system_audio_paused(),
+    };
+    if !recover_sources.screen && !recover_sources.system_audio {
+        runtime.privacy_capture_suspension = None;
+        return PrivacySuspensionRecoveryOutcome::NotSuspended;
+    }
+
+    let Some(screen_planner) = screen_planner_for_runtime(runtime).cloned() else {
+        if let Some(suspension) = runtime.privacy_capture_suspension.as_mut() {
+            suspension.record_recovery_failure(&CaptureErrorResponse {
+                code: "invalid_runtime_state".to_string(),
+                message: "Capture screen planner missing while recovering privacy suspension"
+                    .to_string(),
+            });
+        }
+        return PrivacySuspensionRecoveryOutcome::RetryPending;
+    };
+    let system_audio_planner = if recover_sources.system_audio {
+        match ensure_system_audio_planner_for_runtime(runtime, "recovering privacy suspension") {
+            Ok(planner) => planner,
+            Err(error) => {
+                if let Some(suspension) = runtime.privacy_capture_suspension.as_mut() {
+                    suspension.record_recovery_failure(&error);
+                }
+                return PrivacySuspensionRecoveryOutcome::RetryPending;
+            }
+        }
+    } else {
+        None
+    };
+
+    let next_index = next_emitted_segment_index(runtime.current_segment_index);
+    let segment_dir = screen_planner.segment_dir(next_index);
+    let screen_output_file = screen_planner.segment_screen_output(next_index);
+    let system_audio_output_path = recover_sources.system_audio.then(|| {
+        system_audio_planner
+            .as_ref()
+            .expect("system audio planner should exist when recovering system audio")
+            .system_audio_file(next_index)
+    });
+
+    let started_segment = start_segment_with_current_privacy_filter(
+        app_handle,
+        &segment_dir,
+        Some(&screen_output_file),
+        system_audio_output_path.as_deref(),
+        &recover_sources,
+        runtime.screen_frame_rate,
+        &runtime.screen_resolution,
+        runtime.effective_screen_bitrate_bps,
+        None,
+        runtime.frame_artifact_tx.clone(),
+        None,
+    );
+
+    let (
+        mut segment_outputs,
+        recording_file,
+        _microphone_recording_file,
+        system_audio_recording_file,
+        active_screen_session,
+        _active_microphone_session,
+    ) = match started_segment {
+        Ok(value) => value,
+        Err(error) => {
+            if let Some(suspension) = runtime.privacy_capture_suspension.as_mut() {
+                suspension.record_recovery_failure(&error);
+                if suspension.status == PrivacyCaptureSuspensionStatus::RestartRequired {
+                    super::debug_log::log(format!(
+                        "privacy recovery restart attempts exhausted; screen/system-audio require manual stop/start: [{}] {}",
+                        error.code, error.message
+                    ));
+                    super::push_privacy_recovery_restart_required_notification(app_handle);
+                    return PrivacySuspensionRecoveryOutcome::RestartRequired;
+                }
+            }
+            super::debug_log::log(format!(
+                "privacy recovery restart failed; screen/system-audio remain suspended: [{}] {}",
+                error.code, error.message
+            ));
+            return PrivacySuspensionRecoveryOutcome::RetryPending;
+        }
+    };
+
+    commit_suspended_screen_system_outputs(Some(app_handle), runtime);
+    merge_live_microphone_continuation_into_segment_outputs(runtime, &mut segment_outputs);
+    runtime.current_segment_index = next_index;
+    runtime.current_segment_output_files = Some(segment_outputs);
+    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+        &requested_sources,
+        false,
+        runtime.inactivity.microphone_paused,
+        runtime.inactivity.system_audio_paused,
+    );
+    runtime.recording_file = recording_file;
+    runtime.system_audio_recording_file = system_audio_recording_file;
+    runtime.active_screen_session = active_screen_session;
+    runtime.privacy_capture_suspension = None;
+    if let Err(error) = reanchor_active_segment_timing(runtime, "recovering privacy suspension") {
+        super::debug_log::log(format!(
+            "failed to reanchor segment timing after privacy recovery: [{}] {}",
+            error.code, error.message
+        ));
+    }
+
+    PrivacySuspensionRecoveryOutcome::Recovered
 }
 
 fn spawn_frame_artifact_worker(
@@ -750,14 +1178,15 @@ fn spawn_frame_artifact_worker(
     tauri::async_runtime::spawn(async move {
         while let Some(message) = rx.recv().await {
             match message {
-                FrameArtifactMessage::Artifact(artifact) => {
+                FrameArtifactMessage::Artifact(envelope) => {
                     if let Err(error) = crate::app_infra::persist_screen_frame_artifact(
                         infra.as_ref(),
                         app_handle
                             .state::<crate::native_capture::RecordingSettingsState>()
                             .inner(),
+                        envelope.metadata_snapshot,
                         &session_id,
-                        artifact,
+                        envelope.artifact,
                     )
                     .await
                     {
@@ -1448,7 +1877,8 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
         runtime.inactivity.system_audio_paused,
     );
 
-    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+    runtime.current_segment_sources = active_sources_for_runtime_pause_state(
+        runtime,
         runtime.requested_sources.as_ref().unwrap(),
         runtime.inactivity.screen_paused,
         true, // microphone is now paused
@@ -1589,7 +2019,8 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
         true,
     );
 
-    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+    runtime.current_segment_sources = active_sources_for_runtime_pause_state(
+        runtime,
         runtime.requested_sources.as_ref().unwrap(),
         runtime.inactivity.screen_paused,
         runtime.inactivity.microphone_paused,
@@ -1676,7 +2107,8 @@ pub(super) fn resume_microphone_from_inactivity(
         runtime.inactivity.system_audio_paused,
     );
 
-    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+    runtime.current_segment_sources = active_sources_for_runtime_pause_state(
+        runtime,
         &sources,
         runtime.inactivity.screen_paused,
         false, // microphone is now resumed
@@ -1756,7 +2188,8 @@ pub(super) fn resume_system_audio_from_inactivity(
         false,
     );
 
-    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+    runtime.current_segment_sources = active_sources_for_runtime_pause_state(
+        runtime,
         &sources,
         runtime.inactivity.screen_paused,
         runtime.inactivity.microphone_paused,
@@ -1811,7 +2244,8 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
         runtime.recording_file = None;
 
         runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-            active_sources_for_inactivity_paused_state(
+            active_sources_for_runtime_pause_state(
+                runtime,
                 sources,
                 true,
                 runtime.inactivity.microphone_paused,
@@ -1819,11 +2253,7 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
             )
         });
 
-        runtime.inactivity.set_family_paused_states(
-            true,
-            runtime.inactivity.microphone_paused,
-            runtime.inactivity.system_audio_paused,
-        );
+        mark_screen_paused_for_inactivity(runtime);
 
         return Ok(());
     }
@@ -1854,18 +2284,15 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
                 runtime.system_audio_recording_file = None;
                 runtime.current_segment_output_files = None;
                 runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-                    active_sources_for_inactivity_paused_state(
+                    active_sources_for_runtime_pause_state(
+                        runtime,
                         sources,
                         true, // screen is now stopped
                         runtime.inactivity.microphone_paused,
                         runtime.inactivity.system_audio_paused,
                     )
                 });
-                runtime.inactivity.set_family_paused_states(
-                    true,
-                    runtime.inactivity.microphone_paused,
-                    runtime.inactivity.system_audio_paused,
-                );
+                mark_screen_paused_for_inactivity(runtime);
                 return Err(error);
             }
         };
@@ -1898,7 +2325,8 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
                 runtime.recording_file = None;
                 runtime.system_audio_recording_file = None;
                 runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-                    active_sources_for_inactivity_paused_state(
+                    active_sources_for_runtime_pause_state(
+                        runtime,
                         sources,
                         true, // screen is now stopped
                         runtime.inactivity.microphone_paused,
@@ -1922,11 +2350,7 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
                 } else {
                     runtime.current_segment_output_files = None;
                 }
-                runtime.inactivity.set_family_paused_states(
-                    true,
-                    runtime.inactivity.microphone_paused,
-                    runtime.inactivity.system_audio_paused,
-                );
+                mark_screen_paused_for_inactivity(runtime);
                 return Err(error);
             }
         }
@@ -1954,7 +2378,8 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
     // Recompute current_segment_sources: if audio is still active, the
     // audio-only subset becomes the active set; otherwise clear it.
     runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-        active_sources_for_inactivity_paused_state(
+        active_sources_for_runtime_pause_state(
+            runtime,
             sources,
             true, // screen is now paused
             runtime.inactivity.microphone_paused,
@@ -1984,13 +2409,21 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
         runtime.current_segment_output_files = None;
     }
 
+    mark_screen_paused_for_inactivity(runtime);
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mark_screen_paused_for_inactivity(runtime: &mut NativeCaptureRuntime) {
     runtime.inactivity.set_family_paused_states(
         true,
         runtime.inactivity.microphone_paused,
         runtime.inactivity.system_audio_paused,
     );
-
-    Ok(())
+    runtime
+        .inactivity
+        .mark_screen_pause_started(now_monotonic_marker_ms());
 }
 
 #[cfg(target_os = "macos")]
@@ -2001,6 +2434,8 @@ pub(super) fn resume_screen_from_inactivity(
     let tail_trim_seconds = runtime.inactivity.idle_timeout_seconds;
     let microphone_activity_threshold = runtime.inactivity.microphone_activity_threshold();
     let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
+    let metadata_snapshot_provider = app_handle.map(metadata::frame_metadata_snapshot_provider);
+    let initial_privacy_filter = app_handle.map(privacy::collect_initial_privacy_filter);
     resume_screen_from_inactivity_with_start_segment(
         runtime,
         app_handle,
@@ -2014,7 +2449,7 @@ pub(super) fn resume_screen_from_inactivity(
               microphone_device_id,
               frame_artifact_tx,
               microphone_output_path| {
-            start_segment_with_inactivity_tail_trim_seconds(
+            let started_segment = start_segment_with_inactivity_tail_trim_seconds(
                 segment_dir,
                 screen_output_file,
                 system_audio_output_path,
@@ -2024,11 +2459,19 @@ pub(super) fn resume_screen_from_inactivity(
                 effective_screen_bitrate_bps,
                 microphone_device_id,
                 frame_artifact_tx,
+                metadata_snapshot_provider,
                 microphone_output_path,
                 tail_trim_seconds,
                 microphone_activity_threshold,
                 microphone_tail_activity_mode,
-            )
+                initial_privacy_filter
+                    .as_ref()
+                    .and_then(|initial| initial.screen_capture_filter()),
+            )?;
+            if let (Some(app_handle), Some(initial)) = (app_handle, initial_privacy_filter) {
+                initial.mark_applied(app_handle);
+            }
+            Ok(started_segment)
         },
     )
 }
@@ -2088,6 +2531,11 @@ where
     let _ = clock;
 
     if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
+        if let Some(app_handle) = app_handle {
+            let privacy_filter_update = privacy::collect_privacy_filter_update(app_handle);
+            privacy::apply_privacy_filter_update(app_handle, runtime, privacy_filter_update)?;
+        }
+
         let next_index = next_emitted_segment_index(runtime.current_segment_index);
         let segment_dir = screen_planner.segment_dir(next_index);
         let screen_output_file = screen_planner.segment_screen_output(next_index);
@@ -2385,7 +2833,7 @@ pub(super) fn pause_runtime_for_inactivity_with_app_handle(
     }
 
     runtime.current_segment_sources = requested_sources.as_ref().and_then(|sources| {
-        active_sources_for_inactivity_paused_state(sources, true, true, sources.system_audio)
+        active_sources_for_runtime_pause_state(runtime, sources, true, true, sources.system_audio)
     });
     runtime.inactivity.is_paused = true;
 
@@ -2407,7 +2855,8 @@ fn refresh_current_segment_sources_for_pause_state(
     runtime: &mut NativeCaptureRuntime,
     requested_sources: &CaptureSources,
 ) {
-    runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+    runtime.current_segment_sources = active_sources_for_runtime_pause_state(
+        runtime,
         requested_sources,
         runtime.inactivity.screen_paused,
         runtime.inactivity.microphone_paused,
@@ -2741,28 +3190,52 @@ pub(super) fn recover_screen_capture_after_wake(
     runtime: &mut NativeCaptureRuntime,
     app_handle: Option<&tauri::AppHandle>,
 ) -> Result<bool, CaptureErrorResponse> {
-    recover_screen_capture_after_wake_with_start_segment(runtime, app_handle, start_segment)
+    let metadata_snapshot_provider = app_handle.map(metadata::frame_metadata_snapshot_provider);
+    let initial_privacy_filter = app_handle.map(privacy::collect_initial_privacy_filter);
+    recover_screen_capture_after_wake_with_start_segment(
+        runtime,
+        app_handle,
+        move |segment_dir,
+              screen_output_file,
+              system_audio_output_path,
+              sources,
+              screen_frame_rate,
+              screen_resolution,
+              effective_screen_bitrate_bps,
+              microphone_device_id,
+              frame_artifact_tx,
+              microphone_output_path| {
+            let started_segment = start_segment_with_inactivity_tail_trim_seconds(
+                segment_dir,
+                screen_output_file,
+                system_audio_output_path,
+                sources,
+                screen_frame_rate,
+                screen_resolution,
+                effective_screen_bitrate_bps,
+                microphone_device_id,
+                frame_artifact_tx,
+                metadata_snapshot_provider,
+                microphone_output_path,
+                0,
+                0.0,
+                microphone_capture::MicrophoneInactivityTailTrimActivityMode::PeakLevel,
+                initial_privacy_filter
+                    .as_ref()
+                    .and_then(|initial| initial.screen_capture_filter()),
+            )?;
+            if let (Some(app_handle), Some(initial)) = (app_handle, initial_privacy_filter) {
+                initial.mark_applied(app_handle);
+            }
+            Ok(started_segment)
+        },
+    )
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn resume_runtime_from_inactivity_with_start_segment<F>(
+pub(super) fn resume_runtime_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
-    _start_segment_fn: F,
-) -> Result<(), CaptureErrorResponse>
-where
-    F: FnOnce(
-        &Path,
-        Option<&Path>,
-        Option<&Path>,
-        &CaptureSources,
-        u32,
-        &capture_types::ScreenResolution,
-        Option<u32>,
-        Option<&str>,
-        Option<mpsc::Sender<FrameArtifactMessage>>,
-        Option<&Path>,
-    ) -> Result<StartedSegmentState, CaptureErrorResponse>,
-{
+) -> Result<(), CaptureErrorResponse> {
     if !runtime.inactivity.is_paused {
         return Ok(());
     }
@@ -2783,47 +3256,16 @@ where
     }
 
     runtime.inactivity.is_paused = false;
-    runtime.current_segment_sources = sources.clone().into();
+    runtime.current_segment_sources = if runtime.privacy_capture_suspension.is_some() {
+        privacy_suspended_sources_for_runtime_state(
+            runtime,
+            runtime.inactivity.is_microphone_paused(),
+        )
+    } else {
+        Some(sources)
+    };
 
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn resume_runtime_from_inactivity(
-    runtime: &mut NativeCaptureRuntime,
-) -> Result<(), CaptureErrorResponse> {
-    let tail_trim_seconds = runtime.inactivity.idle_timeout_seconds;
-    let microphone_activity_threshold = runtime.inactivity.microphone_activity_threshold();
-    let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
-    resume_runtime_from_inactivity_with_start_segment(
-        runtime,
-        move |segment_dir,
-              screen_output_file,
-              system_audio_output_path,
-              sources,
-              screen_frame_rate,
-              screen_resolution,
-              effective_screen_bitrate_bps,
-              microphone_device_id,
-              frame_artifact_tx,
-              microphone_output_path| {
-            start_segment_with_inactivity_tail_trim_seconds(
-                segment_dir,
-                screen_output_file,
-                system_audio_output_path,
-                sources,
-                screen_frame_rate,
-                screen_resolution,
-                effective_screen_bitrate_bps,
-                microphone_device_id,
-                frame_artifact_tx,
-                microphone_output_path,
-                tail_trim_seconds,
-                microphone_activity_threshold,
-                microphone_tail_activity_mode,
-            )
-        },
-    )
 }
 
 #[cfg(target_os = "macos")]
@@ -2855,7 +3297,8 @@ pub(super) fn handle_inactivity_resume_error(
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn start_segment(
+pub(super) fn start_segment_with_current_privacy_filter(
+    app_handle: &tauri::AppHandle,
     session_dir: &Path,
     screen_output_file: Option<&Path>,
     system_audio_output_path: Option<&Path>,
@@ -2866,18 +3309,9 @@ pub(super) fn start_segment(
     microphone_device_id: Option<&str>,
     frame_artifact_tx: Option<mpsc::Sender<FrameArtifactMessage>>,
     microphone_output_path: Option<&Path>,
-) -> Result<
-    (
-        CaptureOutputFiles,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<capture_screen::ActiveCaptureSession>,
-        Option<microphone_capture::AvFoundationMicrophoneCaptureSession>,
-    ),
-    CaptureErrorResponse,
-> {
-    start_segment_with_inactivity_tail_trim_seconds(
+) -> Result<StartedSegmentState, CaptureErrorResponse> {
+    let initial_privacy_filter = privacy::collect_initial_privacy_filter(app_handle);
+    let started_segment = start_segment_with_inactivity_tail_trim_seconds(
         session_dir,
         screen_output_file,
         system_audio_output_path,
@@ -2887,11 +3321,15 @@ pub(super) fn start_segment(
         effective_screen_bitrate_bps,
         microphone_device_id,
         frame_artifact_tx,
+        Some(metadata::frame_metadata_snapshot_provider(app_handle)),
         microphone_output_path,
         0,
         0.0,
         microphone_capture::MicrophoneInactivityTailTrimActivityMode::PeakLevel,
-    )
+        initial_privacy_filter.screen_capture_filter(),
+    )?;
+    initial_privacy_filter.mark_applied(app_handle);
+    Ok(started_segment)
 }
 
 #[cfg(target_os = "macos")]
@@ -2905,10 +3343,12 @@ fn start_segment_with_inactivity_tail_trim_seconds(
     effective_screen_bitrate_bps: Option<u32>,
     microphone_device_id: Option<&str>,
     frame_artifact_tx: Option<mpsc::Sender<FrameArtifactMessage>>,
+    metadata_snapshot_provider: Option<metadata::FrameMetadataSnapshotProvider>,
     microphone_output_path: Option<&Path>,
     inactivity_tail_trim_seconds: u64,
     microphone_activity_threshold: f32,
     microphone_tail_activity_mode: microphone_capture::MicrophoneInactivityTailTrimActivityMode,
+    initial_privacy_filter: Option<capture_screen::PrivacyContentFilter>,
 ) -> Result<
     (
         CaptureOutputFiles,
@@ -2940,8 +3380,12 @@ fn start_segment_with_inactivity_tail_trim_seconds(
             screen: sources.screen,
             system_audio: sources.system_audio,
         };
-        let mut screen_options =
-            capture_session_options(frame_artifact_tx, inactivity_tail_trim_seconds);
+        let mut screen_options = capture_session_options(
+            frame_artifact_tx,
+            metadata_snapshot_provider,
+            inactivity_tail_trim_seconds,
+            initial_privacy_filter,
+        );
         if sources.system_audio && system_audio_output_path.is_none() {
             screen_options.system_audio_writer_active = Some(false);
         }
@@ -3041,6 +3485,8 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
         stop: Arc::new(AtomicBool::new(false)),
     };
     let stop = control.stop.clone();
+    let pending_privacy_filter_update =
+        spawn_privacy_filter_poll_loop(app_handle.clone(), stop.clone());
 
     thread::spawn(move || loop {
         let sleep_duration = {
@@ -3073,6 +3519,8 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             break;
         }
 
+        let privacy_filter_update = pending_privacy_filter_update.take();
+
         let capture_state = app_handle.state::<NativeCaptureState>();
         let mut runtime = match capture_state.lock() {
             Ok(runtime) => runtime,
@@ -3081,6 +3529,54 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
 
         if !runtime.runtime().is_running || stop.load(Ordering::Relaxed) {
             break;
+        }
+
+        if let Some(privacy_filter_update) = privacy_filter_update {
+            if runtime.runtime().privacy_capture_suspension.is_some() {
+                match attempt_privacy_suspension_recovery(&app_handle, runtime.runtime_mut()) {
+                    PrivacySuspensionRecoveryOutcome::Recovered => {
+                        super::debug_log::log(
+                            "privacy filter recovered; restarted screen/system-audio capture",
+                        );
+                    }
+                    PrivacySuspensionRecoveryOutcome::RestartRequired => {}
+                    PrivacySuspensionRecoveryOutcome::RetryPending
+                    | PrivacySuspensionRecoveryOutcome::NotSuspended => {}
+                }
+            } else if let Err(error) = privacy::apply_privacy_filter_update(
+                &app_handle,
+                runtime.runtime_mut(),
+                privacy_filter_update,
+            ) {
+                super::debug_log::log(format!(
+                    "privacy filter update failed; suspending screen/system-audio capture: [{}] {}",
+                    error.code, error.message
+                ));
+                if let Err(stop_error) = suspend_screen_system_audio_for_privacy_failure(
+                    Some(&app_handle),
+                    runtime.runtime_mut(),
+                    &error,
+                ) {
+                    super::debug_log::log(format!(
+                        "privacy failure suspension could not stop screen/system-audio capture; preserving runtime state: [{}] {}",
+                        stop_error.code, stop_error.message
+                    ));
+                    if !capture_screen::should_preserve_runtime_on_stop_error(&stop_error) {
+                        mark_runtime_session_failed(runtime.runtime_mut());
+                        break;
+                    }
+                    continue;
+                }
+                if !runtime
+                    .runtime()
+                    .requested_sources
+                    .as_ref()
+                    .is_some_and(|sources| sources.microphone)
+                {
+                    mark_runtime_session_failed(runtime.runtime_mut());
+                    break;
+                }
+            }
         }
 
         match runtime.tick_inactivity(&app_handle) {
@@ -3097,6 +3593,319 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
     });
 
     control
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_privacy_filter_poll_update_replaces_stale_update() {
+        let latest_update = LatestPrivacyFilterPollUpdate::new();
+
+        assert!(latest_update.store(1));
+        assert!(latest_update.store(2));
+
+        assert_eq!(latest_update.take(), Some(2));
+        assert_eq!(latest_update.take(), None);
+    }
+
+    #[test]
+    fn privacy_filter_poll_worker_does_not_block_latest_update_consumer() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (collector_started_tx, collector_started_rx) = std::sync::mpsc::channel();
+        let (release_collector_tx, release_collector_rx) = std::sync::mpsc::channel();
+        let latest_update = spawn_privacy_filter_poll_loop_with_collector(
+            Arc::clone(&stop),
+            || true,
+            move || {
+                let _ = collector_started_tx.send(());
+                release_collector_rx
+                    .recv()
+                    .expect("collector should be released by the test");
+                42
+            },
+        );
+
+        collector_started_rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("poll worker should start collection");
+
+        let started = Instant::now();
+        assert_eq!(latest_update.take(), None);
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "taking the latest privacy update must not wait for collection"
+        );
+
+        release_collector_tx
+            .send(())
+            .expect("collector release should be sent");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if latest_update.take() == Some(42) {
+                stop.store(true, Ordering::Relaxed);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "poll worker should publish the collected update"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn privacy_filter_poll_worker_survives_transient_not_ready_state() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(AtomicBool::new(false));
+        let (not_ready_checked_tx, not_ready_checked_rx) = std::sync::mpsc::channel();
+        let (collector_started_tx, collector_started_rx) = std::sync::mpsc::channel();
+        let latest_update = spawn_privacy_filter_poll_loop_with_collector(
+            Arc::clone(&stop),
+            {
+                let ready = Arc::clone(&ready);
+                move || {
+                    let is_ready = ready.load(Ordering::Relaxed);
+                    if !is_ready {
+                        let _ = not_ready_checked_tx.send(());
+                    }
+                    is_ready
+                }
+            },
+            move || {
+                let _ = collector_started_tx.send(());
+                42
+            },
+        );
+
+        not_ready_checked_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("poll worker should check readiness before the runtime is ready");
+        assert!(
+            collector_started_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "poll worker must not collect before the runtime is ready"
+        );
+
+        ready.store(true, Ordering::Relaxed);
+        assert!(
+            collector_started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .is_ok(),
+            "poll worker should wait for a transient not-ready state instead of exiting"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut published_update = false;
+        loop {
+            if latest_update.take() == Some(42) {
+                published_update = true;
+                break;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        stop.store(true, Ordering::Relaxed);
+
+        assert!(
+            published_update,
+            "poll worker should publish the update after the runtime becomes ready"
+        );
+    }
+
+    #[test]
+    fn privacy_failure_without_microphone_commits_current_screen_output_before_runtime_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_path = temp_dir.path().join("screen-segment.mov");
+        std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+            .expect("fake openable mov should be written");
+        let screen_path = screen_path.to_string_lossy().into_owned();
+
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: false,
+            }),
+            current_segment_sources: Some(CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: false,
+            }),
+            output_files: Some(empty_output_files()),
+            current_segment_output_files: Some(CaptureOutputFiles {
+                screen_file: Some(screen_path.clone()),
+                screen_files: vec![screen_path.clone()],
+                microphone_file: None,
+                microphone_files: Vec::new(),
+                system_audio_file: None,
+                system_audio_files: Vec::new(),
+            }),
+            recording_file: Some(screen_path.clone()),
+            ..Default::default()
+        };
+        let error = CaptureErrorResponse {
+            code: "privacy_update_failed".to_string(),
+            message: "privacy update failed".to_string(),
+        };
+
+        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error)
+            .expect("privacy suspension should succeed");
+        assert!(
+            runtime.current_segment_output_files.is_none(),
+            "without microphone continuation, suspended screen/system outputs should already be committed and detached"
+        );
+        mark_runtime_session_failed(&mut runtime);
+
+        assert!(!runtime.is_running);
+        assert!(runtime.current_segment_output_files.is_none());
+        let output_files = runtime
+            .output_files
+            .expect("committed output files should be preserved after runtime failure");
+        assert_eq!(
+            output_files.screen_file.as_deref(),
+            Some(screen_path.as_str())
+        );
+        assert_eq!(output_files.screen_files, vec![screen_path]);
+    }
+
+    #[test]
+    fn privacy_failure_with_paused_microphone_keeps_suspended_sources_explicit() {
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            }),
+            current_segment_sources: Some(CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: true,
+            }),
+            current_segment_output_files: Some(CaptureOutputFiles {
+                screen_file: Some("/tmp/screen.mov".to_string()),
+                screen_files: vec!["/tmp/screen.mov".to_string()],
+                microphone_file: None,
+                microphone_files: Vec::new(),
+                system_audio_file: Some("/tmp/system-audio.m4a".to_string()),
+                system_audio_files: vec!["/tmp/system-audio.m4a".to_string()],
+            }),
+            recording_file: Some("/tmp/screen.mov".to_string()),
+            system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
+            inactivity: super::super::inactivity::InactivityState {
+                enabled: true,
+                idle_timeout_seconds: 10,
+                microphone_paused: true,
+                is_paused: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let error = CaptureErrorResponse {
+            code: "privacy_update_failed".to_string(),
+            message: "privacy update failed".to_string(),
+        };
+
+        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error)
+            .expect("privacy suspension should succeed");
+
+        assert_eq!(
+            runtime.current_segment_sources,
+            Some(CaptureSources {
+                screen: false,
+                microphone: false,
+                system_audio: false,
+            })
+        );
+        assert!(
+            super::super::runtime::current_segment_sources_for_runtime(&runtime).is_none(),
+            "explicit all-paused privacy suspension must not fall back to stale screen/system-audio outputs"
+        );
+    }
+
+    #[test]
+    fn privacy_failure_with_active_microphone_detaches_suspended_screen_state() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_path = temp_dir.path().join("screen-segment.mov");
+        std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+            .expect("fake openable mov should be written");
+        let screen_path = screen_path.to_string_lossy().into_owned();
+        let microphone_path = temp_dir
+            .path()
+            .join("microphone.m4a")
+            .to_string_lossy()
+            .into_owned();
+
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: false,
+            }),
+            current_segment_sources: Some(CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: false,
+            }),
+            output_files: Some(empty_output_files()),
+            current_segment_output_files: Some(CaptureOutputFiles {
+                screen_file: Some(screen_path.clone()),
+                screen_files: vec![screen_path.clone()],
+                microphone_file: Some(microphone_path.clone()),
+                microphone_files: vec![microphone_path.clone()],
+                system_audio_file: None,
+                system_audio_files: Vec::new(),
+            }),
+            recording_file: Some(screen_path.clone()),
+            microphone_recording_file: Some(microphone_path.clone()),
+            system_audio_recording_file: Some("/tmp/stale-system-audio.m4a".to_string()),
+            ..Default::default()
+        };
+        let error = CaptureErrorResponse {
+            code: "privacy_update_failed".to_string(),
+            message: "privacy update failed".to_string(),
+        };
+
+        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error)
+            .expect("privacy suspension should succeed");
+
+        assert!(runtime.recording_file.is_none());
+        assert!(runtime.system_audio_recording_file.is_none());
+        assert_eq!(
+            runtime.current_segment_sources,
+            Some(CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: false,
+            })
+        );
+
+        let current_outputs = runtime
+            .current_segment_output_files
+            .as_ref()
+            .expect("microphone continuation should remain current");
+        assert!(current_outputs.screen_file.is_none());
+        assert!(current_outputs.screen_files.is_empty());
+        assert_eq!(
+            current_outputs.microphone_file.as_deref(),
+            Some(microphone_path.as_str())
+        );
+        assert_eq!(current_outputs.microphone_files, vec![microphone_path]);
+
+        let committed = runtime
+            .output_files
+            .as_ref()
+            .expect("suspended screen output should be committed");
+        assert_eq!(committed.screen_file.as_deref(), Some(screen_path.as_str()));
+        assert_eq!(committed.screen_files, vec![screen_path]);
+    }
 }
 
 pub(super) fn start_capture_runtime(
@@ -3207,6 +4016,7 @@ pub(super) fn start_capture_runtime(
             let initial_microphone_vad = MicrophoneVadRuntime::new(settings.microphone_vad_adapter);
             let microphone_tail_activity_mode =
                 microphone_tail_trim_activity_mode_for_vad(&initial_microphone_vad);
+            let initial_privacy_filter = privacy::collect_initial_privacy_filter(&app_handle);
 
             let (
                 segment_outputs,
@@ -3225,11 +4035,14 @@ pub(super) fn start_capture_runtime(
                 effective_screen_bitrate_bps,
                 microphone_device_id_for_capture.as_deref(),
                 frame_artifact_tx.clone(),
+                Some(metadata::frame_metadata_snapshot_provider(&app_handle)),
                 first_microphone_output_path.as_deref(),
                 inactivity_tail_trim_seconds,
                 microphone_activity_threshold,
                 microphone_tail_activity_mode,
+                initial_privacy_filter.screen_capture_filter(),
             )?;
+            initial_privacy_filter.mark_applied(&app_handle);
 
             let output_files = empty_output_files();
             let segment_loop_control = spawn_segment_loop(app_handle.clone());
@@ -3285,6 +4098,7 @@ pub(super) fn start_capture_runtime(
             runtime.system_audio_recording_file = system_audio_recording_file;
             runtime.active_screen_session = active_screen_session;
             runtime.active_microphone_session = active_microphone_session;
+            runtime.privacy_capture_suspension = None;
             apply_runtime_signal(runtime, RuntimeSignal::SourcesReady)?;
             Ok(())
         }

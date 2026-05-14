@@ -1,4 +1,5 @@
 use crate::InactivityActivityMode;
+use capture_metadata::{BrowserTitleRuleMatchType, MetadataSettings, PrivacySettings};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,6 +130,76 @@ pub fn default_preview_cache_ttl_seconds() -> u64 {
 
 pub fn default_follow_timeline_live() -> bool {
     false
+}
+
+pub fn default_metadata_settings() -> MetadataSettings {
+    MetadataSettings::default()
+}
+
+pub fn default_privacy_settings() -> PrivacySettings {
+    PrivacySettings::default()
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivacyRedactionSourceKind {
+    ExcludedApp,
+    WebsiteRule,
+    TitleRule,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivacyRedactionSourceStatus {
+    Active,
+    Deleted,
+    Forgotten,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PrivacyRedactionSourceRestorePayload {
+    ExcludedApp {
+        bundle_id: String,
+        display_name: String,
+        enabled: bool,
+    },
+    WebsiteRule {
+        pattern: String,
+        enabled: bool,
+    },
+    TitleRule {
+        match_type: BrowserTitleRuleMatchType,
+        pattern: String,
+        enabled: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivacyRedactionSourceDto {
+    pub source_id: String,
+    pub source_kind: PrivacyRedactionSourceKind,
+    pub status: PrivacyRedactionSourceStatus,
+    pub label: Option<String>,
+    pub detail: Option<String>,
+    pub label_forgotten: bool,
+    pub restorable: bool,
+    pub restore_enabled: Option<bool>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivacyRedactionSourceResolutionDto {
+    pub source_id: String,
+    pub source_kind: PrivacyRedactionSourceKind,
+    pub status: PrivacyRedactionSourceStatus,
+    pub label: Option<String>,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -463,6 +534,10 @@ pub struct RecordingSettings {
     pub speaker_analysis: SpeakerAnalysisSettings,
     #[serde(default = "default_audio_speech_detection_settings")]
     pub audio_speech_detection: AudioSpeechDetectionSettings,
+    #[serde(default = "default_metadata_settings")]
+    pub metadata: MetadataSettings,
+    #[serde(default = "default_privacy_settings")]
+    pub privacy: PrivacySettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -519,6 +594,10 @@ pub struct UpdateRecordingSettingsRequest {
     pub speaker_analysis: SpeakerAnalysisSettings,
     #[serde(default = "default_audio_speech_detection_settings")]
     pub audio_speech_detection: AudioSpeechDetectionSettings,
+    #[serde(default = "default_metadata_settings")]
+    pub metadata: MetadataSettings,
+    #[serde(default = "default_privacy_settings")]
+    pub privacy: PrivacySettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]

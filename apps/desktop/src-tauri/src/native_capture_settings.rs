@@ -1,18 +1,19 @@
 use capture_types::{
     default_appearance, default_audio_speech_detection_settings,
     default_audio_transcription_settings, default_developer_options_enabled,
-    default_follow_timeline_live, default_idle_timeout_seconds,
+    default_follow_timeline_live, default_idle_timeout_seconds, default_metadata_settings,
     default_microphone_activity_sensitivity, default_native_capture_debug_logging_enabled,
     default_ocr_settings, default_ocr_tesseract_char_whitelist,
     default_ocr_tesseract_page_segmentation_mode, default_ocr_tesseract_preprocess_mode,
     default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
-    default_preview_cache_ttl_seconds, default_speaker_analysis_model_id,
+    default_preview_cache_ttl_seconds, default_privacy_settings, default_speaker_analysis_model_id,
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
     default_system_audio_activity_sensitivity, default_video_bitrate, AudioSpeechDetectionSettings,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
-    CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
-    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    BrowserTitleRuleMatchType, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
+    RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
+    SpeakerAnalysisSettings, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
+    VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -89,6 +90,8 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
+        metadata: default_metadata_settings(),
+        privacy: default_privacy_settings(),
         pause_capture_on_inactivity: default_pause_capture_on_inactivity(),
         idle_timeout_seconds: default_idle_timeout_seconds(),
         microphone_activity_sensitivity: default_microphone_activity_sensitivity(),
@@ -246,6 +249,60 @@ fn validate_audio_speech_detection_settings(
     }
 
     Ok(value)
+}
+
+pub(crate) fn validate_privacy_settings(
+    value: capture_types::PrivacySettings,
+) -> Result<capture_types::PrivacySettings, CaptureErrorResponse> {
+    let capture_types::PrivacySettings {
+        excluded_apps,
+        excluded_website_rules,
+        browser_title_rules,
+        private_browser_exclusion_enabled,
+    } = value;
+
+    let excluded_website_rules = excluded_website_rules
+        .into_iter()
+        .map(|rule| capture_metadata::parse_website_rule(rule.id, rule.enabled, &rule.pattern))
+        .collect();
+
+    for rule in &browser_title_rules {
+        if rule.enabled
+            && rule.match_type == BrowserTitleRuleMatchType::Regex
+            && !capture_metadata::title_rule_is_valid(rule)
+        {
+            return Err(CaptureErrorResponse {
+                code: "invalid_recording_settings".to_string(),
+                message: format!(
+                    "Enabled browser title regex rule '{}' is invalid",
+                    rule.pattern
+                ),
+            });
+        }
+    }
+
+    let mut seen_app_bundle_ids = std::collections::BTreeSet::new();
+    let excluded_apps = excluded_apps
+        .into_iter()
+        .filter_map(|mut app| {
+            app.bundle_id = canonicalize_app_bundle_id(&app.bundle_id);
+            if app.bundle_id.is_empty() || !seen_app_bundle_ids.insert(app.bundle_id.clone()) {
+                return None;
+            }
+            Some(app)
+        })
+        .collect();
+
+    Ok(capture_types::PrivacySettings {
+        excluded_apps,
+        excluded_website_rules,
+        browser_title_rules,
+        private_browser_exclusion_enabled,
+    })
+}
+
+pub(crate) fn canonicalize_app_bundle_id(bundle_id: &str) -> String {
+    bundle_id.trim().to_string()
 }
 
 fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> SpeakerAnalysisSettings {
@@ -548,6 +605,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
     let transcription = validate_audio_transcription_settings(request.transcription)?;
     let audio_speech_detection =
         validate_audio_speech_detection_settings(request.audio_speech_detection, &transcription)?;
+    let privacy = validate_privacy_settings(request.privacy)?;
     let speaker_analysis = validate_speaker_analysis_settings(request.speaker_analysis);
     let microphone_activity_sensitivity = validate_audio_activity_sensitivity(
         "microphoneActivitySensitivity",
@@ -588,6 +646,8 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         transcription,
         speaker_analysis,
         audio_speech_detection: audio_speech_detection.clone(),
+        metadata: request.metadata,
+        privacy,
         pause_capture_on_inactivity: request.pause_capture_on_inactivity,
         idle_timeout_seconds: request.idle_timeout_seconds,
         microphone_activity_sensitivity,
@@ -597,7 +657,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
     })
 }
 
-fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
+pub(crate) fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
     if let Ok(config_dir) = app_handle.path().app_config_dir() {
         return config_dir.join(RECORDING_SETTINGS_FILE_NAME);
     }
@@ -639,6 +699,8 @@ fn load_recording_settings_from_path_with_resolution_support(
             transcription: parsed.transcription,
             speaker_analysis: parsed.speaker_analysis,
             audio_speech_detection: parsed.audio_speech_detection,
+            metadata: parsed.metadata,
+            privacy: parsed.privacy,
             pause_capture_on_inactivity: parsed.pause_capture_on_inactivity,
             idle_timeout_seconds: parsed.idle_timeout_seconds,
             microphone_activity_sensitivity: parsed.microphone_activity_sensitivity,
@@ -758,16 +820,24 @@ pub(crate) fn apply_recording_settings_update(
     state: &RecordingSettingsState,
     request: UpdateRecordingSettingsRequest,
 ) -> Result<AppliedRecordingSettingsUpdate, CaptureErrorResponse> {
+    let requested_privacy = validate_privacy_settings(request.privacy.clone())?;
     let settings = validate_recording_settings(request)?;
-    persist_recording_settings(app_handle, &settings)?;
 
     let mut runtime = state.lock().expect("recording settings state poisoned");
+    if requested_privacy != runtime.settings.privacy {
+        return Err(CaptureErrorResponse {
+            code: "invalid_privacy_rule".to_string(),
+            message: "Privacy rules must be changed with dedicated privacy commands".to_string(),
+        });
+    }
+
     let previous_settings = runtime.settings.clone();
     let previous_save_directory = previous_settings.save_directory.clone();
     let save_directory_changed = previous_save_directory != settings.save_directory;
     let debug_logging_enabled_changed = previous_settings.native_capture_debug_logging_enabled
         != settings.native_capture_debug_logging_enabled;
 
+    persist_recording_settings(app_handle, &settings)?;
     runtime.settings = settings.clone();
 
     Ok(AppliedRecordingSettingsUpdate {
@@ -784,6 +854,13 @@ pub(crate) fn persist_recording_settings(
     settings: &RecordingSettings,
 ) -> Result<(), CaptureErrorResponse> {
     let file_path = recording_settings_file_path(app_handle);
+    persist_recording_settings_to_path(&file_path, settings)
+}
+
+pub(crate) fn persist_recording_settings_to_path(
+    file_path: &Path,
+    settings: &RecordingSettings,
+) -> Result<(), CaptureErrorResponse> {
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| CaptureErrorResponse {
             code: "io_error".to_string(),
@@ -989,6 +1066,65 @@ mod tests {
     }
 
     #[test]
+    fn validate_privacy_settings_derives_website_rule_fields_from_pattern() {
+        let mut privacy = default_privacy_settings();
+        privacy.excluded_website_rules = vec![capture_types::WebsiteRule {
+            id: "site".to_string(),
+            enabled: true,
+            pattern: "new.example.com/private".to_string(),
+            host: Some("old.example.com".to_string()),
+            include_subdomains: true,
+            path_prefix: Some("/old".to_string()),
+            port: Some(5173),
+        }];
+
+        let normalized = validate_privacy_settings(privacy).expect("privacy should validate");
+        let rule = normalized
+            .excluded_website_rules
+            .first()
+            .expect("website rule should be preserved");
+
+        assert_eq!(rule.pattern, "new.example.com/private");
+        assert_eq!(rule.host.as_deref(), Some("new.example.com"));
+        assert!(!rule.include_subdomains);
+        assert_eq!(rule.path_prefix.as_deref(), Some("/private"));
+        assert_eq!(rule.port, None);
+    }
+
+    #[test]
+    fn validate_privacy_settings_preserves_app_bundle_id_casing_and_dedupes_exact_ids() {
+        let mut privacy = default_privacy_settings();
+        privacy.excluded_apps = vec![
+            capture_metadata::ExcludedAppEntry {
+                id: "app-a".to_string(),
+                enabled: true,
+                bundle_id: " com.apple.Safari ".to_string(),
+                display_name: "Safari".to_string(),
+            },
+            capture_metadata::ExcludedAppEntry {
+                id: "app-b".to_string(),
+                enabled: true,
+                bundle_id: "com.apple.Safari".to_string(),
+                display_name: "Safari duplicate exact".to_string(),
+            },
+            capture_metadata::ExcludedAppEntry {
+                id: "app-c".to_string(),
+                enabled: true,
+                bundle_id: "com.apple.safari".to_string(),
+                display_name: "Different-case bundle ID".to_string(),
+            },
+        ];
+
+        let normalized = validate_privacy_settings(privacy).expect("privacy should validate");
+
+        assert_eq!(normalized.excluded_apps.len(), 2);
+        assert_eq!(normalized.excluded_apps[0].id, "app-a");
+        assert_eq!(normalized.excluded_apps[0].bundle_id, "com.apple.Safari");
+        assert_eq!(normalized.excluded_apps[1].id, "app-c");
+        assert_eq!(normalized.excluded_apps[1].bundle_id, "com.apple.safari");
+    }
+
+    #[test]
     fn validate_recording_settings_preserves_microphone_vad_adapter_update() {
         let settings = validate_recording_settings_with_resolution_support(
             UpdateRecordingSettingsRequest {
@@ -1013,6 +1149,8 @@ mod tests {
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
+                metadata: default_metadata_settings(),
+                privacy: default_privacy_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1067,6 +1205,8 @@ mod tests {
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
+                metadata: default_metadata_settings(),
+                privacy: default_privacy_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1137,6 +1277,8 @@ mod tests {
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
+                metadata: default_metadata_settings(),
+                privacy: default_privacy_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1181,6 +1323,8 @@ mod tests {
                 transcription,
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
+                metadata: default_metadata_settings(),
+                privacy: default_privacy_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
@@ -1275,6 +1419,8 @@ mod tests {
             transcription: default_audio_transcription_settings(),
             speaker_analysis: default_speaker_analysis_settings(),
             audio_speech_detection: default_audio_speech_detection_settings(),
+            metadata: default_metadata_settings(),
+            privacy: default_privacy_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

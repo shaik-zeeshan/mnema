@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Image } from "@tauri-apps/api/image";
   import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
@@ -85,6 +85,7 @@
   // on any browser-specific RTL `scrollLeft` convention.
 
   const TIMELINE_SLOT_WIDTH = 8; // px, must match CSS `.timeline-rail__slot`
+  const TIMELINE_APP_GROUP_MAX_GAP_MS = 2_000;
   const TIMELINE_PAGE_SIZE = 200;
   // Distance (in frames) from the loaded tail at which we trigger the next
   // `beforeId` page. Sized generously relative to `TIMELINE_PAGE_SIZE` so a
@@ -310,6 +311,24 @@
     deletedFrameIds?: number[];
     deletedAudioSegmentIds?: number[];
   };
+  type AppIconResolution = {
+    bundleId: string;
+    iconPath: string | null;
+  };
+  type TimelineAppGroup = {
+    key: string;
+    bundleId: string | null;
+    appName: string | null;
+    label: string;
+    frameCount: number;
+    rightPx: number;
+    widthPx: number;
+    iconLeftPx: number;
+    iconSrc: string | null;
+    showIcon: boolean;
+    fallback: string;
+    variant: "single" | "range";
+  };
 
   let timelineFrames = $state<FrameDto[]>([]);
   let timelineActiveIndex = $state(0);
@@ -394,6 +413,8 @@
   let previewGeneratedPathCount = $state(0);
   let previewStaleRetryCount = $state(0);
   let activePreviewLoadErrorFrameId = $state<number | null>(null);
+  let timelineAppIconPathsByBundleId = $state<Record<string, string>>({});
+  const requestedTimelineAppIconBundleIds = new Set<string>();
 
   function handleActivePreviewLoadError(frameId: number): void {
     if (activePreviewLoadErrorFrameId === frameId) return;
@@ -2286,9 +2307,205 @@
   const timelineWindow = $derived(
     timelineFrames.slice(timelineWindowStart, timelineWindowEnd),
   );
+  const timelineAppGroups = $derived.by<TimelineAppGroup[]>(() => {
+    const frames = timelineFrames;
+    const windowStart = timelineWindowStart;
+    const windowEnd = timelineWindowEnd;
+    if (frames.length === 0 || windowStart >= windowEnd) return [];
+
+    const groups: TimelineAppGroup[] = [];
+    let runIdentity: string | null = null;
+    let runBundleId: string | null = null;
+    let runAppName: string | null = null;
+    let runLastCapturedAtMs: number | null = null;
+    let runStart = 0;
+
+    function flushRun(endExclusive: number): void {
+      if (!runIdentity) return;
+      const runEnd = endExclusive - 1;
+      const frameCount = runEnd - runStart + 1;
+      const intersectsWindow = runStart < windowEnd && runEnd >= windowStart;
+      if (!intersectsWindow) {
+        return;
+      }
+
+      const visibleStart = Math.max(runStart, windowStart);
+      const visibleEnd = Math.min(runEnd, windowEnd - 1);
+      const visibleWidthPx = (visibleEnd - visibleStart + 1) * TIMELINE_SLOT_WIDTH;
+      const iconCenterOffsetFromRight =
+        (visibleStart - runStart) * TIMELINE_SLOT_WIDTH + visibleWidthPx / 2;
+      const widthPx = frameCount * TIMELINE_SLOT_WIDTH;
+      const iconSizePx = 20;
+      const label = runAppName ?? runBundleId ?? "Unknown app";
+      const variant = frameCount === 1 ? "single" : "range";
+      groups.push({
+        key: timelineAppGroupKey(runIdentity, frames, runEnd),
+        bundleId: runBundleId,
+        appName: runAppName,
+        label,
+        frameCount,
+        rightPx: runStart * TIMELINE_SLOT_WIDTH,
+        widthPx,
+        iconLeftPx: Math.max(
+          2,
+          Math.min(
+            Math.max(2, widthPx - iconSizePx - 2),
+            widthPx - iconCenterOffsetFromRight - iconSizePx / 2,
+          ),
+        ),
+        iconSrc: runBundleId ? timelineAppIconSrc(runBundleId) : null,
+        showIcon: variant === "range" && visibleWidthPx >= iconSizePx + 24,
+        fallback: timelineAppIconFallback(runAppName, runBundleId),
+        variant,
+      });
+    }
+
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i]!;
+      const bundleId = normalizedTimelineAppBundleId(frame);
+      const appName = normalizedTimelineAppName(frame);
+      const identity = timelineAppIdentity(bundleId, appName);
+      const capturedAtMs = parseCapturedAt(frame.capturedAt).getTime();
+      const validCapturedAtMs = Number.isFinite(capturedAtMs) ? capturedAtMs : null;
+      if (!identity) {
+        flushRun(i);
+        runIdentity = null;
+        runBundleId = null;
+        runAppName = null;
+        runLastCapturedAtMs = null;
+        runStart = i + 1;
+        continue;
+      }
+
+      if (identity === runIdentity) {
+        const shouldSplitForTimeGap = runLastCapturedAtMs != null &&
+          validCapturedAtMs != null &&
+          Math.abs(runLastCapturedAtMs - validCapturedAtMs) > TIMELINE_APP_GROUP_MAX_GAP_MS;
+        if (shouldSplitForTimeGap) {
+          flushRun(i);
+          runIdentity = identity;
+          runBundleId = bundleId;
+          runAppName = appName;
+          runLastCapturedAtMs = validCapturedAtMs;
+          runStart = i;
+          continue;
+        }
+        if (!runBundleId && bundleId) runBundleId = bundleId;
+        if (!runAppName && appName) runAppName = appName;
+        runLastCapturedAtMs = validCapturedAtMs;
+        continue;
+      }
+
+      flushRun(i);
+      runIdentity = identity;
+      runBundleId = bundleId;
+      runAppName = appName;
+      runLastCapturedAtMs = validCapturedAtMs;
+      runStart = i;
+    }
+    flushRun(frames.length);
+
+    return groups;
+  });
+
+  $effect(() => {
+    const bundleIds = timelineAppGroups.map((group) => group.bundleId);
+    void resolveTimelineAppIcons(bundleIds);
+  });
 
   function parseCapturedAt(ts: string): Date {
     return new Date(ts.includes("T") ? ts : ts.replace(" ", "T"));
+  }
+
+  function normalizedTimelineAppBundleId(frame: FrameDto): string | null {
+    const bundleId = frame.appBundleId?.trim();
+    return bundleId ? bundleId : null;
+  }
+
+  function normalizedTimelineAppName(frame: FrameDto): string | null {
+    const appName = frame.appName?.trim();
+    return appName ? appName : null;
+  }
+
+  function timelineAppIdentity(bundleId: string | null, appName: string | null): string | null {
+    if (bundleId) return `bundle:${bundleId}`;
+    return appName ? `name:${appName.toLocaleLowerCase()}` : null;
+  }
+
+  function timelineAppGroupKey(
+    identity: string,
+    frames: FrameDto[],
+    runEnd: number,
+  ): string {
+    // New frames prepend at the rail head, shifting every absolute index.
+    // Anchor the keyed DOM node to the oldest frame in the run so existing
+    // app icons are updated in place instead of remounting their <img>.
+    const oldestFrameId = frames[runEnd]?.id;
+    return `${identity}:oldest:${oldestFrameId ?? runEnd}`;
+  }
+
+  function timelineAppIconFallback(
+    appName: string | null | undefined,
+    bundleId: string | null | undefined,
+  ): string {
+    return ((appName ?? "").trim() || (bundleId ?? "").trim() || "?").slice(0, 1).toUpperCase();
+  }
+
+  function timelineAppIconSrc(bundleId: string): string | null {
+    const iconPath = timelineAppIconPathsByBundleId[bundleId];
+    return iconPath ? convertFileSrc(iconPath) : null;
+  }
+
+  function timelineAppGroupTitle(group: TimelineAppGroup): string {
+    const countLabel = `${group.frameCount} frame${group.frameCount === 1 ? "" : "s"}`;
+    return `${group.label} · ${countLabel}`;
+  }
+
+  function timelineFrameAppLabel(frame: FrameDto | null | undefined): string | null {
+    if (!frame) return null;
+    return normalizedTimelineAppName(frame) ?? normalizedTimelineAppBundleId(frame);
+  }
+
+  function timelineFrameAppIconSrc(frame: FrameDto | null | undefined): string | null {
+    const bundleId = frame ? normalizedTimelineAppBundleId(frame) : null;
+    return bundleId ? timelineAppIconSrc(bundleId) : null;
+  }
+
+  function timelineFrameAppFallback(frame: FrameDto | null | undefined): string {
+    return timelineAppIconFallback(
+      frame ? normalizedTimelineAppName(frame) : null,
+      frame ? normalizedTimelineAppBundleId(frame) : null,
+    );
+  }
+
+  function uniqueTimelineAppBundleIds(bundleIds: Array<string | null | undefined>): string[] {
+    return [...new Set(bundleIds.map((bundleId) => bundleId?.trim() ?? "").filter(Boolean))];
+  }
+
+  async function resolveTimelineAppIcons(bundleIds: Array<string | null | undefined>): Promise<void> {
+    const unresolvedBundleIds = uniqueTimelineAppBundleIds(bundleIds).filter((bundleId) => (
+      !timelineAppIconPathsByBundleId[bundleId] && !requestedTimelineAppIconBundleIds.has(bundleId)
+    ));
+    if (unresolvedBundleIds.length === 0) return;
+    for (const bundleId of unresolvedBundleIds) requestedTimelineAppIconBundleIds.add(bundleId);
+
+    try {
+      const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
+        request: { bundleIds: unresolvedBundleIds },
+      });
+      const nextIconPaths = { ...timelineAppIconPathsByBundleId };
+      let changed = false;
+      for (const icon of icons) {
+        if (!icon.iconPath || nextIconPaths[icon.bundleId] === icon.iconPath) continue;
+        nextIconPaths[icon.bundleId] = icon.iconPath;
+        changed = true;
+      }
+      if (changed) {
+        timelineAppIconPathsByBundleId = nextIconPaths;
+      }
+    } catch {
+      for (const bundleId of unresolvedBundleIds) requestedTimelineAppIconBundleIds.delete(bundleId);
+    }
   }
 
   function trimTimelineFramesAroundActive(
@@ -4875,7 +5092,7 @@
   }
 
   // Display string for the picker trigger button — reflects the active
-  // frame's local time so the control doubles as a "you are here" readout.
+  // frame's local time so the control doubles as a compact jump readout.
   const triggerLabel = $derived(
     timelineActive
       ? formatCapturedAt(timelineActive.capturedAt)
@@ -5163,7 +5380,7 @@
           aria-controls="timeline-jump-picker"
           title="Jump to date and time (J)"
         >
-          <span class="timeline__jump-icon">▣</span>
+          <span class="timeline__jump-icon" aria-hidden="true">▣</span>
           <span class="timeline__jump-label">{triggerLabel}</span>
         </button>
         {#if showJumpToLatestButton}
@@ -5561,6 +5778,29 @@
           class="timeline-rail__track"
           style="width: {timelineFrames.length * TIMELINE_SLOT_WIDTH}px"
         >
+          {#each timelineAppGroups as group (group.key)}
+            <div
+              class="timeline-rail__app-group"
+              class:timeline-rail__app-group--single={group.variant === "single"}
+              class:timeline-rail__app-group--range={group.variant === "range"}
+              style="right: {group.rightPx}px; width: {group.widthPx}px; --timeline-app-icon-left: {group.iconLeftPx}px"
+              title={timelineAppGroupTitle(group)}
+              aria-hidden="true"
+            >
+              {#if group.showIcon}
+                <span
+                  class="timeline-rail__app-group-icon"
+                  class:timeline-rail__app-group-icon--image={!!group.iconSrc}
+                >
+                  {#if group.iconSrc}
+                    <img src={group.iconSrc} alt="" loading="lazy" />
+                  {:else}
+                    <span>{group.fallback}</span>
+                  {/if}
+                </span>
+              {/if}
+            </div>
+          {/each}
           {#each timelineWindow as frame, j (frame.id)}
             {@const i = timelineWindowStart + j}
             {@const isActive = i === timelineActiveIndex}
@@ -5695,6 +5935,8 @@
       <div class="timeline-rail__loading">loading…</div>
     {/if}
     {#if timelineFrames.length > 0 && tooltipFrame}
+      {@const tooltipAppLabel = timelineFrameAppLabel(tooltipFrame)}
+      {@const tooltipAppIconSrc = timelineFrameAppIconSrc(tooltipFrame)}
       <div
         id="timeline-rail-readout"
         class="timeline-rail__tooltip"
@@ -5704,7 +5946,27 @@
           : "left: 50%; transform: translate(-50%, -100%);"}
         role="tooltip"
       >
-        {formatCapturedAt(tooltipFrame.capturedAt)}
+        {#if tooltipAppLabel}
+          <span
+            class="timeline-rail__tooltip-icon"
+            class:timeline-rail__tooltip-icon--image={!!tooltipAppIconSrc}
+            aria-hidden="true"
+          >
+            {#if tooltipAppIconSrc}
+              <img src={tooltipAppIconSrc} alt="" loading="lazy" />
+            {:else}
+              <span>{timelineFrameAppFallback(tooltipFrame)}</span>
+            {/if}
+          </span>
+          <span class="timeline-rail__tooltip-copy">
+            <span class="timeline-rail__tooltip-app-name">{tooltipAppLabel}</span>
+            <span class="timeline-rail__tooltip-date">{formatCapturedAt(tooltipFrame.capturedAt)}</span>
+          </span>
+        {:else}
+          <span class="timeline-rail__tooltip-date timeline-rail__tooltip-date--solo">
+            {formatCapturedAt(tooltipFrame.capturedAt)}
+          </span>
+        {/if}
       </div>
     {/if}
   </div>
@@ -8109,12 +8371,12 @@
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    /* Track is 22px + 1px top/bottom border = 24px. Locking the rail's
+    /* Track is 34px + 1px top/bottom border = 36px. Locking the rail's
        height (rather than letting it derive from content) ensures that
        transient in-flow children (e.g. previous sticky loader, future
        overlays) cannot grow the rail and ripple height into the stage. */
-    height: 24px;
-    flex: 0 0 24px;
+    height: 36px;
+    flex: 0 0 36px;
     box-sizing: border-box;
     /* Slot 0 (newest) is anchored to the right edge of the track via
        `right: i * SLOT_WIDTH` on each slot, with symmetric viewport-sized
@@ -8152,7 +8414,7 @@
 
   .timeline-rail__track {
     position: relative;
-    height: 22px;
+    height: 34px;
     /* Symmetric viewport-relative spacers so the first/last frames can sit
        under the centered cursor caret. Using `cqi` (rail's inline size)
        rather than `%` (which resolves against the track's own width and
@@ -8163,11 +8425,90 @@
     margin-right: calc(50cqi - 4px);
   }
 
+  .timeline-rail__app-group {
+    position: absolute;
+    top: 2px;
+    z-index: 1;
+    height: 8px;
+    overflow: visible;
+    pointer-events: none;
+  }
+
+  .timeline-rail__app-group::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    top: 4px;
+    height: 1px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--app-text-muted) 38%, transparent);
+  }
+
+  .timeline-rail__app-group--range::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 2px;
+    height: 5px;
+    border-left: 1px solid color-mix(in srgb, var(--app-text-muted) 45%, transparent);
+    border-right: 1px solid color-mix(in srgb, var(--app-text-muted) 45%, transparent);
+    opacity: 0.72;
+  }
+
+  .timeline-rail__app-group--single::before {
+    left: 50%;
+    right: auto;
+    top: 2px;
+    width: 5px;
+    height: 5px;
+    transform: translateX(-50%);
+    background: color-mix(in srgb, var(--app-text-muted) 72%, var(--app-info));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-bg) 82%, transparent);
+    opacity: 0.9;
+  }
+
+  .timeline-rail__app-group-icon {
+    position: absolute;
+    top: -2px;
+    left: var(--timeline-app-icon-left);
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    min-height: 20px;
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    border-radius: 4px;
+    overflow: hidden;
+    color: var(--app-text-strong);
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1;
+    background: color-mix(in srgb, var(--app-surface-raised) 96%, var(--app-bg));
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--app-border-strong) 82%, transparent),
+      0 2px 6px rgba(0, 0, 0, 0.28);
+  }
+
+  .timeline-rail__app-group-icon--image {
+    padding: 2px;
+  }
+
+  .timeline-rail__app-group-icon img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border-radius: 3px;
+    object-fit: contain;
+  }
+
   .timeline-rail__slot {
     position: absolute;
-    top: 0;
+    top: 13px;
     width: 8px;
-    height: 22px;
+    height: 18px;
     margin: 0;
     padding: 0;
     background: transparent;
@@ -8474,19 +8815,92 @@
     position: absolute;
     top: -6px;
     z-index: 2;
-    padding: 3px 7px;
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr);
+    align-items: center;
+    column-gap: 9px;
+    min-width: 204px;
+    max-width: min(340px, calc(100vw - 24px));
+    min-height: 40px;
+    padding: 7px 10px 7px 7px;
+    box-sizing: border-box;
     font-size: 10px;
     font-weight: 600;
-    line-height: 1.2;
-    letter-spacing: 0.02em;
+    line-height: 1;
+    letter-spacing: 0;
     color: var(--app-text-strong);
-    background: color-mix(in srgb, var(--app-surface-raised) 96%, transparent);
-    border: 1px solid var(--app-border-strong);
+    background: var(--app-status-bg);
+    border: 1px solid var(--app-status-border);
     border-radius: 4px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-    white-space: nowrap;
+    box-shadow:
+      0 8px 20px color-mix(in srgb, var(--app-bg) 58%, transparent),
+      inset 0 1px 0 color-mix(in srgb, var(--app-text-strong) 6%, transparent);
     pointer-events: none;
     /* Subtle pointer hint below the bubble. */
+  }
+
+  .timeline-rail__tooltip-icon {
+    width: 24px;
+    height: 24px;
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    align-self: center;
+    border-radius: 4px;
+    color: var(--app-text);
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border-strong);
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .timeline-rail__tooltip-icon--image {
+    padding: 3px;
+  }
+
+  .timeline-rail__tooltip-icon img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border-radius: 3px;
+    object-fit: contain;
+  }
+
+  .timeline-rail__tooltip-copy {
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+  }
+
+  .timeline-rail__tooltip-app-name,
+  .timeline-rail__tooltip-date {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .timeline-rail__tooltip-app-name {
+    color: var(--app-text-strong);
+    font-size: 11px;
+    font-weight: 760;
+    line-height: 1.05;
+  }
+
+  .timeline-rail__tooltip-date {
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 680;
+    line-height: 1;
+  }
+
+  .timeline-rail__tooltip-date--solo {
+    grid-column: 1 / -1;
+    color: var(--app-text-strong);
+    font-size: 10px;
   }
 
   .timeline-rail__tooltip::after {
@@ -8499,18 +8913,17 @@
     height: 0;
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
-    border-top: 4px solid color-mix(in srgb, var(--app-surface-raised) 96%, transparent);
+    border-top: 4px solid var(--app-status-bg);
   }
 
   .timeline-rail__tooltip--pinned {
-    /* Pinned-to-active variant: tinted to match the active caret accent so
-       it's clear the readout corresponds to the frame under the center cursor. */
-    border-color: rgba(255, 68, 85, 0.5);
-    color: var(--app-danger-text);
+    box-shadow:
+      0 8px 20px color-mix(in srgb, var(--app-bg) 58%, transparent),
+      inset 0 1px 0 color-mix(in srgb, var(--app-text-strong) 6%, transparent);
   }
 
   .timeline-rail__tooltip--pinned::after {
-    border-top-color: color-mix(in srgb, var(--app-surface-raised) 96%, transparent);
+    border-top-color: var(--app-status-bg);
   }
 
   /* ── Light theme overrides ──────────────────────────────────
@@ -8752,7 +9165,7 @@
     border-color: var(--app-border);
   }
   :global([data-theme="light"]) .timeline-rail__slot {
-    background: var(--app-surface);
+    background: transparent;
     border-color: var(--app-border-strong);
   }
   :global([data-theme="light"]) .timeline-rail__audio-lane-wrap {
@@ -8773,12 +9186,30 @@
     color: var(--app-text-muted);
   }
   :global([data-theme="light"]) .timeline-rail__tooltip {
-    background: rgba(255, 255, 255, 0.96);
-    border-color: var(--app-border);
+    background: var(--app-status-bg);
+    border-color: var(--app-status-border);
     color: var(--app-text-strong);
-    box-shadow: 0 6px 16px rgba(20, 28, 40, 0.16);
+    box-shadow:
+      0 8px 18px rgba(20, 28, 40, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  }
+  :global([data-theme="light"]) .timeline-rail__tooltip-icon {
+    background: var(--app-surface-raised);
+    border-color: var(--app-border);
+    color: var(--app-text);
+  }
+  :global([data-theme="light"]) .timeline-rail__tooltip-app-name {
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .timeline-rail__tooltip-date {
+    color: var(--app-text-muted);
   }
   :global([data-theme="light"]) .timeline-rail__tooltip::after {
-    border-top-color: rgba(255, 255, 255, 0.96);
+    border-top-color: var(--app-status-bg);
+  }
+  :global([data-theme="light"]) .timeline-rail__tooltip--pinned {
+    box-shadow:
+      0 8px 18px rgba(20, 28, 40, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.72);
   }
 </style>

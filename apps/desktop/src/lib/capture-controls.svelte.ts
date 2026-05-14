@@ -297,7 +297,7 @@ export const sourceSelection = {
 function buildUpdatePayload(
   base: RecordingSettings,
   overrides: Partial<Pick<RecordingSettings, "captureScreen" | "captureMicrophone" | "captureSystemAudio">>,
-): Record<string, unknown> {
+): RecordingSettings {
   return {
     captureScreen: overrides.captureScreen ?? base.captureScreen,
     captureMicrophone: overrides.captureMicrophone ?? base.captureMicrophone,
@@ -316,10 +316,14 @@ function buildUpdatePayload(
     nativeCaptureDebugLoggingEnabled: base.nativeCaptureDebugLoggingEnabled,
     previewCacheTtlSeconds: base.previewCacheTtlSeconds,
     followTimelineLive: base.followTimelineLive,
+    retentionPolicy: base.retentionPolicy,
     appearance: base.appearance,
     developerOptionsEnabled: base.developerOptionsEnabled,
     ocr: base.ocr,
     transcription: base.transcription,
+    speakerAnalysis: base.speakerAnalysis,
+    metadata: base.metadata,
+    privacy: base.privacy,
     screenResolution: base.screenResolution,
     videoBitrate: base.videoBitrate,
   };

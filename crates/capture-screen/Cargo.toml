@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 capture-runtime = { path = "../capture-runtime" }
+capture-metadata = { path = "../capture-metadata" }
 capture-types = { path = "../capture-types" }
 capture-writers = { path = "../capture-writers" }
 

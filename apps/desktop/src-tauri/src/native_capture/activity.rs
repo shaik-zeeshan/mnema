@@ -125,18 +125,11 @@ fn current_activity_snapshot_with_audio_peak_mode(
     runtime: &mut NativeCaptureRuntime,
     audio_peak_read_mode: AudioPeakReadMode,
 ) -> ActivitySnapshot {
-    // Only poll screen activity via CGDisplayCreateImage when the capture
-    // stream is not running.  While the stream is active, the stream output
-    // callback already updates screen activity from frame samples — polling on
-    // top of that introduces redundant CGDisplayCreateImage snapshots whose
-    // fingerprints can drift from the stream fingerprints and cause false
-    // activity changes.  During inactivity pauses (stream stopped) we still
-    // need polling to detect resumed screen changes.
     #[cfg(target_os = "macos")]
-    if !runtime.is_running
-        || runtime.inactivity.is_screen_paused()
-        || !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref())
-    {
+    if should_poll_screen_activity(
+        runtime.is_running,
+        capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()),
+    ) {
         capture_screen::poll_screen_activity();
     }
 
@@ -183,6 +176,14 @@ fn current_activity_snapshot_with_audio_peak_mode(
             },
         },
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn should_poll_screen_activity(is_running: bool, screen_stream_live: bool) -> bool {
+    // Only poll via CGDisplayCreateImage when no live capture stream can supply
+    // screen activity samples. Soft-paused ScreenCaptureKit sessions keep the
+    // stream alive, so polling there duplicates compositor work.
+    !is_running || !screen_stream_live
 }
 
 pub(super) fn lock_runtime_for_idle_debug(
@@ -386,6 +387,10 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
         // Screen "writer active": session attached and not paused; the screen
         // writer is implicit in the session lifetime.
         let screen_writer = screen_session && !runtime.inactivity.is_screen_paused();
+        let privacy_suspension_reason = runtime
+            .privacy_capture_suspension
+            .as_ref()
+            .map(|suspension| suspension.reason.clone());
 
         RuntimeSourcesStatus {
             screen: RuntimeSourceStatus {
@@ -395,7 +400,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
                 writer_active: Some(screen_writer),
                 output_path: runtime.recording_file.clone(),
                 reason: if requested_screen {
-                    None
+                    privacy_suspension_reason.clone()
                 } else {
                     Some("not_requested".to_string())
                 },
@@ -419,7 +424,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
                 writer_active: Some(sys_writer),
                 output_path: runtime.system_audio_recording_file.clone(),
                 reason: if requested_sys {
-                    None
+                    privacy_suspension_reason
                 } else {
                     Some("not_requested".to_string())
                 },

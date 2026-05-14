@@ -682,6 +682,8 @@ pub struct FrameDto {
     pub captured_at: String,
     pub width: Option<i64>,
     pub height: Option<i64>,
+    pub app_bundle_id: Option<String>,
+    pub app_name: Option<String>,
     pub equivalence_hint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -921,6 +923,11 @@ impl From<::app_infra::BackgroundJob> for AppJobDto {
 
 impl From<::app_infra::Frame> for FrameDto {
     fn from(frame: ::app_infra::Frame) -> Self {
+        let (app_bundle_id, app_name) = frame
+            .metadata_snapshot
+            .map(|metadata| (metadata.app_bundle_id, metadata.app_name))
+            .unwrap_or((None, None));
+
         Self {
             id: frame.id,
             session_id: frame.session_id,
@@ -928,6 +935,8 @@ impl From<::app_infra::Frame> for FrameDto {
             captured_at: frame.captured_at,
             width: frame.width,
             height: frame.height,
+            app_bundle_id,
+            app_name,
             equivalence_hint: frame.equivalence.hint,
             created_at: frame.created_at,
             updated_at: frame.updated_at,
@@ -2367,6 +2376,7 @@ fn ocr_enabled_for_settings(settings: &crate::native_capture::RecordingSettingsS
 pub async fn persist_screen_frame_artifact(
     infra: &::app_infra::AppInfra,
     settings: &crate::native_capture::RecordingSettingsState,
+    metadata_snapshot: Option<capture_metadata::FrameMetadataSnapshot>,
     session_id: &str,
     artifact: ScreenFrameArtifact,
 ) -> ::app_infra::Result<::app_infra::CapturedFramePipelineResult> {
@@ -2387,6 +2397,9 @@ pub async fn persist_screen_frame_artifact(
             .await?
     {
         frame = frame.with_capture_segment_id(capture_segment_id);
+    }
+    if let Some(metadata_snapshot) = metadata_snapshot {
+        frame = frame.with_metadata_snapshot(metadata_snapshot);
     }
 
     if let (Some(width), Some(height)) = (width, height) {
@@ -4704,6 +4717,51 @@ mod tests {
             .block_on(test);
     }
 
+    #[test]
+    fn frame_dto_exposes_only_app_metadata_for_bulk_timeline_payloads() {
+        let frame = ::app_infra::Frame {
+            id: 7,
+            session_id: "session-metadata".to_string(),
+            file_path: "/tmp/frame.png".to_string(),
+            captured_at: "2026-05-12T10:00:00Z".to_string(),
+            width: Some(1440),
+            height: Some(900),
+            equivalence: ::app_infra::FrameEquivalence {
+                hint: Some("hint".to_string()),
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            created_at: "2026-05-12T10:00:00Z".to_string(),
+            updated_at: "2026-05-12T10:00:00Z".to_string(),
+            metadata_snapshot: Some(capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.Browser".to_string()),
+                app_name: Some("Browser".to_string()),
+                window_title: Some("Sensitive Project".to_string()),
+                window_id: None,
+                browser_url: Some("https://example.com/private".to_string()),
+                display_id: Some(1),
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            }),
+        };
+
+        let value = serde_json::to_value(FrameDto::from(frame)).expect("dto should serialize");
+
+        assert!(value.get("metadata").is_none());
+        assert_eq!(
+            value.get("appBundleId").and_then(|value| value.as_str()),
+            Some("com.example.Browser")
+        );
+        assert_eq!(
+            value.get("appName").and_then(|value| value.as_str()),
+            Some("Browser")
+        );
+        assert!(!value.to_string().contains("Sensitive Project"));
+        assert!(!value.to_string().contains("https://example.com/private"));
+    }
+
     struct TestVideoPreviewExtractorGuard;
 
     impl TestVideoPreviewExtractorGuard {
@@ -5034,6 +5092,7 @@ mod tests {
             },
             created_at: String::new(),
             updated_at: String::new(),
+            metadata_snapshot: None,
         };
         let related_frames = vec![::app_infra::Frame {
             id: 1,
@@ -5052,6 +5111,7 @@ mod tests {
             },
             created_at: String::new(),
             updated_at: String::new(),
+            metadata_snapshot: None,
         }];
 
         let offset_seconds = estimate_frame_preview_offset_seconds(&frame, &related_frames);
@@ -5099,6 +5159,7 @@ mod tests {
             },
             created_at: String::new(),
             updated_at: String::new(),
+            metadata_snapshot: None,
         };
 
         let offset = indexed_frame_preview_offset(&frame, &video_path)
@@ -5141,6 +5202,7 @@ mod tests {
             },
             created_at: String::new(),
             updated_at: String::new(),
+            metadata_snapshot: None,
         };
 
         let offset = indexed_frame_preview_offset(&frame, &video_path)
@@ -5186,6 +5248,7 @@ mod tests {
             },
             created_at: String::new(),
             updated_at: String::new(),
+            metadata_snapshot: None,
         };
 
         capture_runtime::configure_debug_log(true, Some(log_path.clone()));
@@ -5697,6 +5760,7 @@ mod tests {
             let persisted = persist_screen_frame_artifact(
                 &infra,
                 &settings,
+                None,
                 "session-artifact",
                 ScreenFrameArtifact {
                     file_path: "/tmp/frame-artifact.png".to_string(),
@@ -5751,6 +5815,7 @@ mod tests {
             let persisted = persist_screen_frame_artifact(
                 &infra,
                 &settings,
+                None,
                 "session-artifact-quarantined",
                 ScreenFrameArtifact {
                     file_path: "/tmp/frame-artifact-quarantined.png".to_string(),

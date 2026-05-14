@@ -19,6 +19,7 @@
     SegmentWorkspaceCleanupDisposition,
     FrameBatchStatus,
     ProcessingJobStatus,
+    PrivacyRedactionSourceResolutionDto,
   } from "$lib/types";
   import { captureSession, setSession } from "$lib/session.svelte";
 
@@ -50,6 +51,50 @@
   let idleDebug = $state<IdleDebugInfo | null>(null);
   let idleDebugError = $state<string | null>(null);
 
+  type PrivacyFilterDecision = {
+    excludedBundleIds: string[];
+    excludedWindowIds: number[];
+    excludedBundleSourceIds?: Record<string, string>;
+    excludedWindowSourceIds?: Record<string, string>;
+    matchedRuleIds: string[];
+    metadataRedactionReason: string | null;
+    privacyFilterApplied: boolean;
+  };
+
+  type CapturePrivacyDebugInfo = {
+    metadataEnabled: boolean;
+    browserUrlMode: string;
+    privateBrowserExclusionEnabled: boolean;
+    privacyDebug: {
+      latestSnapshot: {
+        appBundleId: string | null;
+        appName: string | null;
+        windowTitle: string | null;
+        browserUrl: string | null;
+        displayId: number | null;
+        metadataRedactionReason: string | null;
+        metadataRedactionSourceId: string | null;
+      } | null;
+      latestDecision: PrivacyFilterDecision;
+      latestAppliedDecision: PrivacyFilterDecision;
+      websitePrivacyHoldBundleIds: string[];
+      websitePrivacyHolds: Array<{ bundleId: string; reason: string }>;
+      currentlyExcludedBundleIds: string[];
+      currentlyExcludedWindowIds: number[];
+      privacyFilterApplied: boolean;
+      metadataRedactionReason: string | null;
+      accessibilityPermission: PermissionStatus;
+      privateBrowserDetectionMode: string;
+      privateBrowserDetectedWindowIds: number[];
+      privateBrowserStickyWindowIds: number[];
+      privateBrowserDetectionReasons: Record<string, string>;
+    };
+  };
+
+  let privacyDebug = $state<CapturePrivacyDebugInfo | null>(null);
+  let privacySourceResolutions = $state<Record<string, PrivacyRedactionSourceResolutionDto>>({});
+  let privacyDebugError = $state<string | null>(null);
+
   async function fetchIdleDebug() {
     // Skip the round-trip when the page is hidden or no capture session is active —
     // the debug panel is only meaningful while recording (or briefly after stop).
@@ -61,6 +106,54 @@
     } catch (err) {
       idleDebugError = typeof err === "string" ? err : JSON.stringify(err);
     }
+  }
+
+  async function fetchCapturePrivacyDebug() {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    if (!session?.isRunning) return;
+    try {
+      privacyDebug = await invoke<CapturePrivacyDebugInfo>("get_capture_privacy_debug");
+      await resolvePrivacyDebugSources();
+      privacyDebugError = null;
+    } catch (err) {
+      privacyDebugError = typeof err === "string" ? err : JSON.stringify(err);
+    }
+  }
+
+  function collectPrivacyDebugSourceIds(): string[] {
+    const ids = new Set<string>();
+    const snapshotId = privacyDebug?.privacyDebug.latestSnapshot?.metadataRedactionSourceId;
+    if (snapshotId) ids.add(snapshotId);
+    for (const decision of [privacyDebug?.privacyDebug.latestDecision, privacyDebug?.privacyDebug.latestAppliedDecision]) {
+      if (!decision) continue;
+      Object.values(decision.excludedBundleSourceIds ?? {}).forEach((id) => ids.add(id));
+      Object.values(decision.excludedWindowSourceIds ?? {}).forEach((id) => ids.add(id));
+    }
+    return [...ids];
+  }
+
+  async function resolvePrivacyDebugSources(): Promise<void> {
+    const sourceIds = collectPrivacyDebugSourceIds();
+    if (sourceIds.length === 0) {
+      privacySourceResolutions = {};
+      return;
+    }
+    const resolved = await invoke<PrivacyRedactionSourceResolutionDto[]>("resolve_privacy_redaction_sources", { sourceIds });
+    privacySourceResolutions = Object.fromEntries(resolved.map((source) => [source.sourceId, source]));
+  }
+
+  function formatPrivacySourceLabel(sourceId: string | null | undefined, reason: string | null | undefined): string {
+    if (!sourceId) return reason ?? "none";
+    const source = privacySourceResolutions[sourceId];
+    const kind = source?.sourceKind === "website_rule" ? "Website rule" : source?.sourceKind === "title_rule" ? "Title rule" : "App rule";
+    if (!source) return `${kind} · Unknown source`;
+    const prefix = source.status === "deleted" || source.status === "forgotten" ? `Deleted ${kind.toLowerCase()}` : kind;
+    return source.label ? `${prefix} · ${source.label}` : prefix;
+  }
+
+  function formatDebugList(values: Array<string | number> | null | undefined): string {
+    if (!values || values.length === 0) return "none";
+    return values.join(", ");
   }
 
   function formatIdleMs(ms: number | null | undefined): string {
@@ -376,8 +469,12 @@
 
   $effect(() => {
     fetchIdleDebug();
+    fetchCapturePrivacyDebug();
 
-    const idleDebugInterval = setInterval(fetchIdleDebug, 2000);
+    const idleDebugInterval = setInterval(() => {
+      fetchIdleDebug();
+      fetchCapturePrivacyDebug();
+    }, 2000);
 
     return () => {
       clearInterval(idleDebugInterval);
@@ -1033,7 +1130,7 @@
     <span class="debug-tag">dbg</span>
     Runtime Sources
     <span class="idle-note">capture session · writer · activity</span>
-    <button class="btn btn--ghost btn--sm" onclick={fetchIdleDebug}>↻</button>
+    <button class="btn btn--ghost btn--sm" onclick={() => { fetchIdleDebug(); fetchCapturePrivacyDebug(); }}>↻</button>
   </h2>
 
   {#if idleDebug && idleDebug.runtimeSources}
@@ -1148,6 +1245,109 @@
     <p class="empty">runtime status only available while a session is active</p>
   {/if}
 </div>
+
+<div class="card card--debug" id="debug-panel-privacy" aria-labelledby="debug-tab-runtime">
+  <h2 class="card__title">
+    <span class="debug-tag">dbg</span>
+    Privacy Filter
+    <span class="idle-note">last successfully applied ScreenCaptureKit exclusions</span>
+    <button class="btn btn--ghost btn--sm" onclick={fetchCapturePrivacyDebug}>↻</button>
+  </h2>
+
+  {#if privacyDebugError}
+    <p class="debug-err">{privacyDebugError}</p>
+  {:else if privacyDebug}
+    <ul class="kv-list">
+      <li>
+        <span class="kv-key kv-key--wide">filter</span>
+        <span class={privacyDebug.privacyDebug.privacyFilterApplied ? "badge badge--warn badge--sm" : "badge badge--ok badge--sm"}>
+          {privacyDebug.privacyDebug.privacyFilterApplied ? "active" : "empty"}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">metadata</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.metadataEnabled ? "enabled" : "disabled"} · URL {privacyDebug.browserUrlMode}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">private windows</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.privateBrowserExclusionEnabled ? "enabled" : "disabled"}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">accessibility</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.privacyDebug.accessibilityPermission}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">private detector</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.privacyDebug.privateBrowserDetectionMode}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">detected private</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.privateBrowserDetectedWindowIds)}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">sticky private</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.privateBrowserStickyWindowIds)}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">private reasons</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">
+          {formatDebugList(Object.entries(privacyDebug.privacyDebug.privateBrowserDetectionReasons).map(([id, reason]) => `${id}: ${reason}`))}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">reason</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.privacyDebug.metadataRedactionReason ?? "none"}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">source</span>
+        <span class="kv-val kv-val--mono">
+          {formatPrivacySourceLabel(
+            privacyDebug.privacyDebug.latestSnapshot?.metadataRedactionSourceId,
+            privacyDebug.privacyDebug.latestSnapshot?.metadataRedactionReason ?? privacyDebug.privacyDebug.metadataRedactionReason
+          )}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">applied bundles</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.currentlyExcludedBundleIds)}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">applied windows</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.currentlyExcludedWindowIds)}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">website hold</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.websitePrivacyHoldBundleIds)}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">hold reasons</span>
+        <span class="kv-val kv-val--mono privacy-debug-list">
+          {formatDebugList(privacyDebug.privacyDebug.websitePrivacyHolds.map((hold) => `${hold.bundleId}: ${hold.reason}`))}
+        </span>
+      </li>
+    </ul>
+
+    <div class="privacy-debug-grid">
+      <div>
+        <div class="idle-section-label">evaluated decision</div>
+        <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestDecision, null, 2)}</p>
+      </div>
+      <div>
+        <div class="idle-section-label">applied decision</div>
+        <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestAppliedDecision, null, 2)}</p>
+      </div>
+    </div>
+
+    <div class="idle-section-label">latest metadata snapshot</div>
+    {#if privacyDebug.privacyDebug.latestSnapshot}
+      <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestSnapshot, null, 2)}</p>
+    {:else}
+      <p class="empty">no metadata snapshot captured yet</p>
+    {/if}
+  {:else}
+    <p class="empty">privacy filter status has not loaded yet</p>
+  {/if}
+</div>
 {/if}
 
 <!-- ── System probe ──────────────────────────────────────────────────────── -->
@@ -1223,6 +1423,12 @@
             <span class="kv-key">sys-audio</span>
             <span class={permissionBadgeClass(permissions.systemAudio)}>
               {formatPermission(permissions.systemAudio)}
+            </span>
+          </li>
+          <li>
+            <span class="kv-key">access</span>
+            <span class={permissionBadgeClass(permissions.accessibility)}>
+              {formatPermission(permissions.accessibility)}
             </span>
           </li>
         </ul>
@@ -2399,6 +2605,38 @@
     font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
     font-size: 10px;
     color: var(--app-text);
+  }
+
+  .privacy-debug-list {
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+  }
+
+  .privacy-debug-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .privacy-debug-json {
+    margin: 4px 0 0;
+    padding: 8px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 10px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 760px) {
+    .privacy-debug-grid {
+      grid-template-columns: 1fr;
+    }
   }
 
   /* ── Idle debug sub-sections ────────────────────────── */

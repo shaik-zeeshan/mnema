@@ -447,6 +447,7 @@ impl CaptureRetentionStore {
         let deleted_frame_ids = frame_ids.clone();
         let deleted_audio_segment_ids = audio_ids.clone();
         summary.deleted_frames = delete_by_ids(&mut tx, "frames", &frame_ids).await?;
+        cleanup_unreferenced_frame_metadata_snapshots(&mut tx).await?;
         summary.deleted_frame_ids = deleted_frame_ids;
         summary.deleted_frame_batches =
             delete_by_ids(&mut tx, "frame_batches", &frame_batch_ids).await?;
@@ -1130,6 +1131,27 @@ async fn delete_by_ids(
     }
     separated.push_unseparated(")");
     Ok(query.build().execute(&mut **tx).await?.rows_affected() as i64)
+}
+
+async fn cleanup_unreferenced_frame_metadata_snapshots(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<i64> {
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'frame_metadata_snapshots'",
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+    if exists.is_none() {
+        return Ok(0);
+    }
+
+    Ok(sqlx::query(
+        "DELETE FROM frame_metadata_snapshots \
+         WHERE NOT EXISTS (SELECT 1 FROM frames WHERE frames.metadata_snapshot_id = frame_metadata_snapshots.id)",
+    )
+    .execute(&mut **tx)
+    .await?
+    .rows_affected() as i64)
 }
 
 async fn delete_speaker_rows_for_audio_segments(

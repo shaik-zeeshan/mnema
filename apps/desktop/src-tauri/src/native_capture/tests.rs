@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+use super::activity::should_poll_screen_activity;
 use super::activity::{
     current_activity_snapshot, current_activity_snapshot_for_debug, idle_debug_activity_sources,
     idle_debug_family_fields, lock_runtime_for_idle_debug,
@@ -14,6 +16,8 @@ use super::microphone::{
     should_reconnect_waiting_microphone_session,
 };
 use super::output::set_current_microphone_output_file;
+#[cfg(target_os = "macos")]
+use super::runtime::PrivacyCaptureSuspension;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, current_segment_sources_for_runtime,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
@@ -32,13 +36,13 @@ use super::segments::{
     pause_system_audio_for_inactivity, plan_live_rotation_segment,
     process_inactivity_audio_transitions_for_snapshot, reanchor_active_segment_timing,
     recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
-    resume_runtime_from_inactivity_with_start_segment, resume_screen_from_inactivity,
+    resume_runtime_from_inactivity, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
     segment_loop_sleep_duration, StartedSegmentState,
 };
 use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
-    FrameArtifactForwardingResult, FrameArtifactMessage,
+    FrameArtifactEnvelope, FrameArtifactForwardingResult, FrameArtifactMessage,
 };
 use super::settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
@@ -48,8 +52,9 @@ use super::{
     audio_transcription_unavailable_notification, ocr_unavailable_notification,
     recording_requires_speech_detector, should_warn_audio_transcription_unavailable_at_start,
     should_warn_audio_transcription_unavailable_at_startup, should_warn_ocr_unavailable_at_start,
-    should_warn_ocr_unavailable_at_startup, AppNotification, AppNotificationAction,
-    AppNotificationsRuntime,
+    should_warn_ocr_unavailable_at_startup,
+    should_warn_private_browser_accessibility_limited_at_start, AppNotification,
+    AppNotificationAction, AppNotificationsRuntime,
 };
 #[cfg(target_os = "macos")]
 use capture_runtime::{
@@ -59,13 +64,14 @@ use capture_runtime::{RuntimeController, RuntimeState};
 use capture_types::{
     default_appearance, default_audio_speech_detection_settings,
     default_audio_transcription_settings, default_inactivity_activity_mode,
-    default_microphone_vad_adapter, default_ocr_settings, default_preview_cache_ttl_seconds,
-    default_retention_policy, default_speaker_analysis_settings, default_video_bitrate,
-    AppearanceSetting, AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
-    CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
-    InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
-    MicrophonePreference, MicrophonePreferenceMode, OcrProvider, RecordingSettings,
-    ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
+    default_metadata_settings, default_microphone_vad_adapter, default_ocr_settings,
+    default_preview_cache_ttl_seconds, default_privacy_settings, default_retention_policy,
+    default_speaker_analysis_settings, default_video_bitrate, AppearanceSetting,
+    AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
+    CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, CaptureSources,
+    CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
+    MicrophoneDisconnectPolicy, MicrophonePreference, MicrophonePreferenceMode, OcrProvider,
+    RecordingSettings, ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
     StartNativeCaptureRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
     VideoBitratePreset, VideoBitrateSettings,
 };
@@ -80,6 +86,74 @@ use tokio::sync::mpsc;
 
 struct TestDir {
     path: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn insert_privacy_app_candidate_fills_icon_materialization_fields_from_duplicate() {
+    let mut candidates = std::collections::BTreeMap::new();
+    let bundle_path = PathBuf::from("/Applications/Example.app");
+
+    super::insert_privacy_app_candidate(
+        &mut candidates,
+        super::PrivacyAppCandidate {
+            bundle_id: "com.example.App".to_string(),
+            display_name: "Example".to_string(),
+            running: true,
+            icon_path: None,
+            bundle_path: None,
+        },
+    );
+    super::insert_privacy_app_candidate(
+        &mut candidates,
+        super::PrivacyAppCandidate {
+            bundle_id: "com.example.App".to_string(),
+            display_name: "Example".to_string(),
+            running: false,
+            icon_path: Some("/tmp/example-icon.png".to_string()),
+            bundle_path: Some(bundle_path.clone()),
+        },
+    );
+
+    let candidate = candidates
+        .get("com.example.App")
+        .expect("candidate should be merged by bundle id");
+    assert!(candidate.running);
+    assert_eq!(
+        candidate.icon_path.as_deref(),
+        Some("/tmp/example-icon.png")
+    );
+    assert_eq!(
+        candidate.bundle_path.as_deref(),
+        Some(bundle_path.as_path())
+    );
+}
+
+#[test]
+fn merge_running_privacy_app_candidates_inserts_unscanned_running_app() {
+    let mut candidates = std::collections::BTreeMap::new();
+    let bundle_path = PathBuf::from("/Volumes/Tools/Sensitive.app");
+
+    super::merge_running_privacy_app_candidates(
+        &mut candidates,
+        vec![super::PrivacyAppCandidate {
+            bundle_id: "com.example.Sensitive".to_string(),
+            display_name: "Sensitive".to_string(),
+            running: true,
+            icon_path: None,
+            bundle_path: Some(bundle_path.clone()),
+        }],
+    );
+
+    let candidate = candidates
+        .get("com.example.Sensitive")
+        .expect("running app missing from install scan should be inserted");
+    assert!(candidate.running);
+    assert_eq!(candidate.display_name, "Sensitive");
+    assert_eq!(
+        candidate.bundle_path.as_deref(),
+        Some(bundle_path.as_path())
+    );
 }
 
 impl TestDir {
@@ -160,6 +234,8 @@ fn recording_settings_fixture() -> RecordingSettings {
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
+        metadata: default_metadata_settings(),
+        privacy: default_privacy_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -191,6 +267,8 @@ fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest
         transcription: settings.transcription,
         speaker_analysis: settings.speaker_analysis,
         audio_speech_detection: settings.audio_speech_detection,
+        metadata: settings.metadata,
+        privacy: settings.privacy,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -340,6 +418,47 @@ fn ocr_start_warning_requires_screen_capture() {
     settings.capture_screen = false;
     assert!(!should_warn_ocr_unavailable_at_start(&settings));
     assert!(!should_warn_ocr_unavailable_at_startup(&settings));
+}
+
+#[test]
+fn private_browser_accessibility_warning_requires_requested_screen_capture() {
+    let mut settings = recording_settings_fixture();
+    settings.privacy.private_browser_exclusion_enabled = true;
+    let microphone_only_sources = CaptureSources {
+        screen: false,
+        microphone: true,
+        system_audio: false,
+    };
+
+    assert!(!should_warn_private_browser_accessibility_limited_at_start(
+        &settings,
+        &microphone_only_sources,
+        CapturePermissionState::Denied,
+    ));
+
+    let screen_sources = CaptureSources {
+        screen: true,
+        microphone: false,
+        system_audio: false,
+    };
+    assert!(should_warn_private_browser_accessibility_limited_at_start(
+        &settings,
+        &screen_sources,
+        CapturePermissionState::Denied,
+    ));
+
+    assert!(!should_warn_private_browser_accessibility_limited_at_start(
+        &settings,
+        &screen_sources,
+        CapturePermissionState::Granted,
+    ));
+
+    settings.privacy.private_browser_exclusion_enabled = false;
+    assert!(!should_warn_private_browser_accessibility_limited_at_start(
+        &settings,
+        &screen_sources,
+        CapturePermissionState::Denied,
+    ));
 }
 
 #[test]
@@ -1305,6 +1424,8 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
+        metadata: default_metadata_settings(),
+        privacy: default_privacy_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1347,6 +1468,8 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
+        metadata: default_metadata_settings(),
+        privacy: default_privacy_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1385,6 +1508,8 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
+        metadata: default_metadata_settings(),
+        privacy: default_privacy_settings(),
         pause_capture_on_inactivity: true,
         idle_timeout_seconds: 10,
         microphone_activity_sensitivity: 50,
@@ -1439,6 +1564,7 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
         active_screen_session: None,
         #[cfg(target_os = "macos")]
         active_microphone_session: None,
+        privacy_capture_suspension: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
@@ -1517,6 +1643,7 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         active_screen_session: None,
         #[cfg(target_os = "macos")]
         active_microphone_session: None,
+        privacy_capture_suspension: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
@@ -1642,6 +1769,51 @@ fn session_from_runtime_reports_not_running_when_screen_capture_is_broken_after_
             microphone: true,
             system_audio: false,
         })
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn session_from_runtime_reports_running_during_privacy_suspension_with_live_microphone() {
+    let privacy_error = CaptureErrorResponse {
+        code: "privacy_filter_apply_failed".to_string(),
+        message: "privacy filter application failed".to_string(),
+    };
+
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some("/tmp/privacy-suspended-microphone.m4a".to_string()),
+            microphone_files: vec!["/tmp/privacy-suspended-microphone.m4a".to_string()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        recording_file: None,
+        microphone_recording_file: Some("/tmp/privacy-suspended-microphone.m4a".to_string()),
+        system_audio_recording_file: None,
+        active_screen_session: None,
+        active_microphone_session: None,
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::new(&privacy_error)),
+        ..Default::default()
+    };
+
+    let session = super::runtime::session_from_runtime(&runtime);
+
+    assert!(
+        session.is_running,
+        "privacy suspension intentionally stops screen/system-audio while microphone continues"
     );
 }
 
@@ -1945,6 +2117,23 @@ fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources(
     assert!(snapshot.system_audio_activity.enabled);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn screen_activity_polling_skips_live_screen_streams() {
+    assert!(
+        should_poll_screen_activity(true, false),
+        "running capture without a live screen stream still needs display polling"
+    );
+    assert!(
+        should_poll_screen_activity(false, true),
+        "stopped capture can only refresh screen activity through display polling"
+    );
+    assert!(
+        !should_poll_screen_activity(true, true),
+        "live ScreenCaptureKit streams already provide activity samples, including soft-paused outputs"
+    );
+}
+
 #[test]
 fn current_activity_snapshot_for_debug_does_not_consume_microphone_vad_speech_pulse() {
     let mut runtime = NativeCaptureRuntime {
@@ -2138,6 +2327,7 @@ fn should_reconnect_waiting_microphone_session_when_device_returns() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        privacy_capture_suspension: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
@@ -2206,6 +2396,7 @@ fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        privacy_capture_suspension: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
@@ -2310,6 +2501,7 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        privacy_capture_suspension: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
@@ -2694,6 +2886,43 @@ fn plan_live_rotation_segment_keeps_emitted_numbering_contiguous_when_schedule_j
 
 #[cfg(target_os = "macos")]
 #[test]
+fn plan_live_rotation_segment_skips_explicit_all_paused_sources() {
+    let runtime = NativeCaptureRuntime {
+        current_segment_index: 4,
+        ..Default::default()
+    };
+    let sources = CaptureSources {
+        screen: false,
+        microphone: false,
+        system_audio: false,
+    };
+    let screen_planner = SegmentPlanner::with_date_prefix(
+        "/tmp/native-capture-tests",
+        "native-session-screen-live",
+        "2026/04/28",
+    );
+    let clock = CaptureClock::start_now();
+    let schedule = SegmentSchedule::new(std::time::Duration::from_millis(1));
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    assert!(
+        plan_live_rotation_segment(
+            &runtime,
+            &sources,
+            &screen_planner,
+            None,
+            None,
+            &schedule,
+            &clock
+        )
+        .is_none(),
+        "privacy suspension with all sources paused should preserve the explicit paused sentinel"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn rotation_seeds_missing_system_audio_planner_before_planning_output_path() {
     let mut runtime = NativeCaptureRuntime {
         current_segment_index: 4,
@@ -2851,6 +3080,25 @@ fn microphone_auto_disconnect_transition_failed_event_has_expected_payload() {
 }
 
 #[test]
+fn firefox_browser_url_support_is_reported_unknown() {
+    run_async_test(async {
+        let response = super::check_browser_url_support(super::CheckBrowserUrlSupportRequest {
+            bundle_id: "org.mozilla.firefox".to_string(),
+        })
+        .await
+        .expect("browser URL support check should succeed");
+
+        assert!(!response.supported);
+        assert_eq!(
+            response.warning.as_deref(),
+            Some(
+                "URL metadata support is unknown for this browser. When website privacy rules are enabled, this browser may be redacted because its URL cannot be checked."
+            )
+        );
+    });
+}
+
+#[test]
 fn mark_runtime_session_stopped_clears_frame_artifact_worker() {
     let (tx, _rx) = mpsc::channel::<FrameArtifactMessage>(1);
     let mut runtime = NativeCaptureRuntime {
@@ -2883,6 +3131,7 @@ fn try_forward_frame_artifact_enqueues_when_capacity_available() {
                 },
             ),
         },
+        None,
     );
 
     assert_eq!(result, FrameArtifactForwardingResult::Enqueued);
@@ -2892,6 +3141,43 @@ fn try_forward_frame_artifact_enqueues_when_capacity_available() {
         .expect("frame should be queued")
         .unwrap_artifact();
     assert_eq!(queued.file_path, "/tmp/frame-1.png");
+}
+
+#[test]
+fn try_forward_frame_artifact_enqueues_metadata_snapshot_with_artifact() {
+    let (tx, mut rx) = mpsc::channel::<FrameArtifactMessage>(1);
+    let snapshot = capture_metadata::FrameMetadataSnapshot {
+        app_bundle_id: Some("com.example.App".to_string()),
+        app_name: Some("Example".to_string()),
+        window_title: Some("Original Window".to_string()),
+        window_id: None,
+        browser_url: None,
+        display_id: None,
+        metadata_redaction_reason: None,
+        metadata_redaction_source_id: None,
+    };
+
+    let result = try_forward_frame_artifact(
+        &tx,
+        capture_screen::ScreenFrameArtifact {
+            file_path: "/tmp/frame-1.png".to_string(),
+            captured_at_unix_ms: 1,
+            width: None,
+            height: None,
+            captured_frame_equivalence:
+                capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
+        },
+        Some(snapshot.clone()),
+    );
+
+    assert_eq!(result, FrameArtifactForwardingResult::Enqueued);
+
+    let queued = rx
+        .try_recv()
+        .expect("frame should be queued")
+        .unwrap_artifact_envelope();
+    assert_eq!(queued.artifact.file_path, "/tmp/frame-1.png");
+    assert_eq!(queued.metadata_snapshot, Some(snapshot));
 }
 
 #[test]
@@ -2908,6 +3194,7 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_frame_equivalence:
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
+        None,
     );
     let second = try_forward_frame_artifact(
         &tx,
@@ -2919,6 +3206,7 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_frame_equivalence:
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
+        None,
     );
 
     assert_eq!(first, FrameArtifactForwardingResult::Enqueued);
@@ -2950,6 +3238,7 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
             captured_frame_equivalence:
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
+        None,
     );
 
     assert_eq!(first, FrameArtifactForwardingResult::Enqueued);
@@ -2965,6 +3254,7 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
                 captured_frame_equivalence:
                     capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
+            None,
         )
     });
 
@@ -3011,6 +3301,7 @@ fn try_forward_frame_artifact_reports_closed_receiver() {
             captured_frame_equivalence:
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
+        None,
     );
 
     assert_eq!(result, FrameArtifactForwardingResult::ReceiverClosed);
@@ -3022,8 +3313,8 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
 
     // Enqueue two frame artifacts before the flush.
     for i in 1..=2 {
-        tx.try_send(FrameArtifactMessage::Artifact(
-            capture_screen::ScreenFrameArtifact {
+        tx.try_send(FrameArtifactMessage::Artifact(FrameArtifactEnvelope {
+            artifact: capture_screen::ScreenFrameArtifact {
                 file_path: format!("/tmp/frame-{i}.png"),
                 captured_at_unix_ms: i,
                 width: None,
@@ -3031,7 +3322,8 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
                 captured_frame_equivalence:
                     capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
-        ))
+            metadata_snapshot: None,
+        }))
         .expect("channel should have capacity");
     }
 
@@ -3044,13 +3336,13 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
         tauri::async_runtime::block_on(async {
             while let Some(message) = rx.recv().await {
                 match message {
-                    FrameArtifactMessage::Artifact(artifact) => {
+                    FrameArtifactMessage::Artifact(envelope) => {
                         // Simulate some processing latency.
                         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         seen_for_consumer
                             .lock()
                             .expect("seen state should lock")
-                            .push(artifact.file_path);
+                            .push(envelope.artifact.file_path);
                     }
                     FrameArtifactMessage::Flush(response_tx) => {
                         let _ = response_tx.send(());
@@ -3095,15 +3387,8 @@ fn flush_frame_artifacts_is_noop_when_channel_closed() {
 fn inactivity_resume_soft_pause_is_noop_without_family_pause_state() {
     let mut runtime = paused_runtime_fixture();
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!(
-                "legacy soft-resume should not restart segments when no per-family pause is active"
-            )
-        },
-    )
-    .expect("soft-resume should tolerate legacy paused state without restart");
+    resume_runtime_from_inactivity(&mut runtime)
+        .expect("soft-resume should tolerate legacy paused state without restart");
 
     assert!(runtime.is_running);
     assert_eq!(runtime.runtime_state, RuntimeState::Running);
@@ -3117,11 +3402,7 @@ fn inactivity_resume_soft_pause_is_noop_without_family_pause_state() {
 #[test]
 fn inactivity_resume_soft_pause_clears_paused_state_without_restarting_outputs() {
     let mut runtime = paused_runtime_fixture();
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| panic!("soft-resume should not restart outputs"),
-    )
-    .expect("legacy soft-resume should succeed");
+    resume_runtime_from_inactivity(&mut runtime).expect("legacy soft-resume should succeed");
 
     assert!(runtime.is_running);
     assert_eq!(runtime.runtime_state, RuntimeState::Running);
@@ -3683,13 +3964,8 @@ fn inactivity_resume_no_longer_requires_planner_for_legacy_soft_resume() {
     let mut runtime = paused_runtime_fixture();
     runtime.segment_planner = None;
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("legacy soft-resume should not need planner restart machinery")
-        },
-    )
-    .expect("legacy soft-resume should succeed without planner");
+    resume_runtime_from_inactivity(&mut runtime)
+        .expect("legacy soft-resume should succeed without planner");
 
     assert!(runtime.is_running);
     assert_eq!(runtime.runtime_state, RuntimeState::Running);
@@ -3717,16 +3993,7 @@ fn inactivity_resume_sets_current_segment_sources_from_requested() {
     ));
     assert!(runtime.current_segment_sources.is_none());
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/2026/04/19/native-session-resume-segment-0002.mov".to_string();
-
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
-        },
-    )
-    .expect("resume should succeed");
+    resume_runtime_from_inactivity(&mut runtime).expect("resume should succeed");
 
     assert_eq!(
         runtime.current_segment_sources,
@@ -3782,13 +4049,8 @@ fn inactivity_resume_with_paused_audio_refreshes_sources_without_planning_system
         ..Default::default()
     };
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("paused-audio refresh should not restart the segment")
-        },
-    )
-    .expect("paused-audio refresh should be a tolerant no-op");
+    resume_runtime_from_inactivity(&mut runtime)
+        .expect("paused-audio refresh should be a tolerant no-op");
 
     assert!(runtime.system_audio_planner.is_none());
     assert!(runtime.inactivity.is_paused);
@@ -3848,13 +4110,8 @@ fn inactivity_resume_does_not_restart_or_plan_dedicated_outputs_for_legacy_soft_
         ..Default::default()
     };
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("legacy soft-resume should not plan new output files")
-        },
-    )
-    .expect("legacy soft-resume should succeed without dedicated planning");
+    resume_runtime_from_inactivity(&mut runtime)
+        .expect("legacy soft-resume should succeed without dedicated planning");
 
     assert_eq!(
         runtime.current_segment_sources,
@@ -6116,16 +6373,7 @@ fn inactivity_resume_sets_current_segment_sources_via_active_sources_helper() {
     let mut runtime = paused_runtime_fixture();
     assert!(runtime.current_segment_sources.is_none());
 
-    let expected_screen_file =
-        "/tmp/native-capture-tests/native-session-resume-segment-0002/screen.mov".to_string();
-
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
-        },
-    )
-    .expect("resume should succeed");
+    resume_runtime_from_inactivity(&mut runtime).expect("resume should succeed");
 
     // For legacy resume both family flags are false, so the helper returns
     // the full requested set — same as the old behavior.
@@ -6147,11 +6395,8 @@ fn inactivity_resume_soft_resume_preserves_segment_index_when_schedule_has_advan
 
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| panic!("legacy soft-resume should not create a new segment"),
-    )
-    .expect("soft-resume should preserve current segment numbering");
+    resume_runtime_from_inactivity(&mut runtime)
+        .expect("soft-resume should preserve current segment numbering");
 
     assert_eq!(runtime.current_segment_index, 4);
 }
@@ -6170,13 +6415,7 @@ fn inactivity_resume_soft_resume_preserves_segment_boundary_timing() {
 
     std::thread::sleep(std::time::Duration::from_millis(70));
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("legacy soft-resume should not restart segment outputs")
-        },
-    )
-    .expect("resume should succeed");
+    resume_runtime_from_inactivity(&mut runtime).expect("resume should succeed");
 
     let sources = runtime
         .requested_sources
@@ -6972,6 +7211,112 @@ fn current_segment_sources_for_runtime_fallback_returns_all_when_nothing_paused(
     assert!(sources.screen);
     assert!(sources.microphone);
     assert!(sources.system_audio);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn current_segment_sources_for_runtime_masks_stale_screen_during_privacy_suspension() {
+    let privacy_error = CaptureErrorResponse {
+        code: "privacy_filter_apply_failed".to_string(),
+        message: "privacy filter application failed".to_string(),
+    };
+
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        microphone_recording_file: Some("/tmp/privacy-suspended-microphone.m4a".to_string()),
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::new(&privacy_error)),
+        ..Default::default()
+    };
+
+    let sources = current_segment_sources_for_runtime(&runtime)
+        .expect("live microphone continuation should remain active");
+
+    assert!(
+        !sources.screen,
+        "stale explicit sources must not re-enable suspended screen capture"
+    );
+    assert!(sources.microphone);
+    assert!(
+        !sources.system_audio,
+        "stale explicit sources must not re-enable suspended system audio"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn pause_microphone_for_inactivity_preserves_privacy_suspended_source_mask() {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let privacy_error = CaptureErrorResponse {
+        code: "privacy_filter_apply_failed".to_string(),
+        message: "privacy filter application failed".to_string(),
+    };
+    let microphone_file = "/tmp/privacy-suspended-microphone.m4a".to_string();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        current_segment_index: 1,
+        screen_frame_rate: 30,
+        screen_resolution: ScreenResolution::default(),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        recording_file: None,
+        microphone_recording_file: Some(microphone_file),
+        system_audio_recording_file: None,
+        active_screen_session: None,
+        active_microphone_session: None,
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::new(&privacy_error)),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    pause_microphone_for_inactivity(&mut runtime).expect("microphone pause should succeed");
+
+    if let Some(sources) = runtime.current_segment_sources.as_ref() {
+        assert!(
+            !sources.screen,
+            "screen must stay suspended while privacy recovery is active"
+        );
+        assert!(!sources.microphone, "microphone should be paused");
+        assert!(!sources.system_audio, "system audio must stay suspended");
+    }
+    assert!(
+        current_segment_sources_for_runtime(&runtime).is_none(),
+        "runtime source lookup must not reintroduce suspended screen capture"
+    );
+    assert!(runtime.privacy_capture_suspension.is_some());
 }
 
 // --- Slice 3b8: system_audio requires live screen session ---
@@ -8247,13 +8592,7 @@ fn resume_runtime_from_inactivity_soft_resume_keeps_existing_segment_without_res
         "2026/04/16",
     ));
 
-    resume_runtime_from_inactivity_with_start_segment(
-        &mut runtime,
-        |_, _, _, _, _, _, _, _, _, _| {
-            panic!("legacy soft-resume should not restart the existing segment")
-        },
-    )
-    .expect("legacy soft-resume should succeed");
+    resume_runtime_from_inactivity(&mut runtime).expect("legacy soft-resume should succeed");
 
     assert!(!runtime.inactivity.is_paused);
     assert_eq!(runtime.current_segment_index, 1);

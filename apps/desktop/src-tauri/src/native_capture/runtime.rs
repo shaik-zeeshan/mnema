@@ -17,6 +17,54 @@ use super::inactivity::InactivityState;
 use super::segments::FrameArtifactMessage;
 use capture_vad::MicrophoneVadRuntime;
 
+#[cfg(target_os = "macos")]
+pub(crate) const MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS: u8 = 3;
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PrivacyCaptureSuspensionStatus {
+    Retryable,
+    RestartRequired,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrivacyCaptureSuspension {
+    pub reason: String,
+    pub last_error_code: String,
+    pub last_error_message: String,
+    pub recovery_attempts: u8,
+    pub status: PrivacyCaptureSuspensionStatus,
+}
+
+#[cfg(target_os = "macos")]
+impl PrivacyCaptureSuspension {
+    pub fn new(error: &CaptureErrorResponse) -> Self {
+        Self {
+            reason: "privacy_filter_apply_failed".to_string(),
+            last_error_code: error.code.clone(),
+            last_error_message: error.message.clone(),
+            recovery_attempts: 0,
+            status: PrivacyCaptureSuspensionStatus::Retryable,
+        }
+    }
+
+    pub fn can_retry(&self) -> bool {
+        self.status == PrivacyCaptureSuspensionStatus::Retryable
+            && self.recovery_attempts < MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS
+    }
+
+    pub fn record_recovery_failure(&mut self, error: &CaptureErrorResponse) {
+        self.recovery_attempts = self.recovery_attempts.saturating_add(1);
+        self.last_error_code = error.code.clone();
+        self.last_error_message = error.message.clone();
+        if self.recovery_attempts >= MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS {
+            self.status = PrivacyCaptureSuspensionStatus::RestartRequired;
+            self.reason = "privacy_recovery_restart_required".to_string();
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct NativeCaptureRuntime {
     pub is_running: bool,
@@ -59,6 +107,8 @@ pub struct NativeCaptureRuntime {
     pub active_screen_session: Option<capture_screen::ActiveCaptureSession>,
     #[cfg(target_os = "macos")]
     pub active_microphone_session: Option<microphone_capture::AvFoundationMicrophoneCaptureSession>,
+    #[cfg(target_os = "macos")]
+    pub privacy_capture_suspension: Option<PrivacyCaptureSuspension>,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +175,10 @@ fn session_reports_running(runtime: &NativeCaptureRuntime) -> bool {
 
     #[cfg(target_os = "macos")]
     {
+        if runtime.privacy_capture_suspension.is_some() {
+            return true;
+        }
+
         if runtime
             .requested_sources
             .as_ref()
@@ -213,6 +267,7 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     {
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
+        runtime.privacy_capture_suspension = None;
     }
 
     runtime.runtime_controller = RuntimeController::default();
@@ -240,6 +295,7 @@ pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
     {
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
+        runtime.privacy_capture_suspension = None;
     }
 
     if let Ok(state) = runtime
@@ -300,6 +356,7 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
         runtime.system_audio_recording_file = None;
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
+        runtime.privacy_capture_suspension = None;
     }
     runtime.runtime_controller = RuntimeController::default();
     runtime.runtime_state = RuntimeState::Idle;
@@ -339,6 +396,28 @@ pub(super) fn active_sources_for_inactivity_paused_state(
         screen: requested_sources.screen && !screen_paused,
         microphone: requested_sources.microphone && !microphone_paused,
         system_audio: requested_sources.system_audio && !system_audio_paused && !screen_paused,
+    };
+
+    has_any_capture_sources(&active_sources).then_some(active_sources)
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn privacy_suspended_sources_for_runtime_state(
+    runtime: &NativeCaptureRuntime,
+    microphone_paused: bool,
+) -> Option<CaptureSources> {
+    let microphone_active = runtime
+        .requested_sources
+        .as_ref()
+        .is_some_and(|sources| sources.microphone)
+        && !microphone_paused
+        && (runtime.active_microphone_session.is_some()
+            || runtime.microphone_recording_file.is_some());
+
+    let active_sources = CaptureSources {
+        screen: false,
+        microphone: microphone_active,
+        system_audio: false,
     };
 
     has_any_capture_sources(&active_sources).then_some(active_sources)
@@ -540,6 +619,14 @@ pub(super) fn ensure_system_audio_planner_for_runtime(
 pub(super) fn current_segment_sources_for_runtime(
     runtime: &NativeCaptureRuntime,
 ) -> Option<CaptureSources> {
+    #[cfg(target_os = "macos")]
+    if runtime.privacy_capture_suspension.is_some() {
+        return privacy_suspended_sources_for_runtime_state(
+            runtime,
+            runtime.inactivity.is_microphone_paused(),
+        );
+    }
+
     if let Some(sources) = runtime.current_segment_sources.clone() {
         return has_any_capture_sources(&sources).then_some(sources);
     }
@@ -595,6 +682,13 @@ pub(super) fn should_rotate_segment(
 #[cfg(test)]
 mod tests {
     use super::source_session_suffix;
+    #[cfg(target_os = "macos")]
+    use super::{
+        PrivacyCaptureSuspension, PrivacyCaptureSuspensionStatus,
+        MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS,
+    };
+    #[cfg(target_os = "macos")]
+    use capture_types::CaptureErrorResponse;
 
     #[test]
     fn source_session_suffix_removes_native_session_prefix() {
@@ -610,5 +704,27 @@ mod tests {
             source_session_suffix("session-ceb00964-9039-4e1c-a770-c2c1a1251e83"),
             "ceb00964_9039_4e1c_a770_c2c1a1251e83"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn privacy_capture_suspension_requires_restart_after_bounded_failures() {
+        let error = CaptureErrorResponse {
+            code: "privacy_filter_apply_failed".to_string(),
+            message: "filter failed".to_string(),
+        };
+        let mut suspension = PrivacyCaptureSuspension::new(&error);
+
+        for _ in 0..MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS {
+            assert!(suspension.can_retry());
+            suspension.record_recovery_failure(&error);
+        }
+
+        assert!(!suspension.can_retry());
+        assert_eq!(
+            suspension.status,
+            PrivacyCaptureSuspensionStatus::RestartRequired
+        );
+        assert_eq!(suspension.reason, "privacy_recovery_restart_required");
     }
 }
