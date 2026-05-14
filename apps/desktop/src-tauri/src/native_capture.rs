@@ -38,13 +38,14 @@ use settings::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_os = "macos")]
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
-use tauri::{Emitter, Manager};
+use tauri::{path::BaseDirectory, Emitter, Manager};
 
 pub use capture_types::IdleDebugInfo;
 pub(crate) use debug_log::install_panic_hook;
@@ -111,6 +112,8 @@ const PRIVATE_BROWSER_ACCESSIBILITY_LIMITED_NOTIFICATION_ID: &str =
     "private-browser-accessibility-limited";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
 const PRIVACY_SETTINGS_TAB_ID: &str = "privacy";
+#[cfg(target_os = "macos")]
+const APP_ICON_CACHE_DIR: &str = "app-icons";
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[allow(dead_code)]
@@ -137,6 +140,21 @@ pub struct PrivacyAppCandidate {
     pub bundle_id: String,
     pub display_name: String,
     pub running: bool,
+    pub icon_path: Option<String>,
+    #[serde(skip)]
+    pub bundle_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveAppIconsRequest {
+    pub bundle_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppIconResolution {
+    pub bundle_id: String,
     pub icon_path: Option<String>,
 }
 
@@ -203,6 +221,10 @@ pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, S
             display_name: "Mnema".to_string(),
             running: true,
             icon_path: None,
+            #[cfg(target_os = "macos")]
+            bundle_path: main_bundle_path(),
+            #[cfg(not(target_os = "macos"))]
+            bundle_path: None,
         },
     );
 
@@ -221,6 +243,64 @@ pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, S
             .then_with(|| left.bundle_id.cmp(&right.bundle_id))
     });
     Ok(candidates)
+}
+
+#[tauri::command]
+pub async fn resolve_app_icons(
+    app_handle: tauri::AppHandle,
+    request: ResolveAppIconsRequest,
+) -> Result<Vec<AppIconResolution>, String> {
+    let requested_bundle_ids: BTreeSet<String> = request
+        .bundle_ids
+        .into_iter()
+        .map(|bundle_id| bundle_id.trim().to_string())
+        .filter(|bundle_id| !bundle_id.is_empty())
+        .collect();
+
+    if requested_bundle_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut candidates = BTreeMap::new();
+        for bundle_id in &requested_bundle_ids {
+            insert_privacy_app_candidate(
+                &mut candidates,
+                PrivacyAppCandidate {
+                    bundle_id: bundle_id.clone(),
+                    display_name: bundle_id.clone(),
+                    running: false,
+                    icon_path: None,
+                    bundle_path: app_icon_bundle_path(bundle_id),
+                },
+            );
+        }
+        materialize_app_candidate_icons(&app_handle, &mut candidates);
+
+        let icons = requested_bundle_ids
+            .into_iter()
+            .map(|bundle_id| AppIconResolution {
+                icon_path: candidates
+                    .get(&bundle_id)
+                    .and_then(|candidate| candidate.icon_path.clone()),
+                bundle_id,
+            })
+            .collect();
+        Ok(icons)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app_handle;
+        Ok(requested_bundle_ids
+            .into_iter()
+            .map(|bundle_id| AppIconResolution {
+                bundle_id,
+                icon_path: None,
+            })
+            .collect())
+    }
 }
 
 fn insert_privacy_app_candidate(
@@ -242,6 +322,7 @@ fn insert_privacy_app_candidate(
         },
         running: candidate.running,
         icon_path: candidate.icon_path,
+        bundle_path: candidate.bundle_path,
     };
 
     if let Some(existing) = candidates.get_mut(&candidate.bundle_id) {
@@ -251,6 +332,9 @@ fn insert_privacy_app_candidate(
         }
         if existing.icon_path.is_none() {
             existing.icon_path = candidate.icon_path;
+        }
+        if existing.bundle_path.is_none() {
+            existing.bundle_path = candidate.bundle_path;
         }
         return;
     }
@@ -360,6 +444,7 @@ fn privacy_app_candidate_from_bundle_path(path: &Path) -> Option<PrivacyAppCandi
         display_name,
         running: false,
         icon_path: None,
+        bundle_path: Some(PathBuf::from(path)),
     })
 }
 
@@ -368,6 +453,220 @@ fn path_has_app_extension(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+}
+
+#[cfg(target_os = "macos")]
+fn main_bundle_path() -> Option<PathBuf> {
+    let bundle_path = cidre::ns::Bundle::main().bundle_path().to_string();
+    (!bundle_path.trim().is_empty()).then(|| PathBuf::from(bundle_path))
+}
+
+#[cfg(target_os = "macos")]
+fn app_icon_bundle_path(bundle_id: &str) -> Option<PathBuf> {
+    macos_application_bundle_path_for_bundle_id(bundle_id).or_else(|| {
+        (bundle_id == "com.shaikzeeshan.mnema")
+            .then(main_bundle_path)
+            .flatten()
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn macos_application_bundle_path_for_bundle_id(bundle_id: &str) -> Option<PathBuf> {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSString;
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::ffi::CStr;
+    use std::os::raw::c_char;
+
+    if bundle_id.trim().is_empty() {
+        return None;
+    }
+
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    cidre::ns::try_catch(|| unsafe {
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace == nil {
+            return None;
+        }
+
+        let ns_bundle_id = NSString::alloc(nil).init_str(bundle_id);
+        let app_url: id = msg_send![workspace, URLForApplicationWithBundleIdentifier: ns_bundle_id];
+        if app_url == nil {
+            return None;
+        }
+
+        let path: id = msg_send![app_url, path];
+        if path == nil {
+            return None;
+        }
+
+        let raw_path: *const c_char = msg_send![path, UTF8String];
+        if raw_path.is_null() {
+            return None;
+        }
+
+        let path = CStr::from_ptr(raw_path).to_string_lossy().into_owned();
+        (!path.trim().is_empty()).then(|| PathBuf::from(path))
+    })
+    .ok()
+    .flatten()
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_app_icon_cache_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let cache_dir = app_handle
+        .path()
+        .resolve(APP_ICON_CACHE_DIR, BaseDirectory::AppCache)
+        .map_err(|error| format!("failed to resolve app icon cache directory: {error}"))?;
+    std::fs::create_dir_all(&cache_dir).map_err(|error| {
+        format!(
+            "failed to create app icon cache directory {}: {error}",
+            cache_dir.display()
+        )
+    })?;
+    app_handle
+        .asset_protocol_scope()
+        .allow_directory(&cache_dir, true)
+        .map_err(|error| {
+            format!(
+                "failed to allow app icon cache directory {} in asset scope: {error}",
+                cache_dir.display()
+            )
+        })?;
+    Ok(cache_dir)
+}
+
+#[cfg(target_os = "macos")]
+fn materialize_app_candidate_icons(
+    app_handle: &tauri::AppHandle,
+    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
+) {
+    let Ok(cache_dir) = ensure_app_icon_cache_dir(app_handle) else {
+        return;
+    };
+
+    for candidate in candidates.values_mut() {
+        let Some(bundle_path) = candidate.bundle_path.as_deref() else {
+            continue;
+        };
+        let Some(icon_path) = app_icon_cache_path(&cache_dir, &candidate.bundle_id) else {
+            continue;
+        };
+        let cached_icon_available = icon_path
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+        if cached_icon_available || write_macos_app_icon_png(bundle_path, &icon_path).is_ok() {
+            candidate.icon_path = Some(icon_path.to_string_lossy().to_string());
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn app_icon_cache_path(cache_dir: &Path, bundle_id: &str) -> Option<PathBuf> {
+    let file_stem = sanitize_app_icon_file_stem(bundle_id);
+    if file_stem.is_empty() {
+        return None;
+    }
+    Some(cache_dir.join(format!("{file_stem}.png")))
+}
+
+#[cfg(target_os = "macos")]
+fn sanitize_app_icon_file_stem(bundle_id: &str) -> String {
+    bundle_id
+        .trim()
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                Some(ch)
+            } else if ch.is_whitespace() || matches!(ch, '/' | ':' | '\\') {
+                Some('_')
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn write_macos_app_icon_png(bundle_path: &Path, output_path: &Path) -> Result<(), String> {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::{NSData, NSDictionary, NSSize, NSString, NSUInteger};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    const NS_PNG_FILE_TYPE: NSUInteger = 4;
+    const ICON_POINT_SIZE: f64 = 64.0;
+
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    let bundle_path = bundle_path.to_string_lossy();
+
+    let png_bytes = match cidre::ns::try_catch(|| unsafe {
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace == nil {
+            return Err("failed to access NSWorkspace while loading app icon".to_string());
+        }
+
+        let ns_bundle_path = NSString::alloc(nil).init_str(&bundle_path);
+        let icon: id = msg_send![workspace, iconForFile: ns_bundle_path];
+        if icon == nil {
+            return Err(format!("failed to load app icon for {}", bundle_path));
+        }
+
+        let _: () = msg_send![icon, setSize: NSSize::new(ICON_POINT_SIZE, ICON_POINT_SIZE)];
+        let tiff_data: id = msg_send![icon, TIFFRepresentation];
+        if tiff_data == nil {
+            return Err(format!(
+                "failed to render app icon TIFF for {}",
+                bundle_path
+            ));
+        }
+
+        let bitmap_rep: id = msg_send![class!(NSBitmapImageRep), imageRepWithData: tiff_data];
+        if bitmap_rep == nil {
+            return Err(format!(
+                "failed to decode app icon bitmap for {}",
+                bundle_path
+            ));
+        }
+
+        let properties = NSDictionary::dictionary(nil);
+        let png_data: id = msg_send![
+            bitmap_rep,
+            representationUsingType: NS_PNG_FILE_TYPE
+            properties: properties
+        ];
+        if png_data == nil {
+            return Err(format!("failed to encode app icon PNG for {}", bundle_path));
+        }
+
+        let len = png_data.length();
+        let bytes = png_data.bytes();
+        if bytes.is_null() || len == 0 {
+            return Err(format!("app icon PNG was empty for {}", bundle_path));
+        }
+        Ok(std::slice::from_raw_parts(bytes.cast::<u8>(), len as usize).to_vec())
+    }) {
+        Ok(result) => result?,
+        Err(exception) => {
+            let name = format!("{}", &**exception.name());
+            let reason = exception
+                .reason()
+                .map(|reason| format!("{}", reason.as_ref()))
+                .unwrap_or_else(|| "unknown reason".to_string());
+            return Err(format!(
+                "ObjC exception while loading app icon for {}: {} - {}",
+                bundle_path, name, reason
+            ));
+        }
+    };
+
+    std::fs::write(output_path, png_bytes).map_err(|error| {
+        format!(
+            "failed to write app icon {}: {error}",
+            output_path.display()
+        )
+    })
 }
 
 #[tauri::command]

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from "$app/stores";
   import { tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { ask } from "@tauri-apps/plugin-dialog";
   import Switch from "$lib/components/Switch.svelte";
@@ -79,6 +79,11 @@
 
   type PrivacyAppCandidate = ExcludedAppEntry & {
     running: boolean;
+    iconPath: string | null;
+  };
+
+  type AppIconResolution = {
+    bundleId: string;
     iconPath: string | null;
   };
 
@@ -166,6 +171,8 @@
   let draftBrowserTitleRules = $state<BrowserTitleRule[]>([]);
   let draftPrivateBrowserExclusionEnabled = $state(false);
   let privacyAppCandidates = $state<PrivacyAppCandidate[]>([]);
+  let appIconPathsByBundleId = $state<Record<string, string>>({});
+  const requestedAppIconBundleIds = new Set<string>();
   let manageablePrivacySources = $state<PrivacyRedactionSourceDto[]>([]);
   let privacyHistoryError = $state<string | null>(null);
   let privacyCommandInFlight = $state(false);
@@ -741,6 +748,40 @@
     }
   }
 
+  function uniqueBundleIds(bundleIds: Array<string | null | undefined>): string[] {
+    return [...new Set(bundleIds.map((bundleId) => bundleId?.trim() ?? "").filter(Boolean))];
+  }
+
+  async function resolveAppIcons(bundleIds: Array<string | null | undefined>) {
+    const unresolvedBundleIds = uniqueBundleIds(bundleIds).filter((bundleId) => (
+      !appIconPathsByBundleId[bundleId] && !requestedAppIconBundleIds.has(bundleId)
+    ));
+    if (unresolvedBundleIds.length === 0) return;
+    for (const bundleId of unresolvedBundleIds) requestedAppIconBundleIds.add(bundleId);
+
+    try {
+      const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
+        request: { bundleIds: unresolvedBundleIds },
+      });
+      const nextIconPaths = { ...appIconPathsByBundleId };
+      let changed = false;
+      for (const icon of icons) {
+        if (!icon.iconPath || nextIconPaths[icon.bundleId] === icon.iconPath) continue;
+        nextIconPaths[icon.bundleId] = icon.iconPath;
+        changed = true;
+      }
+      if (!changed) return;
+      appIconPathsByBundleId = nextIconPaths;
+      privacyAppCandidates = privacyAppCandidates.map((candidate) => ({
+        ...candidate,
+        iconPath: nextIconPaths[candidate.bundleId] ?? candidate.iconPath,
+      }));
+    } catch {
+      for (const bundleId of unresolvedBundleIds) requestedAppIconBundleIds.delete(bundleId);
+      // App icons are decorative; app discovery must keep working if icon extraction fails.
+    }
+  }
+
   async function refreshAccessibilityPermission() {
     try {
       const response = await invoke<GetPermissionsResponse>("get_capture_permissions");
@@ -777,6 +818,28 @@
     return normalizedSearchValue(`${candidate.displayName} ${candidate.bundleId}`);
   }
 
+  function appIconPathForBundleId(bundleId: string): string | null {
+    return appIconPathsByBundleId[bundleId] ?? null;
+  }
+
+  function appIconSrcForBundleId(bundleId: string): string | null {
+    const iconPath = appIconPathForBundleId(bundleId);
+    return iconPath ? convertFileSrc(iconPath) : null;
+  }
+
+  function appIconFallback(displayName: string | null | undefined, bundleId: string | null | undefined): string {
+    return ((displayName ?? "").trim() || (bundleId ?? "").trim() || "?").slice(0, 1).toUpperCase();
+  }
+
+  function privacyAppIconSrc(candidate: PrivacyAppCandidate): string | null {
+    const iconPath = appIconPathForBundleId(candidate.bundleId) ?? candidate.iconPath;
+    return iconPath ? convertFileSrc(iconPath) : null;
+  }
+
+  function privacyAppIconFallback(candidate: PrivacyAppCandidate): string {
+    return appIconFallback(candidate.displayName, candidate.bundleId);
+  }
+
   const filteredPrivacyAppCandidates = $derived((() => {
     const query = normalizedSearchValue(privacyAppComboboxQuery);
     const candidates = availablePrivacyAppCandidates;
@@ -785,6 +848,11 @@
       .filter((candidate) => privacyAppCandidateSearchText(candidate).includes(query))
       .slice(0, 12);
   })());
+
+  $effect(() => {
+    if (!privacyAppComboboxOpen) return;
+    void resolveAppIcons(filteredPrivacyAppCandidates.map((candidate) => candidate.bundleId));
+  });
 
   function addPrivacyAppCandidate(candidate: PrivacyAppCandidate | null) {
     if (!candidate || draftExcludedApps.some((item) => item.bundleId === candidate.bundleId)) return;
@@ -795,6 +863,14 @@
     privacyAppComboboxQuery = "";
     privacyAppComboboxOpen = false;
   }
+
+  $effect(() => {
+    const activeAppRuleBundleIds = draftExcludedApps.map((app) => app.bundleId);
+    const deletedAppRuleBundleIds = manageablePrivacySources
+      .filter((source) => source.sourceKind === "excluded_app")
+      .map((source) => source.detail);
+    void resolveAppIcons([...activeAppRuleBundleIds, ...deletedAppRuleBundleIds]);
+  });
 
   function handlePrivacyAppComboboxInput() {
     privacyAppComboboxOpen = true;
@@ -2468,6 +2544,7 @@
               <div class="app-combobox__panel" id="privacy-app-combobox-list" role="listbox">
                 {#if filteredPrivacyAppCandidates.length > 0}
                   {#each filteredPrivacyAppCandidates as candidate (candidate.bundleId)}
+                    {@const iconSrc = privacyAppIconSrc(candidate)}
                     <button
                       class="app-combobox__option"
                       type="button"
@@ -2476,9 +2553,18 @@
                       onmousedown={(event) => event.preventDefault()}
                       onclick={() => addPrivacyAppCandidate(candidate)}
                     >
-                      <span class="app-combobox__option-main">
-                        <span class="app-combobox__name">{candidate.displayName}</span>
-                        <span class="app-combobox__bundle">{candidate.bundleId}</span>
+                      <span class="app-combobox__option-content">
+                        <span class="app-combobox__icon" aria-hidden="true">
+                          {#if iconSrc}
+                            <img src={iconSrc} alt="" loading="lazy" />
+                          {:else}
+                            <span>{privacyAppIconFallback(candidate)}</span>
+                          {/if}
+                        </span>
+                        <span class="app-combobox__option-main">
+                          <span class="app-combobox__name">{candidate.displayName}</span>
+                          <span class="app-combobox__bundle">{candidate.bundleId}</span>
+                        </span>
                       </span>
                       {#if candidate.running}
                         <span class="badge badge--ok badge--sm">Running</span>
@@ -2495,7 +2581,15 @@
           <div class="settings-list">
             {#if draftExcludedApps.length > 0}
               {#each draftExcludedApps as app (app.id)}
-                <div class="settings-list-item">
+                {@const iconSrc = appIconSrcForBundleId(app.bundleId)}
+                <div class="settings-list-item settings-list-item--app-rule">
+                  <span class="app-rule-icon" aria-hidden="true">
+                    {#if iconSrc}
+                      <img src={iconSrc} alt="" loading="lazy" />
+                    {:else}
+                      <span>{appIconFallback(app.displayName, app.bundleId)}</span>
+                    {/if}
+                  </span>
                   <Switch
                     checked={app.enabled}
                     onCheckedChange={(enabled) => void setPrivacySourceEnabled(app.id, enabled)}
@@ -2665,13 +2759,25 @@
             {/if}
             {#if manageablePrivacySources.length > 0}
               {#each manageablePrivacySources as source (source.sourceId)}
+                {@const sourceIconSrc = source.sourceKind === "excluded_app" && source.detail ? appIconSrcForBundleId(source.detail) : null}
                 <div class="settings-list-item settings-list-item--rule">
-                  <div class="switch-text">
-                    <span class="switch-label">{source.label ?? "Deleted privacy rule"}</span>
-                    <span class="switch-description">
-                      {source.detail ?? (source.sourceKind === "website_rule" ? "Deleted website rule" : source.sourceKind === "title_rule" ? "Deleted title rule" : "Deleted app rule")}
-                      {#if source.restoreEnabled === false} · Restores disabled{/if}
-                    </span>
+                  <div class:app-rule-summary={source.sourceKind === "excluded_app"}>
+                    {#if source.sourceKind === "excluded_app"}
+                      <span class="app-rule-icon" aria-hidden="true">
+                        {#if sourceIconSrc}
+                          <img src={sourceIconSrc} alt="" loading="lazy" />
+                        {:else}
+                          <span>{appIconFallback(source.label, source.detail)}</span>
+                        {/if}
+                      </span>
+                    {/if}
+                    <div class="switch-text">
+                      <span class="switch-label">{source.label ?? "Deleted privacy rule"}</span>
+                      <span class="switch-description">
+                        {source.detail ?? (source.sourceKind === "website_rule" ? "Deleted website rule" : source.sourceKind === "title_rule" ? "Deleted title rule" : "Deleted app rule")}
+                        {#if source.restoreEnabled === false} · Restores disabled{/if}
+                      </span>
+                    </div>
                   </div>
                   <div class="rule-row-actions">
                     <button class="btn btn--ghost btn--sm" type="button" disabled={privacyCommandInFlight || !source.restorable} onclick={() => restorePrivacySource(source.sourceId)}>Restore</button>
@@ -4877,6 +4983,35 @@
     background: var(--app-surface-hover);
   }
 
+  .app-combobox__option-content {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .app-combobox__icon {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .app-combobox__icon img {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+  }
+
   .app-combobox__option-main {
     display: flex;
     min-width: 0;
@@ -4939,8 +5074,77 @@
     background: var(--app-surface-subtle);
   }
 
+  .settings-list-item--app-rule {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+  }
+
   .settings-list-item--rule {
     grid-template-columns: minmax(0, 1fr) minmax(150px, auto);
+  }
+
+  .app-rule-summary {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+  }
+
+  .settings-list-item--rule .switch-text {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .settings-list-item--rule .switch-label {
+    overflow: hidden;
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .settings-list-item--rule .switch-description {
+    overflow: hidden;
+    color: var(--app-text-muted);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-rule-icon {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .app-rule-icon img {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+  }
+
+  :global(.settings-list-item--app-rule .switch-wrapper),
+  :global(.settings-list-item--app-rule .switch-text) {
+    min-width: 0;
+  }
+
+  :global(.settings-list-item--app-rule .switch-label),
+  :global(.settings-list-item--app-rule .switch-description) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .rule-row-actions {

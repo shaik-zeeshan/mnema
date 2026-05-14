@@ -178,6 +178,7 @@ pub fn run() {
             native_capture::clear_app_notification,
             native_capture::clear_app_notifications,
             native_capture::list_privacy_app_candidates,
+            native_capture::resolve_app_icons,
             native_capture::check_browser_url_support,
             native_capture::get_capture_privacy_debug,
             native_capture::get_recording_settings,

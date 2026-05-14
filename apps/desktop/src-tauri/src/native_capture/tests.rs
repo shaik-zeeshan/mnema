@@ -88,6 +88,47 @@ struct TestDir {
     path: PathBuf,
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn insert_privacy_app_candidate_fills_icon_materialization_fields_from_duplicate() {
+    let mut candidates = std::collections::BTreeMap::new();
+    let bundle_path = PathBuf::from("/Applications/Example.app");
+
+    super::insert_privacy_app_candidate(
+        &mut candidates,
+        super::PrivacyAppCandidate {
+            bundle_id: "com.example.App".to_string(),
+            display_name: "Example".to_string(),
+            running: true,
+            icon_path: None,
+            bundle_path: None,
+        },
+    );
+    super::insert_privacy_app_candidate(
+        &mut candidates,
+        super::PrivacyAppCandidate {
+            bundle_id: "com.example.App".to_string(),
+            display_name: "Example".to_string(),
+            running: false,
+            icon_path: Some("/tmp/example-icon.png".to_string()),
+            bundle_path: Some(bundle_path.clone()),
+        },
+    );
+
+    let candidate = candidates
+        .get("com.example.App")
+        .expect("candidate should be merged by bundle id");
+    assert!(candidate.running);
+    assert_eq!(
+        candidate.icon_path.as_deref(),
+        Some("/tmp/example-icon.png")
+    );
+    assert_eq!(
+        candidate.bundle_path.as_deref(),
+        Some(bundle_path.as_path())
+    );
+}
+
 impl TestDir {
     fn new(label: &str) -> Self {
         let unique = SystemTime::now()
