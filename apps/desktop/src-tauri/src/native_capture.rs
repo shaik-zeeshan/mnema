@@ -230,9 +230,9 @@ pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, S
 
     #[cfg(target_os = "macos")]
     {
-        let running_bundle_ids = running_privacy_app_bundle_ids();
+        let running_candidates = running_privacy_app_candidates();
         add_installed_privacy_app_candidates(&mut candidates);
-        mark_running_privacy_app_candidates(&mut candidates, &running_bundle_ids);
+        merge_running_privacy_app_candidates(&mut candidates, running_candidates);
     }
 
     let mut candidates: Vec<_> = candidates.into_values().collect();
@@ -343,26 +343,44 @@ fn insert_privacy_app_candidate(
 }
 
 #[cfg(target_os = "macos")]
-fn running_privacy_app_bundle_ids() -> BTreeSet<String> {
-    let mut bundle_ids = BTreeSet::new();
+fn running_privacy_app_candidates() -> Vec<PrivacyAppCandidate> {
+    let mut candidates = Vec::new();
     let running_apps = cidre::ns::Workspace::shared().running_apps();
     for app in running_apps.iter() {
         let Some(bundle_id) = app.bundle_id().map(|value| value.to_string()) else {
             continue;
         };
-        if app
+        let Some(bundle_path) = app
             .bundle_url()
             .and_then(|url| url.path())
-            .map(|path| path_has_app_extension(Path::new(&path.to_string())))
-            .unwrap_or(false)
-        {
-            bundle_ids.insert(bundle_id);
-        }
+            .map(|path| PathBuf::from(path.to_string()))
+            .filter(|path| path_has_app_extension(path))
+        else {
+            continue;
+        };
+        let display_name = app
+            .localized_name()
+            .map(|name| name.to_string())
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                bundle_path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.trim().is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| bundle_id.clone());
+        candidates.push(PrivacyAppCandidate {
+            bundle_id,
+            display_name,
+            running: true,
+            icon_path: None,
+            bundle_path: Some(bundle_path),
+        });
     }
-    bundle_ids
+    candidates
 }
 
-#[cfg(target_os = "macos")]
 fn mark_running_privacy_app_candidates(
     candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
     running_bundle_ids: &BTreeSet<String>,
@@ -372,6 +390,21 @@ fn mark_running_privacy_app_candidates(
             candidate.running = true;
         }
     }
+}
+
+fn merge_running_privacy_app_candidates(
+    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
+    running_candidates: impl IntoIterator<Item = PrivacyAppCandidate>,
+) {
+    let running_bundle_ids = running_candidates
+        .into_iter()
+        .map(|candidate| {
+            let bundle_id = candidate.bundle_id.clone();
+            insert_privacy_app_candidate(candidates, candidate);
+            bundle_id
+        })
+        .collect::<BTreeSet<_>>();
+    mark_running_privacy_app_candidates(candidates, &running_bundle_ids);
 }
 
 #[cfg(target_os = "macos")]

@@ -20,6 +20,7 @@ use std::time::Instant;
 use tauri::Manager;
 
 const PRIVATE_BROWSER_STICKY_REASON_PREFIX: &str = "sticky_";
+const PRIVATE_BROWSER_STICKY_EMPTY_VISIBLE_WINDOW_POLL_LIMIT: u8 = 3;
 
 #[derive(Debug, Clone, Default)]
 pub struct CaptureMetadataRuntime {
@@ -30,6 +31,7 @@ pub struct CaptureMetadataRuntime {
     website_privacy_verified_window_ids: BTreeSet<u32>,
     browser_url_probe_cache: BrowserUrlProbeCache,
     private_browser_sticky_window_reasons: BTreeMap<u32, String>,
+    private_browser_sticky_empty_visible_window_poll_counts: BTreeMap<u32, u8>,
     latest_private_browser_detection:
         crate::native_capture::private_browser::PrivateBrowserDetection,
 }
@@ -166,6 +168,9 @@ pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
     runtime.website_privacy_verified_window_ids.clear();
     runtime.browser_url_probe_cache = BrowserUrlProbeCache::default();
     runtime.private_browser_sticky_window_reasons.clear();
+    runtime
+        .private_browser_sticky_empty_visible_window_poll_counts
+        .clear();
     runtime.latest_private_browser_detection =
         crate::native_capture::private_browser::PrivateBrowserDetection::default();
 }
@@ -190,6 +195,43 @@ fn update_private_browser_sticky_cache(
         runtime
             .private_browser_sticky_window_reasons
             .retain(|window_id, _| visible_window_ids.contains(window_id));
+        runtime
+            .private_browser_sticky_empty_visible_window_poll_counts
+            .retain(|window_id, _| {
+                runtime
+                    .private_browser_sticky_window_reasons
+                    .contains_key(window_id)
+            });
+        for window_id in &visible_window_ids {
+            runtime
+                .private_browser_sticky_empty_visible_window_poll_counts
+                .remove(window_id);
+        }
+    } else {
+        let sticky_window_ids = runtime
+            .private_browser_sticky_window_reasons
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut expired_window_ids = Vec::new();
+        for window_id in sticky_window_ids {
+            let count = runtime
+                .private_browser_sticky_empty_visible_window_poll_counts
+                .entry(window_id)
+                .or_default();
+            *count = count.saturating_add(1);
+            if *count >= PRIVATE_BROWSER_STICKY_EMPTY_VISIBLE_WINDOW_POLL_LIMIT {
+                expired_window_ids.push(window_id);
+            }
+        }
+        for window_id in expired_window_ids {
+            runtime
+                .private_browser_sticky_window_reasons
+                .remove(&window_id);
+            runtime
+                .private_browser_sticky_empty_visible_window_poll_counts
+                .remove(&window_id);
+        }
     }
 
     let detection = crate::native_capture::private_browser::detect_private_browser_windows(
@@ -199,6 +241,9 @@ fn update_private_browser_sticky_cache(
 
     if !privacy.private_browser_exclusion_enabled {
         runtime.private_browser_sticky_window_reasons.clear();
+        runtime
+            .private_browser_sticky_empty_visible_window_poll_counts
+            .clear();
         return;
     }
 
@@ -211,6 +256,9 @@ fn update_private_browser_sticky_cache(
         runtime
             .private_browser_sticky_window_reasons
             .insert(window_id, reason);
+        runtime
+            .private_browser_sticky_empty_visible_window_poll_counts
+            .remove(&window_id);
     }
 }
 
@@ -942,6 +990,30 @@ mod tests {
         assert!(runtime
             .private_browser_sticky_window_reasons
             .contains_key(&9));
+    }
+
+    #[test]
+    fn sticky_private_browser_cache_expires_after_repeated_empty_visible_window_polls() {
+        let mut runtime = CaptureMetadataRuntime::default();
+        runtime
+            .private_browser_sticky_window_reasons
+            .insert(9, "title_private_browser".to_string());
+        let privacy = PrivacySettings::default();
+        let context = MetadataContext {
+            visible_windows: Vec::new(),
+            ..MetadataContext::default()
+        };
+
+        for _ in 0..PRIVATE_BROWSER_STICKY_EMPTY_VISIBLE_WINDOW_POLL_LIMIT {
+            update_private_browser_sticky_cache(&mut runtime, &privacy, &context);
+        }
+
+        assert!(!runtime
+            .private_browser_sticky_window_reasons
+            .contains_key(&9));
+        assert!(runtime
+            .private_browser_sticky_empty_visible_window_poll_counts
+            .is_empty());
     }
 
     #[test]

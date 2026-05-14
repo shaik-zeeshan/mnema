@@ -129,6 +129,33 @@ fn insert_privacy_app_candidate_fills_icon_materialization_fields_from_duplicate
     );
 }
 
+#[test]
+fn merge_running_privacy_app_candidates_inserts_unscanned_running_app() {
+    let mut candidates = std::collections::BTreeMap::new();
+    let bundle_path = PathBuf::from("/Volumes/Tools/Sensitive.app");
+
+    super::merge_running_privacy_app_candidates(
+        &mut candidates,
+        vec![super::PrivacyAppCandidate {
+            bundle_id: "com.example.Sensitive".to_string(),
+            display_name: "Sensitive".to_string(),
+            running: true,
+            icon_path: None,
+            bundle_path: Some(bundle_path.clone()),
+        }],
+    );
+
+    let candidate = candidates
+        .get("com.example.Sensitive")
+        .expect("running app missing from install scan should be inserted");
+    assert!(candidate.running);
+    assert_eq!(candidate.display_name, "Sensitive");
+    assert_eq!(
+        candidate.bundle_path.as_deref(),
+        Some(bundle_path.as_path())
+    );
+}
+
 impl TestDir {
     fn new(label: &str) -> Self {
         let unique = SystemTime::now()
