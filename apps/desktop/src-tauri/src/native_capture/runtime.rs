@@ -175,6 +175,10 @@ fn session_reports_running(runtime: &NativeCaptureRuntime) -> bool {
 
     #[cfg(target_os = "macos")]
     {
+        if runtime.privacy_capture_suspension.is_some() {
+            return true;
+        }
+
         if runtime
             .requested_sources
             .as_ref()

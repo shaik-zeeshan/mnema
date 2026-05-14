@@ -1747,6 +1747,51 @@ fn session_from_runtime_reports_not_running_when_screen_capture_is_broken_after_
 
 #[cfg(target_os = "macos")]
 #[test]
+fn session_from_runtime_reports_running_during_privacy_suspension_with_live_microphone() {
+    let privacy_error = CaptureErrorResponse {
+        code: "privacy_filter_apply_failed".to_string(),
+        message: "privacy filter application failed".to_string(),
+    };
+
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some("/tmp/privacy-suspended-microphone.m4a".to_string()),
+            microphone_files: vec!["/tmp/privacy-suspended-microphone.m4a".to_string()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        recording_file: None,
+        microphone_recording_file: Some("/tmp/privacy-suspended-microphone.m4a".to_string()),
+        system_audio_recording_file: None,
+        active_screen_session: None,
+        active_microphone_session: None,
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::new(&privacy_error)),
+        ..Default::default()
+    };
+
+    let session = super::runtime::session_from_runtime(&runtime);
+
+    assert!(
+        session.is_running,
+        "privacy suspension intentionally stops screen/system-audio while microphone continues"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn close_frame_batches_for_stopped_screen_session_id_closes_stale_open_batch() {
     run_async_test(async {
         let dir = TestDir::new("close-frame-batches-stop");
