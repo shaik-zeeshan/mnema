@@ -65,6 +65,7 @@ pub fn run() {
         .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
         .manage(native_capture::SystemWakeNotifierState::default())
         .manage(native_capture::MetadataNotifierState::default())
+        .manage(native_capture::PrivacyFilterRefreshState::default())
         .manage(native_capture::RecordingSettingsState::default())
         .manage(privacy_redaction_sources::PrivacyRedactionSourcesState::default())
         .manage(native_capture::CaptureMetadataState::default())

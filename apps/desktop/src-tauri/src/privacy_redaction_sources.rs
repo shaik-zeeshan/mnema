@@ -528,6 +528,7 @@ fn emit_privacy_mutation(
     app_handle: &tauri::AppHandle,
     settings: RecordingSettings,
     clear_website_holds: bool,
+    refresh_reason: crate::native_capture::privacy::PrivacyRefreshReason,
 ) {
     crate::native_capture::emit_recording_settings_changed(app_handle, &settings);
     let _ = app_handle.emit(PRIVACY_REDACTION_SOURCES_CHANGED_EVENT, ());
@@ -538,12 +539,14 @@ fn emit_privacy_mutation(
             crate::native_capture::metadata::clear_website_privacy_state(metadata_state.inner());
         }
     }
+    crate::native_capture::privacy::request_privacy_filter_refresh(app_handle, refresh_reason);
     crate::status_bar::refresh(app_handle);
 }
 
 fn with_privacy_mutation<F>(
     app_handle: tauri::AppHandle,
     clear_website_holds: bool,
+    refresh_reason: crate::native_capture::privacy::PrivacyRefreshReason,
     mutate: F,
 ) -> Result<RecordingSettings, CaptureErrorResponse>
 where
@@ -584,7 +587,12 @@ where
         settings
     };
 
-    emit_privacy_mutation(&app_handle, settings.clone(), clear_website_holds);
+    emit_privacy_mutation(
+        &app_handle,
+        settings.clone(),
+        clear_website_holds,
+        refresh_reason,
+    );
     Ok(settings)
 }
 
@@ -594,33 +602,39 @@ pub fn add_privacy_excluded_app(
     display_name: String,
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    with_privacy_mutation(app_handle, false, |settings, history| {
-        let bundle_id = crate::native_capture::settings::canonicalize_app_bundle_id(&bundle_id);
-        let display_name = display_name.trim().to_string();
-        if bundle_id.is_empty() || display_name.is_empty() {
-            return Err(err(
-                "invalid_privacy_rule",
-                "App bundle and display name are required",
-            ));
-        }
-        if settings.privacy.excluded_apps.iter().any(|app| {
-            crate::native_capture::settings::canonicalize_app_bundle_id(&app.bundle_id) == bundle_id
-        }) {
-            return Ok(());
-        }
-        let source_id = new_source_id("excluded-app");
-        let app = ExcludedAppEntry {
-            id: source_id.clone(),
-            enabled: true,
-            bundle_id,
-            display_name,
-        };
-        history
-            .sources
-            .insert(source_id, record_for_app(&app, &now_rfc3339()));
-        settings.privacy.excluded_apps.push(app);
-        Ok(())
-    })
+    with_privacy_mutation(
+        app_handle,
+        false,
+        crate::native_capture::privacy::PrivacyRefreshReason::StaticAppRuleMutation,
+        |settings, history| {
+            let bundle_id = crate::native_capture::settings::canonicalize_app_bundle_id(&bundle_id);
+            let display_name = display_name.trim().to_string();
+            if bundle_id.is_empty() || display_name.is_empty() {
+                return Err(err(
+                    "invalid_privacy_rule",
+                    "App bundle and display name are required",
+                ));
+            }
+            if settings.privacy.excluded_apps.iter().any(|app| {
+                crate::native_capture::settings::canonicalize_app_bundle_id(&app.bundle_id)
+                    == bundle_id
+            }) {
+                return Ok(());
+            }
+            let source_id = new_source_id("excluded-app");
+            let app = ExcludedAppEntry {
+                id: source_id.clone(),
+                enabled: true,
+                bundle_id,
+                display_name,
+            };
+            history
+                .sources
+                .insert(source_id, record_for_app(&app, &now_rfc3339()));
+            settings.privacy.excluded_apps.push(app);
+            Ok(())
+        },
+    )
 }
 
 #[tauri::command]
@@ -628,27 +642,37 @@ pub fn add_privacy_website_rule(
     pattern: String,
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    with_privacy_mutation(app_handle, true, |settings, history| {
-        let rule = parse_website_rule(new_source_id("website"), true, &pattern);
-        if rule.host.is_none() {
-            return Err(err(
-                "invalid_privacy_rule",
-                "Website rule must include a valid host",
-            ));
-        }
-        let fp = website_fingerprint(&rule);
-        if active_fingerprint_exists(history, PrivacyRedactionSourceKind::WebsiteRule, &fp, None) {
-            return Err(err(
-                "duplicate_privacy_rule",
-                "An equivalent website rule already exists",
-            ));
-        }
-        history
-            .sources
-            .insert(rule.id.clone(), record_for_website(&rule, &now_rfc3339()));
-        settings.privacy.excluded_website_rules.push(rule);
-        Ok(())
-    })
+    with_privacy_mutation(
+        app_handle,
+        true,
+        crate::native_capture::privacy::PrivacyRefreshReason::DynamicPrivacySettingsMutation,
+        |settings, history| {
+            let rule = parse_website_rule(new_source_id("website"), true, &pattern);
+            if rule.host.is_none() {
+                return Err(err(
+                    "invalid_privacy_rule",
+                    "Website rule must include a valid host",
+                ));
+            }
+            let fp = website_fingerprint(&rule);
+            if active_fingerprint_exists(
+                history,
+                PrivacyRedactionSourceKind::WebsiteRule,
+                &fp,
+                None,
+            ) {
+                return Err(err(
+                    "duplicate_privacy_rule",
+                    "An equivalent website rule already exists",
+                ));
+            }
+            history
+                .sources
+                .insert(rule.id.clone(), record_for_website(&rule, &now_rfc3339()));
+            settings.privacy.excluded_website_rules.push(rule);
+            Ok(())
+        },
+    )
 }
 
 #[tauri::command]
@@ -657,44 +681,49 @@ pub fn update_privacy_website_rule(
     pattern: String,
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    with_privacy_mutation(app_handle, true, |settings, history| {
-        let index = settings
-            .privacy
-            .excluded_website_rules
-            .iter()
-            .position(|rule| rule.id == source_id)
-            .ok_or_else(|| err("privacy_source_not_found", "Privacy source not found"))?;
-        let enabled = settings.privacy.excluded_website_rules[index].enabled;
-        let new_rule = parse_website_rule(new_source_id("website"), enabled, &pattern);
-        if new_rule.host.is_none() {
-            return Err(err(
-                "invalid_privacy_rule",
-                "Website rule must include a valid host",
-            ));
-        }
-        let fp = website_fingerprint(&new_rule);
-        if active_fingerprint_exists(
-            history,
-            PrivacyRedactionSourceKind::WebsiteRule,
-            &fp,
-            Some(&source_id),
-        ) {
-            return Err(err(
-                "duplicate_privacy_rule",
-                "An equivalent website rule already exists",
-            ));
-        }
-        if let Some(old) = history.sources.get_mut(&source_id) {
-            old.deleted_at = Some(now_rfc3339());
-            old.updated_at = now_rfc3339();
-        }
-        history.sources.insert(
-            new_rule.id.clone(),
-            record_for_website(&new_rule, &now_rfc3339()),
-        );
-        settings.privacy.excluded_website_rules[index] = new_rule;
-        Ok(())
-    })
+    with_privacy_mutation(
+        app_handle,
+        true,
+        crate::native_capture::privacy::PrivacyRefreshReason::DynamicPrivacySettingsMutation,
+        |settings, history| {
+            let index = settings
+                .privacy
+                .excluded_website_rules
+                .iter()
+                .position(|rule| rule.id == source_id)
+                .ok_or_else(|| err("privacy_source_not_found", "Privacy source not found"))?;
+            let enabled = settings.privacy.excluded_website_rules[index].enabled;
+            let new_rule = parse_website_rule(new_source_id("website"), enabled, &pattern);
+            if new_rule.host.is_none() {
+                return Err(err(
+                    "invalid_privacy_rule",
+                    "Website rule must include a valid host",
+                ));
+            }
+            let fp = website_fingerprint(&new_rule);
+            if active_fingerprint_exists(
+                history,
+                PrivacyRedactionSourceKind::WebsiteRule,
+                &fp,
+                Some(&source_id),
+            ) {
+                return Err(err(
+                    "duplicate_privacy_rule",
+                    "An equivalent website rule already exists",
+                ));
+            }
+            if let Some(old) = history.sources.get_mut(&source_id) {
+                old.deleted_at = Some(now_rfc3339());
+                old.updated_at = now_rfc3339();
+            }
+            history.sources.insert(
+                new_rule.id.clone(),
+                record_for_website(&new_rule, &now_rfc3339()),
+            );
+            settings.privacy.excluded_website_rules[index] = new_rule;
+            Ok(())
+        },
+    )
 }
 
 #[tauri::command]
@@ -703,31 +732,38 @@ pub fn add_privacy_title_rule(
     pattern: String,
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    with_privacy_mutation(app_handle, false, |settings, history| {
-        let rule = BrowserTitleRule {
-            id: new_source_id("title"),
-            enabled: true,
-            match_type,
-            pattern: pattern.trim().to_string(),
-        };
-        if rule.pattern.is_empty()
-            || (rule.match_type == BrowserTitleRuleMatchType::Regex && !title_rule_is_valid(&rule))
-        {
-            return Err(err("invalid_privacy_rule", "Title rule is invalid"));
-        }
-        let fp = title_fingerprint(rule.match_type, &rule.pattern);
-        if active_fingerprint_exists(history, PrivacyRedactionSourceKind::TitleRule, &fp, None) {
-            return Err(err(
-                "duplicate_privacy_rule",
-                "An equivalent title rule already exists",
-            ));
-        }
-        history
-            .sources
-            .insert(rule.id.clone(), record_for_title(&rule, &now_rfc3339()));
-        settings.privacy.browser_title_rules.push(rule);
-        Ok(())
-    })
+    with_privacy_mutation(
+        app_handle,
+        false,
+        crate::native_capture::privacy::PrivacyRefreshReason::DynamicPrivacySettingsMutation,
+        |settings, history| {
+            let rule = BrowserTitleRule {
+                id: new_source_id("title"),
+                enabled: true,
+                match_type,
+                pattern: pattern.trim().to_string(),
+            };
+            if rule.pattern.is_empty()
+                || (rule.match_type == BrowserTitleRuleMatchType::Regex
+                    && !title_rule_is_valid(&rule))
+            {
+                return Err(err("invalid_privacy_rule", "Title rule is invalid"));
+            }
+            let fp = title_fingerprint(rule.match_type, &rule.pattern);
+            if active_fingerprint_exists(history, PrivacyRedactionSourceKind::TitleRule, &fp, None)
+            {
+                return Err(err(
+                    "duplicate_privacy_rule",
+                    "An equivalent title rule already exists",
+                ));
+            }
+            history
+                .sources
+                .insert(rule.id.clone(), record_for_title(&rule, &now_rfc3339()));
+            settings.privacy.browser_title_rules.push(rule);
+            Ok(())
+        },
+    )
 }
 
 #[tauri::command]
@@ -737,47 +773,53 @@ pub fn update_privacy_title_rule(
     pattern: String,
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    with_privacy_mutation(app_handle, false, |settings, history| {
-        let index = settings
-            .privacy
-            .browser_title_rules
-            .iter()
-            .position(|rule| rule.id == source_id)
-            .ok_or_else(|| err("privacy_source_not_found", "Privacy source not found"))?;
-        let enabled = settings.privacy.browser_title_rules[index].enabled;
-        let rule = BrowserTitleRule {
-            id: new_source_id("title"),
-            enabled,
-            match_type,
-            pattern: pattern.trim().to_string(),
-        };
-        if rule.pattern.is_empty()
-            || (rule.match_type == BrowserTitleRuleMatchType::Regex && !title_rule_is_valid(&rule))
-        {
-            return Err(err("invalid_privacy_rule", "Title rule is invalid"));
-        }
-        let fp = title_fingerprint(rule.match_type, &rule.pattern);
-        if active_fingerprint_exists(
-            history,
-            PrivacyRedactionSourceKind::TitleRule,
-            &fp,
-            Some(&source_id),
-        ) {
-            return Err(err(
-                "duplicate_privacy_rule",
-                "An equivalent title rule already exists",
-            ));
-        }
-        if let Some(old) = history.sources.get_mut(&source_id) {
-            old.deleted_at = Some(now_rfc3339());
-            old.updated_at = now_rfc3339();
-        }
-        history
-            .sources
-            .insert(rule.id.clone(), record_for_title(&rule, &now_rfc3339()));
-        settings.privacy.browser_title_rules[index] = rule;
-        Ok(())
-    })
+    with_privacy_mutation(
+        app_handle,
+        false,
+        crate::native_capture::privacy::PrivacyRefreshReason::DynamicPrivacySettingsMutation,
+        |settings, history| {
+            let index = settings
+                .privacy
+                .browser_title_rules
+                .iter()
+                .position(|rule| rule.id == source_id)
+                .ok_or_else(|| err("privacy_source_not_found", "Privacy source not found"))?;
+            let enabled = settings.privacy.browser_title_rules[index].enabled;
+            let rule = BrowserTitleRule {
+                id: new_source_id("title"),
+                enabled,
+                match_type,
+                pattern: pattern.trim().to_string(),
+            };
+            if rule.pattern.is_empty()
+                || (rule.match_type == BrowserTitleRuleMatchType::Regex
+                    && !title_rule_is_valid(&rule))
+            {
+                return Err(err("invalid_privacy_rule", "Title rule is invalid"));
+            }
+            let fp = title_fingerprint(rule.match_type, &rule.pattern);
+            if active_fingerprint_exists(
+                history,
+                PrivacyRedactionSourceKind::TitleRule,
+                &fp,
+                Some(&source_id),
+            ) {
+                return Err(err(
+                    "duplicate_privacy_rule",
+                    "An equivalent title rule already exists",
+                ));
+            }
+            if let Some(old) = history.sources.get_mut(&source_id) {
+                old.deleted_at = Some(now_rfc3339());
+                old.updated_at = now_rfc3339();
+            }
+            history
+                .sources
+                .insert(rule.id.clone(), record_for_title(&rule, &now_rfc3339()));
+            settings.privacy.browser_title_rules[index] = rule;
+            Ok(())
+        },
+    )
 }
 
 #[tauri::command]
@@ -789,6 +831,11 @@ pub fn set_privacy_source_enabled(
     with_privacy_mutation(
         app_handle,
         source_id.starts_with("website-"),
+        if source_id.starts_with("excluded-app-") {
+            crate::native_capture::privacy::PrivacyRefreshReason::StaticAppRuleMutation
+        } else {
+            crate::native_capture::privacy::PrivacyRefreshReason::DynamicPrivacySettingsMutation
+        },
         |settings, history| {
             let mut found = false;
             for app in &mut settings.privacy.excluded_apps {
@@ -852,6 +899,11 @@ pub fn remove_privacy_source(
     with_privacy_mutation(
         app_handle,
         source_id.starts_with("website-"),
+        if source_id.starts_with("excluded-app-") {
+            crate::native_capture::privacy::PrivacyRefreshReason::StaticAppRuleMutation
+        } else {
+            crate::native_capture::privacy::PrivacyRefreshReason::DynamicPrivacySettingsMutation
+        },
         |settings, history| {
             let before = settings.privacy.excluded_apps.len()
                 + settings.privacy.excluded_website_rules.len()
@@ -893,6 +945,11 @@ pub fn restore_privacy_redaction_source(
     with_privacy_mutation(
         app_handle,
         source_id.starts_with("website-"),
+        if source_id.starts_with("excluded-app-") {
+            crate::native_capture::privacy::PrivacyRefreshReason::StaticAppRuleMutation
+        } else {
+            crate::native_capture::privacy::PrivacyRefreshReason::DynamicPrivacySettingsMutation
+        },
         |settings, history| {
             let record = history
                 .sources
@@ -998,10 +1055,15 @@ pub fn set_private_browser_exclusion_enabled(
     enabled: bool,
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    with_privacy_mutation(app_handle, false, |settings, _history| {
-        settings.privacy.private_browser_exclusion_enabled = enabled;
-        Ok(())
-    })
+    with_privacy_mutation(
+        app_handle,
+        false,
+        crate::native_capture::privacy::PrivacyRefreshReason::DynamicPrivacySettingsMutation,
+        |settings, _history| {
+            settings.privacy.private_browser_exclusion_enabled = enabled;
+            Ok(())
+        },
+    )
 }
 
 #[tauri::command]
