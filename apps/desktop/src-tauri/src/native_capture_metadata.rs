@@ -168,6 +168,12 @@ pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
         crate::native_capture::private_browser::PrivateBrowserDetection::default();
 }
 
+pub fn clear_website_privacy_state(state: &CaptureMetadataState) {
+    let mut runtime = state.lock().expect("capture metadata state poisoned");
+    runtime.website_privacy_hold_bundle_reasons.clear();
+    runtime.website_privacy_verified_window_ids.clear();
+}
+
 fn update_private_browser_sticky_cache(
     runtime: &mut CaptureMetadataRuntime,
     privacy: &PrivacySettings,

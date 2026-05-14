@@ -4734,6 +4734,7 @@ mod tests {
                 browser_url: Some("https://example.com/private".to_string()),
                 display_id: Some(1),
                 metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
             }),
         };
 

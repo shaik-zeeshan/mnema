@@ -493,20 +493,47 @@ pub fn apply_website_privacy_hold(
             let matched_website_rule = privacy
                 .excluded_website_rules
                 .iter()
-                .any(|rule| website_rule_matches(rule, active_url));
-            if matched_website_rule {
-                held_bundle_reasons.insert(
-                    active_bundle_id.to_string(),
-                    REDACTION_REASON_WEBSITE_RULE.to_string(),
-                );
+                .find(|rule| website_rule_matches(rule, active_url));
+            if let Some(rule) = matched_website_rule {
+                if let Some(window_id) = context.active_privacy_window_id {
+                    if !decision.excluded_window_ids.contains(&window_id) {
+                        decision.excluded_window_ids.push(window_id);
+                    }
+                    decision.excluded_window_reasons.insert(
+                        window_id,
+                        REDACTION_REASON_WEBSITE_RULE.to_string(),
+                    );
+                    decision
+                        .excluded_window_source_ids
+                        .insert(window_id, rule.id.clone());
+                    held_bundle_reasons.remove(active_bundle_id);
+                } else {
+                    held_bundle_reasons.insert(
+                        active_bundle_id.to_string(),
+                        REDACTION_REASON_WEBSITE_RULE.to_string(),
+                    );
+                    decision
+                        .excluded_bundle_source_ids
+                        .insert(active_bundle_id.to_string(), rule.id.clone());
+                }
             } else if !active_private_browser {
                 held_bundle_reasons.remove(active_bundle_id);
             }
         } else {
-            held_bundle_reasons.insert(
-                active_bundle_id.to_string(),
-                REDACTION_REASON_WEBSITE_RULE_URL_UNAVAILABLE.to_string(),
-            );
+            if let Some(window_id) = context.active_privacy_window_id {
+                if !decision.excluded_window_ids.contains(&window_id) {
+                    decision.excluded_window_ids.push(window_id);
+                }
+                decision.excluded_window_reasons.insert(
+                    window_id,
+                    REDACTION_REASON_WEBSITE_RULE_URL_UNAVAILABLE.to_string(),
+                );
+            } else {
+                held_bundle_reasons.insert(
+                    active_bundle_id.to_string(),
+                    REDACTION_REASON_WEBSITE_RULE_URL_UNAVAILABLE.to_string(),
+                );
+            }
         }
     }
 
@@ -525,15 +552,19 @@ pub fn apply_website_privacy_hold(
         }
     }
 
-    if !held_bundle_reasons.is_empty() {
+    if !held_bundle_reasons.is_empty() || !decision.excluded_window_ids.is_empty() {
         decision.excluded_bundle_ids.sort();
         decision.excluded_bundle_ids.dedup();
+        decision.excluded_window_ids.sort_unstable();
+        decision.excluded_window_ids.dedup();
         decision.privacy_filter_applied = true;
         decision.metadata_redaction_reason.get_or_insert_with(|| {
-            held_bundle_reasons
+            decision
+                .excluded_window_reasons
                 .values()
                 .next()
                 .cloned()
+                .or_else(|| held_bundle_reasons.values().next().cloned())
                 .unwrap_or_else(|| REDACTION_REASON_WEBSITE_RULE.to_string())
         });
     }
@@ -604,6 +635,9 @@ pub fn apply_unverified_visible_browser_window_privacy_guard(
             .iter()
             .any(|excluded| excluded == bundle_id)
         {
+            continue;
+        }
+        if decision.excluded_window_ids.contains(&window.window_id) {
             continue;
         }
         if verified_window_ids.contains(&window.window_id) {
@@ -837,11 +871,19 @@ pub fn evaluate_privacy(
     {
         for rule in &settings.excluded_website_rules {
             if website_rule_matches(rule, active_url) {
-                apply_redaction_source(
-                    &mut bundle_sources,
-                    active_bundle.clone(),
-                    RedactionSource::website_rule(rule.id.clone()),
-                );
+                if let Some(window_id) = context.active_privacy_window_id {
+                    apply_redaction_source(
+                        &mut window_sources,
+                        window_id,
+                        RedactionSource::website_rule(rule.id.clone()),
+                    );
+                } else {
+                    apply_redaction_source(
+                        &mut bundle_sources,
+                        active_bundle.clone(),
+                        RedactionSource::website_rule(rule.id.clone()),
+                    );
+                }
                 rule_ids.insert(rule.id.clone());
                 redaction_reason.get_or_insert_with(|| REDACTION_REASON_WEBSITE_RULE.to_string());
             }
@@ -1115,7 +1157,7 @@ mod tests {
         );
         assert_eq!(
             decision.excluded_bundle_ids,
-            vec!["com.google.Chrome", "com.secret"]
+            vec!["com.secret"]
         );
         assert_eq!(decision.excluded_window_ids, vec![7, 9]);
         assert_eq!(
@@ -2003,7 +2045,7 @@ mod tests {
                 .excluded_bundle_source_ids
                 .get("net.imput.helium")
                 .map(String::as_str),
-            Some("website-first")
+            None
         );
         assert_eq!(
             decision

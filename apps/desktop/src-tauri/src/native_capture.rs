@@ -407,7 +407,10 @@ pub(super) fn emit_audio_segments_changed(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(AUDIO_SEGMENTS_CHANGED_EVENT, ());
 }
 
-fn emit_recording_settings_changed(app_handle: &tauri::AppHandle, settings: &RecordingSettings) {
+pub(crate) fn emit_recording_settings_changed(
+    app_handle: &tauri::AppHandle,
+    settings: &RecordingSettings,
+) {
     let _ = app_handle.emit(RECORDING_SETTINGS_CHANGED_EVENT, settings);
 }
 
@@ -2100,7 +2103,14 @@ pub fn update_recording_settings(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let _ = state;
+    let current_privacy = current_recording_settings(state.inner()).privacy;
+    let requested_privacy = settings::validate_privacy_settings(request.privacy.clone())?;
+    if requested_privacy != current_privacy {
+        return Err(CaptureErrorResponse {
+            code: "invalid_privacy_rule".to_string(),
+            message: "Privacy rules must be changed with dedicated privacy commands".to_string(),
+        });
+    }
     apply_recording_settings_update_from_app_handle(&app_handle, request)
 }
 

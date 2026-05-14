@@ -2999,6 +2999,7 @@ fn try_forward_frame_artifact_enqueues_metadata_snapshot_with_artifact() {
         browser_url: None,
         display_id: None,
         metadata_redaction_reason: None,
+        metadata_redaction_source_id: None,
     };
 
     let result = try_forward_frame_artifact(

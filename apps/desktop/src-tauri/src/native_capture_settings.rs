@@ -251,7 +251,7 @@ fn validate_audio_speech_detection_settings(
     Ok(value)
 }
 
-fn validate_privacy_settings(
+pub(crate) fn validate_privacy_settings(
     value: capture_types::PrivacySettings,
 ) -> Result<capture_types::PrivacySettings, CaptureErrorResponse> {
     let capture_types::PrivacySettings {
@@ -641,7 +641,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
     })
 }
 
-fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
+pub(crate) fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
     if let Ok(config_dir) = app_handle.path().app_config_dir() {
         return config_dir.join(RECORDING_SETTINGS_FILE_NAME);
     }
