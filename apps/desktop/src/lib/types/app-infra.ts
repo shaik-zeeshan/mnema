@@ -32,6 +32,8 @@ export interface FrameDto {
 	capturedAt: string;
 	width: number | null;
 	height: number | null;
+	appBundleId: string | null;
+	appName: string | null;
 	ocrText: string | null;
 	processorVersion: string | null;
 	equivalenceHint: string | null;

@@ -682,6 +682,8 @@ pub struct FrameDto {
     pub captured_at: String,
     pub width: Option<i64>,
     pub height: Option<i64>,
+    pub app_bundle_id: Option<String>,
+    pub app_name: Option<String>,
     pub equivalence_hint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -921,6 +923,11 @@ impl From<::app_infra::BackgroundJob> for AppJobDto {
 
 impl From<::app_infra::Frame> for FrameDto {
     fn from(frame: ::app_infra::Frame) -> Self {
+        let (app_bundle_id, app_name) = frame
+            .metadata_snapshot
+            .map(|metadata| (metadata.app_bundle_id, metadata.app_name))
+            .unwrap_or((None, None));
+
         Self {
             id: frame.id,
             session_id: frame.session_id,
@@ -928,6 +935,8 @@ impl From<::app_infra::Frame> for FrameDto {
             captured_at: frame.captured_at,
             width: frame.width,
             height: frame.height,
+            app_bundle_id,
+            app_name,
             equivalence_hint: frame.equivalence.hint,
             created_at: frame.created_at,
             updated_at: frame.updated_at,
@@ -4709,7 +4718,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_dto_omits_metadata_snapshot_from_bulk_timeline_payloads() {
+    fn frame_dto_exposes_only_app_metadata_for_bulk_timeline_payloads() {
         let frame = ::app_infra::Frame {
             id: 7,
             session_id: "session-metadata".to_string(),
@@ -4741,6 +4750,14 @@ mod tests {
         let value = serde_json::to_value(FrameDto::from(frame)).expect("dto should serialize");
 
         assert!(value.get("metadata").is_none());
+        assert_eq!(
+            value.get("appBundleId").and_then(|value| value.as_str()),
+            Some("com.example.Browser")
+        );
+        assert_eq!(
+            value.get("appName").and_then(|value| value.as_str()),
+            Some("Browser")
+        );
         assert!(!value.to_string().contains("Sensitive Project"));
         assert!(!value.to_string().contains("https://example.com/private"));
     }

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Image } from "@tauri-apps/api/image";
   import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
@@ -310,6 +310,22 @@
     deletedFrameIds?: number[];
     deletedAudioSegmentIds?: number[];
   };
+  type AppIconResolution = {
+    bundleId: string;
+    iconPath: string | null;
+  };
+  type TimelineAppGroup = {
+    key: string;
+    bundleId: string | null;
+    appName: string | null;
+    label: string;
+    frameCount: number;
+    rightPx: number;
+    widthPx: number;
+    iconLeftPx: number;
+    iconSrc: string | null;
+    fallback: string;
+  };
 
   let timelineFrames = $state<FrameDto[]>([]);
   let timelineActiveIndex = $state(0);
@@ -394,6 +410,8 @@
   let previewGeneratedPathCount = $state(0);
   let previewStaleRetryCount = $state(0);
   let activePreviewLoadErrorFrameId = $state<number | null>(null);
+  let timelineAppIconPathsByBundleId = $state<Record<string, string>>({});
+  const requestedTimelineAppIconBundleIds = new Set<string>();
 
   function handleActivePreviewLoadError(frameId: number): void {
     if (activePreviewLoadErrorFrameId === frameId) return;
@@ -2286,9 +2304,150 @@
   const timelineWindow = $derived(
     timelineFrames.slice(timelineWindowStart, timelineWindowEnd),
   );
+  const timelineAppGroups = $derived.by<TimelineAppGroup[]>(() => {
+    const frames = timelineFrames;
+    const windowStart = timelineWindowStart;
+    const windowEnd = timelineWindowEnd;
+    if (frames.length === 0 || windowStart >= windowEnd) return [];
+
+    const groups: TimelineAppGroup[] = [];
+    let runIdentity: string | null = null;
+    let runBundleId: string | null = null;
+    let runAppName: string | null = null;
+    let runStart = 0;
+
+    function flushRun(endExclusive: number): void {
+      if (!runIdentity) return;
+      const runEnd = endExclusive - 1;
+      const frameCount = runEnd - runStart + 1;
+      const intersectsWindow = runStart < windowEnd && runEnd >= windowStart;
+      if (frameCount < 2 || !intersectsWindow) {
+        return;
+      }
+
+      const visibleStart = Math.max(runStart, windowStart);
+      const visibleEnd = Math.min(runEnd, windowEnd - 1);
+      const visibleWidthPx = (visibleEnd - visibleStart + 1) * TIMELINE_SLOT_WIDTH;
+      const iconCenterOffsetFromRight =
+        (visibleStart - runStart) * TIMELINE_SLOT_WIDTH + visibleWidthPx / 2;
+      const widthPx = frameCount * TIMELINE_SLOT_WIDTH;
+      const iconSizePx = 18;
+      const label = runAppName ?? runBundleId ?? "Unknown app";
+      groups.push({
+        key: `${runIdentity}:${runStart}:${runEnd}`,
+        bundleId: runBundleId,
+        appName: runAppName,
+        label,
+        frameCount,
+        rightPx: runStart * TIMELINE_SLOT_WIDTH,
+        widthPx,
+        iconLeftPx: Math.max(
+          2,
+          Math.min(
+            Math.max(2, widthPx - iconSizePx - 2),
+            widthPx - iconCenterOffsetFromRight - iconSizePx / 2,
+          ),
+        ),
+        iconSrc: runBundleId ? timelineAppIconSrc(runBundleId) : null,
+        fallback: timelineAppIconFallback(runAppName, runBundleId),
+      });
+    }
+
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i]!;
+      const bundleId = normalizedTimelineAppBundleId(frame);
+      const appName = normalizedTimelineAppName(frame);
+      const identity = timelineAppIdentity(bundleId, appName);
+      if (!identity) {
+        flushRun(i);
+        runIdentity = null;
+        runBundleId = null;
+        runAppName = null;
+        runStart = i + 1;
+        continue;
+      }
+
+      if (identity === runIdentity) {
+        if (!runBundleId && bundleId) runBundleId = bundleId;
+        if (!runAppName && appName) runAppName = appName;
+        continue;
+      }
+
+      flushRun(i);
+      runIdentity = identity;
+      runBundleId = bundleId;
+      runAppName = appName;
+      runStart = i;
+    }
+    flushRun(frames.length);
+
+    return groups;
+  });
+
+  $effect(() => {
+    const bundleIds = timelineAppGroups.map((group) => group.bundleId);
+    void resolveTimelineAppIcons(bundleIds);
+  });
 
   function parseCapturedAt(ts: string): Date {
     return new Date(ts.includes("T") ? ts : ts.replace(" ", "T"));
+  }
+
+  function normalizedTimelineAppBundleId(frame: FrameDto): string | null {
+    const bundleId = frame.appBundleId?.trim();
+    return bundleId ? bundleId : null;
+  }
+
+  function normalizedTimelineAppName(frame: FrameDto): string | null {
+    const appName = frame.appName?.trim();
+    return appName ? appName : null;
+  }
+
+  function timelineAppIdentity(bundleId: string | null, appName: string | null): string | null {
+    if (bundleId) return `bundle:${bundleId}`;
+    return appName ? `name:${appName.toLocaleLowerCase()}` : null;
+  }
+
+  function timelineAppIconFallback(
+    appName: string | null | undefined,
+    bundleId: string | null | undefined,
+  ): string {
+    return ((appName ?? "").trim() || (bundleId ?? "").trim() || "?").slice(0, 1).toUpperCase();
+  }
+
+  function timelineAppIconSrc(bundleId: string): string | null {
+    const iconPath = timelineAppIconPathsByBundleId[bundleId];
+    return iconPath ? convertFileSrc(iconPath) : null;
+  }
+
+  function uniqueTimelineAppBundleIds(bundleIds: Array<string | null | undefined>): string[] {
+    return [...new Set(bundleIds.map((bundleId) => bundleId?.trim() ?? "").filter(Boolean))];
+  }
+
+  async function resolveTimelineAppIcons(bundleIds: Array<string | null | undefined>): Promise<void> {
+    const unresolvedBundleIds = uniqueTimelineAppBundleIds(bundleIds).filter((bundleId) => (
+      !timelineAppIconPathsByBundleId[bundleId] && !requestedTimelineAppIconBundleIds.has(bundleId)
+    ));
+    if (unresolvedBundleIds.length === 0) return;
+    for (const bundleId of unresolvedBundleIds) requestedTimelineAppIconBundleIds.add(bundleId);
+
+    try {
+      const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
+        request: { bundleIds: unresolvedBundleIds },
+      });
+      const nextIconPaths = { ...timelineAppIconPathsByBundleId };
+      let changed = false;
+      for (const icon of icons) {
+        if (!icon.iconPath || nextIconPaths[icon.bundleId] === icon.iconPath) continue;
+        nextIconPaths[icon.bundleId] = icon.iconPath;
+        changed = true;
+      }
+      if (changed) {
+        timelineAppIconPathsByBundleId = nextIconPaths;
+      }
+    } catch {
+      for (const bundleId of unresolvedBundleIds) requestedTimelineAppIconBundleIds.delete(bundleId);
+    }
   }
 
   function trimTimelineFramesAroundActive(
@@ -5561,6 +5720,22 @@
           class="timeline-rail__track"
           style="width: {timelineFrames.length * TIMELINE_SLOT_WIDTH}px"
         >
+          {#each timelineAppGroups as group (group.key)}
+            <div
+              class="timeline-rail__app-group"
+              style="right: {group.rightPx}px; width: {group.widthPx}px; --timeline-app-icon-left: {group.iconLeftPx}px"
+              title={`${group.label} · ${group.frameCount} frames`}
+              aria-hidden="true"
+            >
+              <span class="timeline-rail__app-group-icon {group.iconSrc ? 'timeline-rail__app-group-icon--image' : ''}">
+                {#if group.iconSrc}
+                  <img src={group.iconSrc} alt="" loading="lazy" />
+                {:else}
+                  <span>{group.fallback}</span>
+                {/if}
+              </span>
+            </div>
+          {/each}
           {#each timelineWindow as frame, j (frame.id)}
             {@const i = timelineWindowStart + j}
             {@const isActive = i === timelineActiveIndex}
@@ -8163,6 +8338,55 @@
     margin-right: calc(50cqi - 4px);
   }
 
+  .timeline-rail__app-group {
+    position: absolute;
+    top: 1px;
+    height: 20px;
+    overflow: hidden;
+    border-radius: 3px;
+    pointer-events: none;
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--app-info) 26%, var(--app-surface-raised)),
+        color-mix(in srgb, var(--app-accent) 20%, var(--app-surface))
+      );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--app-info) 46%, var(--app-border-strong)),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  .timeline-rail__app-group-icon {
+    position: absolute;
+    top: 1px;
+    left: var(--timeline-app-icon-left);
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    border-radius: 4px;
+    overflow: hidden;
+    color: var(--app-text-strong);
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1;
+    background: color-mix(in srgb, var(--app-surface-raised) 78%, transparent);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--app-border-strong) 72%, transparent),
+      0 2px 5px rgba(0, 0, 0, 0.25);
+  }
+
+  .timeline-rail__app-group-icon--image {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .timeline-rail__app-group-icon img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
   .timeline-rail__slot {
     position: absolute;
     top: 0;
@@ -8752,7 +8976,7 @@
     border-color: var(--app-border);
   }
   :global([data-theme="light"]) .timeline-rail__slot {
-    background: var(--app-surface);
+    background: transparent;
     border-color: var(--app-border-strong);
   }
   :global([data-theme="light"]) .timeline-rail__audio-lane-wrap {
