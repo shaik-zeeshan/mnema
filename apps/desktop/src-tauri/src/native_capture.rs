@@ -1941,6 +1941,13 @@ pub(crate) fn apply_recording_settings_update_from_app_handle(
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
     let state = app_handle.state::<RecordingSettingsState>();
     let update = apply_recording_settings_update(app_handle, state.inner(), request)?;
+    finish_recording_settings_update(app_handle, update)
+}
+
+fn finish_recording_settings_update(
+    app_handle: &tauri::AppHandle,
+    update: settings::AppliedRecordingSettingsUpdate,
+) -> Result<RecordingSettings, CaptureErrorResponse> {
     let settings = update.settings;
     let previous_settings = update.previous_settings;
     let previous_save_directory = update.previous_save_directory;
@@ -2103,15 +2110,8 @@ pub fn update_recording_settings(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let current_privacy = current_recording_settings(state.inner()).privacy;
-    let requested_privacy = settings::validate_privacy_settings(request.privacy.clone())?;
-    if requested_privacy != current_privacy {
-        return Err(CaptureErrorResponse {
-            code: "invalid_privacy_rule".to_string(),
-            message: "Privacy rules must be changed with dedicated privacy commands".to_string(),
-        });
-    }
-    apply_recording_settings_update_from_app_handle(&app_handle, request)
+    let update = apply_recording_settings_update(&app_handle, state.inner(), request)?;
+    finish_recording_settings_update(&app_handle, update)
 }
 
 #[tauri::command]

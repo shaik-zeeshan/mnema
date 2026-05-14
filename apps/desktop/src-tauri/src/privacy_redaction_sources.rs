@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
@@ -18,6 +19,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 const PRIVACY_REDACTION_SOURCES_FILE_NAME: &str = "privacy-redaction-sources.json";
 pub const PRIVACY_REDACTION_SOURCES_CHANGED_EVENT: &str = "privacy_redaction_sources_changed";
+static SOURCE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -88,9 +90,15 @@ fn new_source_id(prefix: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+    let sequence = SOURCE_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    source_id_from_parts(prefix, nanos, sequence)
+}
+
+fn source_id_from_parts(prefix: &str, nanos: u128, sequence: u64) -> String {
     let mut hash = Sha256::new();
     hash.update(prefix.as_bytes());
     hash.update(nanos.to_le_bytes());
+    hash.update(sequence.to_le_bytes());
     let hex = format!("{:x}", hash.finalize());
     format!(
         "{prefix}-{}-{}-{}-{}-{}",
@@ -128,10 +136,7 @@ fn fingerprint(parts: &[&str]) -> String {
 }
 
 fn app_fingerprint(bundle_id: &str) -> String {
-    fingerprint(&[
-        "excluded_app",
-        &bundle_id.trim().to_ascii_lowercase(),
-    ])
+    fingerprint(&["excluded_app", &bundle_id.trim().to_ascii_lowercase()])
 }
 
 fn website_descriptor(rule: &WebsiteRule) -> String {
@@ -255,12 +260,18 @@ fn record_for_title(rule: &BrowserTitleRule, now: &str) -> PrivacyRedactionSourc
     }
 }
 
-fn source_to_dto(source_id: &str, record: &PrivacyRedactionSourceRecord) -> PrivacyRedactionSourceDto {
-    let restore_enabled = record.restore_payload.as_ref().map(|payload| match payload {
-        PrivacyRedactionSourceRestorePayload::ExcludedApp { enabled, .. }
-        | PrivacyRedactionSourceRestorePayload::WebsiteRule { enabled, .. }
-        | PrivacyRedactionSourceRestorePayload::TitleRule { enabled, .. } => *enabled,
-    });
+fn source_to_dto(
+    source_id: &str,
+    record: &PrivacyRedactionSourceRecord,
+) -> PrivacyRedactionSourceDto {
+    let restore_enabled = record
+        .restore_payload
+        .as_ref()
+        .map(|payload| match payload {
+            PrivacyRedactionSourceRestorePayload::ExcludedApp { enabled, .. }
+            | PrivacyRedactionSourceRestorePayload::WebsiteRule { enabled, .. }
+            | PrivacyRedactionSourceRestorePayload::TitleRule { enabled, .. } => *enabled,
+        });
     PrivacyRedactionSourceDto {
         source_id: source_id.to_string(),
         source_kind: record.source_kind,
@@ -320,7 +331,8 @@ fn load_history_from_path(path: &Path) -> PrivacyRedactionSourcesFile {
     match serde_json::from_str::<PrivacyRedactionSourcesFile>(&raw) {
         Ok(file) if file.schema_version == 1 => file,
         _ => {
-            let backup = path.with_extension(format!("json.corrupt-{}", now_rfc3339().replace(':', "-")));
+            let backup =
+                path.with_extension(format!("json.corrupt-{}", now_rfc3339().replace(':', "-")));
             let _ = std::fs::rename(path, backup);
             PrivacyRedactionSourcesFile::default()
         }
@@ -332,13 +344,25 @@ fn persist_history_to_path(
     file: &PrivacyRedactionSourcesFile,
 ) -> Result<(), CaptureErrorResponse> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| err("io_error", format!("Failed to create privacy history directory: {error}")))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            err(
+                "io_error",
+                format!("Failed to create privacy history directory: {error}"),
+            )
+        })?;
     }
-    let serialized = serde_json::to_string_pretty(file)
-        .map_err(|error| err("serialization_error", format!("Failed to serialize privacy history: {error}")))?;
-    std::fs::write(path, serialized)
-        .map_err(|error| err("io_error", format!("Failed to persist privacy history: {error}")))
+    let serialized = serde_json::to_string_pretty(file).map_err(|error| {
+        err(
+            "serialization_error",
+            format!("Failed to serialize privacy history: {error}"),
+        )
+    })?;
+    std::fs::write(path, serialized).map_err(|error| {
+        err(
+            "io_error",
+            format!("Failed to persist privacy history: {error}"),
+        )
+    })
 }
 
 fn active_fingerprint_exists(
@@ -433,9 +457,7 @@ fn reconcile_privacy_sources(
     }
 
     for (source_id, record) in &mut history.sources {
-        if record.deleted_at.is_none()
-            && !record.label_forgotten
-            && !active_ids.contains(source_id)
+        if record.deleted_at.is_none() && !record.label_forgotten && !active_ids.contains(source_id)
         {
             record.deleted_at = Some(now.clone());
             record.updated_at = now.clone();
@@ -475,27 +497,11 @@ pub fn initialize(app_handle: &tauri::AppHandle) {
         .file = history;
 }
 
-fn persist_privacy_mutation(
+fn emit_privacy_mutation(
     app_handle: &tauri::AppHandle,
     settings: RecordingSettings,
-    history: PrivacyRedactionSourcesFile,
     clear_website_holds: bool,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let history_path = history_file_path(app_handle);
-    persist_history_to_path(&history_path, &history)?;
-    crate::native_capture::settings::persist_recording_settings(app_handle, &settings)?;
-
-    app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
-        .lock()
-        .expect("recording settings state poisoned")
-        .settings = settings.clone();
-    app_handle
-        .state::<PrivacyRedactionSourcesState>()
-        .lock()
-        .expect("privacy redaction source state poisoned")
-        .file = history;
-
+) {
     crate::native_capture::emit_recording_settings_changed(app_handle, &settings);
     let _ = app_handle.emit(PRIVACY_REDACTION_SOURCES_CHANGED_EVENT, ());
     if clear_website_holds {
@@ -506,7 +512,6 @@ fn persist_privacy_mutation(
         }
     }
     crate::status_bar::refresh(app_handle);
-    Ok(settings)
 }
 
 fn with_privacy_mutation<F>(
@@ -515,23 +520,37 @@ fn with_privacy_mutation<F>(
     mutate: F,
 ) -> Result<RecordingSettings, CaptureErrorResponse>
 where
-    F: FnOnce(&mut RecordingSettings, &mut PrivacyRedactionSourcesFile) -> Result<(), CaptureErrorResponse>,
+    F: FnOnce(
+        &mut RecordingSettings,
+        &mut PrivacyRedactionSourcesFile,
+    ) -> Result<(), CaptureErrorResponse>,
 {
-    let mut settings = app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
-        .lock()
-        .expect("recording settings state poisoned")
-        .settings
-        .clone();
-    let mut history = app_handle
-        .state::<PrivacyRedactionSourcesState>()
-        .lock()
-        .expect("privacy redaction source state poisoned")
-        .file
-        .clone();
-    mutate(&mut settings, &mut history)?;
-    settings.privacy = crate::native_capture::settings::validate_privacy_settings(settings.privacy)?;
-    persist_privacy_mutation(&app_handle, settings, history, clear_website_holds)
+    let history_path = history_file_path(&app_handle);
+    let settings = {
+        let settings_state = app_handle.state::<crate::native_capture::RecordingSettingsState>();
+        let history_state = app_handle.state::<PrivacyRedactionSourcesState>();
+        let mut settings_runtime = settings_state
+            .lock()
+            .expect("recording settings state poisoned");
+        let mut history_runtime = history_state
+            .lock()
+            .expect("privacy redaction source state poisoned");
+        let mut settings = settings_runtime.settings.clone();
+        let mut history = history_runtime.file.clone();
+
+        mutate(&mut settings, &mut history)?;
+        settings.privacy =
+            crate::native_capture::settings::validate_privacy_settings(settings.privacy)?;
+        persist_history_to_path(&history_path, &history)?;
+        crate::native_capture::settings::persist_recording_settings(&app_handle, &settings)?;
+
+        settings_runtime.settings = settings.clone();
+        history_runtime.file = history;
+        settings
+    };
+
+    emit_privacy_mutation(&app_handle, settings.clone(), clear_website_holds);
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -544,7 +563,10 @@ pub fn add_privacy_excluded_app(
         let bundle_id = bundle_id.trim().to_string();
         let display_name = display_name.trim().to_string();
         if bundle_id.is_empty() || display_name.is_empty() {
-            return Err(err("invalid_privacy_rule", "App bundle and display name are required"));
+            return Err(err(
+                "invalid_privacy_rule",
+                "App bundle and display name are required",
+            ));
         }
         if settings
             .privacy
@@ -577,11 +599,17 @@ pub fn add_privacy_website_rule(
     with_privacy_mutation(app_handle, true, |settings, history| {
         let rule = parse_website_rule(new_source_id("website"), true, &pattern);
         if rule.host.is_none() {
-            return Err(err("invalid_privacy_rule", "Website rule must include a valid host"));
+            return Err(err(
+                "invalid_privacy_rule",
+                "Website rule must include a valid host",
+            ));
         }
         let fp = website_fingerprint(&rule);
         if active_fingerprint_exists(history, PrivacyRedactionSourceKind::WebsiteRule, &fp, None) {
-            return Err(err("duplicate_privacy_rule", "An equivalent website rule already exists"));
+            return Err(err(
+                "duplicate_privacy_rule",
+                "An equivalent website rule already exists",
+            ));
         }
         history
             .sources
@@ -607,19 +635,31 @@ pub fn update_privacy_website_rule(
         let enabled = settings.privacy.excluded_website_rules[index].enabled;
         let new_rule = parse_website_rule(new_source_id("website"), enabled, &pattern);
         if new_rule.host.is_none() {
-            return Err(err("invalid_privacy_rule", "Website rule must include a valid host"));
+            return Err(err(
+                "invalid_privacy_rule",
+                "Website rule must include a valid host",
+            ));
         }
         let fp = website_fingerprint(&new_rule);
-        if active_fingerprint_exists(history, PrivacyRedactionSourceKind::WebsiteRule, &fp, Some(&source_id)) {
-            return Err(err("duplicate_privacy_rule", "An equivalent website rule already exists"));
+        if active_fingerprint_exists(
+            history,
+            PrivacyRedactionSourceKind::WebsiteRule,
+            &fp,
+            Some(&source_id),
+        ) {
+            return Err(err(
+                "duplicate_privacy_rule",
+                "An equivalent website rule already exists",
+            ));
         }
         if let Some(old) = history.sources.get_mut(&source_id) {
             old.deleted_at = Some(now_rfc3339());
             old.updated_at = now_rfc3339();
         }
-        history
-            .sources
-            .insert(new_rule.id.clone(), record_for_website(&new_rule, &now_rfc3339()));
+        history.sources.insert(
+            new_rule.id.clone(),
+            record_for_website(&new_rule, &now_rfc3339()),
+        );
         settings.privacy.excluded_website_rules[index] = new_rule;
         Ok(())
     })
@@ -638,12 +678,17 @@ pub fn add_privacy_title_rule(
             match_type,
             pattern: pattern.trim().to_string(),
         };
-        if rule.pattern.is_empty() || (rule.match_type == BrowserTitleRuleMatchType::Regex && !title_rule_is_valid(&rule)) {
+        if rule.pattern.is_empty()
+            || (rule.match_type == BrowserTitleRuleMatchType::Regex && !title_rule_is_valid(&rule))
+        {
             return Err(err("invalid_privacy_rule", "Title rule is invalid"));
         }
         let fp = title_fingerprint(rule.match_type, &rule.pattern);
         if active_fingerprint_exists(history, PrivacyRedactionSourceKind::TitleRule, &fp, None) {
-            return Err(err("duplicate_privacy_rule", "An equivalent title rule already exists"));
+            return Err(err(
+                "duplicate_privacy_rule",
+                "An equivalent title rule already exists",
+            ));
         }
         history
             .sources
@@ -674,12 +719,22 @@ pub fn update_privacy_title_rule(
             match_type,
             pattern: pattern.trim().to_string(),
         };
-        if rule.pattern.is_empty() || (rule.match_type == BrowserTitleRuleMatchType::Regex && !title_rule_is_valid(&rule)) {
+        if rule.pattern.is_empty()
+            || (rule.match_type == BrowserTitleRuleMatchType::Regex && !title_rule_is_valid(&rule))
+        {
             return Err(err("invalid_privacy_rule", "Title rule is invalid"));
         }
         let fp = title_fingerprint(rule.match_type, &rule.pattern);
-        if active_fingerprint_exists(history, PrivacyRedactionSourceKind::TitleRule, &fp, Some(&source_id)) {
-            return Err(err("duplicate_privacy_rule", "An equivalent title rule already exists"));
+        if active_fingerprint_exists(
+            history,
+            PrivacyRedactionSourceKind::TitleRule,
+            &fp,
+            Some(&source_id),
+        ) {
+            return Err(err(
+                "duplicate_privacy_rule",
+                "An equivalent title rule already exists",
+            ));
         }
         if let Some(old) = history.sources.get_mut(&source_id) {
             old.deleted_at = Some(now_rfc3339());
@@ -699,51 +754,62 @@ pub fn set_privacy_source_enabled(
     enabled: bool,
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    with_privacy_mutation(app_handle, source_id.starts_with("website-"), |settings, history| {
-        let mut found = false;
-        for app in &mut settings.privacy.excluded_apps {
-            if app.id == source_id {
-                app.enabled = enabled;
-                if let Some(record) = history.sources.get_mut(&source_id) {
-                    record.restore_payload = Some(PrivacyRedactionSourceRestorePayload::ExcludedApp {
-                        bundle_id: app.bundle_id.clone(),
-                        display_name: app.display_name.clone(),
-                        enabled,
-                    });
-                    record.updated_at = now_rfc3339();
+    with_privacy_mutation(
+        app_handle,
+        source_id.starts_with("website-"),
+        |settings, history| {
+            let mut found = false;
+            for app in &mut settings.privacy.excluded_apps {
+                if app.id == source_id {
+                    app.enabled = enabled;
+                    if let Some(record) = history.sources.get_mut(&source_id) {
+                        record.restore_payload =
+                            Some(PrivacyRedactionSourceRestorePayload::ExcludedApp {
+                                bundle_id: app.bundle_id.clone(),
+                                display_name: app.display_name.clone(),
+                                enabled,
+                            });
+                        record.updated_at = now_rfc3339();
+                    }
+                    found = true;
                 }
-                found = true;
             }
-        }
-        for rule in &mut settings.privacy.excluded_website_rules {
-            if rule.id == source_id {
-                rule.enabled = enabled;
-                if let Some(record) = history.sources.get_mut(&source_id) {
-                    record.restore_payload = Some(PrivacyRedactionSourceRestorePayload::WebsiteRule {
-                        pattern: rule.pattern.clone(),
-                        enabled,
-                    });
-                    record.updated_at = now_rfc3339();
+            for rule in &mut settings.privacy.excluded_website_rules {
+                if rule.id == source_id {
+                    rule.enabled = enabled;
+                    if let Some(record) = history.sources.get_mut(&source_id) {
+                        record.restore_payload =
+                            Some(PrivacyRedactionSourceRestorePayload::WebsiteRule {
+                                pattern: rule.pattern.clone(),
+                                enabled,
+                            });
+                        record.updated_at = now_rfc3339();
+                    }
+                    found = true;
                 }
-                found = true;
             }
-        }
-        for rule in &mut settings.privacy.browser_title_rules {
-            if rule.id == source_id {
-                rule.enabled = enabled;
-                if let Some(record) = history.sources.get_mut(&source_id) {
-                    record.restore_payload = Some(PrivacyRedactionSourceRestorePayload::TitleRule {
-                        match_type: rule.match_type,
-                        pattern: rule.pattern.clone(),
-                        enabled,
-                    });
-                    record.updated_at = now_rfc3339();
+            for rule in &mut settings.privacy.browser_title_rules {
+                if rule.id == source_id {
+                    rule.enabled = enabled;
+                    if let Some(record) = history.sources.get_mut(&source_id) {
+                        record.restore_payload =
+                            Some(PrivacyRedactionSourceRestorePayload::TitleRule {
+                                match_type: rule.match_type,
+                                pattern: rule.pattern.clone(),
+                                enabled,
+                            });
+                        record.updated_at = now_rfc3339();
+                    }
+                    found = true;
                 }
-                found = true;
             }
-        }
-        if found { Ok(()) } else { Err(err("privacy_source_not_found", "Privacy source not found")) }
-    })
+            if found {
+                Ok(())
+            } else {
+                Err(err("privacy_source_not_found", "Privacy source not found"))
+            }
+        },
+    )
 }
 
 #[tauri::command]
@@ -751,27 +817,40 @@ pub fn remove_privacy_source(
     source_id: String,
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    with_privacy_mutation(app_handle, source_id.starts_with("website-"), |settings, history| {
-        let before = settings.privacy.excluded_apps.len()
-            + settings.privacy.excluded_website_rules.len()
-            + settings.privacy.browser_title_rules.len();
-        settings.privacy.excluded_apps.retain(|rule| rule.id != source_id);
-        settings.privacy.excluded_website_rules.retain(|rule| rule.id != source_id);
-        settings.privacy.browser_title_rules.retain(|rule| rule.id != source_id);
-        let after = settings.privacy.excluded_apps.len()
-            + settings.privacy.excluded_website_rules.len()
-            + settings.privacy.browser_title_rules.len();
-        if before == after {
-            return Err(err("privacy_source_not_found", "Privacy source not found"));
-        }
-        let record = history
-            .sources
-            .get_mut(&source_id)
-            .ok_or_else(|| err("privacy_source_not_found", "Privacy source not found"))?;
-        record.deleted_at = Some(now_rfc3339());
-        record.updated_at = now_rfc3339();
-        Ok(())
-    })
+    with_privacy_mutation(
+        app_handle,
+        source_id.starts_with("website-"),
+        |settings, history| {
+            let before = settings.privacy.excluded_apps.len()
+                + settings.privacy.excluded_website_rules.len()
+                + settings.privacy.browser_title_rules.len();
+            settings
+                .privacy
+                .excluded_apps
+                .retain(|rule| rule.id != source_id);
+            settings
+                .privacy
+                .excluded_website_rules
+                .retain(|rule| rule.id != source_id);
+            settings
+                .privacy
+                .browser_title_rules
+                .retain(|rule| rule.id != source_id);
+            let after = settings.privacy.excluded_apps.len()
+                + settings.privacy.excluded_website_rules.len()
+                + settings.privacy.browser_title_rules.len();
+            if before == after {
+                return Err(err("privacy_source_not_found", "Privacy source not found"));
+            }
+            let record = history
+                .sources
+                .get_mut(&source_id)
+                .ok_or_else(|| err("privacy_source_not_found", "Privacy source not found"))?;
+            record.deleted_at = Some(now_rfc3339());
+            record.updated_at = now_rfc3339();
+            Ok(())
+        },
+    )
 }
 
 #[tauri::command]
@@ -779,51 +858,105 @@ pub fn restore_privacy_redaction_source(
     source_id: String,
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    with_privacy_mutation(app_handle, source_id.starts_with("website-"), |settings, history| {
-        let record = history
-            .sources
-            .get(&source_id)
-            .cloned()
-            .ok_or_else(|| err("privacy_source_not_found", "Privacy source not found"))?;
-        if record.deleted_at.is_none() {
-            return Err(err("privacy_source_already_active", "Privacy source is already active"));
-        }
-        if record.label_forgotten {
-            return Err(err("privacy_source_not_restorable", "Privacy source label was forgotten"));
-        }
-        let payload = record
-            .restore_payload
-            .clone()
-            .ok_or_else(|| err("privacy_source_not_restorable", "Privacy source is not restorable"))?;
-        match payload {
-            PrivacyRedactionSourceRestorePayload::ExcludedApp { bundle_id, display_name, enabled } => {
-                let fp = app_fingerprint(&bundle_id);
-                if active_fingerprint_exists(history, PrivacyRedactionSourceKind::ExcludedApp, &fp, Some(&source_id)) {
-                    return Err(err("duplicate_privacy_rule", "An equivalent app rule already exists"));
-                }
-                settings.privacy.excluded_apps.push(ExcludedAppEntry { id: source_id.clone(), enabled, bundle_id, display_name });
+    with_privacy_mutation(
+        app_handle,
+        source_id.starts_with("website-"),
+        |settings, history| {
+            let record = history
+                .sources
+                .get(&source_id)
+                .cloned()
+                .ok_or_else(|| err("privacy_source_not_found", "Privacy source not found"))?;
+            if record.deleted_at.is_none() {
+                return Err(err(
+                    "privacy_source_already_active",
+                    "Privacy source is already active",
+                ));
             }
-            PrivacyRedactionSourceRestorePayload::WebsiteRule { pattern, enabled } => {
-                let rule = parse_website_rule(source_id.clone(), enabled, &pattern);
-                let fp = website_fingerprint(&rule);
-                if active_fingerprint_exists(history, PrivacyRedactionSourceKind::WebsiteRule, &fp, Some(&source_id)) {
-                    return Err(err("duplicate_privacy_rule", "An equivalent website rule already exists"));
-                }
-                settings.privacy.excluded_website_rules.push(rule);
+            if record.label_forgotten {
+                return Err(err(
+                    "privacy_source_not_restorable",
+                    "Privacy source label was forgotten",
+                ));
             }
-            PrivacyRedactionSourceRestorePayload::TitleRule { match_type, pattern, enabled } => {
-                let fp = title_fingerprint(match_type, &pattern);
-                if active_fingerprint_exists(history, PrivacyRedactionSourceKind::TitleRule, &fp, Some(&source_id)) {
-                    return Err(err("duplicate_privacy_rule", "An equivalent title rule already exists"));
+            let payload = record.restore_payload.clone().ok_or_else(|| {
+                err(
+                    "privacy_source_not_restorable",
+                    "Privacy source is not restorable",
+                )
+            })?;
+            match payload {
+                PrivacyRedactionSourceRestorePayload::ExcludedApp {
+                    bundle_id,
+                    display_name,
+                    enabled,
+                } => {
+                    let fp = app_fingerprint(&bundle_id);
+                    if active_fingerprint_exists(
+                        history,
+                        PrivacyRedactionSourceKind::ExcludedApp,
+                        &fp,
+                        Some(&source_id),
+                    ) {
+                        return Err(err(
+                            "duplicate_privacy_rule",
+                            "An equivalent app rule already exists",
+                        ));
+                    }
+                    settings.privacy.excluded_apps.push(ExcludedAppEntry {
+                        id: source_id.clone(),
+                        enabled,
+                        bundle_id,
+                        display_name,
+                    });
                 }
-                settings.privacy.browser_title_rules.push(BrowserTitleRule { id: source_id.clone(), enabled, match_type, pattern });
+                PrivacyRedactionSourceRestorePayload::WebsiteRule { pattern, enabled } => {
+                    let rule = parse_website_rule(source_id.clone(), enabled, &pattern);
+                    let fp = website_fingerprint(&rule);
+                    if active_fingerprint_exists(
+                        history,
+                        PrivacyRedactionSourceKind::WebsiteRule,
+                        &fp,
+                        Some(&source_id),
+                    ) {
+                        return Err(err(
+                            "duplicate_privacy_rule",
+                            "An equivalent website rule already exists",
+                        ));
+                    }
+                    settings.privacy.excluded_website_rules.push(rule);
+                }
+                PrivacyRedactionSourceRestorePayload::TitleRule {
+                    match_type,
+                    pattern,
+                    enabled,
+                } => {
+                    let fp = title_fingerprint(match_type, &pattern);
+                    if active_fingerprint_exists(
+                        history,
+                        PrivacyRedactionSourceKind::TitleRule,
+                        &fp,
+                        Some(&source_id),
+                    ) {
+                        return Err(err(
+                            "duplicate_privacy_rule",
+                            "An equivalent title rule already exists",
+                        ));
+                    }
+                    settings.privacy.browser_title_rules.push(BrowserTitleRule {
+                        id: source_id.clone(),
+                        enabled,
+                        match_type,
+                        pattern,
+                    });
+                }
             }
-        }
-        let record = history.sources.get_mut(&source_id).expect("record exists");
-        record.deleted_at = None;
-        record.updated_at = now_rfc3339();
-        Ok(())
-    })
+            let record = history.sources.get_mut(&source_id).expect("record exists");
+            record.deleted_at = None;
+            record.updated_at = now_rfc3339();
+            Ok(())
+        },
+    )
 }
 
 #[tauri::command]
@@ -969,6 +1102,14 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
             .count();
         assert_eq!(backups, 1);
+    }
+
+    #[test]
+    fn source_ids_include_sequence_to_avoid_same_tick_collisions() {
+        let first = source_id_from_parts("website", 42, 1);
+        let second = source_id_from_parts("website", 42, 2);
+
+        assert_ne!(first, second);
     }
 
     #[test]

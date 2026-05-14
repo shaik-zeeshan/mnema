@@ -964,6 +964,10 @@
   }
 
   async function runPrivacySettingsCommand(command: string, args: Record<string, unknown>): Promise<void> {
+    if (recAutoSaveTimer !== null) {
+      clearTimeout(recAutoSaveTimer);
+      recAutoSaveTimer = null;
+    }
     privacyCommandInFlight = true;
     recError = null;
     try {
@@ -1470,6 +1474,7 @@
   }
 
   async function saveRecordingSettings() {
+    if (privacyCommandInFlight) return;
     if (resolutionSupportPendingForNonOriginal) {
       recError = "Wait for capture support to load before saving preset/custom resolution.";
       return;
@@ -1623,13 +1628,14 @@
     const current = buildRecSnapshot();
     if (current === lastSavedRecSnapshot) return;
     if (recSaveBlocked) return;
+    if (privacyCommandInFlight) return;
     if (savingRecSettings) return;
 
     if (recAutoSaveTimer !== null) clearTimeout(recAutoSaveTimer);
     recAutoSaveTimer = setTimeout(() => {
       recAutoSaveTimer = null;
       // Re-check guards at fire time — drafts may have changed during debounce.
-      if (recSaveBlocked || savingRecSettings) return;
+      if (recSaveBlocked || privacyCommandInFlight || savingRecSettings) return;
       if (buildRecSnapshot() === lastSavedRecSnapshot) return;
       void saveRecordingSettings();
     }, RECORDING_AUTOSAVE_DEBOUNCE_MS);

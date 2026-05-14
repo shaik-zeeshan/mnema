@@ -321,6 +321,16 @@ pub fn start_metadata_notifier(_app_handle: tauri::AppHandle) {}
 
 #[cfg(target_os = "macos")]
 fn refresh_metadata_from_app_settings(app_handle: &tauri::AppHandle) {
+    let is_running = app_handle
+        .state::<crate::native_capture::NativeCaptureState>()
+        .lock()
+        .expect("native capture state poisoned")
+        .session()
+        .is_running;
+    if !is_running {
+        return;
+    }
+
     let settings = app_handle
         .state::<crate::native_capture::RecordingSettingsState>()
         .lock()

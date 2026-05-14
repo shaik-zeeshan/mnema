@@ -804,16 +804,24 @@ pub(crate) fn apply_recording_settings_update(
     state: &RecordingSettingsState,
     request: UpdateRecordingSettingsRequest,
 ) -> Result<AppliedRecordingSettingsUpdate, CaptureErrorResponse> {
+    let requested_privacy = validate_privacy_settings(request.privacy.clone())?;
     let settings = validate_recording_settings(request)?;
-    persist_recording_settings(app_handle, &settings)?;
 
     let mut runtime = state.lock().expect("recording settings state poisoned");
+    if requested_privacy != runtime.settings.privacy {
+        return Err(CaptureErrorResponse {
+            code: "invalid_privacy_rule".to_string(),
+            message: "Privacy rules must be changed with dedicated privacy commands".to_string(),
+        });
+    }
+
     let previous_settings = runtime.settings.clone();
     let previous_save_directory = previous_settings.save_directory.clone();
     let save_directory_changed = previous_save_directory != settings.save_directory;
     let debug_logging_enabled_changed = previous_settings.native_capture_debug_logging_enabled
         != settings.native_capture_debug_logging_enabled;
 
+    persist_recording_settings(app_handle, &settings)?;
     runtime.settings = settings.clone();
 
     Ok(AppliedRecordingSettingsUpdate {
