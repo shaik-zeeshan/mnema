@@ -302,7 +302,7 @@ pub(crate) fn validate_privacy_settings(
 }
 
 pub(crate) fn canonicalize_app_bundle_id(bundle_id: &str) -> String {
-    bundle_id.trim().to_ascii_lowercase()
+    bundle_id.trim().to_string()
 }
 
 fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> SpeakerAnalysisSettings {
@@ -1092,7 +1092,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_privacy_settings_canonicalizes_and_dedupes_app_bundle_ids() {
+    fn validate_privacy_settings_preserves_app_bundle_id_casing_and_dedupes_exact_ids() {
         let mut privacy = default_privacy_settings();
         privacy.excluded_apps = vec![
             capture_metadata::ExcludedAppEntry {
@@ -1104,16 +1104,24 @@ mod tests {
             capture_metadata::ExcludedAppEntry {
                 id: "app-b".to_string(),
                 enabled: true,
+                bundle_id: "com.apple.Safari".to_string(),
+                display_name: "Safari duplicate exact".to_string(),
+            },
+            capture_metadata::ExcludedAppEntry {
+                id: "app-c".to_string(),
+                enabled: true,
                 bundle_id: "com.apple.safari".to_string(),
-                display_name: "Safari duplicate".to_string(),
+                display_name: "Different-case bundle ID".to_string(),
             },
         ];
 
         let normalized = validate_privacy_settings(privacy).expect("privacy should validate");
 
-        assert_eq!(normalized.excluded_apps.len(), 1);
+        assert_eq!(normalized.excluded_apps.len(), 2);
         assert_eq!(normalized.excluded_apps[0].id, "app-a");
-        assert_eq!(normalized.excluded_apps[0].bundle_id, "com.apple.safari");
+        assert_eq!(normalized.excluded_apps[0].bundle_id, "com.apple.Safari");
+        assert_eq!(normalized.excluded_apps[1].id, "app-c");
+        assert_eq!(normalized.excluded_apps[1].bundle_id, "com.apple.safari");
     }
 
     #[test]
