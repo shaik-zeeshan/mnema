@@ -9,7 +9,8 @@ use capture_types::{
     StartNativeCaptureRequest,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
@@ -114,11 +115,62 @@ pub struct NativeCaptureRuntime {
 #[derive(Debug, Clone)]
 pub(crate) struct SegmentLoopControl {
     pub(crate) stop: Arc<AtomicBool>,
+    wake: Arc<SegmentLoopWake>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SegmentLoopWake {
+    notified: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl SegmentLoopWake {
+    fn notify(&self) {
+        if let Ok(mut notified) = self.notified.lock() {
+            *notified = true;
+            self.cv.notify_all();
+        }
+    }
+}
+
+impl SegmentLoopControl {
+    pub(crate) fn new() -> Self {
+        Self {
+            stop: Arc::new(AtomicBool::new(false)),
+            wake: Arc::new(SegmentLoopWake::default()),
+        }
+    }
+
+    pub(crate) fn notify(&self) {
+        self.wake.notify();
+    }
+
+    pub(crate) fn request_stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.notify();
+    }
+
+    pub(crate) fn wait_timeout(&self, timeout: Duration) {
+        if self.stop.load(Ordering::Relaxed) || timeout.is_zero() {
+            return;
+        }
+        let Ok(mut notified) = self.wake.notified.lock() else {
+            return;
+        };
+        if *notified {
+            *notified = false;
+            return;
+        }
+        let Ok((mut notified, _)) = self.wake.cv.wait_timeout(notified, timeout) else {
+            return;
+        };
+        *notified = false;
+    }
 }
 
 pub(super) fn request_segment_loop_stop(runtime: &NativeCaptureRuntime) {
     if let Some(control) = runtime.segment_loop_control.as_ref() {
-        control.stop.store(true, Ordering::Relaxed);
+        control.request_stop();
     }
 }
 
@@ -272,6 +324,50 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
 
     runtime.runtime_controller = RuntimeController::default();
     runtime.runtime_state = RuntimeState::Idle;
+}
+
+#[cfg(test)]
+mod segment_loop_control_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn segment_loop_wait_returns_early_when_notified() {
+        let control = SegmentLoopControl::new();
+        let worker = control.clone();
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            worker.wait_timeout(Duration::from_secs(5));
+            tx.send(started.elapsed())
+                .expect("elapsed wait should be sent");
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        control.notify();
+        let elapsed = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("wait should return after notification");
+        assert!(elapsed < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn segment_loop_stop_notifies_waiter() {
+        let control = SegmentLoopControl::new();
+        let worker = control.clone();
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            worker.wait_timeout(Duration::from_secs(5));
+            tx.send(()).expect("stop wake should be sent");
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        control.request_stop();
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("wait should return after stop");
+    }
 }
 
 pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {

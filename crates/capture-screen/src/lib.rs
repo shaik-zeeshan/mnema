@@ -150,6 +150,11 @@ struct PrivacyFilterApplicationState {
     unresolved_window_ids: Vec<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrivacyFilterApplyOutcome {
+    pub request_satisfied: bool,
+}
+
 impl PrivacyFilterApplicationState {
     fn from_plan(privacy_filter: &PrivacyContentFilter, plan: &PrivacyContentFilterPlan) -> Self {
         Self {
@@ -2329,6 +2334,7 @@ pub struct StartedCaptureSession {
     pub recording_file: String,
     pub system_audio_recording_file: Option<String>,
     pub output_files: CaptureOutputFiles,
+    pub initial_privacy_filter_outcome: Option<PrivacyFilterApplyOutcome>,
 }
 
 #[cfg(target_os = "macos")]
@@ -2442,7 +2448,7 @@ impl ActiveCaptureSession {
     fn update_privacy_filter(
         &mut self,
         filter: PrivacyContentFilter,
-    ) -> Result<(), PrivacyFilterApplyError> {
+    ) -> Result<PrivacyFilterApplyOutcome, PrivacyFilterApplyError> {
         match &mut self.backend {
             CaptureBackendSession::ScreenCaptureKit(session) => {
                 session.update_privacy_filter(filter)
@@ -2507,16 +2513,19 @@ impl ScreenCaptureKitCaptureSession {
     fn update_privacy_filter(
         &mut self,
         filter: PrivacyContentFilter,
-    ) -> Result<(), PrivacyFilterApplyError> {
+    ) -> Result<PrivacyFilterApplyOutcome, PrivacyFilterApplyError> {
         let next_key = filter.key();
         if self
             .privacy_filter_state
             .as_ref()
             .is_some_and(|state| state.satisfies_request(&next_key))
         {
-            return Ok(());
+            return Ok(PrivacyFilterApplyOutcome {
+                request_satisfied: true,
+            });
         }
         let built_filter = build_screen_capture_kit_content_filter(&filter)?;
+        let request_satisfied = built_filter.state.satisfies_request(&next_key);
         let should_log_diagnostics = should_log_privacy_filter_diagnostics(
             self.privacy_filter_state.as_ref(),
             &built_filter.state,
@@ -2530,7 +2539,7 @@ impl ScreenCaptureKitCaptureSession {
                 log_privacy_filter_diagnostics(&built_filter.state);
             }
             self.privacy_filter_state = Some(built_filter.state);
-            return Ok(());
+            return Ok(PrivacyFilterApplyOutcome { request_satisfied });
         }
         if should_log_diagnostics {
             log_privacy_filter_diagnostics(&built_filter.state);
@@ -2551,7 +2560,7 @@ impl ScreenCaptureKitCaptureSession {
         match rx.recv_timeout(Duration::from_secs(2)) {
             Ok(Ok(())) => {
                 self.privacy_filter_state = Some(built_filter.state);
-                Ok(())
+                Ok(PrivacyFilterApplyOutcome { request_satisfied })
             }
             Ok(Err(error)) => Err(error),
             Err(_) => Err(PrivacyFilterApplyError {
@@ -3440,6 +3449,7 @@ fn start_avfoundation_capture_session(
             recording_file: output_file_str,
             system_audio_recording_file: None,
             output_files,
+            initial_privacy_filter_outcome: None,
         })
     })();
 
@@ -3538,7 +3548,7 @@ fn start_screen_capture_kit_session(
         })?;
 
         let initial_privacy_filter = options.initial_privacy_filter.clone();
-        let (filter, privacy_filter_state) =
+        let (filter, privacy_filter_state, initial_privacy_filter_outcome) =
             if let Some(initial_privacy_filter) = &initial_privacy_filter {
                 let built_filter = build_screen_capture_kit_content_filter(initial_privacy_filter)
                     .map_err(|error| CaptureErrorResponse {
@@ -3546,10 +3556,18 @@ fn start_screen_capture_kit_session(
                         message: error.message,
                     })?;
                 log_privacy_filter_diagnostics(&built_filter.state);
-                (built_filter.filter, Some(built_filter.state))
+                let request_satisfied = built_filter
+                    .state
+                    .satisfies_request(&initial_privacy_filter.key());
+                (
+                    built_filter.filter,
+                    Some(built_filter.state),
+                    Some(PrivacyFilterApplyOutcome { request_satisfied }),
+                )
             } else {
                 (
                     screen_capture_kit_no_exclusion_filter(display, &content.apps()),
+                    None,
                     None,
                 )
             };
@@ -3638,6 +3656,7 @@ fn start_screen_capture_kit_session(
             recording_file: output_file_str,
             system_audio_recording_file: system_audio_output_file,
             output_files,
+            initial_privacy_filter_outcome,
         })
     })();
 
@@ -4006,7 +4025,7 @@ pub fn rotate_screen_capture_session(
 pub fn update_active_privacy_filter(
     _active_session: &mut Option<ActiveCaptureSession>,
     _filter: PrivacyContentFilter,
-) -> Result<(), PrivacyFilterApplyError> {
+) -> Result<PrivacyFilterApplyOutcome, PrivacyFilterApplyError> {
     Err(PrivacyFilterApplyError {
         kind: PrivacyFilterApplyErrorKind::UnsupportedPlatform,
         message: "Privacy content filters require ScreenCaptureKit".to_string(),
@@ -4017,7 +4036,7 @@ pub fn update_active_privacy_filter(
 pub fn update_active_privacy_filter(
     active_session: &mut Option<ActiveCaptureSession>,
     filter: PrivacyContentFilter,
-) -> Result<(), PrivacyFilterApplyError> {
+) -> Result<PrivacyFilterApplyOutcome, PrivacyFilterApplyError> {
     let Some(session) = active_session.as_mut() else {
         return Err(PrivacyFilterApplyError {
             kind: PrivacyFilterApplyErrorKind::FilterUpdateFailed,
@@ -4248,6 +4267,7 @@ pub struct StartedCaptureSession {
     pub recording_file: String,
     pub system_audio_recording_file: Option<String>,
     pub output_files: CaptureOutputFiles,
+    pub initial_privacy_filter_outcome: Option<PrivacyFilterApplyOutcome>,
 }
 
 #[cfg(not(target_os = "macos"))]

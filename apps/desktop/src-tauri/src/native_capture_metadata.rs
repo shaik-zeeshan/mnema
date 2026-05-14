@@ -330,71 +330,72 @@ pub fn refresh_metadata_state(
     decision
 }
 
+pub fn refresh_static_excluded_app_privacy_state(
+    state: &CaptureMetadataState,
+    privacy: &PrivacySettings,
+) -> PrivacyFilterDecision {
+    let decision = evaluate_privacy(privacy, &MetadataContext::default());
+    state
+        .lock()
+        .expect("capture metadata state poisoned")
+        .latest_decision = decision.clone();
+    decision
+}
+
 #[cfg(target_os = "macos")]
 pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
     use cidre::ns;
 
     let mut center = ns::Workspace::shared().notification_center();
-    let did_activate_guard = center.add_observer_guard(
-        ns::workspace::notification::did_activate_app(),
-        None,
-        None,
-        {
+    let mut guards = Vec::new();
+    for (notification, reason) in [
+        (
+            ns::workspace::notification::did_activate_app(),
+            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
+        ),
+        (
+            ns::workspace::notification::did_deactivate_app(),
+            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
+        ),
+        (
+            ns::workspace::notification::active_space_did_change(),
+            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
+        ),
+        (
+            ns::workspace::notification::did_launch_app(),
+            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+        ),
+        (
+            ns::workspace::notification::did_terminate_app(),
+            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+        ),
+        (
+            ns::workspace::notification::did_hide_app(),
+            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+        ),
+        (
+            ns::workspace::notification::did_unhide_app(),
+            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+        ),
+    ] {
+        guards.push(center.add_observer_guard(notification, None, None, {
             let app_handle = app_handle.clone();
             move |_notification| {
-                refresh_metadata_from_app_settings(&app_handle);
+                crate::native_capture::privacy::request_privacy_filter_refresh(&app_handle, reason);
             }
-        },
-    );
-    let active_space_guard = center.add_observer_guard(
-        ns::workspace::notification::active_space_did_change(),
-        None,
-        None,
-        {
-            let app_handle = app_handle.clone();
-            move |_notification| {
-                refresh_metadata_from_app_settings(&app_handle);
-            }
-        },
-    );
+        }));
+    }
 
     replace_metadata_notifier_guards(
         app_handle
             .state::<crate::native_capture::MetadataNotifierState>()
             .inner(),
-        vec![did_activate_guard, active_space_guard],
+        guards,
     );
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn start_metadata_notifier(_app_handle: tauri::AppHandle) {}
-
-#[cfg(target_os = "macos")]
-fn refresh_metadata_from_app_settings(app_handle: &tauri::AppHandle) {
-    let is_running = app_handle
-        .state::<crate::native_capture::NativeCaptureState>()
-        .lock()
-        .expect("native capture state poisoned")
-        .session()
-        .is_running;
-    if !is_running {
-        return;
-    }
-
-    let settings = app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
-        .lock()
-        .expect("recording settings state poisoned")
-        .settings
-        .clone();
-    refresh_metadata_state(
-        app_handle
-            .state::<crate::native_capture::CaptureMetadataState>()
-            .inner(),
-        &settings.metadata,
-        &settings.privacy,
-    );
-}
 
 #[cfg(target_os = "macos")]
 fn replace_metadata_notifier_guards(

@@ -9,7 +9,7 @@ pub(crate) mod metadata;
 mod microphone;
 #[path = "native_capture_output.rs"]
 pub(crate) mod output;
-mod privacy;
+pub(crate) mod privacy;
 mod private_browser;
 mod runtime;
 mod segments;
@@ -60,6 +60,7 @@ pub use microphone::{
 };
 use runtime::validate_start_request;
 pub type NativeCaptureState = Mutex<RecordingLifecycle>;
+pub use privacy::PrivacyFilterRefreshState;
 pub use settings::RecordingSettingsState;
 // Re-exported so adapter-level Tauri commands (e.g. `open_debug_window`) can
 // read the persisted recording settings through the same seam used by the
@@ -2369,6 +2370,31 @@ fn finish_recording_settings_update(
     }
 
     emit_recording_settings_changed(app_handle, &settings);
+    let privacy_changed = previous_settings.privacy != settings.privacy;
+    let metadata_changed = previous_settings.metadata != settings.metadata;
+    if metadata_changed {
+        privacy::request_privacy_filter_refresh(
+            app_handle,
+            privacy::PrivacyRefreshReason::MetadataSettingsMutation,
+        );
+    } else if privacy_changed {
+        let only_excluded_apps_changed = previous_settings.privacy.excluded_apps
+            != settings.privacy.excluded_apps
+            && previous_settings.privacy.excluded_website_rules
+                == settings.privacy.excluded_website_rules
+            && previous_settings.privacy.browser_title_rules
+                == settings.privacy.browser_title_rules
+            && previous_settings.privacy.private_browser_exclusion_enabled
+                == settings.privacy.private_browser_exclusion_enabled;
+        let reason = if only_excluded_apps_changed
+            && !privacy::dynamic_privacy_features_enabled(&settings.privacy)
+        {
+            privacy::PrivacyRefreshReason::StaticAppRuleMutation
+        } else {
+            privacy::PrivacyRefreshReason::DynamicPrivacySettingsMutation
+        };
+        privacy::request_privacy_filter_refresh(app_handle, reason);
+    }
     crate::status_bar::refresh(app_handle);
 
     Ok(settings)
