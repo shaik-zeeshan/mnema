@@ -168,10 +168,17 @@ fn website_fingerprint(rule: &WebsiteRule) -> String {
     } else {
         rule
     };
+    let Some(host) = rule.host.as_deref() else {
+        return fingerprint(&["website_rule", "invalid", rule.pattern.trim()]);
+    };
     fingerprint(&[
         "website_rule",
-        rule.host.as_deref().unwrap_or(""),
-        if rule.include_subdomains { "subdomains" } else { "exact" },
+        host,
+        if rule.include_subdomains {
+            "subdomains"
+        } else {
+            "exact"
+        },
         rule.path_prefix.as_deref().unwrap_or(""),
         &rule.port.map(|port| port.to_string()).unwrap_or_default(),
     ])
@@ -836,35 +843,43 @@ pub fn forget_privacy_redaction_source_label(
     app_handle: tauri::AppHandle,
 ) -> Result<Vec<PrivacyRedactionSourceDto>, CaptureErrorResponse> {
     let history_path = history_file_path(&app_handle);
-    let mut history = app_handle
-        .state::<PrivacyRedactionSourcesState>()
-        .lock()
-        .expect("privacy redaction source state poisoned")
-        .file
-        .clone();
-    let record = history
-        .sources
-        .get_mut(&source_id)
-        .ok_or_else(|| err("privacy_source_not_found", "Privacy source not found"))?;
-    if record.deleted_at.is_none() {
-        return Err(err("cannot_forget_active_source", "Active privacy sources cannot be forgotten"));
-    }
-    if !record.label_forgotten {
-        record.label = None;
-        record.detail = None;
-        record.fingerprint = None;
-        record.restore_payload = None;
-        record.label_forgotten = true;
-        record.updated_at = now_rfc3339();
-        persist_history_to_path(&history_path, &history)?;
-        app_handle
-            .state::<PrivacyRedactionSourcesState>()
+    let mut changed = false;
+    let sources = {
+        let state = app_handle.state::<PrivacyRedactionSourcesState>();
+        let mut history_state = state
             .lock()
-            .expect("privacy redaction source state poisoned")
-            .file = history.clone();
+            .expect("privacy redaction source state poisoned");
+        let original_history = history_state.file.clone();
+        let record = history_state
+            .file
+            .sources
+            .get_mut(&source_id)
+            .ok_or_else(|| err("privacy_source_not_found", "Privacy source not found"))?;
+        if record.deleted_at.is_none() {
+            return Err(err(
+                "cannot_forget_active_source",
+                "Active privacy sources cannot be forgotten",
+            ));
+        }
+        if !record.label_forgotten {
+            record.label = None;
+            record.detail = None;
+            record.fingerprint = None;
+            record.restore_payload = None;
+            record.label_forgotten = true;
+            record.updated_at = now_rfc3339();
+            if let Err(error) = persist_history_to_path(&history_path, &history_state.file) {
+                history_state.file = original_history;
+                return Err(error);
+            }
+            changed = true;
+        }
+        manageable_sources(&history_state.file)
+    };
+    if changed {
         let _ = app_handle.emit(PRIVACY_REDACTION_SOURCES_CHANGED_EVENT, ());
     }
-    Ok(manageable_sources(&history))
+    Ok(sources)
 }
 
 fn manageable_sources(history: &PrivacyRedactionSourcesFile) -> Vec<PrivacyRedactionSourceDto> {
@@ -1022,6 +1037,29 @@ mod tests {
         assert_eq!(
             source_to_resolution("website-missing", None).status,
             PrivacyRedactionSourceStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn website_fingerprint_distinguishes_unparseable_patterns() {
+        let first = parse_website_rule("website-a", true, "not a url");
+        let second = parse_website_rule("website-b", true, "also invalid!");
+
+        assert!(first.host.is_none());
+        assert!(second.host.is_none());
+        assert_ne!(website_fingerprint(&first), website_fingerprint(&second));
+    }
+
+    #[test]
+    fn website_fingerprint_keeps_valid_canonical_equivalence() {
+        let shorthand = parse_website_rule("website-a", true, "example.com/private");
+        let explicit = parse_website_rule("website-b", true, "https://example.com/private");
+
+        assert_eq!(shorthand.host.as_deref(), Some("example.com"));
+        assert_eq!(explicit.host.as_deref(), Some("example.com"));
+        assert_eq!(
+            website_fingerprint(&shorthand),
+            website_fingerprint(&explicit)
         );
     }
 }
