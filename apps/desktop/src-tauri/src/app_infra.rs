@@ -11,6 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "macos")]
+use std::sync::Condvar;
+
 #[cfg(test)]
 use std::sync::OnceLock;
 
@@ -40,8 +43,8 @@ const APP_INFRA_LOCK_FILE_NAME: &str = ".app-infra.lock";
 const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
 const FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
 const FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS: f64 = 5.0;
-const SCRUB_PREVIEW_DEFAULT_MAX_PIXEL_SIZE: u32 = 640;
-const SCRUB_PREVIEW_MIN_MAX_PIXEL_SIZE: u32 = 256;
+const SCRUB_PREVIEW_DEFAULT_MAX_PIXEL_SIZE: u32 = 200;
+const SCRUB_PREVIEW_MIN_MAX_PIXEL_SIZE: u32 = 200;
 const SCRUB_PREVIEW_MAX_MAX_PIXEL_SIZE: u32 = 1280;
 const SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS: u128 = 25;
 const GENERATED_FRAME_PREVIEW_CACHE_DIR: &str = "frame-previews";
@@ -1346,6 +1349,10 @@ fn generated_scrub_preview_file_name(frame_id: i64, max_pixel_size: u32) -> Stri
     format!("scrub-frame-{frame_id}-{max_pixel_size}.jpg")
 }
 
+fn generated_scrub_preview_path(cache_dir: &Path, frame_id: i64, max_pixel_size: u32) -> PathBuf {
+    cache_dir.join(generated_scrub_preview_file_name(frame_id, max_pixel_size))
+}
+
 fn clamp_scrub_preview_max_pixel_size(max_pixel_size: Option<u32>) -> u32 {
     max_pixel_size
         .unwrap_or(SCRUB_PREVIEW_DEFAULT_MAX_PIXEL_SIZE)
@@ -1493,16 +1500,21 @@ fn persist_generated_frame_preview(
     Ok(output_path)
 }
 
-fn persist_generated_scrub_preview(
-    app_handle: &tauri::AppHandle,
+fn persist_generated_scrub_preview_in_dir(
+    cache_dir: &Path,
     frame_id: i64,
     max_pixel_size: u32,
     bytes: &[u8],
 ) -> Result<PathBuf, String> {
-    let cache_dir = ensure_generated_frame_preview_cache_dir(app_handle)?;
-    let output_path = cache_dir.join(generated_scrub_preview_file_name(frame_id, max_pixel_size));
+    fs::create_dir_all(cache_dir).map_err(|error| {
+        format!(
+            "failed to create preview cache directory {}: {error}",
+            cache_dir.display()
+        )
+    })?;
+    let output_path = generated_scrub_preview_path(cache_dir, frame_id, max_pixel_size);
     if !output_path.is_file() {
-        let temp_file = tempfile::NamedTempFile::new_in(&cache_dir).map_err(|error| {
+        let temp_file = tempfile::NamedTempFile::new_in(cache_dir).map_err(|error| {
             format!(
                 "failed to create temporary scrub preview file in {}: {error}",
                 cache_dir.display()
@@ -1521,7 +1533,6 @@ fn persist_generated_scrub_preview(
             )
         })?;
     }
-    allow_preview_file(app_handle, &output_path)?;
     Ok(output_path)
 }
 
@@ -2070,56 +2081,138 @@ async fn extract_preview_image_from_video(
 }
 
 #[cfg(target_os = "macos")]
-fn extract_scrub_preview_image_from_video_blocking(
+fn extract_scrub_preview_images_from_video_batch_blocking(
     video_path: PathBuf,
-    video_offset_ms: u64,
+    video_offset_ms: Vec<u64>,
     max_pixel_size: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
     #[cfg(test)]
-    if let Some(result) =
-        run_test_video_preview_extractor(&video_path, video_offset_ms as f64 / 1000.0)
+    if test_video_preview_extractor_state()
+        .lock()
+        .expect("test video preview extractor poisoned")
+        .is_some()
     {
-        return result.map(|(bytes, _)| bytes);
+        let mut results = HashMap::new();
+        for offset_ms in video_offset_ms {
+            if let Some(result) =
+                run_test_video_preview_extractor(&video_path, offset_ms as f64 / 1000.0)
+            {
+                results.insert(offset_ms, result.map(|(bytes, _)| bytes));
+            }
+        }
+        return Ok(results);
+    }
+
+    if video_offset_ms.is_empty() {
+        return Ok(HashMap::new());
     }
 
     let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
-    use cidre::{av, cg, ns};
+    use cidre::{av, cg, cm, ns};
 
     let video_url = ns::Url::with_fs_path_str(&video_path.to_string_lossy(), false);
     let asset = av::UrlAsset::with_url(&video_url, None)
         .ok_or_else(|| format!("failed to open video asset at {}", video_path.display()))?;
-    let requested_time = exact_preview_requested_time(video_offset_ms);
+    let requested_times = video_offset_ms
+        .iter()
+        .map(|offset_ms| (*offset_ms, exact_preview_requested_time(*offset_ms)))
+        .collect::<Vec<_>>();
+    let requested_time_values = requested_times
+        .iter()
+        .map(|(_, requested_time)| ns::Value::with_cm_time(requested_time))
+        .collect::<Vec<_>>();
+    let requested_time_array = ns::Array::from_slice_retained(&requested_time_values);
     let mut image_generator = av::AssetImageGenerator::with_asset(asset.as_ref());
     image_generator.set_applies_preferred_track_transform(true);
     image_generator.set_max_size(cg::Size {
         width: f64::from(max_pixel_size),
         height: f64::from(max_pixel_size),
     });
-    let (cg_image, _actual_time) = block_on_waker_driven_future(
-        image_generator.cg_image_for_time(requested_time),
-    )
-    .map_err(|error| {
-        format!(
-            "failed to generate scrub preview image from video {} at {}ms: {error}",
-            video_path.display(),
-            video_offset_ms,
-        )
-    })?;
-    let preview = scrub_preview_image_bytes_from_cg_image(cg_image.as_ref());
+    let tolerant_window = cm::Time::with_secs(0.25, 600);
+    image_generator.set_requested_time_tolerance_before(tolerant_window);
+    image_generator.set_requested_time_tolerance_after(tolerant_window);
+
+    struct BatchScrubPreviewState {
+        remaining: usize,
+        results: HashMap<cm::Time, Result<Vec<u8>, String>>,
+    }
+
+    let state = Arc::new((
+        Mutex::new(BatchScrubPreviewState {
+            remaining: requested_times.len(),
+            results: HashMap::new(),
+        }),
+        Condvar::new(),
+    ));
+    let callback_state = Arc::clone(&state);
+    let mut block = av::AssetImageGeneratorCh::new5(
+        move |requested_time: cm::Time,
+              image: Option<&cg::Image>,
+              _actual_time: cm::Time,
+              result: av::AssetImageGeneratorResult,
+              error: Option<&ns::Error>| {
+            let image_result = match result {
+                av::AssetImageGeneratorResult::Succeeded => image
+                    .ok_or_else(|| "scrub preview generation succeeded without image".to_string())
+                    .and_then(scrub_preview_image_bytes_from_cg_image),
+                av::AssetImageGeneratorResult::Failed => Err(error
+                    .map(|error| format!("scrub preview image generation failed: {error}"))
+                    .unwrap_or_else(|| "scrub preview image generation failed".to_string())),
+                av::AssetImageGeneratorResult::Cancelled => {
+                    Err("scrub preview image generation was cancelled".to_string())
+                }
+            };
+
+            let (lock, cvar) = &*callback_state;
+            let mut state = lock.lock().expect("scrub preview batch state poisoned");
+            state.results.insert(requested_time, image_result);
+            state.remaining = state.remaining.saturating_sub(1);
+            if state.remaining == 0 {
+                cvar.notify_one();
+            }
+        },
+    );
+    image_generator.cg_images_for_times_ch(requested_time_array.as_ref(), &mut block);
+
+    let (lock, cvar) = &*state;
+    let mut state = lock.lock().expect("scrub preview batch state poisoned");
+    while state.remaining > 0 {
+        state = cvar
+            .wait(state)
+            .expect("scrub preview batch state poisoned while waiting");
+    }
+    let results_by_time = std::mem::take(&mut state.results);
+    drop(state);
     image_generator.cancel_all_cg_image_gen();
-    preview
+
+    Ok(requested_times
+        .into_iter()
+        .map(|(offset_ms, requested_time)| {
+            let result = results_by_time
+                .get(&requested_time)
+                .cloned()
+                .unwrap_or_else(|| {
+                    Err(format!(
+                        "scrub preview generation did not return image for {}ms",
+                        offset_ms
+                    ))
+                });
+            (offset_ms, result)
+        })
+        .collect())
 }
 
 #[cfg(target_os = "macos")]
-async fn extract_scrub_preview_image_from_video(
+async fn extract_scrub_preview_images_from_video_batch(
     video_path: &Path,
-    video_offset_ms: u64,
+    video_offset_ms: &[u64],
     max_pixel_size: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
     tokio::task::spawn_blocking({
         let video_path = video_path.to_path_buf();
+        let video_offset_ms = video_offset_ms.to_vec();
         move || {
-            extract_scrub_preview_image_from_video_blocking(
+            extract_scrub_preview_images_from_video_batch_blocking(
                 video_path,
                 video_offset_ms,
                 max_pixel_size,
@@ -2131,11 +2224,11 @@ async fn extract_scrub_preview_image_from_video(
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn extract_scrub_preview_image_from_video(
+async fn extract_scrub_preview_images_from_video_batch(
     _video_path: &Path,
-    _video_offset_ms: u64,
+    _video_offset_ms: &[u64],
     _max_pixel_size: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
     Err("scrub preview video generation is only supported on macOS".to_string())
 }
 
@@ -2389,160 +2482,148 @@ async fn get_frame_preview_inner_with_logging(
     result
 }
 
-async fn get_frame_scrub_preview_inner(
+#[derive(Debug, Clone)]
+struct PreparedVideoScrubPreview {
+    frame_id: i64,
+    video_path: PathBuf,
+    video_offset_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+enum PreparedFrameScrubPreview {
+    Ready(FrameScrubPreviewResultDto),
+    Video(PreparedVideoScrubPreview),
+}
+
+async fn prepare_frame_scrub_preview(
     infra: &::app_infra::AppInfra,
-    cache: &FramePreviewCacheState,
     app_handle: &tauri::AppHandle,
     frame_id: i64,
     max_pixel_size: u32,
-) -> Result<FrameScrubPreviewResultDto, String> {
+    cache_dir: Option<&Path>,
+) -> Result<PreparedFrameScrubPreview, String> {
     let Some(frame) = infra
         .get_frame(frame_id)
         .await
         .map_err(|error| format!("failed to get frame {frame_id}: {error}"))?
     else {
-        return Ok(FrameScrubPreviewResultDto {
-            frame_id,
-            preview: None,
-            missing_reason: Some(ScrubPreviewMissingReasonDto::FrameNotFound),
-        });
+        return Ok(PreparedFrameScrubPreview::Ready(
+            FrameScrubPreviewResultDto {
+                frame_id,
+                preview: None,
+                missing_reason: Some(ScrubPreviewMissingReasonDto::FrameNotFound),
+            },
+        ));
     };
 
     let frame_file_path = PathBuf::from(&frame.file_path);
     if frame_file_path.is_file() {
         allow_preview_file(app_handle, &frame_file_path)?;
-        return Ok(FrameScrubPreviewResultDto {
-            frame_id,
-            preview: Some(frame_preview_payload(
-                frame_file_path.to_string_lossy(),
-                frame_image_mime_type(&frame_file_path),
-                FramePreviewSourceKindDto::OriginalFrame,
-            )),
-            missing_reason: None,
-        });
+        return Ok(PreparedFrameScrubPreview::Ready(
+            FrameScrubPreviewResultDto {
+                frame_id,
+                preview: Some(frame_preview_payload(
+                    frame_file_path.to_string_lossy(),
+                    frame_image_mime_type(&frame_file_path),
+                    FramePreviewSourceKindDto::OriginalFrame,
+                )),
+                missing_reason: None,
+            },
+        ));
+    }
+
+    if let Some(cache_dir) = cache_dir {
+        let cached_path = generated_scrub_preview_path(cache_dir, frame_id, max_pixel_size);
+        if cached_path.is_file() {
+            return Ok(PreparedFrameScrubPreview::Ready(
+                FrameScrubPreviewResultDto {
+                    frame_id,
+                    preview: Some(frame_preview_payload(
+                        cached_path.to_string_lossy(),
+                        "image/jpeg",
+                        FramePreviewSourceKindDto::ScrubPreview,
+                    )),
+                    missing_reason: None,
+                },
+            ));
+        }
     }
 
     let Some(segment_paths) = resolve_segment_preview_paths(&frame_file_path) else {
-        return Ok(FrameScrubPreviewResultDto {
-            frame_id,
-            preview: None,
-            missing_reason: Some(if frame_file_path.extension().is_some() {
-                ScrubPreviewMissingReasonDto::DirectFileMissing
-            } else {
-                ScrubPreviewMissingReasonDto::SegmentUnresolved
-            }),
-        });
+        return Ok(PreparedFrameScrubPreview::Ready(
+            FrameScrubPreviewResultDto {
+                frame_id,
+                preview: None,
+                missing_reason: Some(if frame_file_path.extension().is_some() {
+                    ScrubPreviewMissingReasonDto::DirectFileMissing
+                } else {
+                    ScrubPreviewMissingReasonDto::SegmentUnresolved
+                }),
+            },
+        ));
     };
 
     if !segment_paths.video_path.is_file() {
-        return Ok(FrameScrubPreviewResultDto {
-            frame_id,
-            preview: None,
-            missing_reason: Some(ScrubPreviewMissingReasonDto::SegmentVideoMissing),
-        });
+        return Ok(PreparedFrameScrubPreview::Ready(
+            FrameScrubPreviewResultDto {
+                frame_id,
+                preview: None,
+                missing_reason: Some(ScrubPreviewMissingReasonDto::SegmentVideoMissing),
+            },
+        ));
     }
     if fs::metadata(&segment_paths.video_path)
         .map(|metadata| metadata.len() == 0)
         .unwrap_or(true)
         || !mov_file_appears_openable_for_preview(&segment_paths.video_path).unwrap_or(false)
     {
-        return Ok(FrameScrubPreviewResultDto {
-            frame_id,
-            preview: None,
-            missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
-        });
+        return Ok(PreparedFrameScrubPreview::Ready(
+            FrameScrubPreviewResultDto {
+                frame_id,
+                preview: None,
+                missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
+            },
+        ));
     }
 
     let index = match load_screen_segment_frame_index(&segment_paths.video_path) {
         Ok(Some(index)) => index,
         Ok(None) => {
-            return Ok(FrameScrubPreviewResultDto {
-                frame_id,
-                preview: None,
-                missing_reason: Some(ScrubPreviewMissingReasonDto::FrameIndexMissing),
-            });
+            return Ok(PreparedFrameScrubPreview::Ready(
+                FrameScrubPreviewResultDto {
+                    frame_id,
+                    preview: None,
+                    missing_reason: Some(ScrubPreviewMissingReasonDto::FrameIndexMissing),
+                },
+            ));
         }
         Err(_) => {
-            return Ok(FrameScrubPreviewResultDto {
-                frame_id,
-                preview: None,
-                missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
-            });
+            return Ok(PreparedFrameScrubPreview::Ready(
+                FrameScrubPreviewResultDto {
+                    frame_id,
+                    preview: None,
+                    missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
+                },
+            ));
         }
     };
     let Some(indexed_offset) = find_indexed_frame_preview_offset(&frame, &index) else {
-        return Ok(FrameScrubPreviewResultDto {
-            frame_id,
-            preview: None,
-            missing_reason: Some(ScrubPreviewMissingReasonDto::FrameIndexEntryMissing),
-        });
-    };
-
-    let bytes = loop {
-        let video_request_guard = {
-            let mut preview_state = cache.lock().expect("frame preview cache poisoned");
-            match preview_state.begin_video_request(&segment_paths.video_path) {
-                Ok(()) => Ok(()),
-                Err(rx) => Err(rx),
-            }
-        };
-        match video_request_guard {
-            Ok(()) => {
-                let result = extract_scrub_preview_image_from_video(
-                    &segment_paths.video_path,
-                    indexed_offset.video_offset_ms,
-                    max_pixel_size,
-                )
-                .await;
-                let notify_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
-                cache
-                    .lock()
-                    .expect("frame preview cache poisoned")
-                    .finish_video_request(&segment_paths.video_path, notify_result);
-                match result {
-                    Ok(bytes) => break bytes,
-                    Err(_) => {
-                        return Ok(FrameScrubPreviewResultDto {
-                            frame_id,
-                            preview: None,
-                            missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
-                        });
-                    }
-                }
-            }
-            Err(waiter) => match waiter.await {
-                Ok(Ok(())) => continue,
-                _ => {
-                    return Ok(FrameScrubPreviewResultDto {
-                        frame_id,
-                        preview: None,
-                        missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
-                    });
-                }
+        return Ok(PreparedFrameScrubPreview::Ready(
+            FrameScrubPreviewResultDto {
+                frame_id,
+                preview: None,
+                missing_reason: Some(ScrubPreviewMissingReasonDto::FrameIndexEntryMissing),
             },
-        }
+        ));
     };
 
-    let persisted_path =
-        match persist_generated_scrub_preview(app_handle, frame_id, max_pixel_size, &bytes) {
-            Ok(path) => path,
-            Err(_) => {
-                return Ok(FrameScrubPreviewResultDto {
-                    frame_id,
-                    preview: None,
-                    missing_reason: Some(ScrubPreviewMissingReasonDto::CacheWriteFailed),
-                });
-            }
-        };
-    Ok(FrameScrubPreviewResultDto {
-        frame_id,
-        preview: Some(frame_preview_payload(
-            persisted_path.to_string_lossy(),
-            "image/jpeg",
-            FramePreviewSourceKindDto::ScrubPreview,
-        )),
-        missing_reason: None,
-    })
+    Ok(PreparedFrameScrubPreview::Video(
+        PreparedVideoScrubPreview {
+            frame_id,
+            video_path: segment_paths.video_path,
+            video_offset_ms: indexed_offset.video_offset_ms,
+        },
+    ))
 }
 
 fn preview_cache_ttl(settings: &crate::native_capture::RecordingSettingsState) -> Duration {
@@ -4780,8 +4861,11 @@ pub async fn get_frame_scrub_previews(
         }
     }
     let unique_count = unique_frame_ids.len();
+    let scrub_cache_dir_result = ensure_generated_frame_preview_cache_dir(&app_handle);
+    let scrub_cache_dir = scrub_cache_dir_result.as_ref().ok().map(PathBuf::as_path);
 
     let mut unique_results = HashMap::new();
+    let mut video_batches: HashMap<PathBuf, Vec<PreparedVideoScrubPreview>> = HashMap::new();
     let mut cached_count = 0usize;
     let mut generated_count = 0usize;
     let mut missing_count = 0usize;
@@ -4807,38 +4891,238 @@ pub async fn get_frame_scrub_previews(
             }
         }
 
-        let result =
-            get_frame_scrub_preview_inner(&infra, &cache, &app_handle, frame_id, max_pixel_size)
-                .await?;
-        let source_kind = result
-            .preview
-            .as_ref()
-            .map(|preview| format!("{:?}", preview.source_kind))
-            .unwrap_or_else(|| {
-                missing_count += 1;
-                "missing".to_string()
-            });
-        if result.preview.is_some() {
-            generated_count += 1;
-        }
-        let frame_duration_ms = frame_started_at.elapsed().as_millis();
-        if frame_duration_ms >= SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS {
-            log_scrub_preview_perf(
-                "rust_scrub_preview_frame",
-                format!(
-                    "frameId={frame_id} durationMs={frame_duration_ms} sourceKind={source_kind}"
-                ),
-            );
-        }
-        if !ttl.is_zero() {
-            if let Some(preview) = result.preview.as_ref() {
-                cache
-                    .lock()
-                    .expect("frame preview cache poisoned")
-                    .insert_scrub(cache_key, preview.clone(), ttl, Instant::now());
+        match prepare_frame_scrub_preview(
+            &infra,
+            &app_handle,
+            frame_id,
+            max_pixel_size,
+            scrub_cache_dir,
+        )
+        .await?
+        {
+            PreparedFrameScrubPreview::Ready(result) => {
+                let source_kind = result
+                    .preview
+                    .as_ref()
+                    .map(|preview| format!("{:?}", preview.source_kind))
+                    .unwrap_or_else(|| {
+                        missing_count += 1;
+                        "missing".to_string()
+                    });
+                if result.preview.is_some() {
+                    generated_count += 1;
+                }
+                let frame_duration_ms = frame_started_at.elapsed().as_millis();
+                if frame_duration_ms >= SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS {
+                    log_scrub_preview_perf(
+                        "rust_scrub_preview_frame",
+                        format!(
+                            "frameId={frame_id} durationMs={frame_duration_ms} sourceKind={source_kind}"
+                        ),
+                    );
+                }
+                if !ttl.is_zero() {
+                    if let Some(preview) = result.preview.as_ref() {
+                        cache
+                            .lock()
+                            .expect("frame preview cache poisoned")
+                            .insert_scrub(cache_key, preview.clone(), ttl, Instant::now());
+                    }
+                }
+                unique_results.insert(frame_id, result);
+            }
+            PreparedFrameScrubPreview::Video(preview) => {
+                video_batches
+                    .entry(preview.video_path.clone())
+                    .or_default()
+                    .push(preview);
             }
         }
-        unique_results.insert(frame_id, result);
+    }
+
+    for (video_path, candidates) in video_batches {
+        let Some(cache_dir) = scrub_cache_dir else {
+            for candidate in candidates {
+                missing_count += 1;
+                unique_results.insert(
+                    candidate.frame_id,
+                    FrameScrubPreviewResultDto {
+                        frame_id: candidate.frame_id,
+                        preview: None,
+                        missing_reason: Some(ScrubPreviewMissingReasonDto::CacheWriteFailed),
+                    },
+                );
+            }
+            continue;
+        };
+
+        let mut pending = candidates;
+        loop {
+            let mut still_pending = Vec::new();
+            for candidate in pending {
+                let cache_key = scrub_preview_cache_key(candidate.frame_id, max_pixel_size);
+                if !ttl.is_zero() {
+                    let cached = cache
+                        .lock()
+                        .expect("frame preview cache poisoned")
+                        .get_scrub(cache_key, ttl, Instant::now());
+                    if let Some(preview) = cached {
+                        unique_results.insert(
+                            candidate.frame_id,
+                            FrameScrubPreviewResultDto {
+                                frame_id: candidate.frame_id,
+                                preview: Some(preview),
+                                missing_reason: None,
+                            },
+                        );
+                        cached_count += 1;
+                        continue;
+                    }
+                }
+                still_pending.push(candidate);
+            }
+
+            if still_pending.is_empty() {
+                break;
+            }
+
+            let video_request_guard = {
+                let mut preview_state = cache.lock().expect("frame preview cache poisoned");
+                match preview_state.begin_video_request(&video_path) {
+                    Ok(()) => Ok(()),
+                    Err(rx) => Err(rx),
+                }
+            };
+
+            match video_request_guard {
+                Ok(()) => {
+                    let batch_started_at = Instant::now();
+                    let mut offsets = Vec::new();
+                    for candidate in &still_pending {
+                        if !offsets.contains(&candidate.video_offset_ms) {
+                            offsets.push(candidate.video_offset_ms);
+                        }
+                    }
+                    let result = extract_scrub_preview_images_from_video_batch(
+                        &video_path,
+                        &offsets,
+                        max_pixel_size,
+                    )
+                    .await;
+                    let notify_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
+                    cache
+                        .lock()
+                        .expect("frame preview cache poisoned")
+                        .finish_video_request(&video_path, notify_result);
+
+                    let batch_duration_ms = batch_started_at.elapsed().as_millis();
+                    if batch_duration_ms >= SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS {
+                        log_scrub_preview_perf(
+                            "rust_scrub_preview_segment_batch",
+                            format!(
+                                "path={} frames={} offsets={} durationMs={batch_duration_ms}",
+                                video_path.display(),
+                                still_pending.len(),
+                                offsets.len(),
+                            ),
+                        );
+                    }
+
+                    let decoded_by_offset = match result {
+                        Ok(decoded_by_offset) => decoded_by_offset,
+                        Err(_) => {
+                            for candidate in still_pending {
+                                missing_count += 1;
+                                unique_results.insert(
+                                    candidate.frame_id,
+                                    FrameScrubPreviewResultDto {
+                                        frame_id: candidate.frame_id,
+                                        preview: None,
+                                        missing_reason: Some(
+                                            ScrubPreviewMissingReasonDto::DecodeFailed,
+                                        ),
+                                    },
+                                );
+                            }
+                            break;
+                        }
+                    };
+
+                    for candidate in still_pending {
+                        let frame_result = match decoded_by_offset.get(&candidate.video_offset_ms) {
+                            Some(Ok(bytes)) => match persist_generated_scrub_preview_in_dir(
+                                cache_dir,
+                                candidate.frame_id,
+                                max_pixel_size,
+                                bytes,
+                            ) {
+                                Ok(path) => FrameScrubPreviewResultDto {
+                                    frame_id: candidate.frame_id,
+                                    preview: Some(frame_preview_payload(
+                                        path.to_string_lossy(),
+                                        "image/jpeg",
+                                        FramePreviewSourceKindDto::ScrubPreview,
+                                    )),
+                                    missing_reason: None,
+                                },
+                                Err(_) => FrameScrubPreviewResultDto {
+                                    frame_id: candidate.frame_id,
+                                    preview: None,
+                                    missing_reason: Some(
+                                        ScrubPreviewMissingReasonDto::CacheWriteFailed,
+                                    ),
+                                },
+                            },
+                            _ => FrameScrubPreviewResultDto {
+                                frame_id: candidate.frame_id,
+                                preview: None,
+                                missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
+                            },
+                        };
+
+                        if let Some(preview) = frame_result.preview.as_ref() {
+                            generated_count += 1;
+                            if !ttl.is_zero() {
+                                cache
+                                    .lock()
+                                    .expect("frame preview cache poisoned")
+                                    .insert_scrub(
+                                        scrub_preview_cache_key(candidate.frame_id, max_pixel_size),
+                                        preview.clone(),
+                                        ttl,
+                                        Instant::now(),
+                                    );
+                            }
+                        } else {
+                            missing_count += 1;
+                        }
+                        unique_results.insert(candidate.frame_id, frame_result);
+                    }
+                    break;
+                }
+                Err(waiter) => match waiter.await {
+                    Ok(Ok(())) => {
+                        pending = still_pending;
+                    }
+                    _ => {
+                        for candidate in still_pending {
+                            missing_count += 1;
+                            unique_results.insert(
+                                candidate.frame_id,
+                                FrameScrubPreviewResultDto {
+                                    frame_id: candidate.frame_id,
+                                    preview: None,
+                                    missing_reason: Some(
+                                        ScrubPreviewMissingReasonDto::DecodeFailed,
+                                    ),
+                                },
+                            );
+                        }
+                        break;
+                    }
+                },
+            }
+        }
     }
 
     let total_duration_ms = started_at.elapsed().as_millis();

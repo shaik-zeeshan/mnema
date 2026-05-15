@@ -18,6 +18,14 @@
   import { developerOptions } from "$lib/developer-options.svelte";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import {
+    activeDisplayPreviewPathForFrame,
+    activeDisplayPreviewSourceForFrame,
+    activeExactPreviewDelayMs,
+    scrubPreviewResponseShouldApply,
+    scrubPreviewShouldPopulateExactCache,
+    timelineMovementShouldScheduleScrubPreview,
+  } from "$lib/timeline-preview-state";
+  import {
     getFocusableElements,
     isShortcutSuppressedTarget,
     matchShortcut,
@@ -129,8 +137,7 @@
   const ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS = 2;
   const ACTIVE_PREVIEW_VERY_FAST_SCRUB_PX_PER_MS = 4;
   const ACTIVE_PREVIEW_EXTREME_SCRUB_PX_PER_MS = 8;
-  const ACTIVE_PREVIEW_LARGE_JUMP_FRAMES = 8;
-  const ACTIVE_PREVIEW_SCRUB_MAX_PIXEL_SIZE = 640;
+  const ACTIVE_PREVIEW_SCRUB_MAX_PIXEL_SIZE = 200;
   const PREVIEW_CACHE_MAX_ENTRIES = 192;
   const PREVIEW_FAILURE_CACHE_TTL_MS = 5_000;
   const SCRUB_PERF_LOG_PREFIX = "[DEBUG-scrub-perf]";
@@ -461,9 +468,13 @@
   // previews stream in without any extra plumbing.
   let previewCache = $state<Map<number, string>>(new Map());
   let previewMimeTypeCache = $state<Map<number, string>>(new Map());
+  let previewSourceKindCache = $state<Map<number, FramePreviewDto["sourceKind"]>>(new Map());
+  let previewLoadMsCache = $state<Map<number, number>>(new Map());
   let previewFailedAt = $state<Map<number, number>>(new Map());
   let scrubPreviewCache = $state<Map<number, string>>(new Map());
   let scrubPreviewMimeTypeCache = $state<Map<number, string>>(new Map());
+  let scrubPreviewSourceKindCache = $state<Map<number, FramePreviewDto["sourceKind"]>>(new Map());
+  let scrubPreviewLoadMsCache = $state<Map<number, number>>(new Map());
   let scrubPreviewFailedAt = $state<Map<number, number>>(new Map());
   // Tracks the in-flight requests so concurrent scrolls don't fan out a
   // request per slot per scroll tick for the same id.
@@ -535,9 +546,33 @@
     timelineActive ? previewCache.get(timelineActive.id) ?? null : null,
   );
   const activeDisplayPreviewPath = $derived(
+    activeDisplayPreviewPathForFrame(
+      timelineActive?.id ?? null,
+      previewCache,
+      scrubPreviewCache,
+    ),
+  );
+  const activeDisplayPreviewSource = $derived<"exact" | "scrub" | "none">(
+    activeDisplayPreviewSourceForFrame(
+      timelineActive?.id ?? null,
+      previewCache,
+      scrubPreviewCache,
+    ),
+  );
+  const activeDisplayPreviewSourceKind = $derived<FramePreviewDto["sourceKind"] | "none">(
     timelineActive
-      ? previewCache.get(timelineActive.id) ?? scrubPreviewCache.get(timelineActive.id) ?? null
-      : null,
+      ? activeDisplayPreviewSource === "exact"
+        ? previewSourceKindCache.get(timelineActive.id) ?? "none"
+        : activeDisplayPreviewSource === "scrub"
+          ? scrubPreviewSourceKindCache.get(timelineActive.id) ?? "none"
+          : "none"
+      : "none",
+  );
+  const activeExactPreviewLoadMs = $derived(
+    timelineActive ? previewLoadMsCache.get(timelineActive.id) ?? null : null,
+  );
+  const activeScrubPreviewLoadMs = $derived(
+    timelineActive ? scrubPreviewLoadMsCache.get(timelineActive.id) ?? null : null,
   );
   const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
   let lastPreviewReuseFrameId = $state<number | null>(null);
@@ -2648,8 +2683,13 @@
   function prunePreviewCache(frames: FrameDto[]): void {
     if (
       previewCache.size === 0 &&
+      previewMimeTypeCache.size === 0 &&
+      previewSourceKindCache.size === 0 &&
+      previewLoadMsCache.size === 0 &&
       scrubPreviewCache.size === 0 &&
       scrubPreviewMimeTypeCache.size === 0 &&
+      scrubPreviewSourceKindCache.size === 0 &&
+      scrubPreviewLoadMsCache.size === 0 &&
       scrubPreviewFailedAt.size === 0
     ) {
       return;
@@ -2661,6 +2701,27 @@
     }
     if (next.size !== previewCache.size) {
       previewCache = next;
+    }
+    const nextPreviewMimeTypes = new Map<number, string>();
+    for (const [frameId, mimeType] of previewMimeTypeCache) {
+      if (keep.has(frameId)) nextPreviewMimeTypes.set(frameId, mimeType);
+    }
+    if (nextPreviewMimeTypes.size !== previewMimeTypeCache.size) {
+      previewMimeTypeCache = nextPreviewMimeTypes;
+    }
+    const nextPreviewSourceKinds = new Map<number, FramePreviewDto["sourceKind"]>();
+    for (const [frameId, sourceKind] of previewSourceKindCache) {
+      if (keep.has(frameId)) nextPreviewSourceKinds.set(frameId, sourceKind);
+    }
+    if (nextPreviewSourceKinds.size !== previewSourceKindCache.size) {
+      previewSourceKindCache = nextPreviewSourceKinds;
+    }
+    const nextPreviewLoadMs = new Map<number, number>();
+    for (const [frameId, loadMs] of previewLoadMsCache) {
+      if (keep.has(frameId)) nextPreviewLoadMs.set(frameId, loadMs);
+    }
+    if (nextPreviewLoadMs.size !== previewLoadMsCache.size) {
+      previewLoadMsCache = nextPreviewLoadMs;
     }
     const nextScrub = new Map<number, string>();
     for (const [frameId, url] of scrubPreviewCache) {
@@ -2675,6 +2736,20 @@
     }
     if (nextScrubMimeTypes.size !== scrubPreviewMimeTypeCache.size) {
       scrubPreviewMimeTypeCache = nextScrubMimeTypes;
+    }
+    const nextScrubSourceKinds = new Map<number, FramePreviewDto["sourceKind"]>();
+    for (const [frameId, sourceKind] of scrubPreviewSourceKindCache) {
+      if (keep.has(frameId)) nextScrubSourceKinds.set(frameId, sourceKind);
+    }
+    if (nextScrubSourceKinds.size !== scrubPreviewSourceKindCache.size) {
+      scrubPreviewSourceKindCache = nextScrubSourceKinds;
+    }
+    const nextScrubLoadMs = new Map<number, number>();
+    for (const [frameId, loadMs] of scrubPreviewLoadMsCache) {
+      if (keep.has(frameId)) nextScrubLoadMs.set(frameId, loadMs);
+    }
+    if (nextScrubLoadMs.size !== scrubPreviewLoadMsCache.size) {
+      scrubPreviewLoadMsCache = nextScrubLoadMs;
     }
     const nextScrubFailures = new Map<number, number>();
     for (const [frameId, failedAt] of scrubPreviewFailedAt) {
@@ -2812,12 +2887,30 @@
   function trimPreviewCache(): void {
     if (previewCache.size <= PREVIEW_CACHE_MAX_ENTRIES) return;
     const next = new Map(previewCache);
+    const evictedFrameIds: number[] = [];
     while (next.size > PREVIEW_CACHE_MAX_ENTRIES) {
       const oldestFrameId = next.keys().next().value;
       if (oldestFrameId == null) break;
       next.delete(oldestFrameId);
+      evictedFrameIds.push(oldestFrameId);
     }
     previewCache = next;
+    if (evictedFrameIds.length > 0) {
+      const nextMimeTypes = new Map(previewMimeTypeCache);
+      const nextSourceKinds = new Map(previewSourceKindCache);
+      const nextLoadMs = new Map(previewLoadMsCache);
+      const nextFailures = new Map(previewFailedAt);
+      for (const frameId of evictedFrameIds) {
+        nextMimeTypes.delete(frameId);
+        nextSourceKinds.delete(frameId);
+        nextLoadMs.delete(frameId);
+        nextFailures.delete(frameId);
+      }
+      previewMimeTypeCache = nextMimeTypes;
+      previewSourceKindCache = nextSourceKinds;
+      previewLoadMsCache = nextLoadMs;
+      previewFailedAt = nextFailures;
+    }
   }
 
   function trimScrubPreviewCache(): void {
@@ -2833,29 +2926,73 @@
     scrubPreviewCache = next;
     if (evictedFrameIds.length > 0) {
       const nextMimeTypes = new Map(scrubPreviewMimeTypeCache);
+      const nextSourceKinds = new Map(scrubPreviewSourceKindCache);
+      const nextLoadMs = new Map(scrubPreviewLoadMsCache);
       const nextFailures = new Map(scrubPreviewFailedAt);
       for (const frameId of evictedFrameIds) {
         nextMimeTypes.delete(frameId);
+        nextSourceKinds.delete(frameId);
+        nextLoadMs.delete(frameId);
         nextFailures.delete(frameId);
       }
       scrubPreviewMimeTypeCache = nextMimeTypes;
+      scrubPreviewSourceKindCache = nextSourceKinds;
+      scrubPreviewLoadMsCache = nextLoadMs;
       scrubPreviewFailedAt = nextFailures;
     }
   }
 
-  function touchPreviewCache(frameId: number, url: string): void {
+  function touchPreviewCache(
+    frameId: number,
+    url: string,
+    metadata?: {
+      mimeType: string;
+      sourceKind: FramePreviewDto["sourceKind"];
+      loadMs: number;
+    },
+  ): void {
     const next = new Map(previewCache);
     next.delete(frameId);
     next.set(frameId, url);
     previewCache = next;
+    if (metadata) {
+      const nextMimeTypes = new Map(previewMimeTypeCache);
+      nextMimeTypes.set(frameId, metadata.mimeType);
+      previewMimeTypeCache = nextMimeTypes;
+      const nextSourceKinds = new Map(previewSourceKindCache);
+      nextSourceKinds.set(frameId, metadata.sourceKind);
+      previewSourceKindCache = nextSourceKinds;
+      const nextLoadMs = new Map(previewLoadMsCache);
+      nextLoadMs.set(frameId, metadata.loadMs);
+      previewLoadMsCache = nextLoadMs;
+    }
     trimPreviewCache();
   }
 
-  function touchScrubPreviewCache(frameId: number, url: string): void {
+  function touchScrubPreviewCache(
+    frameId: number,
+    url: string,
+    metadata?: {
+      mimeType: string;
+      sourceKind: FramePreviewDto["sourceKind"];
+      loadMs: number;
+    },
+  ): void {
     const next = new Map(scrubPreviewCache);
     next.delete(frameId);
     next.set(frameId, url);
     scrubPreviewCache = next;
+    if (metadata) {
+      const nextMimeTypes = new Map(scrubPreviewMimeTypeCache);
+      nextMimeTypes.set(frameId, metadata.mimeType);
+      scrubPreviewMimeTypeCache = nextMimeTypes;
+      const nextSourceKinds = new Map(scrubPreviewSourceKindCache);
+      nextSourceKinds.set(frameId, metadata.sourceKind);
+      scrubPreviewSourceKindCache = nextSourceKinds;
+      const nextLoadMs = new Map(scrubPreviewLoadMsCache);
+      nextLoadMs.set(frameId, metadata.loadMs);
+      scrubPreviewLoadMsCache = nextLoadMs;
+    }
     trimScrubPreviewCache();
   }
 
@@ -2896,6 +3033,16 @@
       nextMimeTypes.delete(frameId);
       previewMimeTypeCache = nextMimeTypes;
     }
+    if (previewSourceKindCache.has(frameId)) {
+      const nextSourceKinds = new Map(previewSourceKindCache);
+      nextSourceKinds.delete(frameId);
+      previewSourceKindCache = nextSourceKinds;
+    }
+    if (previewLoadMsCache.has(frameId)) {
+      const nextLoadMs = new Map(previewLoadMsCache);
+      nextLoadMs.delete(frameId);
+      previewLoadMsCache = nextLoadMs;
+    }
   }
 
   function dropScrubPreviewCacheEntry(frameId: number): void {
@@ -2908,6 +3055,16 @@
       const nextMimeTypes = new Map(scrubPreviewMimeTypeCache);
       nextMimeTypes.delete(frameId);
       scrubPreviewMimeTypeCache = nextMimeTypes;
+    }
+    if (scrubPreviewSourceKindCache.has(frameId)) {
+      const nextSourceKinds = new Map(scrubPreviewSourceKindCache);
+      nextSourceKinds.delete(frameId);
+      scrubPreviewSourceKindCache = nextSourceKinds;
+    }
+    if (scrubPreviewLoadMsCache.has(frameId)) {
+      const nextLoadMs = new Map(scrubPreviewLoadMsCache);
+      nextLoadMs.delete(frameId);
+      scrubPreviewLoadMsCache = nextLoadMs;
     }
   }
 
@@ -3326,14 +3483,16 @@
       if (!dto) {
         throw new Error(`frame preview ${frameId} not found`);
       }
+      const loadMs = performance.now() - startedAt;
       clearPreviewFailure(frameId);
-      touchPreviewCache(frameId, dto.filePath);
+      touchPreviewCache(frameId, dto.filePath, {
+        mimeType: dto.mimeType,
+        sourceKind: dto.sourceKind,
+        loadMs,
+      });
       if (activePreviewLoadErrorFrameId === frameId) {
         activePreviewLoadErrorFrameId = null;
       }
-      const nextMimeTypes = new Map(previewMimeTypeCache);
-      nextMimeTypes.set(frameId, dto.mimeType);
-      previewMimeTypeCache = nextMimeTypes;
       if (dto.sourceKind === "original_frame") {
         previewDirectPathCount += 1;
       } else {
@@ -3342,7 +3501,7 @@
       if (isTimelineActiveFrame(frameId)) {
         setFrameActionStatus(null);
       }
-      scrubPerfLogSlow("exact_preview_loaded", performance.now() - startedAt, {
+      scrubPerfLogSlow("exact_preview_loaded", loadMs, {
         frameId,
         invokeMs: invokeDurationMs,
         sourceKind: dto.sourceKind,
@@ -3471,7 +3630,8 @@
         },
       });
       const invokeDurationMs = performance.now() - invokeStartedAt;
-      if (generation !== scrubPreviewFetchGeneration) {
+      const responseStale = generation !== scrubPreviewFetchGeneration;
+      if (!scrubPreviewResponseShouldApply(generation, scrubPreviewFetchGeneration)) {
         scrubPerfLog("scrub_preview_stale", {
           requested: frameIds.length,
           uncached: uncached.length,
@@ -3481,7 +3641,6 @@
         return;
       }
       const applyStartedAt = performance.now();
-      const nextMimeTypes = new Map(scrubPreviewMimeTypeCache);
       let generated = 0;
       let direct = 0;
       let missing = 0;
@@ -3494,21 +3653,26 @@
         }
         clearPreviewFailure(item.frameId);
         clearScrubPreviewFailure(item.frameId);
-        touchScrubPreviewCache(item.frameId, item.preview.filePath);
-        nextMimeTypes.set(item.frameId, item.preview.mimeType);
+        touchScrubPreviewCache(item.frameId, item.preview.filePath, {
+          mimeType: item.preview.mimeType,
+          sourceKind: item.preview.sourceKind,
+          loadMs: performance.now() - startedAt,
+        });
         if (item.preview.sourceKind === "original_frame") {
           direct += 1;
-          touchPreviewCache(item.frameId, item.preview.filePath);
-          const exactMimeTypes = new Map(previewMimeTypeCache);
-          exactMimeTypes.set(item.frameId, item.preview.mimeType);
-          previewMimeTypeCache = exactMimeTypes;
-          previewDirectPathCount += 1;
         } else {
           generated += 1;
           scrubPreviewGeneratedCount += 1;
         }
+        if (scrubPreviewShouldPopulateExactCache(item.preview.sourceKind)) {
+          touchPreviewCache(item.frameId, item.preview.filePath, {
+            mimeType: item.preview.mimeType,
+            sourceKind: item.preview.sourceKind,
+            loadMs: performance.now() - startedAt,
+          });
+          previewDirectPathCount += 1;
+        }
       }
-      scrubPreviewMimeTypeCache = nextMimeTypes;
       scrubPerfLogSlow("scrub_preview_batch", performance.now() - startedAt, {
         requested: frameIds.length,
         uncached: uncached.length,
@@ -3516,6 +3680,7 @@
         generated,
         direct,
         missing,
+        stale: responseStale,
         invokeMs: invokeDurationMs,
         applyMs: performance.now() - applyStartedAt,
       }, SCRUB_PERF_SLOW_PREVIEW_MS);
@@ -3574,9 +3739,13 @@
         // would grow unboundedly across refreshes.
         previewCache = new Map();
         previewMimeTypeCache = new Map();
+        previewSourceKindCache = new Map();
+        previewLoadMsCache = new Map();
         previewFailedAt = new Map();
         scrubPreviewCache = new Map();
         scrubPreviewMimeTypeCache = new Map();
+        scrubPreviewSourceKindCache = new Map();
+        scrubPreviewLoadMsCache = new Map();
         scrubPreviewFailedAt = new Map();
         activePreviewLoadErrorFrameId = null;
         // Targeted picker invalidation: only invalidate months actually
@@ -4382,9 +4551,11 @@
     const activeIndex = timelineActiveIndex;
     const indexDelta = Math.abs(activeIndex - previousActivePreviewIndex);
     previousActivePreviewIndex = activeIndex;
-    const isNavigation =
-      previewScrubVelocityPxPerMs >= ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS ||
-      indexDelta > ACTIVE_PREVIEW_LARGE_JUMP_FRAMES;
+    const shouldScheduleScrubPreview = timelineMovementShouldScheduleScrubPreview(
+      indexDelta,
+      previewScrubVelocityPxPerMs,
+      ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS,
+    );
     activePreviewFetchGeneration += 1;
     scrubPreviewFetchGeneration += 1;
     const gen = activePreviewFetchGeneration;
@@ -4395,7 +4566,7 @@
       return;
     }
 
-    if (isNavigation) {
+    if (shouldScheduleScrubPreview) {
       if (scrubPreviewBatchInFlight) {
         scrubPreviewPendingActiveIndex = activeIndex;
         scrubPerfLog("scrub_preview_deferred", {
@@ -4403,7 +4574,7 @@
           velocity: previewScrubVelocityPxPerMs,
         });
       } else {
-        scheduleLatestScrubPreviews(activeIndex, scrubGen, ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS);
+        void ensureLatestScrubPreviews(activeIndex, scrubGen);
       }
     }
 
@@ -4418,7 +4589,11 @@
     scheduleLatestActivePreview(
       active.id,
       gen,
-      isNavigation || indexDelta > 0 ? ACTIVE_PREVIEW_EXACT_SETTLE_MS : 0,
+      activeExactPreviewDelayMs(
+        shouldScheduleScrubPreview,
+        scrubPreviewCache.has(active.id),
+        ACTIVE_PREVIEW_EXACT_SETTLE_MS,
+      ),
     );
     return () => {
       clearActivePreviewFetchTimer();
@@ -5289,9 +5464,13 @@
       timelineShowingHistoricalWindow = window.hasNewer;
       previewCache = new Map();
       previewMimeTypeCache = new Map();
+      previewSourceKindCache = new Map();
+      previewLoadMsCache = new Map();
       previewFailedAt = new Map();
       scrubPreviewCache = new Map();
       scrubPreviewMimeTypeCache = new Map();
+      scrubPreviewSourceKindCache = new Map();
+      scrubPreviewLoadMsCache = new Map();
       scrubPreviewFailedAt = new Map();
       await syncTimelineScrollToActiveFrame();
       void refreshAudioSegments();
@@ -6202,6 +6381,20 @@
             <span class="timeline__overlay-val">{timelineActive.width}×{timelineActive.height}</span>
           </div>
         {/if}
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">image</span>
+          <span class="timeline__overlay-val">{activeDisplayPreviewSource}</span>
+        </div>
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">source</span>
+          <span class="timeline__overlay-val">{activeDisplayPreviewSourceKind}</span>
+        </div>
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">latency</span>
+          <span class="timeline__overlay-val timeline__overlay-truncate">
+            exact {activeExactPreviewLoadMs == null ? "—" : `${activeExactPreviewLoadMs.toFixed(1)}ms`} scrub {activeScrubPreviewLoadMs == null ? "—" : `${activeScrubPreviewLoadMs.toFixed(1)}ms`}
+          </span>
+        </div>
         {#if timelineActive.equivalenceHint}
           <div class="timeline__overlay-row">
             <span class="timeline__overlay-key">fp</span>
