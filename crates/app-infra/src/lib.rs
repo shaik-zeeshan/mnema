@@ -489,12 +489,18 @@ impl AppInfra {
         self.processing.get_frame(frame_id).await
     }
 
-    pub async fn resolve_screen_text_for_frame(
-        &self,
-        frame_id: i64,
-    ) -> Result<ResolvedScreenText> {
+    pub async fn resolve_screen_text_for_frame(&self, frame_id: i64) -> Result<ResolvedScreenText> {
         self.processing
             .resolve_screen_text_for_frame(&self.captured_frame_equivalence, frame_id)
+            .await
+    }
+
+    pub async fn resolve_screen_text_for_frame_record(
+        &self,
+        frame: &Frame,
+    ) -> Result<ResolvedScreenText> {
+        self.processing
+            .resolve_screen_text_for_frame_record(&self.captured_frame_equivalence, frame)
             .await
     }
 
@@ -2070,6 +2076,118 @@ mod tests {
             TEST_PROCESSOR,
             result_text,
         ))
+    }
+
+    fn test_accessibility_screen_text(result_text: &str) -> NewCapturedScreenText {
+        NewCapturedScreenText {
+            source: CapturedScreenTextSource::Accessibility,
+            result_text: result_text.to_string(),
+            structured_payload_json: None,
+            captured_at_unix_ms: 1_776_000_000_000,
+            source_app_bundle_id: Some("com.example.app".to_string()),
+            source_app_name: Some("Example".to_string()),
+            source_window_title: Some("Example Window".to_string()),
+            source_window_id: Some(42),
+            snapshot_age_ms: 25,
+        }
+    }
+
+    #[test]
+    fn screen_text_resolution_uses_nearest_text_bearing_equivalent_frame() {
+        run_async_test(async {
+            let dir = TestDir::new("screen-text-nearest-equivalent");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [12, 34, 56, 255]);
+
+            let earliest = infra
+                .capture_frame_without_screen_text(&test_frame_with_equivalent_image(
+                    &dir,
+                    "screen-text-equivalence",
+                    "earliest.png",
+                    "2026-04-12T10:00:00Z",
+                    &pixels,
+                    width,
+                    height,
+                ))
+                .await
+                .expect("earliest frame should persist")
+                .frame;
+            let text_bearing = infra
+                .capture_frame_without_screen_text(&test_frame_with_equivalent_image(
+                    &dir,
+                    "screen-text-equivalence",
+                    "text-bearing.png",
+                    "2026-04-12T10:00:01Z",
+                    &pixels,
+                    width,
+                    height,
+                ))
+                .await
+                .expect("text-bearing frame should persist")
+                .frame;
+            let mut transaction = infra
+                .processing
+                .begin_transaction()
+                .await
+                .expect("transaction should begin");
+            infra
+                .processing
+                .upsert_captured_screen_text_in_transaction(
+                    &mut transaction,
+                    text_bearing.id,
+                    &test_accessibility_screen_text("nearest equivalent text"),
+                )
+                .await
+                .expect("screen text should persist");
+            transaction
+                .commit()
+                .await
+                .expect("screen text transaction should commit");
+            let target = infra
+                .capture_frame_without_screen_text(&test_frame_with_equivalent_image(
+                    &dir,
+                    "screen-text-equivalence",
+                    "target.png",
+                    "2026-04-12T10:00:02Z",
+                    &pixels,
+                    width,
+                    height,
+                ))
+                .await
+                .expect("target frame should persist")
+                .frame;
+
+            let nearest = infra
+                .get_nearest_earlier_equivalent_frame(target.id)
+                .await
+                .expect("nearest equivalent lookup should succeed")
+                .expect("nearest equivalent should exist");
+            assert_eq!(nearest.id, text_bearing.id);
+            let stored_text = infra
+                .processing
+                .get_captured_screen_text(text_bearing.id, CapturedScreenTextSource::Accessibility)
+                .await
+                .expect("stored screen text lookup should succeed")
+                .expect("stored screen text should exist");
+            assert_eq!(stored_text.result_text, "nearest equivalent text");
+
+            let resolved = infra
+                .resolve_screen_text_for_frame(target.id)
+                .await
+                .expect("screen text should resolve");
+
+            assert_eq!(earliest.id + 1, text_bearing.id);
+            assert_eq!(resolved.text.as_deref(), Some("nearest equivalent text"));
+            assert_eq!(
+                resolved.source,
+                ResolvedScreenTextSource::EquivalentAccessibility
+            );
+            assert_eq!(resolved.frame_id, Some(text_bearing.id));
+        });
     }
 
     #[test]

@@ -76,7 +76,6 @@ pub(crate) fn start_or_stop_for_recording(
     sources: &CaptureSources,
 ) {
     let enabled = sources.screen
-        && settings.capture_screen
         && settings.screen_text_extraction.enabled
         && settings.screen_text_extraction.accessibility_enabled;
 
@@ -113,17 +112,15 @@ fn start_runtime(app_handle: &tauri::AppHandle) {
         return;
     };
 
-    {
-        let Ok(runtime) = state.runtime.lock() else {
-            return;
-        };
-        if runtime.worker.is_some() {
-            return;
-        }
+    let Ok(mut runtime) = state.runtime.lock() else {
+        return;
+    };
+    if runtime.worker.is_some() {
+        return;
     }
 
     let stop = Arc::new(AtomicBool::new(false));
-        let stop_for_worker = Arc::clone(&stop);
+    let stop_for_worker = Arc::clone(&stop);
     let app_handle_for_worker = app_handle.clone();
     let worker = thread::Builder::new()
         .name("mnema-screen-text-ax".to_string())
@@ -162,10 +159,8 @@ fn start_runtime(app_handle: &tauri::AppHandle) {
         return;
     };
 
-    let _ = state.runtime.lock().map(|mut runtime| {
-        runtime.stop = Some(stop);
-        runtime.worker = Some(worker);
-    });
+    runtime.stop = Some(stop);
+    runtime.worker = Some(worker);
 }
 
 fn collect_frontmost_accessibility_snapshot(refresh_reason: &str) -> Option<ScreenTextSnapshot> {
@@ -260,15 +255,14 @@ mod macos_ax {
     use core_foundation_sys::{
         array::{CFArrayGetCount, CFArrayGetValueAtIndex},
         base::{Boolean, CFGetTypeID, CFRelease, CFTypeID, CFTypeRef},
-        number::{CFNumberGetTypeID, CFNumberGetValue, kCFNumberSInt64Type},
+        number::{kCFNumberSInt64Type, CFNumberGetTypeID, CFNumberGetValue},
         runloop::{
-            kCFRunLoopDefaultMode, CFRunLoopAddSource, CFRunLoopGetCurrent,
-            CFRunLoopRemoveSource, CFRunLoopRunInMode, CFRunLoopRef, CFRunLoopSourceRef,
+            kCFRunLoopDefaultMode, CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopRef,
+            CFRunLoopRemoveSource, CFRunLoopRunInMode, CFRunLoopSourceRef,
         },
         string::{
             kCFStringEncodingUTF8, CFStringCreateWithCString, CFStringGetCString,
-            CFStringGetLength, CFStringGetMaximumSizeForEncoding, CFStringGetTypeID,
-            CFStringRef,
+            CFStringGetLength, CFStringGetMaximumSizeForEncoding, CFStringGetTypeID, CFStringRef,
         },
     };
     use objc::{class, msg_send, runtime::Object, sel, sel_impl};
@@ -456,9 +450,12 @@ mod macos_ax {
                 return;
             }
 
-            self.registration = ObserverRegistration::attach(app.pid, self.event_tx.clone());
+            let registration = ObserverRegistration::attach(app.pid, self.event_tx.clone());
             self.active_pid = Some(app.pid);
-            let _ = self.event_tx.send("workspace_app_changed".to_string());
+            if registration.is_some() {
+                let _ = self.event_tx.send("workspace_app_changed".to_string());
+            }
+            self.registration = registration;
         }
     }
 
@@ -506,7 +503,12 @@ mod macos_ax {
                 "AXTitleChanged",
                 "AXValueChanged",
             ] {
-                add_notification(observer.0 as AXObserverRef, app_element.0, notification, refcon);
+                add_notification(
+                    observer.0 as AXObserverRef,
+                    app_element.0,
+                    notification,
+                    refcon,
+                );
             }
             if let Some(root) = root_element.as_ref() {
                 for notification in [
@@ -596,7 +598,13 @@ mod macos_ax {
         }
 
         walk.node_count += 1;
-        for attr in ["AXTitle", "AXValue", "AXDescription", "AXHelp", "AXDocument"] {
+        for attr in [
+            "AXTitle",
+            "AXValue",
+            "AXDescription",
+            "AXHelp",
+            "AXDocument",
+        ] {
             if let Some(value) = copy_attribute(element, attr) {
                 if let Some(text) = cf_string_to_string(value.0) {
                     walk.strings.push(text);
@@ -666,7 +674,11 @@ mod macos_ax {
                 return None;
             }
             let mut out = 0i64;
-            if CFNumberGetValue(value as *const _, kCFNumberSInt64Type, &mut out as *mut _ as *mut _) {
+            if CFNumberGetValue(
+                value as *const _,
+                kCFNumberSInt64Type,
+                &mut out as *mut _ as *mut _,
+            ) {
                 Some(out)
             } else {
                 None

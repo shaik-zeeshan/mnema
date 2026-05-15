@@ -19,8 +19,8 @@ use super::{
     AudioTranscriptionJobPayload, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary,
     NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingResult,
     ProcessingResultDraft, ProcessingSubject, AUDIO_SEGMENT_SUBJECT_TYPE,
-    AUDIO_TRANSCRIPTION_PROCESSOR, OCR_PROCESSOR, SPEAKER_ANALYSIS_PROCESSOR,
-    FRAME_SUBJECT_TYPE, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+    AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE, OCR_PROCESSOR, SPEAKER_ANALYSIS_PROCESSOR,
+    SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
@@ -193,13 +193,9 @@ impl ProcessingStore {
         .execute(&mut **transaction)
         .await?;
 
-        get_captured_screen_text_optional(
-            &mut **transaction,
-            frame_id,
-            screen_text.source,
-        )
-        .await?
-        .ok_or(AppInfraError::FrameNotFound(frame_id))
+        get_captured_screen_text_optional(&mut **transaction, frame_id, screen_text.source)
+            .await?
+            .ok_or(AppInfraError::FrameNotFound(frame_id))
     }
 
     pub(crate) async fn get_frame_in_transaction(
@@ -358,7 +354,15 @@ impl ProcessingStore {
         let Some(frame) = self.get_frame(frame_id).await? else {
             return Ok(ResolvedScreenText::none());
         };
+        self.resolve_screen_text_for_frame_record(equivalence, &frame)
+            .await
+    }
 
+    pub(crate) async fn resolve_screen_text_for_frame_record(
+        &self,
+        equivalence: &CapturedFrameEquivalenceResolver,
+        frame: &Frame,
+    ) -> Result<ResolvedScreenText> {
         if let Some(text) = self
             .get_captured_screen_text(frame.id, CapturedScreenTextSource::Accessibility)
             .await?
@@ -379,30 +383,31 @@ impl ProcessingStore {
         }
 
         let scope = CapturedFrameEquivalenceScope::from_frame(&frame);
-        let Some(equivalent) = equivalence
-            .find_earliest_earlier_equivalent_frame(&frame, &scope)
-            .await?
-        else {
-            return Ok(ResolvedScreenText::none());
-        };
-
-        if let Some(text) = self
-            .get_captured_screen_text(equivalent.id, CapturedScreenTextSource::Accessibility)
+        let mut candidate = frame.clone();
+        while let Some(equivalent) = equivalence
+            .find_nearest_earlier_equivalent_frame(&candidate, &scope)
             .await?
         {
-            return Ok(ResolvedScreenText {
-                text: Some(text.result_text),
-                source: ResolvedScreenTextSource::EquivalentAccessibility,
-                frame_id: Some(equivalent.id),
-            });
-        }
+            if let Some(text) = self
+                .get_captured_screen_text(equivalent.id, CapturedScreenTextSource::Accessibility)
+                .await?
+            {
+                return Ok(ResolvedScreenText {
+                    text: Some(text.result_text),
+                    source: ResolvedScreenTextSource::EquivalentAccessibility,
+                    frame_id: Some(equivalent.id),
+                });
+            }
 
-        if let Some(ocr_text) = self.get_latest_ocr_text_for_frame(equivalent.id).await? {
-            return Ok(ResolvedScreenText {
-                text: Some(ocr_text),
-                source: ResolvedScreenTextSource::EquivalentOcr,
-                frame_id: Some(equivalent.id),
-            });
+            if let Some(ocr_text) = self.get_latest_ocr_text_for_frame(equivalent.id).await? {
+                return Ok(ResolvedScreenText {
+                    text: Some(ocr_text),
+                    source: ResolvedScreenTextSource::EquivalentOcr,
+                    frame_id: Some(equivalent.id),
+                });
+            }
+
+            candidate = equivalent;
         }
 
         Ok(ResolvedScreenText::none())

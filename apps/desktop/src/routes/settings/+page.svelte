@@ -665,8 +665,8 @@
         tesseractCharWhitelist: draftOcrTesseractCharWhitelist.trim() || null,
       },
       screenTextExtraction: {
-        enabled: draftOcrEnabled,
-        accessibilityEnabled: true,
+        enabled: recordingSettings?.screenTextExtraction?.enabled ?? true,
+        accessibilityEnabled: recordingSettings?.screenTextExtraction?.accessibilityEnabled ?? true,
         ocrFallbackEnabled: draftOcrEnabled,
       },
       transcription: {

@@ -956,7 +956,7 @@ async fn frame_dto_with_screen_text(
     infra: &::app_infra::AppInfra,
     frame: ::app_infra::Frame,
 ) -> ::app_infra::Result<FrameDto> {
-    let resolved = infra.resolve_screen_text_for_frame(frame.id).await?;
+    let resolved = infra.resolve_screen_text_for_frame_record(&frame).await?;
     let mut dto = FrameDto::from(frame);
     if matches!(
         resolved.source,

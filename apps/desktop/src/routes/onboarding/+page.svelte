@@ -366,7 +366,7 @@
         tesseractCharWhitelist: null,
       },
       screenTextExtraction: {
-        enabled: draftOcrEnabled,
+        enabled: true,
         accessibilityEnabled: true,
         ocrFallbackEnabled: draftOcrEnabled,
       },
