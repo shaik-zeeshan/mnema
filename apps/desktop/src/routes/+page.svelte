@@ -35,6 +35,7 @@
     CapturedFrameReprocessingResultDto,
     FrameDto,
     FramePreviewDto,
+    FrameScrubPreviewsDto,
     FrameRangeRequest,
     FrameSummaryDto,
     FocusedFrameWindowDto,
@@ -115,10 +116,13 @@
   const AUDIO_SEGMENT_REFRESH_DEBOUNCE_MS = 100;
   const AUDIO_TRANSCRIPT_POLL_INTERVAL_MS = 1000;
   const OCR_POLL_INTERVAL_MS = 1000;
-  const ACTIVE_PREVIEW_FETCH_FAST_SCRUB_DEBOUNCE_MS = 40;
-  const ACTIVE_PREVIEW_PREFETCH_RADIUS = 8;
-  const ACTIVE_PREVIEW_FAST_SCRUB_RADIUS = 2;
+  const ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS = 50;
+  const ACTIVE_PREVIEW_EXACT_SETTLE_MS = 300;
+  const ACTIVE_PREVIEW_SCRUB_RADIUS = 12;
+  const ACTIVE_PREVIEW_SCRUB_MAX_UNCACHED = 32;
   const ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS = 2;
+  const ACTIVE_PREVIEW_LARGE_JUMP_FRAMES = 8;
+  const ACTIVE_PREVIEW_SCRUB_MAX_PIXEL_SIZE = 640;
   const PREVIEW_CACHE_MAX_ENTRIES = 192;
   const PREVIEW_FAILURE_CACHE_TTL_MS = 5_000;
   // Safety cap on pages walked per poll while chasing the current head. At
@@ -384,9 +388,13 @@
   let previewCache = $state<Map<number, string>>(new Map());
   let previewMimeTypeCache = $state<Map<number, string>>(new Map());
   let previewFailedAt = $state<Map<number, number>>(new Map());
+  let scrubPreviewCache = $state<Map<number, string>>(new Map());
+  let scrubPreviewMimeTypeCache = $state<Map<number, string>>(new Map());
+  let scrubPreviewFailedAt = $state<Map<number, number>>(new Map());
   // Tracks the in-flight requests so concurrent scrolls don't fan out a
   // request per slot per scroll tick for the same id.
   const previewInFlight = new Set<number>();
+  const scrubPreviewInFlight = new Set<number>();
   type FrameActionStatus = {
     message: string;
     detail: string | null;
@@ -402,6 +410,9 @@
   let stageActionsMenuEl = $state<HTMLDivElement | null>(null);
   let activePreviewFetchGeneration = 0;
   let activePreviewFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let scrubPreviewFetchGeneration = 0;
+  let scrubPreviewFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let previousActivePreviewIndex = 0;
   let lastTimelineScrollSample = { left: 0, at: 0 };
   let previewScrubVelocityPxPerMs = $state(0);
   let previewCacheReuseCount = $state(0);
@@ -412,11 +423,27 @@
   let previewDirectPathCount = $state(0);
   let previewGeneratedPathCount = $state(0);
   let previewStaleRetryCount = $state(0);
+  let scrubPreviewHitCount = $state(0);
+  let scrubPreviewMissCount = $state(0);
+  let scrubPreviewBatchCount = $state(0);
+  let scrubPreviewGeneratedCount = $state(0);
+  let scrubPreviewMissingCount = $state(0);
   let activePreviewLoadErrorFrameId = $state<number | null>(null);
   let timelineAppIconPathsByBundleId = $state<Record<string, string>>({});
   const requestedTimelineAppIconBundleIds = new Set<string>();
 
   function handleActivePreviewLoadError(frameId: number): void {
+    if (!previewCache.has(frameId) && scrubPreviewCache.has(frameId)) {
+      dropScrubPreviewCacheEntry(frameId);
+      scrubPreviewFailedAt = new Map(scrubPreviewFailedAt).set(frameId, Date.now());
+      const activeIndex = timelineFrames.findIndex((frame) => frame.id === frameId);
+      if (activeIndex >= 0) {
+        scrubPreviewFetchGeneration += 1;
+        const gen = scrubPreviewFetchGeneration;
+        void ensureScrubPreviews(scrubPreviewFrameIdsAround(activeIndex), gen);
+      }
+      return;
+    }
     if (activePreviewLoadErrorFrameId === frameId) return;
     activePreviewLoadErrorFrameId = frameId;
     previewStaleRetryCount += 1;
@@ -428,6 +455,11 @@
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
   const activePreviewPath = $derived(
     timelineActive ? previewCache.get(timelineActive.id) ?? null : null,
+  );
+  const activeDisplayPreviewPath = $derived(
+    timelineActive
+      ? previewCache.get(timelineActive.id) ?? scrubPreviewCache.get(timelineActive.id) ?? null
+      : null,
   );
   const timelineHasMore = $derived(timelineHasNewer || !timelineExhausted);
   let lastPreviewReuseFrameId = $state<number | null>(null);
@@ -2529,7 +2561,7 @@
   }
 
   function prunePreviewCache(frames: FrameDto[]): void {
-    if (previewCache.size === 0) return;
+    if (previewCache.size === 0 && scrubPreviewCache.size === 0) return;
     const keep = new Set(frames.map((frame) => frame.id));
     const next = new Map<number, string>();
     for (const [frameId, url] of previewCache) {
@@ -2537,6 +2569,13 @@
     }
     if (next.size !== previewCache.size) {
       previewCache = next;
+    }
+    const nextScrub = new Map<number, string>();
+    for (const [frameId, url] of scrubPreviewCache) {
+      if (keep.has(frameId)) nextScrub.set(frameId, url);
+    }
+    if (nextScrub.size !== scrubPreviewCache.size) {
+      scrubPreviewCache = nextScrub;
     }
   }
 
@@ -2638,6 +2677,13 @@
     }
   }
 
+  function clearScrubPreviewFetchTimer(): void {
+    if (scrubPreviewFetchTimer != null) {
+      clearTimeout(scrubPreviewFetchTimer);
+      scrubPreviewFetchTimer = null;
+    }
+  }
+
   function trimPreviewCache(): void {
     if (previewCache.size <= PREVIEW_CACHE_MAX_ENTRIES) return;
     const next = new Map(previewCache);
@@ -2649,12 +2695,31 @@
     previewCache = next;
   }
 
+  function trimScrubPreviewCache(): void {
+    if (scrubPreviewCache.size <= PREVIEW_CACHE_MAX_ENTRIES) return;
+    const next = new Map(scrubPreviewCache);
+    while (next.size > PREVIEW_CACHE_MAX_ENTRIES) {
+      const oldestFrameId = next.keys().next().value;
+      if (oldestFrameId == null) break;
+      next.delete(oldestFrameId);
+    }
+    scrubPreviewCache = next;
+  }
+
   function touchPreviewCache(frameId: number, url: string): void {
     const next = new Map(previewCache);
     next.delete(frameId);
     next.set(frameId, url);
     previewCache = next;
     trimPreviewCache();
+  }
+
+  function touchScrubPreviewCache(frameId: number, url: string): void {
+    const next = new Map(scrubPreviewCache);
+    next.delete(frameId);
+    next.set(frameId, url);
+    scrubPreviewCache = next;
+    trimScrubPreviewCache();
   }
 
   function rememberPreviewFailure(frameId: number): void {
@@ -2683,6 +2748,19 @@
     }
   }
 
+  function dropScrubPreviewCacheEntry(frameId: number): void {
+    if (scrubPreviewCache.has(frameId)) {
+      const next = new Map(scrubPreviewCache);
+      next.delete(frameId);
+      scrubPreviewCache = next;
+    }
+    if (scrubPreviewMimeTypeCache.has(frameId)) {
+      const nextMimeTypes = new Map(scrubPreviewMimeTypeCache);
+      nextMimeTypes.delete(frameId);
+      scrubPreviewMimeTypeCache = nextMimeTypes;
+    }
+  }
+
   function recentlyFailedPreview(frameId: number): boolean {
     const failedAt = previewFailedAt.get(frameId);
     if (failedAt == null) return false;
@@ -2693,30 +2771,17 @@
     return false;
   }
 
-  function currentPreviewPrefetchRadius(): number {
-    return previewScrubVelocityPxPerMs >= ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS
-      ? ACTIVE_PREVIEW_FAST_SCRUB_RADIUS
-      : ACTIVE_PREVIEW_PREFETCH_RADIUS;
-  }
-
-  function currentActivePreviewFetchDebounceMs(): number {
-    return previewScrubVelocityPxPerMs >= ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS
-      ? ACTIVE_PREVIEW_FETCH_FAST_SCRUB_DEBOUNCE_MS
-      : 0;
-  }
-
-  function prefetchPreviewNeighbors(activeIndex: number): void {
-    const radius = currentPreviewPrefetchRadius();
-    for (let offset = 1; offset <= radius; offset += 1) {
-      const newer = timelineFrames[activeIndex - offset];
-      const older = timelineFrames[activeIndex + offset];
-      if (newer && !previewCache.has(newer.id) && !previewInFlight.has(newer.id)) {
-        void ensurePreview(newer.id);
-      }
-      if (older && !previewCache.has(older.id) && !previewInFlight.has(older.id)) {
-        void ensurePreview(older.id);
-      }
+  function scrubPreviewFrameIdsAround(activeIndex: number): number[] {
+    const ids: number[] = [];
+    const start = Math.max(0, activeIndex - ACTIVE_PREVIEW_SCRUB_RADIUS);
+    const end = Math.min(timelineFrames.length - 1, activeIndex + ACTIVE_PREVIEW_SCRUB_RADIUS);
+    for (let index = start; index <= end; index += 1) {
+      const id = timelineFrames[index]?.id;
+      if (id == null || scrubPreviewCache.has(id) || scrubPreviewInFlight.has(id)) continue;
+      ids.push(id);
+      if (ids.length >= ACTIVE_PREVIEW_SCRUB_MAX_UNCACHED) break;
     }
+    return ids;
   }
 
   function onFrameActionStatusPointerEnter() {
@@ -2770,6 +2835,8 @@
         return "segment frame fallback";
       case "video_fallback":
         return "video fallback";
+      case "scrub_preview":
+        return "scrub";
     }
   }
 
@@ -3088,6 +3155,50 @@
     }
   }
 
+  async function ensureScrubPreviews(frameIds: number[], generation: number): Promise<void> {
+    const uncached = frameIds.filter(
+      (frameId) => !scrubPreviewCache.has(frameId) && !scrubPreviewInFlight.has(frameId),
+    );
+    if (uncached.length === 0) {
+      scrubPreviewHitCount += 1;
+      return;
+    }
+    scrubPreviewMissCount += uncached.length;
+    scrubPreviewBatchCount += 1;
+    for (const frameId of uncached) scrubPreviewInFlight.add(frameId);
+    try {
+      const dto = await invoke<FrameScrubPreviewsDto>("get_frame_scrub_previews", {
+        request: {
+          frameIds: uncached,
+          maxPixelSize: ACTIVE_PREVIEW_SCRUB_MAX_PIXEL_SIZE,
+        },
+      });
+      if (generation !== scrubPreviewFetchGeneration) return;
+      const nextMimeTypes = new Map(scrubPreviewMimeTypeCache);
+      for (const item of dto.previews) {
+        if (!item.preview) {
+          scrubPreviewMissingCount += 1;
+          continue;
+        }
+        clearPreviewFailure(item.frameId);
+        touchScrubPreviewCache(item.frameId, item.preview.filePath);
+        nextMimeTypes.set(item.frameId, item.preview.mimeType);
+        if (item.preview.sourceKind === "original_frame") {
+          touchPreviewCache(item.frameId, item.preview.filePath);
+          const exactMimeTypes = new Map(previewMimeTypeCache);
+          exactMimeTypes.set(item.frameId, item.preview.mimeType);
+          previewMimeTypeCache = exactMimeTypes;
+          previewDirectPathCount += 1;
+        } else {
+          scrubPreviewGeneratedCount += 1;
+        }
+      }
+      scrubPreviewMimeTypeCache = nextMimeTypes;
+    } finally {
+      for (const frameId of uncached) scrubPreviewInFlight.delete(frameId);
+    }
+  }
+
   async function loadTimelinePage(reset = false) {
     // A reset must always be able to supersede an in-flight page request, so
     // only "load more" is gated on the loading flags. The generation token
@@ -3139,6 +3250,9 @@
         previewCache = new Map();
         previewMimeTypeCache = new Map();
         previewFailedAt = new Map();
+        scrubPreviewCache = new Map();
+        scrubPreviewMimeTypeCache = new Map();
+        scrubPreviewFailedAt = new Map();
         activePreviewLoadErrorFrameId = null;
         // Targeted picker invalidation: only invalidate months actually
         // covered by the freshly loaded frames. Wholesale clearing of
@@ -3922,11 +4036,30 @@
   $effect(() => {
     const active = timelineActive;
     const activeIndex = timelineActiveIndex;
-    const debounceMs = currentActivePreviewFetchDebounceMs();
+    const indexDelta = Math.abs(activeIndex - previousActivePreviewIndex);
+    previousActivePreviewIndex = activeIndex;
+    const isNavigation =
+      previewScrubVelocityPxPerMs >= ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS ||
+      indexDelta > ACTIVE_PREVIEW_LARGE_JUMP_FRAMES;
     activePreviewFetchGeneration += 1;
+    scrubPreviewFetchGeneration += 1;
     const gen = activePreviewFetchGeneration;
+    const scrubGen = scrubPreviewFetchGeneration;
     clearActivePreviewFetchTimer();
-    if (!active || previewCache.has(active.id) || previewInFlight.has(active.id)) {
+    clearScrubPreviewFetchTimer();
+    if (!active) {
+      return;
+    }
+
+    if (isNavigation) {
+      scrubPreviewFetchTimer = setTimeout(() => {
+        scrubPreviewFetchTimer = null;
+        if (scrubGen !== scrubPreviewFetchGeneration) return;
+        void ensureScrubPreviews(scrubPreviewFrameIdsAround(activeIndex), scrubGen);
+      }, ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS);
+    }
+
+    if (previewCache.has(active.id) || previewInFlight.has(active.id)) {
       return;
     }
     activePreviewFetchTimer = setTimeout(() => {
@@ -3934,10 +4067,10 @@
       if (gen !== activePreviewFetchGeneration) return;
       if (!isTimelineActiveFrame(active.id)) return;
       void ensurePreview(active.id);
-      prefetchPreviewNeighbors(activeIndex);
-    }, debounceMs);
+    }, isNavigation ? ACTIVE_PREVIEW_EXACT_SETTLE_MS : 0);
     return () => {
       clearActivePreviewFetchTimer();
+      clearScrubPreviewFetchTimer();
     };
   });
 
@@ -4803,6 +4936,7 @@
       timelineError = null;
       timelineShowingHistoricalWindow = window.hasNewer;
       previewCache = new Map();
+      scrubPreviewCache = new Map();
       await syncTimelineScrollToActiveFrame();
       void refreshAudioSegments();
       // Keep picker selection state in sync with the resolved target frame
@@ -5555,7 +5689,7 @@
         <span class="timeline__empty-hint">capture a session to populate the timeline</span>
       </div>
     {:else if timelineActive}
-      {@const previewPath = previewCache.get(timelineActive.id)}
+      {@const previewPath = activeDisplayPreviewPath}
       {@const previewUrl = previewPath ? framePreviewAssetUrl(previewPath) : null}
       {#if frameActionStatus}
         <div
@@ -5573,6 +5707,8 @@
         </div>
       {/if}
       {#if previewUrl}
+        {@const exactPreviewReady = previewCache.has(timelineActive.id)}
+        {#if exactPreviewReady}
         <div
           class="timeline__stage-actions"
           class:timeline__stage-actions--open={stageActionsMenuOpen}
@@ -5615,6 +5751,7 @@
             </div>
           {/if}
         </div>
+        {/if}
         <div
           class="timeline__preview"
           role="img"
@@ -5728,9 +5865,15 @@
           </span>
         </div>
         <div class="timeline__overlay-row">
-          <span class="timeline__overlay-key">prefetch</span>
+          <span class="timeline__overlay-key">scrub</span>
+          <span class="timeline__overlay-val timeline__overlay-truncate">
+            hit {scrubPreviewHitCount} miss {scrubPreviewMissCount} batch {scrubPreviewBatchCount} gen {scrubPreviewGeneratedCount} missing {scrubPreviewMissingCount}
+          </span>
+        </div>
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">velocity</span>
           <span class="timeline__overlay-val">
-            r{currentPreviewPrefetchRadius()} @ {previewScrubVelocityPxPerMs.toFixed(2)}px/ms
+            {previewScrubVelocityPxPerMs.toFixed(2)}px/ms
           </span>
         </div>
         {#if timelineActiveDuplicateOf}

@@ -152,6 +152,7 @@ pub fn run() {
             app_infra::get_nearest_earlier_equivalent_frame,
             app_infra::get_timeline_window_around_frame,
             app_infra::get_frame_preview,
+            app_infra::get_frame_scrub_previews,
             app_infra::list_processing_jobs,
             app_infra::get_processing_job,
             app_infra::get_processing_result,

@@ -44,7 +44,8 @@ export interface FrameDto {
 export type FramePreviewSourceKind =
 	| "original_frame"
 	| "segment_frame_fallback"
-	| "video_fallback";
+	| "video_fallback"
+	| "scrub_preview";
 
 export interface FramePreviewDto {
 	mimeType: string;
@@ -54,6 +55,31 @@ export interface FramePreviewDto {
 
 export interface GetFramePreviewRequest {
 	frameId: number;
+}
+
+export type ScrubPreviewMissingReason =
+	| "frame_not_found"
+	| "direct_file_missing"
+	| "segment_unresolved"
+	| "frame_index_missing"
+	| "frame_index_entry_missing"
+	| "segment_video_missing"
+	| "decode_failed"
+	| "cache_write_failed";
+
+export interface GetFrameScrubPreviewsRequest {
+	frameIds: number[];
+	maxPixelSize?: number;
+}
+
+export interface FrameScrubPreviewResultDto {
+	frameId: number;
+	preview: FramePreviewDto | null;
+	missingReason: ScrubPreviewMissingReason | null;
+}
+
+export interface FrameScrubPreviewsDto {
+	previews: FrameScrubPreviewResultDto[];
 }
 
 export interface GetTimelineWindowAroundFrameRequest {

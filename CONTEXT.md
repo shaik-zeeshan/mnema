@@ -29,6 +29,10 @@ _Avoid_: processor task, recognition work item
 A request to re-run OCR for an existing **Captured Frame** that is already persisted.
 _Avoid_: force processing, rerun pipeline, requeue screenshot
 
+**Scrub Preview**:
+A temporary, display-sized visual representation of a **Captured Frame** used while navigating the dashboard timeline.
+_Avoid_: exact frame, OCR source, screenshot, thumbnail
+
 **Recording Lifecycle**:
 The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. Screen and system audio share the screen capture backend, while microphone runs as a separate native session.
 _Avoid_: capture runtime, recorder service, session manager
@@ -115,6 +119,12 @@ _Avoid_: purge, vacuum, file cleanup
 - A **Captured Frame Pipeline** persists one **Captured Frame**.
 - A **Captured Frame Pipeline** attaches each **Captured Frame** to exactly one **Frame Batch**.
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
+- A **Scrub Preview** may be lower resolution or timing-tolerant and is never the source for OCR, copy, download, or **Captured Frame** truth.
+- A **Scrub Preview** can stand in only while timeline navigation is in motion; a parked active **Captured Frame** resolves through the exact preview path.
+- A **Scrub Preview** may remain visible as a placeholder while the exact preview for the parked active **Captured Frame** is loading.
+- An existing **Screen Frame Artifact** may satisfy the **Scrub Preview** for its persisted **Captured Frame** without generating a separate preview.
+- A generated **Scrub Preview** depends on a screen segment frame index; frames without indexed segment timing fall back to the exact preview path instead of guessed scrub output.
+- Video-backed **Scrub Preview** generation applies only to finalized screen segments; live or incomplete segments rely on existing **Screen Frame Artifact** paths or return no **Scrub Preview**.
 - A **Recording Lifecycle** coordinates screen, microphone, and system-audio capture within one recording runtime.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.

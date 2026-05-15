@@ -40,6 +40,9 @@ const APP_INFRA_LOCK_FILE_NAME: &str = ".app-infra.lock";
 const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
 const FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
 const FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS: f64 = 5.0;
+const SCRUB_PREVIEW_DEFAULT_MAX_PIXEL_SIZE: u32 = 640;
+const SCRUB_PREVIEW_MIN_MAX_PIXEL_SIZE: u32 = 256;
+const SCRUB_PREVIEW_MAX_MAX_PIXEL_SIZE: u32 = 1280;
 const GENERATED_FRAME_PREVIEW_CACHE_DIR: &str = "frame-previews";
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES: usize = 512;
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
@@ -275,6 +278,7 @@ struct LegacyScreenSegmentFrameIndex {
 #[derive(Debug, Default)]
 pub struct FramePreviewState {
     cache: FramePreviewCache,
+    scrub_cache: FramePreviewCache,
     in_flight: HashMap<i64, Vec<oneshot::Sender<Result<Option<FramePreviewDto>, String>>>>,
     video_in_flight: HashMap<PathBuf, Vec<oneshot::Sender<Result<(), String>>>>,
 }
@@ -296,8 +300,23 @@ impl FramePreviewState {
 
     fn clear(&mut self) {
         self.cache.clear();
+        self.scrub_cache.clear();
         self.in_flight.clear();
         self.video_in_flight.clear();
+    }
+
+    fn get_scrub(&mut self, frame_id: i64, ttl: Duration, now: Instant) -> Option<FramePreviewDto> {
+        self.scrub_cache.get(frame_id, ttl, now)
+    }
+
+    fn insert_scrub(
+        &mut self,
+        frame_id: i64,
+        preview: FramePreviewDto,
+        ttl: Duration,
+        now: Instant,
+    ) {
+        self.scrub_cache.insert(frame_id, preview, ttl, now);
     }
 
     fn get_video_failure(&mut self, video_path: &Path, now: Instant) -> Option<String> {
@@ -537,6 +556,13 @@ pub struct GetFramePreviewRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetFrameScrubPreviewsRequest {
+    pub frame_ids: Vec<i64>,
+    pub max_pixel_size: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetAudioSegmentMediaRequest {
     pub audio_segment_id: i64,
 }
@@ -711,6 +737,7 @@ pub enum FramePreviewSourceKindDto {
     OriginalFrame,
     SegmentFrameFallback,
     VideoFallback,
+    ScrubPreview,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -719,6 +746,33 @@ pub struct FramePreviewDto {
     pub mime_type: String,
     pub file_path: String,
     pub source_kind: FramePreviewSourceKindDto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrubPreviewMissingReasonDto {
+    FrameNotFound,
+    DirectFileMissing,
+    SegmentUnresolved,
+    FrameIndexMissing,
+    FrameIndexEntryMissing,
+    SegmentVideoMissing,
+    DecodeFailed,
+    CacheWriteFailed,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameScrubPreviewResultDto {
+    pub frame_id: i64,
+    pub preview: Option<FramePreviewDto>,
+    pub missing_reason: Option<ScrubPreviewMissingReasonDto>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameScrubPreviewsDto {
+    pub previews: Vec<FrameScrubPreviewResultDto>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1287,6 +1341,25 @@ fn generated_frame_preview_file_name(frame_id: i64, mime_type: &str) -> String {
     format!("frame-{frame_id}.{ext}")
 }
 
+fn generated_scrub_preview_file_name(frame_id: i64, max_pixel_size: u32) -> String {
+    format!("scrub-frame-{frame_id}-{max_pixel_size}.jpg")
+}
+
+fn clamp_scrub_preview_max_pixel_size(max_pixel_size: Option<u32>) -> u32 {
+    max_pixel_size
+        .unwrap_or(SCRUB_PREVIEW_DEFAULT_MAX_PIXEL_SIZE)
+        .clamp(
+            SCRUB_PREVIEW_MIN_MAX_PIXEL_SIZE,
+            SCRUB_PREVIEW_MAX_MAX_PIXEL_SIZE,
+        )
+}
+
+fn scrub_preview_cache_key(frame_id: i64, max_pixel_size: u32) -> i64 {
+    frame_id
+        .saturating_mul(10_000)
+        .saturating_add(i64::from(max_pixel_size))
+}
+
 fn cleanup_generated_frame_preview_cache_dir(cache_dir: &Path) -> Result<(), String> {
     if !cache_dir.is_dir() {
         return Ok(());
@@ -1419,6 +1492,38 @@ fn persist_generated_frame_preview(
     Ok(output_path)
 }
 
+fn persist_generated_scrub_preview(
+    app_handle: &tauri::AppHandle,
+    frame_id: i64,
+    max_pixel_size: u32,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    let cache_dir = ensure_generated_frame_preview_cache_dir(app_handle)?;
+    let output_path = cache_dir.join(generated_scrub_preview_file_name(frame_id, max_pixel_size));
+    if !output_path.is_file() {
+        let temp_file = tempfile::NamedTempFile::new_in(&cache_dir).map_err(|error| {
+            format!(
+                "failed to create temporary scrub preview file in {}: {error}",
+                cache_dir.display()
+            )
+        })?;
+        fs::write(temp_file.path(), bytes).map_err(|error| {
+            format!(
+                "failed to write temporary scrub preview file {}: {error}",
+                temp_file.path().display()
+            )
+        })?;
+        temp_file.persist(&output_path).map_err(|error| {
+            format!(
+                "failed to persist generated scrub preview file {}: {error}",
+                output_path.display()
+            )
+        })?;
+    }
+    allow_preview_file(app_handle, &output_path)?;
+    Ok(output_path)
+}
+
 fn frame_image_mime_type(file_path: &Path) -> &'static str {
     match file_path
         .extension()
@@ -1525,62 +1630,79 @@ fn indexed_frame_preview_offset(
     frame: &::app_infra::Frame,
     video_path: &Path,
 ) -> std::io::Result<Option<IndexedFramePreviewOffset>> {
+    let Some(index) = load_screen_segment_frame_index(video_path)? else {
+        return Ok(None);
+    };
+
+    Ok(find_indexed_frame_preview_offset(frame, &index))
+}
+
+fn load_screen_segment_frame_index(
+    video_path: &Path,
+) -> std::io::Result<Option<capture_screen::ScreenSegmentFrameIndex>> {
     let index_path = capture_screen::screen_segment_frame_index_path(video_path);
-    let index = if index_path.is_file() {
+    if index_path.is_file() {
         let bytes = fs::read(&index_path)?;
-        capture_screen::decode_screen_segment_frame_index(&bytes).map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "failed to parse screen segment frame index {}: {error}",
-                    index_path.display()
-                ),
-            )
-        })?
-    } else {
-        let legacy_path = capture_screen::legacy_screen_segment_frame_index_path(video_path);
-        if !legacy_path.is_file() {
-            return Ok(None);
-        }
-        let bytes = fs::read(&legacy_path)?;
-        let legacy: LegacyScreenSegmentFrameIndex =
-            serde_json::from_slice(&bytes).map_err(|error| {
+        return capture_screen::decode_screen_segment_frame_index(&bytes)
+            .map(Some)
+            .map_err(|error| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!(
-                        "failed to parse legacy screen segment frame index {}: {error}",
-                        legacy_path.display()
+                        "failed to parse screen segment frame index {}: {error}",
+                        index_path.display()
                     ),
                 )
-            })?;
-        capture_screen::ScreenSegmentFrameIndex {
-            version: legacy.version,
-            entries: legacy
-                .entries
-                .into_iter()
-                .map(|entry| capture_screen::ScreenSegmentFrameIndexEntry {
-                    captured_at_unix_ms: entry.captured_at_unix_ms,
-                    frame_index: entry.frame_index,
-                    video_offset_ms: entry.video_offset_ms,
-                })
-                .collect(),
-        }
-    };
+            });
+    }
 
+    let legacy_path = capture_screen::legacy_screen_segment_frame_index_path(video_path);
+    if !legacy_path.is_file() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&legacy_path)?;
+    let legacy: LegacyScreenSegmentFrameIndex =
+        serde_json::from_slice(&bytes).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "failed to parse legacy screen segment frame index {}: {error}",
+                    legacy_path.display()
+                ),
+            )
+        })?;
+    Ok(Some(capture_screen::ScreenSegmentFrameIndex {
+        version: legacy.version,
+        entries: legacy
+            .entries
+            .into_iter()
+            .map(|entry| capture_screen::ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: entry.captured_at_unix_ms,
+                frame_index: entry.frame_index,
+                video_offset_ms: entry.video_offset_ms,
+            })
+            .collect(),
+    }))
+}
+
+fn find_indexed_frame_preview_offset(
+    frame: &::app_infra::Frame,
+    index: &capture_screen::ScreenSegmentFrameIndex,
+) -> Option<IndexedFramePreviewOffset> {
     if let Some((captured_at_unix_ms, frame_index)) =
         parse_frame_identity_from_path(Path::new(&frame.file_path))
     {
         if let Some(entry) = index.entries.iter().find(|entry| {
             entry.captured_at_unix_ms == captured_at_unix_ms && entry.frame_index == frame_index
         }) {
-            return Ok(Some(IndexedFramePreviewOffset {
+            return Some(IndexedFramePreviewOffset {
                 video_offset_ms: entry.video_offset_ms,
                 exact_match: true,
-            }));
+            });
         }
     }
 
-    Ok(None)
+    None
 }
 
 fn read_nearest_segment_frame_preview(
@@ -1805,6 +1927,13 @@ fn preview_image_bytes_from_cg_image(
 }
 
 #[cfg(target_os = "macos")]
+fn scrub_preview_image_bytes_from_cg_image(image: &cidre::cg::Image) -> Result<Vec<u8>, String> {
+    use cidre::ut;
+
+    image_bytes_from_cg_image(image, ut::Type::jpeg(), "JPEG", "image/jpeg").map(|(bytes, _)| bytes)
+}
+
+#[cfg(target_os = "macos")]
 fn exact_preview_requested_time(video_offset_ms: u64) -> cidre::cm::Time {
     let value = i64::try_from(video_offset_ms)
         .ok()
@@ -1937,6 +2066,76 @@ async fn extract_preview_image_from_video(
     })
     .await
     .map_err(|error| format!("failed to join video preview extraction task: {error}"))?
+}
+
+#[cfg(target_os = "macos")]
+fn extract_scrub_preview_image_from_video_blocking(
+    video_path: PathBuf,
+    video_offset_ms: u64,
+    max_pixel_size: u32,
+) -> Result<Vec<u8>, String> {
+    #[cfg(test)]
+    if let Some(result) =
+        run_test_video_preview_extractor(&video_path, video_offset_ms as f64 / 1000.0)
+    {
+        return result.map(|(bytes, _)| bytes);
+    }
+
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    use cidre::{av, cg, ns};
+
+    let video_url = ns::Url::with_fs_path_str(&video_path.to_string_lossy(), false);
+    let asset = av::UrlAsset::with_url(&video_url, None)
+        .ok_or_else(|| format!("failed to open video asset at {}", video_path.display()))?;
+    let requested_time = exact_preview_requested_time(video_offset_ms);
+    let mut image_generator = av::AssetImageGenerator::with_asset(asset.as_ref());
+    image_generator.set_applies_preferred_track_transform(true);
+    image_generator.set_max_size(cg::Size {
+        width: f64::from(max_pixel_size),
+        height: f64::from(max_pixel_size),
+    });
+    let (cg_image, _actual_time) = block_on_waker_driven_future(
+        image_generator.cg_image_for_time(requested_time),
+    )
+    .map_err(|error| {
+        format!(
+            "failed to generate scrub preview image from video {} at {}ms: {error}",
+            video_path.display(),
+            video_offset_ms,
+        )
+    })?;
+    let preview = scrub_preview_image_bytes_from_cg_image(cg_image.as_ref());
+    image_generator.cancel_all_cg_image_gen();
+    preview
+}
+
+#[cfg(target_os = "macos")]
+async fn extract_scrub_preview_image_from_video(
+    video_path: &Path,
+    video_offset_ms: u64,
+    max_pixel_size: u32,
+) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking({
+        let video_path = video_path.to_path_buf();
+        move || {
+            extract_scrub_preview_image_from_video_blocking(
+                video_path,
+                video_offset_ms,
+                max_pixel_size,
+            )
+        }
+    })
+    .await
+    .map_err(|error| format!("failed to join scrub preview extraction task: {error}"))?
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn extract_scrub_preview_image_from_video(
+    _video_path: &Path,
+    _video_offset_ms: u64,
+    _max_pixel_size: u32,
+) -> Result<Vec<u8>, String> {
+    Err("scrub preview video generation is only supported on macOS".to_string())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2187,6 +2386,162 @@ async fn get_frame_preview_inner_with_logging(
     }
 
     result
+}
+
+async fn get_frame_scrub_preview_inner(
+    infra: &::app_infra::AppInfra,
+    cache: &FramePreviewCacheState,
+    app_handle: &tauri::AppHandle,
+    frame_id: i64,
+    max_pixel_size: u32,
+) -> Result<FrameScrubPreviewResultDto, String> {
+    let Some(frame) = infra
+        .get_frame(frame_id)
+        .await
+        .map_err(|error| format!("failed to get frame {frame_id}: {error}"))?
+    else {
+        return Ok(FrameScrubPreviewResultDto {
+            frame_id,
+            preview: None,
+            missing_reason: Some(ScrubPreviewMissingReasonDto::FrameNotFound),
+        });
+    };
+
+    let frame_file_path = PathBuf::from(&frame.file_path);
+    if frame_file_path.is_file() {
+        allow_preview_file(app_handle, &frame_file_path)?;
+        return Ok(FrameScrubPreviewResultDto {
+            frame_id,
+            preview: Some(frame_preview_payload(
+                frame_file_path.to_string_lossy(),
+                frame_image_mime_type(&frame_file_path),
+                FramePreviewSourceKindDto::OriginalFrame,
+            )),
+            missing_reason: None,
+        });
+    }
+
+    let Some(segment_paths) = resolve_segment_preview_paths(&frame_file_path) else {
+        return Ok(FrameScrubPreviewResultDto {
+            frame_id,
+            preview: None,
+            missing_reason: Some(if frame_file_path.extension().is_some() {
+                ScrubPreviewMissingReasonDto::DirectFileMissing
+            } else {
+                ScrubPreviewMissingReasonDto::SegmentUnresolved
+            }),
+        });
+    };
+
+    if !segment_paths.video_path.is_file() {
+        return Ok(FrameScrubPreviewResultDto {
+            frame_id,
+            preview: None,
+            missing_reason: Some(ScrubPreviewMissingReasonDto::SegmentVideoMissing),
+        });
+    }
+    if fs::metadata(&segment_paths.video_path)
+        .map(|metadata| metadata.len() == 0)
+        .unwrap_or(true)
+        || !mov_file_appears_openable_for_preview(&segment_paths.video_path).unwrap_or(false)
+    {
+        return Ok(FrameScrubPreviewResultDto {
+            frame_id,
+            preview: None,
+            missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
+        });
+    }
+
+    let index = match load_screen_segment_frame_index(&segment_paths.video_path) {
+        Ok(Some(index)) => index,
+        Ok(None) => {
+            return Ok(FrameScrubPreviewResultDto {
+                frame_id,
+                preview: None,
+                missing_reason: Some(ScrubPreviewMissingReasonDto::FrameIndexMissing),
+            });
+        }
+        Err(_) => {
+            return Ok(FrameScrubPreviewResultDto {
+                frame_id,
+                preview: None,
+                missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
+            });
+        }
+    };
+    let Some(indexed_offset) = find_indexed_frame_preview_offset(&frame, &index) else {
+        return Ok(FrameScrubPreviewResultDto {
+            frame_id,
+            preview: None,
+            missing_reason: Some(ScrubPreviewMissingReasonDto::FrameIndexEntryMissing),
+        });
+    };
+
+    let bytes = loop {
+        let video_request_guard = {
+            let mut preview_state = cache.lock().expect("frame preview cache poisoned");
+            match preview_state.begin_video_request(&segment_paths.video_path) {
+                Ok(()) => Ok(()),
+                Err(rx) => Err(rx),
+            }
+        };
+        match video_request_guard {
+            Ok(()) => {
+                let result = extract_scrub_preview_image_from_video(
+                    &segment_paths.video_path,
+                    indexed_offset.video_offset_ms,
+                    max_pixel_size,
+                )
+                .await;
+                let notify_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
+                cache
+                    .lock()
+                    .expect("frame preview cache poisoned")
+                    .finish_video_request(&segment_paths.video_path, notify_result);
+                match result {
+                    Ok(bytes) => break bytes,
+                    Err(_) => {
+                        return Ok(FrameScrubPreviewResultDto {
+                            frame_id,
+                            preview: None,
+                            missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
+                        });
+                    }
+                }
+            }
+            Err(waiter) => match waiter.await {
+                Ok(Ok(())) => continue,
+                _ => {
+                    return Ok(FrameScrubPreviewResultDto {
+                        frame_id,
+                        preview: None,
+                        missing_reason: Some(ScrubPreviewMissingReasonDto::DecodeFailed),
+                    });
+                }
+            },
+        }
+    };
+
+    let persisted_path =
+        match persist_generated_scrub_preview(app_handle, frame_id, max_pixel_size, &bytes) {
+            Ok(path) => path,
+            Err(_) => {
+                return Ok(FrameScrubPreviewResultDto {
+                    frame_id,
+                    preview: None,
+                    missing_reason: Some(ScrubPreviewMissingReasonDto::CacheWriteFailed),
+                });
+            }
+        };
+    Ok(FrameScrubPreviewResultDto {
+        frame_id,
+        preview: Some(frame_preview_payload(
+            persisted_path.to_string_lossy(),
+            "image/jpeg",
+            FramePreviewSourceKindDto::ScrubPreview,
+        )),
+        missing_reason: None,
+    })
 }
 
 fn preview_cache_ttl(settings: &crate::native_capture::RecordingSettingsState) -> Duration {
@@ -4385,6 +4740,77 @@ pub async fn get_frame_preview(
     }?;
 
     Ok(preview)
+}
+
+#[tauri::command]
+pub async fn get_frame_scrub_previews(
+    request: GetFrameScrubPreviewsRequest,
+    state: tauri::State<'_, AppInfraState>,
+    cache: tauri::State<'_, FramePreviewCacheState>,
+    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+    app_handle: tauri::AppHandle,
+) -> Result<FrameScrubPreviewsDto, String> {
+    let infra = Arc::clone(&*state);
+    let ttl = preview_cache_ttl(&settings);
+    let max_pixel_size = clamp_scrub_preview_max_pixel_size(request.max_pixel_size);
+    let mut unique_frame_ids = Vec::new();
+    for frame_id in &request.frame_ids {
+        if !unique_frame_ids.contains(frame_id) {
+            unique_frame_ids.push(*frame_id);
+        }
+    }
+
+    let mut unique_results = HashMap::new();
+    for frame_id in unique_frame_ids {
+        let cache_key = scrub_preview_cache_key(frame_id, max_pixel_size);
+        if !ttl.is_zero() {
+            let cached = cache
+                .lock()
+                .expect("frame preview cache poisoned")
+                .get_scrub(cache_key, ttl, Instant::now());
+            if let Some(preview) = cached {
+                unique_results.insert(
+                    frame_id,
+                    FrameScrubPreviewResultDto {
+                        frame_id,
+                        preview: Some(preview),
+                        missing_reason: None,
+                    },
+                );
+                continue;
+            }
+        }
+
+        let result =
+            get_frame_scrub_preview_inner(&infra, &cache, &app_handle, frame_id, max_pixel_size)
+                .await?;
+        if !ttl.is_zero() {
+            if let Some(preview) = result.preview.as_ref() {
+                cache
+                    .lock()
+                    .expect("frame preview cache poisoned")
+                    .insert_scrub(cache_key, preview.clone(), ttl, Instant::now());
+            }
+        }
+        unique_results.insert(frame_id, result);
+    }
+
+    Ok(FrameScrubPreviewsDto {
+        previews: request
+            .frame_ids
+            .into_iter()
+            .map(|frame_id| {
+                unique_results
+                    .get(&frame_id)
+                    .cloned()
+                    .unwrap_or(FrameScrubPreviewResultDto {
+                        frame_id,
+                        preview: None,
+                        missing_reason: Some(ScrubPreviewMissingReasonDto::FrameNotFound),
+                    })
+            })
+            .collect(),
+    })
 }
 
 #[tauri::command]
