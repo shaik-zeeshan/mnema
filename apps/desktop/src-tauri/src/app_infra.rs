@@ -43,6 +43,7 @@ const FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS: f64 = 5.0;
 const SCRUB_PREVIEW_DEFAULT_MAX_PIXEL_SIZE: u32 = 640;
 const SCRUB_PREVIEW_MIN_MAX_PIXEL_SIZE: u32 = 256;
 const SCRUB_PREVIEW_MAX_MAX_PIXEL_SIZE: u32 = 1280;
+const SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS: u128 = 25;
 const GENERATED_FRAME_PREVIEW_CACHE_DIR: &str = "frame-previews";
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES: usize = 512;
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
@@ -2554,6 +2555,23 @@ fn preview_cache_ttl(settings: &crate::native_capture::RecordingSettingsState) -
     Duration::from_secs(ttl_seconds)
 }
 
+fn scrub_preview_perf_debug_enabled() -> bool {
+    matches!(
+        std::env::var("MNEMA_SCRUB_PERF_DEBUG").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
+
+fn log_scrub_preview_perf(event: &str, fields: impl AsRef<str>) {
+    if !scrub_preview_perf_debug_enabled() {
+        return;
+    }
+    crate::native_capture::debug_log::log_info(format!(
+        "[DEBUG-scrub-perf] event={event} {}",
+        fields.as_ref()
+    ));
+}
+
 fn run_generated_frame_preview_cache_startup_pass(app_handle: &tauri::AppHandle) {
     match app_handle
         .path()
@@ -4750,18 +4768,25 @@ pub async fn get_frame_scrub_previews(
     settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
     app_handle: tauri::AppHandle,
 ) -> Result<FrameScrubPreviewsDto, String> {
+    let started_at = Instant::now();
     let infra = Arc::clone(&*state);
     let ttl = preview_cache_ttl(&settings);
     let max_pixel_size = clamp_scrub_preview_max_pixel_size(request.max_pixel_size);
+    let requested_count = request.frame_ids.len();
     let mut unique_frame_ids = Vec::new();
     for frame_id in &request.frame_ids {
         if !unique_frame_ids.contains(frame_id) {
             unique_frame_ids.push(*frame_id);
         }
     }
+    let unique_count = unique_frame_ids.len();
 
     let mut unique_results = HashMap::new();
+    let mut cached_count = 0usize;
+    let mut generated_count = 0usize;
+    let mut missing_count = 0usize;
     for frame_id in unique_frame_ids {
+        let frame_started_at = Instant::now();
         let cache_key = scrub_preview_cache_key(frame_id, max_pixel_size);
         if !ttl.is_zero() {
             let cached = cache
@@ -4777,6 +4802,7 @@ pub async fn get_frame_scrub_previews(
                         missing_reason: None,
                     },
                 );
+                cached_count += 1;
                 continue;
             }
         }
@@ -4784,6 +4810,26 @@ pub async fn get_frame_scrub_previews(
         let result =
             get_frame_scrub_preview_inner(&infra, &cache, &app_handle, frame_id, max_pixel_size)
                 .await?;
+        let source_kind = result
+            .preview
+            .as_ref()
+            .map(|preview| format!("{:?}", preview.source_kind))
+            .unwrap_or_else(|| {
+                missing_count += 1;
+                "missing".to_string()
+            });
+        if result.preview.is_some() {
+            generated_count += 1;
+        }
+        let frame_duration_ms = frame_started_at.elapsed().as_millis();
+        if frame_duration_ms >= SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS {
+            log_scrub_preview_perf(
+                "rust_scrub_preview_frame",
+                format!(
+                    "frameId={frame_id} durationMs={frame_duration_ms} sourceKind={source_kind}"
+                ),
+            );
+        }
         if !ttl.is_zero() {
             if let Some(preview) = result.preview.as_ref() {
                 cache
@@ -4793,6 +4839,16 @@ pub async fn get_frame_scrub_previews(
             }
         }
         unique_results.insert(frame_id, result);
+    }
+
+    let total_duration_ms = started_at.elapsed().as_millis();
+    if total_duration_ms >= SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS {
+        log_scrub_preview_perf(
+            "rust_scrub_preview_batch",
+            format!(
+                "requested={requested_count} unique={unique_count} cached={cached_count} generated={generated_count} missing={missing_count} durationMs={total_duration_ms}"
+            ),
+        );
     }
 
     Ok(FrameScrubPreviewsDto {
