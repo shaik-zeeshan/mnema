@@ -2319,8 +2319,7 @@ pub(super) fn resume_screen_from_inactivity(
     let microphone_activity_threshold = runtime.inactivity.microphone_activity_threshold();
     let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
     let metadata_snapshot_provider = app_handle.map(metadata::frame_metadata_snapshot_provider);
-    let screen_text_snapshot_provider =
-        app_handle.map(screen_text::screen_text_snapshot_provider);
+    let screen_text_snapshot_provider = app_handle.map(screen_text::screen_text_snapshot_provider);
     let initial_privacy_filter = app_handle.map(privacy::collect_initial_privacy_filter);
     resume_screen_from_inactivity_with_start_segment(
         runtime,
@@ -3102,8 +3101,7 @@ pub(super) fn recover_screen_capture_after_wake(
     app_handle: Option<&tauri::AppHandle>,
 ) -> Result<bool, CaptureErrorResponse> {
     let metadata_snapshot_provider = app_handle.map(metadata::frame_metadata_snapshot_provider);
-    let screen_text_snapshot_provider =
-        app_handle.map(screen_text::screen_text_snapshot_provider);
+    let screen_text_snapshot_provider = app_handle.map(screen_text::screen_text_snapshot_provider);
     let initial_privacy_filter = app_handle.map(privacy::collect_initial_privacy_filter);
     recover_screen_capture_after_wake_with_start_segment(
         runtime,

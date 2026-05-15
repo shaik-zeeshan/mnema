@@ -504,6 +504,16 @@ impl AppInfra {
             .await
     }
 
+    pub async fn get_captured_screen_text(
+        &self,
+        frame_id: i64,
+        source: CapturedScreenTextSource,
+    ) -> Result<Option<CapturedScreenText>> {
+        self.processing
+            .get_captured_screen_text(frame_id, source)
+            .await
+    }
+
     pub async fn get_nearest_earlier_equivalent_frame(
         &self,
         frame_id: i64,

@@ -25,6 +25,14 @@ _Avoid_: bucket, chunk, frame group
 A processing job that recognizes text for one captured frame.
 _Avoid_: processor task, recognition work item
 
+**Captured Screen Text**:
+Text associated with a **Captured Frame** that describes visible screen content and may come from accessibility extraction or OCR.
+_Avoid_: AX text, OCR text, screen text blob
+
+**Accessibility Snapshot**:
+A transient accessibility-derived text candidate used by the **Captured Frame Pipeline** before deciding whether it can become **Captured Screen Text**.
+_Avoid_: AXTree, AX dump, persisted accessibility record
+
 **Captured Frame Reprocessing**:
 A request to re-run OCR for an existing **Captured Frame** that is already persisted.
 _Avoid_: force processing, rerun pipeline, requeue screenshot
@@ -115,6 +123,17 @@ _Avoid_: purge, vacuum, file cleanup
 - A **Captured Frame Pipeline** persists one **Captured Frame**.
 - A **Captured Frame Pipeline** attaches each **Captured Frame** to exactly one **Frame Batch**.
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
+- A **Captured Frame** may have **Captured Screen Text** derived from either an **Accessibility Snapshot** or an **OCR Job**.
+- An **Accessibility Snapshot** becomes **Captured Screen Text** only when it is usable for the corresponding **Captured Frame**.
+- An **Accessibility Snapshot** should approximate text visible in the corresponding **Captured Frame**, not every accessible text node exposed by the foreground app.
+- When accessibility exposes both primary visible content and app chrome, an **Accessibility Snapshot** should prefer the primary visible content.
+- A partial **Accessibility Snapshot** that contains only app chrome or otherwise fails to represent the **Captured Frame** should not become **Captured Screen Text** or suppress OCR fallback.
+- For one **Captured Frame**, **Captured Screen Text** uses a single source: a usable **Accessibility Snapshot** is preferred, otherwise OCR may provide the text.
+- Rejected **Accessibility Snapshot** text should not be persisted as **Captured Screen Text**; non-text rejection diagnostics may be logged for debugging.
+- Structural truncation or timeout makes an **Accessibility Snapshot** unusable, while final text clipping after representative visible content is found may still produce **Captured Screen Text** with provenance.
+- App-specific OCR fallback should be reserved for apps whose visible content is fundamentally not represented by accessibility, not for fixable traversal gaps in browsers or Electron apps.
+- Verbose **Accessibility Snapshot** diagnostics should require both an explicit trace build feature and enabled native capture debug logging.
+- Verbose **Accessibility Snapshot** diagnostics should describe structure and decisions without logging captured visible text by default.
 - A **Recording Lifecycle** coordinates screen, microphone, and system-audio capture within one recording runtime.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.
@@ -161,6 +180,7 @@ _Avoid_: purge, vacuum, file cleanup
 - **Captured Frame Equivalence** determines whether a new **Captured Frame** needs a new **OCR Job**.
 - **Captured Frame Equivalence Scope** determines which earlier **Captured Frame** values are eligible comparison candidates.
 - A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier equivalent **Captured Frame** in the same session is already eligible as the OCR fallback.
+- **Captured Frame Equivalence** should not suppress a fresh usable **Accessibility Snapshot** for the current **Captured Frame**.
 - A **Frame Batch** can be finalized only after its **OCR Job** entries are terminal.
 - **Captured Frame Reprocessing** operates on an existing **Captured Frame**, not on a new **Screen Frame Artifact**.
 - A **Hidden Segment Workspace** may be preserved when an incomplete **Frame Batch** or nonterminal **OCR Job** still references it.
@@ -179,6 +199,8 @@ _Avoid_: purge, vacuum, file cleanup
 ## Flagged ambiguities
 
 - "pipeline" previously meant both frame intake and OCR execution; resolved: **Captured Frame Pipeline** means frame intake through batch-finalization readiness, while **OCR Job** means the recognition work for one frame.
+- "AX snapshot" was used to mean both a full platform accessibility tree and persisted visible text; resolved: an **Accessibility Snapshot** is a transient text candidate, while **Captured Screen Text** is the persisted text associated with a **Captured Frame**.
+- "AXTree" implied capturing all accessibility nodes; resolved: **Accessibility Snapshot** means visible-frame text extracted through accessibility, not a full accessibility tree dump.
 - "audio activity" previously referred to both raw probe output and inactivity-policy state; resolved: raw probe output is an **Audio Activity Sample**, while policy-facing threshold-qualified state is an **Audio Activity Decision**.
 - "audio file" was used to mean the persisted unit for transcription; resolved: use **Audio Segment** for the time-bounded persisted recording file.
 - "provider" was considered for both cloud and local transcription services; resolved: **Audio Transcription Provider** means local-only for v1.

@@ -2514,14 +2514,17 @@ pub async fn persist_screen_frame_artifact(
                     .to_string(),
             );
         } else if let Some(snapshot) = screen_text_snapshot.as_ref() {
-            if crate::native_capture::screen_text::snapshot_usable_for_frame(
+            let evaluation = crate::native_capture::screen_text::evaluate_snapshot_for_frame(
                 snapshot,
                 metadata_snapshot.as_ref(),
-            ) {
+            );
+            if evaluation.usable {
                 crate::native_capture::debug_log::log(format!(
-                    "screen text extraction decision: ax_used snapshot_age_ms={} length={}",
+                    "screen text extraction decision: ax_used snapshot_age_ms={} length={} content_scope={:?} text_clipped={}",
                     snapshot.snapshot_age_ms,
-                    snapshot.normalized_text.chars().count()
+                    snapshot.normalized_text.chars().count(),
+                    snapshot.content_scope,
+                    snapshot.text_clipped
                 ));
                 let screen_text = ::app_infra::NewCapturedScreenText {
                     source: ::app_infra::CapturedScreenTextSource::Accessibility,
@@ -2530,6 +2533,11 @@ pub async fn persist_screen_frame_artifact(
                         "nodeCount": snapshot.node_count,
                         "truncated": snapshot.truncated,
                         "timedOut": snapshot.timed_out,
+                        "textClipped": snapshot.text_clipped,
+                        "contentScope": snapshot.content_scope,
+                        "contentRootRole": snapshot.content_root_role,
+                        "contentRootSubrole": snapshot.content_root_subrole,
+                        "contentRootStrategy": snapshot.content_root_strategy,
                         "refreshReason": snapshot.refresh_reason,
                         "snapshotAgeMs": snapshot.snapshot_age_ms,
                     }))
@@ -2547,11 +2555,20 @@ pub async fn persist_screen_frame_artifact(
             }
 
             crate::native_capture::debug_log::log(format!(
-                "screen text extraction decision: ax_rejected snapshot_age_ms={} length={} truncated={} timed_out={}",
+                "screen text extraction decision: ax_rejected reason={} snapshot_age_ms={} length={} truncated={} timed_out={} text_clipped={} content_scope={:?} content_root_role={:?} content_root_subrole={:?} content_root_strategy={:?}",
+                evaluation
+                    .rejection_reason
+                    .map(|reason| reason.as_str())
+                    .unwrap_or("unknown"),
                 snapshot.snapshot_age_ms,
                 snapshot.normalized_text.chars().count(),
                 snapshot.truncated,
-                snapshot.timed_out
+                snapshot.timed_out,
+                snapshot.text_clipped,
+                snapshot.content_scope,
+                snapshot.content_root_role,
+                snapshot.content_root_subrole,
+                snapshot.content_root_strategy
             ));
         } else {
             crate::native_capture::debug_log::log(
@@ -4878,6 +4895,14 @@ mod tests {
         }
     }
 
+    fn current_unix_ms_i64() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_millis()
+            .min(i64::MAX as u128) as i64
+    }
+
     fn run_async_test(test: impl std::future::Future<Output = ()>) {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -6044,9 +6069,10 @@ mod tests {
                 metadata_redaction_reason: None,
                 metadata_redaction_source_id: None,
             };
+            let captured_at_unix_ms = current_unix_ms_i64();
             let screen_text_snapshot = crate::native_capture::ScreenTextSnapshot {
                 normalized_text: "This accessibility snapshot has enough useful text to skip OCR fallback for the captured frame.".to_string(),
-                captured_at_unix_ms: 1_744_539_600_123,
+                captured_at_unix_ms,
                 source_app_bundle_id: Some("com.example.App".to_string()),
                 source_app_name: Some("Example".to_string()),
                 source_window_title: Some("Document".to_string()),
@@ -6055,6 +6081,11 @@ mod tests {
                 node_count: Some(12),
                 truncated: false,
                 timed_out: false,
+                text_clipped: false,
+                content_scope: crate::native_capture::screen_text::AccessibilitySnapshotScope::PrimaryContent,
+                content_root_role: Some("AXWebArea".to_string()),
+                content_root_subrole: None,
+                content_root_strategy: Some("web_area".to_string()),
                 refresh_reason: Some("test".to_string()),
             };
 
@@ -6066,7 +6097,7 @@ mod tests {
                 "session-artifact-ax",
                 ScreenFrameArtifact {
                     file_path: "/tmp/frame-artifact-ax.png".to_string(),
-                    captured_at_unix_ms: 1_744_539_600_123,
+                    captured_at_unix_ms: captured_at_unix_ms as u64,
                     width: Some(1440),
                     height: Some(900),
                     captured_frame_equivalence:
@@ -6096,6 +6127,181 @@ mod tests {
                 .text
                 .as_deref()
                 .is_some_and(|text| text.contains("accessibility snapshot")));
+            let stored = infra
+                .get_captured_screen_text(
+                    persisted.frame.id,
+                    ::app_infra::CapturedScreenTextSource::Accessibility,
+                )
+                .await
+                .expect("stored accessibility text query should succeed")
+                .expect("stored accessibility text should load");
+            let payload: serde_json::Value = serde_json::from_str(
+                stored
+                    .structured_payload_json
+                    .as_deref()
+                    .expect("accessibility payload should be present"),
+            )
+            .expect("accessibility payload should decode");
+            assert_eq!(payload["contentScope"], "primaryContent");
+            assert_eq!(payload["contentRootRole"], "AXWebArea");
+            assert_eq!(payload["contentRootStrategy"], "web_area");
+            assert_eq!(payload["textClipped"], false);
+        });
+    }
+
+    #[test]
+    fn persist_screen_frame_artifact_rejects_chrome_only_accessibility_and_enqueues_ocr() {
+        run_async_test(async {
+            let dir = TestDir::new("screen-frame-artifact-ax-chrome-only");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let settings = crate::native_capture::RecordingSettingsState::default();
+            let metadata_snapshot = capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.Browser".to_string()),
+                app_name: Some("Example Browser".to_string()),
+                window_title: Some("Document".to_string()),
+                window_id: None,
+                browser_url: None,
+                display_id: None,
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            };
+            let screen_text_snapshot = crate::native_capture::ScreenTextSnapshot {
+                normalized_text: "Toolbar Tab One Tab Two Address Search Settings This text is long enough but it only represents browser chrome.".to_string(),
+                captured_at_unix_ms: 1_744_539_600_123,
+                source_app_bundle_id: Some("com.example.Browser".to_string()),
+                source_app_name: Some("Example Browser".to_string()),
+                source_window_title: Some("Document".to_string()),
+                source_window_id: Some(42),
+                snapshot_age_ms: 100,
+                node_count: Some(12),
+                truncated: false,
+                timed_out: false,
+                text_clipped: false,
+                content_scope: crate::native_capture::screen_text::AccessibilitySnapshotScope::ChromeOnly,
+                content_root_role: Some("AXToolbar".to_string()),
+                content_root_subrole: None,
+                content_root_strategy: Some("chrome_ancestor".to_string()),
+                refresh_reason: Some("test".to_string()),
+            };
+
+            let persisted = persist_screen_frame_artifact(
+                &infra,
+                &settings,
+                Some(metadata_snapshot),
+                Some(screen_text_snapshot),
+                "session-artifact-ax-chrome",
+                ScreenFrameArtifact {
+                    file_path: "/tmp/frame-artifact-ax-chrome.png".to_string(),
+                    captured_at_unix_ms: 1_744_539_600_123,
+                    width: Some(1440),
+                    height: Some(900),
+                    captured_frame_equivalence:
+                        capture_screen::CapturedFrameEquivalenceOutcome::Ready(
+                            capture_screen::CapturedFrameEquivalence {
+                                hint: "axchrome01".to_string(),
+                                proof: b"ax-chrome-proof".to_vec(),
+                                version: capture_screen::CAPTURED_FRAME_EQUIVALENCE_VERSION,
+                            },
+                        ),
+                },
+            )
+            .await
+            .expect("artifact should persist");
+
+            assert!(
+                persisted.job.is_some(),
+                "chrome-only AX should leave OCR fallback eligible"
+            );
+            let resolved = infra
+                .resolve_screen_text_for_frame(persisted.frame.id)
+                .await
+                .expect("screen text resolution should succeed");
+            assert_eq!(resolved, ::app_infra::ResolvedScreenText::none());
+        });
+    }
+
+    #[test]
+    fn persist_screen_frame_artifact_accepts_text_clipped_accessibility_payload() {
+        run_async_test(async {
+            let dir = TestDir::new("screen-frame-artifact-ax-text-clipped");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let settings = crate::native_capture::RecordingSettingsState::default();
+            let metadata_snapshot = capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.App".to_string()),
+                app_name: Some("Example".to_string()),
+                window_title: Some("Document".to_string()),
+                window_id: None,
+                browser_url: None,
+                display_id: None,
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            };
+            let captured_at_unix_ms = current_unix_ms_i64();
+            let screen_text_snapshot = crate::native_capture::ScreenTextSnapshot {
+                normalized_text: "This text-clipped accessibility snapshot still represents the visible document body and should be accepted.".to_string(),
+                captured_at_unix_ms,
+                source_app_bundle_id: Some("com.example.App".to_string()),
+                source_app_name: Some("Example".to_string()),
+                source_window_title: Some("Document".to_string()),
+                source_window_id: Some(42),
+                snapshot_age_ms: 100,
+                node_count: Some(500),
+                truncated: false,
+                timed_out: false,
+                text_clipped: true,
+                content_scope: crate::native_capture::screen_text::AccessibilitySnapshotScope::PrimaryContent,
+                content_root_role: Some("AXDocument".to_string()),
+                content_root_subrole: None,
+                content_root_strategy: Some("primary_role".to_string()),
+                refresh_reason: Some("test".to_string()),
+            };
+
+            let persisted = persist_screen_frame_artifact(
+                &infra,
+                &settings,
+                Some(metadata_snapshot),
+                Some(screen_text_snapshot),
+                "session-artifact-ax-text-clipped",
+                ScreenFrameArtifact {
+                    file_path: "/tmp/frame-artifact-ax-text-clipped.png".to_string(),
+                    captured_at_unix_ms: captured_at_unix_ms as u64,
+                    width: Some(1440),
+                    height: Some(900),
+                    captured_frame_equivalence:
+                        capture_screen::CapturedFrameEquivalenceOutcome::Ready(
+                            capture_screen::CapturedFrameEquivalence {
+                                hint: "axclip0001".to_string(),
+                                proof: b"ax-clip-proof".to_vec(),
+                                version: capture_screen::CAPTURED_FRAME_EQUIVALENCE_VERSION,
+                            },
+                        ),
+                },
+            )
+            .await
+            .expect("artifact should persist");
+
+            assert!(persisted.job.is_none());
+            let stored = infra
+                .get_captured_screen_text(
+                    persisted.frame.id,
+                    ::app_infra::CapturedScreenTextSource::Accessibility,
+                )
+                .await
+                .expect("stored accessibility text query should succeed")
+                .expect("stored accessibility text should load");
+            let payload: serde_json::Value = serde_json::from_str(
+                stored
+                    .structured_payload_json
+                    .as_deref()
+                    .expect("accessibility payload should be present"),
+            )
+            .expect("accessibility payload should decode");
+            assert_eq!(payload["textClipped"], true);
+            assert_eq!(payload["contentRootRole"], "AXDocument");
         });
     }
 
@@ -6128,6 +6334,11 @@ mod tests {
                 node_count: Some(12),
                 truncated: false,
                 timed_out: false,
+                text_clipped: false,
+                content_scope: crate::native_capture::screen_text::AccessibilitySnapshotScope::PrimaryContent,
+                content_root_role: Some("AXWebArea".to_string()),
+                content_root_subrole: None,
+                content_root_strategy: Some("web_area".to_string()),
                 refresh_reason: Some("test".to_string()),
             };
 
@@ -6186,6 +6397,11 @@ mod tests {
                 node_count: Some(12),
                 truncated: false,
                 timed_out: false,
+                text_clipped: false,
+                content_scope: crate::native_capture::screen_text::AccessibilitySnapshotScope::PrimaryContent,
+                content_root_role: Some("AXWebArea".to_string()),
+                content_root_subrole: None,
+                content_root_strategy: Some("web_area".to_string()),
                 refresh_reason: Some("test".to_string()),
             };
 

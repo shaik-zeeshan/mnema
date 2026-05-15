@@ -53,6 +53,7 @@
 - System-audio transcription is gated by the `system_audio_speech_activity` processing job. System-audio segment commit should enqueue that job, not direct transcription; speech-activity completion may enqueue/requeue missing or failed `audio_transcription` jobs and keep speaker analysis chained through the transcription payload.
 - Status-bar source toggles update persisted next-recording `RecordingSettings` only while stopped. The tray and frontend stay synchronized through `native_capture_session_changed` for start/stop session state and `recording_settings_changed` for settings changes.
 - Live privacy refresh is coalesced through `apps/desktop/src-tauri/src/native_capture/privacy.rs`: settings/workspace events request a generation, wake `SegmentLoopControl`, and the segment loop owns applying completed filters. Static excluded-app-only refreshes use a metadata-free fast path and suppress the 1s fallback poll once the current request is satisfied until another settings/workspace event clears suppression.
+- Verbose Accessibility Snapshot diagnostics should be gated behind both a Cargo trace feature (following the `privacy-refresh-trace` pattern) and the persisted native capture debug logging setting, so normal native capture logs stay clean.
 
 ## Verification
 - UI-only changes: `bun run check`.

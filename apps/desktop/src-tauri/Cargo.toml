@@ -17,6 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 cargo-clippy = []
 privacy-refresh-trace = []
+accessibility-snapshot-trace = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
