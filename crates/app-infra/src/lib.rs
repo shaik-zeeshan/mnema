@@ -2261,6 +2261,69 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_frame_persists_accessibility_text_when_only_equivalent_text_is_redacted() {
+        run_async_test(async {
+            let dir = TestDir::new("screen-text-equivalent-insert-after-redacted");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [18, 28, 38, 255]);
+
+            let redacted = infra
+                .capture_frame_with_screen_text(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "screen-text-insert-after-redacted",
+                        "redacted.png",
+                        "2026-04-12T10:00:00Z",
+                        &pixels,
+                        width,
+                        height,
+                    )
+                    .with_metadata_snapshot(privacy_redacted_metadata_snapshot()),
+                    &test_accessibility_screen_text("legacy text from redacted equivalent"),
+                )
+                .await
+                .expect("redacted frame should persist");
+            let duplicate = infra
+                .capture_frame_with_screen_text(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "screen-text-insert-after-redacted",
+                        "duplicate.png",
+                        "2026-04-12T10:00:01Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    &test_accessibility_screen_text("current frame accessibility text"),
+                )
+                .await
+                .expect("duplicate frame should persist");
+
+            let nearest = infra
+                .get_nearest_earlier_equivalent_frame(duplicate.frame.id)
+                .await
+                .expect("equivalent lookup should succeed")
+                .expect("earlier equivalent should exist");
+            assert_eq!(nearest.id, redacted.frame.id);
+
+            let stored_text = infra
+                .processing
+                .get_captured_screen_text(
+                    duplicate.frame.id,
+                    CapturedScreenTextSource::Accessibility,
+                )
+                .await
+                .expect("stored screen text lookup should succeed")
+                .expect("duplicate screen text should persist");
+            assert_eq!(stored_text.result_text, "current frame accessibility text");
+        });
+    }
+
+    #[test]
     fn redacted_frame_does_not_resolve_screen_text_from_equivalent_history() {
         run_async_test(async {
             let dir = TestDir::new("screen-text-redacted-equivalent");

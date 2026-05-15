@@ -228,6 +228,10 @@ pub(crate) fn snapshot_usable_for_frame(
     true
 }
 
+pub(crate) fn refresh_snapshot_age(snapshot: &mut ScreenTextSnapshot) {
+    snapshot.snapshot_age_ms = now_unix_ms_i64() - snapshot.captured_at_unix_ms;
+}
+
 fn app_requires_ocr_fallback(bundle_id: &str) -> bool {
     matches!(
         bundle_id,

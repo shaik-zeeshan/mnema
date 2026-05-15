@@ -366,8 +366,8 @@
         tesseractCharWhitelist: null,
       },
       screenTextExtraction: {
-        enabled: true,
-        accessibilityEnabled: true,
+        enabled: base.screenTextExtraction?.enabled ?? true,
+        accessibilityEnabled: base.screenTextExtraction?.accessibilityEnabled ?? true,
         ocrFallbackEnabled: draftOcrEnabled,
       },
       transcription: {

@@ -373,7 +373,7 @@ impl CapturedFramePipeline {
         {
             if self
                 .processing
-                .frame_has_resolvable_screen_text_in_transaction(transaction, equivalent.id)
+                .frame_record_has_resolvable_screen_text_in_transaction(transaction, &equivalent)
                 .await?
             {
                 return Ok(true);

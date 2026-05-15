@@ -219,6 +219,19 @@ impl ProcessingStore {
             .map(|text| text.is_some())
     }
 
+    pub(crate) async fn frame_record_has_resolvable_screen_text_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame: &Frame,
+    ) -> Result<bool> {
+        if frame_privacy_redacted(frame) {
+            return Ok(false);
+        }
+
+        self.frame_has_resolvable_screen_text_in_transaction(transaction, frame.id)
+            .await
+    }
+
     pub(crate) async fn get_frame_in_transaction(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,

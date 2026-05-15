@@ -2445,6 +2445,11 @@ pub async fn persist_screen_frame_artifact(
     session_id: &str,
     artifact: ScreenFrameArtifact,
 ) -> ::app_infra::Result<::app_infra::CapturedFramePipelineResult> {
+    let mut screen_text_snapshot = screen_text_snapshot;
+    if let Some(snapshot) = screen_text_snapshot.as_mut() {
+        crate::native_capture::screen_text::refresh_snapshot_age(snapshot);
+    }
+
     let ScreenFrameArtifact {
         file_path,
         captured_at_unix_ms,
@@ -6091,6 +6096,74 @@ mod tests {
                 .text
                 .as_deref()
                 .is_some_and(|text| text.contains("accessibility snapshot")));
+        });
+    }
+
+    #[test]
+    fn persist_screen_frame_artifact_recomputes_accessibility_snapshot_age() {
+        run_async_test(async {
+            let dir = TestDir::new("screen-frame-artifact-ax-stale");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let settings = crate::native_capture::RecordingSettingsState::default();
+            let metadata_snapshot = capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.App".to_string()),
+                app_name: Some("Example".to_string()),
+                window_title: Some("Document".to_string()),
+                window_id: None,
+                browser_url: None,
+                display_id: None,
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            };
+            let screen_text_snapshot = crate::native_capture::ScreenTextSnapshot {
+                normalized_text: "This stale accessibility snapshot has enough text and a misleading age that must be recomputed before admission.".to_string(),
+                captured_at_unix_ms: 0,
+                source_app_bundle_id: Some("com.example.App".to_string()),
+                source_app_name: Some("Example".to_string()),
+                source_window_title: Some("Document".to_string()),
+                source_window_id: Some(42),
+                snapshot_age_ms: 100,
+                node_count: Some(12),
+                truncated: false,
+                timed_out: false,
+                refresh_reason: Some("test".to_string()),
+            };
+
+            let persisted = persist_screen_frame_artifact(
+                &infra,
+                &settings,
+                Some(metadata_snapshot),
+                Some(screen_text_snapshot),
+                "session-artifact-ax-stale",
+                ScreenFrameArtifact {
+                    file_path: "/tmp/frame-artifact-ax-stale.png".to_string(),
+                    captured_at_unix_ms: 1_744_539_600_123,
+                    width: Some(1440),
+                    height: Some(900),
+                    captured_frame_equivalence:
+                        capture_screen::CapturedFrameEquivalenceOutcome::Ready(
+                            capture_screen::CapturedFrameEquivalence {
+                                hint: "axstale0001".to_string(),
+                                proof: b"ax-stale-proof".to_vec(),
+                                version: capture_screen::CAPTURED_FRAME_EQUIVALENCE_VERSION,
+                            },
+                        ),
+                },
+            )
+            .await
+            .expect("artifact should persist");
+
+            assert!(
+                persisted.job.is_some(),
+                "stale AX snapshots should fall back to OCR admission"
+            );
+            let resolved = infra
+                .resolve_screen_text_for_frame(persisted.frame.id)
+                .await
+                .expect("screen text resolution should succeed");
+            assert_eq!(resolved, ::app_infra::ResolvedScreenText::none());
         });
     }
 
