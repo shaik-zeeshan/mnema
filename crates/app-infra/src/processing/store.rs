@@ -198,6 +198,27 @@ impl ProcessingStore {
             .ok_or(AppInfraError::FrameNotFound(frame_id))
     }
 
+    pub(crate) async fn frame_has_resolvable_screen_text_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame_id: i64,
+    ) -> Result<bool> {
+        if get_captured_screen_text_optional(
+            &mut **transaction,
+            frame_id,
+            CapturedScreenTextSource::Accessibility,
+        )
+        .await?
+        .is_some()
+        {
+            return Ok(true);
+        }
+
+        get_latest_ocr_text_for_frame(&mut **transaction, frame_id)
+            .await
+            .map(|text| text.is_some())
+    }
+
     pub(crate) async fn get_frame_in_transaction(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,
@@ -363,6 +384,10 @@ impl ProcessingStore {
         equivalence: &CapturedFrameEquivalenceResolver,
         frame: &Frame,
     ) -> Result<ResolvedScreenText> {
+        if frame_privacy_redacted(frame) {
+            return Ok(ResolvedScreenText::none());
+        }
+
         if let Some(text) = self
             .get_captured_screen_text(frame.id, CapturedScreenTextSource::Accessibility)
             .await?
@@ -388,6 +413,11 @@ impl ProcessingStore {
             .find_nearest_earlier_equivalent_frame(&candidate, &scope)
             .await?
         {
+            if frame_privacy_redacted(&equivalent) {
+                candidate = equivalent;
+                continue;
+            }
+
             if let Some(text) = self
                 .get_captured_screen_text(equivalent.id, CapturedScreenTextSource::Accessibility)
                 .await?
@@ -435,12 +465,14 @@ impl ProcessingStore {
         let rows = if let Some(workspace_prefix) = workspace_prefix {
             let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
             sqlx::query(
-                "SELECT id, session_id, file_path, captured_at, width, height, \
+                "SELECT frames.id, session_id, file_path, captured_at, width, height, \
                         equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
-                        created_at, updated_at \
+                        frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                        frames.created_at, frames.updated_at \
                  FROM frames \
-                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
-                 ORDER BY id DESC",
+                 LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+                 WHERE session_id = ?1 AND frames.id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
+                 ORDER BY frames.id DESC",
             )
             .bind(session_id)
             .bind(before_frame_id)
@@ -450,12 +482,14 @@ impl ProcessingStore {
             .await?
         } else {
             sqlx::query(
-                "SELECT id, session_id, file_path, captured_at, width, height, \
+                "SELECT frames.id, session_id, file_path, captured_at, width, height, \
                         equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
-                        created_at, updated_at \
+                        frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                        frames.created_at, frames.updated_at \
                  FROM frames \
-                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 \
-                 ORDER BY id DESC",
+                 LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+                 WHERE session_id = ?1 AND frames.id < ?2 AND equivalence_hint = ?3 \
+                 ORDER BY frames.id DESC",
             )
             .bind(session_id)
             .bind(before_frame_id)
@@ -478,12 +512,14 @@ impl ProcessingStore {
         let rows = if let Some(workspace_prefix) = workspace_prefix {
             let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
             sqlx::query(
-                "SELECT id, session_id, file_path, captured_at, width, height, \
+                "SELECT frames.id, session_id, file_path, captured_at, width, height, \
                         equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
-                        created_at, updated_at \
+                        frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                        frames.created_at, frames.updated_at \
                  FROM frames \
-                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
-                 ORDER BY id DESC",
+                 LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+                 WHERE session_id = ?1 AND frames.id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
+                 ORDER BY frames.id DESC",
             )
             .bind(session_id)
             .bind(before_frame_id)
@@ -493,12 +529,14 @@ impl ProcessingStore {
             .await?
         } else {
             sqlx::query(
-                "SELECT id, session_id, file_path, captured_at, width, height, \
+                "SELECT frames.id, session_id, file_path, captured_at, width, height, \
                         equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
-                        created_at, updated_at \
+                        frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                        frames.created_at, frames.updated_at \
                  FROM frames \
-                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 \
-                 ORDER BY id DESC",
+                 LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+                 WHERE session_id = ?1 AND frames.id < ?2 AND equivalence_hint = ?3 \
+                 ORDER BY frames.id DESC",
             )
             .bind(session_id)
             .bind(before_frame_id)
@@ -3090,6 +3128,13 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
+}
+
+fn frame_privacy_redacted(frame: &Frame) -> bool {
+    frame
+        .metadata_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.metadata_redaction_reason.is_some())
 }
 
 fn map_captured_screen_text(row: SqliteRow) -> Result<CapturedScreenText> {

@@ -2503,7 +2503,12 @@ pub async fn persist_screen_frame_artifact(
     }
 
     if accessibility_text_enabled_for_settings(settings) {
-        if let Some(snapshot) = screen_text_snapshot.as_ref() {
+        if metadata_snapshot.is_none() {
+            crate::native_capture::debug_log::log(
+                "screen text extraction decision: ax_rejected reason=no_metadata_snapshot"
+                    .to_string(),
+            );
+        } else if let Some(snapshot) = screen_text_snapshot.as_ref() {
             if crate::native_capture::screen_text::snapshot_usable_for_frame(
                 snapshot,
                 metadata_snapshot.as_ref(),
@@ -6086,6 +6091,64 @@ mod tests {
                 .text
                 .as_deref()
                 .is_some_and(|text| text.contains("accessibility snapshot")));
+        });
+    }
+
+    #[test]
+    fn persist_screen_frame_artifact_rejects_accessibility_snapshot_without_metadata() {
+        run_async_test(async {
+            let dir = TestDir::new("screen-frame-artifact-ax-no-metadata");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let settings = crate::native_capture::RecordingSettingsState::default();
+            let screen_text_snapshot = crate::native_capture::ScreenTextSnapshot {
+                normalized_text: "This accessibility snapshot has enough useful text but no frame metadata is available to validate it.".to_string(),
+                captured_at_unix_ms: 1_744_539_600_123,
+                source_app_bundle_id: Some("com.example.Secret".to_string()),
+                source_app_name: Some("Secret".to_string()),
+                source_window_title: Some("Private".to_string()),
+                source_window_id: Some(42),
+                snapshot_age_ms: 100,
+                node_count: Some(12),
+                truncated: false,
+                timed_out: false,
+                refresh_reason: Some("test".to_string()),
+            };
+
+            let persisted = persist_screen_frame_artifact(
+                &infra,
+                &settings,
+                None,
+                Some(screen_text_snapshot),
+                "session-artifact-ax-no-metadata",
+                ScreenFrameArtifact {
+                    file_path: "/tmp/frame-artifact-ax-no-metadata.png".to_string(),
+                    captured_at_unix_ms: 1_744_539_600_123,
+                    width: Some(1440),
+                    height: Some(900),
+                    captured_frame_equivalence:
+                        capture_screen::CapturedFrameEquivalenceOutcome::Ready(
+                            capture_screen::CapturedFrameEquivalence {
+                                hint: "axnometa0001".to_string(),
+                                proof: b"ax-no-metadata-proof".to_vec(),
+                                version: capture_screen::CAPTURED_FRAME_EQUIVALENCE_VERSION,
+                            },
+                        ),
+                },
+            )
+            .await
+            .expect("artifact should persist");
+
+            assert!(
+                persisted.job.is_some(),
+                "OCR fallback should remain available for the captured image"
+            );
+            let resolved = infra
+                .resolve_screen_text_for_frame(persisted.frame.id)
+                .await
+                .expect("screen text resolution should succeed");
+            assert_eq!(resolved, ::app_infra::ResolvedScreenText::none());
         });
     }
 

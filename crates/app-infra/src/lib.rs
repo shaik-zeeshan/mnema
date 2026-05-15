@@ -2092,6 +2092,19 @@ mod tests {
         }
     }
 
+    fn privacy_redacted_metadata_snapshot() -> capture_metadata::FrameMetadataSnapshot {
+        capture_metadata::FrameMetadataSnapshot {
+            app_bundle_id: None,
+            app_name: None,
+            window_title: None,
+            window_id: None,
+            browser_url: None,
+            display_id: None,
+            metadata_redaction_reason: Some("excluded_app".to_string()),
+            metadata_redaction_source_id: Some("secret-app".to_string()),
+        }
+    }
+
     #[test]
     fn screen_text_resolution_uses_nearest_text_bearing_equivalent_frame() {
         run_async_test(async {
@@ -2187,6 +2200,120 @@ mod tests {
                 ResolvedScreenTextSource::EquivalentAccessibility
             );
             assert_eq!(resolved.frame_id, Some(text_bearing.id));
+        });
+    }
+
+    #[test]
+    fn duplicate_frame_persists_accessibility_text_when_equivalent_chain_has_no_text() {
+        run_async_test(async {
+            let dir = TestDir::new("screen-text-equivalent-insert-after-missing");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [10, 20, 30, 255]);
+
+            let first = infra
+                .capture_frame_without_screen_text(&test_frame_with_equivalent_image(
+                    &dir,
+                    "screen-text-insert-after-missing",
+                    "first.png",
+                    "2026-04-12T10:00:00Z",
+                    &pixels,
+                    width,
+                    height,
+                ))
+                .await
+                .expect("first frame should persist");
+            let duplicate = infra
+                .capture_frame_with_screen_text(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "screen-text-insert-after-missing",
+                        "duplicate.png",
+                        "2026-04-12T10:00:01Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    &test_accessibility_screen_text("later duplicate accessibility text"),
+                )
+                .await
+                .expect("duplicate frame should persist");
+
+            assert!(first.job.is_none());
+            assert!(duplicate.job.is_none());
+            let stored_text = infra
+                .processing
+                .get_captured_screen_text(
+                    duplicate.frame.id,
+                    CapturedScreenTextSource::Accessibility,
+                )
+                .await
+                .expect("stored screen text lookup should succeed")
+                .expect("duplicate screen text should persist");
+            assert_eq!(
+                stored_text.result_text,
+                "later duplicate accessibility text"
+            );
+        });
+    }
+
+    #[test]
+    fn redacted_frame_does_not_resolve_screen_text_from_equivalent_history() {
+        run_async_test(async {
+            let dir = TestDir::new("screen-text-redacted-equivalent");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let width = 32;
+            let height = 32;
+            let pixels = solid_rgba(width, height, [44, 55, 66, 255]);
+
+            let source = infra
+                .capture_frame_with_screen_text(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "screen-text-redacted-equivalent",
+                        "source.png",
+                        "2026-04-12T10:00:00Z",
+                        &pixels,
+                        width,
+                        height,
+                    ),
+                    &test_accessibility_screen_text("text from non-redacted equivalent"),
+                )
+                .await
+                .expect("source frame should persist");
+            let redacted = infra
+                .capture_frame_without_screen_text(
+                    &test_frame_with_equivalent_image(
+                        &dir,
+                        "screen-text-redacted-equivalent",
+                        "redacted.png",
+                        "2026-04-12T10:00:01Z",
+                        &pixels,
+                        width,
+                        height,
+                    )
+                    .with_metadata_snapshot(privacy_redacted_metadata_snapshot()),
+                )
+                .await
+                .expect("redacted frame should persist");
+
+            let nearest = infra
+                .get_nearest_earlier_equivalent_frame(redacted.frame.id)
+                .await
+                .expect("equivalent lookup should succeed")
+                .expect("earlier equivalent should exist");
+            assert_eq!(nearest.id, source.frame.id);
+
+            let resolved = infra
+                .resolve_screen_text_for_frame(redacted.frame.id)
+                .await
+                .expect("screen text resolution should succeed");
+            assert_eq!(resolved, ResolvedScreenText::none());
         });
     }
 

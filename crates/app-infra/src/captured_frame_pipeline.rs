@@ -302,14 +302,12 @@ impl CapturedFramePipeline {
             PipelineJobMode::InsertScreenText { screen_text } => {
                 let equivalence_scope = CapturedFrameEquivalenceScope::from_frame(frame);
                 if self
-                    .equivalence
-                    .find_nearest_earlier_equivalent_frame_in_transaction(
+                    .equivalent_chain_has_resolvable_screen_text_in_transaction(
                         transaction,
                         frame,
                         &equivalence_scope,
                     )
                     .await?
-                    .is_some()
                 {
                     return Ok(None);
                 }
@@ -359,6 +357,32 @@ impl CapturedFramePipeline {
                     .await?,
             )),
         }
+    }
+
+    async fn equivalent_chain_has_resolvable_screen_text_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame: &Frame,
+        scope: &CapturedFrameEquivalenceScope,
+    ) -> Result<bool> {
+        let mut candidate = frame.clone();
+        while let Some(equivalent) = self
+            .equivalence
+            .find_nearest_earlier_equivalent_frame_in_transaction(transaction, &candidate, scope)
+            .await?
+        {
+            if self
+                .processing
+                .frame_has_resolvable_screen_text_in_transaction(transaction, equivalent.id)
+                .await?
+            {
+                return Ok(true);
+            }
+
+            candidate = equivalent;
+        }
+
+        Ok(false)
     }
 
     pub(crate) async fn debug_insert_frame_and_enqueue_processor_job(
