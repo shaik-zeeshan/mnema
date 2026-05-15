@@ -45,6 +45,7 @@
     FrameRangeRequest,
     FrameSummaryDto,
     FocusedFrameWindowDto,
+    FrameScrubPreviewsDto,
     GetEarliestEarlierEquivalentFrameRequest,
     GetScrubPreviewAvailabilityRequest,
     GetProcessingJobRequest,
@@ -3178,7 +3179,12 @@
     const ids: number[] = [];
     const start = Math.max(0, activeIndex - options.radius);
     const end = Math.min(timelineFrames.length - 1, activeIndex + options.radius);
-    for (let index = start; index <= end; index += 1) {
+    const indexes = [activeIndex];
+    for (let distance = 1; activeIndex - distance >= start || activeIndex + distance <= end; distance += 1) {
+      if (activeIndex - distance >= start) indexes.push(activeIndex - distance);
+      if (activeIndex + distance <= end) indexes.push(activeIndex + distance);
+    }
+    for (const index of indexes) {
       const id = timelineFrames[index]?.id;
       if (
         id == null ||
@@ -3711,6 +3717,47 @@
           scrubPreviewMissingCount += 1;
           missing += 1;
         }
+      }
+      const activeHasIntervalPreview = Boolean(scrubPreviewIntervalForFrame(timelineActive)?.preview);
+      if (!activeHasIntervalPreview && frameIds.length > 0) {
+        const activeFrameId = timelineActive?.id ?? null;
+        const frameScrubIds =
+          activeFrameId != null && frameIds.includes(activeFrameId)
+            ? [activeFrameId]
+            : frameIds.slice(0, 1);
+        const frameScrubStartedAt = performance.now();
+        const frameScrubDto = await invoke<FrameScrubPreviewsDto>("get_frame_scrub_previews", {
+          request: { frameIds: frameScrubIds },
+        });
+        if (!scrubPreviewResponseShouldApply(generation, scrubPreviewFetchGeneration)) {
+          scrubPerfLog("scrub_preview_frame_stale", {
+            requested: frameScrubIds.length,
+            returned: frameScrubDto.previews.length,
+          });
+          return;
+        }
+        let frameReady = 0;
+        let frameMissing = 0;
+        for (const result of frameScrubDto.previews) {
+          if (result.preview) {
+            clearScrubPreviewFailure(result.frameId);
+            touchScrubPreviewCache(result.frameId, result.preview.filePath, {
+              mimeType: result.preview.mimeType,
+              sourceKind: result.preview.sourceKind,
+              loadMs: performance.now() - frameScrubStartedAt,
+            });
+            frameReady += 1;
+          } else {
+            rememberScrubPreviewFailure(result.frameId);
+            frameMissing += 1;
+          }
+        }
+        scrubPerfLogSlow("scrub_preview_frame_batch", performance.now() - frameScrubStartedAt, {
+          requested: frameScrubIds.length,
+          returned: frameScrubDto.previews.length,
+          ready: frameReady,
+          missing: frameMissing,
+        }, SCRUB_PERF_SLOW_PREVIEW_MS);
       }
       scrubPerfLogSlow("scrub_preview_batch", performance.now() - startedAt, {
         requested: frameIds.length,
@@ -6442,7 +6489,7 @@
           <span class="timeline__overlay-val">{activeDisplayPreviewSourceKind}</span>
         </div>
         <div class="timeline__overlay-row">
-          <span class="timeline__overlay-key">latency</span>
+          <span class="timeline__overlay-key">fetch</span>
           <span class="timeline__overlay-val timeline__overlay-truncate">
             exact {activeExactPreviewLoadMs == null ? "—" : `${activeExactPreviewLoadMs.toFixed(1)}ms`} scrub {activeScrubPreviewLoadMs == null ? "—" : `${activeScrubPreviewLoadMs.toFixed(1)}ms`}
           </span>
