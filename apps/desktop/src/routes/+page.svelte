@@ -435,7 +435,7 @@
   function handleActivePreviewLoadError(frameId: number): void {
     if (!previewCache.has(frameId) && scrubPreviewCache.has(frameId)) {
       dropScrubPreviewCacheEntry(frameId);
-      scrubPreviewFailedAt = new Map(scrubPreviewFailedAt).set(frameId, Date.now());
+      rememberScrubPreviewFailure(frameId);
       const activeIndex = timelineFrames.findIndex((frame) => frame.id === frameId);
       if (activeIndex >= 0) {
         scrubPreviewFetchGeneration += 1;
@@ -2561,7 +2561,14 @@
   }
 
   function prunePreviewCache(frames: FrameDto[]): void {
-    if (previewCache.size === 0 && scrubPreviewCache.size === 0) return;
+    if (
+      previewCache.size === 0 &&
+      scrubPreviewCache.size === 0 &&
+      scrubPreviewMimeTypeCache.size === 0 &&
+      scrubPreviewFailedAt.size === 0
+    ) {
+      return;
+    }
     const keep = new Set(frames.map((frame) => frame.id));
     const next = new Map<number, string>();
     for (const [frameId, url] of previewCache) {
@@ -2576,6 +2583,20 @@
     }
     if (nextScrub.size !== scrubPreviewCache.size) {
       scrubPreviewCache = nextScrub;
+    }
+    const nextScrubMimeTypes = new Map<number, string>();
+    for (const [frameId, mimeType] of scrubPreviewMimeTypeCache) {
+      if (keep.has(frameId)) nextScrubMimeTypes.set(frameId, mimeType);
+    }
+    if (nextScrubMimeTypes.size !== scrubPreviewMimeTypeCache.size) {
+      scrubPreviewMimeTypeCache = nextScrubMimeTypes;
+    }
+    const nextScrubFailures = new Map<number, number>();
+    for (const [frameId, failedAt] of scrubPreviewFailedAt) {
+      if (keep.has(frameId)) nextScrubFailures.set(frameId, failedAt);
+    }
+    if (nextScrubFailures.size !== scrubPreviewFailedAt.size) {
+      scrubPreviewFailedAt = nextScrubFailures;
     }
   }
 
@@ -2698,12 +2719,24 @@
   function trimScrubPreviewCache(): void {
     if (scrubPreviewCache.size <= PREVIEW_CACHE_MAX_ENTRIES) return;
     const next = new Map(scrubPreviewCache);
+    const evictedFrameIds: number[] = [];
     while (next.size > PREVIEW_CACHE_MAX_ENTRIES) {
       const oldestFrameId = next.keys().next().value;
       if (oldestFrameId == null) break;
       next.delete(oldestFrameId);
+      evictedFrameIds.push(oldestFrameId);
     }
     scrubPreviewCache = next;
+    if (evictedFrameIds.length > 0) {
+      const nextMimeTypes = new Map(scrubPreviewMimeTypeCache);
+      const nextFailures = new Map(scrubPreviewFailedAt);
+      for (const frameId of evictedFrameIds) {
+        nextMimeTypes.delete(frameId);
+        nextFailures.delete(frameId);
+      }
+      scrubPreviewMimeTypeCache = nextMimeTypes;
+      scrubPreviewFailedAt = nextFailures;
+    }
   }
 
   function touchPreviewCache(frameId: number, url: string): void {
@@ -2728,11 +2761,24 @@
     previewFailedAt = next;
   }
 
+  function rememberScrubPreviewFailure(frameId: number): void {
+    const next = new Map(scrubPreviewFailedAt);
+    next.set(frameId, Date.now());
+    scrubPreviewFailedAt = next;
+  }
+
   function clearPreviewFailure(frameId: number): void {
     if (!previewFailedAt.has(frameId)) return;
     const next = new Map(previewFailedAt);
     next.delete(frameId);
     previewFailedAt = next;
+  }
+
+  function clearScrubPreviewFailure(frameId: number): void {
+    if (!scrubPreviewFailedAt.has(frameId)) return;
+    const next = new Map(scrubPreviewFailedAt);
+    next.delete(frameId);
+    scrubPreviewFailedAt = next;
   }
 
   function dropPreviewCacheEntry(frameId: number): void {
@@ -2771,13 +2817,30 @@
     return false;
   }
 
+  function recentlyFailedScrubPreview(frameId: number): boolean {
+    const failedAt = scrubPreviewFailedAt.get(frameId);
+    if (failedAt == null) return false;
+    if (Date.now() - failedAt < PREVIEW_FAILURE_CACHE_TTL_MS) {
+      return true;
+    }
+    clearScrubPreviewFailure(frameId);
+    return false;
+  }
+
   function scrubPreviewFrameIdsAround(activeIndex: number): number[] {
     const ids: number[] = [];
     const start = Math.max(0, activeIndex - ACTIVE_PREVIEW_SCRUB_RADIUS);
     const end = Math.min(timelineFrames.length - 1, activeIndex + ACTIVE_PREVIEW_SCRUB_RADIUS);
     for (let index = start; index <= end; index += 1) {
       const id = timelineFrames[index]?.id;
-      if (id == null || scrubPreviewCache.has(id) || scrubPreviewInFlight.has(id)) continue;
+      if (
+        id == null ||
+        scrubPreviewCache.has(id) ||
+        scrubPreviewInFlight.has(id) ||
+        recentlyFailedScrubPreview(id)
+      ) {
+        continue;
+      }
       ids.push(id);
       if (ids.length >= ACTIVE_PREVIEW_SCRUB_MAX_UNCACHED) break;
     }
@@ -3157,7 +3220,10 @@
 
   async function ensureScrubPreviews(frameIds: number[], generation: number): Promise<void> {
     const uncached = frameIds.filter(
-      (frameId) => !scrubPreviewCache.has(frameId) && !scrubPreviewInFlight.has(frameId),
+      (frameId) =>
+        !scrubPreviewCache.has(frameId) &&
+        !scrubPreviewInFlight.has(frameId) &&
+        !recentlyFailedScrubPreview(frameId),
     );
     if (uncached.length === 0) {
       scrubPreviewHitCount += 1;
@@ -3178,9 +3244,11 @@
       for (const item of dto.previews) {
         if (!item.preview) {
           scrubPreviewMissingCount += 1;
+          rememberScrubPreviewFailure(item.frameId);
           continue;
         }
         clearPreviewFailure(item.frameId);
+        clearScrubPreviewFailure(item.frameId);
         touchScrubPreviewCache(item.frameId, item.preview.filePath);
         nextMimeTypes.set(item.frameId, item.preview.mimeType);
         if (item.preview.sourceKind === "original_frame") {
@@ -4936,7 +5004,11 @@
       timelineError = null;
       timelineShowingHistoricalWindow = window.hasNewer;
       previewCache = new Map();
+      previewMimeTypeCache = new Map();
+      previewFailedAt = new Map();
       scrubPreviewCache = new Map();
+      scrubPreviewMimeTypeCache = new Map();
+      scrubPreviewFailedAt = new Map();
       await syncTimelineScrollToActiveFrame();
       void refreshAudioSegments();
       // Keep picker selection state in sync with the resolved target frame
