@@ -3437,8 +3437,7 @@ mod tests {
             Arc,
         },
         thread,
-        time::Duration,
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     use super::frame_preview::*;
