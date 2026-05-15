@@ -155,6 +155,8 @@ pub fn run() {
             app_infra::list_processing_jobs,
             app_infra::get_processing_job,
             app_infra::get_processing_result,
+            app_infra::get_frame_ocr_admission,
+            app_infra::get_ocr_budget_telemetry,
             app_infra::list_processing_results,
             app_infra::list_speaker_turns,
             app_infra::list_person_profiles,

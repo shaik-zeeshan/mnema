@@ -25,6 +25,50 @@ _Avoid_: bucket, chunk, frame group
 A processing job that recognizes text for one captured frame.
 _Avoid_: processor task, recognition work item
 
+**OCR Throughput Budget**:
+The user-facing policy for limiting how much **OCR Job** work Mnema admits and schedules over time while preserving useful recognition quality.
+_Avoid_: CPU cap, OCR governor, hard CPU limit
+
+**OCR Quality Floor**:
+The minimum acceptable recognition quality for automatic **OCR Job** work.
+_Avoid_: fast fallback, cheap OCR mode, best-effort recognition
+
+**OCR Settings Selection**:
+The user-selected OCR provider, model, language, recognition mode, and provider-specific options used for automatic **OCR Job** admission.
+_Avoid_: automatic provider choice, adaptive OCR mode, hidden fallback
+
+**OCR Admission Budget**:
+The part of the **OCR Throughput Budget** that decides which automatic **Captured Frame** values should receive an **OCR Job**.
+_Avoid_: frame dropper, OCR enqueue throttle, skip rule
+
+**OCR Candidate**:
+A **Captured Frame** that is eligible for automatic **OCR Job** admission after budget and value checks.
+_Avoid_: sampled frame, selected screenshot, OCR frame
+
+**OCR-Relevant Change**:
+A visual or context change in a **Captured Frame** that is likely to change useful recognized text.
+_Avoid_: pixel change, screen difference, visual delta
+
+**OCR-Relevance Probe**:
+An extra pre-admission analysis pass that tries to detect whether a **Captured Frame** likely contains useful text before admitting an **OCR Job** and costs meaningful CPU beyond already available capture or persistence data.
+_Avoid_: lightweight OCR, pre-OCR, text detector
+
+**OCR Admission Reason**:
+A persisted explanation for why automatic OCR was or was not admitted for a **Captured Frame**.
+_Avoid_: debug log, skip note, enqueue reason
+
+**OCR Budget Telemetry**:
+Durable cost and usefulness summary data used to tune **OCR Throughput Budget** behavior without duplicating recognized text.
+_Avoid_: OCR text copy, performance log, debug-only metric
+
+**OCR Execution Budget**:
+The part of the **OCR Throughput Budget** that paces when already queued **OCR Job** values run.
+_Avoid_: worker sleep, queue delay, CPU limiter
+
+**OCR Catch-Up**:
+The execution mode that processes deferred **OCR Job** backlog after recording stops or the app determines the machine is idle enough for more work.
+_Avoid_: batch OCR, drain mode, background sweep
+
 **Captured Frame Reprocessing**:
 A request to re-run OCR for an existing **Captured Frame** that is already persisted.
 _Avoid_: force processing, rerun pipeline, requeue screenshot
@@ -161,8 +205,44 @@ _Avoid_: purge, vacuum, file cleanup
 - **Captured Frame Equivalence** determines whether a new **Captured Frame** needs a new **OCR Job**.
 - **Captured Frame Equivalence Scope** determines which earlier **Captured Frame** values are eligible comparison candidates.
 - A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier equivalent **Captured Frame** in the same session is already eligible as the OCR fallback.
+- An **OCR Throughput Budget** limits **OCR Job** admission and scheduling rather than guaranteeing a hard process-wide CPU ceiling.
+- An **OCR Throughput Budget** must preserve the **OCR Settings Selection** instead of silently switching provider, model, recognition mode, or provider-specific options.
+- An **OCR Throughput Budget** has an **OCR Admission Budget** and an **OCR Execution Budget**.
+- An **OCR Admission Budget** limits new automatic **OCR Job** creation.
+- **OCR Admission Budget** comparisons should remain scoped to the relevant capture session or workspace where appropriate.
+- **Captured Frame Equivalence** is the first automatic OCR duplicate filter; an **OCR Admission Budget** may add a conservative second filter for non-equivalent but low OCR-value frames.
+- An **OCR Admission Budget** should avoid creating **OCR Job** debt for automatic low OCR-value **OCR Candidate** values.
+- An **OCR Admission Budget** should prefer materially changed **OCR Candidate** values over fixed time cadence.
+- A fixed time cadence may dampen stable or low-change capture periods but must not hide materially new searchable text.
+- **OCR Admission Budget** may use queued plus running **OCR Job** count as a pressure signal during active recording, admitting only stronger automatic **OCR Candidate** values when backlog is high.
+- **OCR-Relevant Change** is narrower than any visible pixel change and excludes cursor movement, small animations, spinners, video playback, and tiny layout shifts.
+- Foreground context changes such as app bundle, window title, browser URL, or display changes are strong positive **OCR-Relevant Change** signals when the frame is not equivalent to an earlier frame.
+- Unchanged foreground context does not prove there is no **OCR-Relevant Change**.
+- An **OCR Throughput Budget** may use cheap admission signals that reuse already available capture or persistence data.
+- An **OCR Throughput Budget** should not add an **OCR-Relevance Probe**, because extra pre-admission analysis can become another CPU cost on the capture hot path.
+- An **OCR Admission Reason** should be persisted for **Captured Frame** values that do not receive an automatic **OCR Job**, including equivalent-frame reuse.
+- **OCR Admission Reason** values apply to newly captured frames after the policy exists and should not be invented historically for older frames.
+- Low OCR-value admission skips should be visible in debug surfaces but not noisy in the normal timeline.
+- **OCR Budget Telemetry** should include timing and usefulness summaries such as recognized text length or observation count, but should not duplicate recognized text.
+- **OCR Budget Telemetry** usefulness summaries should be computed after **OCR Job** completion, not estimated before admission.
+- An **OCR Execution Budget** paces existing queued **OCR Job** execution.
+- An **OCR Execution Budget** should start with deterministic pacing based on recording state and observed OCR job timing rather than live process-wide CPU measurement.
+- An **OCR Execution Budget** should use bounded cost-adaptive pacing based on recent **OCR Job** runtime rather than a single fixed cooldown.
+- **OCR Execution Budget** pacing should use observed **OCR Job** runtime regardless of whether the job completed or failed.
+- **OCR Execution Budget** pacing memory may reset on app startup, while durable job timing remains available for debug and telemetry.
+- **OCR Execution Budget** pacing should be global across sessions because OCR work consumes shared machine resources.
+- An **OCR Execution Budget** should be more conservative during active recording than during **OCR Catch-Up**.
+- Automatic **OCR Job** work still occurs during active recording; active recording is neither OCR-off nor governed by a fixed time cadence for materially changed frames.
+- **OCR Catch-Up** may process deferred **OCR Job** backlog more aggressively after recording stops or while the machine is idle.
+- **OCR Catch-Up** processes already admitted **OCR Job** backlog and should not automatically create new **OCR Job** values for low OCR-value candidates skipped by admission.
+- **OCR Throughput Budget** semantics apply across OCR providers and should use provider/job timing telemetry for future tuning rather than changing the **OCR Settings Selection**.
+- Existing queued **OCR Job** values should be preserved and processed under the **OCR Execution Budget** rather than deleted or reclassified by the **OCR Admission Budget**.
+- An **OCR Throughput Budget** should start as a default product policy rather than a visible user-configurable resource setting.
 - A **Frame Batch** can be finalized only after its **OCR Job** entries are terminal.
+- **OCR Job** values that are not admitted by the **OCR Admission Budget** do not block **Frame Batch** finalization.
+- An admitted **OCR Job** still blocks its **Frame Batch** from finalizing until the job is terminal.
 - **Captured Frame Reprocessing** operates on an existing **Captured Frame**, not on a new **Screen Frame Artifact**.
+- **Captured Frame Reprocessing** bypasses the **OCR Admission Budget** but still respects the **OCR Execution Budget**.
 - A **Hidden Segment Workspace** may be preserved when an incomplete **Frame Batch** or nonterminal **OCR Job** still references it.
 - **Hidden Segment Workspace Repair** removes only **Hidden Segment Workspace** values that are safe to remove.
 - An **Audio Activity Sample** can inform an **Audio Activity Decision**, but the two are not interchangeable.
@@ -173,12 +253,81 @@ _Avoid_: purge, vacuum, file cleanup
 > **Dev:** "When a **Captured Frame** is equivalent to an earlier frame in the same session, does the **Captured Frame Pipeline** still create an **OCR Job**?"
 > **Domain expert:** "No — the frame is persisted and attached to its **Frame Batch**, but if an earlier equivalent frame is already eligible, the pipeline reuses that OCR fallback instead of creating another **OCR Job**."
 
+> **Dev:** "Does an **OCR Admission Budget** replace **Captured Frame Equivalence**?"
+> **Domain expert:** "No — **Captured Frame Equivalence** remains the duplicate filter, while the budget may conservatively filter non-equivalent low OCR-value frames."
+
+> **Dev:** "Should a low OCR-value automatic **OCR Candidate** still create a deferred **OCR Job**?"
+> **Domain expert:** "No — avoid creating OCR debt for that candidate, keep the **Captured Frame**, and allow manual **Captured Frame Reprocessing** later."
+
+> **Dev:** "Should the timeline label every frame skipped by the **OCR Admission Budget**?"
+> **Domain expert:** "No — keep normal timeline quiet, but expose admission-skip reasons in debug surfaces."
+
+> **Dev:** "Can an **OCR Admission Reason** live only in logs?"
+> **Domain expert:** "No — it should be persisted so the frame remains explainable after restart."
+
+> **Dev:** "Should **OCR Budget Telemetry** store another copy of recognized text?"
+> **Domain expert:** "No — store cost and usefulness summaries; recognized text belongs in the normal OCR result."
+
+> **Dev:** "Should equivalent-frame reuse have an **OCR Admission Reason** even though **Captured Frame Equivalence** already works?"
+> **Domain expert:** "Yes — equivalence remains the duplicate filter, and the reason explains why no separate **OCR Job** exists."
+
+> **Dev:** "Should Mnema backfill **OCR Admission Reason** for old **Captured Frame** values?"
+> **Domain expert:** "No — persist reasons for newly captured frames after the policy exists instead of inventing historical explanations."
+
+> **Dev:** "Should an **OCR Throughput Budget** force Mnema to stay below 30% CPU at every moment?"
+> **Domain expert:** "No — it should limit how much **OCR Job** work is admitted and scheduled over time, while short engine-level CPU spikes may still happen."
+
+> **Dev:** "Can the **OCR Throughput Budget** switch automatic Apple Vision OCR from accurate to fast when the machine is busy?"
+> **Domain expert:** "No — the budget should run fewer or later **OCR Job** values instead of changing the **OCR Settings Selection**."
+
+> **Dev:** "Should the **OCR Throughput Budget** only slow the worker after every frame already has a queued **OCR Job**?"
+> **Domain expert:** "No — the **OCR Admission Budget** should control how much OCR debt is created, and the **OCR Execution Budget** should control how quickly that debt is processed."
+
+> **Dev:** "Should the **OCR Execution Budget** constantly read live CPU usage to decide whether OCR can run?"
+> **Domain expert:** "No — start with deterministic pacing from recording state and observed OCR job timing, then add CPU feedback later only if needed."
+
+> **Dev:** "Should **OCR Execution Budget** pacing use one fixed delay after every **OCR Job**?"
+> **Domain expert:** "No — use bounded cost-adaptive pacing so expensive recent OCR work slows the next job more than cheap recent OCR work."
+
+> **Dev:** "Should users configure the **OCR Throughput Budget** directly?"
+> **Domain expert:** "Not yet — users configure the **OCR Settings Selection**, while the throughput budget starts as a default product policy."
+
+> **Dev:** "Can the **OCR Admission Budget** admit only one **OCR Candidate** every few seconds?"
+> **Domain expert:** "No — materially changed **OCR Candidate** values should bypass cadence, while cadence only limits stable or low-change periods."
+
+> **Dev:** "Does every visible pixel difference create an **OCR-Relevant Change**?"
+> **Domain expert:** "No — OCR admission should ignore visual noise that is unlikely to change useful recognized text."
+
+> **Dev:** "If the active app, title, browser URL, or display changes, should that count toward **OCR-Relevant Change**?"
+> **Domain expert:** "Yes — foreground context changes are strong positive signals, but unchanged context does not prove the text is unchanged."
+
+> **Dev:** "Can the **OCR Throughput Budget** use cheap visual or context signals before admitting automatic OCR?"
+> **Domain expert:** "Yes — if the signal reuses already available capture or persistence data; do not add an **OCR-Relevance Probe** that costs meaningful extra CPU."
+
+> **Dev:** "Can the **OCR Admission Budget** reject **Captured Frame Reprocessing**?"
+> **Domain expert:** "No — reprocessing is explicit user intent, but the resulting **OCR Job** still runs under the **OCR Execution Budget**."
+
+> **Dev:** "Should deferred **OCR Job** backlog run at the same pace during recording and after recording stops?"
+> **Domain expert:** "No — active recording should use a conservative **OCR Execution Budget**, while **OCR Catch-Up** can process backlog more aggressively."
+
+> **Dev:** "Can **OCR Catch-Up** later create **OCR Job** values for low OCR-value frames skipped during admission?"
+> **Domain expert:** "No — catch-up drains already admitted OCR backlog; manual **Captured Frame Reprocessing** is the escape hatch for skipped frames."
+
+> **Dev:** "Should the **OCR Throughput Budget** pick different providers when one provider is slower?"
+> **Domain expert:** "No — provider choice belongs to **OCR Settings Selection**; the budget can use provider/job timing telemetry for future tuning."
+
+> **Dev:** "Does the conservative active-recording budget mean automatic OCR is off while recording?"
+> **Domain expert:** "No — automatic **OCR Job** work still happens for **OCR-Relevant Change**, but stable or low-change periods can be paced or deferred."
+
 > **Dev:** "Is `microphoneActivityLastUnixMs` the same thing as the audio signal the inactivity policy uses?"
 > **Domain expert:** "No — that timestamp is an **Audio Activity Sample**; the inactivity pause logic uses an **Audio Activity Decision** derived from threshold-qualified activity."
 
 ## Flagged ambiguities
 
 - "pipeline" previously meant both frame intake and OCR execution; resolved: **Captured Frame Pipeline** means frame intake through batch-finalization readiness, while **OCR Job** means the recognition work for one frame.
+- "CPU cap" suggested a hard process-wide ceiling; resolved: use **OCR Throughput Budget** for limiting OCR work over time.
+- "fast OCR" and provider fallback were considered as optimizations; resolved: the **OCR Throughput Budget** must not change the **OCR Settings Selection**.
+- "30% CPU" suggested live CPU feedback; resolved: the first **OCR Execution Budget** should use deterministic pacing rather than live process-wide CPU measurement.
 - "audio activity" previously referred to both raw probe output and inactivity-policy state; resolved: raw probe output is an **Audio Activity Sample**, while policy-facing threshold-qualified state is an **Audio Activity Decision**.
 - "audio file" was used to mean the persisted unit for transcription; resolved: use **Audio Segment** for the time-bounded persisted recording file.
 - "provider" was considered for both cloud and local transcription services; resolved: **Audio Transcription Provider** means local-only for v1.

@@ -9,6 +9,7 @@ mod frame_batch_runtime;
 mod frame_batch_store;
 mod hidden_segment_workspace;
 pub mod jobs;
+mod ocr_budget;
 pub mod processing;
 pub mod status;
 
@@ -51,6 +52,10 @@ pub use ocr::{
     AppleVisionProvider, FrozenOcrPayload, OcrBoundingBox, OcrObservation, OcrOutput, OcrProvider,
     OcrProviderKind, OcrRecognitionMode, OcrRequest, OcrStructuredPayload, PaddleOcrProvider,
     TesseractProvider,
+};
+pub use ocr_budget::{
+    OcrAdmissionDecision, OcrAdmissionOutcome, OcrAdmissionReason, OcrAdmissionSignals,
+    OcrBudgetTelemetry,
 };
 pub use processing::{
     AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend, FocusedFrameWindow, Frame,
@@ -375,6 +380,27 @@ impl AppInfra {
     ) -> Result<CapturedFramePipelineResult> {
         self.captured_frame_pipeline
             .capture_frame(frame, payload_json)
+            .await
+    }
+
+    pub async fn capture_frame_with_ocr_admission(
+        &self,
+        frame: &NewFrame,
+        payload_json: Option<&str>,
+        decision: OcrAdmissionDecision,
+    ) -> Result<CapturedFramePipelineResult> {
+        self.captured_frame_pipeline
+            .capture_frame_with_ocr_admission(frame, payload_json, decision)
+            .await
+    }
+
+    pub async fn capture_frame_skipping_ocr_with_reason(
+        &self,
+        frame: &NewFrame,
+        decision: OcrAdmissionDecision,
+    ) -> Result<CapturedFramePipelineResult> {
+        self.captured_frame_pipeline
+            .capture_frame_skipping_ocr_with_reason(frame, decision)
             .await
     }
 
@@ -1468,6 +1494,68 @@ impl AppInfra {
     ) -> Result<Option<ProcessingJobRunOutcome>> {
         self.processing_runtime
             .process_next_queued_job_excluding_processors(excluded_processors)
+            .await
+    }
+
+    pub async fn count_queued_or_running_processing_jobs_for_processor(
+        &self,
+        processor: &str,
+    ) -> Result<i64> {
+        self.processing
+            .count_queued_or_running_jobs_for_processor(processor)
+            .await
+    }
+
+    pub async fn insert_ocr_budget_telemetry(
+        &self,
+        telemetry: &OcrBudgetTelemetry,
+    ) -> Result<OcrBudgetTelemetry> {
+        self.processing.insert_ocr_budget_telemetry(telemetry).await
+    }
+
+    pub async fn get_ocr_budget_telemetry(
+        &self,
+        job_id: i64,
+    ) -> Result<Option<OcrBudgetTelemetry>> {
+        self.processing.get_ocr_budget_telemetry(job_id).await
+    }
+
+    pub async fn get_ocr_admission_for_frame(
+        &self,
+        frame_id: i64,
+    ) -> Result<Option<OcrAdmissionDecision>> {
+        self.processing.get_ocr_admission_for_frame(frame_id).await
+    }
+
+    pub async fn has_ocr_admission_in_scope(
+        &self,
+        session_id: &str,
+        workspace_prefix: Option<&str>,
+    ) -> Result<bool> {
+        self.processing
+            .has_ocr_admission_in_scope(session_id, workspace_prefix)
+            .await
+    }
+
+    pub async fn has_recent_admitted_ocr_in_scope(
+        &self,
+        session_id: &str,
+        workspace_prefix: Option<&str>,
+        captured_at: &str,
+        seconds: i64,
+    ) -> Result<bool> {
+        self.processing
+            .has_recent_admitted_ocr_in_scope(session_id, workspace_prefix, captured_at, seconds)
+            .await
+    }
+
+    pub async fn latest_frame_context_differs(
+        &self,
+        frame: &NewFrame,
+        workspace_prefix: Option<&str>,
+    ) -> Result<bool> {
+        self.processing
+            .latest_frame_context_differs(frame, workspace_prefix)
             .await
     }
 

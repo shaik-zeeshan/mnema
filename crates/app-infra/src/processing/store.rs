@@ -7,7 +7,10 @@ use speaker_analysis::{
 };
 use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
-use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
+use crate::{
+    AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, OcrAdmissionDecision,
+    OcrAdmissionOutcome, OcrAdmissionReason, OcrAdmissionSignals, OcrBudgetTelemetry, Result,
+};
 
 use super::SystemAudioSpeechActivityJobPayload;
 use super::{
@@ -222,6 +225,46 @@ impl ProcessingStore {
         .await?;
 
         row.map(map_processing_job).transpose()
+    }
+
+    pub(crate) async fn insert_ocr_admission_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame_id: i64,
+        decision: &OcrAdmissionDecision,
+        job_id: Option<i64>,
+    ) -> Result<()> {
+        let signals_json = serde_json::to_string(&decision.signals)?;
+        sqlx::query(
+            "INSERT INTO frame_ocr_admissions (\
+                frame_id, outcome, reason, job_id, related_frame_id, queue_pressure_count, \
+                recording_active, signals_json\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+             ON CONFLICT(frame_id) DO UPDATE SET \
+                outcome = excluded.outcome, \
+                reason = excluded.reason, \
+                job_id = excluded.job_id, \
+                related_frame_id = excluded.related_frame_id, \
+                queue_pressure_count = excluded.queue_pressure_count, \
+                recording_active = excluded.recording_active, \
+                signals_json = excluded.signals_json",
+        )
+        .bind(frame_id)
+        .bind(decision.outcome.as_str())
+        .bind(decision.reason.as_str())
+        .bind(job_id)
+        .bind(decision.related_frame_id)
+        .bind(decision.queue_pressure_count)
+        .bind(if decision.recording_active {
+            1_i64
+        } else {
+            0_i64
+        })
+        .bind(signals_json)
+        .execute(&mut **transaction)
+        .await?;
+
+        Ok(())
     }
 
     pub(crate) async fn requeue_processing_job_in_transaction(
@@ -696,6 +739,139 @@ impl ProcessingStore {
         rows.into_iter().map(map_processing_job).collect()
     }
 
+    pub async fn count_queued_or_running_jobs_for_processor(&self, processor: &str) -> Result<i64> {
+        let count = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM processing_jobs \
+             WHERE processor = ?1 AND status IN ('queued', 'running')",
+        )
+        .bind(processor)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count)
+    }
+
+    pub async fn has_ocr_admission_in_scope(
+        &self,
+        session_id: &str,
+        workspace_prefix: Option<&str>,
+    ) -> Result<bool> {
+        let row = if let Some(prefix) = workspace_prefix {
+            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(prefix));
+            sqlx::query(
+                "SELECT 1 FROM frame_ocr_admissions AS admission \
+                 JOIN frames AS frame ON frame.id = admission.frame_id \
+                 WHERE frame.session_id = ?1 AND frame.file_path LIKE ?2 ESCAPE '\\' \
+                 LIMIT 1",
+            )
+            .bind(session_id)
+            .bind(like_pattern)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT 1 FROM frame_ocr_admissions AS admission \
+                 JOIN frames AS frame ON frame.id = admission.frame_id \
+                 WHERE frame.session_id = ?1 \
+                 LIMIT 1",
+            )
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        Ok(row.is_some())
+    }
+
+    pub async fn has_recent_admitted_ocr_in_scope(
+        &self,
+        session_id: &str,
+        workspace_prefix: Option<&str>,
+        captured_at: &str,
+        seconds: i64,
+    ) -> Result<bool> {
+        let row = if let Some(prefix) = workspace_prefix {
+            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(prefix));
+            sqlx::query(
+                "SELECT 1 FROM frame_ocr_admissions AS admission \
+                 JOIN frames AS frame ON frame.id = admission.frame_id \
+                 WHERE frame.session_id = ?1 \
+                   AND frame.file_path LIKE ?2 ESCAPE '\\' \
+                   AND admission.outcome = 'admitted' \
+                   AND frame.captured_at >= datetime(?3, '-' || ?4 || ' seconds') \
+                   AND frame.captured_at <= ?3 \
+                 LIMIT 1",
+            )
+            .bind(session_id)
+            .bind(like_pattern)
+            .bind(captured_at)
+            .bind(seconds)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT 1 FROM frame_ocr_admissions AS admission \
+                 JOIN frames AS frame ON frame.id = admission.frame_id \
+                 WHERE frame.session_id = ?1 \
+                   AND admission.outcome = 'admitted' \
+                   AND frame.captured_at >= datetime(?2, '-' || ?3 || ' seconds') \
+                   AND frame.captured_at <= ?2 \
+                 LIMIT 1",
+            )
+            .bind(session_id)
+            .bind(captured_at)
+            .bind(seconds)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        Ok(row.is_some())
+    }
+
+    pub async fn latest_frame_context_differs(
+        &self,
+        frame: &NewFrame,
+        workspace_prefix: Option<&str>,
+    ) -> Result<bool> {
+        let Some(current) = frame.metadata_snapshot.as_ref() else {
+            return Ok(false);
+        };
+        let row = if let Some(prefix) = workspace_prefix {
+            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(prefix));
+            sqlx::query(
+                "SELECT snapshot.snapshot_json FROM frames AS frame \
+                 LEFT JOIN frame_metadata_snapshots AS snapshot ON snapshot.id = frame.metadata_snapshot_id \
+                 WHERE frame.session_id = ?1 AND frame.file_path LIKE ?2 ESCAPE '\\' \
+                 ORDER BY frame.id DESC LIMIT 1",
+            )
+            .bind(&frame.session_id)
+            .bind(like_pattern)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT snapshot.snapshot_json FROM frames AS frame \
+                 LEFT JOIN frame_metadata_snapshots AS snapshot ON snapshot.id = frame.metadata_snapshot_id \
+                 WHERE frame.session_id = ?1 \
+                 ORDER BY frame.id DESC LIMIT 1",
+            )
+            .bind(&frame.session_id)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let previous_json: Option<String> = row.get("snapshot_json");
+        let Some(previous_json) = previous_json else {
+            return Ok(false);
+        };
+        let previous: capture_metadata::FrameMetadataSnapshot =
+            serde_json::from_str(&previous_json)?;
+        Ok(previous.app_bundle_id != current.app_bundle_id
+            || previous.app_name != current.app_name
+            || previous.window_title != current.window_title
+            || previous.browser_url != current.browser_url)
+    }
+
     pub async fn list_retargetable_jobs_for_processor(
         &self,
         processor: &str,
@@ -756,6 +932,75 @@ impl ProcessingStore {
         }
 
         self.get_job(job_id).await
+    }
+
+    pub async fn insert_ocr_budget_telemetry(
+        &self,
+        telemetry: &OcrBudgetTelemetry,
+    ) -> Result<OcrBudgetTelemetry> {
+        sqlx::query(
+            "INSERT INTO ocr_budget_telemetry (\
+                job_id, frame_id, provider, model_id, recognition_mode, status, run_duration_ms, \
+                queue_wait_ms, result_text_length, observation_count\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+             ON CONFLICT(job_id) DO UPDATE SET \
+                frame_id = excluded.frame_id, \
+                provider = excluded.provider, \
+                model_id = excluded.model_id, \
+                recognition_mode = excluded.recognition_mode, \
+                status = excluded.status, \
+                run_duration_ms = excluded.run_duration_ms, \
+                queue_wait_ms = excluded.queue_wait_ms, \
+                result_text_length = excluded.result_text_length, \
+                observation_count = excluded.observation_count",
+        )
+        .bind(telemetry.job_id)
+        .bind(telemetry.frame_id)
+        .bind(&telemetry.provider)
+        .bind(telemetry.model_id.as_deref())
+        .bind(telemetry.recognition_mode.as_deref())
+        .bind(&telemetry.status)
+        .bind(telemetry.run_duration_ms)
+        .bind(telemetry.queue_wait_ms)
+        .bind(telemetry.result_text_length)
+        .bind(telemetry.observation_count)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_ocr_budget_telemetry(telemetry.job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(telemetry.job_id))
+    }
+
+    pub async fn get_ocr_budget_telemetry(
+        &self,
+        job_id: i64,
+    ) -> Result<Option<OcrBudgetTelemetry>> {
+        let row = sqlx::query(
+            "SELECT job_id, frame_id, provider, model_id, recognition_mode, status, \
+                    run_duration_ms, queue_wait_ms, result_text_length, observation_count, created_at \
+             FROM ocr_budget_telemetry WHERE job_id = ?1",
+        )
+        .bind(job_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(map_ocr_budget_telemetry).transpose()
+    }
+
+    pub async fn get_ocr_admission_for_frame(
+        &self,
+        frame_id: i64,
+    ) -> Result<Option<OcrAdmissionDecision>> {
+        let row = sqlx::query(
+            "SELECT outcome, reason, related_frame_id, queue_pressure_count, recording_active, signals_json \
+             FROM frame_ocr_admissions WHERE frame_id = ?1",
+        )
+        .bind(frame_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(map_ocr_admission_decision).transpose()
     }
 
     pub async fn acquire_model_cleanup_locks(
@@ -2941,6 +3186,39 @@ fn map_processing_job(row: SqliteRow) -> Result<ProcessingJob> {
         updated_at: row.get("updated_at"),
         started_at: row.get("started_at"),
         finished_at: row.get("finished_at"),
+    })
+}
+
+fn map_ocr_budget_telemetry(row: SqliteRow) -> Result<OcrBudgetTelemetry> {
+    Ok(OcrBudgetTelemetry {
+        job_id: row.get("job_id"),
+        frame_id: row.get("frame_id"),
+        provider: row.get("provider"),
+        model_id: row.get("model_id"),
+        recognition_mode: row.get("recognition_mode"),
+        status: row.get("status"),
+        run_duration_ms: row.get("run_duration_ms"),
+        queue_wait_ms: row.get("queue_wait_ms"),
+        result_text_length: row.get("result_text_length"),
+        observation_count: row.get("observation_count"),
+        created_at: row.get("created_at"),
+    })
+}
+
+fn map_ocr_admission_decision(row: SqliteRow) -> Result<OcrAdmissionDecision> {
+    let signals = row
+        .get::<Option<String>, _>("signals_json")
+        .map(|json| serde_json::from_str::<OcrAdmissionSignals>(&json))
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(OcrAdmissionDecision {
+        outcome: OcrAdmissionOutcome::from_str(row.get("outcome"))?,
+        reason: OcrAdmissionReason::from_str(row.get("reason"))?,
+        related_frame_id: row.get("related_frame_id"),
+        queue_pressure_count: row.get("queue_pressure_count"),
+        recording_active: row.get::<i64, _>("recording_active") != 0,
+        signals,
     })
 }
 

@@ -6,13 +6,10 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
 };
-
-#[cfg(test)]
-use std::sync::OnceLock;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
@@ -45,6 +42,11 @@ const GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES: usize = 512;
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const OCR_ACTIVE_RECORDING_COOLDOWN_MIN: Duration = Duration::from_millis(1000);
+const OCR_ACTIVE_RECORDING_COOLDOWN_MAX: Duration = Duration::from_millis(10000);
+const OCR_CATCH_UP_COOLDOWN_MIN: Duration = Duration::from_millis(250);
+const OCR_CATCH_UP_COOLDOWN_MAX: Duration = Duration::from_millis(2000);
+static OCR_EXECUTION_BUDGET_STATE: OnceLock<Mutex<OcrExecutionBudgetState>> = OnceLock::new();
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETENTION_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -652,6 +654,12 @@ pub struct GetProcessingResultRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetOcrAdmissionRequest {
+    pub frame_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListProcessingResultsRequest {
     pub subject_type: String,
     pub subject_id: i64,
@@ -804,6 +812,33 @@ pub struct ProcessingResultDto {
     pub structured_payload_json: Option<String>,
     pub processor_version: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrAdmissionDecisionDto {
+    pub outcome: ::app_infra::OcrAdmissionOutcome,
+    pub reason: ::app_infra::OcrAdmissionReason,
+    pub related_frame_id: Option<i64>,
+    pub queue_pressure_count: i64,
+    pub recording_active: bool,
+    pub signals: ::app_infra::OcrAdmissionSignals,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrBudgetTelemetryDto {
+    pub job_id: i64,
+    pub frame_id: Option<i64>,
+    pub provider: String,
+    pub model_id: Option<String>,
+    pub recognition_mode: Option<String>,
+    pub status: String,
+    pub run_duration_ms: i64,
+    pub queue_wait_ms: Option<i64>,
+    pub result_text_length: Option<i64>,
+    pub observation_count: Option<i64>,
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -995,6 +1030,37 @@ impl From<::app_infra::ProcessingResult> for ProcessingResultDto {
             structured_payload_json: result.structured_payload_json,
             processor_version: result.processor_version,
             created_at: result.created_at,
+        }
+    }
+}
+
+impl From<::app_infra::OcrAdmissionDecision> for OcrAdmissionDecisionDto {
+    fn from(decision: ::app_infra::OcrAdmissionDecision) -> Self {
+        Self {
+            outcome: decision.outcome,
+            reason: decision.reason,
+            related_frame_id: decision.related_frame_id,
+            queue_pressure_count: decision.queue_pressure_count,
+            recording_active: decision.recording_active,
+            signals: decision.signals,
+        }
+    }
+}
+
+impl From<::app_infra::OcrBudgetTelemetry> for OcrBudgetTelemetryDto {
+    fn from(telemetry: ::app_infra::OcrBudgetTelemetry) -> Self {
+        Self {
+            job_id: telemetry.job_id,
+            frame_id: telemetry.frame_id,
+            provider: telemetry.provider,
+            model_id: telemetry.model_id,
+            recognition_mode: telemetry.recognition_mode,
+            status: telemetry.status,
+            run_duration_ms: telemetry.run_duration_ms,
+            queue_wait_ms: telemetry.queue_wait_ms,
+            result_text_length: telemetry.result_text_length,
+            observation_count: telemetry.observation_count,
+            created_at: telemetry.created_at,
         }
     }
 }
@@ -2373,6 +2439,90 @@ fn ocr_enabled_for_settings(settings: &crate::native_capture::RecordingSettingsS
         .enabled
 }
 
+fn ocr_admission_workspace_prefix(frame: &::app_infra::NewFrame) -> Option<String> {
+    ::app_infra::HiddenSegmentWorkspacePaths::from_frame_artifact_path(Path::new(&frame.file_path))
+        .map(|paths| paths.workspace_dir)
+}
+
+async fn automatic_ocr_admission_decision(
+    infra: &::app_infra::AppInfra,
+    frame: &::app_infra::NewFrame,
+    recording_active: bool,
+) -> ::app_infra::Result<::app_infra::OcrAdmissionDecision> {
+    const HIGH_PRESSURE_THRESHOLD: i64 = 3;
+    const REPRESENTATIVE_SECONDS: i64 = 15;
+
+    let workspace_prefix = ocr_admission_workspace_prefix(frame);
+    let queue_pressure = infra
+        .count_queued_or_running_processing_jobs_for_processor(::app_infra::OCR_PROCESSOR)
+        .await?;
+    let high_queue_pressure = queue_pressure >= HIGH_PRESSURE_THRESHOLD;
+    let low_queue_pressure = !high_queue_pressure;
+    let first_candidate = !infra
+        .has_ocr_admission_in_scope(&frame.session_id, workspace_prefix.as_deref())
+        .await?;
+    let context_changed = infra
+        .latest_frame_context_differs(frame, workspace_prefix.as_deref())
+        .await?;
+    let recent_admitted = infra
+        .has_recent_admitted_ocr_in_scope(
+            &frame.session_id,
+            workspace_prefix.as_deref(),
+            &frame.captured_at,
+            REPRESENTATIVE_SECONDS,
+        )
+        .await?;
+    let representative_due = !recent_admitted;
+
+    let signals = ::app_infra::OcrAdmissionSignals {
+        first_candidate_in_scope: first_candidate,
+        context_changed,
+        low_queue_pressure,
+        representative_due,
+        high_queue_pressure,
+    };
+
+    let mut decision = if first_candidate {
+        ::app_infra::OcrAdmissionDecision::admit(
+            ::app_infra::OcrAdmissionReason::AdmittedInitial,
+            queue_pressure,
+            recording_active,
+        )
+    } else if context_changed {
+        ::app_infra::OcrAdmissionDecision::admit(
+            ::app_infra::OcrAdmissionReason::AdmittedContextChange,
+            queue_pressure,
+            recording_active,
+        )
+    } else if low_queue_pressure {
+        ::app_infra::OcrAdmissionDecision::admit(
+            ::app_infra::OcrAdmissionReason::AdmittedLowPressure,
+            queue_pressure,
+            recording_active,
+        )
+    } else if representative_due {
+        ::app_infra::OcrAdmissionDecision::admit(
+            ::app_infra::OcrAdmissionReason::AdmittedRepresentative,
+            queue_pressure,
+            recording_active,
+        )
+    } else if recording_active && high_queue_pressure {
+        ::app_infra::OcrAdmissionDecision::skip(
+            ::app_infra::OcrAdmissionReason::SkippedLowOcrValue,
+            queue_pressure,
+            recording_active,
+        )
+    } else {
+        ::app_infra::OcrAdmissionDecision::admit(
+            ::app_infra::OcrAdmissionReason::AdmittedLowPressure,
+            queue_pressure,
+            recording_active,
+        )
+    };
+    decision.signals = signals;
+    Ok(decision)
+}
+
 pub async fn persist_screen_frame_artifact(
     infra: &::app_infra::AppInfra,
     settings: &crate::native_capture::RecordingSettingsState,
@@ -2423,13 +2573,25 @@ pub async fn persist_screen_frame_artifact(
     };
 
     if !ocr_enabled_for_settings(settings) {
-        return infra.capture_frame_without_ocr(&frame).await;
+        let decision = ::app_infra::OcrAdmissionDecision::skip(
+            ::app_infra::OcrAdmissionReason::SkippedOcrDisabled,
+            infra
+                .count_queued_or_running_processing_jobs_for_processor(::app_infra::OCR_PROCESSOR)
+                .await?,
+            true,
+        );
+        return infra
+            .capture_frame_skipping_ocr_with_reason(&frame, decision)
+            .await;
     }
 
     let payload_json = ocr_payload_json_from_settings(settings, None)
         .map_err(::app_infra::AppInfraError::OcrEngine)?;
 
-    infra.capture_frame(&frame, payload_json.as_deref()).await
+    let decision = automatic_ocr_admission_decision(infra, &frame, true).await?;
+    infra
+        .capture_frame_with_ocr_admission(&frame, payload_json.as_deref(), decision)
+        .await
 }
 
 async fn ensure_screen_capture_segment_for_frame(
@@ -3618,6 +3780,7 @@ async fn process_pending_jobs_once(
 ) -> ::app_infra::Result<Option<()>> {
     let did_processing = infra
         .process_next_processing_job_excluding_processors(&[
+            ::app_infra::OCR_PROCESSOR,
             ::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR,
             ::app_infra::SPEAKER_ANALYSIS_PROCESSOR,
         ])
@@ -3634,11 +3797,193 @@ async fn process_pending_jobs_once(
         }
     };
 
-    if did_processing || did_finalize {
+    let did_ocr = process_pending_ocr_job_once(infra).await?.is_some();
+    let did_finalize_after_ocr = if did_ocr {
+        match infra.process_next_frame_batch_job().await {
+            Ok(result) => result.is_some(),
+            Err(error) => {
+                crate::native_capture::debug_log::log_error(format!(
+                    "app infrastructure frame-batch finalization failed after OCR state update; worker will continue: {error}"
+                ));
+                true
+            }
+        }
+    } else {
+        false
+    };
+
+    if did_processing || did_finalize || did_ocr || did_finalize_after_ocr {
         Ok(Some(()))
     } else {
         Ok(None)
     }
+}
+
+#[derive(Debug, Default)]
+struct OcrExecutionBudgetState {
+    next_due_at: Option<Instant>,
+    last_run_ms: Option<u64>,
+    last_recording_active: bool,
+}
+
+fn ocr_execution_budget_state() -> &'static Mutex<OcrExecutionBudgetState> {
+    OCR_EXECUTION_BUDGET_STATE.get_or_init(|| Mutex::new(OcrExecutionBudgetState::default()))
+}
+
+fn scaled_clamped_duration(
+    last_run_ms: u64,
+    multiplier: f64,
+    min: Duration,
+    max: Duration,
+) -> Duration {
+    let scaled = ((last_run_ms as f64) * multiplier).round() as u64;
+    Duration::from_millis(scaled).clamp(min, max)
+}
+
+fn ocr_cooldown_duration(last_run_ms: u64, recording_active: bool) -> Duration {
+    if recording_active {
+        scaled_clamped_duration(
+            last_run_ms,
+            2.5,
+            OCR_ACTIVE_RECORDING_COOLDOWN_MIN,
+            OCR_ACTIVE_RECORDING_COOLDOWN_MAX,
+        )
+    } else {
+        scaled_clamped_duration(
+            last_run_ms,
+            0.5,
+            OCR_CATCH_UP_COOLDOWN_MIN,
+            OCR_CATCH_UP_COOLDOWN_MAX,
+        )
+    }
+}
+
+fn rfc3339_delta_ms(start: Option<&str>, end: Option<&str>) -> Option<i64> {
+    let start = OffsetDateTime::parse(start?, &Rfc3339).ok()?;
+    let end = OffsetDateTime::parse(end?, &Rfc3339).ok()?;
+    Some((end - start).whole_milliseconds().max(0) as i64)
+}
+
+fn ocr_observation_count(structured_payload_json: Option<&str>) -> Option<i64> {
+    let payload = structured_payload_json?;
+    let parsed: serde_json::Value = serde_json::from_str(payload).ok()?;
+    parsed
+        .get("observations")
+        .and_then(|value| value.as_array())
+        .map(|items| items.len().min(i64::MAX as usize) as i64)
+}
+
+async fn persist_ocr_telemetry_for_outcome(
+    infra: &::app_infra::AppInfra,
+    outcome: &::app_infra::ProcessingJobRunOutcome,
+    run_duration_ms: i64,
+) {
+    let (job, status, result) = match outcome {
+        ::app_infra::ProcessingJobRunOutcome::Completed(completion) => {
+            (&completion.job, "completed", Some(&completion.result))
+        }
+        ::app_infra::ProcessingJobRunOutcome::Failed(job) => (job, "failed", None),
+    };
+    let payload =
+        match ::app_infra::FrozenOcrPayload::from_payload_json(job.payload_json.as_deref()) {
+            Ok(payload) => payload,
+            Err(error) => {
+                crate::native_capture::debug_log::log_error(format!(
+                    "failed to parse OCR payload for budget telemetry job_id={}: {error}",
+                    job.id
+                ));
+                return;
+            }
+        };
+    let recognition_mode = payload
+        .options
+        .get("recognitionMode")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    let telemetry = ::app_infra::OcrBudgetTelemetry {
+        job_id: job.id,
+        frame_id: if job.subject_type == ::app_infra::FRAME_SUBJECT_TYPE {
+            Some(job.subject_id)
+        } else {
+            None
+        },
+        provider: payload.provider,
+        model_id: payload.model_id,
+        recognition_mode,
+        status: status.to_string(),
+        run_duration_ms,
+        queue_wait_ms: rfc3339_delta_ms(Some(&job.created_at), job.started_at.as_deref()),
+        result_text_length: result
+            .and_then(|result| result.result_text.as_ref())
+            .map(|text| text.chars().count().min(i64::MAX as usize) as i64),
+        observation_count: result
+            .and_then(|result| ocr_observation_count(result.structured_payload_json.as_deref())),
+        created_at: None,
+    };
+    if let Err(error) = infra.insert_ocr_budget_telemetry(&telemetry).await {
+        crate::native_capture::debug_log::log_error(format!(
+            "failed to persist OCR budget telemetry job_id={}: {error}",
+            job.id
+        ));
+    }
+}
+
+async fn process_pending_ocr_job_once(
+    infra: &::app_infra::AppInfra,
+) -> ::app_infra::Result<Option<()>> {
+    let now = Instant::now();
+    {
+        let state = ocr_execution_budget_state()
+            .lock()
+            .expect("OCR execution budget state poisoned");
+        if state.next_due_at.is_some_and(|due| due > now) {
+            return Ok(None);
+        }
+    }
+
+    let started_at = Instant::now();
+    let outcome = infra
+        .process_next_processing_job_for_processor(::app_infra::OCR_PROCESSOR)
+        .await?;
+    let Some(outcome) = outcome else {
+        return Ok(None);
+    };
+    let run_duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
+    persist_ocr_telemetry_for_outcome(infra, &outcome, run_duration_ms).await;
+
+    let (job_id, frame_id) = match &outcome {
+        ::app_infra::ProcessingJobRunOutcome::Completed(completion) => {
+            (completion.job.id, Some(completion.job.subject_id))
+        }
+        ::app_infra::ProcessingJobRunOutcome::Failed(job) => (job.id, Some(job.subject_id)),
+    };
+    let recording_active = match frame_id {
+        Some(frame_id) => infra
+            .get_ocr_admission_for_frame(frame_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|decision| decision.recording_active)
+            .unwrap_or(false),
+        None => false,
+    };
+    let cooldown = ocr_cooldown_duration(run_duration_ms.max(0) as u64, recording_active);
+    {
+        let mut state = ocr_execution_budget_state()
+            .lock()
+            .expect("OCR execution budget state poisoned");
+        state.last_run_ms = Some(run_duration_ms.max(0) as u64);
+        state.last_recording_active = recording_active;
+        state.next_due_at = Some(Instant::now() + cooldown);
+    }
+    crate::native_capture::debug_log::log_info(format!(
+        "OCR execution budget paced job_id={} run_duration_ms={} cooldown_ms={} recording_active={}",
+        job_id,
+        run_duration_ms,
+        cooldown.as_millis(),
+        recording_active
+    ));
+    Ok(Some(()))
 }
 
 async fn process_pending_audio_transcription_jobs_once(
@@ -4428,6 +4773,42 @@ pub async fn get_processing_result(
         .map_err(|error| {
             format!(
                 "failed to get processing result for job {}: {error}",
+                request.job_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn get_frame_ocr_admission(
+    request: GetOcrAdmissionRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Option<OcrAdmissionDecisionDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .get_ocr_admission_for_frame(request.frame_id)
+        .await
+        .map(|decision| decision.map(OcrAdmissionDecisionDto::from))
+        .map_err(|error| {
+            format!(
+                "failed to get OCR admission for frame {}: {error}",
+                request.frame_id
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn get_ocr_budget_telemetry(
+    request: GetProcessingJobRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Option<OcrBudgetTelemetryDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .get_ocr_budget_telemetry(request.job_id)
+        .await
+        .map(|telemetry| telemetry.map(OcrBudgetTelemetryDto::from))
+        .map_err(|error| {
+            format!(
+                "failed to get OCR budget telemetry for job {}: {error}",
                 request.job_id
             )
         })
