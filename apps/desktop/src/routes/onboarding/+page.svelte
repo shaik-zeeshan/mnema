@@ -301,7 +301,7 @@
     draftActivityMode = "system_input_or_screen_or_audio";
     draftMicrophoneActivitySensitivity = next.microphoneActivitySensitivity ?? 50;
     draftSystemAudioActivitySensitivity = next.systemAudioActivitySensitivity ?? 50;
-    draftOcrEnabled = next.ocr?.enabled ?? true;
+    draftOcrEnabled = next.screenTextExtraction?.ocrFallbackEnabled ?? next.ocr?.enabled ?? true;
     const loadedOcrProvider = next.ocr?.provider;
     const loadedOcrProviderSelectable = isSelectableOcrProvider(loadedOcrProvider);
     draftOcrProvider = loadedOcrProviderSelectable ? loadedOcrProvider : "apple_vision";
@@ -364,6 +364,11 @@
         tesseractPreprocessMode: draftOcrTesseractPreprocessMode,
         tesseractUpscaleFactor: Math.max(1, Math.min(4, Math.trunc(Number(draftOcrTesseractUpscaleFactor) || 1))),
         tesseractCharWhitelist: null,
+      },
+      screenTextExtraction: {
+        enabled: draftOcrEnabled,
+        accessibilityEnabled: true,
+        ocrFallbackEnabled: draftOcrEnabled,
       },
       transcription: {
         enabled: draftTranscriptionEnabled,

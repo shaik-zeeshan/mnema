@@ -7,7 +7,12 @@ use speaker_analysis::{
 };
 use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 
-use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
+use crate::{
+    captured_frame_equivalence::{CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope},
+    AppInfraError, AudioSegment, AudioSegmentSourceKind, CapturedScreenText,
+    CapturedScreenTextSource, NewAudioSegment, NewCapturedScreenText, ResolvedScreenText,
+    ResolvedScreenTextSource, Result,
+};
 
 use super::SystemAudioSpeechActivityJobPayload;
 use super::{
@@ -15,7 +20,7 @@ use super::{
     NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingResult,
     ProcessingResultDraft, ProcessingSubject, AUDIO_SEGMENT_SUBJECT_TYPE,
     AUDIO_TRANSCRIPTION_PROCESSOR, OCR_PROCESSOR, SPEAKER_ANALYSIS_PROCESSOR,
-    SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+    FRAME_SUBJECT_TYPE, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 
 pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
@@ -150,6 +155,51 @@ impl ProcessingStore {
         get_frame_optional(&mut **transaction, frame_id)
             .await?
             .ok_or(AppInfraError::FrameNotFound(frame_id))
+    }
+
+    pub(crate) async fn upsert_captured_screen_text_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        frame_id: i64,
+        screen_text: &NewCapturedScreenText,
+    ) -> Result<CapturedScreenText> {
+        sqlx::query(
+            "INSERT INTO captured_screen_text (
+                frame_id, source, result_text, structured_payload_json, captured_at_unix_ms,
+                source_app_bundle_id, source_app_name, source_window_title, source_window_id,
+                snapshot_age_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(frame_id, source) DO UPDATE SET
+                result_text = excluded.result_text,
+                structured_payload_json = excluded.structured_payload_json,
+                captured_at_unix_ms = excluded.captured_at_unix_ms,
+                source_app_bundle_id = excluded.source_app_bundle_id,
+                source_app_name = excluded.source_app_name,
+                source_window_title = excluded.source_window_title,
+                source_window_id = excluded.source_window_id,
+                snapshot_age_ms = excluded.snapshot_age_ms,
+                updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(frame_id)
+        .bind(screen_text.source.as_str())
+        .bind(screen_text.result_text.trim())
+        .bind(screen_text.structured_payload_json.as_deref())
+        .bind(screen_text.captured_at_unix_ms)
+        .bind(screen_text.source_app_bundle_id.as_deref())
+        .bind(screen_text.source_app_name.as_deref())
+        .bind(screen_text.source_window_title.as_deref())
+        .bind(screen_text.source_window_id)
+        .bind(screen_text.snapshot_age_ms)
+        .execute(&mut **transaction)
+        .await?;
+
+        get_captured_screen_text_optional(
+            &mut **transaction,
+            frame_id,
+            screen_text.source,
+        )
+        .await?
+        .ok_or(AppInfraError::FrameNotFound(frame_id))
     }
 
     pub(crate) async fn get_frame_in_transaction(
@@ -298,6 +348,76 @@ impl ProcessingStore {
 
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
         get_frame_optional(&self.pool, frame_id).await
+    }
+
+    pub async fn resolve_screen_text_for_frame(
+        &self,
+        equivalence: &CapturedFrameEquivalenceResolver,
+        frame_id: i64,
+    ) -> Result<ResolvedScreenText> {
+        let Some(frame) = self.get_frame(frame_id).await? else {
+            return Ok(ResolvedScreenText::none());
+        };
+
+        if let Some(text) = self
+            .get_captured_screen_text(frame.id, CapturedScreenTextSource::Accessibility)
+            .await?
+        {
+            return Ok(ResolvedScreenText {
+                text: Some(text.result_text),
+                source: ResolvedScreenTextSource::Accessibility,
+                frame_id: Some(frame.id),
+            });
+        }
+
+        if let Some(ocr_text) = self.get_latest_ocr_text_for_frame(frame.id).await? {
+            return Ok(ResolvedScreenText {
+                text: Some(ocr_text),
+                source: ResolvedScreenTextSource::Ocr,
+                frame_id: Some(frame.id),
+            });
+        }
+
+        let scope = CapturedFrameEquivalenceScope::from_frame(&frame);
+        let Some(equivalent) = equivalence
+            .find_earliest_earlier_equivalent_frame(&frame, &scope)
+            .await?
+        else {
+            return Ok(ResolvedScreenText::none());
+        };
+
+        if let Some(text) = self
+            .get_captured_screen_text(equivalent.id, CapturedScreenTextSource::Accessibility)
+            .await?
+        {
+            return Ok(ResolvedScreenText {
+                text: Some(text.result_text),
+                source: ResolvedScreenTextSource::EquivalentAccessibility,
+                frame_id: Some(equivalent.id),
+            });
+        }
+
+        if let Some(ocr_text) = self.get_latest_ocr_text_for_frame(equivalent.id).await? {
+            return Ok(ResolvedScreenText {
+                text: Some(ocr_text),
+                source: ResolvedScreenTextSource::EquivalentOcr,
+                frame_id: Some(equivalent.id),
+            });
+        }
+
+        Ok(ResolvedScreenText::none())
+    }
+
+    pub async fn get_captured_screen_text(
+        &self,
+        frame_id: i64,
+        source: CapturedScreenTextSource,
+    ) -> Result<Option<CapturedScreenText>> {
+        get_captured_screen_text_optional(&self.pool, frame_id, source).await
+    }
+
+    async fn get_latest_ocr_text_for_frame(&self, frame_id: i64) -> Result<Option<String>> {
+        get_latest_ocr_text_for_frame(&self.pool, frame_id).await
     }
 
     pub async fn list_earlier_frames_with_equivalence_hint_in_scope(
@@ -2768,6 +2888,53 @@ where
     row.map(map_frame).transpose()
 }
 
+async fn get_captured_screen_text_optional<'e, E>(
+    executor: E,
+    frame_id: i64,
+    source: CapturedScreenTextSource,
+) -> Result<Option<CapturedScreenText>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        "SELECT id, frame_id, source, result_text, structured_payload_json, captured_at_unix_ms,
+                source_app_bundle_id, source_app_name, source_window_title, source_window_id,
+                snapshot_age_ms, created_at, updated_at
+         FROM captured_screen_text
+         WHERE frame_id = ?1 AND source = ?2",
+    )
+    .bind(frame_id)
+    .bind(source.as_str())
+    .fetch_optional(executor)
+    .await?;
+
+    row.map(map_captured_screen_text).transpose()
+}
+
+async fn get_latest_ocr_text_for_frame<'e, E>(executor: E, frame_id: i64) -> Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        "SELECT processing_results.result_text AS result_text
+         FROM processing_results
+         WHERE processing_results.subject_type = ?1
+            AND processing_results.subject_id = ?2
+            AND processing_results.processor = ?3
+            AND processing_results.result_text IS NOT NULL
+            AND LENGTH(TRIM(processing_results.result_text)) > 0
+         ORDER BY processing_results.id DESC
+         LIMIT 1",
+    )
+    .bind(FRAME_SUBJECT_TYPE)
+    .bind(frame_id)
+    .bind(OCR_PROCESSOR)
+    .fetch_optional(executor)
+    .await?;
+
+    Ok(row.map(|row| row.get("result_text")))
+}
+
 async fn get_processing_job_optional<'e, E>(
     executor: E,
     job_id: i64,
@@ -2915,6 +3082,28 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
             error: row.get("equivalence_error"),
         },
         metadata_snapshot,
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+fn map_captured_screen_text(row: SqliteRow) -> Result<CapturedScreenText> {
+    let source: String = row.get("source");
+    let source = CapturedScreenTextSource::from_str(&source)
+        .ok_or_else(|| AppInfraError::InvalidCapturedScreenTextSource(source.clone()))?;
+
+    Ok(CapturedScreenText {
+        id: row.get("id"),
+        frame_id: row.get("frame_id"),
+        source,
+        result_text: row.get("result_text"),
+        structured_payload_json: row.get("structured_payload_json"),
+        captured_at_unix_ms: row.get("captured_at_unix_ms"),
+        source_app_bundle_id: row.get("source_app_bundle_id"),
+        source_app_name: row.get("source_app_name"),
+        source_window_title: row.get("source_window_title"),
+        source_window_id: row.get("source_window_id"),
+        snapshot_age_ms: row.get("snapshot_age_ms"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })

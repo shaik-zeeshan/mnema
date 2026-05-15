@@ -246,6 +246,37 @@ pub fn default_ocr_enabled() -> bool {
     true
 }
 
+pub fn default_screen_text_extraction_enabled() -> bool {
+    true
+}
+
+pub fn default_screen_text_accessibility_enabled() -> bool {
+    true
+}
+
+pub fn default_screen_text_ocr_fallback_enabled() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenTextExtractionSettings {
+    #[serde(default = "default_screen_text_extraction_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_screen_text_accessibility_enabled")]
+    pub accessibility_enabled: bool,
+    #[serde(default = "default_screen_text_ocr_fallback_enabled")]
+    pub ocr_fallback_enabled: bool,
+}
+
+pub fn default_screen_text_extraction_settings() -> ScreenTextExtractionSettings {
+    ScreenTextExtractionSettings {
+        enabled: default_screen_text_extraction_enabled(),
+        accessibility_enabled: default_screen_text_accessibility_enabled(),
+        ocr_fallback_enabled: default_screen_text_ocr_fallback_enabled(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OcrRecognitionMode {
@@ -528,6 +559,8 @@ pub struct RecordingSettings {
     pub appearance: AppearanceSetting,
     #[serde(default = "default_ocr_settings")]
     pub ocr: OcrSettings,
+    #[serde(default = "default_screen_text_extraction_settings")]
+    pub screen_text_extraction: ScreenTextExtractionSettings,
     #[serde(default = "default_audio_transcription_settings")]
     pub transcription: AudioTranscriptionSettings,
     #[serde(default = "default_speaker_analysis_settings")]
@@ -588,6 +621,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub appearance: AppearanceSetting,
     #[serde(default = "default_ocr_settings")]
     pub ocr: OcrSettings,
+    #[serde(default = "default_screen_text_extraction_settings")]
+    pub screen_text_extraction: ScreenTextExtractionSettings,
     #[serde(default = "default_audio_transcription_settings")]
     pub transcription: AudioTranscriptionSettings,
     #[serde(default = "default_speaker_analysis_settings")]

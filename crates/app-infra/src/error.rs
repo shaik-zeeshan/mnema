@@ -34,6 +34,8 @@ pub enum AppInfraError {
     AudioSegmentNotFound(i64),
     #[error("invalid frame equivalence status: {0}")]
     InvalidFrameEquivalenceStatus(String),
+    #[error("invalid captured screen text source: {0}")]
+    InvalidCapturedScreenTextSource(String),
     #[error("frame batch {0} was not found")]
     FrameBatchNotFound(i64),
     #[error("processing job {0} was not found")]

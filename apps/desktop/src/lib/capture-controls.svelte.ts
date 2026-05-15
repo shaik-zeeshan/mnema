@@ -319,6 +319,7 @@ function buildUpdatePayload(
     retentionPolicy: base.retentionPolicy,
     appearance: base.appearance,
     developerOptionsEnabled: base.developerOptionsEnabled,
+    screenTextExtraction: base.screenTextExtraction,
     ocr: base.ocr,
     transcription: base.transcription,
     speakerAnalysis: base.speakerAnalysis,

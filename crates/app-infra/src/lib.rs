@@ -10,6 +10,7 @@ mod frame_batch_store;
 mod hidden_segment_workspace;
 pub mod jobs;
 pub mod processing;
+mod screen_text;
 pub mod status;
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -65,6 +66,10 @@ pub use processing::{
     FRAME_SUBJECT_TYPE, HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR,
     SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY, SPEAKER_ANALYSIS_PROCESSOR,
     SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+};
+pub use screen_text::{
+    CapturedScreenText, CapturedScreenTextSource, NewCapturedScreenText, ResolvedScreenText,
+    ResolvedScreenTextSource,
 };
 pub use status::AppInfraStatus;
 
@@ -387,6 +392,25 @@ impl AppInfra {
             .await
     }
 
+    pub async fn capture_frame_without_screen_text(
+        &self,
+        frame: &NewFrame,
+    ) -> Result<CapturedFramePipelineResult> {
+        self.captured_frame_pipeline
+            .capture_frame_without_screen_text(frame)
+            .await
+    }
+
+    pub async fn capture_frame_with_screen_text(
+        &self,
+        frame: &NewFrame,
+        screen_text: &NewCapturedScreenText,
+    ) -> Result<CapturedFramePipelineResult> {
+        self.captured_frame_pipeline
+            .capture_frame_with_screen_text(frame, screen_text)
+            .await
+    }
+
     pub async fn reprocess_captured_frame_ocr(
         &self,
         frame_id: i64,
@@ -463,6 +487,15 @@ impl AppInfra {
 
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
         self.processing.get_frame(frame_id).await
+    }
+
+    pub async fn resolve_screen_text_for_frame(
+        &self,
+        frame_id: i64,
+    ) -> Result<ResolvedScreenText> {
+        self.processing
+            .resolve_screen_text_for_frame(&self.captured_frame_equivalence, frame_id)
+            .await
     }
 
     pub async fn get_nearest_earlier_equivalent_frame(

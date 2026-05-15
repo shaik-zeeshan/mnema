@@ -689,8 +689,8 @@ mod tests {
         default_appearance, default_audio_speech_detection_settings,
         default_audio_transcription_settings, default_inactivity_activity_mode,
         default_metadata_settings, default_microphone_vad_adapter, default_privacy_settings,
-        default_video_bitrate, InactivityActivityMode, RecordingSettings, ScreenResolution,
-        ScreenResolutionPreset,
+        default_screen_text_extraction_settings, default_video_bitrate, InactivityActivityMode,
+        RecordingSettings, ScreenResolution, ScreenResolutionPreset,
     };
 
     fn empty_audio_activity() -> AudioActivitySourceState {
@@ -751,6 +751,7 @@ mod tests {
             retention_policy: capture_types::default_retention_policy(),
             appearance: default_appearance(),
             ocr: capture_types::default_ocr_settings(),
+            screen_text_extraction: default_screen_text_extraction_settings(),
             transcription: default_audio_transcription_settings(),
             speaker_analysis: capture_types::default_speaker_analysis_settings(),
             audio_speech_detection: default_audio_speech_detection_settings(),

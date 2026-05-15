@@ -12,6 +12,7 @@ pub(crate) mod output;
 pub(crate) mod privacy;
 mod private_browser;
 mod runtime;
+pub(crate) mod screen_text;
 mod segments;
 #[path = "native_capture_settings.rs"]
 pub(crate) mod settings;
@@ -61,6 +62,8 @@ pub use microphone::{
 use runtime::validate_start_request;
 pub type NativeCaptureState = Mutex<RecordingLifecycle>;
 pub use privacy::PrivacyFilterRefreshState;
+#[allow(unused_imports)]
+pub use screen_text::{ScreenTextSnapshot, ScreenTextSnapshotProvider, ScreenTextSnapshotState};
 pub use settings::RecordingSettingsState;
 // Re-exported so adapter-level Tauri commands (e.g. `open_debug_window`) can
 // read the persisted recording settings through the same seam used by the
@@ -1445,6 +1448,7 @@ fn update_recording_settings_request_from_settings(
         retention_policy: settings.retention_policy,
         appearance: settings.appearance,
         ocr: settings.ocr,
+        screen_text_extraction: settings.screen_text_extraction,
         transcription: settings.transcription,
         speaker_analysis: settings.speaker_analysis,
         audio_speech_detection: settings.audio_speech_detection,
@@ -2370,6 +2374,14 @@ fn finish_recording_settings_update(
     }
 
     emit_recording_settings_changed(app_handle, &settings);
+    let session = current_native_capture_session(app_handle);
+    if session.is_running {
+        if let Some(sources) = session.requested_sources.as_ref() {
+            screen_text::start_or_stop_for_recording(app_handle, &settings, sources);
+        } else {
+            screen_text::stop_runtime(app_handle);
+        }
+    }
     let privacy_changed = previous_settings.privacy != settings.privacy;
     let metadata_changed = previous_settings.metadata != settings.metadata;
     if metadata_changed {

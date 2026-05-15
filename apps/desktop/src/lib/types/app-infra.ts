@@ -35,7 +35,9 @@ export interface FrameDto {
 	appBundleId: string | null;
 	appName: string | null;
 	ocrText: string | null;
-	processorVersion: string | null;
+	screenText: string | null;
+	screenTextSource: "accessibility" | "ocr" | "equivalent_accessibility" | "equivalent_ocr" | "none";
+	screenTextFrameId: number | null;
 	equivalenceHint: string | null;
 	createdAt: string;
 	updatedAt: string;

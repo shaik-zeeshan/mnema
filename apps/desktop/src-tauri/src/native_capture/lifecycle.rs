@@ -115,11 +115,12 @@ impl RecordingLifecycle {
 
         start_capture_runtime(
             &mut self.runtime,
-            app_handle,
+            app_handle.clone(),
             settings,
-            sources,
+            sources.clone(),
             microphone_device_id_for_capture,
         )?;
+        super::screen_text::start_or_stop_for_recording(&app_handle, settings, &sources);
 
         Ok(StartRecordingLifecycleOutcome::Started(self.session()))
     }
@@ -133,11 +134,13 @@ impl RecordingLifecycle {
                 return Err(error);
             }
 
+            super::screen_text::stop_runtime(app_handle);
             request_segment_loop_stop(&self.runtime);
             mark_runtime_session_stopped(&mut self.runtime);
             return Err(error);
         }
 
+        super::screen_text::stop_runtime(app_handle);
         request_segment_loop_stop(&self.runtime);
         mark_runtime_session_stopped(&mut self.runtime);
         Ok(stopped_session_from_runtime(&self.runtime))

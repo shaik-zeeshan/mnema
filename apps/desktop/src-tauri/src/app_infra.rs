@@ -684,6 +684,10 @@ pub struct FrameDto {
     pub height: Option<i64>,
     pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
+    pub ocr_text: Option<String>,
+    pub screen_text: Option<String>,
+    pub screen_text_source: ::app_infra::ResolvedScreenTextSource,
+    pub screen_text_frame_id: Option<i64>,
     pub equivalence_hint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -937,11 +941,45 @@ impl From<::app_infra::Frame> for FrameDto {
             height: frame.height,
             app_bundle_id,
             app_name,
+            ocr_text: None,
+            screen_text: None,
+            screen_text_source: ::app_infra::ResolvedScreenTextSource::None,
+            screen_text_frame_id: None,
             equivalence_hint: frame.equivalence.hint,
             created_at: frame.created_at,
             updated_at: frame.updated_at,
         }
     }
+}
+
+async fn frame_dto_with_screen_text(
+    infra: &::app_infra::AppInfra,
+    frame: ::app_infra::Frame,
+) -> ::app_infra::Result<FrameDto> {
+    let resolved = infra.resolve_screen_text_for_frame(frame.id).await?;
+    let mut dto = FrameDto::from(frame);
+    if matches!(
+        resolved.source,
+        ::app_infra::ResolvedScreenTextSource::Ocr
+            | ::app_infra::ResolvedScreenTextSource::EquivalentOcr
+    ) {
+        dto.ocr_text = resolved.text.clone();
+    }
+    dto.screen_text = resolved.text;
+    dto.screen_text_source = resolved.source;
+    dto.screen_text_frame_id = resolved.frame_id;
+    Ok(dto)
+}
+
+async fn frame_dtos_with_screen_text(
+    infra: &::app_infra::AppInfra,
+    frames: Vec<::app_infra::Frame>,
+) -> ::app_infra::Result<Vec<FrameDto>> {
+    let mut dtos = Vec::with_capacity(frames.len());
+    for frame in frames {
+        dtos.push(frame_dto_with_screen_text(infra, frame).await?);
+    }
+    Ok(dtos)
 }
 
 impl From<::app_infra::FrameSummary> for FrameSummaryDto {
@@ -2364,19 +2402,46 @@ fn ocr_payload_json_from_settings(
     merged_ocr_payload_json(payload_json, &ocr_settings)
 }
 
-fn ocr_enabled_for_settings(settings: &crate::native_capture::RecordingSettingsState) -> bool {
+fn screen_text_settings_snapshot(
+    settings: &crate::native_capture::RecordingSettingsState,
+) -> capture_types::ScreenTextExtractionSettings {
     settings
         .lock()
         .expect("recording settings state poisoned")
         .settings
-        .ocr
-        .enabled
+        .screen_text_extraction
+        .clone()
+}
+
+fn screen_text_extraction_enabled_for_settings(
+    settings: &crate::native_capture::RecordingSettingsState,
+) -> bool {
+    screen_text_settings_snapshot(settings).enabled
+}
+
+fn accessibility_text_enabled_for_settings(
+    settings: &crate::native_capture::RecordingSettingsState,
+) -> bool {
+    let screen_text = screen_text_settings_snapshot(settings);
+    screen_text.enabled && screen_text.accessibility_enabled
+}
+
+fn ocr_fallback_enabled_for_settings(
+    settings: &crate::native_capture::RecordingSettingsState,
+) -> bool {
+    let screen_text = screen_text_settings_snapshot(settings);
+    screen_text.enabled && screen_text.ocr_fallback_enabled
+}
+
+fn ocr_enabled_for_settings(settings: &crate::native_capture::RecordingSettingsState) -> bool {
+    ocr_fallback_enabled_for_settings(settings)
 }
 
 pub async fn persist_screen_frame_artifact(
     infra: &::app_infra::AppInfra,
     settings: &crate::native_capture::RecordingSettingsState,
     metadata_snapshot: Option<capture_metadata::FrameMetadataSnapshot>,
+    screen_text_snapshot: Option<crate::native_capture::ScreenTextSnapshot>,
     session_id: &str,
     artifact: ScreenFrameArtifact,
 ) -> ::app_infra::Result<::app_infra::CapturedFramePipelineResult> {
@@ -2398,7 +2463,11 @@ pub async fn persist_screen_frame_artifact(
     {
         frame = frame.with_capture_segment_id(capture_segment_id);
     }
-    if let Some(metadata_snapshot) = metadata_snapshot {
+    let privacy_redacted = metadata_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.metadata_redaction_reason.is_some());
+
+    if let Some(metadata_snapshot) = metadata_snapshot.clone() {
         frame = frame.with_metadata_snapshot(metadata_snapshot);
     }
 
@@ -2422,13 +2491,78 @@ pub async fn persist_screen_frame_artifact(
         }
     };
 
-    if !ocr_enabled_for_settings(settings) {
-        return infra.capture_frame_without_ocr(&frame).await;
+    if !screen_text_extraction_enabled_for_settings(settings) {
+        return infra.capture_frame_without_screen_text(&frame).await;
+    }
+
+    if privacy_redacted {
+        crate::native_capture::debug_log::log(
+            "screen text extraction decision: privacy_redacted".to_string(),
+        );
+        return infra.capture_frame_without_screen_text(&frame).await;
+    }
+
+    if accessibility_text_enabled_for_settings(settings) {
+        if let Some(snapshot) = screen_text_snapshot.as_ref() {
+            if crate::native_capture::screen_text::snapshot_usable_for_frame(
+                snapshot,
+                metadata_snapshot.as_ref(),
+            ) {
+                crate::native_capture::debug_log::log(format!(
+                    "screen text extraction decision: ax_used snapshot_age_ms={} length={}",
+                    snapshot.snapshot_age_ms,
+                    snapshot.normalized_text.chars().count()
+                ));
+                let screen_text = ::app_infra::NewCapturedScreenText {
+                    source: ::app_infra::CapturedScreenTextSource::Accessibility,
+                    result_text: snapshot.normalized_text.clone(),
+                    structured_payload_json: serde_json::to_string(&serde_json::json!({
+                        "nodeCount": snapshot.node_count,
+                        "truncated": snapshot.truncated,
+                        "timedOut": snapshot.timed_out,
+                        "refreshReason": snapshot.refresh_reason,
+                        "snapshotAgeMs": snapshot.snapshot_age_ms,
+                    }))
+                    .ok(),
+                    captured_at_unix_ms: snapshot.captured_at_unix_ms,
+                    source_app_bundle_id: snapshot.source_app_bundle_id.clone(),
+                    source_app_name: snapshot.source_app_name.clone(),
+                    source_window_title: snapshot.source_window_title.clone(),
+                    source_window_id: snapshot.source_window_id,
+                    snapshot_age_ms: snapshot.snapshot_age_ms,
+                };
+                return infra
+                    .capture_frame_with_screen_text(&frame, &screen_text)
+                    .await;
+            }
+
+            crate::native_capture::debug_log::log(format!(
+                "screen text extraction decision: ax_rejected snapshot_age_ms={} length={} truncated={} timed_out={}",
+                snapshot.snapshot_age_ms,
+                snapshot.normalized_text.chars().count(),
+                snapshot.truncated,
+                snapshot.timed_out
+            ));
+        } else {
+            crate::native_capture::debug_log::log(
+                "screen text extraction decision: ax_rejected reason=no_snapshot".to_string(),
+            );
+        }
+    }
+
+    if !ocr_fallback_enabled_for_settings(settings) {
+        crate::native_capture::debug_log::log(
+            "screen text extraction decision: no_text_source".to_string(),
+        );
+        return infra.capture_frame_without_screen_text(&frame).await;
     }
 
     let payload_json = ocr_payload_json_from_settings(settings, None)
         .map_err(::app_infra::AppInfraError::OcrEngine)?;
 
+    crate::native_capture::debug_log::log(
+        "screen text extraction decision: ocr_enqueued".to_string(),
+    );
     infra.capture_frame(&frame, payload_json.as_deref()).await
 }
 
@@ -4178,11 +4312,13 @@ pub async fn list_frames(
         None => (None, None, None, None),
     };
 
-    infra
+    let frames = infra
         .list_frames(session_id.as_deref(), before_id, limit, offset)
         .await
-        .map(|frames| frames.into_iter().map(FrameDto::from).collect())
-        .map_err(|error| format!("failed to list frames: {error}"))
+        .map_err(|error| format!("failed to list frames: {error}"))?;
+    frame_dtos_with_screen_text(&infra, frames)
+        .await
+        .map_err(|error| format!("failed to resolve frame screen text: {error}"))
 }
 
 #[tauri::command]
@@ -4204,11 +4340,17 @@ pub async fn get_latest_frame_in_range(
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Option<FrameDto>, String> {
     let infra = Arc::clone(&*state);
-    infra
+    let frame = infra
         .get_latest_frame_in_range(&request.captured_at_start, &request.captured_at_end)
         .await
-        .map(|frame| frame.map(FrameDto::from))
-        .map_err(|error| format!("failed to get latest frame in range: {error}"))
+        .map_err(|error| format!("failed to get latest frame in range: {error}"))?;
+    match frame {
+        Some(frame) => frame_dto_with_screen_text(&infra, frame)
+            .await
+            .map(Some)
+            .map_err(|error| format!("failed to resolve frame screen text: {error}")),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
@@ -4257,11 +4399,17 @@ pub async fn get_frame(
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Option<FrameDto>, String> {
     let infra = Arc::clone(&*state);
-    infra
+    let frame = infra
         .get_frame(request.frame_id)
         .await
-        .map(|frame| frame.map(FrameDto::from))
-        .map_err(|error| format!("failed to get frame {}: {error}", request.frame_id))
+        .map_err(|error| format!("failed to get frame {}: {error}", request.frame_id))?;
+    match frame {
+        Some(frame) => frame_dto_with_screen_text(&infra, frame)
+            .await
+            .map(Some)
+            .map_err(|error| format!("failed to resolve frame screen text: {error}")),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
@@ -4270,16 +4418,22 @@ pub async fn get_nearest_earlier_equivalent_frame(
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Option<FrameDto>, String> {
     let infra = Arc::clone(&*state);
-    infra
+    let frame = infra
         .get_nearest_earlier_equivalent_frame(request.frame_id)
         .await
-        .map(|frame| frame.map(FrameDto::from))
         .map_err(|error| {
             format!(
                 "failed to resolve nearest earlier equivalent frame for frame {}: {error}",
                 request.frame_id
             )
-        })
+        })?;
+    match frame {
+        Some(frame) => frame_dto_with_screen_text(&infra, frame)
+            .await
+            .map(Some)
+            .map_err(|error| format!("failed to resolve frame screen text: {error}")),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
@@ -4288,16 +4442,22 @@ pub async fn get_earliest_earlier_equivalent_frame(
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Option<FrameDto>, String> {
     let infra = Arc::clone(&*state);
-    infra
+    let frame = infra
         .get_earliest_earlier_equivalent_frame(request.frame_id)
         .await
-        .map(|frame| frame.map(FrameDto::from))
         .map_err(|error| {
             format!(
                 "failed to resolve earliest earlier equivalent frame for frame {}: {error}",
                 request.frame_id
             )
-        })
+        })?;
+    match frame {
+        Some(frame) => frame_dto_with_screen_text(&infra, frame)
+            .await
+            .map(Some)
+            .map_err(|error| format!("failed to resolve frame screen text: {error}")),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
@@ -4306,20 +4466,28 @@ pub async fn get_timeline_window_around_frame(
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<FocusedFrameWindowDto, String> {
     let infra = Arc::clone(&*state);
-    infra
+    let window = infra
         .get_timeline_window_around_frame(
             request.frame_id,
             request.newer_limit,
             request.older_limit,
         )
         .await
-        .map(FocusedFrameWindowDto::from)
         .map_err(|error| {
             format!(
                 "failed to get timeline window around frame {}: {error}",
                 request.frame_id
             )
-        })
+        })?;
+    let frames = frame_dtos_with_screen_text(&infra, window.frames)
+        .await
+        .map_err(|error| format!("failed to resolve frame screen text: {error}"))?;
+    Ok(FocusedFrameWindowDto {
+        frames,
+        target_index: window.target_index,
+        has_newer: window.has_newer,
+        has_older: window.has_older,
+    })
 }
 
 #[tauri::command]
@@ -5761,6 +5929,7 @@ mod tests {
                 &infra,
                 &settings,
                 None,
+                None,
                 "session-artifact",
                 ScreenFrameArtifact {
                     file_path: "/tmp/frame-artifact.png".to_string(),
@@ -5816,6 +5985,7 @@ mod tests {
                 &infra,
                 &settings,
                 None,
+                None,
                 "session-artifact-quarantined",
                 ScreenFrameArtifact {
                     file_path: "/tmp/frame-artifact-quarantined.png".to_string(),
@@ -5843,6 +6013,79 @@ mod tests {
                 persisted.job.is_some(),
                 "quarantined frames must still enqueue OCR"
             );
+        });
+    }
+
+    #[test]
+    fn persist_screen_frame_artifact_uses_accessibility_snapshot_before_ocr() {
+        run_async_test(async {
+            let dir = TestDir::new("screen-frame-artifact-ax");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let settings = crate::native_capture::RecordingSettingsState::default();
+            let metadata_snapshot = capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.App".to_string()),
+                app_name: Some("Example".to_string()),
+                window_title: Some("Document".to_string()),
+                window_id: None,
+                browser_url: None,
+                display_id: None,
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            };
+            let screen_text_snapshot = crate::native_capture::ScreenTextSnapshot {
+                normalized_text: "This accessibility snapshot has enough useful text to skip OCR fallback for the captured frame.".to_string(),
+                captured_at_unix_ms: 1_744_539_600_123,
+                source_app_bundle_id: Some("com.example.App".to_string()),
+                source_app_name: Some("Example".to_string()),
+                source_window_title: Some("Document".to_string()),
+                source_window_id: Some(42),
+                snapshot_age_ms: 100,
+                node_count: Some(12),
+                truncated: false,
+                timed_out: false,
+                refresh_reason: Some("test".to_string()),
+            };
+
+            let persisted = persist_screen_frame_artifact(
+                &infra,
+                &settings,
+                Some(metadata_snapshot),
+                Some(screen_text_snapshot),
+                "session-artifact-ax",
+                ScreenFrameArtifact {
+                    file_path: "/tmp/frame-artifact-ax.png".to_string(),
+                    captured_at_unix_ms: 1_744_539_600_123,
+                    width: Some(1440),
+                    height: Some(900),
+                    captured_frame_equivalence:
+                        capture_screen::CapturedFrameEquivalenceOutcome::Ready(
+                            capture_screen::CapturedFrameEquivalence {
+                                hint: "axhint0001".to_string(),
+                                proof: b"ax-proof".to_vec(),
+                                version: capture_screen::CAPTURED_FRAME_EQUIVALENCE_VERSION,
+                            },
+                        ),
+                },
+            )
+            .await
+            .expect("artifact should persist");
+
+            assert!(persisted.job.is_none(), "AX text should skip OCR fallback");
+            let resolved = infra
+                .resolve_screen_text_for_frame(persisted.frame.id)
+                .await
+                .expect("screen text should resolve");
+            assert_eq!(
+                resolved.source,
+                ::app_infra::ResolvedScreenTextSource::Accessibility
+            );
+            assert_eq!(resolved.frame_id, Some(persisted.frame.id));
+            assert!(resolved
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("accessibility snapshot")));
         });
     }
 

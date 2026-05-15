@@ -542,7 +542,7 @@
     draftPrivateBrowserExclusionEnabled = s.privacy?.privateBrowserExclusionEnabled ?? true;
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
     draftAppearance = s.appearance ?? "system";
-    draftOcrEnabled = s.ocr?.enabled ?? true;
+    draftOcrEnabled = s.screenTextExtraction?.ocrFallbackEnabled ?? s.ocr?.enabled ?? true;
     const loadedOcrProvider = s.ocr?.provider;
     const loadedOcrProviderSelectable = isSelectableOcrProvider(loadedOcrProvider);
     draftOcrProvider = loadedOcrProviderSelectable ? loadedOcrProvider : "apple_vision";
@@ -663,6 +663,11 @@
         tesseractPreprocessMode: draftOcrTesseractPreprocessMode,
         tesseractUpscaleFactor: Math.max(1, Math.min(4, Math.trunc(Number(draftOcrTesseractUpscaleFactor) || 1))),
         tesseractCharWhitelist: draftOcrTesseractCharWhitelist.trim() || null,
+      },
+      screenTextExtraction: {
+        enabled: draftOcrEnabled,
+        accessibilityEnabled: true,
+        ocrFallbackEnabled: draftOcrEnabled,
       },
       transcription: {
         enabled: draftTranscriptionEnabled,

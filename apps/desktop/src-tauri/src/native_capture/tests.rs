@@ -66,7 +66,8 @@ use capture_types::{
     default_audio_transcription_settings, default_inactivity_activity_mode,
     default_metadata_settings, default_microphone_vad_adapter, default_ocr_settings,
     default_preview_cache_ttl_seconds, default_privacy_settings, default_retention_policy,
-    default_speaker_analysis_settings, default_video_bitrate, AppearanceSetting,
+    default_screen_text_extraction_settings, default_speaker_analysis_settings,
+    default_video_bitrate, AppearanceSetting,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, CaptureSources,
     CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
@@ -231,6 +232,7 @@ fn recording_settings_fixture() -> RecordingSettings {
         retention_policy: default_retention_policy(),
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
+        screen_text_extraction: default_screen_text_extraction_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
@@ -264,6 +266,7 @@ fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest
         retention_policy: settings.retention_policy,
         appearance: settings.appearance,
         ocr: settings.ocr,
+        screen_text_extraction: settings.screen_text_extraction,
         transcription: settings.transcription,
         speaker_analysis: settings.speaker_analysis,
         audio_speech_detection: settings.audio_speech_detection,
@@ -1421,6 +1424,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         retention_policy: default_retention_policy(),
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
+        screen_text_extraction: default_screen_text_extraction_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
@@ -1465,6 +1469,7 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         retention_policy: default_retention_policy(),
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
+        screen_text_extraction: default_screen_text_extraction_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
@@ -1505,6 +1510,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         retention_policy: default_retention_policy(),
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
+        screen_text_extraction: default_screen_text_extraction_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
@@ -3132,6 +3138,7 @@ fn try_forward_frame_artifact_enqueues_when_capacity_available() {
             ),
         },
         None,
+        None,
     );
 
     assert_eq!(result, FrameArtifactForwardingResult::Enqueued);
@@ -3168,6 +3175,7 @@ fn try_forward_frame_artifact_enqueues_metadata_snapshot_with_artifact() {
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
         Some(snapshot.clone()),
+        None,
     );
 
     assert_eq!(result, FrameArtifactForwardingResult::Enqueued);
@@ -3195,6 +3203,7 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
         None,
+        None,
     );
     let second = try_forward_frame_artifact(
         &tx,
@@ -3206,6 +3215,7 @@ fn try_forward_frame_artifact_enqueues_multiple_frames_without_dropping() {
             captured_frame_equivalence:
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
+        None,
         None,
     );
 
@@ -3239,6 +3249,7 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
         None,
+        None,
     );
 
     assert_eq!(first, FrameArtifactForwardingResult::Enqueued);
@@ -3254,6 +3265,7 @@ fn try_forward_frame_artifact_waits_for_capacity_without_dropping_frames() {
                 captured_frame_equivalence:
                     capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
+            None,
             None,
         )
     });
@@ -3302,6 +3314,7 @@ fn try_forward_frame_artifact_reports_closed_receiver() {
                 capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
         },
         None,
+        None,
     );
 
     assert_eq!(result, FrameArtifactForwardingResult::ReceiverClosed);
@@ -3323,6 +3336,7 @@ fn flush_frame_artifacts_waits_for_all_queued_items() {
                     capture_screen::CapturedFrameEquivalenceOutcome::quarantined("test"),
             },
             metadata_snapshot: None,
+            screen_text_snapshot: None,
         }))
         .expect("channel should have capacity");
     }

@@ -69,6 +69,7 @@ pub fn run() {
         .manage(native_capture::RecordingSettingsState::default())
         .manage(privacy_redaction_sources::PrivacyRedactionSourcesState::default())
         .manage(native_capture::CaptureMetadataState::default())
+        .manage(native_capture::ScreenTextSnapshotState::default())
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
         .manage(native_capture::AppNotificationsState::default())

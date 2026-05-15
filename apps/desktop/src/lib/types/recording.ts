@@ -95,6 +95,7 @@ export interface RecordingSettings {
 	retentionPolicy: RetentionPolicy;
 	appearance: AppearanceSetting;
 	ocr: OcrSettings;
+	screenTextExtraction: ScreenTextExtractionSettings;
 	transcription: AudioTranscriptionSettings;
 	speakerAnalysis: SpeakerAnalysisSettings;
 	developerOptionsEnabled: boolean;
@@ -160,6 +161,12 @@ export interface OcrSettings {
 	tesseractPreprocessMode: OcrTesseractPreprocessMode;
 	tesseractUpscaleFactor: number;
 	tesseractCharWhitelist: string | null;
+}
+
+export interface ScreenTextExtractionSettings {
+	enabled: boolean;
+	accessibilityEnabled: boolean;
+	ocrFallbackEnabled: boolean;
 }
 
 export type AudioTranscriptionProvider =

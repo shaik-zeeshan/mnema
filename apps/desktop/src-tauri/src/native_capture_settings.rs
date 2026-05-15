@@ -6,7 +6,8 @@ use capture_types::{
     default_ocr_settings, default_ocr_tesseract_char_whitelist,
     default_ocr_tesseract_page_segmentation_mode, default_ocr_tesseract_preprocess_mode,
     default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
-    default_preview_cache_ttl_seconds, default_privacy_settings, default_speaker_analysis_model_id,
+    default_preview_cache_ttl_seconds, default_privacy_settings,
+    default_screen_text_extraction_settings, default_speaker_analysis_model_id,
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
     default_system_audio_activity_sensitivity, default_video_bitrate, AudioSpeechDetectionSettings,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
@@ -87,6 +88,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         retention_policy: RetentionPolicy::Never,
         appearance: default_appearance(),
         ocr: default_ocr_settings(),
+        screen_text_extraction: default_screen_text_extraction_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
         audio_speech_detection: default_audio_speech_detection_settings(),
@@ -602,6 +604,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
     let screen_resolution = validate_screen_resolution(request.screen_resolution)?;
     let video_bitrate = validate_video_bitrate(request.video_bitrate)?;
     let ocr = validate_ocr_settings(request.ocr)?;
+    let screen_text_extraction = request.screen_text_extraction;
     let transcription = validate_audio_transcription_settings(request.transcription)?;
     let audio_speech_detection =
         validate_audio_speech_detection_settings(request.audio_speech_detection, &transcription)?;
@@ -643,6 +646,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         retention_policy: request.retention_policy,
         appearance: request.appearance,
         ocr,
+        screen_text_extraction,
         transcription,
         speaker_analysis,
         audio_speech_detection: audio_speech_detection.clone(),
@@ -696,6 +700,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             retention_policy: parsed.retention_policy,
             appearance: parsed.appearance,
             ocr: parsed.ocr,
+            screen_text_extraction: parsed.screen_text_extraction,
             transcription: parsed.transcription,
             speaker_analysis: parsed.speaker_analysis,
             audio_speech_detection: parsed.audio_speech_detection,
@@ -728,6 +733,22 @@ fn migrate_legacy_recording_settings_json(raw: &str) -> String {
         if !obj.contains_key("systemAudioActivitySensitivity") {
             obj.insert("systemAudioActivitySensitivity".to_string(), legacy);
         }
+    }
+
+    if !obj.contains_key("screenTextExtraction") {
+        let ocr_enabled = obj
+            .get("ocr")
+            .and_then(|ocr| ocr.get("enabled"))
+            .and_then(|enabled| enabled.as_bool())
+            .unwrap_or(true);
+        obj.insert(
+            "screenTextExtraction".to_string(),
+            serde_json::json!({
+                "enabled": ocr_enabled,
+                "accessibilityEnabled": true,
+                "ocrFallbackEnabled": ocr_enabled,
+            }),
+        );
     }
 
     if !obj.contains_key("audioSpeechDetection") {
@@ -1145,8 +1166,9 @@ mod tests {
                 follow_timeline_live: false,
                 retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
-                ocr: default_ocr_settings(),
-                transcription: default_audio_transcription_settings(),
+        ocr: default_ocr_settings(),
+        screen_text_extraction: default_screen_text_extraction_settings(),
+        transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
                 metadata: default_metadata_settings(),
@@ -1202,6 +1224,7 @@ mod tests {
                 retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
                 ocr,
+                screen_text_extraction: default_screen_text_extraction_settings(),
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
@@ -1274,6 +1297,7 @@ mod tests {
                 retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
                 ocr: ocr_settings,
+                screen_text_extraction: default_screen_text_extraction_settings(),
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
@@ -1320,6 +1344,7 @@ mod tests {
                 retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
                 ocr: default_ocr_settings(),
+                screen_text_extraction: default_screen_text_extraction_settings(),
                 transcription,
                 speaker_analysis: default_speaker_analysis_settings(),
                 audio_speech_detection: default_audio_speech_detection_settings(),
@@ -1415,8 +1440,9 @@ mod tests {
             follow_timeline_live: false,
             retention_policy: RetentionPolicy::Never,
             appearance: default_appearance(),
-            ocr: default_ocr_settings(),
-            transcription: default_audio_transcription_settings(),
+        ocr: default_ocr_settings(),
+        screen_text_extraction: default_screen_text_extraction_settings(),
+        transcription: default_audio_transcription_settings(),
             speaker_analysis: default_speaker_analysis_settings(),
             audio_speech_detection: default_audio_speech_detection_settings(),
             metadata: default_metadata_settings(),

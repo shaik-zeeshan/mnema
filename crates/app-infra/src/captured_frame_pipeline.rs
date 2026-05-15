@@ -7,7 +7,7 @@ use crate::{
     processing::{
         Frame, FrameProcessingJob, NewFrame, ProcessingJob, ProcessingStore, OCR_PROCESSOR,
     },
-    AppInfraError, Result,
+    AppInfraError, NewCapturedScreenText, Result,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,6 +76,9 @@ enum PipelineJobMode<'a> {
         ocr_payload_json: Option<&'a str>,
     },
     SkipOcrJob,
+    InsertScreenText {
+        screen_text: &'a NewCapturedScreenText,
+    },
     EnqueueProcessorJob {
         processor: &'a str,
         payload_json: Option<&'a str>,
@@ -112,6 +115,13 @@ impl CapturedFramePipeline {
         &self,
         frame: &NewFrame,
     ) -> Result<CapturedFramePipelineResult> {
+        self.capture_frame_without_screen_text(frame).await
+    }
+
+    pub async fn capture_frame_without_screen_text(
+        &self,
+        frame: &NewFrame,
+    ) -> Result<CapturedFramePipelineResult> {
         let mut transaction = self.processing.begin_transaction().await?;
 
         let result = self
@@ -119,6 +129,26 @@ impl CapturedFramePipeline {
                 &mut transaction,
                 frame,
                 PipelineJobMode::SkipOcrJob,
+            )
+            .await?;
+
+        transaction.commit().await?;
+
+        Ok(result)
+    }
+
+    pub async fn capture_frame_with_screen_text(
+        &self,
+        frame: &NewFrame,
+        screen_text: &NewCapturedScreenText,
+    ) -> Result<CapturedFramePipelineResult> {
+        let mut transaction = self.processing.begin_transaction().await?;
+
+        let result = self
+            .capture_frame_with_mode_in_transaction(
+                &mut transaction,
+                frame,
+                PipelineJobMode::InsertScreenText { screen_text },
             )
             .await?;
 
@@ -269,6 +299,26 @@ impl CapturedFramePipeline {
     ) -> Result<Option<ProcessingJob>> {
         match job_mode {
             PipelineJobMode::SkipOcrJob => Ok(None),
+            PipelineJobMode::InsertScreenText { screen_text } => {
+                let equivalence_scope = CapturedFrameEquivalenceScope::from_frame(frame);
+                if self
+                    .equivalence
+                    .find_nearest_earlier_equivalent_frame_in_transaction(
+                        transaction,
+                        frame,
+                        &equivalence_scope,
+                    )
+                    .await?
+                    .is_some()
+                {
+                    return Ok(None);
+                }
+
+                self.processing
+                    .upsert_captured_screen_text_in_transaction(transaction, frame.id, screen_text)
+                    .await?;
+                Ok(None)
+            }
             PipelineJobMode::AdmitOcrJob { ocr_payload_json } => {
                 let equivalence_scope = CapturedFrameEquivalenceScope::from_frame(frame);
                 if self
