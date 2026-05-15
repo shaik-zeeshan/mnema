@@ -122,6 +122,19 @@ pub struct CaptureSegment {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenCaptureSegmentWindow {
+    pub id: i64,
+    pub capture_session_id: String,
+    pub source_session_id: String,
+    pub segment_index: i64,
+    pub media_file_path: String,
+    pub sidecar_file_path: Option<String>,
+    pub started_at: String,
+    pub ended_at: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RetentionCleanupSummary {
@@ -324,6 +337,43 @@ impl CaptureRetentionStore {
         .await?;
 
         row.map(map_capture_segment).transpose()
+    }
+
+    pub async fn list_finalized_screen_segments_overlapping_window(
+        &self,
+        start_at: &str,
+        end_at: &str,
+    ) -> Result<Vec<ScreenCaptureSegmentWindow>> {
+        let rows = sqlx::query(
+            "SELECT id, capture_session_id, source_session_id, segment_index, media_file_path,
+                    sidecar_file_path, started_at, ended_at
+             FROM capture_segments
+             WHERE source_kind = 'screen'
+               AND status != 'recording'
+               AND media_file_path IS NOT NULL
+               AND ended_at >= ?1
+               AND started_at <= ?2
+             ORDER BY started_at ASC, id ASC",
+        )
+        .bind(start_at)
+        .bind(end_at)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(ScreenCaptureSegmentWindow {
+                    id: row.get("id"),
+                    capture_session_id: row.get("capture_session_id"),
+                    source_session_id: row.get("source_session_id"),
+                    segment_index: row.get("segment_index"),
+                    media_file_path: row.get("media_file_path"),
+                    sidecar_file_path: row.get("sidecar_file_path"),
+                    started_at: row.get("started_at"),
+                    ended_at: row.get("ended_at"),
+                })
+            })
+            .collect()
     }
 
     pub async fn upsert_screen_segment_for_source_session(

@@ -2255,10 +2255,15 @@ fn spawn_retention_cleanup_worker(
                     .await
                 {
                     Ok(summary)
-                        if summary.deleted_frames > 0 || summary.deleted_audio_segments > 0 =>
+                        if summary.deleted_frames > 0
+                            || summary.deleted_audio_segments > 0
+                            || summary.deleted_capture_segments > 0 =>
                     {
                         retry_soon =
                             summary.skipped_running_jobs > 0 || summary.pending_file_tombstones > 0;
+                        if summary.deleted_capture_segments > 0 {
+                            let _ = frame_preview::clear_scrub_preview_cache(app_handle.clone());
+                        }
                         let _ = app_handle.emit(
                             TIMELINE_DATA_CHANGED_EVENT,
                             TimelineDataChangedPayload {
@@ -2816,7 +2821,13 @@ pub async fn run_retention_cleanup_now(
         )
         .await
         .map_err(|error| format!("failed to run retention cleanup: {error}"))?;
-    if summary.deleted_frames > 0 || summary.deleted_audio_segments > 0 {
+    if summary.deleted_capture_segments > 0 {
+        let _ = frame_preview::clear_scrub_preview_cache(app_handle.clone());
+    }
+    if summary.deleted_frames > 0
+        || summary.deleted_audio_segments > 0
+        || summary.deleted_capture_segments > 0
+    {
         let _ = app_handle.emit(
             TIMELINE_DATA_CHANGED_EVENT,
             TimelineDataChangedPayload {

@@ -22,7 +22,6 @@
     activeDisplayPreviewSourceForFrame,
     activeExactPreviewDelayMs,
     scrubPreviewResponseShouldApply,
-    scrubPreviewShouldPopulateExactCache,
     timelineMovementShouldScheduleScrubPreview,
   } from "$lib/timeline-preview-state";
   import {
@@ -43,11 +42,11 @@
     CapturedFrameReprocessingResultDto,
     FrameDto,
     FramePreviewDto,
-    FrameScrubPreviewsDto,
     FrameRangeRequest,
     FrameSummaryDto,
     FocusedFrameWindowDto,
     GetEarliestEarlierEquivalentFrameRequest,
+    GetScrubPreviewAvailabilityRequest,
     GetProcessingJobRequest,
     GetProcessingResultRequest,
     GetTimelineWindowAroundFrameRequest,
@@ -62,6 +61,8 @@
     ReprocessCapturedFrameOcrRequest,
     PersonProfileDto,
     SpeakerAnalysisSkipReason,
+    ScrubPreviewAvailabilityDto,
+    ScrubPreviewAvailabilityIntervalDto,
     SpeakerAnalysisStructuredPayload,
     SystemAudioSpeechActivityReprocessingResultDto,
     SpeakerClusterDto,
@@ -137,7 +138,6 @@
   const ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS = 2;
   const ACTIVE_PREVIEW_VERY_FAST_SCRUB_PX_PER_MS = 4;
   const ACTIVE_PREVIEW_EXTREME_SCRUB_PX_PER_MS = 8;
-  const ACTIVE_PREVIEW_SCRUB_MAX_PIXEL_SIZE = 200;
   const PREVIEW_CACHE_MAX_ENTRIES = 192;
   const PREVIEW_FAILURE_CACHE_TTL_MS = 5_000;
   const SCRUB_PERF_LOG_PREFIX = "[DEBUG-scrub-perf]";
@@ -476,6 +476,7 @@
   let scrubPreviewSourceKindCache = $state<Map<number, FramePreviewDto["sourceKind"]>>(new Map());
   let scrubPreviewLoadMsCache = $state<Map<number, number>>(new Map());
   let scrubPreviewFailedAt = $state<Map<number, number>>(new Map());
+  let scrubPreviewIntervalCache = $state<Map<string, ScrubPreviewAvailabilityIntervalDto>>(new Map());
   // Tracks the in-flight requests so concurrent scrolls don't fan out a
   // request per slot per scroll tick for the same id.
   const previewInFlight = new Set<number>();
@@ -546,25 +547,34 @@
     timelineActive ? previewCache.get(timelineActive.id) ?? null : null,
   );
   const activeDisplayPreviewPath = $derived(
-    activeDisplayPreviewPathForFrame(
-      timelineActive?.id ?? null,
-      previewCache,
-      scrubPreviewCache,
-    ),
+    timelineActive && previewCache.has(timelineActive.id)
+      ? previewCache.get(timelineActive.id) ?? null
+      : scrubPreviewIntervalForFrame(timelineActive)?.preview?.filePath ??
+        activeDisplayPreviewPathForFrame(
+          timelineActive?.id ?? null,
+          previewCache,
+          scrubPreviewCache,
+        ),
   );
   const activeDisplayPreviewSource = $derived<"exact" | "scrub" | "none">(
-    activeDisplayPreviewSourceForFrame(
-      timelineActive?.id ?? null,
-      previewCache,
-      scrubPreviewCache,
-    ),
+    timelineActive && previewCache.has(timelineActive.id)
+      ? "exact"
+      : scrubPreviewIntervalForFrame(timelineActive)?.preview
+        ? "scrub"
+        : activeDisplayPreviewSourceForFrame(
+          timelineActive?.id ?? null,
+          previewCache,
+          scrubPreviewCache,
+        ),
   );
   const activeDisplayPreviewSourceKind = $derived<FramePreviewDto["sourceKind"] | "none">(
     timelineActive
       ? activeDisplayPreviewSource === "exact"
         ? previewSourceKindCache.get(timelineActive.id) ?? "none"
         : activeDisplayPreviewSource === "scrub"
-          ? scrubPreviewSourceKindCache.get(timelineActive.id) ?? "none"
+          ? scrubPreviewIntervalForFrame(timelineActive)?.preview?.sourceKind ??
+            scrubPreviewSourceKindCache.get(timelineActive.id) ??
+            "none"
           : "none"
       : "none",
   );
@@ -2996,6 +3006,54 @@
     trimScrubPreviewCache();
   }
 
+  function scrubPreviewIntervalKey(interval: Pick<ScrubPreviewAvailabilityIntervalDto, "segmentCacheKey" | "intervalStartVideoOffsetMs">): string {
+    return `${interval.segmentCacheKey}:${interval.intervalStartVideoOffsetMs}`;
+  }
+
+  function scrubPreviewIntervalForFrame(frame: FrameDto | null): ScrubPreviewAvailabilityIntervalDto | null {
+    if (!frame) return null;
+    const capturedAtMs = Date.parse(frame.capturedAt);
+    if (!Number.isFinite(capturedAtMs)) return null;
+    for (const interval of scrubPreviewIntervalCache.values()) {
+      if (
+        interval.preview &&
+        capturedAtMs >= interval.intervalStartUnixMs &&
+        capturedAtMs < interval.intervalEndUnixMs
+      ) {
+        return interval;
+      }
+    }
+    return null;
+  }
+
+  function touchScrubPreviewIntervalCache(interval: ScrubPreviewAvailabilityIntervalDto): void {
+    const key = scrubPreviewIntervalKey(interval);
+    const next = new Map(scrubPreviewIntervalCache);
+    next.delete(key);
+    next.set(key, interval);
+    while (next.size > 1500) {
+      const oldestKey = next.keys().next().value;
+      if (oldestKey == null) break;
+      next.delete(oldestKey);
+    }
+    scrubPreviewIntervalCache = next;
+  }
+
+  function scrubPreviewTimeWindowAround(activeIndex: number): { startUnixMs: number; endUnixMs: number } | null {
+    const options = scrubPreviewWindowForVelocity();
+    const start = Math.max(0, activeIndex - options.radius);
+    const end = Math.min(timelineFrames.length - 1, activeIndex + options.radius);
+    const times = timelineFrames
+      .slice(start, end + 1)
+      .map((frame) => Date.parse(frame.capturedAt))
+      .filter(Number.isFinite);
+    if (times.length === 0) return null;
+    return {
+      startUnixMs: Math.min(...times) - 1000,
+      endUnixMs: Math.max(...times) + 1000,
+    };
+  }
+
   function rememberPreviewFailure(frameId: number): void {
     const next = new Map(previewFailedAt);
     next.set(frameId, Date.now());
@@ -3605,87 +3663,68 @@
 
   async function ensureScrubPreviews(frameIds: number[], generation: number): Promise<void> {
     const startedAt = performance.now();
-    const uncached = frameIds.filter(
-      (frameId) =>
-        !scrubPreviewCache.has(frameId) &&
-        !scrubPreviewInFlight.has(frameId) &&
-        !recentlyFailedScrubPreview(frameId),
-    );
-    if (uncached.length === 0) {
+    const timeWindow = scrubPreviewTimeWindowAround(timelineActiveIndex);
+    if (!timeWindow) return;
+    if (frameIds.length === 0 && scrubPreviewIntervalForFrame(timelineActive)) {
       scrubPreviewHitCount += 1;
       scrubPerfLogSlow("scrub_preview_all_cached", performance.now() - startedAt, {
         requested: frameIds.length,
       }, 1);
       return;
     }
-    scrubPreviewMissCount += uncached.length;
+    scrubPreviewMissCount += frameIds.length;
     scrubPreviewBatchCount += 1;
-    for (const frameId of uncached) scrubPreviewInFlight.add(frameId);
+    for (const frameId of frameIds) scrubPreviewInFlight.add(frameId);
     try {
       const invokeStartedAt = performance.now();
-      const dto = await invoke<FrameScrubPreviewsDto>("get_frame_scrub_previews", {
-        request: {
-          frameIds: uncached,
-          maxPixelSize: ACTIVE_PREVIEW_SCRUB_MAX_PIXEL_SIZE,
-        },
+      const request: GetScrubPreviewAvailabilityRequest = {
+        startUnixMs: timeWindow.startUnixMs,
+        endUnixMs: timeWindow.endUnixMs,
+        enqueueMissing: true,
+      };
+      const dto = await invoke<ScrubPreviewAvailabilityDto>("get_scrub_preview_availability", {
+        request,
       });
       const invokeDurationMs = performance.now() - invokeStartedAt;
       const responseStale = generation !== scrubPreviewFetchGeneration;
       if (!scrubPreviewResponseShouldApply(generation, scrubPreviewFetchGeneration)) {
         scrubPerfLog("scrub_preview_stale", {
           requested: frameIds.length,
-          uncached: uncached.length,
-          returned: dto.previews.length,
+          uncached: frameIds.length,
+          returned: dto.intervals.length,
           invokeMs: invokeDurationMs,
         });
         return;
       }
       const applyStartedAt = performance.now();
-      let generated = 0;
-      let direct = 0;
+      let ready = 0;
+      let queued = 0;
       let missing = 0;
-      for (const item of dto.previews) {
-        if (!item.preview) {
+      for (const interval of dto.intervals) {
+        if (interval.preview) {
+          touchScrubPreviewIntervalCache(interval);
+          ready += 1;
+          scrubPreviewGeneratedCount += 1;
+        } else if (interval.status === "queued") {
+          queued += 1;
+        } else {
           scrubPreviewMissingCount += 1;
           missing += 1;
-          rememberScrubPreviewFailure(item.frameId);
-          continue;
-        }
-        clearPreviewFailure(item.frameId);
-        clearScrubPreviewFailure(item.frameId);
-        touchScrubPreviewCache(item.frameId, item.preview.filePath, {
-          mimeType: item.preview.mimeType,
-          sourceKind: item.preview.sourceKind,
-          loadMs: performance.now() - startedAt,
-        });
-        if (item.preview.sourceKind === "original_frame") {
-          direct += 1;
-        } else {
-          generated += 1;
-          scrubPreviewGeneratedCount += 1;
-        }
-        if (scrubPreviewShouldPopulateExactCache(item.preview.sourceKind)) {
-          touchPreviewCache(item.frameId, item.preview.filePath, {
-            mimeType: item.preview.mimeType,
-            sourceKind: item.preview.sourceKind,
-            loadMs: performance.now() - startedAt,
-          });
-          previewDirectPathCount += 1;
         }
       }
       scrubPerfLogSlow("scrub_preview_batch", performance.now() - startedAt, {
         requested: frameIds.length,
-        uncached: uncached.length,
-        returned: dto.previews.length,
-        generated,
-        direct,
+        uncached: frameIds.length,
+        returned: dto.intervals.length,
+        generated: ready,
+        queued,
         missing,
         stale: responseStale,
         invokeMs: invokeDurationMs,
         applyMs: performance.now() - applyStartedAt,
       }, SCRUB_PERF_SLOW_PREVIEW_MS);
     } finally {
-      for (const frameId of uncached) scrubPreviewInFlight.delete(frameId);
+      for (const frameId of frameIds) scrubPreviewInFlight.delete(frameId);
     }
   }
 
@@ -3747,6 +3786,7 @@
         scrubPreviewSourceKindCache = new Map();
         scrubPreviewLoadMsCache = new Map();
         scrubPreviewFailedAt = new Map();
+        scrubPreviewIntervalCache = new Map();
         activePreviewLoadErrorFrameId = null;
         // Targeted picker invalidation: only invalidate months actually
         // covered by the freshly loaded frames. Wholesale clearing of
@@ -4591,7 +4631,7 @@
       gen,
       activeExactPreviewDelayMs(
         shouldScheduleScrubPreview,
-        scrubPreviewCache.has(active.id),
+        Boolean(scrubPreviewIntervalForFrame(active)?.preview) || scrubPreviewCache.has(active.id),
         ACTIVE_PREVIEW_EXACT_SETTLE_MS,
       ),
     );
@@ -5472,6 +5512,7 @@
       scrubPreviewSourceKindCache = new Map();
       scrubPreviewLoadMsCache = new Map();
       scrubPreviewFailedAt = new Map();
+      scrubPreviewIntervalCache = new Map();
       await syncTimelineScrollToActiveFrame();
       void refreshAudioSegments();
       // Keep picker selection state in sync with the resolved target frame
@@ -5924,6 +5965,7 @@
     let unlistenSystemDidWake: (() => void) | undefined;
     let unlistenAudioSegmentsChanged: (() => void) | undefined;
     let unlistenTimelineDataChanged: (() => void) | undefined;
+    let unlistenScrubPreviewCacheChanged: (() => void) | undefined;
     let destroyed = false;
 
     listen("system_did_wake", () => {
@@ -5979,6 +6021,15 @@
       else unlistenTimelineDataChanged = fn;
     });
 
+    listen("scrub_preview_cache_changed", () => {
+      const activeIndex = timelineActiveIndex;
+      scrubPreviewFetchGeneration += 1;
+      void ensureLatestScrubPreviews(activeIndex, scrubPreviewFetchGeneration);
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenScrubPreviewCacheChanged = fn;
+    });
+
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onFocus);
     window.addEventListener("pageshow", onFocus);
@@ -6002,6 +6053,7 @@
       unlistenSystemDidWake?.();
       unlistenAudioSegmentsChanged?.();
       unlistenTimelineDataChanged?.();
+      unlistenScrubPreviewCacheChanged?.();
       if (refreshAudioSegmentsDebounceTimer != null) {
         clearTimeout(refreshAudioSegmentsDebounceTimer);
         refreshAudioSegmentsDebounceTimer = null;

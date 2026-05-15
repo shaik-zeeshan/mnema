@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     fs::File,
     io::{Read, Seek, SeekFrom},
@@ -15,7 +15,8 @@ use std::sync::Condvar;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
-use tauri::{path::BaseDirectory, Manager};
+use sha2::{Digest, Sha256};
+use tauri::{path::BaseDirectory, Emitter, Manager};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::oneshot;
 
@@ -33,7 +34,13 @@ const SCRUB_PREVIEW_MAX_MAX_PIXEL_SIZE: u32 = 1280;
 const SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS: u128 = 25;
 const SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT: Duration = Duration::from_secs(2);
 const SCRUB_PREVIEW_JPEG_QUALITY: u8 = 72;
+const SCRUB_PREVIEW_RENDITION: &str = "v1-jpeg-q72-max360-1fps";
+const SCRUB_PREVIEW_MAX_PIXEL_SIZE: u32 = 360;
+const SCRUB_PREVIEW_INTERVAL_MS: u64 = 1000;
+const SCRUB_PREVIEW_CHUNK_SIZE: usize = 30;
+pub const SCRUB_PREVIEW_CACHE_CHANGED_EVENT: &str = "scrub_preview_cache_changed";
 const GENERATED_FRAME_PREVIEW_CACHE_DIR: &str = "frame-previews";
+const GENERATED_SCRUB_PREVIEW_CACHE_DIR: &str = "scrub-previews";
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES: usize = 512;
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 
@@ -53,6 +60,12 @@ struct CachedVideoPreviewFailure {
 pub(super) struct ScrubPreviewCacheKey {
     frame_id: i64,
     max_pixel_size: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ScrubIntervalWorkKey {
+    segment_cache_key: String,
+    interval_start_video_offset_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +96,7 @@ pub struct FramePreviewState {
     scrub_cache: FrameScrubPreviewCache,
     in_flight: HashMap<i64, Vec<oneshot::Sender<Result<Option<FramePreviewDto>, String>>>>,
     video_in_flight: HashMap<PathBuf, Vec<oneshot::Sender<Result<(), String>>>>,
+    scrub_interval_in_flight: HashSet<ScrubIntervalWorkKey>,
 }
 
 #[derive(Debug, Default)]
@@ -216,6 +230,25 @@ impl FramePreviewState {
         let waiters = self.video_in_flight.remove(video_path).unwrap_or_default();
         for waiter in waiters {
             let _ = waiter.send(result.clone());
+        }
+    }
+
+    fn begin_scrub_interval_work(
+        &mut self,
+        keys: &[ScrubIntervalWorkKey],
+    ) -> Vec<ScrubIntervalWorkKey> {
+        let mut accepted = Vec::new();
+        for key in keys {
+            if self.scrub_interval_in_flight.insert(key.clone()) {
+                accepted.push(key.clone());
+            }
+        }
+        accepted
+    }
+
+    fn finish_scrub_interval_work(&mut self, keys: &[ScrubIntervalWorkKey]) {
+        for key in keys {
+            self.scrub_interval_in_flight.remove(key);
         }
     }
 
@@ -445,6 +478,73 @@ pub struct FrameScrubPreviewResultDto {
 #[serde(rename_all = "camelCase")]
 pub struct FrameScrubPreviewsDto {
     pub previews: Vec<FrameScrubPreviewResultDto>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetScrubPreviewAvailabilityRequest {
+    pub start_unix_ms: i64,
+    pub end_unix_ms: i64,
+    pub enqueue_missing: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum ScrubPreviewAvailabilityStatusDto {
+    Ready,
+    Queued,
+    NotIndexed,
+    SourceMissing,
+    FrameIndexMissing,
+    DecodeFailed,
+    CacheWriteFailed,
+    UnsupportedPlatform,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubPreviewAvailabilityPreviewDto {
+    pub file_path: String,
+    pub mime_type: String,
+    pub source_kind: FramePreviewSourceKindDto,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubPreviewAvailabilityIntervalDto {
+    pub segment_cache_key: String,
+    pub interval_start_video_offset_ms: u64,
+    pub interval_end_video_offset_ms: u64,
+    pub interval_start_unix_ms: i64,
+    pub interval_end_unix_ms: i64,
+    pub preview: Option<ScrubPreviewAvailabilityPreviewDto>,
+    pub status: ScrubPreviewAvailabilityStatusDto,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubPreviewAvailabilityDto {
+    pub rendition: String,
+    pub intervals: Vec<ScrubPreviewAvailabilityIntervalDto>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubPreviewCacheChangedPayload {
+    pub rendition: String,
+    pub start_unix_ms: i64,
+    pub end_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubPreviewCacheStatusDto {
+    pub rendition: String,
+    pub cache_directory: String,
+    pub segment_directories: usize,
+    pub preview_files: usize,
+    pub total_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1891,6 +1991,564 @@ pub(crate) fn run_generated_frame_preview_cache_startup_pass(app_handle: &tauri:
             "failed to resolve generated frame preview cache directory for startup cleanup: {error}"
         )),
     }
+}
+
+fn scrub_preview_cache_root(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let cache_dir = app_handle
+        .path()
+        .resolve(GENERATED_SCRUB_PREVIEW_CACHE_DIR, BaseDirectory::AppCache)
+        .map_err(|error| format!("failed to resolve scrub preview cache directory: {error}"))?
+        .join(SCRUB_PREVIEW_RENDITION);
+    fs::create_dir_all(&cache_dir).map_err(|error| {
+        format!(
+            "failed to create scrub preview cache directory {}: {error}",
+            cache_dir.display()
+        )
+    })?;
+    app_handle
+        .asset_protocol_scope()
+        .allow_directory(&cache_dir, true)
+        .map_err(|error| {
+            format!(
+                "failed to allow scrub preview cache directory {} in asset scope: {error}",
+                cache_dir.display()
+            )
+        })?;
+    Ok(cache_dir)
+}
+
+fn unix_ms_to_rfc3339(unix_ms: i64) -> String {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix_ms) * 1_000_000)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+fn rfc3339_to_unix_ms(value: &str) -> Option<i64> {
+    OffsetDateTime::parse(value, &Rfc3339)
+        .ok()
+        .and_then(|dt| i64::try_from(dt.unix_timestamp_nanos() / 1_000_000).ok())
+}
+
+fn file_freshness(path: &Path) -> (u64, u64) {
+    let Ok(metadata) = fs::metadata(path) else {
+        return (0, 0);
+    };
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| {
+            modified
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .ok()
+        })
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    (metadata.len(), modified_ms)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ScrubPreviewSegmentMetadata {
+    rendition: String,
+    segment_cache_key: String,
+    video_path: String,
+    video_size: u64,
+    video_modified_unix_ms: u64,
+    frame_index_size: u64,
+    frame_index_modified_unix_ms: u64,
+}
+
+fn screen_frame_index_existing_path(video_path: &Path) -> Option<PathBuf> {
+    let binary = capture_screen::screen_segment_frame_index_path(video_path);
+    if binary.is_file() {
+        return Some(binary);
+    }
+    let legacy = capture_screen::legacy_screen_segment_frame_index_path(video_path);
+    if legacy.is_file() {
+        return Some(legacy);
+    }
+    None
+}
+
+fn segment_cache_key(video_path: &Path, frame_index_path: Option<&Path>) -> String {
+    let canonical_video = video_path
+        .canonicalize()
+        .unwrap_or_else(|_| video_path.to_path_buf());
+    let (video_size, video_modified) = file_freshness(&canonical_video);
+    let (index_size, index_modified) = frame_index_path.map(file_freshness).unwrap_or((0, 0));
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_video.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(video_size.to_le_bytes());
+    hasher.update(video_modified.to_le_bytes());
+    hasher.update(index_size.to_le_bytes());
+    hasher.update(index_modified.to_le_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn scrub_preview_segment_dir(root: &Path, segment_cache_key: &str) -> PathBuf {
+    root.join(segment_cache_key)
+}
+
+fn scrub_preview_interval_path(segment_dir: &Path, interval_start_video_offset_ms: u64) -> PathBuf {
+    segment_dir.join(format!("{interval_start_video_offset_ms:06}.jpg"))
+}
+
+fn scrub_preview_metadata_path(segment_dir: &Path) -> PathBuf {
+    segment_dir.join("metadata.json")
+}
+
+fn write_scrub_preview_metadata(
+    segment_dir: &Path,
+    segment_cache_key: &str,
+    video_path: &Path,
+    frame_index_path: Option<&Path>,
+) -> Result<(), String> {
+    fs::create_dir_all(segment_dir).map_err(|error| {
+        format!(
+            "failed to create scrub preview segment directory {}: {error}",
+            segment_dir.display()
+        )
+    })?;
+    let canonical_video = video_path
+        .canonicalize()
+        .unwrap_or_else(|_| video_path.to_path_buf());
+    let (video_size, video_modified_unix_ms) = file_freshness(&canonical_video);
+    let (frame_index_size, frame_index_modified_unix_ms) =
+        frame_index_path.map(file_freshness).unwrap_or((0, 0));
+    let metadata = ScrubPreviewSegmentMetadata {
+        rendition: SCRUB_PREVIEW_RENDITION.to_string(),
+        segment_cache_key: segment_cache_key.to_string(),
+        video_path: canonical_video.to_string_lossy().to_string(),
+        video_size,
+        video_modified_unix_ms,
+        frame_index_size,
+        frame_index_modified_unix_ms,
+    };
+    let bytes = serde_json::to_vec_pretty(&metadata)
+        .map_err(|error| format!("failed to encode scrub preview metadata: {error}"))?;
+    let temp_file = tempfile::NamedTempFile::new_in(segment_dir).map_err(|error| {
+        format!(
+            "failed to create temporary scrub preview metadata in {}: {error}",
+            segment_dir.display()
+        )
+    })?;
+    fs::write(temp_file.path(), bytes).map_err(|error| {
+        format!(
+            "failed to write temporary scrub preview metadata {}: {error}",
+            temp_file.path().display()
+        )
+    })?;
+    temp_file
+        .persist(scrub_preview_metadata_path(segment_dir))
+        .map_err(|error| format!("failed to persist scrub preview metadata: {error}"))?;
+    Ok(())
+}
+
+fn scrub_preview_metadata_valid(
+    segment_dir: &Path,
+    segment_cache_key: &str,
+    video_path: &Path,
+    frame_index_path: Option<&Path>,
+) -> bool {
+    let Ok(bytes) = fs::read(scrub_preview_metadata_path(segment_dir)) else {
+        return false;
+    };
+    let Ok(metadata) = serde_json::from_slice::<ScrubPreviewSegmentMetadata>(&bytes) else {
+        return false;
+    };
+    let canonical_video = video_path
+        .canonicalize()
+        .unwrap_or_else(|_| video_path.to_path_buf());
+    let (video_size, video_modified_unix_ms) = file_freshness(&canonical_video);
+    let (frame_index_size, frame_index_modified_unix_ms) =
+        frame_index_path.map(file_freshness).unwrap_or((0, 0));
+    metadata.rendition == SCRUB_PREVIEW_RENDITION
+        && metadata.segment_cache_key == segment_cache_key
+        && metadata.video_path == canonical_video.to_string_lossy().as_ref()
+        && metadata.video_size == video_size
+        && metadata.video_modified_unix_ms == video_modified_unix_ms
+        && metadata.frame_index_size == frame_index_size
+        && metadata.frame_index_modified_unix_ms == frame_index_modified_unix_ms
+}
+
+fn indexed_scrub_preview_offsets(
+    index: &capture_screen::ScreenSegmentFrameIndex,
+) -> HashMap<u64, u64> {
+    let mut offsets = HashMap::new();
+    for entry in &index.entries {
+        let bucket =
+            (entry.video_offset_ms / SCRUB_PREVIEW_INTERVAL_MS) * SCRUB_PREVIEW_INTERVAL_MS;
+        offsets.entry(bucket).or_insert(entry.video_offset_ms);
+    }
+    offsets
+}
+
+fn persist_scrub_preview_interval(
+    segment_dir: &Path,
+    interval_start_video_offset_ms: u64,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(segment_dir).map_err(|error| {
+        format!(
+            "failed to create scrub preview segment directory {}: {error}",
+            segment_dir.display()
+        )
+    })?;
+    let output_path = scrub_preview_interval_path(segment_dir, interval_start_video_offset_ms);
+    let temp_file = tempfile::NamedTempFile::new_in(segment_dir).map_err(|error| {
+        format!(
+            "failed to create temporary scrub preview file in {}: {error}",
+            segment_dir.display()
+        )
+    })?;
+    fs::write(temp_file.path(), bytes).map_err(|error| {
+        format!(
+            "failed to write temporary scrub preview file {}: {error}",
+            temp_file.path().display()
+        )
+    })?;
+    temp_file.persist(&output_path).map_err(|error| {
+        format!(
+            "failed to persist scrub preview file {}: {error}",
+            output_path.display()
+        )
+    })?;
+    Ok(output_path)
+}
+
+#[derive(Debug, Clone)]
+struct ScrubPreviewGenerationJob {
+    segment_cache_key: String,
+    segment_dir: PathBuf,
+    video_path: PathBuf,
+    frame_index_path: Option<PathBuf>,
+    started_unix_ms: i64,
+    intervals: Vec<(u64, u64)>,
+}
+
+async fn generate_scrub_preview_job(job: ScrubPreviewGenerationJob, app_handle: tauri::AppHandle) {
+    let keys = job
+        .intervals
+        .iter()
+        .map(|(interval_start, _)| ScrubIntervalWorkKey {
+            segment_cache_key: job.segment_cache_key.clone(),
+            interval_start_video_offset_ms: *interval_start,
+        })
+        .collect::<Vec<_>>();
+
+    let accepted = {
+        app_handle
+            .state::<FramePreviewCacheState>()
+            .lock()
+            .expect("frame preview cache poisoned")
+            .begin_scrub_interval_work(&keys)
+    };
+    if accepted.is_empty() {
+        return;
+    }
+    let accepted_intervals = job
+        .intervals
+        .into_iter()
+        .filter(|(interval_start, _)| {
+            accepted
+                .iter()
+                .any(|key| key.interval_start_video_offset_ms == *interval_start)
+        })
+        .collect::<Vec<_>>();
+
+    for chunk in accepted_intervals.chunks(SCRUB_PREVIEW_CHUNK_SIZE) {
+        let offsets = chunk
+            .iter()
+            .map(|(_, selected_offset)| *selected_offset)
+            .collect::<Vec<_>>();
+        let result = extract_scrub_preview_images_from_video_batch(
+            &job.video_path,
+            &offsets,
+            SCRUB_PREVIEW_MAX_PIXEL_SIZE,
+        )
+        .await;
+        if let Ok(decoded_by_offset) = result {
+            let _ = write_scrub_preview_metadata(
+                &job.segment_dir,
+                &job.segment_cache_key,
+                &job.video_path,
+                job.frame_index_path.as_deref(),
+            );
+            for (interval_start, selected_offset) in chunk {
+                if let Some(Ok(bytes)) = decoded_by_offset.get(selected_offset) {
+                    if let Ok(path) =
+                        persist_scrub_preview_interval(&job.segment_dir, *interval_start, bytes)
+                    {
+                        let _ = allow_preview_file(&app_handle, &path);
+                    }
+                }
+            }
+            let start_unix_ms = job.started_unix_ms + chunk[0].0 as i64;
+            let end_unix_ms = job.started_unix_ms
+                + chunk
+                    .last()
+                    .map(|(interval_start, _)| *interval_start + SCRUB_PREVIEW_INTERVAL_MS)
+                    .unwrap_or(0) as i64;
+            let _ = app_handle.emit(
+                SCRUB_PREVIEW_CACHE_CHANGED_EVENT,
+                ScrubPreviewCacheChangedPayload {
+                    rendition: SCRUB_PREVIEW_RENDITION.to_string(),
+                    start_unix_ms,
+                    end_unix_ms,
+                },
+            );
+        }
+    }
+
+    app_handle
+        .state::<FramePreviewCacheState>()
+        .lock()
+        .expect("frame preview cache poisoned")
+        .finish_scrub_interval_work(&accepted);
+}
+
+#[tauri::command]
+pub async fn get_scrub_preview_availability(
+    request: GetScrubPreviewAvailabilityRequest,
+    state: tauri::State<'_, AppInfraState>,
+    app_handle: tauri::AppHandle,
+) -> Result<ScrubPreviewAvailabilityDto, String> {
+    let start_unix_ms = request.start_unix_ms.min(request.end_unix_ms);
+    let end_unix_ms = request.start_unix_ms.max(request.end_unix_ms);
+    let enqueue_missing = request.enqueue_missing.unwrap_or(true);
+    let infra = Arc::clone(&*state);
+    let cache_root = scrub_preview_cache_root(&app_handle)?;
+    let segments = infra
+        .list_finalized_screen_segments_overlapping_window(
+            &unix_ms_to_rfc3339(start_unix_ms),
+            &unix_ms_to_rfc3339(end_unix_ms),
+        )
+        .await
+        .map_err(|error| format!("failed to list screen segments for scrub previews: {error}"))?;
+
+    let mut intervals = Vec::new();
+    let mut jobs = Vec::new();
+    for segment in segments {
+        let segment_started_unix_ms =
+            rfc3339_to_unix_ms(&segment.started_at).unwrap_or(start_unix_ms);
+        let segment_ended_unix_ms =
+            rfc3339_to_unix_ms(&segment.ended_at).unwrap_or(segment_started_unix_ms);
+        let video_path = PathBuf::from(&segment.media_file_path);
+        let frame_index_path = screen_frame_index_existing_path(&video_path);
+        let segment_cache_key = segment_cache_key(&video_path, frame_index_path.as_deref());
+        let segment_dir = scrub_preview_segment_dir(&cache_root, &segment_cache_key);
+        let metadata_valid = scrub_preview_metadata_valid(
+            &segment_dir,
+            &segment_cache_key,
+            &video_path,
+            frame_index_path.as_deref(),
+        );
+
+        if !video_path.is_file()
+            || fs::metadata(&video_path)
+                .map(|metadata| metadata.len() == 0)
+                .unwrap_or(true)
+            || !mov_file_appears_openable_for_preview(&video_path).unwrap_or(false)
+        {
+            intervals.push(ScrubPreviewAvailabilityIntervalDto {
+                segment_cache_key,
+                interval_start_video_offset_ms: 0,
+                interval_end_video_offset_ms: SCRUB_PREVIEW_INTERVAL_MS,
+                interval_start_unix_ms: segment_started_unix_ms,
+                interval_end_unix_ms: segment_ended_unix_ms,
+                preview: None,
+                status: ScrubPreviewAvailabilityStatusDto::SourceMissing,
+            });
+            continue;
+        }
+
+        let index = match load_screen_segment_frame_index(&video_path) {
+            Ok(Some(index)) => index,
+            Ok(None) => {
+                intervals.push(ScrubPreviewAvailabilityIntervalDto {
+                    segment_cache_key,
+                    interval_start_video_offset_ms: 0,
+                    interval_end_video_offset_ms: SCRUB_PREVIEW_INTERVAL_MS,
+                    interval_start_unix_ms: segment_started_unix_ms,
+                    interval_end_unix_ms: segment_ended_unix_ms,
+                    preview: None,
+                    status: ScrubPreviewAvailabilityStatusDto::FrameIndexMissing,
+                });
+                continue;
+            }
+            Err(_) => {
+                intervals.push(ScrubPreviewAvailabilityIntervalDto {
+                    segment_cache_key,
+                    interval_start_video_offset_ms: 0,
+                    interval_end_video_offset_ms: SCRUB_PREVIEW_INTERVAL_MS,
+                    interval_start_unix_ms: segment_started_unix_ms,
+                    interval_end_unix_ms: segment_ended_unix_ms,
+                    preview: None,
+                    status: ScrubPreviewAvailabilityStatusDto::DecodeFailed,
+                });
+                continue;
+            }
+        };
+
+        let indexed_offsets = indexed_scrub_preview_offsets(&index);
+        let duration_ms = (segment_ended_unix_ms - segment_started_unix_ms).max(0) as u64;
+        let last_bucket = ((duration_ms + SCRUB_PREVIEW_INTERVAL_MS - 1)
+            / SCRUB_PREVIEW_INTERVAL_MS)
+            * SCRUB_PREVIEW_INTERVAL_MS;
+        let mut missing_for_generation = Vec::new();
+        let mut bucket = 0;
+        while bucket < last_bucket {
+            let interval_start_unix_ms = segment_started_unix_ms + bucket as i64;
+            let interval_end_unix_ms = (interval_start_unix_ms + SCRUB_PREVIEW_INTERVAL_MS as i64)
+                .min(segment_ended_unix_ms);
+            if interval_end_unix_ms < start_unix_ms || interval_start_unix_ms > end_unix_ms {
+                bucket += SCRUB_PREVIEW_INTERVAL_MS;
+                continue;
+            }
+            let interval_path = scrub_preview_interval_path(&segment_dir, bucket);
+            if metadata_valid && interval_path.is_file() {
+                allow_preview_file(&app_handle, &interval_path)?;
+                intervals.push(ScrubPreviewAvailabilityIntervalDto {
+                    segment_cache_key: segment_cache_key.clone(),
+                    interval_start_video_offset_ms: bucket,
+                    interval_end_video_offset_ms: bucket + SCRUB_PREVIEW_INTERVAL_MS,
+                    interval_start_unix_ms,
+                    interval_end_unix_ms,
+                    preview: Some(ScrubPreviewAvailabilityPreviewDto {
+                        file_path: interval_path.to_string_lossy().to_string(),
+                        mime_type: "image/jpeg".to_string(),
+                        source_kind: FramePreviewSourceKindDto::ScrubPreview,
+                    }),
+                    status: ScrubPreviewAvailabilityStatusDto::Ready,
+                });
+            } else if let Some(selected_offset) = indexed_offsets.get(&bucket) {
+                if cfg!(target_os = "macos") && enqueue_missing {
+                    missing_for_generation.push((bucket, *selected_offset));
+                }
+                intervals.push(ScrubPreviewAvailabilityIntervalDto {
+                    segment_cache_key: segment_cache_key.clone(),
+                    interval_start_video_offset_ms: bucket,
+                    interval_end_video_offset_ms: bucket + SCRUB_PREVIEW_INTERVAL_MS,
+                    interval_start_unix_ms,
+                    interval_end_unix_ms,
+                    preview: None,
+                    status: if !cfg!(target_os = "macos") {
+                        ScrubPreviewAvailabilityStatusDto::UnsupportedPlatform
+                    } else if enqueue_missing {
+                        ScrubPreviewAvailabilityStatusDto::Queued
+                    } else {
+                        ScrubPreviewAvailabilityStatusDto::NotIndexed
+                    },
+                });
+            } else {
+                intervals.push(ScrubPreviewAvailabilityIntervalDto {
+                    segment_cache_key: segment_cache_key.clone(),
+                    interval_start_video_offset_ms: bucket,
+                    interval_end_video_offset_ms: bucket + SCRUB_PREVIEW_INTERVAL_MS,
+                    interval_start_unix_ms,
+                    interval_end_unix_ms,
+                    preview: None,
+                    status: ScrubPreviewAvailabilityStatusDto::NotIndexed,
+                });
+            }
+            bucket += SCRUB_PREVIEW_INTERVAL_MS;
+        }
+
+        if !missing_for_generation.is_empty() {
+            jobs.push(ScrubPreviewGenerationJob {
+                segment_cache_key,
+                segment_dir,
+                video_path,
+                frame_index_path,
+                started_unix_ms: segment_started_unix_ms,
+                intervals: missing_for_generation,
+            });
+        }
+    }
+
+    for job in jobs {
+        let app_handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            generate_scrub_preview_job(job, app_handle).await;
+        });
+    }
+
+    Ok(ScrubPreviewAvailabilityDto {
+        rendition: SCRUB_PREVIEW_RENDITION.to_string(),
+        intervals,
+    })
+}
+
+#[tauri::command]
+pub fn get_scrub_preview_cache_status(
+    app_handle: tauri::AppHandle,
+) -> Result<ScrubPreviewCacheStatusDto, String> {
+    let cache_root = scrub_preview_cache_root(&app_handle)?;
+    let mut segment_directories = 0usize;
+    let mut preview_files = 0usize;
+    let mut total_bytes = 0u64;
+    if cache_root.is_dir() {
+        for entry in fs::read_dir(&cache_root).map_err(|error| {
+            format!(
+                "failed to read scrub preview cache directory {}: {error}",
+                cache_root.display()
+            )
+        })? {
+            let Ok(entry) = entry else { continue };
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                segment_directories += 1;
+                let Ok(files) = fs::read_dir(entry.path()) else {
+                    continue;
+                };
+                for file in files.flatten() {
+                    let path = file.path();
+                    if path.extension().and_then(|ext| ext.to_str()) != Some("jpg") {
+                        continue;
+                    }
+                    if let Ok(metadata) = file.metadata() {
+                        preview_files += 1;
+                        total_bytes = total_bytes.saturating_add(metadata.len());
+                    }
+                }
+            }
+        }
+    }
+    Ok(ScrubPreviewCacheStatusDto {
+        rendition: SCRUB_PREVIEW_RENDITION.to_string(),
+        cache_directory: cache_root.to_string_lossy().to_string(),
+        segment_directories,
+        preview_files,
+        total_bytes,
+    })
+}
+
+#[tauri::command]
+pub fn clear_scrub_preview_cache(
+    app_handle: tauri::AppHandle,
+) -> Result<ScrubPreviewCacheStatusDto, String> {
+    let cache_root = scrub_preview_cache_root(&app_handle)?;
+    if cache_root.is_dir() {
+        for entry in fs::read_dir(&cache_root).map_err(|error| {
+            format!(
+                "failed to read scrub preview cache directory {}: {error}",
+                cache_root.display()
+            )
+        })? {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = fs::remove_dir_all(path);
+            } else {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+    get_scrub_preview_cache_status(app_handle)
 }
 
 #[tauri::command]

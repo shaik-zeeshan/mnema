@@ -82,6 +82,37 @@ export interface FrameScrubPreviewsDto {
 	previews: FrameScrubPreviewResultDto[];
 }
 
+export type ScrubPreviewAvailabilityStatus =
+	| "ready"
+	| "queued"
+	| "not_indexed"
+	| "source_missing"
+	| "frame_index_missing"
+	| "decode_failed"
+	| "cache_write_failed"
+	| "unsupported_platform";
+
+export interface GetScrubPreviewAvailabilityRequest {
+	startUnixMs: number;
+	endUnixMs: number;
+	enqueueMissing?: boolean;
+}
+
+export interface ScrubPreviewAvailabilityIntervalDto {
+	segmentCacheKey: string;
+	intervalStartVideoOffsetMs: number;
+	intervalEndVideoOffsetMs: number;
+	intervalStartUnixMs: number;
+	intervalEndUnixMs: number;
+	preview: FramePreviewDto | null;
+	status: ScrubPreviewAvailabilityStatus;
+}
+
+export interface ScrubPreviewAvailabilityDto {
+	rendition: "v1-jpeg-q72-max360-1fps";
+	intervals: ScrubPreviewAvailabilityIntervalDto[];
+}
+
 export interface GetTimelineWindowAroundFrameRequest {
 	frameId: number;
 	newerLimit: number;
