@@ -160,6 +160,7 @@ mod tests {
             retention_policy: default_retention_policy(),
             appearance: default_appearance(),
             ocr: default_ocr_settings(),
+            screen_text_extraction: default_screen_text_extraction_settings(),
             transcription: default_audio_transcription_settings(),
             speaker_analysis: default_speaker_analysis_settings(),
             audio_speech_detection: default_audio_speech_detection_settings(),
