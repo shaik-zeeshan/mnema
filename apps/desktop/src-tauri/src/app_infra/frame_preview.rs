@@ -157,6 +157,23 @@ impl FramePreviewState {
         );
     }
 
+    pub(super) fn get_scrub(
+        &mut self,
+        frame_id: i64,
+        max_pixel_size: u32,
+        ttl: Duration,
+        now: Instant,
+    ) -> Option<FramePreviewDto> {
+        self.scrub_cache.get(
+            ScrubPreviewCacheKey {
+                frame_id,
+                max_pixel_size,
+            },
+            ttl,
+            now,
+        )
+    }
+
     pub(super) fn get_video_failure(&mut self, video_path: &Path, now: Instant) -> Option<String> {
         self.cache.get_video_failure(video_path, now)
     }
@@ -350,6 +367,21 @@ impl FramePreviewCache {
 }
 
 impl FrameScrubPreviewCache {
+    pub(super) fn get(
+        &mut self,
+        key: ScrubPreviewCacheKey,
+        ttl: Duration,
+        now: Instant,
+    ) -> Option<FramePreviewDto> {
+        self.evict_expired(ttl, now);
+        let preview = self.entries.get(&key).map(|entry| entry.preview.clone())?;
+        if !Path::new(&preview.file_path).is_file() {
+            self.entries.remove(&key);
+            return None;
+        }
+        Some(preview)
+    }
+
     pub(super) fn insert(
         &mut self,
         key: ScrubPreviewCacheKey,
@@ -2690,11 +2722,30 @@ pub async fn get_frame_scrub_previews(
 
     let mut unique_results = HashMap::new();
     let mut video_batches: HashMap<PathBuf, Vec<PreparedVideoScrubPreview>> = HashMap::new();
-    let cached_count = 0usize;
+    let mut cached_count = 0usize;
     let mut generated_count = 0usize;
     let mut missing_count = 0usize;
     for frame_id in unique_frame_ids {
         let frame_started_at = Instant::now();
+        if !ttl.is_zero() {
+            let cached_preview = cache
+                .lock()
+                .expect("frame preview cache poisoned")
+                .get_scrub(frame_id, max_pixel_size, ttl, frame_started_at);
+            if let Some(preview) = cached_preview {
+                cached_count += 1;
+                unique_results.insert(
+                    frame_id,
+                    FrameScrubPreviewResultDto {
+                        frame_id,
+                        preview: Some(preview),
+                        missing_reason: None,
+                    },
+                );
+                continue;
+            }
+        }
+
         match prepare_frame_scrub_preview(
             &infra,
             &app_handle,
