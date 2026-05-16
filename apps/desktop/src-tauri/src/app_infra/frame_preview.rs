@@ -2276,6 +2276,15 @@ fn scrub_preview_last_bucket(duration_ms: u64, has_indexed_offsets: bool) -> u64
         * SCRUB_PREVIEW_INTERVAL_MS
 }
 
+fn scrub_preview_interval_end_unix_ms(
+    interval_start_unix_ms: i64,
+    segment_ended_unix_ms: i64,
+) -> i64 {
+    interval_start_unix_ms
+        .saturating_add(SCRUB_PREVIEW_INTERVAL_MS as i64)
+        .min(segment_ended_unix_ms.saturating_add(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2291,6 +2300,13 @@ mod tests {
     #[test]
     fn scrub_preview_last_bucket_keeps_empty_zero_duration_segment_empty() {
         assert_eq!(scrub_preview_last_bucket(0, false), 0);
+    }
+
+    #[test]
+    fn scrub_preview_interval_end_is_exclusive_for_segment_end_frame() {
+        assert_eq!(scrub_preview_interval_end_unix_ms(1_000, 1_000), 1_001);
+        assert_eq!(scrub_preview_interval_end_unix_ms(1_000, 1_500), 1_501);
+        assert_eq!(scrub_preview_interval_end_unix_ms(1_000, 3_000), 2_000);
     }
 }
 
@@ -2538,8 +2554,8 @@ pub async fn get_scrub_preview_availability(
         let mut bucket = 0;
         while bucket < last_bucket {
             let interval_start_unix_ms = segment_started_unix_ms + bucket as i64;
-            let interval_end_unix_ms = (interval_start_unix_ms + SCRUB_PREVIEW_INTERVAL_MS as i64)
-                .min(segment_ended_unix_ms);
+            let interval_end_unix_ms =
+                scrub_preview_interval_end_unix_ms(interval_start_unix_ms, segment_ended_unix_ms);
             if interval_end_unix_ms < start_unix_ms || interval_start_unix_ms > end_unix_ms {
                 bucket += SCRUB_PREVIEW_INTERVAL_MS;
                 continue;
