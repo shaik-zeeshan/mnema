@@ -122,6 +122,19 @@ pub struct CaptureSegment {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenCaptureSegmentWindow {
+    pub id: i64,
+    pub capture_session_id: String,
+    pub source_session_id: String,
+    pub segment_index: i64,
+    pub media_file_path: String,
+    pub sidecar_file_path: Option<String>,
+    pub started_at: String,
+    pub ended_at: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RetentionCleanupSummary {
@@ -129,6 +142,8 @@ pub struct RetentionCleanupSummary {
     pub cutoff_ended_before: Option<String>,
     pub eligible_capture_segments: i64,
     pub deleted_capture_segments: i64,
+    #[serde(default)]
+    pub deleted_capture_segment_media_paths: Vec<String>,
     pub deleted_frames: i64,
     #[serde(default)]
     pub deleted_frame_ids: Vec<i64>,
@@ -270,8 +285,16 @@ impl CaptureRetentionStore {
                 workspace_dir_path = COALESCE(excluded.workspace_dir_path, capture_segments.workspace_dir_path),
                 frame_dir_path = COALESCE(excluded.frame_dir_path, capture_segments.frame_dir_path),
                 sidecar_file_path = COALESCE(excluded.sidecar_file_path, capture_segments.sidecar_file_path),
-                started_at = excluded.started_at,
-                ended_at = excluded.ended_at,
+                started_at = CASE
+                    WHEN julianday(excluded.started_at) < julianday(capture_segments.started_at)
+                    THEN excluded.started_at
+                    ELSE capture_segments.started_at
+                END,
+                ended_at = CASE
+                    WHEN julianday(excluded.ended_at) > julianday(capture_segments.ended_at)
+                    THEN excluded.ended_at
+                    ELSE capture_segments.ended_at
+                END,
                 status = excluded.status,
                 updated_at = CURRENT_TIMESTAMP",
         )
@@ -326,6 +349,51 @@ impl CaptureRetentionStore {
         row.map(map_capture_segment).transpose()
     }
 
+    pub async fn list_finalized_screen_segments_overlapping_window(
+        &self,
+        start_at: &str,
+        end_at: &str,
+    ) -> Result<Vec<ScreenCaptureSegmentWindow>> {
+        let rows = sqlx::query(
+            "SELECT id, capture_session_id, source_session_id, segment_index, media_file_path,
+                    sidecar_file_path, started_at, ended_at
+             FROM capture_segments
+             WHERE source_kind = 'screen'
+               AND status != 'recording'
+               AND media_file_path IS NOT NULL
+               AND (
+                 (julianday(ended_at) >= julianday(?1) AND julianday(started_at) <= julianday(?2))
+                 OR id IN (
+                   SELECT capture_segment_id
+                   FROM frames
+                   WHERE capture_segment_id IS NOT NULL
+                     AND julianday(captured_at) >= julianday(?1)
+                     AND julianday(captured_at) <= julianday(?2)
+                 )
+               )
+             ORDER BY julianday(started_at) ASC, id ASC",
+        )
+        .bind(start_at)
+        .bind(end_at)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(ScreenCaptureSegmentWindow {
+                    id: row.get("id"),
+                    capture_session_id: row.get("capture_session_id"),
+                    source_session_id: row.get("source_session_id"),
+                    segment_index: row.get("segment_index"),
+                    media_file_path: row.get("media_file_path"),
+                    sidecar_file_path: row.get("sidecar_file_path"),
+                    started_at: row.get("started_at"),
+                    ended_at: row.get("ended_at"),
+                })
+            })
+            .collect()
+    }
+
     pub async fn upsert_screen_segment_for_source_session(
         &self,
         source_session_id: &str,
@@ -359,7 +427,7 @@ impl CaptureRetentionStore {
             frame_dir_path: Some(frame_dir_path),
             sidecar_file_path: Some(sidecar_file_path),
             started_at: captured_at.clone(),
-            ended_at: captured_at,
+            ended_at: captured_at.clone(),
             status: "completed".to_string(),
         })
         .await
@@ -430,6 +498,11 @@ impl CaptureRetentionStore {
             _ => 3,
         });
         file_paths.dedup_by(|a, b| a.path == b.path);
+        let deleted_capture_segment_media_paths = file_paths
+            .iter()
+            .filter(|path| path.capture_segment_id.is_some() && path.path_kind == "media_file")
+            .map(|path| path.path.clone())
+            .collect::<Vec<_>>();
         let mut tx = self.pool.begin().await?;
         let mut frame_ids = ids_for_capture_segments(&mut tx, "frames", &segment_ids).await?;
         frame_ids.extend(orphan_frame_ids);
@@ -458,6 +531,7 @@ impl CaptureRetentionStore {
         summary.deleted_audio_segment_ids = deleted_audio_segment_ids;
         summary.deleted_capture_segments =
             delete_by_ids(&mut tx, "capture_segments", &segment_ids).await?;
+        summary.deleted_capture_segment_media_paths = deleted_capture_segment_media_paths;
         let cleanup_run_id =
             insert_cleanup_run(&mut tx, &summary, mode.as_str(), "completed").await?;
         tx.commit().await?;
@@ -1390,6 +1464,7 @@ mod tests {
                 started_at TEXT NOT NULL,
                 ended_at TEXT NOT NULL,
                 status TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(source_kind, source_session_id, segment_index)
             )",
             "CREATE TABLE frames (
@@ -1570,6 +1645,222 @@ mod tests {
             .expect("eligible ids should query");
 
             assert_eq!(ids, vec![1]);
+        });
+    }
+
+    #[test]
+    fn screen_segment_upsert_tracks_first_and_last_frame_times() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "CREATE TABLE capture_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    capture_session_id TEXT NOT NULL,
+                    screen_source_session_id TEXT,
+                    microphone_source_session_id TEXT,
+                    system_audio_source_session_id TEXT
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("capture_sessions table should be created");
+            sqlx::query(
+                "INSERT INTO capture_sessions (capture_session_id, screen_source_session_id)
+                 VALUES ('capture-1', 'screen-source-1')",
+            )
+            .execute(&pool)
+            .await
+            .expect("capture session should insert");
+
+            let store = CaptureRetentionStore::new(pool.clone());
+            store
+                .upsert_screen_segment_for_source_session(
+                    "screen-source-1",
+                    1,
+                    "/tmp/segment.mov".to_string(),
+                    "/tmp/.segment".to_string(),
+                    "/tmp/.segment/frames".to_string(),
+                    "/tmp/segment.frame-index.bin".to_string(),
+                    "2026-05-16T07:45:17.086Z".to_string(),
+                )
+                .await
+                .expect("first frame should upsert segment");
+            let segment = store
+                .upsert_screen_segment_for_source_session(
+                    "screen-source-1",
+                    1,
+                    "/tmp/segment.mov".to_string(),
+                    "/tmp/.segment".to_string(),
+                    "/tmp/.segment/frames".to_string(),
+                    "/tmp/segment.frame-index.bin".to_string(),
+                    "2026-05-16T07:45:32.105Z".to_string(),
+                )
+                .await
+                .expect("later frame should upsert segment")
+                .expect("segment should exist");
+
+            assert_eq!(segment.started_at, "2026-05-16T07:45:17.086Z");
+            assert_eq!(segment.ended_at, "2026-05-16T07:45:32.105Z");
+        });
+    }
+
+    #[test]
+    fn screen_segment_upsert_orders_mixed_precision_timestamps_by_time() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            let store = CaptureRetentionStore::new(pool);
+
+            store
+                .upsert_capture_segment(&NewCaptureSegment {
+                    capture_session_id: "capture-1".to_string(),
+                    source_kind: CaptureSourceKind::Screen,
+                    source_session_id: "screen-source-1".to_string(),
+                    segment_index: 1,
+                    media_file_path: Some("/tmp/segment.mov".to_string()),
+                    workspace_dir_path: None,
+                    frame_dir_path: None,
+                    sidecar_file_path: None,
+                    started_at: "2026-05-16T07:45:30.100Z".to_string(),
+                    ended_at: "2026-05-16T07:45:30Z".to_string(),
+                    status: "completed".to_string(),
+                })
+                .await
+                .expect("initial segment should upsert");
+            let segment = store
+                .upsert_capture_segment(&NewCaptureSegment {
+                    capture_session_id: "capture-1".to_string(),
+                    source_kind: CaptureSourceKind::Screen,
+                    source_session_id: "screen-source-1".to_string(),
+                    segment_index: 1,
+                    media_file_path: Some("/tmp/segment.mov".to_string()),
+                    workspace_dir_path: None,
+                    frame_dir_path: None,
+                    sidecar_file_path: None,
+                    started_at: "2026-05-16T07:45:30Z".to_string(),
+                    ended_at: "2026-05-16T07:45:30.100Z".to_string(),
+                    status: "completed".to_string(),
+                })
+                .await
+                .expect("later segment should upsert");
+
+            assert_eq!(segment.started_at, "2026-05-16T07:45:30Z");
+            assert_eq!(segment.ended_at, "2026-05-16T07:45:30.100Z");
+        });
+    }
+
+    #[test]
+    fn screen_segment_window_query_finds_legacy_zero_duration_segment_by_frame_time() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, started_at, ended_at, status
+                 ) VALUES (
+                    42, 'capture-1', 'screen', 'screen-source-1', 1,
+                    '/tmp/segment.mov', '2026-05-16T07:45:17.086Z',
+                    '2026-05-16T07:45:17.086Z', 'completed'
+                 )",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy zero-duration segment should insert");
+            sqlx::query(
+                "INSERT INTO frames (session_id, file_path, captured_at, capture_segment_id)
+                 VALUES ('screen-source-1', '/tmp/frame.jpg', '2026-05-16T07:45:30.100Z', 42)",
+            )
+            .execute(&pool)
+            .await
+            .expect("linked frame should insert");
+
+            let store = CaptureRetentionStore::new(pool);
+            let segments = store
+                .list_finalized_screen_segments_overlapping_window(
+                    "2026-05-16T07:45:30Z",
+                    "2026-05-16T07:45:31Z",
+                )
+                .await
+                .expect("segments should query");
+
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0].id, 42);
+        });
+    }
+
+    #[test]
+    fn screen_segment_window_query_orders_mixed_precision_timestamps_by_time() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, started_at, ended_at, status
+                 ) VALUES
+                    (1, 'capture-1', 'screen', 'screen-source-1', 1,
+                     '/tmp/segment-1.mov', '2026-05-16T07:45:30Z',
+                     '2026-05-16T07:45:30.050Z', 'completed'),
+                    (2, 'capture-1', 'screen', 'screen-source-1', 2,
+                     '/tmp/segment-2.mov', '2026-05-16T07:45:30.100Z',
+                     '2026-05-16T07:45:31Z', 'completed')",
+            )
+            .execute(&pool)
+            .await
+            .expect("segments should insert");
+
+            let store = CaptureRetentionStore::new(pool);
+            let segments = store
+                .list_finalized_screen_segments_overlapping_window(
+                    "2026-05-16T07:45:30Z",
+                    "2026-05-16T07:45:31Z",
+                )
+                .await
+                .expect("segments should query");
+
+            let ids = segments
+                .into_iter()
+                .map(|segment| segment.id)
+                .collect::<Vec<_>>();
+            assert_eq!(ids, vec![1, 2]);
         });
     }
 

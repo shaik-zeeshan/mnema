@@ -1,16 +1,12 @@
-#[cfg(test)]
-use std::sync::OnceLock;
 use std::{
-    collections::HashMap,
     fs,
     fs::File,
-    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -25,25 +21,23 @@ use futures_util::{
     pin_mut,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{async_runtime::JoinHandle, path::BaseDirectory, Emitter, Manager};
+use tauri::{async_runtime::JoinHandle, Emitter, Manager};
 #[cfg(test)]
 use time::{format_description, PrimitiveDateTime};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
-pub type FramePreviewCacheState = Mutex<FramePreviewState>;
 pub type BackgroundWorkersState = BackgroundWorkersControl;
 
 pub const TIMELINE_DATA_CHANGED_EVENT: &str = "timeline_data_changed";
 
+pub mod frame_preview;
+pub(crate) use frame_preview::{
+    run_generated_frame_preview_cache_startup_pass, FramePreviewCacheState,
+};
+
 const APP_INFRA_LOCK_FILE_NAME: &str = ".app-infra.lock";
-const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
-const FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
-const FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS: f64 = 5.0;
-const GENERATED_FRAME_PREVIEW_CACHE_DIR: &str = "frame-previews";
-const GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES: usize = 512;
-const GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -239,216 +233,6 @@ struct FrameIndexSidecarConversionResult {
     skipped_count: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CachedFramePreview {
-    preview: FramePreviewDto,
-    cached_at: Instant,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CachedVideoPreviewFailure {
-    message: String,
-    cached_at: Instant,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct IndexedFramePreviewOffset {
-    video_offset_ms: u64,
-    exact_match: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyScreenSegmentFrameIndexEntry {
-    captured_at_unix_ms: u64,
-    frame_index: u64,
-    #[allow(dead_code)]
-    #[serde(default)]
-    artifact_file_name: Option<String>,
-    video_offset_ms: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyScreenSegmentFrameIndex {
-    version: u32,
-    entries: Vec<LegacyScreenSegmentFrameIndexEntry>,
-}
-
-#[derive(Debug, Default)]
-pub struct FramePreviewState {
-    cache: FramePreviewCache,
-    in_flight: HashMap<i64, Vec<oneshot::Sender<Result<Option<FramePreviewDto>, String>>>>,
-    video_in_flight: HashMap<PathBuf, Vec<oneshot::Sender<Result<(), String>>>>,
-}
-
-#[derive(Debug, Default)]
-pub struct FramePreviewCache {
-    entries: HashMap<i64, CachedFramePreview>,
-    video_failures: HashMap<PathBuf, CachedVideoPreviewFailure>,
-}
-
-impl FramePreviewState {
-    fn get(&mut self, frame_id: i64, ttl: Duration, now: Instant) -> Option<FramePreviewDto> {
-        self.cache.get(frame_id, ttl, now)
-    }
-
-    fn insert(&mut self, frame_id: i64, preview: FramePreviewDto, ttl: Duration, now: Instant) {
-        self.cache.insert(frame_id, preview, ttl, now);
-    }
-
-    fn clear(&mut self) {
-        self.cache.clear();
-        self.in_flight.clear();
-        self.video_in_flight.clear();
-    }
-
-    fn get_video_failure(&mut self, video_path: &Path, now: Instant) -> Option<String> {
-        self.cache.get_video_failure(video_path, now)
-    }
-
-    fn insert_video_failure(&mut self, video_path: &Path, message: String, now: Instant) {
-        self.cache.insert_video_failure(video_path, message, now);
-    }
-
-    fn begin_request(
-        &mut self,
-        frame_id: i64,
-    ) -> Result<(), oneshot::Receiver<Result<Option<FramePreviewDto>, String>>> {
-        if let Some(waiters) = self.in_flight.get_mut(&frame_id) {
-            let (tx, rx) = oneshot::channel();
-            waiters.push(tx);
-            return Err(rx);
-        }
-
-        self.in_flight.insert(frame_id, Vec::new());
-        Ok(())
-    }
-
-    fn finish_request(&mut self, frame_id: i64, result: Result<Option<FramePreviewDto>, String>) {
-        let waiters = self.in_flight.remove(&frame_id).unwrap_or_default();
-        for waiter in waiters {
-            let _ = waiter.send(result.clone());
-        }
-    }
-
-    fn begin_video_request(
-        &mut self,
-        video_path: &Path,
-    ) -> Result<(), oneshot::Receiver<Result<(), String>>> {
-        if let Some(waiters) = self.video_in_flight.get_mut(video_path) {
-            let (tx, rx) = oneshot::channel();
-            waiters.push(tx);
-            return Err(rx);
-        }
-
-        self.video_in_flight
-            .insert(video_path.to_path_buf(), Vec::new());
-        Ok(())
-    }
-
-    fn finish_video_request(&mut self, video_path: &Path, result: Result<(), String>) {
-        let waiters = self.video_in_flight.remove(video_path).unwrap_or_default();
-        for waiter in waiters {
-            let _ = waiter.send(result.clone());
-        }
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.cache.len()
-    }
-
-    #[cfg(test)]
-    fn in_flight_len(&self) -> usize {
-        self.in_flight.len()
-    }
-
-    #[cfg(test)]
-    fn video_in_flight_len(&self) -> usize {
-        self.video_in_flight.len()
-    }
-}
-
-impl FramePreviewCache {
-    fn get(&mut self, frame_id: i64, ttl: Duration, now: Instant) -> Option<FramePreviewDto> {
-        self.evict_expired(ttl, now);
-        let preview = self
-            .entries
-            .get(&frame_id)
-            .map(|entry| entry.preview.clone())?;
-        if !Path::new(&preview.file_path).is_file() {
-            self.entries.remove(&frame_id);
-            return None;
-        }
-        Some(preview)
-    }
-
-    fn insert(&mut self, frame_id: i64, preview: FramePreviewDto, ttl: Duration, now: Instant) {
-        self.evict_expired(ttl, now);
-        self.entries.insert(
-            frame_id,
-            CachedFramePreview {
-                preview,
-                cached_at: now,
-            },
-        );
-        self.evict_oldest_excess_entries();
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.video_failures.clear();
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    fn evict_expired(&mut self, ttl: Duration, now: Instant) {
-        self.entries
-            .retain(|_, entry| now.duration_since(entry.cached_at) < ttl);
-    }
-
-    fn evict_oldest_excess_entries(&mut self) {
-        while self.entries.len() > FRAME_PREVIEW_CACHE_MAX_ENTRIES {
-            let Some(oldest_frame_id) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.cached_at)
-                .map(|(frame_id, _)| *frame_id)
-            else {
-                break;
-            };
-
-            self.entries.remove(&oldest_frame_id);
-        }
-    }
-
-    fn get_video_failure(&mut self, video_path: &Path, now: Instant) -> Option<String> {
-        self.evict_expired_video_failures(now);
-        self.video_failures
-            .get(video_path)
-            .map(|entry| entry.message.clone())
-    }
-
-    fn insert_video_failure(&mut self, video_path: &Path, message: String, now: Instant) {
-        self.evict_expired_video_failures(now);
-        self.video_failures.insert(
-            video_path.to_path_buf(),
-            CachedVideoPreviewFailure {
-                message,
-                cached_at: now,
-            },
-        );
-    }
-
-    fn evict_expired_video_failures(&mut self, now: Instant) {
-        self.video_failures.retain(|_, entry| {
-            now.duration_since(entry.cached_at) < FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL
-        });
-    }
-}
-
 #[derive(Debug, Clone)]
 struct ResolvedAppInfraBaseDir {
     save_directory: String,
@@ -528,12 +312,6 @@ pub struct GetTimelineWindowAroundFrameRequest {
     pub frame_id: i64,
     pub newer_limit: u32,
     pub older_limit: u32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetFramePreviewRequest {
-    pub frame_id: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -706,33 +484,11 @@ pub struct FocusedFrameWindowDto {
     pub has_older: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum FramePreviewSourceKindDto {
-    OriginalFrame,
-    SegmentFrameFallback,
-    VideoFallback,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct FramePreviewDto {
-    pub mime_type: String,
-    pub file_path: String,
-    pub source_kind: FramePreviewSourceKindDto,
-}
-
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioSegmentMediaDto {
     pub mime_type: String,
     pub data_base64: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResolvedSegmentPreviewPaths {
-    workspace_dir: PathBuf,
-    video_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1261,179 +1017,6 @@ impl From<DebugInsertFrameAndEnqueueOcrRequest> for DebugInsertFrameAndEnqueuePr
     }
 }
 
-fn captured_at_from_unix_ms(unix_ms: u64) -> String {
-    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix_ms) * 1_000_000)
-        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-}
-
-fn frame_preview_payload(
-    file_path: impl Into<String>,
-    mime_type: &str,
-    source_kind: FramePreviewSourceKindDto,
-) -> FramePreviewDto {
-    FramePreviewDto {
-        mime_type: mime_type.to_string(),
-        file_path: file_path.into(),
-        source_kind,
-    }
-}
-
-fn generated_frame_preview_file_name(frame_id: i64, mime_type: &str) -> String {
-    let ext = match mime_type {
-        "image/jpeg" => "jpg",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        _ => "png",
-    };
-    format!("frame-{frame_id}.{ext}")
-}
-
-fn cleanup_generated_frame_preview_cache_dir(cache_dir: &Path) -> Result<(), String> {
-    if !cache_dir.is_dir() {
-        return Ok(());
-    }
-
-    let now = std::time::SystemTime::now();
-    let mut files = fs::read_dir(cache_dir)
-        .map_err(|error| {
-            format!(
-                "failed to read preview cache directory {}: {error}",
-                cache_dir.display()
-            )
-        })?
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            let metadata = entry.metadata().ok()?;
-            if !metadata.is_file() {
-                return None;
-            }
-            let modified = metadata
-                .modified()
-                .ok()
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            Some((path, modified))
-        })
-        .collect::<Vec<_>>();
-
-    for (path, modified) in &files {
-        if now.duration_since(*modified).unwrap_or_default() > GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE
-        {
-            let _ = fs::remove_file(path);
-        }
-    }
-
-    files.retain(|(path, _)| path.is_file());
-    files.sort_by_key(|(_, modified)| *modified);
-    while files.len() > GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES {
-        let (path, _) = files.remove(0);
-        let _ = fs::remove_file(path);
-    }
-
-    Ok(())
-}
-
-fn ensure_generated_frame_preview_cache_dir(
-    app_handle: &tauri::AppHandle,
-) -> Result<PathBuf, String> {
-    let cache_dir = app_handle
-        .path()
-        .resolve(GENERATED_FRAME_PREVIEW_CACHE_DIR, BaseDirectory::AppCache)
-        .map_err(|error| format!("failed to resolve app preview cache directory: {error}"))?;
-    fs::create_dir_all(&cache_dir).map_err(|error| {
-        format!(
-            "failed to create app preview cache directory {}: {error}",
-            cache_dir.display()
-        )
-    })?;
-    app_handle
-        .asset_protocol_scope()
-        .allow_directory(&cache_dir, true)
-        .map_err(|error| {
-            format!(
-                "failed to allow preview cache directory {} in asset scope: {error}",
-                cache_dir.display()
-            )
-        })?;
-    cleanup_generated_frame_preview_cache_dir(&cache_dir)?;
-    Ok(cache_dir)
-}
-
-fn allow_preview_file(app_handle: &tauri::AppHandle, file_path: &Path) -> Result<(), String> {
-    app_handle
-        .asset_protocol_scope()
-        .allow_file(file_path)
-        .map_err(|error| {
-            format!(
-                "failed to allow preview file {} in asset scope: {error}",
-                file_path.display()
-            )
-        })
-}
-
-fn persist_generated_frame_preview_in_dir(
-    cache_dir: &Path,
-    frame_id: i64,
-    bytes: &[u8],
-    mime_type: &str,
-) -> Result<PathBuf, String> {
-    fs::create_dir_all(cache_dir).map_err(|error| {
-        format!(
-            "failed to create preview cache directory {}: {error}",
-            cache_dir.display()
-        )
-    })?;
-    let output_path = cache_dir.join(generated_frame_preview_file_name(frame_id, mime_type));
-    if !output_path.is_file() {
-        let temp_file = tempfile::NamedTempFile::new_in(cache_dir).map_err(|error| {
-            format!(
-                "failed to create temporary preview file in {}: {error}",
-                cache_dir.display()
-            )
-        })?;
-        fs::write(temp_file.path(), bytes).map_err(|error| {
-            format!(
-                "failed to write temporary preview file {}: {error}",
-                temp_file.path().display()
-            )
-        })?;
-        temp_file.persist(&output_path).map_err(|error| {
-            format!(
-                "failed to persist generated preview file {}: {error}",
-                output_path.display()
-            )
-        })?;
-    }
-    Ok(output_path)
-}
-
-fn persist_generated_frame_preview(
-    app_handle: &tauri::AppHandle,
-    frame_id: i64,
-    bytes: &[u8],
-    mime_type: &str,
-) -> Result<PathBuf, String> {
-    let cache_dir = ensure_generated_frame_preview_cache_dir(app_handle)?;
-    let output_path =
-        persist_generated_frame_preview_in_dir(&cache_dir, frame_id, bytes, mime_type)?;
-    allow_preview_file(app_handle, &output_path)?;
-    Ok(output_path)
-}
-
-fn frame_image_mime_type(file_path: &Path) -> &'static str {
-    match file_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        _ => "image/png",
-    }
-}
-
 fn audio_segment_mime_type(file_path: &Path) -> &'static str {
     match file_path
         .extension()
@@ -1473,752 +1056,6 @@ async fn get_audio_segment_media_inner(
         mime_type: audio_segment_mime_type(&file_path).to_string(),
         data_base64: BASE64_STANDARD.encode(bytes),
     }))
-}
-
-fn resolve_segment_preview_paths(frame_file_path: &Path) -> Option<ResolvedSegmentPreviewPaths> {
-    let paths =
-        ::app_infra::HiddenSegmentWorkspacePaths::from_frame_artifact_path(frame_file_path)?;
-
-    Some(ResolvedSegmentPreviewPaths {
-        workspace_dir: PathBuf::from(paths.workspace_dir),
-        video_path: PathBuf::from(paths.visible_segment_path),
-    })
-}
-
-fn parse_frame_unix_ms_from_path(frame_file_path: &Path) -> Option<i128> {
-    let stem = frame_file_path.file_stem()?.to_str()?;
-    let raw = stem.strip_prefix("frame-")?;
-    let (unix_ms, _) = raw.rsplit_once('-')?;
-    unix_ms.parse().ok()
-}
-
-fn parse_frame_identity_from_path(frame_file_path: &Path) -> Option<(u64, u64)> {
-    let stem = frame_file_path.file_stem()?.to_str()?;
-    let raw = stem.strip_prefix("frame-")?;
-    let (captured_at_unix_ms, frame_index) = raw.rsplit_once('-')?;
-    Some((captured_at_unix_ms.parse().ok()?, frame_index.parse().ok()?))
-}
-
-fn parse_captured_at_unix_ms(captured_at: &str) -> Option<i128> {
-    OffsetDateTime::parse(captured_at, &Rfc3339)
-        .ok()
-        .map(|timestamp| timestamp.unix_timestamp_nanos() / 1_000_000)
-}
-
-fn estimate_frame_preview_offset_seconds(
-    frame: &::app_infra::Frame,
-    related_frames: &[::app_infra::Frame],
-) -> f64 {
-    let target_unix_ms = frame_preview_unix_ms(frame);
-
-    let first_unix_ms = related_frames.first().and_then(frame_preview_unix_ms);
-
-    match (target_unix_ms, first_unix_ms) {
-        (Some(target), Some(first)) if target >= first => (target - first) as f64 / 1000.0,
-        _ => 0.0,
-    }
-}
-
-fn frame_preview_unix_ms(frame: &::app_infra::Frame) -> Option<i128> {
-    parse_frame_unix_ms_from_path(Path::new(&frame.file_path))
-        .or_else(|| parse_captured_at_unix_ms(&frame.captured_at))
-}
-
-fn indexed_frame_preview_offset(
-    frame: &::app_infra::Frame,
-    video_path: &Path,
-) -> std::io::Result<Option<IndexedFramePreviewOffset>> {
-    let index_path = capture_screen::screen_segment_frame_index_path(video_path);
-    let index = if index_path.is_file() {
-        let bytes = fs::read(&index_path)?;
-        capture_screen::decode_screen_segment_frame_index(&bytes).map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "failed to parse screen segment frame index {}: {error}",
-                    index_path.display()
-                ),
-            )
-        })?
-    } else {
-        let legacy_path = capture_screen::legacy_screen_segment_frame_index_path(video_path);
-        if !legacy_path.is_file() {
-            return Ok(None);
-        }
-        let bytes = fs::read(&legacy_path)?;
-        let legacy: LegacyScreenSegmentFrameIndex =
-            serde_json::from_slice(&bytes).map_err(|error| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "failed to parse legacy screen segment frame index {}: {error}",
-                        legacy_path.display()
-                    ),
-                )
-            })?;
-        capture_screen::ScreenSegmentFrameIndex {
-            version: legacy.version,
-            entries: legacy
-                .entries
-                .into_iter()
-                .map(|entry| capture_screen::ScreenSegmentFrameIndexEntry {
-                    captured_at_unix_ms: entry.captured_at_unix_ms,
-                    frame_index: entry.frame_index,
-                    video_offset_ms: entry.video_offset_ms,
-                })
-                .collect(),
-        }
-    };
-
-    if let Some((captured_at_unix_ms, frame_index)) =
-        parse_frame_identity_from_path(Path::new(&frame.file_path))
-    {
-        if let Some(entry) = index.entries.iter().find(|entry| {
-            entry.captured_at_unix_ms == captured_at_unix_ms && entry.frame_index == frame_index
-        }) {
-            return Ok(Some(IndexedFramePreviewOffset {
-                video_offset_ms: entry.video_offset_ms,
-                exact_match: true,
-            }));
-        }
-    }
-
-    Ok(None)
-}
-
-fn read_nearest_segment_frame_preview(
-    frame: &::app_infra::Frame,
-    related_frames: &[::app_infra::Frame],
-) -> std::io::Result<Option<Vec<u8>>> {
-    let target_unix_ms = frame_preview_unix_ms(frame);
-    let mut best_match: Option<(bool, i128, usize, &str)> = None;
-
-    for (index, related_frame) in related_frames.iter().enumerate() {
-        let candidate_path = Path::new(&related_frame.file_path);
-        if !candidate_path.is_file() {
-            continue;
-        }
-
-        let candidate_unix_ms = frame_preview_unix_ms(related_frame);
-        let (has_distance, distance) = match (target_unix_ms, candidate_unix_ms) {
-            (Some(target), Some(candidate)) => (true, (target - candidate).abs()),
-            _ => (false, 0),
-        };
-
-        let should_replace = match best_match {
-            Some((best_has_distance, best_distance, best_index, _)) => {
-                (!has_distance, distance, index) < (!best_has_distance, best_distance, best_index)
-            }
-            None => true,
-        };
-
-        if should_replace {
-            best_match = Some((has_distance, distance, index, &related_frame.file_path));
-        }
-    }
-
-    best_match
-        .map(|(_, _, _, file_path)| fs::read(file_path))
-        .transpose()
-}
-
-fn read_segment_frame_preview_or_return_video_error(
-    frame: &::app_infra::Frame,
-    _infra: &::app_infra::AppInfra,
-    related_frames: &[::app_infra::Frame],
-    video_path: &Path,
-    app_handle: Option<&tauri::AppHandle>,
-    video_error: impl Into<String>,
-) -> ::app_infra::Result<Option<FramePreviewDto>> {
-    let video_error = video_error.into();
-
-    if let Some(bytes) = read_nearest_segment_frame_preview(frame, related_frames)? {
-        crate::native_capture::debug_log::log_warn(format!(
-            "[DEBUG-frame-preview] frame_id={} falling back to persisted segment frame after video preview failure at {}: {}",
-            frame.id,
-            video_path.display(),
-            video_error,
-        ));
-        let persisted_path = if let Some(app_handle) = app_handle {
-            persist_generated_frame_preview(
-                app_handle,
-                frame.id,
-                &bytes,
-                frame_image_mime_type(Path::new(&frame.file_path)),
-            )
-        } else {
-            let cache_dir = std::env::temp_dir().join("mnema-preview-test-cache");
-            persist_generated_frame_preview_in_dir(
-                &cache_dir,
-                frame.id,
-                &bytes,
-                frame_image_mime_type(Path::new(&frame.file_path)),
-            )
-        }
-        .map_err(::app_infra::AppInfraError::OcrEngine)?;
-        return Ok(Some(frame_preview_payload(
-            persisted_path.to_string_lossy(),
-            frame_image_mime_type(Path::new(&frame.file_path)),
-            FramePreviewSourceKindDto::SegmentFrameFallback,
-        )));
-    }
-
-    Err(::app_infra::AppInfraError::Io(std::io::Error::other(
-        video_error,
-    )))
-}
-
-fn mov_file_appears_openable_for_preview(video_path: &Path) -> std::io::Result<bool> {
-    const SEARCH_WINDOW_BYTES: u64 = 256 * 1024;
-
-    let mut file = fs::File::open(video_path)?;
-    let file_len = file.metadata()?.len();
-    if file_len < 8 {
-        return Ok(false);
-    }
-
-    let prefix_len = file_len.min(SEARCH_WINDOW_BYTES) as usize;
-    let mut prefix = vec![0_u8; prefix_len];
-    file.read_exact(&mut prefix)?;
-    if prefix.windows(4).any(|window| window == b"moov") {
-        return Ok(true);
-    }
-
-    if file_len <= SEARCH_WINDOW_BYTES {
-        return Ok(false);
-    }
-
-    let suffix_len = file_len.min(SEARCH_WINDOW_BYTES) as usize;
-    file.seek(SeekFrom::End(-(suffix_len as i64)))?;
-    let mut suffix = vec![0_u8; suffix_len];
-    file.read_exact(&mut suffix)?;
-
-    Ok(suffix.windows(4).any(|window| window == b"moov"))
-}
-
-#[cfg(test)]
-type TestVideoPreviewExtractor =
-    dyn Fn(PathBuf, f64) -> Result<(Vec<u8>, &'static str), String> + Send + Sync;
-
-#[cfg(test)]
-fn test_video_preview_extractor_state() -> &'static Mutex<Option<Arc<TestVideoPreviewExtractor>>> {
-    static STATE: OnceLock<Mutex<Option<Arc<TestVideoPreviewExtractor>>>> = OnceLock::new();
-    STATE.get_or_init(|| Mutex::new(None))
-}
-
-#[cfg(test)]
-fn run_test_video_preview_extractor(
-    video_path: &Path,
-    offset_seconds: f64,
-) -> Option<Result<(Vec<u8>, &'static str), String>> {
-    let extractor = test_video_preview_extractor_state()
-        .lock()
-        .expect("test video preview extractor poisoned")
-        .clone();
-    extractor.map(|extractor| extractor(video_path.to_path_buf(), offset_seconds))
-}
-
-#[cfg(target_os = "macos")]
-fn block_on_waker_driven_future<F>(future: F) -> F::Output
-where
-    F: std::future::Future,
-{
-    struct ThreadWaker(std::thread::Thread);
-
-    impl std::task::Wake for ThreadWaker {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-
-    let waker = std::task::Waker::from(Arc::new(ThreadWaker(std::thread::current())));
-    let mut context = std::task::Context::from_waker(&waker);
-    let mut future = std::pin::pin!(future);
-
-    loop {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(output) => return output,
-            std::task::Poll::Pending => std::thread::park(),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn image_bytes_from_cg_image(
-    image: &cidre::cg::Image,
-    ut_type: &cidre::ut::Type,
-    format_label: &str,
-    mime_type: &'static str,
-) -> Result<(Vec<u8>, &'static str), String> {
-    use cidre::{cf, cg};
-    use tempfile::NamedTempFile;
-
-    let type_identifier = ut_type.id();
-    let output_file = NamedTempFile::new().map_err(|error| {
-        format!("failed to create temporary {format_label} output file: {error}")
-    })?;
-    let output_path = output_file.path();
-    let output_url = cf::Url::with_file_path(&output_path).ok_or_else(|| {
-        format!(
-            "failed to create temporary {format_label} output URL at {}",
-            output_path.display()
-        )
-    })?;
-    let mut image_destination =
-        cg::ImageDst::with_url(output_url.as_ref(), type_identifier.as_cf(), 1).ok_or_else(
-            || {
-                format!(
-                    "failed to create temporary {format_label} image destination at {}",
-                    output_path.display()
-                )
-            },
-        )?;
-    image_destination.add_image(image, None);
-
-    if !image_destination.finalize() {
-        return Err(format!(
-            "failed to finalize temporary {format_label} image destination at {}",
-            output_path.display()
-        ));
-    }
-
-    fs::read(output_path)
-        .map(|bytes| (bytes, mime_type))
-        .map_err(|error| {
-            format!(
-                "failed to read temporary {format_label} output at {}: {error}",
-                output_path.display()
-            )
-        })
-}
-
-#[cfg(target_os = "macos")]
-fn preview_image_bytes_from_cg_image(
-    image: &cidre::cg::Image,
-) -> Result<(Vec<u8>, &'static str), String> {
-    use cidre::ut;
-
-    image_bytes_from_cg_image(image, ut::Type::webp(), "WebP", "image/webp").or_else(
-        |_webp_error| image_bytes_from_cg_image(image, ut::Type::jpeg(), "JPEG", "image/jpeg"),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn exact_preview_requested_time(video_offset_ms: u64) -> cidre::cm::Time {
-    let value = i64::try_from(video_offset_ms)
-        .ok()
-        .and_then(|offset_ms| offset_ms.checked_mul(600))
-        .map(|scaled_ms| (scaled_ms + 999) / 1000)
-        .unwrap_or(i64::MAX);
-    cidre::cm::Time::new(value, 600)
-}
-
-#[cfg(target_os = "macos")]
-fn log_video_preview_exact_miss(
-    video_path: &Path,
-    frame: &::app_infra::Frame,
-    used_indexed_offset: bool,
-    require_exact_time: bool,
-    offset_seconds: f64,
-    requested_time: cidre::cm::Time,
-    actual_time: cidre::cm::Time,
-) {
-    let delta_ms = actual_time.sub(requested_time).abs().as_secs() * 1000.0;
-    if delta_ms < FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS {
-        return;
-    }
-
-    let frame_identity = parse_frame_identity_from_path(Path::new(&frame.file_path))
-        .map(|(captured_at_unix_ms, frame_index)| format!("{captured_at_unix_ms}:{frame_index}"))
-        .unwrap_or_else(|| "unknown".to_string());
-
-    crate::native_capture::debug_log::log_warn(format!(
-        "[DEBUG-frame-preview] event=video_exact_miss path={} frame_id={} frame_identity={} used_indexed_offset={} require_exact_time={} offset_seconds={} requested_time={} actual_time={} delta_ms={:.3}",
-        video_path.display(),
-        frame.id,
-        frame_identity,
-        used_indexed_offset,
-        require_exact_time,
-        offset_seconds,
-        requested_time.as_secs(),
-        actual_time.as_secs(),
-        delta_ms,
-    ));
-}
-
-#[cfg(target_os = "macos")]
-fn extract_preview_image_from_video_blocking(
-    video_path: PathBuf,
-    frame: &::app_infra::Frame,
-    exact_offset_ms: Option<u64>,
-    offset_seconds: f64,
-    require_exact_time: bool,
-) -> Result<(Vec<u8>, &'static str), String> {
-    #[cfg(test)]
-    if let Some(result) = run_test_video_preview_extractor(&video_path, offset_seconds) {
-        return result;
-    }
-
-    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
-    let result = {
-        use cidre::{av, cm, ns};
-
-        let video_url = ns::Url::with_fs_path_str(&video_path.to_string_lossy(), false);
-        let asset = av::UrlAsset::with_url(&video_url, None)
-            .ok_or_else(|| format!("failed to open video asset at {}", video_path.display()))?;
-
-        let duration_seconds = asset.duration().as_secs();
-        let clamped_offset_seconds = if duration_seconds.is_finite() && duration_seconds > 0.0 {
-            offset_seconds.clamp(0.0, (duration_seconds - 0.001).max(0.0))
-        } else {
-            0.0
-        };
-        let requested_time = exact_offset_ms
-            .map(exact_preview_requested_time)
-            .unwrap_or_else(|| cm::Time::with_secs(clamped_offset_seconds, 600));
-        let mut image_generator = av::AssetImageGenerator::with_asset(asset.as_ref());
-        image_generator.set_applies_preferred_track_transform(true);
-        if require_exact_time {
-            image_generator.set_requested_time_tolerance_before(cm::Time::zero());
-            image_generator.set_requested_time_tolerance_after(cm::Time::zero());
-        }
-
-        let (cg_image, actual_time) =
-            block_on_waker_driven_future(image_generator.cg_image_for_time(requested_time))
-                .map_err(|error| {
-                    format!(
-                        "failed to generate preview image from video {} at {}s: {error}",
-                        video_path.display(),
-                        clamped_offset_seconds,
-                    )
-                })?;
-
-        if requested_time.is_valid() && actual_time.is_valid() && requested_time != actual_time {
-            log_video_preview_exact_miss(
-                &video_path,
-                frame,
-                exact_offset_ms.is_some(),
-                require_exact_time,
-                offset_seconds,
-                requested_time,
-                actual_time,
-            );
-        }
-
-        let preview = preview_image_bytes_from_cg_image(cg_image.as_ref());
-        image_generator.cancel_all_cg_image_gen();
-        preview
-    };
-
-    result
-}
-
-#[cfg(target_os = "macos")]
-async fn extract_preview_image_from_video(
-    video_path: &Path,
-    frame: &::app_infra::Frame,
-    exact_offset_ms: Option<u64>,
-    offset_seconds: f64,
-    require_exact_time: bool,
-) -> Result<(Vec<u8>, &'static str), String> {
-    tokio::task::spawn_blocking({
-        let video_path = video_path.to_path_buf();
-        let frame = frame.clone();
-        move || {
-            extract_preview_image_from_video_blocking(
-                video_path,
-                &frame,
-                exact_offset_ms,
-                offset_seconds,
-                require_exact_time,
-            )
-        }
-    })
-    .await
-    .map_err(|error| format!("failed to join video preview extraction task: {error}"))?
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn extract_preview_image_from_video(
-    _video_path: &Path,
-    _offset_seconds: f64,
-    _require_exact_time: bool,
-) -> Result<(Vec<u8>, &'static str), String> {
-    Err("video frame preview fallback is only supported on macOS".to_string())
-}
-
-async fn get_frame_preview_inner(
-    infra: &::app_infra::AppInfra,
-    cache: &FramePreviewCacheState,
-    app_handle: Option<&tauri::AppHandle>,
-    frame_id: i64,
-) -> ::app_infra::Result<Option<FramePreviewDto>> {
-    let Some(frame) = infra.get_frame(frame_id).await? else {
-        return Ok(None);
-    };
-
-    let frame_file_path = PathBuf::from(&frame.file_path);
-    if frame_file_path.is_file() {
-        if let Some(app_handle) = app_handle {
-            allow_preview_file(app_handle, &frame_file_path)
-                .map_err(::app_infra::AppInfraError::OcrEngine)?;
-        }
-        return Ok(Some(frame_preview_payload(
-            frame_file_path.to_string_lossy(),
-            frame_image_mime_type(&frame_file_path),
-            FramePreviewSourceKindDto::OriginalFrame,
-        )));
-    }
-
-    let segment_paths = resolve_segment_preview_paths(&frame_file_path).ok_or_else(|| {
-        ::app_infra::AppInfraError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "unable to infer segment video path from frame artifact path {}",
-                frame.file_path
-            ),
-        ))
-    })?;
-
-    let workspace_prefix = format!("{}/", segment_paths.workspace_dir.to_string_lossy());
-    let related_frames = infra
-        .list_frames_for_segment_workspace(&frame.session_id, &workspace_prefix)
-        .await?;
-
-    if !segment_paths.video_path.is_file() {
-        if let Some(bytes) = read_nearest_segment_frame_preview(&frame, &related_frames)? {
-            let persisted_path = if let Some(app_handle) = app_handle {
-                persist_generated_frame_preview(
-                    app_handle,
-                    frame.id,
-                    &bytes,
-                    frame_image_mime_type(Path::new(&frame.file_path)),
-                )
-            } else {
-                let cache_dir = std::env::temp_dir().join("mnema-preview-test-cache");
-                persist_generated_frame_preview_in_dir(
-                    &cache_dir,
-                    frame.id,
-                    &bytes,
-                    frame_image_mime_type(Path::new(&frame.file_path)),
-                )
-            }
-            .map_err(::app_infra::AppInfraError::OcrEngine)?;
-            return Ok(Some(frame_preview_payload(
-                persisted_path.to_string_lossy(),
-                frame_image_mime_type(Path::new(&frame.file_path)),
-                FramePreviewSourceKindDto::SegmentFrameFallback,
-            )));
-        }
-
-        return Err(::app_infra::AppInfraError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "segment video does not exist for frame {} at {}",
-                frame.id,
-                segment_paths.video_path.display()
-            ),
-        )));
-    }
-
-    let video_metadata = fs::metadata(&segment_paths.video_path)?;
-    if video_metadata.len() == 0 {
-        return read_segment_frame_preview_or_return_video_error(
-            &frame,
-            infra,
-            &related_frames,
-            &segment_paths.video_path,
-            app_handle,
-            format!(
-                "segment video is empty for frame {} at {}",
-                frame.id,
-                segment_paths.video_path.display()
-            ),
-        );
-    }
-
-    if !mov_file_appears_openable_for_preview(&segment_paths.video_path)? {
-        return read_segment_frame_preview_or_return_video_error(
-            &frame,
-            infra,
-            &related_frames,
-            &segment_paths.video_path,
-            app_handle,
-            format!(
-                "segment video is missing moov atom for frame {} at {}",
-                frame.id,
-                segment_paths.video_path.display()
-            ),
-        );
-    }
-
-    let now = Instant::now();
-    if let Some(cached_video_error) = cache
-        .lock()
-        .expect("frame preview cache poisoned")
-        .get_video_failure(&segment_paths.video_path, now)
-    {
-        return read_segment_frame_preview_or_return_video_error(
-            &frame,
-            infra,
-            &related_frames,
-            &segment_paths.video_path,
-            app_handle,
-            cached_video_error,
-        );
-    }
-
-    let indexed_offset = indexed_frame_preview_offset(&frame, &segment_paths.video_path)?;
-    let exact_offset_ms = indexed_offset
-        .as_ref()
-        .filter(|offset| offset.exact_match)
-        .map(|offset| offset.video_offset_ms);
-    let require_exact_time = indexed_offset
-        .as_ref()
-        .is_some_and(|offset| offset.exact_match);
-    let offset_seconds = indexed_offset
-        .map(|offset| offset.video_offset_ms as f64 / 1000.0)
-        .unwrap_or_else(|| estimate_frame_preview_offset_seconds(&frame, &related_frames));
-    let (bytes, mime_type) = loop {
-        let video_request_guard = {
-            let mut preview_state = cache.lock().expect("frame preview cache poisoned");
-            match preview_state.begin_video_request(&segment_paths.video_path) {
-                Ok(()) => Ok(()),
-                Err(rx) => Err(rx),
-            }
-        };
-
-        match video_request_guard {
-            Ok(()) => {
-                let result = extract_preview_image_from_video(
-                    &segment_paths.video_path,
-                    &frame,
-                    exact_offset_ms,
-                    offset_seconds,
-                    require_exact_time,
-                )
-                .await;
-                let notify_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
-                cache
-                    .lock()
-                    .expect("frame preview cache poisoned")
-                    .finish_video_request(&segment_paths.video_path, notify_result);
-
-                match result {
-                    Ok(result) => break result,
-                    Err(video_error) => {
-                        cache
-                            .lock()
-                            .expect("frame preview cache poisoned")
-                            .insert_video_failure(
-                                &segment_paths.video_path,
-                                video_error.clone(),
-                                now,
-                            );
-                        return read_segment_frame_preview_or_return_video_error(
-                            &frame,
-                            infra,
-                            &related_frames,
-                            &segment_paths.video_path,
-                            app_handle,
-                            video_error,
-                        );
-                    }
-                }
-            }
-            Err(waiter) => {
-                let leader_result = waiter.await.map_err(|_| {
-                    ::app_infra::AppInfraError::Io(std::io::Error::other(format!(
-                        "video preview request waiter dropped for {}",
-                        segment_paths.video_path.display()
-                    )))
-                })?;
-
-                if let Err(video_error) = leader_result {
-                    return read_segment_frame_preview_or_return_video_error(
-                        &frame,
-                        infra,
-                        &related_frames,
-                        &segment_paths.video_path,
-                        app_handle,
-                        video_error,
-                    );
-                }
-            }
-        }
-    };
-
-    let persisted_path = if let Some(app_handle) = app_handle {
-        persist_generated_frame_preview(app_handle, frame.id, &bytes, mime_type)
-    } else {
-        let cache_dir = std::env::temp_dir().join("mnema-preview-test-cache");
-        persist_generated_frame_preview_in_dir(&cache_dir, frame.id, &bytes, mime_type)
-    }
-    .map_err(::app_infra::AppInfraError::OcrEngine)?;
-
-    Ok(Some(frame_preview_payload(
-        persisted_path.to_string_lossy(),
-        mime_type,
-        FramePreviewSourceKindDto::VideoFallback,
-    )))
-}
-
-async fn get_frame_preview_inner_with_logging(
-    infra: &::app_infra::AppInfra,
-    cache: &FramePreviewCacheState,
-    app_handle: Option<&tauri::AppHandle>,
-    frame_id: i64,
-) -> ::app_infra::Result<Option<FramePreviewDto>> {
-    let started_at = Instant::now();
-    let result = get_frame_preview_inner(infra, cache, app_handle, frame_id).await;
-    let elapsed_ms = started_at.elapsed().as_millis();
-
-    match &result {
-        Ok(Some(_preview)) => {}
-        Ok(None) => crate::native_capture::debug_log::log_warn(format!(
-            "[DEBUG-frame-preview] frame_id={} missing elapsed_ms={}",
-            frame_id, elapsed_ms,
-        )),
-        Err(error) => crate::native_capture::debug_log::log_error(format!(
-            "[DEBUG-frame-preview] frame_id={} failed elapsed_ms={} error={}",
-            frame_id, elapsed_ms, error,
-        )),
-    }
-
-    result
-}
-
-fn preview_cache_ttl(settings: &crate::native_capture::RecordingSettingsState) -> Duration {
-    let ttl_seconds = settings
-        .lock()
-        .expect("recording settings state poisoned")
-        .settings
-        .preview_cache_ttl_seconds;
-
-    Duration::from_secs(ttl_seconds)
-}
-
-fn run_generated_frame_preview_cache_startup_pass(app_handle: &tauri::AppHandle) {
-    match app_handle
-        .path()
-        .resolve(GENERATED_FRAME_PREVIEW_CACHE_DIR, BaseDirectory::AppCache)
-    {
-        Ok(cache_dir) => {
-            if let Err(error) = cleanup_generated_frame_preview_cache_dir(&cache_dir) {
-                crate::native_capture::debug_log::log_warn(format!(
-                    "failed generated frame preview cache startup cleanup at {}: {error}",
-                    cache_dir.display()
-                ));
-            }
-        }
-        Err(error) => crate::native_capture::debug_log::log_warn(format!(
-            "failed to resolve generated frame preview cache directory for startup cleanup: {error}"
-        )),
-    }
 }
 
 fn normalized_ocr_language_for_settings(settings: &OcrSettings) -> Option<String> {
@@ -2393,7 +1230,7 @@ pub async fn persist_screen_frame_artifact(
     let mut frame = ::app_infra::NewFrame::new(
         session_id,
         file_path.clone(),
-        captured_at_from_unix_ms(captured_at_unix_ms),
+        frame_preview::captured_at_from_unix_ms(captured_at_unix_ms),
     );
     if let Some(capture_segment_id) =
         ensure_screen_capture_segment_for_frame(infra, session_id, &file_path, &frame.captured_at)
@@ -3462,10 +2299,18 @@ fn spawn_retention_cleanup_worker(
                     .await
                 {
                     Ok(summary)
-                        if summary.deleted_frames > 0 || summary.deleted_audio_segments > 0 =>
+                        if summary.deleted_frames > 0
+                            || summary.deleted_audio_segments > 0
+                            || summary.deleted_capture_segments > 0 =>
                     {
                         retry_soon =
                             summary.skipped_running_jobs > 0 || summary.pending_file_tombstones > 0;
+                        if summary.deleted_capture_segments > 0 {
+                            let _ = frame_preview::clear_scrub_preview_cache_for_video_paths(
+                                app_handle.clone(),
+                                &summary.deleted_capture_segment_media_paths,
+                            );
+                        }
                         let _ = app_handle.emit(
                             TIMELINE_DATA_CHANGED_EVENT,
                             TimelineDataChangedPayload {
@@ -3593,7 +2438,7 @@ fn convert_frame_index_sidecars_once(
 
             let bytes = fs::read(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-            let legacy: LegacyScreenSegmentFrameIndex =
+            let legacy: frame_preview::LegacyScreenSegmentFrameIndex =
                 serde_json::from_slice(&bytes).map_err(|error| {
                     format!("failed to parse legacy sidecar {}: {error}", path.display())
                 })?;
@@ -4077,7 +2922,16 @@ pub async fn run_retention_cleanup_now(
         )
         .await
         .map_err(|error| format!("failed to run retention cleanup: {error}"))?;
-    if summary.deleted_frames > 0 || summary.deleted_audio_segments > 0 {
+    if summary.deleted_capture_segments > 0 {
+        let _ = frame_preview::clear_scrub_preview_cache_for_video_paths(
+            app_handle.clone(),
+            &summary.deleted_capture_segment_media_paths,
+        );
+    }
+    if summary.deleted_frames > 0
+        || summary.deleted_audio_segments > 0
+        || summary.deleted_capture_segments > 0
+    {
         let _ = app_handle.emit(
             TIMELINE_DATA_CHANGED_EVENT,
             TimelineDataChangedPayload {
@@ -4420,71 +3274,6 @@ pub async fn get_timeline_window_around_frame(
 }
 
 #[tauri::command]
-pub async fn get_frame_preview(
-    request: GetFramePreviewRequest,
-    state: tauri::State<'_, AppInfraState>,
-    cache: tauri::State<'_, FramePreviewCacheState>,
-    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
-    app_handle: tauri::AppHandle,
-) -> Result<Option<FramePreviewDto>, String> {
-    let infra = Arc::clone(&*state);
-    let ttl = preview_cache_ttl(&settings);
-
-    if ttl.is_zero() {
-        cache.lock().expect("frame preview cache poisoned").clear();
-        return get_frame_preview_inner_with_logging(
-            &infra,
-            &cache,
-            Some(&app_handle),
-            request.frame_id,
-        )
-        .await
-        .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
-    }
-
-    let now = Instant::now();
-    let request_guard = {
-        let mut preview_state = cache.lock().expect("frame preview cache poisoned");
-        if let Some(preview) = preview_state.get(request.frame_id, ttl, now) {
-            return Ok(Some(preview));
-        }
-
-        match preview_state.begin_request(request.frame_id) {
-            Ok(()) => Ok(()),
-            Err(rx) => Err(rx),
-        }
-    };
-
-    let preview = match request_guard {
-        Ok(()) => {
-            let result = get_frame_preview_inner_with_logging(
-                &infra,
-                &cache,
-                Some(&app_handle),
-                request.frame_id,
-            )
-            .await
-            .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
-
-            let mut preview_state = cache.lock().expect("frame preview cache poisoned");
-            if let Ok(Some(preview)) = result.as_ref() {
-                preview_state.insert(request.frame_id, preview.clone(), ttl, now);
-            }
-            preview_state.finish_request(request.frame_id, result.clone());
-            result
-        }
-        Err(waiter) => waiter.await.map_err(|_| {
-            format!(
-                "failed to get frame preview {}: preview request waiter dropped",
-                request.frame_id
-            )
-        })?,
-    }?;
-
-    Ok(preview)
-}
-
-#[tauri::command]
 pub async fn list_processing_jobs(
     request: ListProcessingJobsRequest,
     state: tauri::State<'_, AppInfraState>,
@@ -4763,10 +3552,10 @@ mod tests {
             Arc,
         },
         thread,
-        time::Duration,
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
+    use super::frame_preview::*;
     use super::*;
 
     struct TestDir {
@@ -5765,6 +4554,133 @@ mod tests {
             .expect("missing-moov fixture should read"));
         assert!(mov_file_appears_openable_for_preview(&with_moov_path)
             .expect("with-moov fixture should read"));
+    }
+
+    #[test]
+    fn generated_scrub_preview_derivative_is_low_res_jpeg() {
+        let dir = TestDir::new("scrub-preview-derivative");
+        let source_path = dir.path().join("source.png");
+        let cache_dir = dir.path().join("cache");
+        let image = image::RgbImage::from_fn(640, 360, |x, y| {
+            image::Rgb([(x % 255) as u8, (y % 255) as u8, 96])
+        });
+        image
+            .save(&source_path)
+            .expect("source image fixture should be written");
+
+        let derivative_path =
+            generate_scrub_preview_derivative_in_dir(&cache_dir, 42, 200, &source_path)
+                .expect("scrub derivative should generate");
+
+        let derivative_file_name = derivative_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("derivative file name should be valid UTF-8");
+        assert!(derivative_file_name.starts_with("scrub-v3-frame-42-200-"));
+        assert!(derivative_file_name.ends_with(".jpg"));
+        let derivative = image::open(&derivative_path).expect("derivative should decode");
+        assert!(derivative.width() <= 200);
+        assert!(derivative.height() <= 200);
+        assert_eq!(frame_image_mime_type(&derivative_path), "image/jpeg");
+    }
+
+    #[test]
+    fn generated_scrub_preview_derivative_reuses_cached_file() {
+        let dir = TestDir::new("scrub-preview-derivative-cache");
+        let source_path = dir.path().join("source.png");
+        let cache_dir = dir.path().join("cache");
+        image::RgbImage::from_pixel(320, 240, image::Rgb([32, 64, 128]))
+            .save(&source_path)
+            .expect("source image fixture should be written");
+
+        let first = generate_scrub_preview_derivative_in_dir(&cache_dir, 7, 200, &source_path)
+            .expect("first scrub derivative should generate");
+        let first_modified = fs::metadata(&first)
+            .and_then(|metadata| metadata.modified())
+            .expect("first derivative modified time should read");
+        let second = generate_scrub_preview_derivative_in_dir(&cache_dir, 7, 200, &source_path)
+            .expect("second scrub derivative should reuse cache");
+        let second_modified = fs::metadata(&second)
+            .and_then(|metadata| metadata.modified())
+            .expect("second derivative modified time should read");
+
+        assert_eq!(first, second);
+        assert_eq!(first_modified, second_modified);
+    }
+
+    #[test]
+    fn scrub_preview_cache_keys_include_max_pixel_size() {
+        let dir = TestDir::new("scrub-preview-cache-key");
+        let preview_200_path = dir.path().join("scrub-v2-frame-42-200.jpg");
+        let preview_400_path = dir.path().join("scrub-v2-frame-42-400.jpg");
+        fs::write(&preview_200_path, b"200").expect("200px preview should exist");
+        fs::write(&preview_400_path, b"400").expect("400px preview should exist");
+        let mut cache = FramePreviewState::default();
+        let now = Instant::now();
+        let ttl = Duration::from_secs(60);
+
+        cache.insert_scrub(
+            42,
+            200,
+            FramePreviewDto {
+                mime_type: "image/jpeg".to_string(),
+                file_path: preview_200_path.to_string_lossy().to_string(),
+                source_kind: FramePreviewSourceKindDto::ScrubPreview,
+            },
+            ttl,
+            now,
+        );
+        cache.insert_scrub(
+            42,
+            400,
+            FramePreviewDto {
+                mime_type: "image/jpeg".to_string(),
+                file_path: preview_400_path.to_string_lossy().to_string(),
+                source_kind: FramePreviewSourceKindDto::ScrubPreview,
+            },
+            ttl,
+            now,
+        );
+
+        assert_eq!(
+            cache
+                .get_scrub(42, 200, ttl, now)
+                .expect("200px scrub preview should be cached")
+                .file_path,
+            preview_200_path.to_string_lossy()
+        );
+        assert_eq!(
+            cache
+                .get_scrub(42, 400, ttl, now)
+                .expect("400px scrub preview should be cached")
+                .file_path,
+            preview_400_path.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn scrub_preview_cache_invalidates_deleted_derivative() {
+        let dir = TestDir::new("scrub-preview-cache-invalidates");
+        let preview_path = dir.path().join("scrub-v2-frame-42-200.jpg");
+        fs::write(&preview_path, b"preview").expect("preview should exist");
+        let mut cache = FramePreviewState::default();
+        let now = Instant::now();
+        let ttl = Duration::from_secs(60);
+
+        cache.insert_scrub(
+            42,
+            200,
+            FramePreviewDto {
+                mime_type: "image/jpeg".to_string(),
+                file_path: preview_path.to_string_lossy().to_string(),
+                source_kind: FramePreviewSourceKindDto::ScrubPreview,
+            },
+            ttl,
+            now,
+        );
+        fs::remove_file(&preview_path).expect("preview should be deleted");
+
+        assert_eq!(cache.get_scrub(42, 200, ttl, now), None);
     }
 
     #[test]

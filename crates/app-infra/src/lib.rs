@@ -24,6 +24,7 @@ pub use audio_segments::{
 pub use capture_retention::{
     CaptureRetentionStore, CaptureSegment, CaptureSourceKind, NewCaptureSegment, NewCaptureSession,
     RetentionCleanupContext, RetentionCleanupMode, RetentionCleanupSummary, RetentionPolicy,
+    ScreenCaptureSegmentWindow,
 };
 pub use captured_frame_equivalence::{
     CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,
@@ -515,6 +516,16 @@ impl AppInfra {
     ) -> Result<Vec<Frame>> {
         self.processing
             .list_frames_for_segment_workspace(session_id, workspace_prefix)
+            .await
+    }
+
+    pub async fn list_finalized_screen_segments_overlapping_window(
+        &self,
+        start_at: &str,
+        end_at: &str,
+    ) -> Result<Vec<ScreenCaptureSegmentWindow>> {
+        self.capture_retention
+            .list_finalized_screen_segments_overlapping_window(start_at, end_at)
             .await
     }
 

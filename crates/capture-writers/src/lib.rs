@@ -717,12 +717,23 @@ pub fn create_audio_asset_writer_for_sample_format(
     label: &'static str,
     sample_format: AudioSampleFormat,
 ) -> Result<AudioAssetWriterState, CaptureErrorResponse> {
-    create_audio_asset_writer_with_format_internal(
-        output_url,
-        label,
-        sample_format.to_writer_format(),
-        Some(sample_format),
-    )
+    let mut last_error = None;
+    for format in audio_writer_format_candidates_for_sample_format(sample_format) {
+        match create_audio_asset_writer_with_format_internal(
+            output_url,
+            label,
+            format,
+            Some(sample_format),
+        ) {
+            Ok(writer_state) => return Ok(writer_state),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| CaptureErrorResponse {
+        code: "capture_output_unavailable".to_string(),
+        message: format!("Failed to create {label} asset writer input"),
+    }))
 }
 
 #[cfg(target_os = "macos")]
@@ -732,6 +743,43 @@ pub fn create_audio_asset_writer_with_format(
     format: AudioWriterFormatSpec,
 ) -> Result<AudioAssetWriterState, CaptureErrorResponse> {
     create_audio_asset_writer_with_format_internal(output_url, label, format, None)
+}
+
+#[cfg(target_os = "macos")]
+fn audio_writer_format_candidates_for_sample_format(
+    sample_format: AudioSampleFormat,
+) -> Vec<AudioWriterFormatSpec> {
+    let mut candidates = Vec::new();
+    push_audio_writer_format_candidate(&mut candidates, sample_format.to_writer_format());
+
+    let channel_count = sample_format.channels_per_frame.max(1);
+    push_audio_writer_format_candidate(
+        &mut candidates,
+        AudioWriterFormatSpec::new(48_000.0, channel_count),
+    );
+
+    let aac_channel_count = channel_count.min(2);
+    push_audio_writer_format_candidate(
+        &mut candidates,
+        AudioWriterFormatSpec::new(48_000.0, aac_channel_count),
+    );
+
+    push_audio_writer_format_candidate(&mut candidates, DEFAULT_AUDIO_WRITER_FORMAT);
+    candidates
+}
+
+#[cfg(target_os = "macos")]
+fn push_audio_writer_format_candidate(
+    candidates: &mut Vec<AudioWriterFormatSpec>,
+    candidate: AudioWriterFormatSpec,
+) {
+    if candidate.sample_rate_hz.is_finite()
+        && candidate.sample_rate_hz > 0.0
+        && candidate.channel_count > 0
+        && !candidates.contains(&candidate)
+    {
+        candidates.push(candidate);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1464,6 +1512,43 @@ mod tests {
             channels_per_frame: 2,
             bits_per_channel,
         }
+    }
+
+    #[test]
+    fn audio_writer_accepts_96khz_mono_float_microphone_format() {
+        let path = std::env::temp_dir().join(format!(
+            "mnema-96khz-mono-float-writer-{}.m4a",
+            std::process::id()
+        ));
+        let path_string = path.to_string_lossy().to_string();
+        let output_url = cidre::ns::Url::with_fs_path_str(&path_string, false);
+        let format = AudioSampleFormat {
+            sample_rate_hz: 96_000.0,
+            format_id: cidre::cat::AudioFormat::LINEAR_PCM.0,
+            format_flags: cidre::cat::AudioFormatFlags::IS_FLOAT.0
+                | cidre::cat::AudioFormatFlags::IS_PACKED.0
+                | cidre::cat::AudioFormatFlags::IS_NON_INTERLEAVED.0,
+            bytes_per_packet: 4,
+            frames_per_packet: 1,
+            bytes_per_frame: 4,
+            channels_per_frame: 1,
+            bits_per_channel: 32,
+        };
+
+        let writer_result =
+            create_audio_asset_writer_for_sample_format(&output_url, "microphone", format);
+        let writer_error = writer_result
+            .as_ref()
+            .err()
+            .map(|error| format!("{error:?}"));
+
+        drop(writer_result);
+        let _ = std::fs::remove_file(path);
+        assert!(
+            writer_error.is_none(),
+            "unexpected writer error: {}",
+            writer_error.unwrap_or_default()
+        );
     }
 
     fn bytes_from_hex(hex: &str) -> Vec<u8> {

@@ -1001,7 +1001,7 @@
                   <Slider
                     bind:value={draftSegmentDuration}
                     min={10}
-                    max={600}
+                    max={300}
                     step={10}
                     label="Duration"
                     formatValue={formatDuration}

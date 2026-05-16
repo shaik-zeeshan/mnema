@@ -27,6 +27,7 @@ const MAX_IDLE_TIMEOUT_SECONDS: u64 = 3600;
 const MIN_AUDIO_ACTIVITY_SENSITIVITY: u8 = 0;
 const MAX_AUDIO_ACTIVITY_SENSITIVITY: u8 = 100;
 const MAX_PREVIEW_CACHE_TTL_SECONDS: u64 = 24 * 60 * 60;
+const MAX_SEGMENT_DURATION_SECONDS: u64 = 300;
 const MIN_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 500_000;
 const MAX_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 120_000_000;
 const VIDEO_BITRATE_ROUND_STEP_BPS: u32 = 250_000;
@@ -565,10 +566,12 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         });
     }
 
-    if request.segment_duration_seconds == 0 {
+    if !(1..=MAX_SEGMENT_DURATION_SECONDS).contains(&request.segment_duration_seconds) {
         return Err(CaptureErrorResponse {
             code: "invalid_recording_settings".to_string(),
-            message: "segmentDurationSeconds must be greater than 0".to_string(),
+            message: format!(
+                "segmentDurationSeconds must be between 1 and {MAX_SEGMENT_DURATION_SECONDS}"
+            ),
         });
     }
 
@@ -683,7 +686,9 @@ fn load_recording_settings_from_path_with_resolution_support(
             capture_screen: parsed.capture_screen,
             capture_microphone: parsed.capture_microphone,
             capture_system_audio: parsed.capture_system_audio,
-            segment_duration_seconds: parsed.segment_duration_seconds,
+            segment_duration_seconds: parsed
+                .segment_duration_seconds
+                .clamp(1, MAX_SEGMENT_DURATION_SECONDS),
             screen_frame_rate: parsed.screen_frame_rate,
             screen_resolution: parsed.screen_resolution,
             video_bitrate: parsed.video_bitrate,
