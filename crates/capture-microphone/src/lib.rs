@@ -533,12 +533,12 @@ mod tests {
         microphone_output_context_for_output_url, microphone_tail_activity_override,
         mono_pcm_samples_from_audio_buffers, observe_microphone_format,
         peek_microphone_activity_window_peak_level, push_bounded_pending_microphone_sample,
-        record_microphone_vad_tail_speech, reset_last_microphone_activity_unix_ms,
-        reset_microphone_vad_tail_activity, resolve_microphone_finalize_format,
-        resolve_microphone_live_format, store_microphone_activity,
-        take_microphone_activity_window_peak_level, transfer_pending_microphone_samples,
-        AudioSampleAppendDisposition, AudioSampleFormat, MicFormatStabilityState,
-        MicrophoneInactivityTailTrimActivityMode, MicrophoneOutputContext,
+        record_microphone_vad_tail_speech, replace_microphone_output_context_for_rotation,
+        reset_last_microphone_activity_unix_ms, reset_microphone_vad_tail_activity,
+        resolve_microphone_finalize_format, resolve_microphone_live_format,
+        store_microphone_activity, take_microphone_activity_window_peak_level,
+        transfer_pending_microphone_samples, AudioSampleAppendDisposition, AudioSampleFormat,
+        MicFormatStabilityState, MicrophoneInactivityTailTrimActivityMode, MicrophoneOutputContext,
         MicrophoneVadPcmFeedState, MicrophoneVadSpeechEvent, OnceLock, MAX_PENDING_MIC_SAMPLES,
         MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT, MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ,
     };
@@ -839,6 +839,35 @@ mod tests {
             Some(fmt)
         );
         assert_eq!(resumed.logged_format_samples, 1);
+    }
+
+    #[test]
+    fn rotation_context_finalizes_previous_output_with_normal_tail_policy() {
+        let current_url =
+            cidre::ns::Url::with_fs_path_str("/tmp/test-microphone-current.m4a", false);
+        let next_url = cidre::ns::Url::with_fs_path_str("/tmp/test-microphone-next.m4a", false);
+        let mut current = microphone_output_context_for_output_url(
+            &current_url,
+            Some("/tmp/test-microphone-current.m4a".to_string()),
+            10,
+            0.08,
+            MicrophoneInactivityTailTrimActivityMode::PeakLevel,
+        );
+        let next = microphone_output_context_for_output_url(
+            &next_url,
+            Some("/tmp/test-microphone-next.m4a".to_string()),
+            10,
+            0.08,
+            MicrophoneInactivityTailTrimActivityMode::PeakLevel,
+        );
+
+        let previous = replace_microphone_output_context_for_rotation(&mut current, next);
+
+        assert_eq!(
+            previous.inactivity_tail_trim_seconds, 0,
+            "normal segment rotation must flush buffered tail audio instead of discarding it as inactivity"
+        );
+        assert_eq!(current.inactivity_tail_trim_seconds, 10);
     }
 
     #[test]
@@ -1538,6 +1567,16 @@ fn carry_probe_only_microphone_context(
 }
 
 #[cfg(target_os = "macos")]
+fn replace_microphone_output_context_for_rotation(
+    current_context: &mut MicrophoneOutputContext,
+    next_context: MicrophoneOutputContext,
+) -> MicrophoneOutputContext {
+    let mut previous_context = std::mem::replace(current_context, next_context);
+    previous_context.inactivity_tail_trim_seconds = 0;
+    previous_context
+}
+
+#[cfg(target_os = "macos")]
 fn flush_pending_microphone_sample_queue<T, E>(
     pending_samples: &mut VecDeque<T>,
     selected_format: Option<AudioSampleFormat>,
@@ -1831,7 +1870,8 @@ impl AvFoundationMicrophoneCaptureSession {
             current_context.activity_threshold,
             current_context.tail_activity_mode,
         );
-        let mut previous_context = std::mem::replace(current_context, next_context);
+        let mut previous_context =
+            replace_microphone_output_context_for_rotation(current_context, next_context);
         finalize_microphone_output_context(&mut previous_context)
     }
 
