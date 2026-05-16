@@ -6275,6 +6275,24 @@
     </div>
 
     <div class="timeline__bar-group timeline__bar-group--secondary">
+      {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
+        {#if ocrProviderLabel}
+          <span class="timeline__ocr-provider-chip" title={ocrProviderLabel}>{ocrProviderLabel}</span>
+        {/if}
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm timeline__ocr-rerun-btn"
+          onclick={reprocessOcrForActiveFrame}
+          disabled={ocrRerunDisabled}
+          title={!ocrEnabled
+            ? ocrRunDisabledTooltip
+            : ocrStatus === "running"
+            ? "OCR is queued or still processing"
+            : ocrStatus === "missing"
+              ? "Run OCR for the active frame with current settings"
+              : "Rerun OCR for the active frame with current settings"}
+        >{ocrRerunButtonLabel}</button>
+      {/if}
       <button
         class="btn btn--ghost btn--sm timeline__ocr-btn"
         class:timeline__ocr-btn--running={ocrStatus === "running"}
@@ -6294,24 +6312,6 @@
           <span class="timeline__ocr-count">{ocrObservations.length}</span>
         {/if}
       </button>
-      {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
-        {#if ocrProviderLabel}
-          <span class="timeline__ocr-provider-chip" title={ocrProviderLabel}>{ocrProviderLabel}</span>
-        {/if}
-        <button
-          type="button"
-          class="btn btn--ghost btn--sm timeline__ocr-rerun-btn"
-          onclick={reprocessOcrForActiveFrame}
-          disabled={ocrRerunDisabled}
-          title={!ocrEnabled
-            ? ocrRunDisabledTooltip
-            : ocrStatus === "running"
-            ? "OCR is queued or still processing"
-            : ocrStatus === "missing"
-              ? "Run OCR for the active frame with current settings"
-              : "Rerun OCR for the active frame with current settings"}
-        >{ocrRerunButtonLabel}</button>
-      {/if}
       <button
         class="btn btn--ghost btn--sm"
         onclick={refreshTimelineAndDashboard}
