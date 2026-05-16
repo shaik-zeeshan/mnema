@@ -4701,7 +4701,6 @@
       gen,
       activeExactPreviewDelayMs(
         shouldScheduleScrubPreview,
-        Boolean(scrubPreviewIntervalForFrame(active)?.preview) || scrubPreviewCache.has(active.id),
         ACTIVE_PREVIEW_EXACT_SETTLE_MS,
       ),
     );

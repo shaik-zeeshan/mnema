@@ -51,8 +51,7 @@ export function scrubPreviewResponseShouldApply(
 
 export function activeExactPreviewDelayMs(
   shouldScheduleScrubPreview: boolean,
-  hasScrubPreview: boolean,
   settleMs: number,
 ): number {
-  return shouldScheduleScrubPreview && hasScrubPreview ? settleMs : 0;
+  return shouldScheduleScrubPreview ? settleMs : 0;
 }
