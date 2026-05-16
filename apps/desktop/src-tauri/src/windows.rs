@@ -72,6 +72,7 @@ pub type OnboardingStateStore = Mutex<OnboardingStateRuntime>;
 #[derive(Default)]
 pub struct AppExitCoordinatorState {
     exit_requested: AtomicBool,
+    final_graceful_exit_ready: AtomicBool,
 }
 
 impl AppExitCoordinatorState {
@@ -81,6 +82,14 @@ impl AppExitCoordinatorState {
 
     fn is_exit_requested(&self) -> bool {
         self.exit_requested.load(Ordering::SeqCst)
+    }
+
+    fn mark_final_graceful_exit_ready(&self) {
+        self.final_graceful_exit_ready.store(true, Ordering::SeqCst);
+    }
+
+    fn is_final_graceful_exit_ready(&self) -> bool {
+        self.final_graceful_exit_ready.load(Ordering::SeqCst)
     }
 }
 
@@ -510,12 +519,20 @@ pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
         );
         crate::app_infra::shutdown_background_workers_for_app_exit(&app_handle).await;
 
+        app_handle
+            .state::<AppExitCoordinatorState>()
+            .mark_final_graceful_exit_ready();
         app_handle.exit(0);
     });
 }
 
 pub(crate) fn is_graceful_exit_in_progress(app: &tauri::AppHandle) -> bool {
     app.state::<AppExitCoordinatorState>().is_exit_requested()
+}
+
+pub(crate) fn is_final_graceful_exit_ready(app: &tauri::AppHandle) -> bool {
+    app.state::<AppExitCoordinatorState>()
+        .is_final_graceful_exit_ready()
 }
 
 fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
@@ -654,7 +671,7 @@ pub fn complete_onboarding(
 mod tests {
     use super::{
         destroyed_window_action, is_known_settings_tab, load_onboarding_state_from_path,
-        normalize_settings_tab, settings_tab_path, DestroyedWindowAction,
+        normalize_settings_tab, settings_tab_path, AppExitCoordinatorState, DestroyedWindowAction,
     };
 
     #[test]
@@ -691,6 +708,20 @@ mod tests {
             destroyed_window_action("other"),
             DestroyedWindowAction::None
         );
+    }
+
+    #[test]
+    fn app_exit_coordinator_marks_final_exit_only_after_graceful_work_is_done() {
+        let coordinator = AppExitCoordinatorState::default();
+
+        assert!(coordinator.begin_exit());
+        assert!(!coordinator.begin_exit());
+        assert!(coordinator.is_exit_requested());
+        assert!(!coordinator.is_final_graceful_exit_ready());
+
+        coordinator.mark_final_graceful_exit_ready();
+
+        assert!(coordinator.is_final_graceful_exit_ready());
     }
 
     #[test]

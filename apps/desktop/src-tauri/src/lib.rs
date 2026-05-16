@@ -47,15 +47,35 @@ fn should_forward_window_event(event: &tauri::WindowEvent, webview_window_found:
     matches!(event, tauri::WindowEvent::Destroyed) || webview_window_found
 }
 
-fn should_start_graceful_exit_for_exit_request(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitRequestAction {
+    StartGracefulExit,
+    PreventExit,
+    AllowExit,
+}
+
+fn exit_request_action_for_exit_request(
     code: Option<i32>,
     graceful_exit_in_progress: bool,
-) -> bool {
-    if graceful_exit_in_progress {
-        return code.is_none();
+    final_graceful_exit_ready: bool,
+) -> ExitRequestAction {
+    if final_graceful_exit_ready && code == Some(0) {
+        return ExitRequestAction::AllowExit;
     }
 
-    code.is_none() || code == Some(0)
+    if graceful_exit_in_progress {
+        if code.is_none() || code == Some(0) {
+            return ExitRequestAction::PreventExit;
+        }
+
+        return ExitRequestAction::AllowExit;
+    }
+
+    if code.is_none() || code == Some(0) {
+        return ExitRequestAction::StartGracefulExit;
+    }
+
+    ExitRequestAction::AllowExit
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -261,12 +281,19 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
             tauri::RunEvent::ExitRequested { code, api, .. } => {
-                if should_start_graceful_exit_for_exit_request(
+                match exit_request_action_for_exit_request(
                     code,
                     windows::is_graceful_exit_in_progress(app_handle),
+                    windows::is_final_graceful_exit_ready(app_handle),
                 ) {
-                    api.prevent_exit();
-                    windows::request_graceful_exit(app_handle);
+                    ExitRequestAction::StartGracefulExit => {
+                        api.prevent_exit();
+                        windows::request_graceful_exit(app_handle);
+                    }
+                    ExitRequestAction::PreventExit => {
+                        api.prevent_exit();
+                    }
+                    ExitRequestAction::AllowExit => {}
                 }
             }
             #[cfg(target_os = "macos")]
@@ -287,7 +314,8 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_app_log_target, should_forward_window_event, should_start_graceful_exit_for_exit_request,
+        exit_request_action_for_exit_request, is_app_log_target, should_forward_window_event,
+        ExitRequestAction,
     };
 
     #[test]
@@ -321,29 +349,65 @@ mod tests {
 
     #[test]
     fn user_exit_requests_start_graceful_exit() {
-        assert!(should_start_graceful_exit_for_exit_request(None, false));
+        assert_eq!(
+            exit_request_action_for_exit_request(None, false, false),
+            ExitRequestAction::StartGracefulExit
+        );
     }
 
     #[test]
     fn zero_exit_code_requests_start_graceful_exit_when_not_already_exiting() {
-        assert!(should_start_graceful_exit_for_exit_request(Some(0), false));
+        assert_eq!(
+            exit_request_action_for_exit_request(Some(0), false, false),
+            ExitRequestAction::StartGracefulExit
+        );
     }
 
     #[test]
-    fn final_zero_exit_code_request_is_allowed_after_graceful_exit_started() {
-        assert!(!should_start_graceful_exit_for_exit_request(Some(0), true));
+    fn final_zero_exit_code_request_is_allowed_after_graceful_exit_is_ready() {
+        assert_eq!(
+            exit_request_action_for_exit_request(Some(0), true, true),
+            ExitRequestAction::AllowExit
+        );
     }
 
     #[test]
     fn repeated_user_exit_request_is_prevented_while_graceful_exit_is_running() {
-        assert!(should_start_graceful_exit_for_exit_request(None, true));
+        assert_eq!(
+            exit_request_action_for_exit_request(None, true, false),
+            ExitRequestAction::PreventExit
+        );
+    }
+
+    #[test]
+    fn repeated_zero_exit_request_is_prevented_while_graceful_exit_is_running() {
+        assert_eq!(
+            exit_request_action_for_exit_request(Some(0), true, false),
+            ExitRequestAction::PreventExit
+        );
     }
 
     #[test]
     fn restart_exit_code_is_not_rewritten_as_a_normal_graceful_quit() {
-        assert!(!should_start_graceful_exit_for_exit_request(
-            Some(tauri::RESTART_EXIT_CODE),
-            false
-        ));
+        assert_eq!(
+            exit_request_action_for_exit_request(Some(tauri::RESTART_EXIT_CODE), false, false),
+            ExitRequestAction::AllowExit
+        );
+    }
+
+    #[test]
+    fn restart_exit_code_is_not_blocked_while_graceful_exit_is_running() {
+        assert_eq!(
+            exit_request_action_for_exit_request(Some(tauri::RESTART_EXIT_CODE), true, false),
+            ExitRequestAction::AllowExit
+        );
+    }
+
+    #[test]
+    fn user_exit_request_is_still_prevented_after_final_exit_is_ready() {
+        assert_eq!(
+            exit_request_action_for_exit_request(None, true, true),
+            ExitRequestAction::PreventExit
+        );
     }
 }
