@@ -41,6 +41,7 @@ const SCRUB_PREVIEW_CHUNK_SIZE: usize = 30;
 pub const SCRUB_PREVIEW_CACHE_CHANGED_EVENT: &str = "scrub_preview_cache_changed";
 const GENERATED_FRAME_PREVIEW_CACHE_DIR: &str = "frame-previews";
 const GENERATED_SCRUB_PREVIEW_CACHE_DIR: &str = "scrub-previews";
+const GENERATED_FRAME_SCRUB_PREVIEW_CACHE_DIR: &str = "frame-v1-jpeg-q72";
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES: usize = 512;
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 
@@ -135,23 +136,6 @@ impl FramePreviewState {
         self.scrub_cache.clear();
         self.in_flight.clear();
         self.video_in_flight.clear();
-    }
-
-    pub(super) fn get_scrub(
-        &mut self,
-        frame_id: i64,
-        max_pixel_size: u32,
-        ttl: Duration,
-        now: Instant,
-    ) -> Option<FramePreviewDto> {
-        self.scrub_cache.get(
-            ScrubPreviewCacheKey {
-                frame_id,
-                max_pixel_size,
-            },
-            ttl,
-            now,
-        )
     }
 
     pub(super) fn insert_scrub(
@@ -366,21 +350,6 @@ impl FramePreviewCache {
 }
 
 impl FrameScrubPreviewCache {
-    pub(super) fn get(
-        &mut self,
-        key: ScrubPreviewCacheKey,
-        ttl: Duration,
-        now: Instant,
-    ) -> Option<FramePreviewDto> {
-        self.evict_expired(ttl, now);
-        let preview = self.entries.get(&key).map(|entry| entry.preview.clone())?;
-        if !Path::new(&preview.file_path).is_file() {
-            self.entries.remove(&key);
-            return None;
-        }
-        Some(preview)
-    }
-
     pub(super) fn insert(
         &mut self,
         key: ScrubPreviewCacheKey,
@@ -582,12 +551,48 @@ fn generated_frame_preview_file_name(frame_id: i64, mime_type: &str) -> String {
     format!("frame-{frame_id}.{ext}")
 }
 
-fn generated_scrub_preview_file_name(frame_id: i64, max_pixel_size: u32) -> String {
-    format!("scrub-v2-frame-{frame_id}-{max_pixel_size}.jpg")
+fn scrub_preview_source_hash(source_path: &Path, extra: impl AsRef<str>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(source_path.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(extra.as_ref().as_bytes());
+    if let Ok(metadata) = fs::metadata(source_path) {
+        hasher.update(b"\0len=");
+        hasher.update(metadata.len().to_le_bytes());
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(duration) = modified.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+                hasher.update(b"\0mtime=");
+                hasher.update(duration.as_secs().to_le_bytes());
+                hasher.update(duration.subsec_nanos().to_le_bytes());
+            }
+        }
+    }
+    let digest = hasher.finalize();
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
-fn generated_scrub_preview_path(cache_dir: &Path, frame_id: i64, max_pixel_size: u32) -> PathBuf {
-    cache_dir.join(generated_scrub_preview_file_name(frame_id, max_pixel_size))
+fn generated_scrub_preview_file_name(
+    frame_id: i64,
+    max_pixel_size: u32,
+    source_hash: &str,
+) -> String {
+    format!("scrub-v3-frame-{frame_id}-{max_pixel_size}-{source_hash}.jpg")
+}
+
+fn generated_scrub_preview_path(
+    cache_dir: &Path,
+    frame_id: i64,
+    max_pixel_size: u32,
+    source_hash: &str,
+) -> PathBuf {
+    cache_dir.join(generated_scrub_preview_file_name(
+        frame_id,
+        max_pixel_size,
+        source_hash,
+    ))
 }
 
 fn clamp_scrub_preview_max_pixel_size(max_pixel_size: Option<u32>) -> u32 {
@@ -670,6 +675,39 @@ fn ensure_generated_frame_preview_cache_dir(
     Ok(cache_dir)
 }
 
+fn ensure_generated_frame_scrub_preview_cache_dir(
+    app_handle: &tauri::AppHandle,
+) -> Result<PathBuf, String> {
+    let cache_dir = app_handle
+        .path()
+        .resolve(
+            format!(
+                "{GENERATED_SCRUB_PREVIEW_CACHE_DIR}/{GENERATED_FRAME_SCRUB_PREVIEW_CACHE_DIR}"
+            ),
+            BaseDirectory::AppCache,
+        )
+        .map_err(|error| {
+            format!("failed to resolve app frame scrub preview cache directory: {error}")
+        })?;
+    fs::create_dir_all(&cache_dir).map_err(|error| {
+        format!(
+            "failed to create app frame scrub preview cache directory {}: {error}",
+            cache_dir.display()
+        )
+    })?;
+    app_handle
+        .asset_protocol_scope()
+        .allow_directory(&cache_dir, true)
+        .map_err(|error| {
+            format!(
+                "failed to allow frame scrub preview cache directory {} in asset scope: {error}",
+                cache_dir.display()
+            )
+        })?;
+    cleanup_generated_frame_preview_cache_dir(&cache_dir)?;
+    Ok(cache_dir)
+}
+
 fn allow_preview_file(app_handle: &tauri::AppHandle, file_path: &Path) -> Result<(), String> {
     app_handle
         .asset_protocol_scope()
@@ -735,6 +773,7 @@ fn persist_generated_scrub_preview_in_dir(
     cache_dir: &Path,
     frame_id: i64,
     max_pixel_size: u32,
+    source_hash: &str,
     bytes: &[u8],
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(cache_dir).map_err(|error| {
@@ -743,7 +782,8 @@ fn persist_generated_scrub_preview_in_dir(
             cache_dir.display()
         )
     })?;
-    let output_path = generated_scrub_preview_path(cache_dir, frame_id, max_pixel_size);
+    let output_path =
+        generated_scrub_preview_path(cache_dir, frame_id, max_pixel_size, source_hash);
     if !output_path.is_file() {
         let temp_file = tempfile::NamedTempFile::new_in(cache_dir).map_err(|error| {
             format!(
@@ -773,7 +813,9 @@ pub(super) fn generate_scrub_preview_derivative_in_dir(
     max_pixel_size: u32,
     source_path: &Path,
 ) -> Result<PathBuf, String> {
-    let cached_path = generated_scrub_preview_path(cache_dir, frame_id, max_pixel_size);
+    let source_hash = scrub_preview_source_hash(source_path, "direct-frame");
+    let cached_path =
+        generated_scrub_preview_path(cache_dir, frame_id, max_pixel_size, &source_hash);
     if cached_path.is_file() {
         return Ok(cached_path);
     }
@@ -1792,6 +1834,7 @@ struct PreparedVideoScrubPreview {
     frame_id: i64,
     video_path: PathBuf,
     video_offset_ms: u64,
+    source_hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1823,7 +1866,9 @@ async fn prepare_frame_scrub_preview(
 
     let frame_file_path = PathBuf::from(&frame.file_path);
     if let Some(cache_dir) = cache_dir {
-        let cached_path = generated_scrub_preview_path(cache_dir, frame_id, max_pixel_size);
+        let source_hash = scrub_preview_source_hash(&frame_file_path, "direct-frame");
+        let cached_path =
+            generated_scrub_preview_path(cache_dir, frame_id, max_pixel_size, &source_hash);
         if cached_path.is_file() {
             allow_preview_file(app_handle, &cached_path)?;
             return Ok(PreparedFrameScrubPreview::Ready(
@@ -1941,6 +1986,10 @@ async fn prepare_frame_scrub_preview(
     Ok(PreparedFrameScrubPreview::Video(
         PreparedVideoScrubPreview {
             frame_id,
+            source_hash: scrub_preview_source_hash(
+                &segment_paths.video_path,
+                indexed_offset.video_offset_ms.to_string(),
+            ),
             video_path: segment_paths.video_path,
             video_offset_ms: indexed_offset.video_offset_ms,
         },
@@ -2636,35 +2685,16 @@ pub async fn get_frame_scrub_previews(
         }
     }
     let unique_count = unique_frame_ids.len();
-    let scrub_cache_dir_result = ensure_generated_frame_preview_cache_dir(&app_handle);
+    let scrub_cache_dir_result = ensure_generated_frame_scrub_preview_cache_dir(&app_handle);
     let scrub_cache_dir = scrub_cache_dir_result.as_ref().ok().map(PathBuf::as_path);
 
     let mut unique_results = HashMap::new();
     let mut video_batches: HashMap<PathBuf, Vec<PreparedVideoScrubPreview>> = HashMap::new();
-    let mut cached_count = 0usize;
+    let cached_count = 0usize;
     let mut generated_count = 0usize;
     let mut missing_count = 0usize;
     for frame_id in unique_frame_ids {
         let frame_started_at = Instant::now();
-        if !ttl.is_zero() {
-            let cached = cache
-                .lock()
-                .expect("frame preview cache poisoned")
-                .get_scrub(frame_id, max_pixel_size, ttl, Instant::now());
-            if let Some(preview) = cached {
-                unique_results.insert(
-                    frame_id,
-                    FrameScrubPreviewResultDto {
-                        frame_id,
-                        preview: Some(preview),
-                        missing_reason: None,
-                    },
-                );
-                cached_count += 1;
-                continue;
-            }
-        }
-
         match prepare_frame_scrub_preview(
             &infra,
             &app_handle,
@@ -2740,24 +2770,6 @@ pub async fn get_frame_scrub_previews(
         loop {
             let mut still_pending = Vec::new();
             for candidate in pending {
-                if !ttl.is_zero() {
-                    let cached = cache
-                        .lock()
-                        .expect("frame preview cache poisoned")
-                        .get_scrub(candidate.frame_id, max_pixel_size, ttl, Instant::now());
-                    if let Some(preview) = cached {
-                        unique_results.insert(
-                            candidate.frame_id,
-                            FrameScrubPreviewResultDto {
-                                frame_id: candidate.frame_id,
-                                preview: Some(preview),
-                                missing_reason: None,
-                            },
-                        );
-                        cached_count += 1;
-                        continue;
-                    }
-                }
                 still_pending.push(candidate);
             }
 
@@ -2833,6 +2845,7 @@ pub async fn get_frame_scrub_previews(
                                 cache_dir,
                                 candidate.frame_id,
                                 max_pixel_size,
+                                &candidate.source_hash,
                                 bytes,
                             ) {
                                 Ok(path) => FrameScrubPreviewResultDto {

@@ -504,6 +504,7 @@
   let scrubPreviewBatchInFlight = false;
   let scrubPreviewPendingActiveIndex: number | null = null;
   let previousActivePreviewIndex = 0;
+  let previousActivePreviewFrameId: number | null = null;
   let lastTimelineScrollSample = { left: 0, at: 0 };
   let previewScrubVelocityPxPerMs = $state(0);
   let previewCacheReuseCount = $state(0);
@@ -4636,10 +4637,12 @@
   $effect(() => {
     const active = timelineActive;
     const activeIndex = timelineActiveIndex;
+    const activeFrameChanged = (active?.id ?? null) !== previousActivePreviewFrameId;
     const indexDelta = Math.abs(activeIndex - previousActivePreviewIndex);
     previousActivePreviewIndex = activeIndex;
+    previousActivePreviewFrameId = active?.id ?? null;
     const shouldScheduleScrubPreview = timelineMovementShouldScheduleScrubPreview(
-      indexDelta,
+      activeFrameChanged ? indexDelta : 0,
       previewScrubVelocityPxPerMs,
       ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS,
     );

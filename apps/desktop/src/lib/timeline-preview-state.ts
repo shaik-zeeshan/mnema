@@ -39,14 +39,14 @@ export function timelineMovementShouldScheduleScrubPreview(
   velocityPxPerMs: number,
   fastScrubThresholdPxPerMs: number,
 ): boolean {
-  return indexDelta > 0 || velocityPxPerMs >= fastScrubThresholdPxPerMs;
+  return indexDelta > 0 && velocityPxPerMs >= fastScrubThresholdPxPerMs;
 }
 
 export function scrubPreviewResponseShouldApply(
-  _requestGeneration: number,
-  _currentGeneration: number,
+  requestGeneration: number,
+  currentGeneration: number,
 ): boolean {
-  return true;
+  return requestGeneration === currentGeneration;
 }
 
 export function activeExactPreviewDelayMs(
