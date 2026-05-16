@@ -7,7 +7,9 @@ use std::{
 };
 
 use serde::Serialize;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{
+    format_description, format_description::well_known::Rfc3339, OffsetDateTime, PrimitiveDateTime,
+};
 
 const HIGH_PRESSURE_THRESHOLD: i64 = 3;
 const REPRESENTATIVE_SECONDS: i64 = 15;
@@ -337,9 +339,21 @@ fn cooldown_duration(last_run_ms: u64, recording_active: bool) -> Duration {
     }
 }
 
+fn parse_job_timestamp(value: &str) -> Option<OffsetDateTime> {
+    if let Ok(parsed) = OffsetDateTime::parse(value, &Rfc3339) {
+        return Some(parsed);
+    }
+
+    let sqlite_format =
+        format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").ok()?;
+    PrimitiveDateTime::parse(value, &sqlite_format)
+        .ok()
+        .map(|parsed| parsed.assume_utc())
+}
+
 fn timestamp_delta_ms(start: Option<&str>, end: Option<&str>) -> Option<i64> {
-    let start = parse_rfc3339(start?)?;
-    let end = parse_rfc3339(end?)?;
+    let start = parse_job_timestamp(start?)?;
+    let end = parse_job_timestamp(end?)?;
     Some((end - start).whole_milliseconds().max(0) as i64)
 }
 
@@ -597,5 +611,17 @@ mod tests {
                 .keys()
                 .any(|key| key.session_id == "active"));
         });
+    }
+
+    #[test]
+    fn timestamp_delta_ms_accepts_sqlite_current_timestamp_format() {
+        assert_eq!(
+            timestamp_delta_ms(Some("2026-04-12 10:00:00"), Some("2026-04-12 10:00:02")),
+            Some(2000)
+        );
+        assert_eq!(
+            timestamp_delta_ms(Some("2026-04-12T10:00:00Z"), Some("2026-04-12T10:00:02Z")),
+            Some(2000)
+        );
     }
 }
