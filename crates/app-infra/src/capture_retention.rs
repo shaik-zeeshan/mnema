@@ -142,6 +142,8 @@ pub struct RetentionCleanupSummary {
     pub cutoff_ended_before: Option<String>,
     pub eligible_capture_segments: i64,
     pub deleted_capture_segments: i64,
+    #[serde(default)]
+    pub deleted_capture_segment_media_paths: Vec<String>,
     pub deleted_frames: i64,
     #[serde(default)]
     pub deleted_frame_ids: Vec<i64>,
@@ -480,6 +482,11 @@ impl CaptureRetentionStore {
             _ => 3,
         });
         file_paths.dedup_by(|a, b| a.path == b.path);
+        let deleted_capture_segment_media_paths = file_paths
+            .iter()
+            .filter(|path| path.capture_segment_id.is_some() && path.path_kind == "media_file")
+            .map(|path| path.path.clone())
+            .collect::<Vec<_>>();
         let mut tx = self.pool.begin().await?;
         let mut frame_ids = ids_for_capture_segments(&mut tx, "frames", &segment_ids).await?;
         frame_ids.extend(orphan_frame_ids);
@@ -508,6 +515,7 @@ impl CaptureRetentionStore {
         summary.deleted_audio_segment_ids = deleted_audio_segment_ids;
         summary.deleted_capture_segments =
             delete_by_ids(&mut tx, "capture_segments", &segment_ids).await?;
+        summary.deleted_capture_segment_media_paths = deleted_capture_segment_media_paths;
         let cleanup_run_id =
             insert_cleanup_run(&mut tx, &summary, mode.as_str(), "completed").await?;
         tx.commit().await?;

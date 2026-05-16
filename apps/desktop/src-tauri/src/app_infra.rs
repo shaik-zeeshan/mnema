@@ -2262,7 +2262,10 @@ fn spawn_retention_cleanup_worker(
                         retry_soon =
                             summary.skipped_running_jobs > 0 || summary.pending_file_tombstones > 0;
                         if summary.deleted_capture_segments > 0 {
-                            let _ = frame_preview::clear_scrub_preview_cache(app_handle.clone());
+                            let _ = frame_preview::clear_scrub_preview_cache_for_video_paths(
+                                app_handle.clone(),
+                                &summary.deleted_capture_segment_media_paths,
+                            );
                         }
                         let _ = app_handle.emit(
                             TIMELINE_DATA_CHANGED_EVENT,
@@ -2822,7 +2825,10 @@ pub async fn run_retention_cleanup_now(
         .await
         .map_err(|error| format!("failed to run retention cleanup: {error}"))?;
     if summary.deleted_capture_segments > 0 {
-        let _ = frame_preview::clear_scrub_preview_cache(app_handle.clone());
+        let _ = frame_preview::clear_scrub_preview_cache_for_video_paths(
+            app_handle.clone(),
+            &summary.deleted_capture_segment_media_paths,
+        );
     }
     if summary.deleted_frames > 0
         || summary.deleted_audio_segments > 0
@@ -4456,10 +4462,12 @@ mod tests {
             generate_scrub_preview_derivative_in_dir(&cache_dir, 42, 200, &source_path)
                 .expect("scrub derivative should generate");
 
-        assert_eq!(
-            derivative_path.file_name().and_then(|name| name.to_str()),
-            Some("scrub-v2-frame-42-200.jpg")
-        );
+        let derivative_file_name = derivative_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("derivative file name should be valid UTF-8");
+        assert!(derivative_file_name.starts_with("scrub-v3-frame-42-200-"));
+        assert!(derivative_file_name.ends_with(".jpg"));
         let derivative = image::open(&derivative_path).expect("derivative should decode");
         assert!(derivative.width() <= 200);
         assert!(derivative.height() <= 200);

@@ -1614,6 +1614,8 @@ async fn extract_scrub_preview_images_from_video_batch(
 #[cfg(not(target_os = "macos"))]
 async fn extract_preview_image_from_video(
     _video_path: &Path,
+    _frame: &::app_infra::Frame,
+    _exact_offset_ms: Option<u64>,
     _offset_seconds: f64,
     _require_exact_time: bool,
 ) -> Result<(Vec<u8>, &'static str), String> {
@@ -2629,6 +2631,58 @@ pub fn clear_scrub_preview_cache(
             }
         }
     }
+    get_scrub_preview_cache_status(app_handle)
+}
+
+pub fn clear_scrub_preview_cache_for_video_paths(
+    app_handle: tauri::AppHandle,
+    video_paths: &[String],
+) -> Result<ScrubPreviewCacheStatusDto, String> {
+    let cache_root = scrub_preview_cache_root(&app_handle)?;
+    if !cache_root.is_dir() || video_paths.is_empty() {
+        return get_scrub_preview_cache_status(app_handle);
+    }
+
+    let target_paths = video_paths
+        .iter()
+        .map(|path| {
+            let path = PathBuf::from(path);
+            path.canonicalize()
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect::<HashSet<_>>();
+
+    for entry in fs::read_dir(&cache_root).map_err(|error| {
+        format!(
+            "failed to read scrub preview cache directory {}: {error}",
+            cache_root.display()
+        )
+    })? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(bytes) = fs::read(scrub_preview_metadata_path(&path)) else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_slice::<ScrubPreviewSegmentMetadata>(&bytes) else {
+            continue;
+        };
+        let metadata_video_path = {
+            let path = PathBuf::from(&metadata.video_path);
+            path.canonicalize()
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string()
+        };
+        if target_paths.contains(&metadata_video_path) {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+
     get_scrub_preview_cache_status(app_handle)
 }
 
