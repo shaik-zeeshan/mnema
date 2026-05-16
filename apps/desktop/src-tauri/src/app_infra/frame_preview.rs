@@ -44,6 +44,9 @@ const GENERATED_SCRUB_PREVIEW_CACHE_DIR: &str = "scrub-previews";
 const GENERATED_FRAME_SCRUB_PREVIEW_CACHE_DIR: &str = "frame-v1-jpeg-q72";
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES: usize = 512;
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
+const GENERATED_SCRUB_PREVIEW_CACHE_MAX_FILES: usize = 4096;
+const GENERATED_SCRUB_PREVIEW_CACHE_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const GENERATED_SCRUB_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedFramePreview {
@@ -676,6 +679,101 @@ fn cleanup_generated_frame_preview_cache_dir(cache_dir: &Path) -> Result<(), Str
     while files.len() > GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES {
         let (path, _) = files.remove(0);
         let _ = fs::remove_file(path);
+    }
+
+    Ok(())
+}
+
+fn cleanup_generated_scrub_preview_cache_dir(cache_root: &Path) -> Result<(), String> {
+    cleanup_generated_scrub_preview_cache_dir_with_limits(
+        cache_root,
+        GENERATED_SCRUB_PREVIEW_CACHE_MAX_FILES,
+        GENERATED_SCRUB_PREVIEW_CACHE_MAX_BYTES,
+        GENERATED_SCRUB_PREVIEW_CACHE_MAX_AGE,
+    )
+}
+
+fn cleanup_generated_scrub_preview_cache_dir_with_limits(
+    cache_root: &Path,
+    max_files: usize,
+    max_bytes: u64,
+    max_age: Duration,
+) -> Result<(), String> {
+    if !cache_root.is_dir() {
+        return Ok(());
+    }
+
+    let now = std::time::SystemTime::now();
+    let mut files = Vec::new();
+    for entry in fs::read_dir(cache_root).map_err(|error| {
+        format!(
+            "failed to read scrub preview cache directory {}: {error}",
+            cache_root.display()
+        )
+    })? {
+        let Ok(entry) = entry else { continue };
+        let segment_dir = entry.path();
+        if !segment_dir.is_dir() {
+            continue;
+        }
+        let Ok(segment_files) = fs::read_dir(&segment_dir) else {
+            continue;
+        };
+        for file in segment_files.flatten() {
+            let path = file.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jpg") {
+                continue;
+            }
+            let Ok(metadata) = file.metadata() else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            let modified = metadata
+                .modified()
+                .ok()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            files.push((path, modified, metadata.len()));
+        }
+    }
+
+    for (path, modified, _) in &files {
+        if now.duration_since(*modified).unwrap_or_default() > max_age {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    files.retain(|(path, _, _)| path.is_file());
+    files.sort_by_key(|(_, modified, _)| *modified);
+    let mut total_bytes = files.iter().map(|(_, _, len)| *len).sum::<u64>();
+    while files.len() > max_files || total_bytes > max_bytes {
+        let (path, _, len) = files.remove(0);
+        if fs::remove_file(&path).is_ok() {
+            total_bytes = total_bytes.saturating_sub(len);
+        }
+    }
+
+    for entry in fs::read_dir(cache_root).map_err(|error| {
+        format!(
+            "failed to read scrub preview cache directory {}: {error}",
+            cache_root.display()
+        )
+    })? {
+        let Ok(entry) = entry else { continue };
+        let segment_dir = entry.path();
+        if !segment_dir.is_dir() {
+            continue;
+        }
+        let has_preview = fs::read_dir(&segment_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|file| file.path().extension().and_then(|ext| ext.to_str()) == Some("jpg"));
+        if !has_preview {
+            let _ = fs::remove_dir_all(segment_dir);
+        }
     }
 
     Ok(())
@@ -2074,6 +2172,24 @@ pub(crate) fn run_generated_frame_preview_cache_startup_pass(app_handle: &tauri:
             "failed to resolve generated frame preview cache directory for startup cleanup: {error}"
         )),
     }
+
+    match app_handle
+        .path()
+        .resolve(GENERATED_SCRUB_PREVIEW_CACHE_DIR, BaseDirectory::AppCache)
+    {
+        Ok(cache_dir) => {
+            let cache_dir = cache_dir.join(SCRUB_PREVIEW_RENDITION);
+            if let Err(error) = cleanup_generated_scrub_preview_cache_dir(&cache_dir) {
+                crate::native_capture::debug_log::log_warn(format!(
+                    "failed generated scrub preview cache startup cleanup at {}: {error}",
+                    cache_dir.display()
+                ));
+            }
+        }
+        Err(error) => crate::native_capture::debug_log::log_warn(format!(
+            "failed to resolve generated scrub preview cache directory for startup cleanup: {error}"
+        )),
+    }
 }
 
 fn scrub_preview_cache_root(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -2097,6 +2213,7 @@ fn scrub_preview_cache_root(app_handle: &tauri::AppHandle) -> Result<PathBuf, St
                 cache_dir.display()
             )
         })?;
+    cleanup_generated_scrub_preview_cache_dir(&cache_dir)?;
     Ok(cache_dir)
 }
 
@@ -2339,6 +2456,67 @@ mod tests {
             scrub_preview_interval_end_unix_ms(1_000, 2_000, Some(1_000)),
             1_000
         );
+    }
+
+    fn count_scrub_preview_jpegs(cache_root: &Path) -> usize {
+        fs::read_dir(cache_root)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .flat_map(|entry| fs::read_dir(entry.path()).unwrap().flatten())
+            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("jpg"))
+            .count()
+    }
+
+    #[test]
+    fn scrub_preview_cache_cleanup_evicts_by_file_count_and_removes_empty_segment_dirs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let segment_a = temp_dir.path().join("segment-a");
+        let segment_b = temp_dir.path().join("segment-b");
+        fs::create_dir_all(&segment_a).unwrap();
+        fs::create_dir_all(&segment_b).unwrap();
+        fs::write(scrub_preview_metadata_path(&segment_a), b"{}").unwrap();
+        fs::write(scrub_preview_metadata_path(&segment_b), b"{}").unwrap();
+        fs::write(segment_a.join("000000.jpg"), b"a").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        fs::write(segment_b.join("000000.jpg"), b"b").unwrap();
+
+        cleanup_generated_scrub_preview_cache_dir_with_limits(
+            temp_dir.path(),
+            1,
+            u64::MAX,
+            Duration::from_secs(60 * 60),
+        )
+        .unwrap();
+
+        assert_eq!(count_scrub_preview_jpegs(temp_dir.path()), 1);
+        let segment_dirs = fs::read_dir(temp_dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .count();
+        assert_eq!(segment_dirs, 1);
+    }
+
+    #[test]
+    fn scrub_preview_cache_cleanup_evicts_by_total_bytes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let segment = temp_dir.path().join("segment");
+        fs::create_dir_all(&segment).unwrap();
+        fs::write(scrub_preview_metadata_path(&segment), b"{}").unwrap();
+        fs::write(segment.join("000000.jpg"), b"1234").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        fs::write(segment.join("001000.jpg"), b"5678").unwrap();
+
+        cleanup_generated_scrub_preview_cache_dir_with_limits(
+            temp_dir.path(),
+            usize::MAX,
+            4,
+            Duration::from_secs(60 * 60),
+        )
+        .unwrap();
+
+        assert_eq!(count_scrub_preview_jpegs(temp_dir.path()), 1);
     }
 }
 

@@ -3204,10 +3204,12 @@
       if (activeIndex + distance <= end) indexes.push(activeIndex + distance);
     }
     for (const index of indexes) {
-      const id = timelineFrames[index]?.id;
+      const frame = timelineFrames[index];
+      const id = frame?.id;
       if (
         id == null ||
         scrubPreviewCache.has(id) ||
+        Boolean(scrubPreviewIntervalForFrame(frame)?.preview) ||
         scrubPreviewInFlight.has(id) ||
         recentlyFailedScrubPreview(id)
       ) {
