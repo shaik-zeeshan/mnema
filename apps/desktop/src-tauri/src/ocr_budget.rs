@@ -21,6 +21,15 @@ const OCR_CATCH_UP_COOLDOWN_MAX: Duration = Duration::from_millis(2000);
 
 static OCR_BUDGET_STATES: OnceLock<Mutex<HashMap<PathBuf, OcrBudgetState>>> = OnceLock::new();
 
+macro_rules! ocr_budget_trace {
+    ($($arg:tt)*) => {{
+        #[cfg(feature = "ocr-budget-trace")]
+        {
+            crate::native_capture::debug_log::log(format!($($arg)*));
+        }
+    }};
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OcrBudgetDebugDto {
@@ -301,14 +310,14 @@ pub fn record_admission_result(
             }
         }
     });
-    crate::native_capture::debug_log::log_info(format!(
+    ocr_budget_trace!(
         "OCR admission budget event frame_id={} outcome={} reason={} queue_pressure={} recording_active={}",
         result.frame.id,
         decision.outcome.as_str(),
         decision.reason.as_str(),
         decision.queue_pressure_count,
         decision.recording_active
-    ));
+    );
 }
 
 fn scaled_clamped_duration(
@@ -468,14 +477,14 @@ pub async fn process_pending_ocr_job_once(
         state.execution.next_due_at = Some(completed_at + cooldown);
         push_capped(&mut state.execution_events, event.clone());
     });
-    crate::native_capture::debug_log::log_info(format!(
+    ocr_budget_trace!(
         "OCR execution budget paced job_id={} status={} run_duration_ms={} cooldown_ms={} recording_active={}",
         event.job_id,
         event.status,
         run_duration_ms,
         cooldown.as_millis(),
         recording_active
-    ));
+    );
     Ok(OcrProcessingPass::DidWork)
 }
 
