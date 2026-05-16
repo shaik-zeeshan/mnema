@@ -36,10 +36,10 @@ export function scrubPreviewShouldPopulateExactCache(_sourceKind: PreviewSourceK
 
 export function timelineMovementShouldScheduleScrubPreview(
   indexDelta: number,
-  velocityPxPerMs: number,
-  fastScrubThresholdPxPerMs: number,
+  _velocityPxPerMs: number,
+  _fastScrubThresholdPxPerMs: number,
 ): boolean {
-  return indexDelta > 0 && velocityPxPerMs >= fastScrubThresholdPxPerMs;
+  return indexDelta > 0;
 }
 
 export function scrubPreviewResponseShouldApply(
@@ -51,8 +51,8 @@ export function scrubPreviewResponseShouldApply(
 
 export function activeExactPreviewDelayMs(
   shouldScheduleScrubPreview: boolean,
-  hasScrubPreview: boolean,
+  _hasScrubPreview: boolean,
   settleMs: number,
 ): number {
-  return shouldScheduleScrubPreview && hasScrubPreview ? settleMs : 0;
+  return shouldScheduleScrubPreview ? settleMs : 0;
 }

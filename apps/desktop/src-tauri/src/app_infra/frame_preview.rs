@@ -2268,6 +2268,31 @@ fn indexed_scrub_preview_offsets(
     offsets
 }
 
+fn scrub_preview_segment_bounds_unix_ms(
+    segment_started_unix_ms: i64,
+    segment_ended_unix_ms: i64,
+    index: &capture_screen::ScreenSegmentFrameIndex,
+) -> (i64, i64) {
+    let indexed_start = index
+        .entries
+        .iter()
+        .map(|entry| entry.captured_at_unix_ms as i64)
+        .min();
+    let indexed_end = index
+        .entries
+        .iter()
+        .map(|entry| entry.captured_at_unix_ms as i64)
+        .max();
+
+    match (indexed_start, indexed_end) {
+        (Some(start), Some(end)) => (
+            segment_started_unix_ms.min(start),
+            segment_ended_unix_ms.max(end),
+        ),
+        _ => (segment_started_unix_ms, segment_ended_unix_ms),
+    }
+}
+
 fn persist_scrub_preview_interval(
     segment_dir: &Path,
     interval_start_video_offset_ms: u64,
@@ -2476,6 +2501,12 @@ pub async fn get_scrub_preview_availability(
         };
 
         let indexed_offsets = indexed_scrub_preview_offsets(&index);
+        let (segment_started_unix_ms, segment_ended_unix_ms) =
+            scrub_preview_segment_bounds_unix_ms(
+                segment_started_unix_ms,
+                segment_ended_unix_ms,
+                &index,
+            );
         let duration_ms = (segment_ended_unix_ms - segment_started_unix_ms).max(0) as u64;
         let last_bucket = ((duration_ms + SCRUB_PREVIEW_INTERVAL_MS - 1)
             / SCRUB_PREVIEW_INTERVAL_MS)
