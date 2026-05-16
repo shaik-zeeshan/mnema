@@ -1109,7 +1109,7 @@ impl ProcessingStore {
                 (Some(processor), _) => sqlx::query(
                     "SELECT \
                         pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
-                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                        pj.payload_json, pj.last_error, pj.created_at, pj.queued_at, pj.updated_at, pj.started_at, \
                         pj.finished_at \
                      FROM processing_jobs AS pj \
                      WHERE pj.status = 'queued' \
@@ -1142,7 +1142,7 @@ impl ProcessingStore {
                     let mut query = sqlx::QueryBuilder::new(
                         "SELECT \
                             pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
-                            pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                            pj.payload_json, pj.last_error, pj.created_at, pj.queued_at, pj.updated_at, pj.started_at, \
                             pj.finished_at \
                          FROM processing_jobs AS pj \
                          WHERE pj.status = 'queued' \
@@ -1180,7 +1180,7 @@ impl ProcessingStore {
                 (None, true) => sqlx::query(
                     "SELECT \
                         pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
-                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                        pj.payload_json, pj.last_error, pj.created_at, pj.queued_at, pj.updated_at, pj.started_at, \
                         pj.finished_at \
                      FROM processing_jobs AS pj \
                      WHERE pj.status = 'queued' \
