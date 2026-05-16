@@ -17,6 +17,7 @@ pub struct CapturedFramePipelineResult {
     pub frame: Frame,
     pub active_batch: FrameBatch,
     pub job: Option<ProcessingJob>,
+    pub ocr_admission_decision: Option<OcrAdmissionDecision>,
     pub closed_batches: Vec<ClosedFrameBatchSummary>,
 }
 
@@ -285,7 +286,7 @@ impl CapturedFramePipeline {
                 &stored_frame.captured_at,
             )
             .await?;
-        let job = self
+        let (job, ocr_admission_decision) = self
             .admit_processing_job_in_transaction(transaction, &stored_frame, job_mode)
             .await?;
         let closed_batches = self
@@ -304,6 +305,7 @@ impl CapturedFramePipeline {
             frame: stored_frame,
             active_batch,
             job,
+            ocr_admission_decision,
             closed_batches,
         })
     }
@@ -313,16 +315,9 @@ impl CapturedFramePipeline {
         transaction: &mut Transaction<'_, Sqlite>,
         frame: &Frame,
         job_mode: PipelineJobMode<'_>,
-    ) -> Result<Option<ProcessingJob>> {
+    ) -> Result<(Option<ProcessingJob>, Option<OcrAdmissionDecision>)> {
         match job_mode {
-            PipelineJobMode::SkipOcrJob { decision } => {
-                if let Some(decision) = decision {
-                    self.processing
-                        .insert_ocr_admission_in_transaction(transaction, frame.id, &decision, None)
-                        .await?;
-                }
-                Ok(None)
-            }
+            PipelineJobMode::SkipOcrJob { decision } => Ok((None, decision)),
             PipelineJobMode::AdmitOcrJob {
                 ocr_payload_json,
                 decision,
@@ -348,20 +343,14 @@ impl CapturedFramePipeline {
                     skipped.outcome = OcrAdmissionOutcome::Skipped;
                     skipped.reason = OcrAdmissionReason::SkippedEquivalentFrame;
                     skipped.related_frame_id = Some(related.id);
-                    self.processing
-                        .insert_ocr_admission_in_transaction(transaction, frame.id, &skipped, None)
-                        .await?;
-                    return Ok(None);
+                    return Ok((None, Some(skipped)));
                 }
 
                 let decision = decision.unwrap_or_else(|| {
                     OcrAdmissionDecision::admit(OcrAdmissionReason::AdmittedLowPressure, 0, false)
                 });
                 if decision.outcome == OcrAdmissionOutcome::Skipped {
-                    self.processing
-                        .insert_ocr_admission_in_transaction(transaction, frame.id, &decision, None)
-                        .await?;
-                    return Ok(None);
+                    return Ok((None, Some(decision)));
                 }
 
                 let job = self
@@ -373,29 +362,23 @@ impl CapturedFramePipeline {
                         ocr_payload_json,
                     )
                     .await?;
-                self.processing
-                    .insert_ocr_admission_in_transaction(
-                        transaction,
-                        frame.id,
-                        &decision,
-                        Some(job.id),
-                    )
-                    .await?;
-                Ok(Some(job))
+                Ok((Some(job), Some(decision)))
             }
             PipelineJobMode::EnqueueProcessorJob {
                 processor,
                 payload_json,
-            } => Ok(Some(
-                self.processing
+            } => {
+                let job = self
+                    .processing
                     .enqueue_processor_job_for_frame_in_transaction(
                         transaction,
                         frame.id,
                         processor,
                         payload_json,
                     )
-                    .await?,
-            )),
+                    .await?;
+                Ok((Some(job), None))
+            }
         }
     }
 

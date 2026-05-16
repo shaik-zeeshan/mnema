@@ -95,6 +95,62 @@
   let privacySourceResolutions = $state<Record<string, PrivacyRedactionSourceResolutionDto>>({});
   let privacyDebugError = $state<string | null>(null);
 
+  type OcrAdmissionSignals = {
+    firstCandidateInScope: boolean;
+    contextChanged: boolean;
+    lowQueuePressure: boolean;
+    representativeDue: boolean;
+    highQueuePressure: boolean;
+  };
+
+  type OcrAdmissionDebugEvent = {
+    occurredAt: string;
+    sessionId: string;
+    workspaceScope: string;
+    frameId: number;
+    outcome: string;
+    reason: string;
+    queuePressureCount: number;
+    recordingActive: boolean;
+    jobId: number | null;
+    relatedFrameId: number | null;
+    signals: OcrAdmissionSignals;
+  };
+
+  type OcrExecutionDebugEvent = {
+    occurredAt: string;
+    jobId: number;
+    frameId: number | null;
+    provider: string;
+    modelId: string | null;
+    recognitionMode: string | null;
+    status: string;
+    runDurationMs: number;
+    queueWaitMs: number | null;
+    resultTextLength: number | null;
+    observationCount: number | null;
+    lastError: string | null;
+  };
+
+  type OcrBudgetDebug = {
+    summary: {
+      queuedOrRunningCount: number;
+      executionState: string;
+      cooldownRemainingMs: number;
+      lastRunDurationMs: number | null;
+      lastRunStatus: string | null;
+      lastPacingMode: string | null;
+    };
+    admissionEvents: OcrAdmissionDebugEvent[];
+    executionEvents: OcrExecutionDebugEvent[];
+  };
+
+  let ocrBudgetDebug = $state<OcrBudgetDebug | null>(null);
+  let ocrBudgetDebugError = $state<string | null>(null);
+  let admissionPage = $state(0);
+  let executionPage = $state(0);
+  const OCR_EVENT_PAGE_SIZE = 10;
+
   async function fetchIdleDebug() {
     // Skip the round-trip when the page is hidden or no capture session is active —
     // the debug panel is only meaningful while recording (or briefly after stop).
@@ -117,6 +173,17 @@
       privacyDebugError = null;
     } catch (err) {
       privacyDebugError = typeof err === "string" ? err : JSON.stringify(err);
+    }
+  }
+
+  async function fetchOcrBudgetDebug() {
+    if (activeTab !== "ocr") return;
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    try {
+      ocrBudgetDebug = await invoke<OcrBudgetDebug>("get_ocr_budget_debug");
+      ocrBudgetDebugError = null;
+    } catch (err) {
+      ocrBudgetDebugError = typeof err === "string" ? err : JSON.stringify(err);
     }
   }
 
@@ -160,6 +227,30 @@
     if (ms == null) return "unavailable";
     if (ms < 1000) return `${ms} ms`;
     return `${(ms / 1000).toFixed(1)} s`;
+  }
+
+  function formatOptionalMs(ms: number | null | undefined): string {
+    return ms == null ? "—" : `${ms} ms`;
+  }
+
+  function formatDebugTime(value: string): string {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? value : new Date(parsed).toLocaleTimeString();
+  }
+
+  function truncateDebugText(value: string | null | undefined, max = 80): string {
+    if (!value) return "—";
+    return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+  }
+
+  function activeSignalBadges(signals: OcrAdmissionSignals): string[] {
+    const badges: string[] = [];
+    if (signals.firstCandidateInScope) badges.push("first");
+    if (signals.contextChanged) badges.push("context");
+    if (signals.lowQueuePressure) badges.push("low-q");
+    if (signals.highQueuePressure) badges.push("high-q");
+    if (signals.representativeDue) badges.push("repr");
+    return badges;
   }
 
   /**
@@ -478,6 +569,25 @@
 
     return () => {
       clearInterval(idleDebugInterval);
+    };
+  });
+
+  $effect(() => {
+    if (activeTab !== "ocr") return;
+    fetchOcrBudgetDebug();
+
+    const interval = setInterval(() => {
+      fetchOcrBudgetDebug();
+    }, 1000);
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void fetchOcrBudgetDebug();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   });
 
@@ -862,6 +972,7 @@
     | "probe"
     | "inactivity"
     | "infra"
+    | "ocr"
     | "workspaces"
     | "jobs";
 
@@ -871,6 +982,7 @@
     { id: "probe", label: "Probe" },
     { id: "inactivity", label: "Inactivity" },
     { id: "infra", label: "Infra" },
+    { id: "ocr", label: "OCR" },
     { id: "workspaces", label: "Workspaces" },
     { id: "jobs", label: "Jobs" },
   ];
@@ -948,6 +1060,16 @@
     if (jobsPage < 0) jobsPage = 0;
   });
   const jobsPageStart = $derived(jobsPage * JOBS_PAGE_SIZE);
+  const admissionPageCount = $derived(Math.max(1, Math.ceil((ocrBudgetDebug?.admissionEvents.length ?? 0) / OCR_EVENT_PAGE_SIZE)));
+  const executionPageCount = $derived(Math.max(1, Math.ceil((ocrBudgetDebug?.executionEvents.length ?? 0) / OCR_EVENT_PAGE_SIZE)));
+  $effect(() => {
+    if (admissionPage > admissionPageCount - 1) admissionPage = admissionPageCount - 1;
+    if (admissionPage < 0) admissionPage = 0;
+    if (executionPage > executionPageCount - 1) executionPage = executionPageCount - 1;
+    if (executionPage < 0) executionPage = 0;
+  });
+  const pagedAdmissionEvents = $derived((ocrBudgetDebug?.admissionEvents ?? []).slice(admissionPage * OCR_EVENT_PAGE_SIZE, admissionPage * OCR_EVENT_PAGE_SIZE + OCR_EVENT_PAGE_SIZE));
+  const pagedExecutionEvents = $derived((ocrBudgetDebug?.executionEvents ?? []).slice(executionPage * OCR_EVENT_PAGE_SIZE, executionPage * OCR_EVENT_PAGE_SIZE + OCR_EVENT_PAGE_SIZE));
   const pagedJobs = $derived(jobs.slice(jobsPageStart, jobsPageStart + JOBS_PAGE_SIZE));
   const selectedJobPage = $derived.by(() => {
     if (selectedJobId == null) return null;
@@ -1767,6 +1889,122 @@
     <p class="infra-db-path">{infraStatus.databasePath}</p>
   {:else}
     <p class="empty">—</p>
+  {/if}
+</div>
+{/if}
+
+<!-- ── OCR budget debug ──────────────────────────────────────────────────── -->
+{#if activeTab === "ocr"}
+<div class="card card--debug" id="debug-panel-ocr" role="tabpanel" aria-labelledby="debug-tab-ocr" tabindex="0">
+  <h2 class="card__title">
+    <span class="debug-tag">dbg</span>
+    OCR Budget
+    <button class="btn btn--ghost btn--sm card__title-action" onclick={fetchOcrBudgetDebug}>
+      ↻
+    </button>
+  </h2>
+
+  {#if ocrBudgetDebugError}
+    <p class="debug-err">{ocrBudgetDebugError}</p>
+  {:else if ocrBudgetDebug}
+    <div class="ocr-summary-grid">
+      <div><span>queued/running</span><strong>{ocrBudgetDebug.summary.queuedOrRunningCount}</strong></div>
+      <div><span>execution</span><strong>{ocrBudgetDebug.summary.executionState}</strong></div>
+      <div><span>cooldown</span><strong>{formatOptionalMs(ocrBudgetDebug.summary.cooldownRemainingMs)}</strong></div>
+      <div><span>last run</span><strong>{formatOptionalMs(ocrBudgetDebug.summary.lastRunDurationMs)}</strong></div>
+      <div><span>last status</span><strong>{ocrBudgetDebug.summary.lastRunStatus ?? "—"}</strong></div>
+      <div><span>pacing</span><strong>{ocrBudgetDebug.summary.lastPacingMode ?? "—"}</strong></div>
+    </div>
+
+    <div class="idle-section-label">
+      Admission events
+      <span class="idle-note">{ocrBudgetDebug.admissionEvents.length}</span>
+    </div>
+    {#if ocrBudgetDebug.admissionEvents.length === 0}
+      <p class="empty">no admission events in this run</p>
+    {:else}
+      <div class="debug-table-wrap">
+        <table class="debug-table">
+          <thead>
+            <tr>
+              <th>time</th><th>session</th><th>workspace</th><th>frame</th><th>outcome</th><th>reason</th><th>queue</th><th>job</th><th>related</th><th>signals</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each pagedAdmissionEvents as event (`admission-${event.occurredAt}-${event.frameId}`)}
+              <tr>
+                <td>{formatDebugTime(event.occurredAt)}</td>
+                <td class="mono-cell">{event.sessionId}</td>
+                <td class="mono-cell">{event.workspaceScope}</td>
+                <td>#{event.frameId}</td>
+                <td>{event.outcome}</td>
+                <td>{event.reason}</td>
+                <td>{event.queuePressureCount}</td>
+                <td>{event.jobId == null ? "—" : `#${event.jobId}`}</td>
+                <td>{event.relatedFrameId == null ? "—" : `#${event.relatedFrameId}`}</td>
+                <td>
+                  {#each activeSignalBadges(event.signals) as signal}
+                    <span class="badge badge--neutral badge--sm">{signal}</span>
+                  {/each}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if admissionPageCount > 1}
+        <div class="job-pager">
+          <button class="btn btn--ghost btn--sm" onclick={() => (admissionPage = Math.max(0, admissionPage - 1))} disabled={admissionPage === 0}>‹ prev</button>
+          <span class="job-pager__info">page {admissionPage + 1} / {admissionPageCount}</span>
+          <button class="btn btn--ghost btn--sm" onclick={() => (admissionPage = Math.min(admissionPageCount - 1, admissionPage + 1))} disabled={admissionPage >= admissionPageCount - 1}>next ›</button>
+        </div>
+      {/if}
+    {/if}
+
+    <div class="idle-section-label">
+      Execution events
+      <span class="idle-note">{ocrBudgetDebug.executionEvents.length}</span>
+    </div>
+    {#if ocrBudgetDebug.executionEvents.length === 0}
+      <p class="empty">no execution events in this run</p>
+    {:else}
+      <div class="debug-table-wrap">
+        <table class="debug-table">
+          <thead>
+            <tr>
+              <th>time</th><th>job</th><th>frame</th><th>provider</th><th>model</th><th>mode</th><th>status</th><th>run</th><th>wait</th><th>text</th><th>obs</th><th>error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each pagedExecutionEvents as event (`execution-${event.occurredAt}-${event.jobId}`)}
+              <tr>
+                <td>{formatDebugTime(event.occurredAt)}</td>
+                <td>#{event.jobId}</td>
+                <td>{event.frameId == null ? "—" : `#${event.frameId}`}</td>
+                <td>{event.provider}</td>
+                <td>{event.modelId ?? "—"}</td>
+                <td>{event.recognitionMode ?? "—"}</td>
+                <td>{event.status}</td>
+                <td>{formatOptionalMs(event.runDurationMs)}</td>
+                <td>{formatOptionalMs(event.queueWaitMs)}</td>
+                <td>{event.resultTextLength ?? "—"}</td>
+                <td>{event.observationCount ?? "—"}</td>
+                <td title={event.lastError ?? ""}>{truncateDebugText(event.lastError)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if executionPageCount > 1}
+        <div class="job-pager">
+          <button class="btn btn--ghost btn--sm" onclick={() => (executionPage = Math.max(0, executionPage - 1))} disabled={executionPage === 0}>‹ prev</button>
+          <span class="job-pager__info">page {executionPage + 1} / {executionPageCount}</span>
+          <button class="btn btn--ghost btn--sm" onclick={() => (executionPage = Math.min(executionPageCount - 1, executionPage + 1))} disabled={executionPage >= executionPageCount - 1}>next ›</button>
+        </div>
+      {/if}
+    {/if}
+  {:else}
+    <p class="empty">OCR budget state has not loaded yet</p>
   {/if}
 </div>
 {/if}
@@ -2841,6 +3079,70 @@
     color: var(--app-text-subtle);
     word-break: break-all;
     line-height: 1.5;
+  }
+
+  .ocr-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .ocr-summary-grid > div {
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    padding: 10px;
+    background: var(--app-bg-soft);
+  }
+
+  .ocr-summary-grid span {
+    display: block;
+    color: var(--app-text-subtle);
+    font-size: 10px;
+    margin-bottom: 4px;
+  }
+
+  .ocr-summary-grid strong {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .debug-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+  }
+
+  .debug-table {
+    width: 100%;
+    min-width: 920px;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+
+  .debug-table th,
+  .debug-table td {
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--app-border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .debug-table th {
+    color: var(--app-text-subtle);
+    font-weight: 700;
+    background: var(--app-bg-soft);
+  }
+
+  .debug-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .mono-cell {
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    max-width: 180px;
+    overflow-wrap: anywhere;
   }
 
   /* ── Background Jobs ────────────────────────────────────────── */

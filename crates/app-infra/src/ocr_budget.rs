@@ -122,19 +122,3 @@ impl OcrAdmissionDecision {
         }
     }
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OcrBudgetTelemetry {
-    pub job_id: i64,
-    pub frame_id: Option<i64>,
-    pub provider: String,
-    pub model_id: Option<String>,
-    pub recognition_mode: Option<String>,
-    pub status: String,
-    pub run_duration_ms: i64,
-    pub queue_wait_ms: Option<i64>,
-    pub result_text_length: Option<i64>,
-    pub observation_count: Option<i64>,
-    pub created_at: Option<String>,
-}

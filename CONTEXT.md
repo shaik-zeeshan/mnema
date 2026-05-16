@@ -54,11 +54,11 @@ An extra pre-admission analysis pass that tries to detect whether a **Captured F
 _Avoid_: lightweight OCR, pre-OCR, text detector
 
 **OCR Admission Reason**:
-A persisted explanation for why automatic OCR was or was not admitted for a **Captured Frame**.
+A runtime/debug explanation for why automatic OCR was or was not admitted for an **OCR Candidate**. It may be exposed through live debug state or logs, but it is not durable user data.
 _Avoid_: debug log, skip note, enqueue reason
 
 **OCR Budget Telemetry**:
-Durable cost and usefulness summary data used to tune **OCR Throughput Budget** behavior without duplicating recognized text.
+Live-only cost and usefulness summary data used to inspect **OCR Throughput Budget** behavior during the current app run without duplicating recognized text. It may be kept in bounded memory and logs, but it is not durable user data.
 _Avoid_: OCR text copy, performance log, debug-only metric
 
 **OCR Execution Budget**:
@@ -208,6 +208,10 @@ _Avoid_: purge, vacuum, file cleanup
 - An **OCR Throughput Budget** limits **OCR Job** admission and scheduling rather than guaranteeing a hard process-wide CPU ceiling.
 - An **OCR Throughput Budget** must preserve the **OCR Settings Selection** instead of silently switching provider, model, recognition mode, or provider-specific options.
 - An **OCR Throughput Budget** has an **OCR Admission Budget** and an **OCR Execution Budget**.
+- Current-run **OCR Throughput Budget** state belongs to the desktop runtime, not app-infra durable storage.
+- **OCR Admission Budget** memory is scoped to active capture session/workspace state and should be cleared when that recording session stops.
+- **OCR Admission Reason** values may remain app-infra pipeline decision types, but live **OCR Budget Telemetry** DTOs belong to the desktop runtime.
+- **OCR Admission Budget** behavior should be tested through the desktop runtime memory interface rather than app-infra database queries.
 - An **OCR Admission Budget** limits new automatic **OCR Job** creation.
 - **OCR Admission Budget** comparisons should remain scoped to the relevant capture session or workspace where appropriate.
 - **Captured Frame Equivalence** is the first automatic OCR duplicate filter; an **OCR Admission Budget** may add a conservative second filter for non-equivalent but low OCR-value frames.
@@ -219,17 +223,26 @@ _Avoid_: purge, vacuum, file cleanup
 - Foreground context changes such as app bundle, window title, browser URL, or display changes are strong positive **OCR-Relevant Change** signals when the frame is not equivalent to an earlier frame.
 - Unchanged foreground context does not prove there is no **OCR-Relevant Change**.
 - An **OCR Throughput Budget** may use cheap admission signals that reuse already available capture or persistence data.
+- **OCR Admission Budget** memory should not persist budget decisions, but it may read existing **Captured Frame** metadata to detect **OCR-Relevant Change**.
 - An **OCR Throughput Budget** should not add an **OCR-Relevance Probe**, because extra pre-admission analysis can become another CPU cost on the capture hot path.
-- An **OCR Admission Reason** should be persisted for **Captured Frame** values that do not receive an automatic **OCR Job**, including equivalent-frame reuse.
-- **OCR Admission Reason** values apply to newly captured frames after the policy exists and should not be invented historically for older frames.
+- **OCR Admission Reason** values explain current runtime decisions and should not be persisted as durable per-frame data.
+- **OCR Admission Reason** values should not be invented historically for older frames.
 - Low OCR-value admission skips should be visible in debug surfaces but not noisy in the normal timeline.
 - **OCR Budget Telemetry** should include timing and usefulness summaries such as recognized text length or observation count, but should not duplicate recognized text.
 - **OCR Budget Telemetry** usefulness summaries should be computed after **OCR Job** completion, not estimated before admission.
+- **OCR Budget Telemetry** should be live-only by default and should not be stored in the main app database.
+- **OCR Budget Telemetry** may be exposed through the debug surface as bounded current-run state so developers can see whether **OCR Job** values are executing.
+- The debug surface should separate **OCR Admission Budget** events from **OCR Execution Budget** events so skipped candidates are not confused with jobs that ran.
+- **OCR Budget Telemetry** debug events should not include full frame or workspace paths.
+- Equivalent-frame reuse should produce a live **OCR Admission Budget** debug event with the related **Captured Frame** id even though it does not create a new **OCR Job**.
+- The debug surface should paginate recent **OCR Budget Telemetry** events rather than rendering the full bounded ring at once.
+- The debug surface may poll current-run **OCR Budget Telemetry** while the OCR debug tab is active and visible.
+- OCR debug commands should expose current-run **OCR Throughput Budget** state rather than durable lookup by old frame or job ids.
 - An **OCR Execution Budget** paces existing queued **OCR Job** execution.
 - An **OCR Execution Budget** should start with deterministic pacing based on recording state and observed OCR job timing rather than live process-wide CPU measurement.
 - An **OCR Execution Budget** should use bounded cost-adaptive pacing based on recent **OCR Job** runtime rather than a single fixed cooldown.
 - **OCR Execution Budget** pacing should use observed **OCR Job** runtime regardless of whether the job completed or failed.
-- **OCR Execution Budget** pacing memory may reset on app startup, while durable job timing remains available for debug and telemetry.
+- **OCR Execution Budget** pacing memory may reset on app startup; debug timing summaries are current-run state, while durable OCR results remain normal app data.
 - **OCR Execution Budget** pacing should be global across sessions because OCR work consumes shared machine resources.
 - An **OCR Execution Budget** should be more conservative during active recording than during **OCR Catch-Up**.
 - Automatic **OCR Job** work still occurs during active recording; active recording is neither OCR-off nor governed by a fixed time cadence for materially changed frames.

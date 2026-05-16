@@ -4,6 +4,7 @@ mod general_app_log;
 mod keyboard_bindings;
 mod managed_storage_layout;
 mod native_capture;
+mod ocr_budget;
 mod ocr_models;
 mod privacy_redaction_sources;
 mod speaker_analysis_models;
@@ -155,8 +156,7 @@ pub fn run() {
             app_infra::list_processing_jobs,
             app_infra::get_processing_job,
             app_infra::get_processing_result,
-            app_infra::get_frame_ocr_admission,
-            app_infra::get_ocr_budget_telemetry,
+            ocr_budget::get_ocr_budget_debug,
             app_infra::list_processing_results,
             app_infra::list_speaker_turns,
             app_infra::list_person_profiles,

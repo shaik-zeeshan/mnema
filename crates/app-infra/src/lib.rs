@@ -55,7 +55,6 @@ pub use ocr::{
 };
 pub use ocr_budget::{
     OcrAdmissionDecision, OcrAdmissionOutcome, OcrAdmissionReason, OcrAdmissionSignals,
-    OcrBudgetTelemetry,
 };
 pub use processing::{
     AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend, FocusedFrameWindow, Frame,
@@ -1503,49 +1502,6 @@ impl AppInfra {
     ) -> Result<i64> {
         self.processing
             .count_queued_or_running_jobs_for_processor(processor)
-            .await
-    }
-
-    pub async fn insert_ocr_budget_telemetry(
-        &self,
-        telemetry: &OcrBudgetTelemetry,
-    ) -> Result<OcrBudgetTelemetry> {
-        self.processing.insert_ocr_budget_telemetry(telemetry).await
-    }
-
-    pub async fn get_ocr_budget_telemetry(
-        &self,
-        job_id: i64,
-    ) -> Result<Option<OcrBudgetTelemetry>> {
-        self.processing.get_ocr_budget_telemetry(job_id).await
-    }
-
-    pub async fn get_ocr_admission_for_frame(
-        &self,
-        frame_id: i64,
-    ) -> Result<Option<OcrAdmissionDecision>> {
-        self.processing.get_ocr_admission_for_frame(frame_id).await
-    }
-
-    pub async fn has_ocr_admission_in_scope(
-        &self,
-        session_id: &str,
-        workspace_prefix: Option<&str>,
-    ) -> Result<bool> {
-        self.processing
-            .has_ocr_admission_in_scope(session_id, workspace_prefix)
-            .await
-    }
-
-    pub async fn has_recent_admitted_ocr_in_scope(
-        &self,
-        session_id: &str,
-        workspace_prefix: Option<&str>,
-        captured_at: &str,
-        seconds: i64,
-    ) -> Result<bool> {
-        self.processing
-            .has_recent_admitted_ocr_in_scope(session_id, workspace_prefix, captured_at, seconds)
             .await
     }
 
@@ -6164,47 +6120,6 @@ mod tests {
     }
 
     #[test]
-    fn ocr_admission_scope_does_not_match_sibling_workspace_prefixes() {
-        run_async_test(async {
-            let dir = TestDir::new("ocr-admission-workspace-prefix");
-            let infra = AppInfra::initialize(dir.path())
-                .await
-                .expect("app infra should initialize");
-            let shorter_workspace = "/tmp/.session-a-segment-1000";
-
-            infra
-                .capture_frame(
-                    &NewFrame::new(
-                        "session-a",
-                        "/tmp/.session-a-segment-10000/frames/frame-1.png",
-                        "2026-04-12T10:00:00Z",
-                    )
-                    .with_dimensions(1920, 1080),
-                    None,
-                )
-                .await
-                .expect("sibling workspace frame should persist with OCR admission");
-
-            let has_admission = infra
-                .has_ocr_admission_in_scope("session-a", Some(shorter_workspace))
-                .await
-                .expect("workspace-scoped admission lookup should succeed");
-            assert!(!has_admission);
-
-            let has_recent_admission = infra
-                .has_recent_admitted_ocr_in_scope(
-                    "session-a",
-                    Some(shorter_workspace),
-                    "2026-04-12T10:00:05Z",
-                    15,
-                )
-                .await
-                .expect("workspace-scoped recent admission lookup should succeed");
-            assert!(!has_recent_admission);
-        });
-    }
-
-    #[test]
     fn captured_frame_pipeline_persists_frame_batch_and_ocr_job() {
         run_async_test(async {
             let dir = TestDir::new("captured-frame-pipeline");
@@ -6305,46 +6220,6 @@ mod tests {
                 .await
                 .expect("subject jobs should list");
             assert_eq!(jobs, vec![persisted.job.clone()]);
-        });
-    }
-
-    #[test]
-    fn recent_ocr_admission_uses_chronological_timestamp_range() {
-        run_async_test(async {
-            let dir = TestDir::new("processing-ocr-recent-range");
-            let infra = AppInfra::initialize(dir.path())
-                .await
-                .expect("app infra should initialize");
-
-            infra
-                .capture_frame(
-                    &test_frame_at("session-ocr-range", "frame-old.png", "2026-04-12T10:00:00Z"),
-                    None,
-                )
-                .await
-                .expect("first frame should persist with OCR admission");
-
-            let recent = infra
-                .has_recent_admitted_ocr_in_scope(
-                    "session-ocr-range",
-                    None,
-                    "2026-04-12T10:00:10Z",
-                    15,
-                )
-                .await
-                .expect("recent OCR admission check should succeed");
-            assert!(recent);
-
-            let stale = infra
-                .has_recent_admitted_ocr_in_scope(
-                    "session-ocr-range",
-                    None,
-                    "2026-04-12T10:00:20Z",
-                    15,
-                )
-                .await
-                .expect("stale OCR admission check should succeed");
-            assert!(!stale);
         });
     }
 
