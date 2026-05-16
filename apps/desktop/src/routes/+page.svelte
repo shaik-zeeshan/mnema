@@ -6408,9 +6408,9 @@
              width/height since there's no <img> element to measure.
              Pointer-events stay disabled so the overlay never blocks
              scrub/click on the stage. Boxes and labels only render once
-             an OCR run has produced observations for the currently active
-             frame. -->
-        {#if ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0 && renderedImageRect.width > 0 && renderedImageRect.height > 0}
+             the exact active-frame preview is painted and an OCR run has
+             produced observations for the currently active frame. -->
+        {#if exactPreviewReady && ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0 && renderedImageRect.width > 0 && renderedImageRect.height > 0}
           <div
             class="timeline__ocr-overlay"
             aria-hidden="true"
