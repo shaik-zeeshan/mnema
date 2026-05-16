@@ -371,7 +371,7 @@ impl CaptureRetentionStore {
                      AND julianday(captured_at) <= julianday(?2)
                  )
                )
-             ORDER BY started_at ASC, id ASC",
+             ORDER BY julianday(started_at) ASC, id ASC",
         )
         .bind(start_at)
         .bind(end_at)
@@ -1814,6 +1814,53 @@ mod tests {
 
             assert_eq!(segments.len(), 1);
             assert_eq!(segments[0].id, 42);
+        });
+    }
+
+    #[test]
+    fn screen_segment_window_query_orders_mixed_precision_timestamps_by_time() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, started_at, ended_at, status
+                 ) VALUES
+                    (1, 'capture-1', 'screen', 'screen-source-1', 1,
+                     '/tmp/segment-1.mov', '2026-05-16T07:45:30Z',
+                     '2026-05-16T07:45:30.050Z', 'completed'),
+                    (2, 'capture-1', 'screen', 'screen-source-1', 2,
+                     '/tmp/segment-2.mov', '2026-05-16T07:45:30.100Z',
+                     '2026-05-16T07:45:31Z', 'completed')",
+            )
+            .execute(&pool)
+            .await
+            .expect("segments should insert");
+
+            let store = CaptureRetentionStore::new(pool);
+            let segments = store
+                .list_finalized_screen_segments_overlapping_window(
+                    "2026-05-16T07:45:30Z",
+                    "2026-05-16T07:45:31Z",
+                )
+                .await
+                .expect("segments should query");
+
+            let ids = segments
+                .into_iter()
+                .map(|segment| segment.id)
+                .collect::<Vec<_>>();
+            assert_eq!(ids, vec![1, 2]);
         });
     }
 

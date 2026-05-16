@@ -2409,6 +2409,13 @@ fn scrub_preview_interval_end_unix_ms(
     }
 }
 
+fn scrub_preview_adjacent_next_segment_started_unix_ms(
+    next_segment_started_unix_ms: Option<i64>,
+    segment_ended_unix_ms: i64,
+) -> Option<i64> {
+    next_segment_started_unix_ms.filter(|next_start| *next_start <= segment_ended_unix_ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2455,6 +2462,25 @@ mod tests {
         assert_eq!(
             scrub_preview_interval_end_unix_ms(1_000, 2_000, Some(1_000)),
             1_000
+        );
+    }
+
+    #[test]
+    fn scrub_preview_next_segment_clamp_uses_expanded_index_bounds() {
+        let index = capture_screen::ScreenSegmentFrameIndex {
+            version: capture_screen::SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: vec![capture_screen::ScreenSegmentFrameIndexEntry {
+                captured_at_unix_ms: 3_000,
+                frame_index: 0,
+                video_offset_ms: 0,
+            }],
+        };
+        let (_, expanded_end_unix_ms) = scrub_preview_segment_bounds_unix_ms(1_000, 2_000, &index);
+
+        assert_eq!(expanded_end_unix_ms, 3_000);
+        assert_eq!(
+            scrub_preview_adjacent_next_segment_started_unix_ms(Some(2_500), expanded_end_unix_ms),
+            Some(2_500)
         );
     }
 
@@ -2697,8 +2723,7 @@ pub async fn get_scrub_preview_availability(
             rfc3339_to_unix_ms(&segment.ended_at).unwrap_or(segment_started_unix_ms);
         let next_segment_started_unix_ms = segments
             .get(segment_index + 1)
-            .and_then(|next_segment| rfc3339_to_unix_ms(&next_segment.started_at))
-            .filter(|next_start| *next_start <= segment_ended_unix_ms);
+            .and_then(|next_segment| rfc3339_to_unix_ms(&next_segment.started_at));
         let video_path = PathBuf::from(&segment.media_file_path);
         let frame_index_path = screen_frame_index_existing_path(&video_path);
         let segment_cache_key = segment_cache_key(&video_path, frame_index_path.as_deref());
@@ -2761,6 +2786,10 @@ pub async fn get_scrub_preview_availability(
             segment_started_unix_ms,
             segment_ended_unix_ms,
             &index,
+        );
+        let next_segment_started_unix_ms = scrub_preview_adjacent_next_segment_started_unix_ms(
+            next_segment_started_unix_ms,
+            segment_ended_unix_ms,
         );
         let duration_ms = (segment_ended_unix_ms - segment_started_unix_ms).max(0) as u64;
         let last_bucket = scrub_preview_last_bucket(duration_ms, !indexed_offsets.is_empty());
