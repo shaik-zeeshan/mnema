@@ -49,7 +49,8 @@ const OCR_ACTIVE_RECORDING_COOLDOWN_MIN: Duration = Duration::from_millis(1000);
 const OCR_ACTIVE_RECORDING_COOLDOWN_MAX: Duration = Duration::from_millis(10000);
 const OCR_CATCH_UP_COOLDOWN_MIN: Duration = Duration::from_millis(250);
 const OCR_CATCH_UP_COOLDOWN_MAX: Duration = Duration::from_millis(2000);
-static OCR_EXECUTION_BUDGET_STATE: OnceLock<Mutex<OcrExecutionBudgetState>> = OnceLock::new();
+static OCR_EXECUTION_BUDGET_STATES: OnceLock<Mutex<HashMap<PathBuf, OcrExecutionBudgetState>>> =
+    OnceLock::new();
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETENTION_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -2764,6 +2765,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
             ))
         })?;
     let infra = Arc::new(infra);
+    reset_ocr_execution_budget_state_for_base_dir(&resolved_base_dir.base_dir);
     let frame_preview_cache = FramePreviewCacheState::default();
     let background_workers = BackgroundWorkersState::default();
 
@@ -3838,12 +3840,27 @@ async fn process_pending_jobs_once(
 #[derive(Debug, Default)]
 struct OcrExecutionBudgetState {
     next_due_at: Option<Instant>,
+    last_run_at: Option<Instant>,
     last_run_ms: Option<u64>,
     last_recording_active: bool,
 }
 
-fn ocr_execution_budget_state() -> &'static Mutex<OcrExecutionBudgetState> {
-    OCR_EXECUTION_BUDGET_STATE.get_or_init(|| Mutex::new(OcrExecutionBudgetState::default()))
+fn reset_ocr_execution_budget_state_for_base_dir(base_dir: &Path) {
+    if let Some(states) = OCR_EXECUTION_BUDGET_STATES.get() {
+        states
+            .lock()
+            .expect("OCR execution budget states poisoned")
+            .remove(base_dir);
+    }
+}
+
+fn with_ocr_execution_budget_state<R>(
+    infra: &::app_infra::AppInfra,
+    f: impl FnOnce(&mut OcrExecutionBudgetState) -> R,
+) -> R {
+    let states = OCR_EXECUTION_BUDGET_STATES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut states = states.lock().expect("OCR execution budget states poisoned");
+    f(states.entry(infra.base_dir().to_path_buf()).or_default())
 }
 
 fn scaled_clamped_duration(
@@ -3973,13 +3990,19 @@ async fn process_pending_ocr_job_once(
     recording_active: bool,
 ) -> ::app_infra::Result<Option<()>> {
     let now = Instant::now();
-    {
-        let state = ocr_execution_budget_state()
-            .lock()
-            .expect("OCR execution budget state poisoned");
-        if state.next_due_at.is_some_and(|due| due > now) {
-            return Ok(None);
+    let should_wait = with_ocr_execution_budget_state(infra, |state| {
+        if state.last_recording_active != recording_active {
+            if let (Some(last_run_at), Some(last_run_ms)) = (state.last_run_at, state.last_run_ms) {
+                state.next_due_at =
+                    Some(last_run_at + ocr_cooldown_duration(last_run_ms, recording_active));
+            }
+            state.last_recording_active = recording_active;
         }
+
+        state.next_due_at.is_some_and(|due| due > now)
+    });
+    if should_wait {
+        return Ok(None);
     }
 
     let started_at = Instant::now();
@@ -3997,14 +4020,13 @@ async fn process_pending_ocr_job_once(
         ::app_infra::ProcessingJobRunOutcome::Failed(job) => job.id,
     };
     let cooldown = ocr_cooldown_duration(run_duration_ms.max(0) as u64, recording_active);
-    {
-        let mut state = ocr_execution_budget_state()
-            .lock()
-            .expect("OCR execution budget state poisoned");
+    with_ocr_execution_budget_state(infra, |state| {
+        let completed_at = Instant::now();
         state.last_run_ms = Some(run_duration_ms.max(0) as u64);
+        state.last_run_at = Some(completed_at);
         state.last_recording_active = recording_active;
-        state.next_due_at = Some(Instant::now() + cooldown);
-    }
+        state.next_due_at = Some(completed_at + cooldown);
+    });
     crate::native_capture::debug_log::log_info(format!(
         "OCR execution budget paced job_id={} run_duration_ms={} cooldown_ms={} recording_active={}",
         job_id,
@@ -6351,6 +6373,113 @@ mod tests {
                 failed.last_error.as_deref(),
                 Some("audio segment 123 was not found")
             );
+        });
+    }
+
+    #[test]
+    fn ocr_pacing_state_is_scoped_to_app_infra_base_dir() {
+        run_async_test(async {
+            let first_dir = TestDir::new("ocr-pacing-first");
+            let first_infra = ::app_infra::AppInfra::initialize(first_dir.path())
+                .await
+                .expect("first app infra should initialize");
+            let first = first_infra
+                .debug_insert_frame_and_enqueue_ocr_job(
+                    &::app_infra::NewFrame::new(
+                        "session-first",
+                        "/tmp/frame-first.png",
+                        "2026-04-12T10:00:00Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect("first OCR job should enqueue");
+
+            assert_eq!(
+                process_pending_ocr_job_once(&first_infra, true)
+                    .await
+                    .expect("first OCR worker pass should succeed"),
+                Some(())
+            );
+            let first_job = first_infra
+                .get_processing_job(first.job.id)
+                .await
+                .expect("first job should be readable")
+                .expect("first job should exist");
+            assert_eq!(first_job.status, ::app_infra::ProcessingJobStatus::Failed);
+
+            let second_dir = TestDir::new("ocr-pacing-second");
+            let second_infra = ::app_infra::AppInfra::initialize(second_dir.path())
+                .await
+                .expect("second app infra should initialize");
+            let second = second_infra
+                .debug_insert_frame_and_enqueue_ocr_job(
+                    &::app_infra::NewFrame::new(
+                        "session-second",
+                        "/tmp/frame-second.png",
+                        "2026-04-12T10:00:01Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect("second OCR job should enqueue");
+
+            assert_eq!(
+                process_pending_ocr_job_once(&second_infra, false)
+                    .await
+                    .expect("second OCR worker pass should succeed"),
+                Some(())
+            );
+            let second_job = second_infra
+                .get_processing_job(second.job.id)
+                .await
+                .expect("second job should be readable")
+                .expect("second job should exist");
+            assert_eq!(second_job.status, ::app_infra::ProcessingJobStatus::Failed);
+        });
+    }
+
+    #[test]
+    fn ocr_pacing_recomputes_due_time_when_recording_stops() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-pacing-catch-up");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            reset_ocr_execution_budget_state_for_base_dir(infra.base_dir());
+
+            let old_now = Instant::now();
+            with_ocr_execution_budget_state(&infra, |state| {
+                state.last_run_at = Some(old_now - Duration::from_secs(3));
+                state.last_run_ms = Some(4000);
+                state.last_recording_active = true;
+                state.next_due_at = Some(old_now + Duration::from_secs(7));
+            });
+
+            let queued = infra
+                .debug_insert_frame_and_enqueue_ocr_job(
+                    &::app_infra::NewFrame::new(
+                        "session-catch-up",
+                        "/tmp/frame-catch-up.png",
+                        "2026-04-12T10:00:02Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect("catch-up OCR job should enqueue");
+
+            assert_eq!(
+                process_pending_ocr_job_once(&infra, false)
+                    .await
+                    .expect("catch-up OCR worker pass should succeed"),
+                Some(())
+            );
+            let job = infra
+                .get_processing_job(queued.job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(job.status, ::app_infra::ProcessingJobStatus::Failed);
         });
     }
 

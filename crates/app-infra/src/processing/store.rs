@@ -121,6 +121,15 @@ impl ProcessingStore {
         Self { pool }
     }
 
+    fn workspace_like_pattern(workspace_prefix: &str) -> String {
+        let escaped = Self::escape_sql_like_pattern(workspace_prefix);
+        if workspace_prefix.ends_with('/') {
+            format!("{escaped}%")
+        } else {
+            format!("{escaped}/%")
+        }
+    }
+
     pub(crate) async fn begin_transaction(&self) -> Result<Transaction<'_, Sqlite>> {
         Ok(self.pool.begin().await?)
     }
@@ -351,7 +360,7 @@ impl ProcessingStore {
         workspace_prefix: Option<&str>,
     ) -> Result<Vec<Frame>> {
         let rows = if let Some(workspace_prefix) = workspace_prefix {
-            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+            let like_pattern = Self::workspace_like_pattern(workspace_prefix);
             sqlx::query(
                 "SELECT id, session_id, file_path, captured_at, width, height, \
                         equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
@@ -394,7 +403,7 @@ impl ProcessingStore {
         workspace_prefix: Option<&str>,
     ) -> Result<Vec<Frame>> {
         let rows = if let Some(workspace_prefix) = workspace_prefix {
-            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+            let like_pattern = Self::workspace_like_pattern(workspace_prefix);
             sqlx::query(
                 "SELECT id, session_id, file_path, captured_at, width, height, \
                         equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
@@ -433,7 +442,7 @@ impl ProcessingStore {
         session_id: &str,
         workspace_prefix: &str,
     ) -> Result<Vec<Frame>> {
-        let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+        let like_pattern = Self::workspace_like_pattern(workspace_prefix);
         let rows = sqlx::query(
             "SELECT id, session_id, file_path, captured_at, width, height, \
                     equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
@@ -466,10 +475,7 @@ impl ProcessingStore {
              WHERE frames.file_path LIKE ?1 ESCAPE '\\' \
              ORDER BY frames.id ASC, processing_jobs.id ASC",
         )
-        .bind(format!(
-            "{}%",
-            Self::escape_sql_like_pattern(workspace_prefix)
-        ))
+        .bind(Self::workspace_like_pattern(workspace_prefix))
         .bind(super::FRAME_SUBJECT_TYPE)
         .bind(super::OCR_PROCESSOR)
         .fetch_all(&self.pool)
@@ -757,7 +763,7 @@ impl ProcessingStore {
         workspace_prefix: Option<&str>,
     ) -> Result<bool> {
         let row = if let Some(prefix) = workspace_prefix {
-            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(prefix));
+            let like_pattern = Self::workspace_like_pattern(prefix);
             sqlx::query(
                 "SELECT 1 FROM frame_ocr_admissions AS admission \
                  JOIN frames AS frame ON frame.id = admission.frame_id \
@@ -790,7 +796,7 @@ impl ProcessingStore {
         seconds: i64,
     ) -> Result<bool> {
         let row = if let Some(prefix) = workspace_prefix {
-            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(prefix));
+            let like_pattern = Self::workspace_like_pattern(prefix);
             sqlx::query(
                 "SELECT 1 FROM frame_ocr_admissions AS admission \
                  JOIN frames AS frame ON frame.id = admission.frame_id \
@@ -835,7 +841,7 @@ impl ProcessingStore {
             return Ok(false);
         };
         let row = if let Some(prefix) = workspace_prefix {
-            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(prefix));
+            let like_pattern = Self::workspace_like_pattern(prefix);
             sqlx::query(
                 "SELECT snapshot.snapshot_json FROM frames AS frame \
                  LEFT JOIN frame_metadata_snapshots AS snapshot ON snapshot.id = frame.metadata_snapshot_id \

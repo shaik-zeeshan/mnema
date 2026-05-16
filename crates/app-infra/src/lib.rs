@@ -6164,6 +6164,47 @@ mod tests {
     }
 
     #[test]
+    fn ocr_admission_scope_does_not_match_sibling_workspace_prefixes() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-admission-workspace-prefix");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let shorter_workspace = "/tmp/.session-a-segment-1000";
+
+            infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "session-a",
+                        "/tmp/.session-a-segment-10000/frames/frame-1.png",
+                        "2026-04-12T10:00:00Z",
+                    )
+                    .with_dimensions(1920, 1080),
+                    None,
+                )
+                .await
+                .expect("sibling workspace frame should persist with OCR admission");
+
+            let has_admission = infra
+                .has_ocr_admission_in_scope("session-a", Some(shorter_workspace))
+                .await
+                .expect("workspace-scoped admission lookup should succeed");
+            assert!(!has_admission);
+
+            let has_recent_admission = infra
+                .has_recent_admitted_ocr_in_scope(
+                    "session-a",
+                    Some(shorter_workspace),
+                    "2026-04-12T10:00:05Z",
+                    15,
+                )
+                .await
+                .expect("workspace-scoped recent admission lookup should succeed");
+            assert!(!has_recent_admission);
+        });
+    }
+
+    #[test]
     fn captured_frame_pipeline_persists_frame_batch_and_ocr_job() {
         run_async_test(async {
             let dir = TestDir::new("captured-frame-pipeline");
