@@ -2279,10 +2279,17 @@ fn scrub_preview_last_bucket(duration_ms: u64, has_indexed_offsets: bool) -> u64
 fn scrub_preview_interval_end_unix_ms(
     interval_start_unix_ms: i64,
     segment_ended_unix_ms: i64,
+    next_segment_started_unix_ms: Option<i64>,
 ) -> i64 {
-    interval_start_unix_ms
+    let inclusive_segment_end = interval_start_unix_ms
         .saturating_add(SCRUB_PREVIEW_INTERVAL_MS as i64)
-        .min(segment_ended_unix_ms.saturating_add(1))
+        .min(segment_ended_unix_ms.saturating_add(1));
+    match next_segment_started_unix_ms {
+        Some(next_start) => inclusive_segment_end
+            .min(next_start)
+            .max(interval_start_unix_ms),
+        _ => inclusive_segment_end,
+    }
 }
 
 #[cfg(test)]
@@ -2303,10 +2310,35 @@ mod tests {
     }
 
     #[test]
-    fn scrub_preview_interval_end_is_exclusive_for_segment_end_frame() {
-        assert_eq!(scrub_preview_interval_end_unix_ms(1_000, 1_000), 1_001);
-        assert_eq!(scrub_preview_interval_end_unix_ms(1_000, 1_500), 1_501);
-        assert_eq!(scrub_preview_interval_end_unix_ms(1_000, 3_000), 2_000);
+    fn scrub_preview_interval_end_includes_segment_end_frame_without_adjacent_segment() {
+        assert_eq!(
+            scrub_preview_interval_end_unix_ms(1_000, 1_000, None),
+            1_001
+        );
+        assert_eq!(
+            scrub_preview_interval_end_unix_ms(1_000, 1_500, None),
+            1_501
+        );
+        assert_eq!(
+            scrub_preview_interval_end_unix_ms(1_000, 3_000, None),
+            2_000
+        );
+    }
+
+    #[test]
+    fn scrub_preview_interval_end_stays_exclusive_at_adjacent_segment_boundary() {
+        assert_eq!(
+            scrub_preview_interval_end_unix_ms(1_000, 2_000, Some(2_000)),
+            2_000
+        );
+        assert_eq!(
+            scrub_preview_interval_end_unix_ms(1_000, 3_000, Some(2_000)),
+            2_000
+        );
+        assert_eq!(
+            scrub_preview_interval_end_unix_ms(1_000, 2_000, Some(1_000)),
+            1_000
+        );
     }
 }
 
@@ -2480,11 +2512,15 @@ pub async fn get_scrub_preview_availability(
 
     let mut intervals = Vec::new();
     let mut jobs = Vec::new();
-    for segment in segments {
+    for (segment_index, segment) in segments.iter().enumerate() {
         let segment_started_unix_ms =
             rfc3339_to_unix_ms(&segment.started_at).unwrap_or(start_unix_ms);
         let segment_ended_unix_ms =
             rfc3339_to_unix_ms(&segment.ended_at).unwrap_or(segment_started_unix_ms);
+        let next_segment_started_unix_ms = segments
+            .get(segment_index + 1)
+            .and_then(|next_segment| rfc3339_to_unix_ms(&next_segment.started_at))
+            .filter(|next_start| *next_start <= segment_ended_unix_ms);
         let video_path = PathBuf::from(&segment.media_file_path);
         let frame_index_path = screen_frame_index_existing_path(&video_path);
         let segment_cache_key = segment_cache_key(&video_path, frame_index_path.as_deref());
@@ -2554,8 +2590,15 @@ pub async fn get_scrub_preview_availability(
         let mut bucket = 0;
         while bucket < last_bucket {
             let interval_start_unix_ms = segment_started_unix_ms + bucket as i64;
-            let interval_end_unix_ms =
-                scrub_preview_interval_end_unix_ms(interval_start_unix_ms, segment_ended_unix_ms);
+            let interval_end_unix_ms = scrub_preview_interval_end_unix_ms(
+                interval_start_unix_ms,
+                segment_ended_unix_ms,
+                next_segment_started_unix_ms,
+            );
+            if interval_end_unix_ms <= interval_start_unix_ms {
+                bucket += SCRUB_PREVIEW_INTERVAL_MS;
+                continue;
+            }
             if interval_end_unix_ms < start_unix_ms || interval_start_unix_ms > end_unix_ms {
                 bucket += SCRUB_PREVIEW_INTERVAL_MS;
                 continue;

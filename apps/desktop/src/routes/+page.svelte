@@ -3023,16 +3023,19 @@
     if (!frame) return null;
     const capturedAtMs = Date.parse(frame.capturedAt);
     if (!Number.isFinite(capturedAtMs)) return null;
+    let selected: ScrubPreviewAvailabilityIntervalDto | null = null;
     for (const interval of scrubPreviewIntervalCache.values()) {
       if (
         interval.preview &&
         capturedAtMs >= interval.intervalStartUnixMs &&
         capturedAtMs < interval.intervalEndUnixMs
       ) {
-        return interval;
+        if (!selected || interval.intervalStartUnixMs > selected.intervalStartUnixMs) {
+          selected = interval;
+        }
       }
     }
-    return null;
+    return selected;
   }
 
   function touchScrubPreviewIntervalCache(interval: ScrubPreviewAvailabilityIntervalDto): void {
