@@ -3326,6 +3326,13 @@ enum ProcessingWorkerKind {
     SpeakerAnalysis,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessingWorkerPass {
+    DidWork,
+    Idle,
+    IdleFor(Duration),
+}
+
 impl ProcessingWorkerKind {
     fn name(self) -> &'static str {
         match self {
@@ -3339,7 +3346,7 @@ impl ProcessingWorkerKind {
         self,
         infra: &::app_infra::AppInfra,
         app_handle: Option<&tauri::AppHandle>,
-    ) -> ::app_infra::Result<Option<()>> {
+    ) -> ::app_infra::Result<ProcessingWorkerPass> {
         match self {
             Self::NonTranscriptionAndFrameBatch => {
                 process_pending_jobs_once(infra, app_handle).await
@@ -3417,7 +3424,7 @@ fn spawn_processing_worker_loop(
             }
 
             match worker_kind.process_once(&infra, app_handle.as_ref()).await {
-                Ok(Some(_)) => {
+                Ok(ProcessingWorkerPass::DidWork) => {
                     if consecutive_failures > 0 {
                         crate::native_capture::debug_log::log_info(format!(
                             "app infrastructure {worker_name} worker recovered after {} failed iteration(s) (base_dir='{}')",
@@ -3428,7 +3435,7 @@ fn spawn_processing_worker_loop(
 
                     continue;
                 }
-                Ok(None) => {
+                Ok(pass @ (ProcessingWorkerPass::Idle | ProcessingWorkerPass::IdleFor(_))) => {
                     if consecutive_failures > 0 {
                         crate::native_capture::debug_log::log_info(format!(
                             "app infrastructure {worker_name} worker recovered after {} failed iteration(s) (base_dir='{}')",
@@ -3437,9 +3444,15 @@ fn spawn_processing_worker_loop(
                         consecutive_failures = 0;
                     }
 
-                    if shutdown_aware_sleep(&mut shutdown_rx, PROCESSING_WORKER_IDLE_POLL_INTERVAL)
-                        .await
-                    {
+                    let sleep_duration = match pass {
+                        ProcessingWorkerPass::IdleFor(duration) => {
+                            duration.min(PROCESSING_WORKER_IDLE_POLL_INTERVAL)
+                        }
+                        ProcessingWorkerPass::Idle => PROCESSING_WORKER_IDLE_POLL_INTERVAL,
+                        ProcessingWorkerPass::DidWork => continue,
+                    };
+
+                    if shutdown_aware_sleep(&mut shutdown_rx, sleep_duration).await {
                         break;
                     }
                 }
@@ -3795,7 +3808,7 @@ fn active_screen_session_id_for_hidden_workspace_repair(
 async fn process_pending_jobs_once(
     infra: &::app_infra::AppInfra,
     app_handle: Option<&tauri::AppHandle>,
-) -> ::app_infra::Result<Option<()>> {
+) -> ::app_infra::Result<ProcessingWorkerPass> {
     let did_processing = infra
         .process_next_processing_job_excluding_processors(&[
             ::app_infra::OCR_PROCESSOR,
@@ -3815,9 +3828,9 @@ async fn process_pending_jobs_once(
         }
     };
 
-    let did_ocr = process_pending_ocr_job_once(infra, live_recording_active(app_handle))
-        .await?
-        .is_some();
+    let ocr_outcome =
+        process_pending_ocr_job_once(infra, live_recording_active(app_handle)).await?;
+    let did_ocr = ocr_outcome == OcrProcessingPass::DidWork;
     let did_finalize_after_ocr = if did_ocr {
         match infra.process_next_frame_batch_job().await {
             Ok(result) => result.is_some(),
@@ -3833,9 +3846,11 @@ async fn process_pending_jobs_once(
     };
 
     if did_processing || did_finalize || did_ocr || did_finalize_after_ocr {
-        Ok(Some(()))
+        Ok(ProcessingWorkerPass::DidWork)
+    } else if let OcrProcessingPass::CoolingDown(duration) = ocr_outcome {
+        Ok(ProcessingWorkerPass::IdleFor(duration))
     } else {
-        Ok(None)
+        Ok(ProcessingWorkerPass::Idle)
     }
 }
 
@@ -3845,6 +3860,13 @@ struct OcrExecutionBudgetState {
     last_run_at: Option<Instant>,
     last_run_ms: Option<u64>,
     last_recording_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OcrProcessingPass {
+    DidWork,
+    Idle,
+    CoolingDown(Duration),
 }
 
 fn reset_ocr_execution_budget_state_for_base_dir(base_dir: &Path) {
@@ -3994,9 +4016,9 @@ async fn persist_ocr_telemetry_for_outcome(
 async fn process_pending_ocr_job_once(
     infra: &::app_infra::AppInfra,
     recording_active: bool,
-) -> ::app_infra::Result<Option<()>> {
+) -> ::app_infra::Result<OcrProcessingPass> {
     let now = Instant::now();
-    let should_wait = with_ocr_execution_budget_state(infra, |state| {
+    let cooldown_remaining = with_ocr_execution_budget_state(infra, |state| {
         if state.last_recording_active != recording_active {
             if let (Some(last_run_at), Some(last_run_ms)) = (state.last_run_at, state.last_run_ms) {
                 state.next_due_at =
@@ -4005,10 +4027,13 @@ async fn process_pending_ocr_job_once(
             state.last_recording_active = recording_active;
         }
 
-        state.next_due_at.is_some_and(|due| due > now)
+        state
+            .next_due_at
+            .and_then(|due| due.checked_duration_since(now))
+            .filter(|duration| !duration.is_zero())
     });
-    if should_wait {
-        return Ok(None);
+    if let Some(duration) = cooldown_remaining {
+        return Ok(OcrProcessingPass::CoolingDown(duration));
     }
 
     let started_at = Instant::now();
@@ -4016,7 +4041,7 @@ async fn process_pending_ocr_job_once(
         .process_next_processing_job_for_processor(::app_infra::OCR_PROCESSOR)
         .await?;
     let Some(outcome) = outcome else {
-        return Ok(None);
+        return Ok(OcrProcessingPass::Idle);
     };
     let run_duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
     persist_ocr_telemetry_for_outcome(infra, &outcome, run_duration_ms).await;
@@ -4040,34 +4065,34 @@ async fn process_pending_ocr_job_once(
         cooldown.as_millis(),
         recording_active
     ));
-    Ok(Some(()))
+    Ok(OcrProcessingPass::DidWork)
 }
 
 async fn process_pending_audio_transcription_jobs_once(
     infra: &::app_infra::AppInfra,
-) -> ::app_infra::Result<Option<()>> {
+) -> ::app_infra::Result<ProcessingWorkerPass> {
     if infra
         .process_next_processing_job_for_processor(::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR)
         .await?
         .is_some()
     {
-        Ok(Some(()))
+        Ok(ProcessingWorkerPass::DidWork)
     } else {
-        Ok(None)
+        Ok(ProcessingWorkerPass::Idle)
     }
 }
 
 async fn process_pending_speaker_analysis_jobs_once(
     infra: &::app_infra::AppInfra,
-) -> ::app_infra::Result<Option<()>> {
+) -> ::app_infra::Result<ProcessingWorkerPass> {
     if infra
         .process_next_processing_job_for_processor(::app_infra::SPEAKER_ANALYSIS_PROCESSOR)
         .await?
         .is_some()
     {
-        Ok(Some(()))
+        Ok(ProcessingWorkerPass::DidWork)
     } else {
-        Ok(None)
+        Ok(ProcessingWorkerPass::Idle)
     }
 }
 
@@ -6320,7 +6345,7 @@ mod tests {
             let processed = process_pending_jobs_once(&infra, None)
                 .await
                 .expect("worker iteration should succeed");
-            assert_eq!(processed, Some(()));
+            assert_eq!(processed, ProcessingWorkerPass::DidWork);
 
             let job = infra
                 .get_processing_job(persisted.job.id)
@@ -6353,7 +6378,7 @@ mod tests {
             let processed = process_pending_jobs_once(&infra, None)
                 .await
                 .expect("non-transcription worker should succeed");
-            assert_eq!(processed, None);
+            assert_eq!(processed, ProcessingWorkerPass::Idle);
             let still_queued = infra
                 .get_processing_job(job.id)
                 .await
@@ -6367,7 +6392,7 @@ mod tests {
             let processed = process_pending_audio_transcription_jobs_once(&infra)
                 .await
                 .expect("transcription worker should succeed");
-            assert_eq!(processed, Some(()));
+            assert_eq!(processed, ProcessingWorkerPass::DidWork);
             let failed = infra
                 .get_processing_job(job.id)
                 .await
@@ -6405,7 +6430,7 @@ mod tests {
                 process_pending_ocr_job_once(&first_infra, true)
                     .await
                     .expect("first OCR worker pass should succeed"),
-                Some(())
+                OcrProcessingPass::DidWork
             );
             let first_job = first_infra
                 .get_processing_job(first.job.id)
@@ -6434,7 +6459,7 @@ mod tests {
                 process_pending_ocr_job_once(&second_infra, false)
                     .await
                     .expect("second OCR worker pass should succeed"),
-                Some(())
+                OcrProcessingPass::DidWork
             );
             let second_job = second_infra
                 .get_processing_job(second.job.id)
@@ -6478,7 +6503,7 @@ mod tests {
                 process_pending_ocr_job_once(&infra, false)
                     .await
                     .expect("catch-up OCR worker pass should succeed"),
-                Some(())
+                OcrProcessingPass::DidWork
             );
             let job = infra
                 .get_processing_job(queued.job.id)
@@ -6486,6 +6511,53 @@ mod tests {
                 .expect("job should be readable")
                 .expect("job should exist");
             assert_eq!(job.status, ::app_infra::ProcessingJobStatus::Failed);
+        });
+    }
+
+    #[test]
+    fn processing_worker_uses_ocr_cooldown_as_next_idle_wake() {
+        run_async_test(async {
+            let dir = TestDir::new("ocr-pacing-idle-wake");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            reset_ocr_execution_budget_state_for_base_dir(infra.base_dir());
+
+            let due_at = Instant::now() + OCR_CATCH_UP_COOLDOWN_MIN;
+            with_ocr_execution_budget_state(&infra, |state| {
+                state.last_run_at = Some(Instant::now());
+                state.last_run_ms = Some(100);
+                state.last_recording_active = false;
+                state.next_due_at = Some(due_at);
+            });
+
+            let queued = infra
+                .debug_insert_frame_and_enqueue_ocr_job(
+                    &::app_infra::NewFrame::new(
+                        "session-idle-wake",
+                        "/tmp/frame-idle-wake.png",
+                        "2026-04-12T10:00:03Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect("OCR job should enqueue");
+
+            let processed = process_pending_jobs_once(&infra, None)
+                .await
+                .expect("worker iteration should succeed");
+            let ProcessingWorkerPass::IdleFor(duration) = processed else {
+                panic!("expected OCR cooldown to drive worker sleep, got {processed:?}");
+            };
+            assert!(duration > Duration::ZERO);
+            assert!(duration <= OCR_CATCH_UP_COOLDOWN_MIN);
+
+            let job = infra
+                .get_processing_job(queued.job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(job.status, ::app_infra::ProcessingJobStatus::Queued);
         });
     }
 
@@ -6544,7 +6616,7 @@ mod tests {
             let processed = process_pending_jobs_once(&infra, None)
                 .await
                 .expect("worker iteration should succeed");
-            assert_eq!(processed, Some(()));
+            assert_eq!(processed, ProcessingWorkerPass::DidWork);
 
             let batches = infra
                 .list_frame_batches(Some("session-batch-worker"))
