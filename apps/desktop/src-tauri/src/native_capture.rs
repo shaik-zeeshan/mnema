@@ -2575,6 +2575,7 @@ fn stop_native_capture_with_state(
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
             let source_session_ids = source_session_ids_before_stop;
+            crate::ocr_budget::clear_sessions_for_base_dir(infra.base_dir(), &source_session_ids);
             let infra = std::sync::Arc::clone(&*infra);
             if let Err(error) = tauri::async_runtime::block_on(async move {
                 infra

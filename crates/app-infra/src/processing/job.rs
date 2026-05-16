@@ -79,6 +79,7 @@ pub struct ProcessingJob {
     pub payload_json: Option<String>,
     pub last_error: Option<String>,
     pub created_at: String,
+    pub queued_at: String,
     pub updated_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,

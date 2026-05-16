@@ -118,6 +118,15 @@ impl ProcessingStore {
         Self { pool }
     }
 
+    fn workspace_like_pattern(workspace_prefix: &str) -> String {
+        let escaped = Self::escape_sql_like_pattern(workspace_prefix);
+        if workspace_prefix.ends_with('/') {
+            format!("{escaped}%")
+        } else {
+            format!("{escaped}/%")
+        }
+    }
+
     pub(crate) async fn begin_transaction(&self) -> Result<Transaction<'_, Sqlite>> {
         Ok(self.pool.begin().await?)
     }
@@ -209,7 +218,7 @@ impl ProcessingStore {
         let row = sqlx::query(
             "SELECT \
                 id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                created_at, updated_at, started_at, finished_at \
+                created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE subject_type = ?1 AND subject_id = ?2 AND processor = ?3 \
              ORDER BY id DESC \
@@ -235,6 +244,7 @@ impl ProcessingStore {
              SET status = 'queued', \
                  payload_json = COALESCE(?2, payload_json), \
                  last_error = NULL, \
+                 queued_at = CURRENT_TIMESTAMP, \
                  started_at = NULL, \
                  finished_at = NULL, \
                  updated_at = CURRENT_TIMESTAMP \
@@ -308,7 +318,7 @@ impl ProcessingStore {
         workspace_prefix: Option<&str>,
     ) -> Result<Vec<Frame>> {
         let rows = if let Some(workspace_prefix) = workspace_prefix {
-            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+            let like_pattern = Self::workspace_like_pattern(workspace_prefix);
             sqlx::query(
                 "SELECT id, session_id, file_path, captured_at, width, height, \
                         equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
@@ -351,7 +361,7 @@ impl ProcessingStore {
         workspace_prefix: Option<&str>,
     ) -> Result<Vec<Frame>> {
         let rows = if let Some(workspace_prefix) = workspace_prefix {
-            let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+            let like_pattern = Self::workspace_like_pattern(workspace_prefix);
             sqlx::query(
                 "SELECT id, session_id, file_path, captured_at, width, height, \
                         equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
@@ -390,7 +400,7 @@ impl ProcessingStore {
         session_id: &str,
         workspace_prefix: &str,
     ) -> Result<Vec<Frame>> {
-        let like_pattern = format!("{}%", Self::escape_sql_like_pattern(workspace_prefix));
+        let like_pattern = Self::workspace_like_pattern(workspace_prefix);
         let rows = sqlx::query(
             "SELECT id, session_id, file_path, captured_at, width, height, \
                     equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
@@ -423,10 +433,7 @@ impl ProcessingStore {
              WHERE frames.file_path LIKE ?1 ESCAPE '\\' \
              ORDER BY frames.id ASC, processing_jobs.id ASC",
         )
-        .bind(format!(
-            "{}%",
-            Self::escape_sql_like_pattern(workspace_prefix)
-        ))
+        .bind(Self::workspace_like_pattern(workspace_prefix))
         .bind(super::FRAME_SUBJECT_TYPE)
         .bind(super::OCR_PROCESSOR)
         .fetch_all(&self.pool)
@@ -664,7 +671,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT \
                 id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                created_at, updated_at, started_at, finished_at \
+                created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE subject_type = ?1 AND subject_id = ?2 \
              ORDER BY id DESC",
@@ -684,7 +691,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT \
                 id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                created_at, updated_at, started_at, finished_at \
+                created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE processor = ?1 AND status = 'running' \
              ORDER BY id ASC",
@@ -696,6 +703,64 @@ impl ProcessingStore {
         rows.into_iter().map(map_processing_job).collect()
     }
 
+    pub async fn count_queued_or_running_jobs_for_processor(&self, processor: &str) -> Result<i64> {
+        let count = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM processing_jobs \
+             WHERE processor = ?1 AND status IN ('queued', 'running')",
+        )
+        .bind(processor)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count)
+    }
+
+    pub async fn latest_frame_context_differs(
+        &self,
+        frame: &NewFrame,
+        workspace_prefix: Option<&str>,
+    ) -> Result<bool> {
+        let Some(current) = frame.metadata_snapshot.as_ref() else {
+            return Ok(false);
+        };
+        let row = if let Some(prefix) = workspace_prefix {
+            let like_pattern = Self::workspace_like_pattern(prefix);
+            sqlx::query(
+                "SELECT snapshot.snapshot_json FROM frames AS frame \
+                 LEFT JOIN frame_metadata_snapshots AS snapshot ON snapshot.id = frame.metadata_snapshot_id \
+                 WHERE frame.session_id = ?1 AND frame.file_path LIKE ?2 ESCAPE '\\' \
+                 ORDER BY frame.id DESC LIMIT 1",
+            )
+            .bind(&frame.session_id)
+            .bind(like_pattern)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT snapshot.snapshot_json FROM frames AS frame \
+                 LEFT JOIN frame_metadata_snapshots AS snapshot ON snapshot.id = frame.metadata_snapshot_id \
+                 WHERE frame.session_id = ?1 \
+                 ORDER BY frame.id DESC LIMIT 1",
+            )
+            .bind(&frame.session_id)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let previous_json: Option<String> = row.get("snapshot_json");
+        let Some(previous_json) = previous_json else {
+            return Ok(false);
+        };
+        let previous: capture_metadata::FrameMetadataSnapshot =
+            serde_json::from_str(&previous_json)?;
+        Ok(previous.app_bundle_id != current.app_bundle_id
+            || previous.app_name != current.app_name
+            || previous.window_title != current.window_title
+            || previous.browser_url != current.browser_url)
+    }
+
     pub async fn list_retargetable_jobs_for_processor(
         &self,
         processor: &str,
@@ -703,7 +768,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT \
                 id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                created_at, updated_at, started_at, finished_at \
+                created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE processor = ?1 AND status IN ('queued', 'failed') \
              ORDER BY id ASC",
@@ -857,7 +922,7 @@ impl ProcessingStore {
                 (Some(processor), _) => sqlx::query(
                     "SELECT \
                         pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
-                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                        pj.payload_json, pj.last_error, pj.created_at, pj.queued_at, pj.updated_at, pj.started_at, \
                         pj.finished_at \
                      FROM processing_jobs AS pj \
                      WHERE pj.status = 'queued' \
@@ -890,7 +955,7 @@ impl ProcessingStore {
                     let mut query = sqlx::QueryBuilder::new(
                         "SELECT \
                             pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
-                            pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                            pj.payload_json, pj.last_error, pj.created_at, pj.queued_at, pj.updated_at, pj.started_at, \
                             pj.finished_at \
                          FROM processing_jobs AS pj \
                          WHERE pj.status = 'queued' \
@@ -928,7 +993,7 @@ impl ProcessingStore {
                 (None, true) => sqlx::query(
                     "SELECT \
                         pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
-                        pj.payload_json, pj.last_error, pj.created_at, pj.updated_at, pj.started_at, \
+                        pj.payload_json, pj.last_error, pj.created_at, pj.queued_at, pj.updated_at, pj.started_at, \
                         pj.finished_at \
                      FROM processing_jobs AS pj \
                      WHERE pj.status = 'queued' \
@@ -2666,8 +2731,8 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let result = sqlx::query(
-        "INSERT INTO processing_jobs (subject_type, subject_id, processor, status, payload_json) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO processing_jobs (subject_type, subject_id, processor, status, payload_json, queued_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)",
     )
     .bind(subject.subject_type())
     .bind(subject.subject_id)
@@ -2778,7 +2843,7 @@ where
     let row = sqlx::query(
         "SELECT \
             id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-            created_at, updated_at, started_at, finished_at \
+            created_at, queued_at, updated_at, started_at, finished_at \
          FROM processing_jobs \
          WHERE id = ?1",
     )
@@ -2938,6 +3003,7 @@ fn map_processing_job(row: SqliteRow) -> Result<ProcessingJob> {
         payload_json: row.get("payload_json"),
         last_error: row.get("last_error"),
         created_at: row.get("created_at"),
+        queued_at: row.get("queued_at"),
         updated_at: row.get("updated_at"),
         started_at: row.get("started_at"),
         finished_at: row.get("finished_at"),

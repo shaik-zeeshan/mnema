@@ -22,6 +22,8 @@ use futures_util::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager};
+#[cfg(test)]
+use time::{format_description, PrimitiveDateTime};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::watch;
 
@@ -542,6 +544,7 @@ pub struct ProcessingJobDto {
     pub payload_json: Option<String>,
     pub last_error: Option<String>,
     pub created_at: String,
+    pub queued_at: String,
     pub updated_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -731,6 +734,7 @@ impl From<::app_infra::ProcessingJob> for ProcessingJobDto {
             payload_json: job.payload_json,
             last_error: job.last_error,
             created_at: job.created_at,
+            queued_at: job.queued_at,
             updated_at: job.updated_at,
             started_at: job.started_at,
             finished_at: job.finished_at,
@@ -1259,13 +1263,29 @@ pub async fn persist_screen_frame_artifact(
     };
 
     if !ocr_enabled_for_settings(settings) {
-        return infra.capture_frame_without_ocr(&frame).await;
+        let decision = ::app_infra::OcrAdmissionDecision::skip(
+            ::app_infra::OcrAdmissionReason::SkippedOcrDisabled,
+            infra
+                .count_queued_or_running_processing_jobs_for_processor(::app_infra::OCR_PROCESSOR)
+                .await?,
+            true,
+        );
+        let result = infra
+            .capture_frame_skipping_ocr_with_reason(&frame, decision)
+            .await?;
+        crate::ocr_budget::record_admission_result(infra, &result);
+        return Ok(result);
     }
 
     let payload_json = ocr_payload_json_from_settings(settings, None)
         .map_err(::app_infra::AppInfraError::OcrEngine)?;
 
-    infra.capture_frame(&frame, payload_json.as_deref()).await
+    let decision = crate::ocr_budget::decide_admission(infra, &frame, true).await?;
+    let result = infra
+        .capture_frame_with_ocr_admission(&frame, payload_json.as_deref(), decision)
+        .await?;
+    crate::ocr_budget::record_admission_result(infra, &result);
+    Ok(result)
 }
 
 async fn ensure_screen_capture_segment_for_frame(
@@ -1435,6 +1455,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
             ))
         })?;
     let infra = Arc::new(infra);
+    crate::ocr_budget::reset_for_base_dir(&resolved_base_dir.base_dir);
     let frame_preview_cache = FramePreviewCacheState::default();
     let background_workers = BackgroundWorkersState::default();
 
@@ -1965,18 +1986,21 @@ fn spawn_processing_worker(
         Arc::clone(&infra),
         base_dir_display.clone(),
         ProcessingWorkerKind::NonTranscriptionAndFrameBatch,
+        Some(app_handle.clone()),
         background_workers.clone(),
     );
     spawn_processing_worker_loop(
         Arc::clone(&infra),
         base_dir_display.clone(),
         ProcessingWorkerKind::AudioTranscription,
+        None,
         background_workers.clone(),
     );
     spawn_processing_worker_loop(
         Arc::clone(&infra),
         base_dir_display,
         ProcessingWorkerKind::SpeakerAnalysis,
+        None,
         background_workers.clone(),
     );
 
@@ -1990,6 +2014,13 @@ enum ProcessingWorkerKind {
     SpeakerAnalysis,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessingWorkerPass {
+    DidWork,
+    Idle,
+    IdleFor(Duration),
+}
+
 impl ProcessingWorkerKind {
     fn name(self) -> &'static str {
         match self {
@@ -1999,9 +2030,15 @@ impl ProcessingWorkerKind {
         }
     }
 
-    async fn process_once(self, infra: &::app_infra::AppInfra) -> ::app_infra::Result<Option<()>> {
+    async fn process_once(
+        self,
+        infra: &::app_infra::AppInfra,
+        app_handle: Option<&tauri::AppHandle>,
+    ) -> ::app_infra::Result<ProcessingWorkerPass> {
         match self {
-            Self::NonTranscriptionAndFrameBatch => process_pending_jobs_once(infra).await,
+            Self::NonTranscriptionAndFrameBatch => {
+                process_pending_jobs_once(infra, app_handle).await
+            }
             Self::AudioTranscription => process_pending_audio_transcription_jobs_once(infra).await,
             Self::SpeakerAnalysis => process_pending_speaker_analysis_jobs_once(infra).await,
         }
@@ -2054,6 +2091,7 @@ fn spawn_processing_worker_loop(
     infra: AppInfraState,
     base_dir_display: String,
     worker_kind: ProcessingWorkerKind,
+    app_handle: Option<tauri::AppHandle>,
     background_workers: BackgroundWorkersState,
 ) {
     let worker_name = worker_kind.name();
@@ -2073,8 +2111,8 @@ fn spawn_processing_worker_loop(
                 break;
             }
 
-            match worker_kind.process_once(&infra).await {
-                Ok(Some(_)) => {
+            match worker_kind.process_once(&infra, app_handle.as_ref()).await {
+                Ok(ProcessingWorkerPass::DidWork) => {
                     if consecutive_failures > 0 {
                         crate::native_capture::debug_log::log_info(format!(
                             "app infrastructure {worker_name} worker recovered after {} failed iteration(s) (base_dir='{}')",
@@ -2085,7 +2123,7 @@ fn spawn_processing_worker_loop(
 
                     continue;
                 }
-                Ok(None) => {
+                Ok(pass @ (ProcessingWorkerPass::Idle | ProcessingWorkerPass::IdleFor(_))) => {
                     if consecutive_failures > 0 {
                         crate::native_capture::debug_log::log_info(format!(
                             "app infrastructure {worker_name} worker recovered after {} failed iteration(s) (base_dir='{}')",
@@ -2094,9 +2132,15 @@ fn spawn_processing_worker_loop(
                         consecutive_failures = 0;
                     }
 
-                    if shutdown_aware_sleep(&mut shutdown_rx, PROCESSING_WORKER_IDLE_POLL_INTERVAL)
-                        .await
-                    {
+                    let sleep_duration = match pass {
+                        ProcessingWorkerPass::IdleFor(duration) => {
+                            duration.min(PROCESSING_WORKER_IDLE_POLL_INTERVAL)
+                        }
+                        ProcessingWorkerPass::Idle => PROCESSING_WORKER_IDLE_POLL_INTERVAL,
+                        ProcessingWorkerPass::DidWork => continue,
+                    };
+
+                    if shutdown_aware_sleep(&mut shutdown_rx, sleep_duration).await {
                         break;
                     }
                 }
@@ -2459,9 +2503,11 @@ fn active_screen_session_id_for_hidden_workspace_repair(
 
 async fn process_pending_jobs_once(
     infra: &::app_infra::AppInfra,
-) -> ::app_infra::Result<Option<()>> {
+    app_handle: Option<&tauri::AppHandle>,
+) -> ::app_infra::Result<ProcessingWorkerPass> {
     let did_processing = infra
         .process_next_processing_job_excluding_processors(&[
+            ::app_infra::OCR_PROCESSOR,
             ::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR,
             ::app_infra::SPEAKER_ANALYSIS_PROCESSOR,
         ])
@@ -2478,38 +2524,90 @@ async fn process_pending_jobs_once(
         }
     };
 
-    if did_processing || did_finalize {
-        Ok(Some(()))
+    let ocr_outcome =
+        crate::ocr_budget::process_pending_ocr_job_once(infra, live_recording_active(app_handle))
+            .await?;
+    let did_ocr = ocr_outcome == crate::ocr_budget::OcrProcessingPass::DidWork;
+    let did_finalize_after_ocr = if did_ocr {
+        match infra.process_next_frame_batch_job().await {
+            Ok(result) => result.is_some(),
+            Err(error) => {
+                crate::native_capture::debug_log::log_error(format!(
+                    "app infrastructure frame-batch finalization failed after OCR state update; worker will continue: {error}"
+                ));
+                true
+            }
+        }
     } else {
-        Ok(None)
+        false
+    };
+
+    if did_processing || did_finalize || did_ocr || did_finalize_after_ocr {
+        Ok(ProcessingWorkerPass::DidWork)
+    } else if let crate::ocr_budget::OcrProcessingPass::CoolingDown(duration) = ocr_outcome {
+        Ok(ProcessingWorkerPass::IdleFor(duration))
+    } else {
+        Ok(ProcessingWorkerPass::Idle)
     }
+}
+
+#[cfg(test)]
+fn parse_job_timestamp(value: &str) -> Option<OffsetDateTime> {
+    if let Ok(parsed) = OffsetDateTime::parse(value, &Rfc3339) {
+        return Some(parsed);
+    }
+
+    let sqlite_format =
+        format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").ok()?;
+    PrimitiveDateTime::parse(value, &sqlite_format)
+        .ok()
+        .map(|parsed| parsed.assume_utc())
+}
+
+#[cfg(test)]
+fn timestamp_delta_ms(start: Option<&str>, end: Option<&str>) -> Option<i64> {
+    let start = parse_job_timestamp(start?)?;
+    let end = parse_job_timestamp(end?)?;
+    Some((end - start).whole_milliseconds().max(0) as i64)
+}
+
+fn live_recording_active(app_handle: Option<&tauri::AppHandle>) -> bool {
+    app_handle
+        .and_then(|app_handle| app_handle.try_state::<crate::native_capture::NativeCaptureState>())
+        .and_then(|state| {
+            state
+                .lock()
+                .ok()
+                .map(|lifecycle| lifecycle.runtime().is_running)
+        })
+        .unwrap_or(false)
 }
 
 async fn process_pending_audio_transcription_jobs_once(
     infra: &::app_infra::AppInfra,
-) -> ::app_infra::Result<Option<()>> {
+) -> ::app_infra::Result<ProcessingWorkerPass> {
     if infra
         .process_next_processing_job_for_processor(::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR)
         .await?
         .is_some()
     {
-        Ok(Some(()))
+        Ok(ProcessingWorkerPass::DidWork)
     } else {
-        Ok(None)
+        Ok(ProcessingWorkerPass::Idle)
     }
 }
 
 async fn process_pending_speaker_analysis_jobs_once(
     infra: &::app_infra::AppInfra,
-) -> ::app_infra::Result<Option<()>> {
+) -> ::app_infra::Result<ProcessingWorkerPass> {
     if infra
         .process_next_processing_job_for_processor(::app_infra::SPEAKER_ANALYSIS_PROCESSOR)
         .await?
         .is_some()
     {
-        Ok(Some(()))
+        Ok(ProcessingWorkerPass::DidWork)
     } else {
-        Ok(None)
+        Ok(ProcessingWorkerPass::Idle)
     }
 }
 
@@ -3503,6 +3601,18 @@ mod tests {
             .build()
             .expect("test runtime should build")
             .block_on(test);
+    }
+
+    #[test]
+    fn timestamp_delta_ms_accepts_sqlite_current_timestamp_format() {
+        assert_eq!(
+            timestamp_delta_ms(Some("2026-04-12 10:00:00"), Some("2026-04-12 10:00:02")),
+            Some(2000)
+        );
+        assert_eq!(
+            timestamp_delta_ms(Some("2026-04-12T10:00:00Z"), Some("2026-04-12T10:00:02Z")),
+            Some(2000)
+        );
     }
 
     #[test]
@@ -4782,10 +4892,10 @@ mod tests {
                 .await
                 .expect("frame and job should persist");
 
-            let processed = process_pending_jobs_once(&infra)
+            let processed = process_pending_jobs_once(&infra, None)
                 .await
                 .expect("worker iteration should succeed");
-            assert_eq!(processed, Some(()));
+            assert_eq!(processed, ProcessingWorkerPass::DidWork);
 
             let job = infra
                 .get_processing_job(persisted.job.id)
@@ -4815,10 +4925,10 @@ mod tests {
                 .await
                 .expect("transcription job should enqueue");
 
-            let processed = process_pending_jobs_once(&infra)
+            let processed = process_pending_jobs_once(&infra, None)
                 .await
                 .expect("non-transcription worker should succeed");
-            assert_eq!(processed, None);
+            assert_eq!(processed, ProcessingWorkerPass::Idle);
             let still_queued = infra
                 .get_processing_job(job.id)
                 .await
@@ -4832,7 +4942,7 @@ mod tests {
             let processed = process_pending_audio_transcription_jobs_once(&infra)
                 .await
                 .expect("transcription worker should succeed");
-            assert_eq!(processed, Some(()));
+            assert_eq!(processed, ProcessingWorkerPass::DidWork);
             let failed = infra
                 .get_processing_job(job.id)
                 .await
@@ -4844,6 +4954,69 @@ mod tests {
                 failed.last_error.as_deref(),
                 Some("audio segment 123 was not found")
             );
+        });
+    }
+
+    #[test]
+    fn ocr_pacing_state_is_scoped_to_app_infra_base_dir() {
+        run_async_test(async {
+            let first_dir = TestDir::new("ocr-pacing-first");
+            let first_infra = ::app_infra::AppInfra::initialize(first_dir.path())
+                .await
+                .expect("first app infra should initialize");
+            let first = first_infra
+                .debug_insert_frame_and_enqueue_ocr_job(
+                    &::app_infra::NewFrame::new(
+                        "session-first",
+                        "/tmp/frame-first.png",
+                        "2026-04-12T10:00:00Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect("first OCR job should enqueue");
+
+            assert_eq!(
+                crate::ocr_budget::process_pending_ocr_job_once(&first_infra, true)
+                    .await
+                    .expect("first OCR worker pass should succeed"),
+                crate::ocr_budget::OcrProcessingPass::DidWork
+            );
+            let first_job = first_infra
+                .get_processing_job(first.job.id)
+                .await
+                .expect("first job should be readable")
+                .expect("first job should exist");
+            assert_eq!(first_job.status, ::app_infra::ProcessingJobStatus::Failed);
+
+            let second_dir = TestDir::new("ocr-pacing-second");
+            let second_infra = ::app_infra::AppInfra::initialize(second_dir.path())
+                .await
+                .expect("second app infra should initialize");
+            let second = second_infra
+                .debug_insert_frame_and_enqueue_ocr_job(
+                    &::app_infra::NewFrame::new(
+                        "session-second",
+                        "/tmp/frame-second.png",
+                        "2026-04-12T10:00:01Z",
+                    ),
+                    None,
+                )
+                .await
+                .expect("second OCR job should enqueue");
+
+            assert_eq!(
+                crate::ocr_budget::process_pending_ocr_job_once(&second_infra, false)
+                    .await
+                    .expect("second OCR worker pass should succeed"),
+                crate::ocr_budget::OcrProcessingPass::DidWork
+            );
+            let second_job = second_infra
+                .get_processing_job(second.job.id)
+                .await
+                .expect("second job should be readable")
+                .expect("second job should exist");
+            assert_eq!(second_job.status, ::app_infra::ProcessingJobStatus::Failed);
         });
     }
 
@@ -4878,10 +5051,10 @@ mod tests {
                 .await
                 .expect("second frame should persist");
 
-            let processed = process_pending_jobs_once(&infra)
+            let processed = process_pending_jobs_once(&infra, None)
                 .await
                 .expect("worker iteration should succeed");
-            assert_eq!(processed, Some(()));
+            assert_eq!(processed, ProcessingWorkerPass::DidWork);
 
             let batches = infra
                 .list_frame_batches(Some("session-batch-worker"))

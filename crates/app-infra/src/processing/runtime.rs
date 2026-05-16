@@ -290,6 +290,62 @@ mod tests {
     }
 
     #[test]
+    fn runtime_claims_next_queued_job_for_requested_processor() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-runtime-processor-claim");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(database.pool().clone());
+            let alpha = Arc::new(RecordingBackend::successful("alpha", "alpha result"));
+            let beta = Arc::new(RecordingBackend::successful("beta", "beta result"));
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new()
+                    .register_arc(alpha.clone())
+                    .register_arc(beta.clone()),
+            );
+
+            let alpha_job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    "alpha",
+                ))
+                .await
+                .expect("alpha job should enqueue");
+            let beta_job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 2),
+                    "beta",
+                ))
+                .await
+                .expect("beta job should enqueue");
+
+            let outcome = runtime
+                .process_next_queued_job_for_processor("beta")
+                .await
+                .expect("runtime should process requested processor")
+                .expect("requested processor job should exist");
+
+            let ProcessingJobRunOutcome::Completed(completion) = outcome else {
+                panic!("expected completed outcome");
+            };
+            assert_eq!(completion.job.id, beta_job.id);
+            assert!(alpha.processed_job_ids().is_empty());
+            assert_eq!(beta.processed_job_ids(), vec![beta_job.id]);
+            assert_eq!(
+                store
+                    .get_job(alpha_job.id)
+                    .await
+                    .expect("alpha job should be readable")
+                    .expect("alpha job should exist")
+                    .status,
+                ProcessingJobStatus::Queued
+            );
+        });
+    }
+
+    #[test]
     fn runtime_processes_queued_ocr_jobs_and_round_trips_structured_results() {
         run_async_test(async {
             let dir = TestDir::new("processing-runtime-ocr-success");
