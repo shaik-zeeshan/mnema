@@ -24,7 +24,10 @@ use futures_util::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime::JoinHandle, path::BaseDirectory, Emitter, Manager};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{
+    format_description::{self, well_known::Rfc3339},
+    OffsetDateTime, PrimitiveDateTime,
+};
 use tokio::sync::{oneshot, watch};
 
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
@@ -3291,18 +3294,21 @@ fn spawn_processing_worker(
         Arc::clone(&infra),
         base_dir_display.clone(),
         ProcessingWorkerKind::NonTranscriptionAndFrameBatch,
+        Some(app_handle.clone()),
         background_workers.clone(),
     );
     spawn_processing_worker_loop(
         Arc::clone(&infra),
         base_dir_display.clone(),
         ProcessingWorkerKind::AudioTranscription,
+        None,
         background_workers.clone(),
     );
     spawn_processing_worker_loop(
         Arc::clone(&infra),
         base_dir_display,
         ProcessingWorkerKind::SpeakerAnalysis,
+        None,
         background_workers.clone(),
     );
 
@@ -3325,9 +3331,15 @@ impl ProcessingWorkerKind {
         }
     }
 
-    async fn process_once(self, infra: &::app_infra::AppInfra) -> ::app_infra::Result<Option<()>> {
+    async fn process_once(
+        self,
+        infra: &::app_infra::AppInfra,
+        app_handle: Option<&tauri::AppHandle>,
+    ) -> ::app_infra::Result<Option<()>> {
         match self {
-            Self::NonTranscriptionAndFrameBatch => process_pending_jobs_once(infra).await,
+            Self::NonTranscriptionAndFrameBatch => {
+                process_pending_jobs_once(infra, app_handle).await
+            }
             Self::AudioTranscription => process_pending_audio_transcription_jobs_once(infra).await,
             Self::SpeakerAnalysis => process_pending_speaker_analysis_jobs_once(infra).await,
         }
@@ -3380,6 +3392,7 @@ fn spawn_processing_worker_loop(
     infra: AppInfraState,
     base_dir_display: String,
     worker_kind: ProcessingWorkerKind,
+    app_handle: Option<tauri::AppHandle>,
     background_workers: BackgroundWorkersState,
 ) {
     let worker_name = worker_kind.name();
@@ -3399,7 +3412,7 @@ fn spawn_processing_worker_loop(
                 break;
             }
 
-            match worker_kind.process_once(&infra).await {
+            match worker_kind.process_once(&infra, app_handle.as_ref()).await {
                 Ok(Some(_)) => {
                     if consecutive_failures > 0 {
                         crate::native_capture::debug_log::log_info(format!(
@@ -3777,6 +3790,7 @@ fn active_screen_session_id_for_hidden_workspace_repair(
 
 async fn process_pending_jobs_once(
     infra: &::app_infra::AppInfra,
+    app_handle: Option<&tauri::AppHandle>,
 ) -> ::app_infra::Result<Option<()>> {
     let did_processing = infra
         .process_next_processing_job_excluding_processors(&[
@@ -3797,7 +3811,9 @@ async fn process_pending_jobs_once(
         }
     };
 
-    let did_ocr = process_pending_ocr_job_once(infra).await?.is_some();
+    let did_ocr = process_pending_ocr_job_once(infra, live_recording_active(app_handle))
+        .await?
+        .is_some();
     let did_finalize_after_ocr = if did_ocr {
         match infra.process_next_frame_batch_job().await {
             Ok(result) => result.is_some(),
@@ -3858,10 +3874,34 @@ fn ocr_cooldown_duration(last_run_ms: u64, recording_active: bool) -> Duration {
     }
 }
 
-fn rfc3339_delta_ms(start: Option<&str>, end: Option<&str>) -> Option<i64> {
-    let start = OffsetDateTime::parse(start?, &Rfc3339).ok()?;
-    let end = OffsetDateTime::parse(end?, &Rfc3339).ok()?;
+fn parse_job_timestamp(value: &str) -> Option<OffsetDateTime> {
+    if let Ok(parsed) = OffsetDateTime::parse(value, &Rfc3339) {
+        return Some(parsed);
+    }
+
+    let sqlite_format =
+        format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").ok()?;
+    PrimitiveDateTime::parse(value, &sqlite_format)
+        .ok()
+        .map(|parsed| parsed.assume_utc())
+}
+
+fn timestamp_delta_ms(start: Option<&str>, end: Option<&str>) -> Option<i64> {
+    let start = parse_job_timestamp(start?)?;
+    let end = parse_job_timestamp(end?)?;
     Some((end - start).whole_milliseconds().max(0) as i64)
+}
+
+fn live_recording_active(app_handle: Option<&tauri::AppHandle>) -> bool {
+    app_handle
+        .and_then(|app_handle| app_handle.try_state::<crate::native_capture::NativeCaptureState>())
+        .and_then(|state| {
+            state
+                .lock()
+                .ok()
+                .map(|lifecycle| lifecycle.runtime().is_running)
+        })
+        .unwrap_or(false)
 }
 
 fn ocr_observation_count(structured_payload_json: Option<&str>) -> Option<i64> {
@@ -3912,7 +3952,7 @@ async fn persist_ocr_telemetry_for_outcome(
         recognition_mode,
         status: status.to_string(),
         run_duration_ms,
-        queue_wait_ms: rfc3339_delta_ms(Some(&job.created_at), job.started_at.as_deref()),
+        queue_wait_ms: timestamp_delta_ms(Some(&job.created_at), job.started_at.as_deref()),
         result_text_length: result
             .and_then(|result| result.result_text.as_ref())
             .map(|text| text.chars().count().min(i64::MAX as usize) as i64),
@@ -3930,6 +3970,7 @@ async fn persist_ocr_telemetry_for_outcome(
 
 async fn process_pending_ocr_job_once(
     infra: &::app_infra::AppInfra,
+    recording_active: bool,
 ) -> ::app_infra::Result<Option<()>> {
     let now = Instant::now();
     {
@@ -3951,21 +3992,9 @@ async fn process_pending_ocr_job_once(
     let run_duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
     persist_ocr_telemetry_for_outcome(infra, &outcome, run_duration_ms).await;
 
-    let (job_id, frame_id) = match &outcome {
-        ::app_infra::ProcessingJobRunOutcome::Completed(completion) => {
-            (completion.job.id, Some(completion.job.subject_id))
-        }
-        ::app_infra::ProcessingJobRunOutcome::Failed(job) => (job.id, Some(job.subject_id)),
-    };
-    let recording_active = match frame_id {
-        Some(frame_id) => infra
-            .get_ocr_admission_for_frame(frame_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|decision| decision.recording_active)
-            .unwrap_or(false),
-        None => false,
+    let job_id = match &outcome {
+        ::app_infra::ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+        ::app_infra::ProcessingJobRunOutcome::Failed(job) => job.id,
     };
     let cooldown = ocr_cooldown_duration(run_duration_ms.max(0) as u64, recording_active);
     {
@@ -5096,6 +5125,18 @@ mod tests {
             .build()
             .expect("test runtime should build")
             .block_on(test);
+    }
+
+    #[test]
+    fn timestamp_delta_ms_accepts_sqlite_current_timestamp_format() {
+        assert_eq!(
+            timestamp_delta_ms(Some("2026-04-12 10:00:00"), Some("2026-04-12 10:00:02")),
+            Some(2000)
+        );
+        assert_eq!(
+            timestamp_delta_ms(Some("2026-04-12T10:00:00Z"), Some("2026-04-12T10:00:02Z")),
+            Some(2000)
+        );
     }
 
     #[test]
@@ -6248,7 +6289,7 @@ mod tests {
                 .await
                 .expect("frame and job should persist");
 
-            let processed = process_pending_jobs_once(&infra)
+            let processed = process_pending_jobs_once(&infra, None)
                 .await
                 .expect("worker iteration should succeed");
             assert_eq!(processed, Some(()));
@@ -6281,7 +6322,7 @@ mod tests {
                 .await
                 .expect("transcription job should enqueue");
 
-            let processed = process_pending_jobs_once(&infra)
+            let processed = process_pending_jobs_once(&infra, None)
                 .await
                 .expect("non-transcription worker should succeed");
             assert_eq!(processed, None);
@@ -6344,7 +6385,7 @@ mod tests {
                 .await
                 .expect("second frame should persist");
 
-            let processed = process_pending_jobs_once(&infra)
+            let processed = process_pending_jobs_once(&infra, None)
                 .await
                 .expect("worker iteration should succeed");
             assert_eq!(processed, Some(()));

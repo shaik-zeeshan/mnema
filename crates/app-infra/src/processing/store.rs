@@ -797,8 +797,8 @@ impl ProcessingStore {
                  WHERE frame.session_id = ?1 \
                    AND frame.file_path LIKE ?2 ESCAPE '\\' \
                    AND admission.outcome = 'admitted' \
-                   AND frame.captured_at >= datetime(?3, '-' || ?4 || ' seconds') \
-                   AND frame.captured_at <= ?3 \
+                   AND julianday(frame.captured_at) >= julianday(?3, '-' || ?4 || ' seconds') \
+                   AND julianday(frame.captured_at) <= julianday(?3) \
                  LIMIT 1",
             )
             .bind(session_id)
@@ -813,8 +813,8 @@ impl ProcessingStore {
                  JOIN frames AS frame ON frame.id = admission.frame_id \
                  WHERE frame.session_id = ?1 \
                    AND admission.outcome = 'admitted' \
-                   AND frame.captured_at >= datetime(?2, '-' || ?3 || ' seconds') \
-                   AND frame.captured_at <= ?2 \
+                   AND julianday(frame.captured_at) >= julianday(?2, '-' || ?3 || ' seconds') \
+                   AND julianday(frame.captured_at) <= julianday(?2) \
                  LIMIT 1",
             )
             .bind(session_id)

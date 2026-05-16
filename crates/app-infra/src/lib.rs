@@ -6268,6 +6268,46 @@ mod tests {
     }
 
     #[test]
+    fn recent_ocr_admission_uses_chronological_timestamp_range() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-ocr-recent-range");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            infra
+                .capture_frame(
+                    &test_frame_at("session-ocr-range", "frame-old.png", "2026-04-12T10:00:00Z"),
+                    None,
+                )
+                .await
+                .expect("first frame should persist with OCR admission");
+
+            let recent = infra
+                .has_recent_admitted_ocr_in_scope(
+                    "session-ocr-range",
+                    None,
+                    "2026-04-12T10:00:10Z",
+                    15,
+                )
+                .await
+                .expect("recent OCR admission check should succeed");
+            assert!(recent);
+
+            let stale = infra
+                .has_recent_admitted_ocr_in_scope(
+                    "session-ocr-range",
+                    None,
+                    "2026-04-12T10:00:20Z",
+                    15,
+                )
+                .await
+                .expect("stale OCR admission check should succeed");
+            assert!(!stale);
+        });
+    }
+
+    #[test]
     fn duplicate_fingerprinted_frames_skip_redundant_ocr_jobs() {
         run_async_test(async {
             let dir = TestDir::new("processing-ocr-dedupe");
