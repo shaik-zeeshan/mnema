@@ -7293,6 +7293,13 @@ mod tests {
                 )
                 .await
                 .expect("job should complete");
+            sqlx::query(
+                "UPDATE processing_jobs SET queued_at = '2000-01-01 00:00:00' WHERE id = ?1",
+            )
+            .bind(queued_job.id)
+            .execute(infra.pool())
+            .await
+            .expect("queued timestamp should be adjustable");
             assert!(infra
                 .get_processing_result_for_job(queued_job.id)
                 .await
@@ -7311,6 +7318,7 @@ mod tests {
             assert_eq!(reprocessed.job.id, queued_job.id);
             assert_eq!(reprocessed.job.status, ProcessingJobStatus::Queued);
             assert_eq!(reprocessed.job.attempt_count, 1);
+            assert_ne!(reprocessed.job.queued_at, "2000-01-01 00:00:00");
             assert_eq!(
                 reprocessed.job.payload_json.as_deref(),
                 Some("{\"language\":\"fra\"}")

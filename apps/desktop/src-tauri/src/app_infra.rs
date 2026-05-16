@@ -799,6 +799,7 @@ pub struct ProcessingJobDto {
     pub payload_json: Option<String>,
     pub last_error: Option<String>,
     pub created_at: String,
+    pub queued_at: String,
     pub updated_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -1015,6 +1016,7 @@ impl From<::app_infra::ProcessingJob> for ProcessingJobDto {
             payload_json: job.payload_json,
             last_error: job.last_error,
             created_at: job.created_at,
+            queued_at: job.queued_at,
             updated_at: job.updated_at,
             started_at: job.started_at,
             finished_at: job.finished_at,
@@ -3909,6 +3911,10 @@ fn timestamp_delta_ms(start: Option<&str>, end: Option<&str>) -> Option<i64> {
     Some((end - start).whole_milliseconds().max(0) as i64)
 }
 
+fn processing_job_queue_wait_ms(job: &::app_infra::ProcessingJob) -> Option<i64> {
+    timestamp_delta_ms(Some(&job.queued_at), job.started_at.as_deref())
+}
+
 fn live_recording_active(app_handle: Option<&tauri::AppHandle>) -> bool {
     app_handle
         .and_then(|app_handle| app_handle.try_state::<crate::native_capture::NativeCaptureState>())
@@ -3969,7 +3975,7 @@ async fn persist_ocr_telemetry_for_outcome(
         recognition_mode,
         status: status.to_string(),
         run_duration_ms,
-        queue_wait_ms: timestamp_delta_ms(Some(&job.created_at), job.started_at.as_deref()),
+        queue_wait_ms: processing_job_queue_wait_ms(job),
         result_text_length: result
             .and_then(|result| result.result_text.as_ref())
             .map(|text| text.chars().count().min(i64::MAX as usize) as i64),
@@ -6481,6 +6487,27 @@ mod tests {
                 .expect("job should exist");
             assert_eq!(job.status, ::app_infra::ProcessingJobStatus::Failed);
         });
+    }
+
+    #[test]
+    fn processing_job_queue_wait_uses_queued_at_not_created_at() {
+        let job = ::app_infra::ProcessingJob {
+            id: 42,
+            subject_type: ::app_infra::FRAME_SUBJECT_TYPE.to_string(),
+            subject_id: 7,
+            processor: ::app_infra::OCR_PROCESSOR.to_string(),
+            status: ::app_infra::ProcessingJobStatus::Failed,
+            attempt_count: 2,
+            payload_json: None,
+            last_error: None,
+            created_at: "2000-01-01 00:00:00".to_string(),
+            queued_at: "2026-05-16 10:00:00".to_string(),
+            updated_at: "2026-05-16 10:00:03".to_string(),
+            started_at: Some("2026-05-16 10:00:03".to_string()),
+            finished_at: Some("2026-05-16 10:00:04".to_string()),
+        };
+
+        assert_eq!(processing_job_queue_wait_ms(&job), Some(3_000));
     }
 
     #[test]

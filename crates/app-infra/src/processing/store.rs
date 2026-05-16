@@ -221,7 +221,7 @@ impl ProcessingStore {
         let row = sqlx::query(
             "SELECT \
                 id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                created_at, updated_at, started_at, finished_at \
+                created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE subject_type = ?1 AND subject_id = ?2 AND processor = ?3 \
              ORDER BY id DESC \
@@ -287,6 +287,7 @@ impl ProcessingStore {
              SET status = 'queued', \
                  payload_json = COALESCE(?2, payload_json), \
                  last_error = NULL, \
+                 queued_at = CURRENT_TIMESTAMP, \
                  started_at = NULL, \
                  finished_at = NULL, \
                  updated_at = CURRENT_TIMESTAMP \
@@ -713,7 +714,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT \
                 id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                created_at, updated_at, started_at, finished_at \
+                created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE subject_type = ?1 AND subject_id = ?2 \
              ORDER BY id DESC",
@@ -733,7 +734,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT \
                 id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                created_at, updated_at, started_at, finished_at \
+                created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE processor = ?1 AND status = 'running' \
              ORDER BY id ASC",
@@ -885,7 +886,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT \
                 id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-                created_at, updated_at, started_at, finished_at \
+                created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE processor = ?1 AND status IN ('queued', 'failed') \
              ORDER BY id ASC",
@@ -2917,8 +2918,8 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let result = sqlx::query(
-        "INSERT INTO processing_jobs (subject_type, subject_id, processor, status, payload_json) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO processing_jobs (subject_type, subject_id, processor, status, payload_json, queued_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)",
     )
     .bind(subject.subject_type())
     .bind(subject.subject_id)
@@ -3029,7 +3030,7 @@ where
     let row = sqlx::query(
         "SELECT \
             id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
-            created_at, updated_at, started_at, finished_at \
+            created_at, queued_at, updated_at, started_at, finished_at \
          FROM processing_jobs \
          WHERE id = ?1",
     )
@@ -3189,6 +3190,7 @@ fn map_processing_job(row: SqliteRow) -> Result<ProcessingJob> {
         payload_json: row.get("payload_json"),
         last_error: row.get("last_error"),
         created_at: row.get("created_at"),
+        queued_at: row.get("queued_at"),
         updated_at: row.get("updated_at"),
         started_at: row.get("started_at"),
         finished_at: row.get("finished_at"),
