@@ -525,10 +525,17 @@
   const requestedTimelineAppIconBundleIds = new Set<string>();
 
   function handleActivePreviewLoadError(frameId: number): void {
-    if (!previewCache.has(frameId) && scrubPreviewCache.has(frameId)) {
-      dropScrubPreviewCacheEntry(frameId);
+    const activeIndex = timelineFrames.findIndex((frame) => frame.id === frameId);
+    const activeFrame = activeIndex >= 0 ? timelineFrames[activeIndex] : null;
+    const intervalPreview = scrubPreviewIntervalForFrame(activeFrame);
+    if (!previewCache.has(frameId) && (scrubPreviewCache.has(frameId) || intervalPreview)) {
+      if (intervalPreview) {
+        dropScrubPreviewIntervalCacheEntry(intervalPreview);
+      }
+      if (scrubPreviewCache.has(frameId)) {
+        dropScrubPreviewCacheEntry(frameId);
+      }
       rememberScrubPreviewFailure(frameId);
-      const activeIndex = timelineFrames.findIndex((frame) => frame.id === frameId);
       if (activeIndex >= 0) {
         scrubPreviewFetchGeneration += 1;
         const gen = scrubPreviewFetchGeneration;
@@ -3038,6 +3045,14 @@
       if (oldestKey == null) break;
       next.delete(oldestKey);
     }
+    scrubPreviewIntervalCache = next;
+  }
+
+  function dropScrubPreviewIntervalCacheEntry(interval: ScrubPreviewAvailabilityIntervalDto): void {
+    const key = scrubPreviewIntervalKey(interval);
+    if (!scrubPreviewIntervalCache.has(key)) return;
+    const next = new Map(scrubPreviewIntervalCache);
+    next.delete(key);
     scrubPreviewIntervalCache = next;
   }
 

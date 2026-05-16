@@ -2268,6 +2268,32 @@ fn indexed_scrub_preview_offsets(
     offsets
 }
 
+fn scrub_preview_last_bucket(duration_ms: u64, has_indexed_offsets: bool) -> u64 {
+    if duration_ms == 0 && has_indexed_offsets {
+        return SCRUB_PREVIEW_INTERVAL_MS;
+    }
+    ((duration_ms + SCRUB_PREVIEW_INTERVAL_MS - 1) / SCRUB_PREVIEW_INTERVAL_MS)
+        * SCRUB_PREVIEW_INTERVAL_MS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scrub_preview_last_bucket_emits_one_interval_for_indexed_zero_duration_segment() {
+        assert_eq!(
+            scrub_preview_last_bucket(0, true),
+            SCRUB_PREVIEW_INTERVAL_MS
+        );
+    }
+
+    #[test]
+    fn scrub_preview_last_bucket_keeps_empty_zero_duration_segment_empty() {
+        assert_eq!(scrub_preview_last_bucket(0, false), 0);
+    }
+}
+
 fn scrub_preview_segment_bounds_unix_ms(
     segment_started_unix_ms: i64,
     segment_ended_unix_ms: i64,
@@ -2501,16 +2527,13 @@ pub async fn get_scrub_preview_availability(
         };
 
         let indexed_offsets = indexed_scrub_preview_offsets(&index);
-        let (segment_started_unix_ms, segment_ended_unix_ms) =
-            scrub_preview_segment_bounds_unix_ms(
-                segment_started_unix_ms,
-                segment_ended_unix_ms,
-                &index,
-            );
+        let (segment_started_unix_ms, segment_ended_unix_ms) = scrub_preview_segment_bounds_unix_ms(
+            segment_started_unix_ms,
+            segment_ended_unix_ms,
+            &index,
+        );
         let duration_ms = (segment_ended_unix_ms - segment_started_unix_ms).max(0) as u64;
-        let last_bucket = ((duration_ms + SCRUB_PREVIEW_INTERVAL_MS - 1)
-            / SCRUB_PREVIEW_INTERVAL_MS)
-            * SCRUB_PREVIEW_INTERVAL_MS;
+        let last_bucket = scrub_preview_last_bucket(duration_ms, !indexed_offsets.is_empty());
         let mut missing_for_generation = Vec::new();
         let mut bucket = 0;
         while bucket < last_bucket {

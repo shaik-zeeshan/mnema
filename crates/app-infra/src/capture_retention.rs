@@ -285,8 +285,16 @@ impl CaptureRetentionStore {
                 workspace_dir_path = COALESCE(excluded.workspace_dir_path, capture_segments.workspace_dir_path),
                 frame_dir_path = COALESCE(excluded.frame_dir_path, capture_segments.frame_dir_path),
                 sidecar_file_path = COALESCE(excluded.sidecar_file_path, capture_segments.sidecar_file_path),
-                started_at = MIN(capture_segments.started_at, excluded.started_at),
-                ended_at = MAX(capture_segments.ended_at, excluded.ended_at),
+                started_at = CASE
+                    WHEN julianday(excluded.started_at) < julianday(capture_segments.started_at)
+                    THEN excluded.started_at
+                    ELSE capture_segments.started_at
+                END,
+                ended_at = CASE
+                    WHEN julianday(excluded.ended_at) > julianday(capture_segments.ended_at)
+                    THEN excluded.ended_at
+                    ELSE capture_segments.ended_at
+                END,
                 status = excluded.status,
                 updated_at = CURRENT_TIMESTAMP",
         )
@@ -354,13 +362,13 @@ impl CaptureRetentionStore {
                AND status != 'recording'
                AND media_file_path IS NOT NULL
                AND (
-                 (ended_at >= ?1 AND started_at <= ?2)
+                 (julianday(ended_at) >= julianday(?1) AND julianday(started_at) <= julianday(?2))
                  OR id IN (
                    SELECT capture_segment_id
                    FROM frames
                    WHERE capture_segment_id IS NOT NULL
-                     AND captured_at >= ?1
-                     AND captured_at <= ?2
+                     AND julianday(captured_at) >= julianday(?1)
+                     AND julianday(captured_at) <= julianday(?2)
                  )
                )
              ORDER BY started_at ASC, id ASC",
@@ -1707,6 +1715,60 @@ mod tests {
     }
 
     #[test]
+    fn screen_segment_upsert_orders_mixed_precision_timestamps_by_time() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            let store = CaptureRetentionStore::new(pool);
+
+            store
+                .upsert_capture_segment(&NewCaptureSegment {
+                    capture_session_id: "capture-1".to_string(),
+                    source_kind: CaptureSourceKind::Screen,
+                    source_session_id: "screen-source-1".to_string(),
+                    segment_index: 1,
+                    media_file_path: Some("/tmp/segment.mov".to_string()),
+                    workspace_dir_path: None,
+                    frame_dir_path: None,
+                    sidecar_file_path: None,
+                    started_at: "2026-05-16T07:45:30.100Z".to_string(),
+                    ended_at: "2026-05-16T07:45:30Z".to_string(),
+                    status: "completed".to_string(),
+                })
+                .await
+                .expect("initial segment should upsert");
+            let segment = store
+                .upsert_capture_segment(&NewCaptureSegment {
+                    capture_session_id: "capture-1".to_string(),
+                    source_kind: CaptureSourceKind::Screen,
+                    source_session_id: "screen-source-1".to_string(),
+                    segment_index: 1,
+                    media_file_path: Some("/tmp/segment.mov".to_string()),
+                    workspace_dir_path: None,
+                    frame_dir_path: None,
+                    sidecar_file_path: None,
+                    started_at: "2026-05-16T07:45:30Z".to_string(),
+                    ended_at: "2026-05-16T07:45:30.100Z".to_string(),
+                    status: "completed".to_string(),
+                })
+                .await
+                .expect("later segment should upsert");
+
+            assert_eq!(segment.started_at, "2026-05-16T07:45:30Z");
+            assert_eq!(segment.ended_at, "2026-05-16T07:45:30.100Z");
+        });
+    }
+
+    #[test]
     fn screen_segment_window_query_finds_legacy_zero_duration_segment_by_frame_time() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1735,7 +1797,7 @@ mod tests {
             .expect("legacy zero-duration segment should insert");
             sqlx::query(
                 "INSERT INTO frames (session_id, file_path, captured_at, capture_segment_id)
-                 VALUES ('screen-source-1', '/tmp/frame.jpg', '2026-05-16T07:45:31.105Z', 42)",
+                 VALUES ('screen-source-1', '/tmp/frame.jpg', '2026-05-16T07:45:30.100Z', 42)",
             )
             .execute(&pool)
             .await
@@ -1745,7 +1807,7 @@ mod tests {
             let segments = store
                 .list_finalized_screen_segments_overlapping_window(
                     "2026-05-16T07:45:30Z",
-                    "2026-05-16T07:45:32Z",
+                    "2026-05-16T07:45:31Z",
                 )
                 .await
                 .expect("segments should query");
