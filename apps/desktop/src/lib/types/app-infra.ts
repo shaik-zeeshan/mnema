@@ -172,10 +172,12 @@ export interface SearchCaptureRequest {
 	frameOffset?: number;
 	audioLimit?: number;
 	audioOffset?: number;
+	snapshotDocumentId?: number;
 }
 
 export interface SearchCaptureResponse {
 	normalizedQuery: string;
+	snapshotDocumentId: number;
 	frames: FrameSearchResultDto[];
 	audio: AudioSearchResultDto[];
 	hasMoreFrames: boolean;

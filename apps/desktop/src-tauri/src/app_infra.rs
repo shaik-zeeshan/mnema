@@ -477,12 +477,14 @@ pub struct SearchCaptureRequest {
     pub frame_offset: Option<u32>,
     pub audio_limit: Option<u32>,
     pub audio_offset: Option<u32>,
+    pub snapshot_document_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchCaptureResponseDto {
     pub normalized_query: String,
+    pub snapshot_document_id: i64,
     pub frames: Vec<FrameSearchResultDto>,
     pub audio: Vec<AudioSearchResultDto>,
     pub has_more_frames: bool,
@@ -812,6 +814,7 @@ impl From<::app_infra::SearchCaptureResponse> for SearchCaptureResponseDto {
     fn from(response: ::app_infra::SearchCaptureResponse) -> Self {
         Self {
             normalized_query: response.normalized_query,
+            snapshot_document_id: response.snapshot_document_id,
             frames: response
                 .frames
                 .into_iter()
@@ -3392,6 +3395,7 @@ pub async fn search_capture(
             frame_offset: request.frame_offset,
             audio_limit: request.audio_limit,
             audio_offset: request.audio_offset,
+            snapshot_document_id: request.snapshot_document_id,
         })
         .await
         .map(SearchCaptureResponseDto::from)

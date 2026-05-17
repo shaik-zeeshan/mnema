@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use audio_transcription::TranscriptionMetadata;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, Executor, Row, Sqlite, SqlitePool, Transaction};
@@ -23,12 +21,14 @@ pub struct SearchCaptureRequest {
     pub frame_offset: Option<u32>,
     pub audio_limit: Option<u32>,
     pub audio_offset: Option<u32>,
+    pub snapshot_document_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchCaptureResponse {
     pub normalized_query: String,
+    pub snapshot_document_id: i64,
     pub frames: Vec<FrameSearchResult>,
     pub audio: Vec<AudioSearchResult>,
     pub has_more_frames: bool,
@@ -83,6 +83,7 @@ impl SearchStore {
         if normalized_query.chars().count() < 2 {
             return Ok(SearchCaptureResponse {
                 normalized_query,
+                snapshot_document_id: 0,
                 frames: Vec::new(),
                 audio: Vec::new(),
                 has_more_frames: false,
@@ -94,6 +95,7 @@ impl SearchStore {
         if fts_query.is_empty() {
             return Ok(SearchCaptureResponse {
                 normalized_query,
+                snapshot_document_id: 0,
                 frames: Vec::new(),
                 audio: Vec::new(),
                 has_more_frames: false,
@@ -105,12 +107,16 @@ impl SearchStore {
         let frame_offset = request.frame_offset.unwrap_or(0) as usize;
         let audio_limit = clamp_limit(request.audio_limit);
         let audio_offset = request.audio_offset.unwrap_or(0) as usize;
+        let snapshot_document_id = match request.snapshot_document_id {
+            Some(id) => id.max(0),
+            None => fetch_search_document_high_water_mark(&self.pool).await?,
+        };
 
-        let frame_hits = fetch_frame_hits(&self.pool, &fts_query).await?;
-        let audio_hits = fetch_audio_hits(&self.pool, &fts_query).await?;
+        let frame_hits = fetch_frame_hits(&self.pool, &fts_query, snapshot_document_id).await?;
+        let audio_hits = fetch_audio_hits(&self.pool, &fts_query, snapshot_document_id).await?;
 
         let all_frame_groups = group_frame_hits(frame_hits);
-        let all_audio_groups = group_audio_hits(&self.pool, audio_hits).await?;
+        let all_audio_groups = group_audio_hits(audio_hits)?;
 
         let frame_end = frame_offset.saturating_add(frame_limit as usize);
         let audio_end = audio_offset.saturating_add(audio_limit as usize);
@@ -120,15 +126,17 @@ impl SearchStore {
             .take(frame_limit as usize)
             .cloned()
             .collect::<Vec<_>>();
-        let audio = all_audio_groups
+        let mut audio = all_audio_groups
             .iter()
             .skip(audio_offset)
             .take(audio_limit as usize)
             .cloned()
             .collect::<Vec<_>>();
+        align_audio_results(&self.pool, &mut audio).await?;
 
         Ok(SearchCaptureResponse {
             normalized_query,
+            snapshot_document_id,
             frames,
             audio,
             has_more_frames: all_frame_groups.len() > frame_end,
@@ -167,21 +175,6 @@ async fn delete_projection_for_subject_processor(
     processor: &str,
 ) -> Result<()> {
     sqlx::query(
-        "DELETE FROM search_documents_fts \
-         WHERE rowid IN (\
-            SELECT id FROM search_documents \
-            WHERE anchor_type = CASE WHEN ?1 = 'frame' THEN 'frame' ELSE 'audio' END \
-              AND ((?1 = 'frame' AND frame_id = ?2) OR (?1 = 'audio_segment' AND audio_segment_id = ?2))\
-              AND processing_result_id IN (SELECT id FROM processing_results WHERE processor = ?3)\
-         )",
-    )
-    .bind(subject_type)
-    .bind(subject_id)
-    .bind(processor)
-    .execute(&mut **transaction)
-    .await?;
-
-    sqlx::query(
         "DELETE FROM search_documents \
          WHERE anchor_type = CASE WHEN ?1 = 'frame' THEN 'frame' ELSE 'audio' END \
            AND ((?1 = 'frame' AND frame_id = ?2) OR (?1 = 'audio_segment' AND audio_segment_id = ?2))\
@@ -200,7 +193,11 @@ async fn project_frame_ocr_result(
     transaction: &mut Transaction<'_, Sqlite>,
     result: &ProcessingResult,
 ) -> Result<()> {
-    let Some(text) = result.result_text.as_deref().map(str::trim).filter(|text| !text.is_empty())
+    let Some(text) = result
+        .result_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
     else {
         return Ok(());
     };
@@ -228,9 +225,8 @@ async fn project_frame_ocr_result(
         .unwrap_or((None, None));
     let group_key = frame
         .equivalence
-        .hint
-        .as_ref()
-        .map(|hint| format!("frame:eq:{}:{hint}", frame.session_id))
+        .ready_parts()
+        .map(|(hint, _proof, version)| format!("frame:eq:{}:{version}:{hint}", frame.session_id))
         .unwrap_or_else(|| format!("frame:{}", frame.id));
 
     insert_search_document(
@@ -260,7 +256,11 @@ async fn project_audio_transcription_result(
     transaction: &mut Transaction<'_, Sqlite>,
     result: &ProcessingResult,
 ) -> Result<()> {
-    let Some(text) = result.result_text.as_deref().map(str::trim).filter(|text| !text.is_empty())
+    let Some(text) = result
+        .result_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
     else {
         return Ok(());
     };
@@ -352,13 +352,11 @@ async fn insert_search_document(
     .await?;
     let rowid = insert.last_insert_rowid();
 
-    sqlx::query(
-        "INSERT INTO search_documents_fts(rowid, searchable_text) VALUES (?1, ?2)",
-    )
-    .bind(rowid)
-    .bind(doc.searchable_text)
-    .execute(&mut **transaction)
-    .await?;
+    sqlx::query("INSERT INTO search_documents_fts(rowid, searchable_text) VALUES (?1, ?2)")
+        .bind(rowid)
+        .bind(doc.searchable_text)
+        .execute(&mut **transaction)
+        .await?;
 
     Ok(())
 }
@@ -417,14 +415,21 @@ fn transcription_spans(result: &ProcessingResult, fallback_text: &str) -> Vec<Tr
 }
 
 fn timestamp_plus_ms(started_at: &str, offset_ms: u64) -> Result<String> {
-    let start = OffsetDateTime::parse(started_at, &Rfc3339)
-        .map_err(|error| AppInfraError::FrameBatchFinalize(format!("invalid search timestamp '{started_at}': {error}")))?;
+    let start = OffsetDateTime::parse(started_at, &Rfc3339).map_err(|error| {
+        AppInfraError::FrameBatchFinalize(format!(
+            "invalid search timestamp '{started_at}': {error}"
+        ))
+    })?;
     let timestamp = start
-        .checked_add(Duration::milliseconds(offset_ms.try_into().unwrap_or(i64::MAX)))
-        .ok_or_else(|| AppInfraError::FrameBatchFinalize("search timestamp overflow".to_string()))?;
-    Ok(timestamp
-        .format(&Rfc3339)
-        .map_err(|error| AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}")))?)
+        .checked_add(Duration::milliseconds(
+            offset_ms.try_into().unwrap_or(i64::MAX),
+        ))
+        .ok_or_else(|| {
+            AppInfraError::FrameBatchFinalize("search timestamp overflow".to_string())
+        })?;
+    Ok(timestamp.format(&Rfc3339).map_err(|error| {
+        AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}"))
+    })?)
 }
 
 fn normalize_query(query: &str) -> String {
@@ -470,7 +475,19 @@ struct AudioHit {
     rank: f64,
 }
 
-async fn fetch_frame_hits(pool: &SqlitePool, fts_query: &str) -> Result<Vec<FrameHit>> {
+async fn fetch_search_document_high_water_mark(pool: &SqlitePool) -> Result<i64> {
+    let row =
+        sqlx::query("SELECT COALESCE(MAX(id), 0) AS snapshot_document_id FROM search_documents")
+            .fetch_one(pool)
+            .await?;
+    Ok(row.get("snapshot_document_id"))
+}
+
+async fn fetch_frame_hits(
+    pool: &SqlitePool,
+    fts_query: &str,
+    snapshot_document_id: i64,
+) -> Result<Vec<FrameHit>> {
     let rows = sqlx::query(
         "SELECT search_documents.group_key, search_documents.app_name, search_documents.window_title, \
                 search_documents.text_source_kind, \
@@ -485,10 +502,13 @@ async fn fetch_frame_hits(pool: &SqlitePool, fts_query: &str) -> Result<Vec<Fram
          JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
          JOIN frames ON frames.id = search_documents.frame_id \
          LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
-         WHERE search_documents_fts MATCH ?1 AND search_documents.anchor_type = 'frame' \
+         WHERE search_documents_fts MATCH ?1 \
+           AND search_documents.anchor_type = 'frame' \
+           AND search_documents.id <= ?2 \
          ORDER BY rank ASC, search_documents.absolute_start_at DESC",
     )
     .bind(fts_query)
+    .bind(snapshot_document_id)
     .fetch_all(pool)
     .await?;
 
@@ -507,7 +527,11 @@ async fn fetch_frame_hits(pool: &SqlitePool, fts_query: &str) -> Result<Vec<Fram
         .collect()
 }
 
-async fn fetch_audio_hits(pool: &SqlitePool, fts_query: &str) -> Result<Vec<AudioHit>> {
+async fn fetch_audio_hits(
+    pool: &SqlitePool,
+    fts_query: &str,
+    snapshot_document_id: i64,
+) -> Result<Vec<AudioHit>> {
     let rows = sqlx::query(
         "SELECT search_documents.id AS document_id, search_documents.group_key, \
                 search_documents.span_start_ms, search_documents.span_end_ms, \
@@ -520,10 +544,13 @@ async fn fetch_audio_hits(pool: &SqlitePool, fts_query: &str) -> Result<Vec<Audi
          FROM search_documents_fts \
          JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
          JOIN audio_segments ON audio_segments.id = search_documents.audio_segment_id \
-         WHERE search_documents_fts MATCH ?1 AND search_documents.anchor_type = 'audio' \
+         WHERE search_documents_fts MATCH ?1 \
+           AND search_documents.anchor_type = 'audio' \
+           AND search_documents.id <= ?2 \
          ORDER BY rank ASC, search_documents.absolute_start_at DESC",
     )
     .bind(fts_query)
+    .bind(snapshot_document_id)
     .fetch_all(pool)
     .await?;
 
@@ -531,9 +558,18 @@ async fn fetch_audio_hits(pool: &SqlitePool, fts_query: &str) -> Result<Vec<Audi
 }
 
 fn group_frame_hits(hits: Vec<FrameHit>) -> Vec<FrameSearchResult> {
-    let mut groups: BTreeMap<String, Vec<FrameHit>> = BTreeMap::new();
+    let mut groups: Vec<(String, Vec<FrameHit>)> = Vec::new();
     for hit in hits {
-        groups.entry(hit.group_key.clone()).or_default().push(hit);
+        let group_index = groups.iter().position(|(_group_key, group_hits)| {
+            group_hits
+                .first()
+                .is_some_and(|representative| frame_hits_are_equivalent(representative, &hit))
+        });
+        if let Some(index) = group_index {
+            groups[index].1.push(hit);
+        } else {
+            groups.push((hit.group_key.clone(), vec![hit]));
+        }
     }
 
     let mut results = groups
@@ -578,12 +614,34 @@ fn group_frame_hits(hits: Vec<FrameHit>) -> Vec<FrameSearchResult> {
     results
 }
 
-async fn group_audio_hits(pool: &SqlitePool, mut hits: Vec<AudioHit>) -> Result<Vec<AudioSearchResult>> {
+fn frame_hits_are_equivalent(left: &FrameHit, right: &FrameHit) -> bool {
+    if left.frame.session_id != right.frame.session_id {
+        return false;
+    }
+
+    let Some((_left_hint, left_proof, left_version)) = left.frame.equivalence.ready_parts() else {
+        return left.frame.id == right.frame.id;
+    };
+    let Some((_right_hint, right_proof, right_version)) = right.frame.equivalence.ready_parts()
+    else {
+        return false;
+    };
+    left_version == right_version
+        && capture_screen::captured_frame_equivalence_proofs_match(
+            left_version,
+            left_proof,
+            right_proof,
+        )
+}
+
+fn group_audio_hits(mut hits: Vec<AudioHit>) -> Result<Vec<AudioSearchResult>> {
     hits.sort_by(|a, b| {
-        a.rank
-            .total_cmp(&b.rank)
-            .then_with(|| a.audio_segment.id.cmp(&b.audio_segment.id))
+        a.audio_segment
+            .id
+            .cmp(&b.audio_segment.id)
             .then_with(|| a.span_start_ms.cmp(&b.span_start_ms))
+            .then_with(|| a.span_end_ms.cmp(&b.span_end_ms))
+            .then_with(|| a.rank.total_cmp(&b.rank))
     });
 
     let mut groups: Vec<Vec<AudioHit>> = Vec::new();
@@ -602,15 +660,26 @@ async fn group_audio_hits(pool: &SqlitePool, mut hits: Vec<AudioHit>) -> Result<
     }
 
     let mut results = Vec::new();
-    for group in groups {
+    for mut group in groups {
+        group.sort_by(|a, b| {
+            a.rank
+                .total_cmp(&b.rank)
+                .then_with(|| a.span_start_ms.cmp(&b.span_start_ms))
+        });
         let first = group.first().expect("group should not be empty");
         let span_start_ms = group.iter().map(|hit| hit.span_start_ms).min().unwrap_or(0);
-        let span_end_ms = group.iter().map(|hit| hit.span_end_ms).max().unwrap_or(span_start_ms);
+        let span_end_ms = group
+            .iter()
+            .map(|hit| hit.span_end_ms)
+            .max()
+            .unwrap_or(span_start_ms);
         let absolute_start_at = timestamp_plus_ms(&first.audio_segment.started_at, span_start_ms)?;
         let absolute_end_at = timestamp_plus_ms(&first.audio_segment.started_at, span_end_ms)?;
-        let aligned_frame = find_aligned_frame(pool, &first.audio_segment.source_session_id, &absolute_start_at).await?;
         results.push(AudioSearchResult {
-            group_key: format!("audio:{}:{}-{}", first.audio_segment.id, span_start_ms, span_end_ms),
+            group_key: format!(
+                "audio:{}:{}-{}",
+                first.audio_segment.id, span_start_ms, span_end_ms
+            ),
             audio_segment: first.audio_segment.clone(),
             source_kind: first.source_kind.clone(),
             span_start_ms,
@@ -619,7 +688,7 @@ async fn group_audio_hits(pool: &SqlitePool, mut hits: Vec<AudioHit>) -> Result<
             absolute_end_at,
             match_count: group.len() as u32,
             snippet: first.snippet.clone(),
-            aligned_frame,
+            aligned_frame: None,
         });
     }
 
@@ -627,23 +696,37 @@ async fn group_audio_hits(pool: &SqlitePool, mut hits: Vec<AudioHit>) -> Result<
     Ok(results)
 }
 
+async fn align_audio_results(pool: &SqlitePool, results: &mut [AudioSearchResult]) -> Result<()> {
+    for result in results {
+        result.aligned_frame = find_aligned_frame(
+            pool,
+            &result.audio_segment.source_session_id,
+            &result.absolute_start_at,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn find_aligned_frame(
     pool: &SqlitePool,
     session_id: &str,
     absolute_start_at: &str,
 ) -> Result<Option<Frame>> {
-    let target = OffsetDateTime::parse(absolute_start_at, &Rfc3339)
-        .map_err(|error| AppInfraError::FrameBatchFinalize(format!("invalid search timestamp '{absolute_start_at}': {error}")))?;
-    let before_start = target
-        .checked_sub(Duration::seconds(10))
-        .ok_or_else(|| AppInfraError::FrameBatchFinalize("search alignment timestamp underflow".to_string()))?
-        .format(&Rfc3339)
-        .map_err(|error| AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}")))?;
+    let target = OffsetDateTime::parse(absolute_start_at, &Rfc3339).map_err(|error| {
+        AppInfraError::FrameBatchFinalize(format!(
+            "invalid search timestamp '{absolute_start_at}': {error}"
+        ))
+    })?;
     let after_end = target
         .checked_add(Duration::seconds(10))
-        .ok_or_else(|| AppInfraError::FrameBatchFinalize("search alignment timestamp overflow".to_string()))?
+        .ok_or_else(|| {
+            AppInfraError::FrameBatchFinalize("search alignment timestamp overflow".to_string())
+        })?
         .format(&Rfc3339)
-        .map_err(|error| AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}")))?;
+        .map_err(|error| {
+            AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}"))
+        })?;
 
     let before = sqlx::query(
         "SELECT frames.id, session_id, file_path, captured_at, width, height, \
@@ -652,12 +735,11 @@ async fn find_aligned_frame(
                 frames.created_at, frames.updated_at \
          FROM frames \
          LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
-         WHERE session_id = ?1 AND captured_at <= ?2 AND captured_at >= ?3 \
+         WHERE session_id = ?1 AND captured_at <= ?2 \
          ORDER BY captured_at DESC, frames.id DESC LIMIT 1",
     )
     .bind(session_id)
     .bind(absolute_start_at)
-    .bind(&before_start)
     .fetch_optional(pool)
     .await?;
     if let Some(row) = before {
@@ -703,7 +785,8 @@ where
 }
 
 fn map_audio_hit(row: SqliteRow) -> Result<AudioHit> {
-    let source_kind = AudioSegmentSourceKind::from_str(row.get::<String, _>("source_kind").as_str());
+    let source_kind =
+        AudioSegmentSourceKind::from_str(row.get::<String, _>("source_kind").as_str());
     let audio_segment = AudioSegment {
         id: row.get("id"),
         source_kind: source_kind.clone(),
@@ -719,7 +802,10 @@ fn map_audio_hit(row: SqliteRow) -> Result<AudioHit> {
     Ok(AudioHit {
         audio_segment,
         source_kind,
-        span_start_ms: row.get::<Option<i64>, _>("span_start_ms").unwrap_or(0).max(0) as u64,
+        span_start_ms: row
+            .get::<Option<i64>, _>("span_start_ms")
+            .unwrap_or(0)
+            .max(0) as u64,
         span_end_ms: row.get::<Option<i64>, _>("span_end_ms").unwrap_or(0).max(0) as u64,
         snippet: row.get("snippet"),
         rank: row.get("rank"),
@@ -755,10 +841,7 @@ mod tests {
 
     fn test_dir(name: &str) -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "mnema-search-{name}-{}-{id}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("mnema-search-{name}-{}-{id}", std::process::id()))
     }
 
     async fn complete_job(
@@ -788,127 +871,504 @@ mod tests {
     #[test]
     fn search_projects_completed_ocr_and_groups_equivalent_frames() {
         run_async_test(async {
-        let dir = test_dir("ocr-groups");
-        let infra = AppInfra::initialize(&dir).await.expect("infra should initialize");
-        let first = infra
-            .insert_frame(
-                &NewFrame::new("screen-session", "/tmp/search-frame-a.jpg", "2026-05-17T10:00:00Z")
-                    .with_equivalence(crate::FrameEquivalence {
-                        hint: Some("same-screen".to_string()),
-                        proof: None,
-                        version: Some(1),
-                        status: Some(crate::FrameEquivalenceStatus::Ready),
-                        error: None,
-                    }),
-            )
-            .await
-            .expect("first frame should insert");
-        let second = infra
-            .insert_frame(
-                &NewFrame::new("screen-session", "/tmp/search-frame-b.jpg", "2026-05-17T10:00:02Z")
-                    .with_equivalence(crate::FrameEquivalence {
-                        hint: Some("same-screen".to_string()),
-                        proof: None,
-                        version: Some(1),
-                        status: Some(crate::FrameEquivalenceStatus::Ready),
-                        error: None,
-                    }),
-            )
-            .await
-            .expect("second frame should insert");
-
-        for frame in [&first, &second] {
-            let job = infra
-                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+            let dir = test_dir("ocr-groups");
+            let infra = AppInfra::initialize(&dir)
                 .await
-                .expect("ocr job should enqueue");
-            complete_job(
-                &infra,
-                job,
-                ProcessingResultDraft::new().with_result_text("quarterly roadmap search target"),
-            )
-            .await;
-        }
+                .expect("infra should initialize");
+            let first = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-frame-a.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(crate::FrameEquivalence {
+                        hint: Some("same-screen".to_string()),
+                        proof: Some(vec![0; 1024]),
+                        version: Some(1),
+                        status: Some(crate::FrameEquivalenceStatus::Ready),
+                        error: None,
+                    }),
+                )
+                .await
+                .expect("first frame should insert");
+            let second = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-frame-b.jpg",
+                        "2026-05-17T10:00:02Z",
+                    )
+                    .with_equivalence(crate::FrameEquivalence {
+                        hint: Some("same-screen".to_string()),
+                        proof: Some(vec![0; 1024]),
+                        version: Some(1),
+                        status: Some(crate::FrameEquivalenceStatus::Ready),
+                        error: None,
+                    }),
+                )
+                .await
+                .expect("second frame should insert");
 
-        let response = infra
-            .search_capture(SearchCaptureRequest {
-                query: "roadmap".to_string(),
-                frame_limit: Some(5),
-                frame_offset: None,
-                audio_limit: Some(5),
-                audio_offset: None,
-            })
-            .await
-            .expect("search should succeed");
+            for frame in [&first, &second] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new()
+                        .with_result_text("quarterly roadmap search target"),
+                )
+                .await;
+            }
 
-        assert_eq!(response.frames.len(), 1);
-        assert_eq!(response.frames[0].match_count, 2);
-        assert_eq!(response.frames[0].representative_frame.id, second.id);
-        assert!(response.audio.is_empty());
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "roadmap".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].match_count, 2);
+            assert_eq!(response.frames[0].representative_frame.id, second.id);
+            assert!(response.audio.is_empty());
         });
     }
 
     #[test]
     fn search_projects_transcript_segments_and_sanitizes_plain_query() {
         run_async_test(async {
-        let dir = test_dir("audio-segments");
-        let infra = AppInfra::initialize(&dir).await.expect("infra should initialize");
-        let segment = infra
-            .upsert_audio_segment(&NewAudioSegment::new(
-                AudioSegmentSourceKind::Microphone,
-                "mic-session",
-                1,
-                "/tmp/search-audio.m4a",
-                "2026-05-17T10:00:00Z",
-                "2026-05-17T10:00:20Z",
-            ))
-            .await
-            .expect("segment should insert");
-        let metadata = TranscriptionMetadata {
-            provider: "test".to_string(),
-            model_id: None,
-            language: "en".to_string(),
-            segments: vec![TranscriptionSegment {
-                start_ms: 1_000,
-                end_ms: 2_500,
-                text: "search target phrase".to_string(),
-                confidence: None,
-            }],
-            words: Vec::new(),
-            provenance: Default::default(),
+            let dir = test_dir("audio-segments");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-audio.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![TranscriptionSegment {
+                    start_ms: 1_000,
+                    end_ms: 2_500,
+                    text: "search target phrase".to_string(),
+                    confidence: None,
+                }],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("search target phrase")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "\"target\"".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert!(response.frames.is_empty());
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(response.audio[0].span_start_ms, 1_000);
+            assert_eq!(response.audio[0].span_end_ms, 2_500);
+        });
+    }
+
+    #[test]
+    fn audio_hits_group_chronologically_before_rank_ordering() {
+        let segment = AudioSegment {
+            id: 7,
+            source_kind: AudioSegmentSourceKind::Microphone,
+            source_session_id: "mic-session".to_string(),
+            segment_index: 1,
+            file_path: "/tmp/audio.m4a".to_string(),
+            started_at: "2026-05-17T10:00:00Z".to_string(),
+            ended_at: "2026-05-17T10:00:20Z".to_string(),
+            capture_segment_id: None,
+            created_at: "2026-05-17T10:00:00Z".to_string(),
+            updated_at: "2026-05-17T10:00:00Z".to_string(),
         };
-        let job = infra
-            .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
-                segment.id,
-            ))
-            .await
-            .expect("transcription job should enqueue");
-        complete_job(
-            &infra,
-            job,
-            ProcessingResultDraft::new()
-                .with_result_text("search target phrase")
-                .with_structured_payload_json(
-                    serde_json::to_string(&metadata).expect("metadata should serialize"),
-                ),
-        )
-        .await;
+        let hit = |span_start_ms, span_end_ms, rank| AudioHit {
+            audio_segment: segment.clone(),
+            source_kind: AudioSegmentSourceKind::Microphone,
+            span_start_ms,
+            span_end_ms,
+            snippet: format!("hit {span_start_ms}"),
+            rank,
+        };
 
-        let response = infra
-            .search_capture(SearchCaptureRequest {
-                query: "\"target\"".to_string(),
-                frame_limit: Some(5),
-                frame_offset: None,
-                audio_limit: Some(5),
-                audio_offset: None,
-            })
-            .await
-            .expect("search should succeed");
+        let groups = group_audio_hits(vec![
+            hit(4_000, 4_500, -10.0),
+            hit(1_000, 1_500, -1.0),
+            hit(2_200, 2_500, -5.0),
+        ])
+        .expect("grouping should succeed");
 
-        assert!(response.frames.is_empty());
-        assert_eq!(response.audio.len(), 1);
-        assert_eq!(response.audio[0].span_start_ms, 1_000);
-        assert_eq!(response.audio[0].span_end_ms, 2_500);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].span_start_ms, 1_000);
+        assert_eq!(groups[0].span_end_ms, 4_500);
+        assert_eq!(groups[0].match_count, 3);
+    }
+
+    #[test]
+    fn audio_search_aligns_to_latest_earlier_frame_without_ten_second_floor() {
+        run_async_test(async {
+            let dir = test_dir("audio-alignment-floor");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "shared-session",
+                    "/tmp/alignment-frame.jpg",
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "shared-session",
+                    1,
+                    "/tmp/search-audio-alignment.m4a",
+                    "2026-05-17T10:01:00Z",
+                    "2026-05-17T10:01:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![TranscriptionSegment {
+                    start_ms: 1_000,
+                    end_ms: 2_500,
+                    text: "alignment target phrase".to_string(),
+                    confidence: None,
+                }],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("alignment target phrase")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "alignment".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(
+                response.audio[0]
+                    .aligned_frame
+                    .as_ref()
+                    .map(|frame| frame.id),
+                Some(frame.id)
+            );
+        });
+    }
+
+    #[test]
+    fn search_pagination_uses_snapshot_document_high_water_mark() {
+        run_async_test(async {
+            let dir = test_dir("pagination-snapshot");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            for (path, captured_at) in [
+                ("/tmp/search-page-a.jpg", "2026-05-17T10:00:00Z"),
+                ("/tmp/search-page-b.jpg", "2026-05-17T10:00:01Z"),
+            ] {
+                let frame = infra
+                    .insert_frame(&NewFrame::new("screen-session", path, captured_at))
+                    .await
+                    .expect("frame should insert");
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("snapshot target phrase"),
+                )
+                .await;
+            }
+
+            let first_page = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "snapshot".to_string(),
+                    frame_limit: Some(1),
+                    frame_offset: Some(0),
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("first page search should succeed");
+            let first_frame_id = first_page.frames[0].representative_frame.id;
+
+            let newer_frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-page-c.jpg",
+                    "2026-05-17T10:00:02Z",
+                ))
+                .await
+                .expect("newer frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(newer_frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("snapshot target phrase"),
+            )
+            .await;
+
+            let second_page = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "snapshot".to_string(),
+                    frame_limit: Some(1),
+                    frame_offset: Some(1),
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: Some(first_page.snapshot_document_id),
+                })
+                .await
+                .expect("second page search should succeed");
+
+            assert_eq!(second_page.frames.len(), 1);
+            assert_ne!(
+                second_page.frames[0].representative_frame.id,
+                first_frame_id
+            );
+            assert_ne!(
+                second_page.frames[0].representative_frame.id,
+                newer_frame.id
+            );
+        });
+    }
+
+    #[test]
+    fn cascaded_search_document_deletes_remove_fts_rows() {
+        run_async_test(async {
+            let dir = test_dir("fts-cascade");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-fts-cascade.jpg",
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            let job_id = job.id;
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("cascade target phrase"),
+            )
+            .await;
+
+            let count_before: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents_fts WHERE search_documents_fts MATCH 'cascade'",
+            )
+            .fetch_one(infra.pool())
+            .await
+            .expect("fts count should query");
+            assert_eq!(count_before, 1);
+
+            sqlx::query("DELETE FROM processing_results WHERE job_id = ?1")
+                .bind(job_id)
+                .execute(infra.pool())
+                .await
+                .expect("processing result delete should cascade");
+
+            let count_after: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents_fts WHERE search_documents_fts MATCH 'cascade'",
+            )
+            .fetch_one(infra.pool())
+            .await
+            .expect("fts count should query");
+            assert_eq!(count_after, 0);
+        });
+    }
+
+    #[test]
+    fn replacing_search_projection_keeps_fts_delete_trigger_idempotent() {
+        run_async_test(async {
+            let dir = test_dir("fts-replace");
+            let infra = AppInfra::initialize(&dir).await.expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-fts-replace.jpg",
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+
+            for text in ["first target phrase", "second target phrase"] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(&infra, job, ProcessingResultDraft::new().with_result_text(text))
+                    .await;
+            }
+
+            let first = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "first".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+            let second = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "second".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert!(first.frames.is_empty());
+            assert_eq!(second.frames.len(), 1);
+        });
+    }
+
+    #[test]
+    fn frame_search_does_not_group_same_hint_with_different_proofs() {
+        run_async_test(async {
+            let dir = test_dir("frame-proof-grouping");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            for (path, proof) in [
+                ("/tmp/search-proof-a.jpg", vec![0; 1024]),
+                ("/tmp/search-proof-b.jpg", vec![255; 1024]),
+            ] {
+                let frame = infra
+                    .insert_frame(
+                        &NewFrame::new("screen-session", path, "2026-05-17T10:00:00Z")
+                            .with_equivalence(crate::FrameEquivalence {
+                                hint: Some("same-hint".to_string()),
+                                proof: Some(proof),
+                                version: Some(1),
+                                status: Some(crate::FrameEquivalenceStatus::Ready),
+                                error: None,
+                            }),
+                    )
+                    .await
+                    .expect("frame should insert");
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("proof target phrase"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "proof".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 2);
+            assert_eq!(
+                response
+                    .frames
+                    .iter()
+                    .map(|frame| frame.match_count)
+                    .collect::<Vec<_>>(),
+                vec![1, 1]
+            );
         });
     }
 }

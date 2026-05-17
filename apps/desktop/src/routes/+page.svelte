@@ -483,6 +483,7 @@
   let searchLoadingMoreFrames = $state(false);
   let searchLoadingMoreAudio = $state(false);
   let searchError = $state<string | null>(null);
+  let searchSnapshotDocumentId: number | null = null;
   let searchGeneration = 0;
   let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -3531,6 +3532,7 @@
       searchAudio = [];
       searchHasMoreFrames = false;
       searchHasMoreAudio = false;
+      searchSnapshotDocumentId = null;
       searchLoading = false;
       searchLoadingMoreFrames = false;
       searchLoadingMoreAudio = false;
@@ -3540,6 +3542,9 @@
 
     const appendFrames = options.appendFrames === true;
     const appendAudio = options.appendAudio === true;
+    if (!appendFrames && !appendAudio) {
+      searchSnapshotDocumentId = null;
+    }
     searchLoading = !appendFrames && !appendAudio;
     searchLoadingMoreFrames = appendFrames;
     searchLoadingMoreAudio = appendAudio;
@@ -3552,10 +3557,12 @@
           frameOffset: appendFrames ? searchFrames.length : 0,
           audioLimit: appendFrames ? 0 : 5,
           audioOffset: appendAudio ? searchAudio.length : 0,
+          snapshotDocumentId: searchSnapshotDocumentId ?? undefined,
         },
       });
       if (gen !== searchGeneration) return;
       searchNormalizedQuery = response.normalizedQuery;
+      searchSnapshotDocumentId = response.snapshotDocumentId;
       if (!appendAudio) {
         searchFrames = appendFrames ? [...searchFrames, ...response.frames] : response.frames;
         searchHasMoreFrames = response.hasMoreFrames;

@@ -37,3 +37,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5(
     content_rowid='id',
     tokenize='unicode61'
 );
+
+CREATE TRIGGER IF NOT EXISTS search_documents_fts_after_delete
+AFTER DELETE ON search_documents
+BEGIN
+    INSERT INTO search_documents_fts(search_documents_fts, rowid, searchable_text)
+    VALUES('delete', OLD.id, OLD.searchable_text);
+END;

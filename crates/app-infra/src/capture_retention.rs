@@ -1239,15 +1239,6 @@ async fn delete_search_documents_for_subjects(
         return Ok(());
     }
 
-    let mut fts_query =
-        QueryBuilder::<Sqlite>::new("DELETE FROM search_documents_fts WHERE rowid IN (");
-    let mut fts_separated = fts_query.separated(", ");
-    for id in &document_ids {
-        fts_separated.push_bind(*id);
-    }
-    fts_separated.push_unseparated(")");
-    fts_query.build().execute(&mut **tx).await?;
-
     let mut doc_query = QueryBuilder::<Sqlite>::new("DELETE FROM search_documents WHERE id IN (");
     let mut doc_separated = doc_query.separated(", ");
     for id in &document_ids {
