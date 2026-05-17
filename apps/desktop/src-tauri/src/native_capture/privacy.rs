@@ -42,7 +42,6 @@ pub type PrivacyFilterRefreshState = std::sync::Mutex<()>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrivacyRefreshReason {
     StaticAppRuleMutation,
-    DynamicPrivacySettingsMutation,
     MetadataSettingsMutation,
     WorkspaceAppChanged,
     WorkspaceFocusChanged,
@@ -52,7 +51,6 @@ pub enum PrivacyRefreshReason {
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PrivacyRefreshMode {
-    Full,
     StaticExcludedAppsOnly,
 }
 
@@ -85,39 +83,7 @@ pub(super) fn privacy_filter_from_decision(
         .then_some(capture_screen::PrivacyContentFilter {
             display_id: 0,
             excluded_bundle_ids: decision.excluded_bundle_ids,
-            excluded_window_ids: decision.excluded_window_ids,
         })
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn dynamic_privacy_features_enabled(
-    privacy: &capture_metadata::PrivacySettings,
-) -> bool {
-    privacy
-        .excluded_website_rules
-        .iter()
-        .any(|rule| rule.enabled)
-        || privacy.browser_title_rules.iter().any(|rule| rule.enabled)
-        || privacy.private_browser_exclusion_enabled
-}
-
-#[cfg(target_os = "macos")]
-fn refresh_mode_for_reason(
-    reason: PrivacyRefreshReason,
-    settings: &capture_types::RecordingSettings,
-) -> PrivacyRefreshMode {
-    let static_reason = matches!(
-        reason,
-        PrivacyRefreshReason::StaticAppRuleMutation
-            | PrivacyRefreshReason::WorkspaceAppChanged
-            | PrivacyRefreshReason::WorkspaceFocusChanged
-            | PrivacyRefreshReason::FallbackPoll
-    );
-    if static_reason && !dynamic_privacy_features_enabled(&settings.privacy) {
-        PrivacyRefreshMode::StaticExcludedAppsOnly
-    } else {
-        PrivacyRefreshMode::Full
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -135,34 +101,14 @@ pub(super) fn collect_initial_privacy_filter(
         .expect("recording settings state poisoned")
         .settings
         .clone();
-    let decision = crate::native_capture::metadata::refresh_metadata_state(
+    let decision = crate::native_capture::metadata::refresh_static_excluded_app_privacy_state(
         app_handle
             .state::<crate::native_capture::CaptureMetadataState>()
             .inner(),
-        &settings.metadata,
         &settings.privacy,
     );
     let filter = privacy_filter_from_decision(decision.clone());
     InitialPrivacyFilter { decision, filter }
-}
-
-#[cfg(target_os = "macos")]
-fn collect_full_privacy_filter_update(app_handle: &tauri::AppHandle) -> PrivacyFilterUpdate {
-    let current = collect_initial_privacy_filter(app_handle);
-    let latest_applied = crate::native_capture::metadata::latest_applied_privacy_decision(
-        app_handle
-            .state::<crate::native_capture::CaptureMetadataState>()
-            .inner(),
-    );
-    let filter = current.filter.or_else(|| {
-        latest_applied
-            .privacy_filter_applied
-            .then_some(empty_privacy_filter())
-    });
-    PrivacyFilterUpdate {
-        decision: current.decision,
-        filter,
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -194,20 +140,7 @@ fn collect_static_privacy_filter_update(app_handle: &tauri::AppHandle) -> Privac
 
 #[cfg(target_os = "macos")]
 pub(super) fn collect_privacy_filter_update(app_handle: &tauri::AppHandle) -> PrivacyFilterUpdate {
-    collect_full_privacy_filter_update(app_handle)
-}
-
-#[cfg(target_os = "macos")]
-fn collect_privacy_filter_update_for_mode(
-    app_handle: &tauri::AppHandle,
-    mode: PrivacyRefreshMode,
-) -> PrivacyFilterUpdate {
-    match mode {
-        PrivacyRefreshMode::Full => collect_full_privacy_filter_update(app_handle),
-        PrivacyRefreshMode::StaticExcludedAppsOnly => {
-            collect_static_privacy_filter_update(app_handle)
-        }
-    }
+    collect_static_privacy_filter_update(app_handle)
 }
 
 #[cfg(target_os = "macos")]
@@ -276,7 +209,7 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
     else {
         return;
     };
-    let (generation, reason, settings) = {
+    let (generation, reason) = {
         let mut state = refresh_state
             .lock()
             .expect("privacy filter refresh state poisoned");
@@ -290,15 +223,9 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
             .latest_reason
             .unwrap_or(PrivacyRefreshReason::FallbackPoll);
         state.collecting_generation = Some(generation);
-        let settings = app_handle
-            .state::<crate::native_capture::RecordingSettingsState>()
-            .lock()
-            .expect("recording settings state poisoned")
-            .settings
-            .clone();
-        (generation, reason, settings)
+        (generation, reason)
     };
-    let mode = refresh_mode_for_reason(reason, &settings);
+    let mode = PrivacyRefreshMode::StaticExcludedAppsOnly;
     if privacy_refresh_debug_log_enabled(reason) {
         super::debug_log::log(format!(
             "privacy refresh collector started (reason={reason:?}, generation={generation}, mode={mode:?})"
@@ -306,7 +233,7 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
     }
     let app_handle = app_handle.clone();
     std::thread::spawn(move || {
-        let update = collect_privacy_filter_update_for_mode(&app_handle, mode);
+        let update = collect_privacy_filter_update(&app_handle);
         if let Some(refresh_state) =
             app_handle.try_state::<crate::native_capture::PrivacyFilterRefreshState>()
         {
@@ -382,21 +309,17 @@ pub(super) fn record_privacy_filter_apply_outcome(
 #[cfg(target_os = "macos")]
 pub(super) fn record_initial_privacy_filter_outcome(
     app_handle: &tauri::AppHandle,
-    settings: &capture_types::RecordingSettings,
+    _settings: &capture_types::RecordingSettings,
     outcome: Option<capture_screen::PrivacyFilterApplyOutcome>,
 ) {
     let Some(outcome) = outcome else {
         return;
     };
-    if refresh_mode_for_reason(PrivacyRefreshReason::FallbackPoll, settings)
-        == PrivacyRefreshMode::StaticExcludedAppsOnly
-    {
-        record_privacy_filter_apply_outcome(
-            app_handle,
-            PrivacyRefreshMode::StaticExcludedAppsOnly,
-            outcome,
-        );
-    }
+    record_privacy_filter_apply_outcome(
+        app_handle,
+        PrivacyRefreshMode::StaticExcludedAppsOnly,
+        outcome,
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -446,7 +369,6 @@ fn empty_privacy_filter() -> capture_screen::PrivacyContentFilter {
     capture_screen::PrivacyContentFilter {
         display_id: 0,
         excluded_bundle_ids: Vec::new(),
-        excluded_window_ids: Vec::new(),
     }
 }
 
@@ -454,76 +376,14 @@ fn empty_privacy_filter() -> capture_screen::PrivacyContentFilter {
 mod tests {
     use super::*;
     use crate::native_capture::settings::default_recording_settings;
-    use capture_metadata::{BrowserTitleRule, BrowserTitleRuleMatchType, WebsiteRule};
 
     #[test]
-    fn enabled_website_rule_disables_static_fast_path() {
-        let mut settings = default_recording_settings();
-        settings.privacy.private_browser_exclusion_enabled = false;
-        settings.privacy.excluded_website_rules = vec![WebsiteRule {
-            id: "site".to_string(),
-            enabled: true,
-            pattern: "example.com".to_string(),
-            host: Some("example.com".to_string()),
-            include_subdomains: true,
-            path_prefix: None,
-            port: None,
-        }];
-
+    fn privacy_refresh_is_static_app_only() {
+        let settings = default_recording_settings();
         assert_eq!(
-            refresh_mode_for_reason(PrivacyRefreshReason::FallbackPoll, &settings),
-            PrivacyRefreshMode::Full
-        );
-    }
-
-    #[test]
-    fn enabled_title_rule_disables_static_fast_path() {
-        let mut settings = default_recording_settings();
-        settings.privacy.private_browser_exclusion_enabled = false;
-        settings.privacy.browser_title_rules = vec![BrowserTitleRule {
-            id: "title".to_string(),
-            enabled: true,
-            match_type: BrowserTitleRuleMatchType::Substring,
-            pattern: "secret".to_string(),
-        }];
-
-        assert_eq!(
-            refresh_mode_for_reason(PrivacyRefreshReason::FallbackPoll, &settings),
-            PrivacyRefreshMode::Full
-        );
-    }
-
-    #[test]
-    fn private_browser_exclusion_disables_static_fast_path() {
-        let mut settings = default_recording_settings();
-        settings.privacy.private_browser_exclusion_enabled = true;
-
-        assert_eq!(
-            refresh_mode_for_reason(PrivacyRefreshReason::FallbackPoll, &settings),
-            PrivacyRefreshMode::Full
-        );
-    }
-
-    #[test]
-    fn metadata_enabled_alone_does_not_disable_static_fast_path() {
-        let mut settings = default_recording_settings();
-        settings.metadata.enabled = true;
-        settings.privacy.private_browser_exclusion_enabled = false;
-
-        assert_eq!(
-            refresh_mode_for_reason(PrivacyRefreshReason::FallbackPoll, &settings),
+            PrivacyRefreshMode::StaticExcludedAppsOnly,
             PrivacyRefreshMode::StaticExcludedAppsOnly
         );
-    }
-
-    #[test]
-    fn metadata_settings_mutation_forces_full_refresh() {
-        let mut settings = default_recording_settings();
-        settings.privacy.private_browser_exclusion_enabled = false;
-
-        assert_eq!(
-            refresh_mode_for_reason(PrivacyRefreshReason::MetadataSettingsMutation, &settings),
-            PrivacyRefreshMode::Full
-        );
+        assert!(settings.privacy.excluded_apps.is_empty());
     }
 }

@@ -19,7 +19,6 @@
     SegmentWorkspaceCleanupDisposition,
     FrameBatchStatus,
     ProcessingJobStatus,
-    PrivacyRedactionSourceResolutionDto,
   } from "$lib/types";
   import { captureSession, setSession } from "$lib/session.svelte";
 
@@ -53,9 +52,7 @@
 
   type PrivacyFilterDecision = {
     excludedBundleIds: string[];
-    excludedWindowIds: number[];
     excludedBundleSourceIds?: Record<string, string>;
-    excludedWindowSourceIds?: Record<string, string>;
     matchedRuleIds: string[];
     metadataRedactionReason: string | null;
     privacyFilterApplied: boolean;
@@ -64,7 +61,6 @@
   type CapturePrivacyDebugInfo = {
     metadataEnabled: boolean;
     browserUrlMode: string;
-    privateBrowserExclusionEnabled: boolean;
     privacyDebug: {
       latestSnapshot: {
         appBundleId: string | null;
@@ -77,22 +73,12 @@
       } | null;
       latestDecision: PrivacyFilterDecision;
       latestAppliedDecision: PrivacyFilterDecision;
-      websitePrivacyHoldBundleIds: string[];
-      websitePrivacyHolds: Array<{ bundleId: string; reason: string }>;
       currentlyExcludedBundleIds: string[];
-      currentlyExcludedWindowIds: number[];
       privacyFilterApplied: boolean;
-      metadataRedactionReason: string | null;
-      accessibilityPermission: PermissionStatus;
-      privateBrowserDetectionMode: string;
-      privateBrowserDetectedWindowIds: number[];
-      privateBrowserStickyWindowIds: number[];
-      privateBrowserDetectionReasons: Record<string, string>;
     };
   };
 
   let privacyDebug = $state<CapturePrivacyDebugInfo | null>(null);
-  let privacySourceResolutions = $state<Record<string, PrivacyRedactionSourceResolutionDto>>({});
   let privacyDebugError = $state<string | null>(null);
 
   type OcrAdmissionSignals = {
@@ -169,7 +155,6 @@
     if (!session?.isRunning) return;
     try {
       privacyDebug = await invoke<CapturePrivacyDebugInfo>("get_capture_privacy_debug");
-      await resolvePrivacyDebugSources();
       privacyDebugError = null;
     } catch (err) {
       privacyDebugError = typeof err === "string" ? err : JSON.stringify(err);
@@ -185,37 +170,6 @@
     } catch (err) {
       ocrBudgetDebugError = typeof err === "string" ? err : JSON.stringify(err);
     }
-  }
-
-  function collectPrivacyDebugSourceIds(): string[] {
-    const ids = new Set<string>();
-    const snapshotId = privacyDebug?.privacyDebug.latestSnapshot?.metadataRedactionSourceId;
-    if (snapshotId) ids.add(snapshotId);
-    for (const decision of [privacyDebug?.privacyDebug.latestDecision, privacyDebug?.privacyDebug.latestAppliedDecision]) {
-      if (!decision) continue;
-      Object.values(decision.excludedBundleSourceIds ?? {}).forEach((id) => ids.add(id));
-      Object.values(decision.excludedWindowSourceIds ?? {}).forEach((id) => ids.add(id));
-    }
-    return [...ids];
-  }
-
-  async function resolvePrivacyDebugSources(): Promise<void> {
-    const sourceIds = collectPrivacyDebugSourceIds();
-    if (sourceIds.length === 0) {
-      privacySourceResolutions = {};
-      return;
-    }
-    const resolved = await invoke<PrivacyRedactionSourceResolutionDto[]>("resolve_privacy_redaction_sources", { sourceIds });
-    privacySourceResolutions = Object.fromEntries(resolved.map((source) => [source.sourceId, source]));
-  }
-
-  function formatPrivacySourceLabel(sourceId: string | null | undefined, reason: string | null | undefined): string {
-    if (!sourceId) return reason ?? "none";
-    const source = privacySourceResolutions[sourceId];
-    const kind = source?.sourceKind === "website_rule" ? "Website rule" : source?.sourceKind === "title_rule" ? "Title rule" : "App rule";
-    if (!source) return `${kind} · Unknown source`;
-    const prefix = source.status === "deleted" || source.status === "forgotten" ? `Deleted ${kind.toLowerCase()}` : kind;
-    return source.label ? `${prefix} · ${source.label}` : prefix;
   }
 
   function formatDebugList(values: Array<string | number> | null | undefined): string {
@@ -1391,61 +1345,8 @@
         <span class="kv-val kv-val--mono">{privacyDebug.metadataEnabled ? "enabled" : "disabled"} · URL {privacyDebug.browserUrlMode}</span>
       </li>
       <li>
-        <span class="kv-key kv-key--wide">private windows</span>
-        <span class="kv-val kv-val--mono">{privacyDebug.privateBrowserExclusionEnabled ? "enabled" : "disabled"}</span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">accessibility</span>
-        <span class="kv-val kv-val--mono">{privacyDebug.privacyDebug.accessibilityPermission}</span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">private detector</span>
-        <span class="kv-val kv-val--mono">{privacyDebug.privacyDebug.privateBrowserDetectionMode}</span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">detected private</span>
-        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.privateBrowserDetectedWindowIds)}</span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">sticky private</span>
-        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.privateBrowserStickyWindowIds)}</span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">private reasons</span>
-        <span class="kv-val kv-val--mono privacy-debug-list">
-          {formatDebugList(Object.entries(privacyDebug.privacyDebug.privateBrowserDetectionReasons).map(([id, reason]) => `${id}: ${reason}`))}
-        </span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">reason</span>
-        <span class="kv-val kv-val--mono">{privacyDebug.privacyDebug.metadataRedactionReason ?? "none"}</span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">source</span>
-        <span class="kv-val kv-val--mono">
-          {formatPrivacySourceLabel(
-            privacyDebug.privacyDebug.latestSnapshot?.metadataRedactionSourceId,
-            privacyDebug.privacyDebug.latestSnapshot?.metadataRedactionReason ?? privacyDebug.privacyDebug.metadataRedactionReason
-          )}
-        </span>
-      </li>
-      <li>
         <span class="kv-key kv-key--wide">applied bundles</span>
         <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.currentlyExcludedBundleIds)}</span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">applied windows</span>
-        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.currentlyExcludedWindowIds)}</span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">website hold</span>
-        <span class="kv-val kv-val--mono privacy-debug-list">{formatDebugList(privacyDebug.privacyDebug.websitePrivacyHoldBundleIds)}</span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">hold reasons</span>
-        <span class="kv-val kv-val--mono privacy-debug-list">
-          {formatDebugList(privacyDebug.privacyDebug.websitePrivacyHolds.map((hold) => `${hold.bundleId}: ${hold.reason}`))}
-        </span>
       </li>
     </ul>
 
@@ -1545,12 +1446,6 @@
             <span class="kv-key">sys-audio</span>
             <span class={permissionBadgeClass(permissions.systemAudio)}>
               {formatPermission(permissions.systemAudio)}
-            </span>
-          </li>
-          <li>
-            <span class="kv-key">access</span>
-            <span class={permissionBadgeClass(permissions.accessibility)}>
-              {formatPermission(permissions.accessibility)}
             </span>
           </li>
         </ul>

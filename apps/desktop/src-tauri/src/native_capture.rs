@@ -10,7 +10,6 @@ mod microphone;
 #[path = "native_capture_output.rs"]
 pub(crate) mod output;
 pub(crate) mod privacy;
-mod private_browser;
 mod runtime;
 mod segments;
 #[path = "native_capture_settings.rs"]
@@ -109,10 +108,7 @@ const OCR_UNAVAILABLE_NOTIFICATION_ID: &str = "ocr-unavailable";
 const SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID: &str = "speech-detector-unavailable";
 const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-unavailable";
 const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recovery-restart-required";
-const PRIVATE_BROWSER_ACCESSIBILITY_LIMITED_NOTIFICATION_ID: &str =
-    "private-browser-accessibility-limited";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
-const PRIVACY_SETTINGS_TAB_ID: &str = "privacy";
 #[cfg(target_os = "macos")]
 const APP_ICON_CACHE_DIR: &str = "app-icons";
 
@@ -178,7 +174,6 @@ pub struct BrowserUrlSupportResponse {
 pub struct CapturePrivacyDebugResponse {
     pub metadata_enabled: bool,
     pub browser_url_mode: capture_metadata::BrowserUrlMode,
-    pub private_browser_exclusion_enabled: bool,
     pub privacy_debug: metadata::CapturePrivacyDebugInfo,
 }
 
@@ -727,7 +722,6 @@ pub fn get_capture_privacy_debug(
     CapturePrivacyDebugResponse {
         metadata_enabled: settings.metadata.enabled,
         browser_url_mode: settings.metadata.browser_url_mode,
-        private_browser_exclusion_enabled: settings.privacy.private_browser_exclusion_enabled,
         privacy_debug: metadata::capture_privacy_debug_info(metadata_state.inner()),
     }
 }
@@ -792,45 +786,6 @@ pub(super) fn push_privacy_recovery_restart_required_notification(app_handle: &t
             action: None,
         },
     );
-}
-
-fn maybe_push_private_browser_accessibility_limited_start_warning(
-    app_handle: &tauri::AppHandle,
-    state: &AppNotificationsState,
-    settings: &RecordingSettings,
-    sources: &CaptureSources,
-) {
-    if !should_warn_private_browser_accessibility_limited_at_start(
-        settings,
-        sources,
-        private_browser::accessibility_permission_state(),
-    ) {
-        return;
-    }
-    push_app_notification(
-        app_handle,
-        state,
-        AppNotification {
-            id: PRIVATE_BROWSER_ACCESSIBILITY_LIMITED_NOTIFICATION_ID.to_string(),
-            severity: "warning".to_string(),
-            title: "Private browser detection is limited".to_string(),
-            message: "Mnema will keep recording and use title-based private-window detection until Accessibility is enabled.".to_string(),
-            created_at_unix_ms: runtime::now_unix_ms(),
-            action: Some(AppNotificationAction::OpenSettingsTab {
-                tab: PRIVACY_SETTINGS_TAB_ID.to_string(),
-            }),
-        },
-    );
-}
-
-fn should_warn_private_browser_accessibility_limited_at_start(
-    settings: &RecordingSettings,
-    sources: &CaptureSources,
-    accessibility_permission: CapturePermissionState,
-) -> bool {
-    settings.privacy.private_browser_exclusion_enabled
-        && sources.screen
-        && !matches!(accessibility_permission, CapturePermissionState::Granted)
 }
 
 pub(crate) fn push_warning_app_notification(
@@ -1387,7 +1342,6 @@ struct CapturePermissionsSnapshot {
     screen: &'static str,
     microphone: &'static str,
     system_audio: &'static str,
-    accessibility: &'static str,
 }
 
 fn capture_support_log_snapshot_state() -> &'static std::sync::Mutex<Option<CaptureSupportSnapshot>>
@@ -1724,7 +1678,6 @@ fn log_capture_permissions_if_changed(permissions: &CapturePermissions) {
         screen: permission_state_label(&permissions.screen),
         microphone: permission_state_label(&permissions.microphone),
         system_audio: permission_state_label(&permissions.system_audio),
-        accessibility: permission_state_label(&permissions.accessibility),
     };
     let mut last_snapshot = capture_permissions_log_snapshot_state()
         .lock()
@@ -1737,8 +1690,8 @@ fn log_capture_permissions_if_changed(permissions: &CapturePermissions) {
     *last_snapshot = Some(snapshot.clone());
 
     debug_log::log(format!(
-        "observed native capture permissions (screen={}, microphone={}, system_audio={}, accessibility={})",
-        snapshot.screen, snapshot.microphone, snapshot.system_audio, snapshot.accessibility
+        "observed native capture permissions (screen={}, microphone={}, system_audio={})",
+        snapshot.screen, snapshot.microphone, snapshot.system_audio
     ));
 }
 
@@ -2084,13 +2037,6 @@ fn start_native_capture_inner(
         app_notifications_state.inner(),
         &settings,
     );
-    maybe_push_private_browser_accessibility_limited_start_warning(
-        &app_handle,
-        app_notifications_state.inner(),
-        &settings,
-        &requested_sources_for_log,
-    );
-
     if let Some(notice) = runtime.take_microphone_vad_fallback_notification() {
         let message = format!(
             "Configured microphone VAD '{}' could not run. Using '{}' for this recording session.",
@@ -2160,7 +2106,6 @@ pub fn get_capture_permissions(
         screen: capture_screen::screen_permission_state(),
         microphone: microphone_capture::microphone_permission_state(),
         system_audio: capture_screen::system_audio_permission_state(),
-        accessibility: private_browser::accessibility_permission_state(),
     };
 
     log_capture_permissions_if_changed(&permissions);
@@ -2169,11 +2114,6 @@ pub fn get_capture_permissions(
         permissions,
         session: runtime.session(),
     }
-}
-
-#[tauri::command]
-pub fn request_accessibility_permission() -> CapturePermissionState {
-    private_browser::request_accessibility_permission()
 }
 
 #[tauri::command]
@@ -2378,22 +2318,10 @@ fn finish_recording_settings_update(
             privacy::PrivacyRefreshReason::MetadataSettingsMutation,
         );
     } else if privacy_changed {
-        let only_excluded_apps_changed = previous_settings.privacy.excluded_apps
-            != settings.privacy.excluded_apps
-            && previous_settings.privacy.excluded_website_rules
-                == settings.privacy.excluded_website_rules
-            && previous_settings.privacy.browser_title_rules
-                == settings.privacy.browser_title_rules
-            && previous_settings.privacy.private_browser_exclusion_enabled
-                == settings.privacy.private_browser_exclusion_enabled;
-        let reason = if only_excluded_apps_changed
-            && !privacy::dynamic_privacy_features_enabled(&settings.privacy)
-        {
-            privacy::PrivacyRefreshReason::StaticAppRuleMutation
-        } else {
-            privacy::PrivacyRefreshReason::DynamicPrivacySettingsMutation
-        };
-        privacy::request_privacy_filter_refresh(app_handle, reason);
+        privacy::request_privacy_filter_refresh(
+            app_handle,
+            privacy::PrivacyRefreshReason::StaticAppRuleMutation,
+        );
     }
     crate::status_bar::refresh(app_handle);
 

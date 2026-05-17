@@ -46,7 +46,7 @@
   type OnboardingStep = "about" | "permissions" | "sources" | "video" | "storage" | "processing" | "done";
   type ProcessingPanel = "ocr" | "transcription";
   type PermissionValue = PermissionStatus | "unsupported" | "unknown";
-  type PermissionKey = "screen" | "microphone" | "systemAudio" | "accessibility";
+  type PermissionKey = "screen" | "microphone" | "systemAudio";
 
   const steps: { id: OnboardingStep; label: string }[] = [
     { id: "about", label: "About" },
@@ -82,7 +82,6 @@
   let activeProcessingPanel = $state<ProcessingPanel>("ocr");
   let settings = $state<RecordingSettings | null>(null);
   let permissions = $state<Record<PermissionKey, PermissionValue> | null>(null);
-  let requestingAccessibilityPermission = $state(false);
   let loading = $state(true);
   let saving = $state(false);
   let starting = $state(false);
@@ -404,19 +403,6 @@
       error = serializeError(err);
     } finally {
       refreshingPerms = false;
-    }
-  }
-
-  async function requestAccessibilityPermission(): Promise<void> {
-    error = null;
-    requestingAccessibilityPermission = true;
-    try {
-      await invoke<PermissionStatus>("request_accessibility_permission");
-      await refreshPermissions();
-    } catch (err) {
-      error = serializeError(err);
-    } finally {
-      requestingAccessibilityPermission = false;
     }
   }
 
@@ -940,12 +926,11 @@
                   { key: "screen", name: "Screen recording" },
                   { key: "microphone", name: "Microphone" },
                   { key: "systemAudio", name: "System audio" },
-                  { key: "accessibility", name: "Accessibility", optional: true },
                 ] as p}
                   {@const value = permissions?.[p.key as PermissionKey]}
                   {@const tone = permissionTone(value)}
                   <li class="perm perm--{tone}">
-                    <span class="perm__name">{p.name}{p.optional ? " (optional)" : ""}</span>
+                    <span class="perm__name">{p.name}</span>
                     <span class="perm__pill">
                       <span class="perm__dot"></span>{permissionLabel(value)}
                     </span>
@@ -958,9 +943,6 @@
               <div class="row">
                 <button type="button" class="btn btn--ghost btn--sm" onclick={refreshPermissions} disabled={refreshingPerms}>
                   {refreshingPerms ? "Checking…" : "Refresh"}
-                </button>
-                <button type="button" class="btn btn--ghost btn--sm" onclick={requestAccessibilityPermission} disabled={requestingAccessibilityPermission}>
-                  {requestingAccessibilityPermission ? "Requesting…" : "Enable Accessibility"}
                 </button>
               </div>
             </article>
