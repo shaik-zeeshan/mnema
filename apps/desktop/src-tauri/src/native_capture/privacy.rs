@@ -102,14 +102,33 @@ pub(super) fn collect_initial_privacy_filter(
         .expect("recording settings state poisoned")
         .settings
         .clone();
-    let decision = crate::native_capture::metadata::refresh_static_excluded_app_privacy_state(
+    let decision = collect_initial_privacy_filter_decision(
         app_handle
             .state::<crate::native_capture::CaptureMetadataState>()
             .inner(),
-        &settings.privacy,
+        &settings,
     );
     let filter = privacy_filter_from_decision(decision.clone());
     InitialPrivacyFilter { decision, filter }
+}
+
+#[cfg(target_os = "macos")]
+fn collect_initial_privacy_filter_decision(
+    metadata_state: &crate::native_capture::CaptureMetadataState,
+    settings: &capture_types::RecordingSettings,
+) -> capture_metadata::PrivacyFilterDecision {
+    if settings.metadata.enabled {
+        crate::native_capture::metadata::refresh_metadata_state(
+            metadata_state,
+            &settings.metadata,
+            &settings.privacy,
+        )
+    } else {
+        crate::native_capture::metadata::refresh_static_excluded_app_privacy_state(
+            metadata_state,
+            &settings.privacy,
+        )
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -172,7 +191,9 @@ fn privacy_refresh_mode(
     settings: &capture_types::RecordingSettings,
     reason: PrivacyRefreshReason,
 ) -> PrivacyRefreshMode {
-    if settings.metadata.enabled && reason != PrivacyRefreshReason::StaticAppRuleMutation {
+    if reason == PrivacyRefreshReason::MetadataSettingsMutation {
+        PrivacyRefreshMode::MetadataAndStaticApps
+    } else if settings.metadata.enabled && reason != PrivacyRefreshReason::StaticAppRuleMutation {
         PrivacyRefreshMode::MetadataAndStaticApps
     } else {
         PrivacyRefreshMode::StaticExcludedAppsOnly
@@ -473,6 +494,17 @@ mod tests {
     }
 
     #[test]
+    fn privacy_refresh_uses_metadata_collection_for_metadata_settings_mutations() {
+        let mut settings = default_recording_settings();
+        settings.metadata.enabled = false;
+
+        assert_eq!(
+            privacy_refresh_mode(&settings, PrivacyRefreshReason::MetadataSettingsMutation),
+            PrivacyRefreshMode::MetadataAndStaticApps
+        );
+    }
+
+    #[test]
     fn privacy_refresh_keeps_static_fast_path_when_metadata_is_disabled() {
         let mut settings = default_recording_settings();
         settings.metadata.enabled = false;
@@ -485,5 +517,19 @@ mod tests {
             privacy_refresh_mode(&settings, PrivacyRefreshReason::WorkspaceFocusChanged),
             PrivacyRefreshMode::StaticExcludedAppsOnly
         );
+    }
+
+    #[test]
+    fn initial_privacy_filter_collects_metadata_snapshot_when_metadata_is_enabled() {
+        let mut settings = default_recording_settings();
+        settings.metadata.enabled = true;
+        let metadata_state = crate::native_capture::CaptureMetadataState::default();
+
+        let _decision = collect_initial_privacy_filter_decision(&metadata_state, &settings);
+
+        let runtime = metadata_state
+            .lock()
+            .expect("capture metadata state should lock");
+        assert!(runtime.latest_snapshot().is_some());
     }
 }
