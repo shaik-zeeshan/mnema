@@ -11,6 +11,7 @@ mod hidden_segment_workspace;
 pub mod jobs;
 mod ocr_budget;
 pub mod processing;
+mod search;
 pub mod status;
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -70,6 +71,9 @@ pub use processing::{
     FRAME_SUBJECT_TYPE, HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR,
     SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY, SPEAKER_ANALYSIS_PROCESSOR,
     SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+};
+pub use search::{
+    AudioSearchResult, FrameSearchResult, SearchCaptureRequest, SearchCaptureResponse, SearchStore,
 };
 pub use status::AppInfraStatus;
 
@@ -247,6 +251,7 @@ pub struct AppInfra {
     frame_batches: FrameBatchStore,
     capture_retention: CaptureRetentionStore,
     processing: ProcessingStore,
+    search: SearchStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
     runtime: JobRuntime,
@@ -269,6 +274,7 @@ impl AppInfra {
         let frame_batches = FrameBatchStore::new(database.pool().clone());
         let capture_retention = CaptureRetentionStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
+        let search = SearchStore::new(database.pool().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
@@ -293,6 +299,7 @@ impl AppInfra {
             frame_batches,
             capture_retention,
             processing,
+            search,
             captured_frame_equivalence,
             captured_frame_pipeline,
             runtime,
@@ -1352,6 +1359,13 @@ impl AppInfra {
         result: &ProcessingResultDraft,
     ) -> Result<ProcessingJobCompletion> {
         self.processing.complete_job(job_id, result).await
+    }
+
+    pub async fn search_capture(
+        &self,
+        request: SearchCaptureRequest,
+    ) -> Result<SearchCaptureResponse> {
+        self.search.search_capture(request).await
     }
 
     pub async fn get_processing_result_for_job(

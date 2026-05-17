@@ -171,6 +171,7 @@ pub fn run() {
             app_infra::get_earliest_earlier_equivalent_frame,
             app_infra::get_nearest_earlier_equivalent_frame,
             app_infra::get_timeline_window_around_frame,
+            app_infra::search_capture,
             app_infra::frame_preview::get_frame_preview,
             app_infra::frame_preview::get_frame_scrub_previews,
             app_infra::frame_preview::get_scrub_preview_availability,

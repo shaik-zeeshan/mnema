@@ -34,6 +34,7 @@ export interface FrameDto {
 	height: number | null;
 	appBundleId: string | null;
 	appName: string | null;
+	windowTitle: string | null;
 	ocrText: string | null;
 	processorVersion: string | null;
 	equivalenceHint: string | null;
@@ -163,6 +164,48 @@ export interface AudioSegmentDto {
 	endedAt: string;
 	createdAt: string;
 	updatedAt: string;
+}
+
+export interface SearchCaptureRequest {
+	query: string;
+	frameLimit?: number;
+	frameOffset?: number;
+	audioLimit?: number;
+	audioOffset?: number;
+}
+
+export interface SearchCaptureResponse {
+	normalizedQuery: string;
+	frames: FrameSearchResultDto[];
+	audio: AudioSearchResultDto[];
+	hasMoreFrames: boolean;
+	hasMoreAudio: boolean;
+}
+
+export interface FrameSearchResultDto {
+	groupKey: string;
+	representativeFrame: FrameDto;
+	groupStartAt: string;
+	groupEndAt: string;
+	matchCount: number;
+	snippet: string;
+	appName: string | null;
+	windowTitle: string | null;
+	thumbnailFrameId: number;
+	textSourceKind: "direct" | "equivalent_reuse";
+}
+
+export interface AudioSearchResultDto {
+	groupKey: string;
+	audioSegment: AudioSegmentDto;
+	sourceKind: AudioSegmentSourceKind;
+	spanStartMs: number;
+	spanEndMs: number;
+	absoluteStartAt: string;
+	absoluteEndAt: string;
+	matchCount: number;
+	snippet: string;
+	alignedFrame: FrameDto | null;
 }
 
 export interface ListAudioSegmentsRequest {

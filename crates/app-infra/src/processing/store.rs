@@ -1463,6 +1463,8 @@ impl ProcessingStore {
         {
             refresh_speaker_turn_transcript_texts(&mut transaction, job.subject_id).await?;
         }
+        crate::search::project_processing_result_in_transaction(&mut transaction, &stored_result)
+            .await?;
 
         transaction.commit().await?;
 
@@ -2983,6 +2985,10 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
+}
+
+pub(crate) fn map_frame_for_search(row: SqliteRow) -> Result<Frame> {
+    map_frame(row)
 }
 
 fn map_frame_summary(row: SqliteRow) -> Result<FrameSummary> {

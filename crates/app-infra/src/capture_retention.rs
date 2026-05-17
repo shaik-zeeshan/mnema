@@ -513,6 +513,7 @@ impl CaptureRetentionStore {
         let background_job_ids =
             background_job_ids_for_frame_batches(&mut tx, &frame_batch_ids).await?;
         let job_ids = processing_job_ids_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
+        delete_search_documents_for_subjects(&mut tx, &frame_ids, &audio_ids).await?;
         summary.deleted_processing_results =
             delete_by_job_ids(&mut tx, "processing_results", &job_ids).await?;
         summary.deleted_processing_jobs = delete_processing_jobs(&mut tx, &job_ids).await?;
@@ -1181,6 +1182,81 @@ async fn delete_by_job_ids(
     }
     separated.push_unseparated(")");
     Ok(query.build().execute(&mut **tx).await?.rows_affected() as i64)
+}
+
+async fn delete_search_documents_for_subjects(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    frame_ids: &[i64],
+    audio_ids: &[i64],
+) -> Result<()> {
+    let search_exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'search_documents'",
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+    if search_exists.is_none() {
+        return Ok(());
+    }
+
+    let mut document_ids: Vec<i64> = Vec::new();
+    if !frame_ids.is_empty() {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT id FROM search_documents WHERE frame_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for id in frame_ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        document_ids.extend(
+            query
+                .build()
+                .fetch_all(&mut **tx)
+                .await?
+                .into_iter()
+                .map(|row| row.get::<i64, _>("id")),
+        );
+    }
+    if !audio_ids.is_empty() {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT id FROM search_documents WHERE audio_segment_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for id in audio_ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        document_ids.extend(
+            query
+                .build()
+                .fetch_all(&mut **tx)
+                .await?
+                .into_iter()
+                .map(|row| row.get::<i64, _>("id")),
+        );
+    }
+    if document_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut fts_query =
+        QueryBuilder::<Sqlite>::new("DELETE FROM search_documents_fts WHERE rowid IN (");
+    let mut fts_separated = fts_query.separated(", ");
+    for id in &document_ids {
+        fts_separated.push_bind(*id);
+    }
+    fts_separated.push_unseparated(")");
+    fts_query.build().execute(&mut **tx).await?;
+
+    let mut doc_query = QueryBuilder::<Sqlite>::new("DELETE FROM search_documents WHERE id IN (");
+    let mut doc_separated = doc_query.separated(", ");
+    for id in &document_ids {
+        doc_separated.push_bind(*id);
+    }
+    doc_separated.push_unseparated(")");
+    doc_query.build().execute(&mut **tx).await?;
+
+    Ok(())
 }
 
 async fn delete_processing_jobs(

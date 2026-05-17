@@ -38,9 +38,11 @@
   import type {
     AudioSegmentDto,
     AudioSegmentMediaDto,
+    AudioSearchResultDto,
     AudioSegmentTranscriptionReprocessingResultDto,
     CapturedFrameReprocessingResultDto,
     FrameDto,
+    FrameSearchResultDto,
     FramePreviewDto,
     FrameRangeRequest,
     FrameSummaryDto,
@@ -65,6 +67,7 @@
     ScrubPreviewAvailabilityDto,
     ScrubPreviewAvailabilityIntervalDto,
     SpeakerAnalysisStructuredPayload,
+    SearchCaptureResponse,
     SystemAudioSpeechActivityReprocessingResultDto,
     SpeakerClusterDto,
     SpeakerTurnDto,
@@ -461,10 +464,27 @@
   // window/range refresh drops the row we clear the selection (see effect
   // below) so the player doesn't keep pointing at a stale path.
   let selectedAudioSegmentId = $state<number | null>(null);
+  let pendingAudioSeekMs = $state<number | null>(null);
   // Monotonic token used to discard stale `list_frames` responses. A reset
   // bumps this so any in-flight page request resolves into a no-op rather
   // than appending mismatched frames.
   let timelineGeneration = 0;
+
+  type SearchView = "all" | "frames" | "audio";
+  let searchOpen = $state(false);
+  let searchView = $state<SearchView>("all");
+  let searchQuery = $state("");
+  let searchNormalizedQuery = $state("");
+  let searchFrames = $state<FrameSearchResultDto[]>([]);
+  let searchAudio = $state<AudioSearchResultDto[]>([]);
+  let searchHasMoreFrames = $state(false);
+  let searchHasMoreAudio = $state(false);
+  let searchLoading = $state(false);
+  let searchLoadingMoreFrames = $state(false);
+  let searchLoadingMoreAudio = $state(false);
+  let searchError = $state<string | null>(null);
+  let searchGeneration = 0;
+  let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Preview file paths keyed by frame id. Reactive so the rail re-renders as
   // previews stream in without any extra plumbing.
@@ -2077,6 +2097,22 @@
     audioCurrentTime = nextTime;
   }
 
+  $effect(() => {
+    const seekMs = pendingAudioSeekMs;
+    const el = audioEl;
+    if (seekMs == null || !el || selectedAudioSrc == null) return;
+    const applySeek = () => {
+      seekAudioToTimeMs(seekMs);
+      pendingAudioSeekMs = null;
+    };
+    if (el.readyState >= 1) {
+      applySeek();
+      return;
+    }
+    el.addEventListener("loadedmetadata", applySeek, { once: true });
+    return () => el.removeEventListener("loadedmetadata", applySeek);
+  });
+
   /** `M:SS` for the player transport. Distinct from the segment-duration
    *  helper above because the transport ticks per second and a leading dash
    *  while metadata is still loading reads better as `0:00`. */
@@ -2809,6 +2845,17 @@
     return d.toLocaleString();
   }
 
+  function formatCapturedAtCompact(ts: string): string {
+    const d = parseCapturedAt(ts);
+    if (isNaN(d.getTime())) return ts;
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
   function formatUnixMs(ms: number): string {
     const d = new Date(ms);
     if (isNaN(d.getTime())) return "unknown";
@@ -3455,6 +3502,147 @@
       endUnixMs,
       durationSeconds,
     };
+  }
+
+  function plainSearchSnippet(snippet: string): string {
+    return snippet.replaceAll("<mark>", "").replaceAll("</mark>", "");
+  }
+
+  function openSearch(): void {
+    searchOpen = true;
+    searchView = "all";
+    void tick().then(() => {
+      document.querySelector<HTMLInputElement>(".search-modal__input")?.focus();
+    });
+  }
+
+  function closeSearch(): void {
+    searchOpen = false;
+    searchError = null;
+  }
+
+  async function runSearch(options: { appendFrames?: boolean; appendAudio?: boolean } = {}): Promise<void> {
+    const query = searchQuery.trim();
+    searchGeneration += 1;
+    const gen = searchGeneration;
+    if (query.length < 2) {
+      searchNormalizedQuery = query;
+      searchFrames = [];
+      searchAudio = [];
+      searchHasMoreFrames = false;
+      searchHasMoreAudio = false;
+      searchLoading = false;
+      searchLoadingMoreFrames = false;
+      searchLoadingMoreAudio = false;
+      searchError = null;
+      return;
+    }
+
+    const appendFrames = options.appendFrames === true;
+    const appendAudio = options.appendAudio === true;
+    searchLoading = !appendFrames && !appendAudio;
+    searchLoadingMoreFrames = appendFrames;
+    searchLoadingMoreAudio = appendAudio;
+    searchError = null;
+    try {
+      const response = await invoke<SearchCaptureResponse>("search_capture", {
+        request: {
+          query,
+          frameLimit: appendAudio ? 0 : 5,
+          frameOffset: appendFrames ? searchFrames.length : 0,
+          audioLimit: appendFrames ? 0 : 5,
+          audioOffset: appendAudio ? searchAudio.length : 0,
+        },
+      });
+      if (gen !== searchGeneration) return;
+      searchNormalizedQuery = response.normalizedQuery;
+      if (!appendAudio) {
+        searchFrames = appendFrames ? [...searchFrames, ...response.frames] : response.frames;
+        searchHasMoreFrames = response.hasMoreFrames;
+        void loadSearchFrameThumbnails(response.frames);
+      }
+      if (!appendFrames) {
+        searchAudio = appendAudio ? [...searchAudio, ...response.audio] : response.audio;
+        searchHasMoreAudio = response.hasMoreAudio;
+      }
+    } catch (err) {
+      if (gen !== searchGeneration) return;
+      searchError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      if (gen === searchGeneration) {
+        searchLoading = false;
+        searchLoadingMoreFrames = false;
+        searchLoadingMoreAudio = false;
+      }
+    }
+  }
+
+  async function loadSearchFrameThumbnails(results: FrameSearchResultDto[]): Promise<void> {
+    const frameIds = results
+      .map((result) => result.thumbnailFrameId)
+      .filter((frameId) => !scrubPreviewCache.has(frameId) && !scrubPreviewInFlight.has(frameId));
+    if (frameIds.length === 0) return;
+    for (const frameId of frameIds) scrubPreviewInFlight.add(frameId);
+    try {
+      const dto = await invoke<FrameScrubPreviewsDto>("get_frame_scrub_previews", {
+        request: { frameIds },
+      });
+      for (const result of dto.previews) {
+        if (result.preview) {
+          touchScrubPreviewCache(result.frameId, result.preview.filePath, {
+            mimeType: result.preview.mimeType,
+            sourceKind: result.preview.sourceKind,
+            loadMs: 0,
+          });
+        }
+      }
+    } finally {
+      for (const frameId of frameIds) scrubPreviewInFlight.delete(frameId);
+    }
+  }
+
+  function scheduleSearch(): void {
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => {
+      searchDebounceTimer = null;
+      void runSearch();
+    }, 250);
+  }
+
+  function onSearchInput(): void {
+    scheduleSearch();
+  }
+
+  function onSearchKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = null;
+      }
+      void runSearch();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeSearch();
+    }
+  }
+
+  async function selectFrameSearchResult(result: FrameSearchResultDto): Promise<void> {
+    closeSearch();
+    await jumpToFrame(result.representativeFrame, false);
+  }
+
+  async function selectAudioSearchResult(result: AudioSearchResultDto): Promise<void> {
+    closeSearch();
+    const mapped = mapAudioSegmentDto(result.audioSegment);
+    if (mapped && !audioSegments.some((segment) => segment.id === mapped.id)) {
+      audioSegments = [...audioSegments, mapped].sort((a, b) => a.startUnixMs - b.startUnixMs);
+    }
+    selectedAudioSegmentId = result.audioSegment.id;
+    pendingAudioSeekMs = result.spanStartMs;
+    if (result.alignedFrame) {
+      await jumpToFrame(result.alignedFrame, false);
+    }
   }
 
   /**
@@ -6303,6 +6491,11 @@
         >{ocrRerunButtonLabel}</button>
       {/if}
       <button
+        class="btn btn--ghost btn--sm timeline__search-btn"
+        onclick={openSearch}
+        title="Search captured frames and audio"
+      >search</button>
+      <button
         class="btn btn--ghost btn--sm timeline__ocr-btn"
         class:timeline__ocr-btn--running={ocrStatus === "running"}
         class:timeline__ocr-btn--error={ocrStatus === "error"}
@@ -6329,6 +6522,116 @@
       >refresh</button>
     </div>
   </header>
+
+  {#if searchOpen}
+    <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search captured content">
+      <div class="search-modal__panel">
+        <header class="search-modal__header">
+          <input
+            class="search-modal__input"
+            bind:value={searchQuery}
+            oninput={onSearchInput}
+            onkeydown={onSearchKeydown}
+            placeholder="Search captured text or audio"
+            aria-label="Search captured text or audio"
+          />
+          <button class="btn btn--ghost btn--sm" onclick={closeSearch} aria-label="Close search">close</button>
+        </header>
+        <div class="search-modal__tabs" role="tablist" aria-label="Search result sections">
+          <button class:search-modal__tab--active={searchView === "all"} onclick={() => (searchView = "all")}>All</button>
+          <button class:search-modal__tab--active={searchView === "frames"} onclick={() => (searchView = "frames")}>Frames</button>
+          <button class:search-modal__tab--active={searchView === "audio"} onclick={() => (searchView = "audio")}>Audio</button>
+        </div>
+        {#if searchError}
+          <p class="search-modal__error">{searchError}</p>
+        {:else if searchLoading}
+          <p class="search-modal__empty">searching…</p>
+        {:else if searchQuery.trim().length < 2}
+          <p class="search-modal__empty">Type at least 2 characters.</p>
+        {:else}
+          <div class="search-modal__body">
+            {#if searchView === "all" || searchView === "frames"}
+              <section class="search-modal__section">
+                <div class="search-modal__section-head">
+                  <h2>Frames</h2>
+                  <span>{searchFrames.length}</span>
+                </div>
+                {#if searchFrames.length === 0}
+                  <p class="search-modal__empty">No frame matches.</p>
+                {:else}
+                  <div class="search-modal__results">
+                    {#each searchFrames as result (result.groupKey)}
+                      <button class="search-card search-card--frame" onclick={() => void selectFrameSearchResult(result)}>
+                        <div class="search-card__thumb">
+                          {#if scrubPreviewCache.get(result.thumbnailFrameId)}
+                            <img src={framePreviewAssetUrl(scrubPreviewCache.get(result.thumbnailFrameId) ?? "")} alt="" />
+                          {:else}
+                            <span>frame</span>
+                          {/if}
+                        </div>
+                        <div class="search-card__content">
+                          <div class="search-card__meta">
+                            <span>{result.appName ?? "Unknown app"}</span>
+                            <span>{formatCapturedAtCompact(result.groupEndAt)}</span>
+                          </div>
+                          {#if result.windowTitle}
+                            <div class="search-card__title">{result.windowTitle}</div>
+                          {/if}
+                          <p>{plainSearchSnippet(result.snippet)}</p>
+                          {#if result.matchCount > 1}
+                            <span class="search-card__badge">{result.matchCount} matches</span>
+                          {/if}
+                        </div>
+                      </button>
+                    {/each}
+                  </div>
+                  {#if searchHasMoreFrames}
+                    <button class="btn btn--ghost btn--sm search-modal__more" disabled={searchLoadingMoreFrames} onclick={() => void runSearch({ appendFrames: true })}>
+                      {searchLoadingMoreFrames ? "loading…" : "More frames"}
+                    </button>
+                  {/if}
+                {/if}
+              </section>
+            {/if}
+            {#if searchView === "all" || searchView === "audio"}
+              <section class="search-modal__section">
+                <div class="search-modal__section-head">
+                  <h2>Audio</h2>
+                  <span>{searchAudio.length}</span>
+                </div>
+                {#if searchAudio.length === 0}
+                  <p class="search-modal__empty">No audio matches.</p>
+                {:else}
+                  <div class="search-modal__results">
+                    {#each searchAudio as result (result.groupKey)}
+                      <button class="search-card" onclick={() => void selectAudioSearchResult(result)}>
+                        <div class="search-card__content">
+                          <div class="search-card__meta">
+                            <span class="search-card__badge">{audioSourceLabel(result.sourceKind === "microphone" ? "microphone" : "systemAudio")}</span>
+                            <span>{formatCapturedAtCompact(result.absoluteStartAt)}</span>
+                            <span>{formatDurationSeconds(Math.max(0, (result.spanEndMs - result.spanStartMs) / 1000))}</span>
+                          </div>
+                          <p>{plainSearchSnippet(result.snippet)}</p>
+                          {#if result.matchCount > 1}
+                            <span class="search-card__badge">{result.matchCount} adjacent matches</span>
+                          {/if}
+                        </div>
+                      </button>
+                    {/each}
+                  </div>
+                  {#if searchHasMoreAudio}
+                    <button class="btn btn--ghost btn--sm search-modal__more" disabled={searchLoadingMoreAudio} onclick={() => void runSearch({ appendAudio: true })}>
+                      {searchLoadingMoreAudio ? "loading…" : "More audio"}
+                    </button>
+                  {/if}
+                {/if}
+              </section>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
 
   {#if timelineError}
     <div class="timeline__error">
@@ -7329,6 +7632,199 @@
 
   .timeline__bar-group--secondary {
     margin-left: auto;
+  }
+
+  .search-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: grid;
+    place-items: start center;
+    padding: 8vh 24px 24px;
+    background: rgba(0, 0, 0, 0.42);
+  }
+
+  .search-modal__panel {
+    width: min(980px, 100%);
+    max-height: 82vh;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.34);
+    overflow: hidden;
+  }
+
+  .search-modal__header {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .search-modal__input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 36px;
+    padding: 0 12px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-strong);
+    font: inherit;
+  }
+
+  .search-modal__tabs {
+    display: flex;
+    gap: 6px;
+  }
+
+  .search-modal__tabs button {
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--app-text-muted);
+    padding: 5px 10px;
+    font: inherit;
+  }
+
+  .search-modal__tab--active {
+    background: var(--app-surface-raised) !important;
+    color: var(--app-text-strong) !important;
+    border-color: var(--app-border-strong) !important;
+  }
+
+  .search-modal__body {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .search-modal__section {
+    min-width: 0;
+  }
+
+  .search-modal__section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    color: var(--app-text-muted);
+  }
+
+  .search-modal__section-head h2 {
+    margin: 0;
+    font-size: 13px;
+    color: var(--app-text-strong);
+  }
+
+  .search-modal__results {
+    display: grid;
+    gap: 8px;
+  }
+
+  .search-card {
+    width: 100%;
+    display: flex;
+    gap: 10px;
+    padding: 10px;
+    text-align: left;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface-raised);
+    color: var(--app-text);
+    font: inherit;
+  }
+
+  .search-card:hover {
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+  }
+
+  .search-card__thumb {
+    width: 88px;
+    aspect-ratio: 16 / 10;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--app-bg);
+    color: var(--app-text-subtle);
+    font-size: 11px;
+  }
+
+  .search-card__thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .search-card__content {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+  }
+
+  .search-card__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    color: var(--app-text-muted);
+    font-size: 11px;
+  }
+
+  .search-card__title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--app-text-strong);
+    font-size: 12px;
+  }
+
+  .search-card p,
+  .search-modal__empty,
+  .search-modal__error {
+    margin: 0;
+    color: var(--app-text);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .search-modal__empty {
+    color: var(--app-text-muted);
+  }
+
+  .search-modal__error {
+    color: var(--app-danger);
+  }
+
+  .search-card__badge {
+    width: fit-content;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    padding: 1px 6px;
+    color: var(--app-text-muted);
+    font-size: 11px;
+  }
+
+  .search-modal__more {
+    margin-top: 8px;
+  }
+
+  @media (max-width: 760px) {
+    .search-modal {
+      padding: 12px;
+      place-items: stretch;
+    }
+
+    .search-modal__body {
+      grid-template-columns: 1fr;
+    }
   }
 
   /* ── Recording control cluster ─────────────────────────────

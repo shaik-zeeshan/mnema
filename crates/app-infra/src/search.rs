@@ -1,0 +1,914 @@
+use std::collections::BTreeMap;
+
+use audio_transcription::TranscriptionMetadata;
+use serde::{Deserialize, Serialize};
+use sqlx::{sqlite::SqliteRow, Executor, Row, Sqlite, SqlitePool, Transaction};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
+
+use crate::{
+    processing::{map_frame_for_search, Frame},
+    AppInfraError, AudioSegment, AudioSegmentSourceKind, ProcessingResult, Result,
+    AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
+};
+
+const DEFAULT_GROUP_LIMIT: u32 = 5;
+const MAX_GROUP_LIMIT: u32 = 50;
+const AUDIO_GROUP_GAP_MS: u64 = 2_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCaptureRequest {
+    pub query: String,
+    pub frame_limit: Option<u32>,
+    pub frame_offset: Option<u32>,
+    pub audio_limit: Option<u32>,
+    pub audio_offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCaptureResponse {
+    pub normalized_query: String,
+    pub frames: Vec<FrameSearchResult>,
+    pub audio: Vec<AudioSearchResult>,
+    pub has_more_frames: bool,
+    pub has_more_audio: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameSearchResult {
+    pub group_key: String,
+    pub representative_frame: Frame,
+    pub group_start_at: String,
+    pub group_end_at: String,
+    pub match_count: u32,
+    pub snippet: String,
+    pub app_name: Option<String>,
+    pub window_title: Option<String>,
+    pub thumbnail_frame_id: i64,
+    pub text_source_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSearchResult {
+    pub group_key: String,
+    pub audio_segment: AudioSegment,
+    pub source_kind: AudioSegmentSourceKind,
+    pub span_start_ms: u64,
+    pub span_end_ms: u64,
+    pub absolute_start_at: String,
+    pub absolute_end_at: String,
+    pub match_count: u32,
+    pub snippet: String,
+    pub aligned_frame: Option<Frame>,
+}
+
+#[derive(Clone)]
+pub struct SearchStore {
+    pool: SqlitePool,
+}
+
+impl SearchStore {
+    pub(crate) fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn search_capture(
+        &self,
+        request: SearchCaptureRequest,
+    ) -> Result<SearchCaptureResponse> {
+        let normalized_query = normalize_query(&request.query);
+        if normalized_query.chars().count() < 2 {
+            return Ok(SearchCaptureResponse {
+                normalized_query,
+                frames: Vec::new(),
+                audio: Vec::new(),
+                has_more_frames: false,
+                has_more_audio: false,
+            });
+        }
+
+        let fts_query = fts_query_for_plain_text(&normalized_query);
+        if fts_query.is_empty() {
+            return Ok(SearchCaptureResponse {
+                normalized_query,
+                frames: Vec::new(),
+                audio: Vec::new(),
+                has_more_frames: false,
+                has_more_audio: false,
+            });
+        }
+
+        let frame_limit = clamp_limit(request.frame_limit);
+        let frame_offset = request.frame_offset.unwrap_or(0) as usize;
+        let audio_limit = clamp_limit(request.audio_limit);
+        let audio_offset = request.audio_offset.unwrap_or(0) as usize;
+
+        let frame_hits = fetch_frame_hits(&self.pool, &fts_query).await?;
+        let audio_hits = fetch_audio_hits(&self.pool, &fts_query).await?;
+
+        let all_frame_groups = group_frame_hits(frame_hits);
+        let all_audio_groups = group_audio_hits(&self.pool, audio_hits).await?;
+
+        let frame_end = frame_offset.saturating_add(frame_limit as usize);
+        let audio_end = audio_offset.saturating_add(audio_limit as usize);
+        let frames = all_frame_groups
+            .iter()
+            .skip(frame_offset)
+            .take(frame_limit as usize)
+            .cloned()
+            .collect::<Vec<_>>();
+        let audio = all_audio_groups
+            .iter()
+            .skip(audio_offset)
+            .take(audio_limit as usize)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        Ok(SearchCaptureResponse {
+            normalized_query,
+            frames,
+            audio,
+            has_more_frames: all_frame_groups.len() > frame_end,
+            has_more_audio: all_audio_groups.len() > audio_end,
+        })
+    }
+}
+
+pub(crate) async fn project_processing_result_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    result: &ProcessingResult,
+) -> Result<()> {
+    delete_projection_for_subject_processor(
+        transaction,
+        &result.subject_type,
+        result.subject_id,
+        &result.processor,
+    )
+    .await?;
+
+    if result.processor == OCR_PROCESSOR && result.subject_type == FRAME_SUBJECT_TYPE {
+        project_frame_ocr_result(transaction, result).await?;
+    } else if result.processor == AUDIO_TRANSCRIPTION_PROCESSOR
+        && result.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
+    {
+        project_audio_transcription_result(transaction, result).await?;
+    }
+
+    Ok(())
+}
+
+async fn delete_projection_for_subject_processor(
+    transaction: &mut Transaction<'_, Sqlite>,
+    subject_type: &str,
+    subject_id: i64,
+    processor: &str,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM search_documents_fts \
+         WHERE rowid IN (\
+            SELECT id FROM search_documents \
+            WHERE anchor_type = CASE WHEN ?1 = 'frame' THEN 'frame' ELSE 'audio' END \
+              AND ((?1 = 'frame' AND frame_id = ?2) OR (?1 = 'audio_segment' AND audio_segment_id = ?2))\
+              AND processing_result_id IN (SELECT id FROM processing_results WHERE processor = ?3)\
+         )",
+    )
+    .bind(subject_type)
+    .bind(subject_id)
+    .bind(processor)
+    .execute(&mut **transaction)
+    .await?;
+
+    sqlx::query(
+        "DELETE FROM search_documents \
+         WHERE anchor_type = CASE WHEN ?1 = 'frame' THEN 'frame' ELSE 'audio' END \
+           AND ((?1 = 'frame' AND frame_id = ?2) OR (?1 = 'audio_segment' AND audio_segment_id = ?2))\
+           AND processing_result_id IN (SELECT id FROM processing_results WHERE processor = ?3)",
+    )
+    .bind(subject_type)
+    .bind(subject_id)
+    .bind(processor)
+    .execute(&mut **transaction)
+    .await?;
+
+    Ok(())
+}
+
+async fn project_frame_ocr_result(
+    transaction: &mut Transaction<'_, Sqlite>,
+    result: &ProcessingResult,
+) -> Result<()> {
+    let Some(text) = result.result_text.as_deref().map(str::trim).filter(|text| !text.is_empty())
+    else {
+        return Ok(());
+    };
+
+    let row = sqlx::query(
+        "SELECT frames.id, session_id, file_path, captured_at, width, height, \
+                equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at \
+         FROM frames \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE frames.id = ?1",
+    )
+    .bind(result.subject_id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    let Some(frame) = row.map(map_frame_for_search).transpose()? else {
+        return Ok(());
+    };
+
+    let (app_name, window_title) = frame
+        .metadata_snapshot
+        .as_ref()
+        .map(|metadata| (metadata.app_name.clone(), metadata.window_title.clone()))
+        .unwrap_or((None, None));
+    let group_key = frame
+        .equivalence
+        .hint
+        .as_ref()
+        .map(|hint| format!("frame:eq:{}:{hint}", frame.session_id))
+        .unwrap_or_else(|| format!("frame:{}", frame.id));
+
+    insert_search_document(
+        transaction,
+        NewSearchDocument {
+            anchor_type: "frame",
+            frame_id: Some(frame.id),
+            audio_segment_id: None,
+            processing_result_id: result.id,
+            span_start_ms: None,
+            span_end_ms: None,
+            absolute_start_at: &frame.captured_at,
+            absolute_end_at: &frame.captured_at,
+            source_kind: None,
+            session_id: &frame.session_id,
+            app_name: app_name.as_deref(),
+            window_title: window_title.as_deref(),
+            group_key: &group_key,
+            text_source_kind: "direct",
+            searchable_text: text,
+        },
+    )
+    .await
+}
+
+async fn project_audio_transcription_result(
+    transaction: &mut Transaction<'_, Sqlite>,
+    result: &ProcessingResult,
+) -> Result<()> {
+    let Some(text) = result.result_text.as_deref().map(str::trim).filter(|text| !text.is_empty())
+    else {
+        return Ok(());
+    };
+
+    let segment = get_audio_segment_for_search(&mut **transaction, result.subject_id).await?;
+    let Some(segment) = segment else {
+        return Ok(());
+    };
+    let spans = transcription_spans(result, text);
+    for (index, span) in spans.into_iter().enumerate() {
+        let span_text = span.text.trim();
+        if span_text.is_empty() {
+            continue;
+        }
+        let absolute_start_at = timestamp_plus_ms(&segment.started_at, span.start_ms)?;
+        let absolute_end_at = timestamp_plus_ms(&segment.started_at, span.end_ms)?;
+        let group_key = format!("audio:{}:{index}", segment.id);
+        insert_search_document(
+            transaction,
+            NewSearchDocument {
+                anchor_type: "audio",
+                frame_id: None,
+                audio_segment_id: Some(segment.id),
+                processing_result_id: result.id,
+                span_start_ms: Some(span.start_ms as i64),
+                span_end_ms: Some(span.end_ms as i64),
+                absolute_start_at: &absolute_start_at,
+                absolute_end_at: &absolute_end_at,
+                source_kind: Some(segment.source_kind.as_str()),
+                session_id: &segment.source_session_id,
+                app_name: None,
+                window_title: None,
+                group_key: &group_key,
+                text_source_kind: "direct",
+                searchable_text: span_text,
+            },
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+struct NewSearchDocument<'a> {
+    anchor_type: &'a str,
+    frame_id: Option<i64>,
+    audio_segment_id: Option<i64>,
+    processing_result_id: i64,
+    span_start_ms: Option<i64>,
+    span_end_ms: Option<i64>,
+    absolute_start_at: &'a str,
+    absolute_end_at: &'a str,
+    source_kind: Option<&'a str>,
+    session_id: &'a str,
+    app_name: Option<&'a str>,
+    window_title: Option<&'a str>,
+    group_key: &'a str,
+    text_source_kind: &'a str,
+    searchable_text: &'a str,
+}
+
+async fn insert_search_document(
+    transaction: &mut Transaction<'_, Sqlite>,
+    doc: NewSearchDocument<'_>,
+) -> Result<()> {
+    let insert = sqlx::query(
+        "INSERT INTO search_documents (\
+            anchor_type, frame_id, audio_segment_id, processing_result_id, span_start_ms, span_end_ms, \
+            absolute_start_at, absolute_end_at, source_kind, session_id, app_name, window_title, \
+            group_key, text_source_kind, searchable_text\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+    )
+    .bind(doc.anchor_type)
+    .bind(doc.frame_id)
+    .bind(doc.audio_segment_id)
+    .bind(doc.processing_result_id)
+    .bind(doc.span_start_ms)
+    .bind(doc.span_end_ms)
+    .bind(doc.absolute_start_at)
+    .bind(doc.absolute_end_at)
+    .bind(doc.source_kind)
+    .bind(doc.session_id)
+    .bind(doc.app_name)
+    .bind(doc.window_title)
+    .bind(doc.group_key)
+    .bind(doc.text_source_kind)
+    .bind(doc.searchable_text)
+    .execute(&mut **transaction)
+    .await?;
+    let rowid = insert.last_insert_rowid();
+
+    sqlx::query(
+        "INSERT INTO search_documents_fts(rowid, searchable_text) VALUES (?1, ?2)",
+    )
+    .bind(rowid)
+    .bind(doc.searchable_text)
+    .execute(&mut **transaction)
+    .await?;
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct TranscriptSpan {
+    start_ms: u64,
+    end_ms: u64,
+    text: String,
+}
+
+fn transcription_spans(result: &ProcessingResult, fallback_text: &str) -> Vec<TranscriptSpan> {
+    if let Some(payload) = result.structured_payload_json.as_deref() {
+        if let Ok(metadata) = serde_json::from_str::<TranscriptionMetadata>(payload) {
+            let segments = metadata
+                .segments
+                .into_iter()
+                .filter(|segment| !segment.text.trim().is_empty())
+                .map(|segment| TranscriptSpan {
+                    start_ms: segment.start_ms,
+                    end_ms: segment.end_ms.max(segment.start_ms),
+                    text: segment.text,
+                })
+                .collect::<Vec<_>>();
+            if !segments.is_empty() {
+                return segments;
+            }
+
+            if !metadata.words.is_empty() {
+                return metadata
+                    .words
+                    .chunks(24)
+                    .filter_map(|words| {
+                        let first = words.first()?;
+                        let last = words.last()?;
+                        Some(TranscriptSpan {
+                            start_ms: first.start_ms,
+                            end_ms: last.end_ms.max(first.start_ms),
+                            text: words
+                                .iter()
+                                .map(|word| word.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        })
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    vec![TranscriptSpan {
+        start_ms: 0,
+        end_ms: 0,
+        text: fallback_text.to_string(),
+    }]
+}
+
+fn timestamp_plus_ms(started_at: &str, offset_ms: u64) -> Result<String> {
+    let start = OffsetDateTime::parse(started_at, &Rfc3339)
+        .map_err(|error| AppInfraError::FrameBatchFinalize(format!("invalid search timestamp '{started_at}': {error}")))?;
+    let timestamp = start
+        .checked_add(Duration::milliseconds(offset_ms.try_into().unwrap_or(i64::MAX)))
+        .ok_or_else(|| AppInfraError::FrameBatchFinalize("search timestamp overflow".to_string()))?;
+    Ok(timestamp
+        .format(&Rfc3339)
+        .map_err(|error| AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}")))?)
+}
+
+fn normalize_query(query: &str) -> String {
+    query.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn fts_query_for_plain_text(query: &str) -> String {
+    query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 2)
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn clamp_limit(limit: Option<u32>) -> u32 {
+    if limit == Some(0) {
+        return 0;
+    }
+    limit
+        .unwrap_or(DEFAULT_GROUP_LIMIT)
+        .clamp(1, MAX_GROUP_LIMIT)
+}
+
+#[derive(Debug, Clone)]
+struct FrameHit {
+    group_key: String,
+    frame: Frame,
+    snippet: String,
+    rank: f64,
+    app_name: Option<String>,
+    window_title: Option<String>,
+    text_source_kind: String,
+}
+
+#[derive(Debug, Clone)]
+struct AudioHit {
+    audio_segment: AudioSegment,
+    source_kind: AudioSegmentSourceKind,
+    span_start_ms: u64,
+    span_end_ms: u64,
+    snippet: String,
+    rank: f64,
+}
+
+async fn fetch_frame_hits(pool: &SqlitePool, fts_query: &str) -> Result<Vec<FrameHit>> {
+    let rows = sqlx::query(
+        "SELECT search_documents.group_key, search_documents.app_name, search_documents.window_title, \
+                search_documents.text_source_kind, \
+                snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12) AS snippet, \
+                bm25(search_documents_fts) AS rank, \
+                frames.id, frames.session_id, frames.file_path, frames.captured_at, frames.width, frames.height, \
+                frames.equivalence_hint, frames.equivalence_proof, frames.equivalence_version, \
+                frames.equivalence_status, frames.equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at \
+         FROM search_documents_fts \
+         JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
+         JOIN frames ON frames.id = search_documents.frame_id \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE search_documents_fts MATCH ?1 AND search_documents.anchor_type = 'frame' \
+         ORDER BY rank ASC, search_documents.absolute_start_at DESC",
+    )
+    .bind(fts_query)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(FrameHit {
+                group_key: row.get("group_key"),
+                app_name: row.get("app_name"),
+                window_title: row.get("window_title"),
+                text_source_kind: row.get("text_source_kind"),
+                snippet: row.get("snippet"),
+                rank: row.get("rank"),
+                frame: map_frame_for_search(row)?,
+            })
+        })
+        .collect()
+}
+
+async fn fetch_audio_hits(pool: &SqlitePool, fts_query: &str) -> Result<Vec<AudioHit>> {
+    let rows = sqlx::query(
+        "SELECT search_documents.id AS document_id, search_documents.group_key, \
+                search_documents.span_start_ms, search_documents.span_end_ms, \
+                search_documents.absolute_start_at, search_documents.absolute_end_at, \
+                snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12) AS snippet, \
+                bm25(search_documents_fts) AS rank, \
+                audio_segments.id, audio_segments.source_kind, audio_segments.source_session_id, \
+                audio_segments.segment_index, audio_segments.file_path, audio_segments.started_at, \
+                audio_segments.ended_at, audio_segments.capture_segment_id, audio_segments.created_at, audio_segments.updated_at \
+         FROM search_documents_fts \
+         JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
+         JOIN audio_segments ON audio_segments.id = search_documents.audio_segment_id \
+         WHERE search_documents_fts MATCH ?1 AND search_documents.anchor_type = 'audio' \
+         ORDER BY rank ASC, search_documents.absolute_start_at DESC",
+    )
+    .bind(fts_query)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter().map(map_audio_hit).collect()
+}
+
+fn group_frame_hits(hits: Vec<FrameHit>) -> Vec<FrameSearchResult> {
+    let mut groups: BTreeMap<String, Vec<FrameHit>> = BTreeMap::new();
+    for hit in hits {
+        groups.entry(hit.group_key.clone()).or_default().push(hit);
+    }
+
+    let mut results = groups
+        .into_iter()
+        .filter_map(|(group_key, mut hits)| {
+            hits.sort_by(|a, b| {
+                a.rank
+                    .total_cmp(&b.rank)
+                    .then_with(|| b.frame.captured_at.cmp(&a.frame.captured_at))
+            });
+            let representative = hits
+                .iter()
+                .max_by(|a, b| a.frame.captured_at.cmp(&b.frame.captured_at))?;
+            let group_start_at = hits
+                .iter()
+                .map(|hit| hit.frame.captured_at.as_str())
+                .min()
+                .unwrap_or(representative.frame.captured_at.as_str())
+                .to_string();
+            let group_end_at = hits
+                .iter()
+                .map(|hit| hit.frame.captured_at.as_str())
+                .max()
+                .unwrap_or(representative.frame.captured_at.as_str())
+                .to_string();
+            Some(FrameSearchResult {
+                group_key,
+                representative_frame: representative.frame.clone(),
+                group_start_at,
+                group_end_at,
+                match_count: hits.len() as u32,
+                snippet: hits[0].snippet.clone(),
+                app_name: representative.app_name.clone(),
+                window_title: representative.window_title.clone(),
+                thumbnail_frame_id: representative.frame.id,
+                text_source_kind: representative.text_source_kind.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    results.sort_by(|a, b| b.group_end_at.cmp(&a.group_end_at));
+    results
+}
+
+async fn group_audio_hits(pool: &SqlitePool, mut hits: Vec<AudioHit>) -> Result<Vec<AudioSearchResult>> {
+    hits.sort_by(|a, b| {
+        a.rank
+            .total_cmp(&b.rank)
+            .then_with(|| a.audio_segment.id.cmp(&b.audio_segment.id))
+            .then_with(|| a.span_start_ms.cmp(&b.span_start_ms))
+    });
+
+    let mut groups: Vec<Vec<AudioHit>> = Vec::new();
+    for hit in hits {
+        if let Some(last_group) = groups.last_mut() {
+            if let Some(last) = last_group.last() {
+                if last.audio_segment.id == hit.audio_segment.id
+                    && hit.span_start_ms <= last.span_end_ms.saturating_add(AUDIO_GROUP_GAP_MS)
+                {
+                    last_group.push(hit);
+                    continue;
+                }
+            }
+        }
+        groups.push(vec![hit]);
+    }
+
+    let mut results = Vec::new();
+    for group in groups {
+        let first = group.first().expect("group should not be empty");
+        let span_start_ms = group.iter().map(|hit| hit.span_start_ms).min().unwrap_or(0);
+        let span_end_ms = group.iter().map(|hit| hit.span_end_ms).max().unwrap_or(span_start_ms);
+        let absolute_start_at = timestamp_plus_ms(&first.audio_segment.started_at, span_start_ms)?;
+        let absolute_end_at = timestamp_plus_ms(&first.audio_segment.started_at, span_end_ms)?;
+        let aligned_frame = find_aligned_frame(pool, &first.audio_segment.source_session_id, &absolute_start_at).await?;
+        results.push(AudioSearchResult {
+            group_key: format!("audio:{}:{}-{}", first.audio_segment.id, span_start_ms, span_end_ms),
+            audio_segment: first.audio_segment.clone(),
+            source_kind: first.source_kind.clone(),
+            span_start_ms,
+            span_end_ms,
+            absolute_start_at,
+            absolute_end_at,
+            match_count: group.len() as u32,
+            snippet: first.snippet.clone(),
+            aligned_frame,
+        });
+    }
+
+    results.sort_by(|a, b| b.absolute_start_at.cmp(&a.absolute_start_at));
+    Ok(results)
+}
+
+async fn find_aligned_frame(
+    pool: &SqlitePool,
+    session_id: &str,
+    absolute_start_at: &str,
+) -> Result<Option<Frame>> {
+    let target = OffsetDateTime::parse(absolute_start_at, &Rfc3339)
+        .map_err(|error| AppInfraError::FrameBatchFinalize(format!("invalid search timestamp '{absolute_start_at}': {error}")))?;
+    let before_start = target
+        .checked_sub(Duration::seconds(10))
+        .ok_or_else(|| AppInfraError::FrameBatchFinalize("search alignment timestamp underflow".to_string()))?
+        .format(&Rfc3339)
+        .map_err(|error| AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}")))?;
+    let after_end = target
+        .checked_add(Duration::seconds(10))
+        .ok_or_else(|| AppInfraError::FrameBatchFinalize("search alignment timestamp overflow".to_string()))?
+        .format(&Rfc3339)
+        .map_err(|error| AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}")))?;
+
+    let before = sqlx::query(
+        "SELECT frames.id, session_id, file_path, captured_at, width, height, \
+                equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at \
+         FROM frames \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE session_id = ?1 AND captured_at <= ?2 AND captured_at >= ?3 \
+         ORDER BY captured_at DESC, frames.id DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .bind(absolute_start_at)
+    .bind(&before_start)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(row) = before {
+        return map_frame_for_search(row).map(Some);
+    }
+
+    let after = sqlx::query(
+        "SELECT frames.id, session_id, file_path, captured_at, width, height, \
+                equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at \
+         FROM frames \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE session_id = ?1 AND captured_at > ?2 AND captured_at <= ?3 \
+         ORDER BY captured_at ASC, frames.id ASC LIMIT 1",
+    )
+    .bind(session_id)
+    .bind(absolute_start_at)
+    .bind(after_end)
+    .fetch_optional(pool)
+    .await?;
+
+    after.map(map_frame_for_search).transpose()
+}
+
+async fn get_audio_segment_for_search<'e, E>(
+    executor: E,
+    audio_segment_id: i64,
+) -> Result<Option<AudioSegment>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        "SELECT id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, \
+                capture_segment_id, created_at, updated_at \
+         FROM audio_segments WHERE id = ?1",
+    )
+    .bind(audio_segment_id)
+    .fetch_optional(executor)
+    .await?;
+
+    row.map(map_audio_segment_for_search).transpose()
+}
+
+fn map_audio_hit(row: SqliteRow) -> Result<AudioHit> {
+    let source_kind = AudioSegmentSourceKind::from_str(row.get::<String, _>("source_kind").as_str());
+    let audio_segment = AudioSegment {
+        id: row.get("id"),
+        source_kind: source_kind.clone(),
+        source_session_id: row.get("source_session_id"),
+        segment_index: row.get("segment_index"),
+        file_path: row.get("file_path"),
+        started_at: row.get("started_at"),
+        ended_at: row.get("ended_at"),
+        capture_segment_id: row.get("capture_segment_id"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    };
+    Ok(AudioHit {
+        audio_segment,
+        source_kind,
+        span_start_ms: row.get::<Option<i64>, _>("span_start_ms").unwrap_or(0).max(0) as u64,
+        span_end_ms: row.get::<Option<i64>, _>("span_end_ms").unwrap_or(0).max(0) as u64,
+        snippet: row.get("snippet"),
+        rank: row.get("rank"),
+    })
+}
+
+fn map_audio_segment_for_search(row: SqliteRow) -> Result<AudioSegment> {
+    Ok(AudioSegment {
+        id: row.get("id"),
+        source_kind: AudioSegmentSourceKind::from_str(row.get::<String, _>("source_kind").as_str()),
+        source_session_id: row.get("source_session_id"),
+        segment_index: row.get("segment_index"),
+        file_path: row.get("file_path"),
+        started_at: row.get("started_at"),
+        ended_at: row.get("ended_at"),
+        capture_segment_id: row.get("capture_segment_id"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use audio_transcription::{TranscriptionMetadata, TranscriptionSegment};
+
+    use super::*;
+    use crate::{AppInfra, NewAudioSegment, NewFrame, ProcessingJobDraft, ProcessingResultDraft};
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn test_dir(name: &str) -> PathBuf {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!(
+            "mnema-search-{name}-{}-{id}",
+            std::process::id()
+        ))
+    }
+
+    async fn complete_job(
+        infra: &AppInfra,
+        job: crate::ProcessingJob,
+        result: ProcessingResultDraft,
+    ) {
+        let running = infra
+            .claim_queued_processing_job(job.id)
+            .await
+            .expect("job should claim")
+            .expect("job should exist");
+        infra
+            .complete_processing_job(running.id, &result)
+            .await
+            .expect("job should complete");
+    }
+
+    fn run_async_test(test: impl std::future::Future<Output = ()>) {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(test);
+    }
+
+    #[test]
+    fn search_projects_completed_ocr_and_groups_equivalent_frames() {
+        run_async_test(async {
+        let dir = test_dir("ocr-groups");
+        let infra = AppInfra::initialize(&dir).await.expect("infra should initialize");
+        let first = infra
+            .insert_frame(
+                &NewFrame::new("screen-session", "/tmp/search-frame-a.jpg", "2026-05-17T10:00:00Z")
+                    .with_equivalence(crate::FrameEquivalence {
+                        hint: Some("same-screen".to_string()),
+                        proof: None,
+                        version: Some(1),
+                        status: Some(crate::FrameEquivalenceStatus::Ready),
+                        error: None,
+                    }),
+            )
+            .await
+            .expect("first frame should insert");
+        let second = infra
+            .insert_frame(
+                &NewFrame::new("screen-session", "/tmp/search-frame-b.jpg", "2026-05-17T10:00:02Z")
+                    .with_equivalence(crate::FrameEquivalence {
+                        hint: Some("same-screen".to_string()),
+                        proof: None,
+                        version: Some(1),
+                        status: Some(crate::FrameEquivalenceStatus::Ready),
+                        error: None,
+                    }),
+            )
+            .await
+            .expect("second frame should insert");
+
+        for frame in [&first, &second] {
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("quarterly roadmap search target"),
+            )
+            .await;
+        }
+
+        let response = infra
+            .search_capture(SearchCaptureRequest {
+                query: "roadmap".to_string(),
+                frame_limit: Some(5),
+                frame_offset: None,
+                audio_limit: Some(5),
+                audio_offset: None,
+            })
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(response.frames.len(), 1);
+        assert_eq!(response.frames[0].match_count, 2);
+        assert_eq!(response.frames[0].representative_frame.id, second.id);
+        assert!(response.audio.is_empty());
+        });
+    }
+
+    #[test]
+    fn search_projects_transcript_segments_and_sanitizes_plain_query() {
+        run_async_test(async {
+        let dir = test_dir("audio-segments");
+        let infra = AppInfra::initialize(&dir).await.expect("infra should initialize");
+        let segment = infra
+            .upsert_audio_segment(&NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "mic-session",
+                1,
+                "/tmp/search-audio.m4a",
+                "2026-05-17T10:00:00Z",
+                "2026-05-17T10:00:20Z",
+            ))
+            .await
+            .expect("segment should insert");
+        let metadata = TranscriptionMetadata {
+            provider: "test".to_string(),
+            model_id: None,
+            language: "en".to_string(),
+            segments: vec![TranscriptionSegment {
+                start_ms: 1_000,
+                end_ms: 2_500,
+                text: "search target phrase".to_string(),
+                confidence: None,
+            }],
+            words: Vec::new(),
+            provenance: Default::default(),
+        };
+        let job = infra
+            .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                segment.id,
+            ))
+            .await
+            .expect("transcription job should enqueue");
+        complete_job(
+            &infra,
+            job,
+            ProcessingResultDraft::new()
+                .with_result_text("search target phrase")
+                .with_structured_payload_json(
+                    serde_json::to_string(&metadata).expect("metadata should serialize"),
+                ),
+        )
+        .await;
+
+        let response = infra
+            .search_capture(SearchCaptureRequest {
+                query: "\"target\"".to_string(),
+                frame_limit: Some(5),
+                frame_offset: None,
+                audio_limit: Some(5),
+                audio_offset: None,
+            })
+            .await
+            .expect("search should succeed");
+
+        assert!(response.frames.is_empty());
+        assert_eq!(response.audio.len(), 1);
+        assert_eq!(response.audio[0].span_start_ms, 1_000);
+        assert_eq!(response.audio[0].span_end_ms, 2_500);
+        });
+    }
+}
