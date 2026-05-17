@@ -10,8 +10,8 @@ use capture_types::{
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
     default_system_audio_activity_sensitivity, default_video_bitrate, AudioSpeechDetectionSettings,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
-    BrowserTitleRuleMatchType, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
-    RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
+    CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
+    RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
     SpeakerAnalysisSettings, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
     VideoBitrateSettings,
 };
@@ -255,32 +255,7 @@ fn validate_audio_speech_detection_settings(
 pub(crate) fn validate_privacy_settings(
     value: capture_types::PrivacySettings,
 ) -> Result<capture_types::PrivacySettings, CaptureErrorResponse> {
-    let capture_types::PrivacySettings {
-        excluded_apps,
-        excluded_website_rules,
-        browser_title_rules,
-        private_browser_exclusion_enabled,
-    } = value;
-
-    let excluded_website_rules = excluded_website_rules
-        .into_iter()
-        .map(|rule| capture_metadata::parse_website_rule(rule.id, rule.enabled, &rule.pattern))
-        .collect();
-
-    for rule in &browser_title_rules {
-        if rule.enabled
-            && rule.match_type == BrowserTitleRuleMatchType::Regex
-            && !capture_metadata::title_rule_is_valid(rule)
-        {
-            return Err(CaptureErrorResponse {
-                code: "invalid_recording_settings".to_string(),
-                message: format!(
-                    "Enabled browser title regex rule '{}' is invalid",
-                    rule.pattern
-                ),
-            });
-        }
-    }
+    let capture_types::PrivacySettings { excluded_apps } = value;
 
     let mut seen_app_bundle_ids = std::collections::BTreeSet::new();
     let excluded_apps = excluded_apps
@@ -294,12 +269,7 @@ pub(crate) fn validate_privacy_settings(
         })
         .collect();
 
-    Ok(capture_types::PrivacySettings {
-        excluded_apps,
-        excluded_website_rules,
-        browser_title_rules,
-        private_browser_exclusion_enabled,
-    })
+    Ok(capture_types::PrivacySettings { excluded_apps })
 }
 
 pub(crate) fn canonicalize_app_bundle_id(bundle_id: &str) -> String {
@@ -1068,32 +1038,6 @@ mod tests {
                 preset: ScreenResolutionPreset::P720
             }
         );
-    }
-
-    #[test]
-    fn validate_privacy_settings_derives_website_rule_fields_from_pattern() {
-        let mut privacy = default_privacy_settings();
-        privacy.excluded_website_rules = vec![capture_types::WebsiteRule {
-            id: "site".to_string(),
-            enabled: true,
-            pattern: "new.example.com/private".to_string(),
-            host: Some("old.example.com".to_string()),
-            include_subdomains: true,
-            path_prefix: Some("/old".to_string()),
-            port: Some(5173),
-        }];
-
-        let normalized = validate_privacy_settings(privacy).expect("privacy should validate");
-        let rule = normalized
-            .excluded_website_rules
-            .first()
-            .expect("website rule should be preserved");
-
-        assert_eq!(rule.pattern, "new.example.com/private");
-        assert_eq!(rule.host.as_deref(), Some("new.example.com"));
-        assert!(!rule.include_subdomains);
-        assert_eq!(rule.path_prefix.as_deref(), Some("/private"));
-        assert_eq!(rule.port, None);
     }
 
     #[test]

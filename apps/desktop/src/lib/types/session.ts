@@ -16,7 +16,6 @@ export interface PermissionsMap {
 	screen: PermissionStatus;
 	microphone: PermissionStatus;
 	systemAudio: PermissionStatus;
-	accessibility: PermissionStatus;
 }
 
 export interface RequestedSources {

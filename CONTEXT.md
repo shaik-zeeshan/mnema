@@ -85,6 +85,14 @@ _Avoid_: scrub-time extraction, exact frame preview generation, thumbnail pipeli
 The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. Screen and system audio share the screen capture backend, while microphone runs as a separate native session.
 _Avoid_: capture runtime, recorder service, session manager
 
+**App Privacy Exclusion**:
+The user-facing privacy policy that prevents live screen capture of selected apps by app identity. **App Privacy Exclusion** is the only live privacy exclusion guarantee and the only privacy exclusion control exposed in settings. Mnema records visible screen content from apps that are not excluded, including private or incognito browser windows.
+_Avoid_: website exclusion, title exclusion, private browser exclusion, per-window privacy, metadata privacy rule
+
+**Live Privacy Filter**:
+The native screen-capture filtering mechanism that applies **App Privacy Exclusion** before frames are delivered to Mnema.
+_Avoid_: privacy promise, metadata redaction, post-capture filtering
+
 **Audio Segment**:
 A time-bounded persisted audio recording file produced from one recording source during a recording session.
 _Avoid_: audio file, raw microphone file, sound clip
@@ -231,6 +239,11 @@ _Avoid_: purge, vacuum, file cleanup
 - **Scrub Preview Generation** prefers an existing matching **Screen Frame Artifact** when available, then falls back to the finalized screen segment recording plus frame index.
 - **Hidden Segment Workspace** cleanup does not wait on **Scrub Preview Generation**; existing frame artifacts are used opportunistically but the finalized segment recording remains the regeneration source.
 - A **Recording Lifecycle** coordinates screen, microphone, and system-audio capture within one recording runtime.
+- A **Recording Lifecycle** applies **App Privacy Exclusion** through the **Live Privacy Filter** when screen capture is requested.
+- **App Privacy Exclusion** is app-based rather than website-, title-, private-browser-, or private-window-based.
+- Metadata-derived website, title, private-browser, and per-window decisions must not feed the **Live Privacy Filter**.
+- Shared recording/privacy settings should not expose inactive metadata privacy fields for website, title, private-browser, or per-window exclusion.
+- Metadata collection kept after removing metadata privacy rules must serve non-privacy product features such as timeline context, app/window labels, or debug surfaces.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.
 - A **Recording Lifecycle** creates one **Capture Session** for a user recording and **Capture Segment** rows only for produced artifacts.

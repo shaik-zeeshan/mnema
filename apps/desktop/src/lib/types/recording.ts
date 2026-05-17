@@ -8,9 +8,6 @@ export type AudioSpeechDetector = "silero" | "webrtc" | "off";
 export type MicrophoneVadAdapter = AudioSpeechDetector;
 export type RetentionPolicy = "never" | "days_7" | "days_14" | "days_30";
 export type BrowserUrlMode = "off" | "sanitized" | "full";
-export type BrowserTitleRuleMatchType = "substring" | "regex";
-export type PrivacyRedactionSourceKind = "excluded_app" | "website_rule" | "title_rule";
-export type PrivacyRedactionSourceStatus = "active" | "deleted" | "forgotten" | "unknown";
 
 export interface MetadataSettings {
 	enabled: boolean;
@@ -24,50 +21,8 @@ export interface ExcludedAppEntry {
 	displayName: string;
 }
 
-export interface WebsiteRule {
-	id: string;
-	enabled: boolean;
-	pattern: string;
-	host: string | null;
-	includeSubdomains: boolean;
-	pathPrefix: string | null;
-	port: number | null;
-}
-
-export interface BrowserTitleRule {
-	id: string;
-	enabled: boolean;
-	matchType: BrowserTitleRuleMatchType;
-	pattern: string;
-}
-
 export interface PrivacySettings {
 	excludedApps: ExcludedAppEntry[];
-	excludedWebsiteRules: WebsiteRule[];
-	browserTitleRules: BrowserTitleRule[];
-	privateBrowserExclusionEnabled: boolean;
-}
-
-export interface PrivacyRedactionSourceDto {
-	sourceId: string;
-	sourceKind: PrivacyRedactionSourceKind;
-	status: PrivacyRedactionSourceStatus;
-	label: string | null;
-	detail: string | null;
-	labelForgotten: boolean;
-	restorable: boolean;
-	restoreEnabled: boolean | null;
-	createdAt: string;
-	updatedAt: string;
-	deletedAt: string | null;
-}
-
-export interface PrivacyRedactionSourceResolutionDto {
-	sourceId: string;
-	sourceKind: PrivacyRedactionSourceKind;
-	status: PrivacyRedactionSourceStatus;
-	label: string | null;
-	detail: string | null;
 }
 
 export interface RecordingSettings {

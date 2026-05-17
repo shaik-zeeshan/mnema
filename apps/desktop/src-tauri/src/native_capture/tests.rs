@@ -52,9 +52,8 @@ use super::{
     audio_transcription_unavailable_notification, ocr_unavailable_notification,
     recording_requires_speech_detector, should_warn_audio_transcription_unavailable_at_start,
     should_warn_audio_transcription_unavailable_at_startup, should_warn_ocr_unavailable_at_start,
-    should_warn_ocr_unavailable_at_startup,
-    should_warn_private_browser_accessibility_limited_at_start, AppNotification,
-    AppNotificationAction, AppNotificationsRuntime,
+    should_warn_ocr_unavailable_at_startup, AppNotification, AppNotificationAction,
+    AppNotificationsRuntime,
 };
 #[cfg(target_os = "macos")]
 use capture_runtime::{
@@ -68,8 +67,8 @@ use capture_types::{
     default_preview_cache_ttl_seconds, default_privacy_settings, default_retention_policy,
     default_speaker_analysis_settings, default_video_bitrate, AppearanceSetting,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
-    CaptureErrorResponse, CaptureOutputFiles, CapturePermissionState, CaptureSources,
-    CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
+    CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
+    InactivityActivityMode, MicrophoneControllerState,
     MicrophoneDisconnectPolicy, MicrophonePreference, MicrophonePreferenceMode, OcrProvider,
     RecordingSettings, ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
     StartNativeCaptureRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
@@ -418,47 +417,6 @@ fn ocr_start_warning_requires_screen_capture() {
     settings.capture_screen = false;
     assert!(!should_warn_ocr_unavailable_at_start(&settings));
     assert!(!should_warn_ocr_unavailable_at_startup(&settings));
-}
-
-#[test]
-fn private_browser_accessibility_warning_requires_requested_screen_capture() {
-    let mut settings = recording_settings_fixture();
-    settings.privacy.private_browser_exclusion_enabled = true;
-    let microphone_only_sources = CaptureSources {
-        screen: false,
-        microphone: true,
-        system_audio: false,
-    };
-
-    assert!(!should_warn_private_browser_accessibility_limited_at_start(
-        &settings,
-        &microphone_only_sources,
-        CapturePermissionState::Denied,
-    ));
-
-    let screen_sources = CaptureSources {
-        screen: true,
-        microphone: false,
-        system_audio: false,
-    };
-    assert!(should_warn_private_browser_accessibility_limited_at_start(
-        &settings,
-        &screen_sources,
-        CapturePermissionState::Denied,
-    ));
-
-    assert!(!should_warn_private_browser_accessibility_limited_at_start(
-        &settings,
-        &screen_sources,
-        CapturePermissionState::Granted,
-    ));
-
-    settings.privacy.private_browser_exclusion_enabled = false;
-    assert!(!should_warn_private_browser_accessibility_limited_at_start(
-        &settings,
-        &screen_sources,
-        CapturePermissionState::Denied,
-    ));
 }
 
 #[test]

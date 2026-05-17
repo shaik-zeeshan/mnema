@@ -32,7 +32,6 @@ pub struct CapturePermissions {
     pub screen: CapturePermissionState,
     pub microphone: CapturePermissionState,
     pub system_audio: CapturePermissionState,
-    pub accessibility: CapturePermissionState,
 }
 
 #[derive(Debug, Clone, Serialize)]

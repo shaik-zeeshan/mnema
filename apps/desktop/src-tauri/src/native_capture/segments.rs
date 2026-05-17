@@ -2426,7 +2426,10 @@ where
 
     if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
         if let Some(app_handle) = app_handle {
-            let privacy_filter_update = privacy::collect_privacy_filter_update(app_handle);
+            let (_, privacy_filter_update) = privacy::collect_privacy_filter_update(
+                app_handle,
+                privacy::PrivacyRefreshReason::FallbackPoll,
+            );
             let _ =
                 privacy::apply_privacy_filter_update(app_handle, runtime, privacy_filter_update)?;
         }

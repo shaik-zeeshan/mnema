@@ -45,16 +45,10 @@
     RetentionPolicy,
     BrowserUrlMode,
     ExcludedAppEntry,
-    WebsiteRule,
-    BrowserTitleRule,
-    BrowserTitleRuleMatchType,
     SpeakerAnalysisModelDownloadProgress,
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
     KeyboardBindingsSettings,
-    GetPermissionsResponse,
-    PermissionStatus,
-    PrivacyRedactionSourceDto,
   } from "$lib/types";
 
   type CardIconKind =
@@ -71,7 +65,6 @@
     | "audio";
 
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
-  const PRIVACY_REDACTION_SOURCES_CHANGED_EVENT = "privacy_redaction_sources_changed";
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
   const SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT = "speaker_analysis_model_download_progress";
   const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
@@ -85,13 +78,6 @@
   type AppIconResolution = {
     bundleId: string;
     iconPath: string | null;
-  };
-
-  type ParsedWebsiteRule = {
-    host: string | null;
-    includeSubdomains: boolean;
-    pathPrefix: string | null;
-    port: number | null;
   };
 
   type RetentionCleanupSummary = {
@@ -167,23 +153,12 @@
   let draftMetadataEnabled = $state(true);
   let draftBrowserUrlMode = $state<BrowserUrlMode>("sanitized");
   let draftExcludedApps = $state<ExcludedAppEntry[]>([]);
-  let draftWebsiteRules = $state<WebsiteRule[]>([]);
-  let draftBrowserTitleRules = $state<BrowserTitleRule[]>([]);
-  let draftPrivateBrowserExclusionEnabled = $state(false);
   let privacyAppCandidates = $state<PrivacyAppCandidate[]>([]);
   let appIconPathsByBundleId = $state<Record<string, string>>({});
   const requestedAppIconBundleIds = new Set<string>();
-  let manageablePrivacySources = $state<PrivacyRedactionSourceDto[]>([]);
-  let privacyHistoryError = $state<string | null>(null);
   let privacyCommandInFlight = $state(false);
   let privacyAppComboboxQuery = $state("");
   let privacyAppComboboxOpen = $state(false);
-  let accessibilityPermission = $state<PermissionStatus | null>(null);
-  let requestingAccessibilityPermission = $state(false);
-  let accessibilityPermissionError = $state<string | null>(null);
-  let websiteRuleDraft = $state("");
-  let titleRuleDraft = $state("");
-  let titleRuleDraftMatchType = $state<BrowserTitleRuleMatchType>("substring");
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
   let retentionCleanupRunning = $state(false);
   let retentionCleanupError = $state<string | null>(null);
@@ -537,9 +512,6 @@
     draftMetadataEnabled = s.metadata?.enabled ?? true;
     draftBrowserUrlMode = s.metadata?.browserUrlMode ?? "sanitized";
     draftExcludedApps = [...(s.privacy?.excludedApps ?? [])];
-    draftWebsiteRules = [...(s.privacy?.excludedWebsiteRules ?? [])];
-    draftBrowserTitleRules = [...(s.privacy?.browserTitleRules ?? [])];
-    draftPrivateBrowserExclusionEnabled = s.privacy?.privateBrowserExclusionEnabled ?? true;
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
     draftAppearance = s.appearance ?? "system";
     draftOcrEnabled = s.ocr?.enabled ?? true;
@@ -642,9 +614,6 @@
       },
       privacy: recordingSettings?.privacy ?? {
         excludedApps: draftExcludedApps,
-        excludedWebsiteRules: draftWebsiteRules,
-        browserTitleRules: draftBrowserTitleRules,
-        privateBrowserExclusionEnabled: draftPrivateBrowserExclusionEnabled,
       },
       nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
       previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
@@ -782,28 +751,6 @@
     }
   }
 
-  async function refreshAccessibilityPermission() {
-    try {
-      const response = await invoke<GetPermissionsResponse>("get_capture_permissions");
-      accessibilityPermission = response.permissions.accessibility;
-    } catch (err) {
-      accessibilityPermissionError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-    }
-  }
-
-  async function requestAccessibilityPermission() {
-    requestingAccessibilityPermission = true;
-    accessibilityPermissionError = null;
-    try {
-      accessibilityPermission = await invoke<PermissionStatus>("request_accessibility_permission");
-      await refreshAccessibilityPermission();
-    } catch (err) {
-      accessibilityPermissionError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-    } finally {
-      requestingAccessibilityPermission = false;
-    }
-  }
-
   const availablePrivacyAppCandidates = $derived(
     privacyAppCandidates.filter((candidate) => (
       !draftExcludedApps.some((item) => item.bundleId === candidate.bundleId)
@@ -866,10 +813,7 @@
 
   $effect(() => {
     const activeAppRuleBundleIds = draftExcludedApps.map((app) => app.bundleId);
-    const deletedAppRuleBundleIds = manageablePrivacySources
-      .filter((source) => source.sourceKind === "excluded_app")
-      .map((source) => source.detail);
-    void resolveAppIcons([...activeAppRuleBundleIds, ...deletedAppRuleBundleIds]);
+    void resolveAppIcons(activeAppRuleBundleIds);
   });
 
   function handlePrivacyAppComboboxInput() {
@@ -903,126 +847,7 @@
   }
 
   function removePrivacyApp(id: string) {
-    void removePrivacySource(id);
-  }
-
-  function parseWebsiteRuleDraft(pattern: string): ParsedWebsiteRule | null {
-    const trimmed = pattern.trim();
-    if (!trimmed) return null;
-    try {
-      const normalized = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
-      const wildcardHostMatch = normalized.match(/^([a-z][a-z\d+\-.]*:\/\/)\*\./i);
-      const includeSubdomains = Boolean(wildcardHostMatch);
-      const parseablePattern = wildcardHostMatch
-        ? `${wildcardHostMatch[1]}${normalized.slice(wildcardHostMatch[0].length)}`
-        : normalized;
-      const parsed = new URL(parseablePattern);
-      let host = parsed.hostname.toLowerCase();
-      if (!host) return null;
-      const port = parsed.port ? Number.parseInt(parsed.port, 10) : null;
-      return {
-        host,
-        includeSubdomains,
-        pathPrefix: parsed.pathname && parsed.pathname !== "/" ? parsed.pathname : null,
-        port: Number.isInteger(port) ? port : null,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  const websiteRuleDraftError = $derived((() => {
-    if (!websiteRuleDraft.trim()) return null;
-    return parseWebsiteRuleDraft(websiteRuleDraft) ? null : "Enter a valid domain or URL.";
-  })());
-
-  function formatWebsiteRuleDescription(rule: WebsiteRule): string {
-    const parsed = rule.host
-      ? {
-          host: rule.host,
-          includeSubdomains: rule.includeSubdomains,
-          pathPrefix: rule.pathPrefix,
-          port: rule.port,
-        }
-      : parseWebsiteRuleDraft(rule.pattern);
-    if (!parsed?.host) return "Website rule";
-    const host = parsed.includeSubdomains ? `*.${parsed.host}` : parsed.host;
-    const parts = [host];
-    if (parsed.pathPrefix) parts.push(parsed.pathPrefix);
-    if (parsed.port) parts.push(`port ${parsed.port}`);
-    return parts.join(" ");
-  }
-
-  function addWebsiteRule() {
-    const pattern = websiteRuleDraft.trim();
-    const parsed = parseWebsiteRuleDraft(pattern);
-    if (!pattern || !parsed) return;
-    void runPrivacySettingsCommand("add_privacy_website_rule", { pattern });
-    websiteRuleDraft = "";
-  }
-
-  function removeWebsiteRule(id: string) {
-    void removePrivacySource(id);
-  }
-
-  function titleRuleRegexError(pattern: string): string | null {
-    try {
-      new RegExp(pattern);
-      return null;
-    } catch {
-      return "Invalid regex pattern.";
-    }
-  }
-
-  const titleRuleDraftError = $derived((() => {
-    const pattern = titleRuleDraft.trim();
-    if (!pattern || titleRuleDraftMatchType !== "regex") return null;
-    return titleRuleRegexError(pattern);
-  })());
-
-  const titleRuleValidationErrors = $derived((() => (
-    draftBrowserTitleRules
-      .filter((rule) => rule.enabled && rule.matchType === "regex")
-      .map((rule) => {
-        const error = titleRuleRegexError(rule.pattern);
-        return error ? `Title regex "${rule.pattern}" is invalid.` : null;
-      })
-      .filter((error): error is string => Boolean(error))
-  ))());
-
-  function handleRuleDraftKeydown(event: KeyboardEvent, addRule: () => void) {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    addRule();
-  }
-
-  function addTitleRule() {
-    const pattern = titleRuleDraft.trim();
-    if (!pattern || titleRuleDraftError) return;
-    void runPrivacySettingsCommand("add_privacy_title_rule", {
-      matchType: titleRuleDraftMatchType,
-      pattern,
-    });
-    titleRuleDraft = "";
-    titleRuleDraftMatchType = "substring";
-  }
-
-  function removeTitleRule(id: string) {
-    void removePrivacySource(id);
-  }
-
-  function updateTitleRuleMatchType(id: string, value: string) {
-    const existing = draftBrowserTitleRules.find((rule) => rule.id === id);
-    if (!existing) return;
-    void runPrivacySettingsCommand("update_privacy_title_rule", {
-      sourceId: id,
-      matchType: value as BrowserTitleRuleMatchType,
-      pattern: existing.pattern,
-    });
-  }
-
-  function formatTitleRuleDescription(rule: BrowserTitleRule): string {
-    return rule.matchType === "regex" ? "Regex title rule" : "Substring title rule";
+    void removePrivacyExcludedApp(id);
   }
 
   async function setBrowserUrlMode(mode: string) {
@@ -1050,7 +875,6 @@
       const updated = await invoke<RecordingSettings>(command, args);
       recordingSettings = updated;
       syncRecDrafts(updated);
-      await loadManageablePrivacySources();
     } catch (err) {
       recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
@@ -1058,54 +882,12 @@
     }
   }
 
-  async function setPrivacySourceEnabled(sourceId: string, enabled: boolean): Promise<void> {
-    await runPrivacySettingsCommand("set_privacy_source_enabled", { sourceId, enabled });
+  async function setPrivacyExcludedAppEnabled(sourceId: string, enabled: boolean): Promise<void> {
+    await runPrivacySettingsCommand("set_privacy_excluded_app_enabled", { sourceId, enabled });
   }
 
-  async function removePrivacySource(sourceId: string): Promise<void> {
-    await runPrivacySettingsCommand("remove_privacy_source", { sourceId });
-  }
-
-  async function setPrivateBrowserExclusionEnabled(enabled: boolean): Promise<void> {
-    await runPrivacySettingsCommand("set_private_browser_exclusion_enabled", { enabled });
-  }
-
-  async function restorePrivacySource(sourceId: string): Promise<void> {
-    await runPrivacySettingsCommand("restore_privacy_redaction_source", { sourceId });
-  }
-
-  async function forgetPrivacySourceLabel(sourceId: string): Promise<void> {
-    const ok = await ask(
-      "Old frames will still show that metadata was redacted by a deleted privacy rule, but this label will no longer be shown. This rule will also no longer be restorable.",
-      {
-        title: "Forget this redaction label?",
-        kind: "warning",
-        okLabel: "Forget label",
-        cancelLabel: "Cancel",
-      }
-    );
-    if (!ok) return;
-    privacyCommandInFlight = true;
-    privacyHistoryError = null;
-    try {
-      manageablePrivacySources = await invoke<PrivacyRedactionSourceDto[]>(
-        "forget_privacy_redaction_source_label",
-        { sourceId }
-      );
-    } catch (err) {
-      privacyHistoryError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-    } finally {
-      privacyCommandInFlight = false;
-    }
-  }
-
-  async function loadManageablePrivacySources(): Promise<void> {
-    privacyHistoryError = null;
-    try {
-      manageablePrivacySources = await invoke<PrivacyRedactionSourceDto[]>("list_manageable_privacy_redaction_sources");
-    } catch (err) {
-      privacyHistoryError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-    }
+  async function removePrivacyExcludedApp(sourceId: string): Promise<void> {
+    await runPrivacySettingsCommand("remove_privacy_excluded_app", { sourceId });
   }
 
   // Snapshots are stable JSON strings derived from the very same payload
@@ -1848,7 +1630,6 @@
     if (resolutionSupportPendingForNonOriginal) {
       errors.push("Wait for capture support to load before saving preset/custom resolution.");
     }
-    errors.push(...titleRuleValidationErrors);
     return errors;
   })());
 
@@ -2151,13 +1932,10 @@
     loadDebugLogStatus();
     loadGeneralLogStatus();
     loadPrivacyAppCandidates();
-    loadManageablePrivacySources();
-    refreshAccessibilityPermission();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
     let unlistenRecordingSettingsChanged: (() => void) | undefined;
-    let unlistenPrivacySourcesChanged: (() => void) | undefined;
     let unlistenOpenSettingsTab: (() => void) | undefined;
     let unlistenOcrDownloadProgress: (() => void) | undefined;
     let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
@@ -2193,12 +1971,6 @@
       else unlistenRecordingSettingsChanged = fn;
     });
 
-    listen(PRIVACY_REDACTION_SOURCES_CHANGED_EVENT, () => {
-      void loadManageablePrivacySources();
-    }).then((fn) => {
-      if (destroyed) fn();
-      else unlistenPrivacySourcesChanged = fn;
-    });
 
     listen<{ tab: string }>("open_settings_tab", (event) => {
       handleSettingsTabEvent(event.payload.tab);
@@ -2243,7 +2015,6 @@
       unlistenControllerChanged?.();
       unlistenAutoDisconnectFailure?.();
       unlistenRecordingSettingsChanged?.();
-      unlistenPrivacySourcesChanged?.();
       unlistenOpenSettingsTab?.();
       unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
@@ -2592,7 +2363,7 @@
                   </span>
                   <Switch
                     checked={app.enabled}
-                    onCheckedChange={(enabled) => void setPrivacySourceEnabled(app.id, enabled)}
+                    onCheckedChange={(enabled) => void setPrivacyExcludedAppEnabled(app.id, enabled)}
                     label={app.displayName}
                     description={app.bundleId}
                     disabled={privacyCommandInFlight}
@@ -2604,194 +2375,9 @@
               <p class="empty-state">No app exclusions.</p>
             {/if}
           </div>
-        </div>
-
-        <div class="settings-group">
-          <span class="group-label">Website Exclusions</span>
-          <div class="privacy-add-row">
-            <div class="rule-draft-field">
-              <input
-                class="text-input"
-                class:text-input--empty={Boolean(websiteRuleDraft.trim() && websiteRuleDraftError)}
-                bind:value={websiteRuleDraft}
-                placeholder="example.com/private"
-                onkeydown={(event) => handleRuleDraftKeydown(event, addWebsiteRule)}
-              />
-              {#if websiteRuleDraftError}
-                <span class="rule-draft-error">{websiteRuleDraftError}</span>
-              {/if}
-            </div>
-            <button
-              class="btn icon-add-button"
-              type="button"
-              aria-label="Add website exclusion"
-              disabled={!websiteRuleDraft.trim() || Boolean(websiteRuleDraftError)}
-              onclick={addWebsiteRule}
-            >+</button>
-          </div>
-          <p class="group-hint">Website and title exclusions are best-effort and require metadata support for the active browser.</p>
-          <div class="settings-list">
-            {#if draftWebsiteRules.length > 0}
-              {#each draftWebsiteRules as rule (rule.id)}
-                <div class="settings-list-item">
-                  <Switch
-                    checked={rule.enabled}
-                    onCheckedChange={(enabled) => void setPrivacySourceEnabled(rule.id, enabled)}
-                    label={rule.pattern}
-                    description={formatWebsiteRuleDescription(rule)}
-                    disabled={privacyCommandInFlight}
-                  />
-                  <button class="btn btn--ghost btn--sm" type="button" disabled={privacyCommandInFlight} onclick={() => removeWebsiteRule(rule.id)}>Remove</button>
-                </div>
-              {/each}
-            {:else}
-              <p class="empty-state">No website exclusions.</p>
-            {/if}
-          </div>
-        </div>
-
-        <div class="settings-group">
-          <span class="group-label">Browser Titles</span>
-          <div class="privacy-add-row privacy-add-row--title">
-            <SelectMenu
-              value={titleRuleDraftMatchType}
-              onValueChange={(value) => { titleRuleDraftMatchType = value as BrowserTitleRuleMatchType; }}
-              options={[
-                { value: "substring", label: "Substring" },
-                { value: "regex", label: "Regex" },
-              ]}
-            />
-            <div class="rule-draft-field">
-              <input
-                class="text-input"
-                class:text-input--empty={Boolean(titleRuleDraft.trim() && titleRuleDraftError)}
-                bind:value={titleRuleDraft}
-                placeholder={titleRuleDraftMatchType === "regex" ? "Project .* confidential" : "private title text"}
-                onkeydown={(event) => handleRuleDraftKeydown(event, addTitleRule)}
-              />
-              {#if titleRuleDraftError}
-                <span class="rule-draft-error">{titleRuleDraftError}</span>
-              {/if}
-            </div>
-            <button
-              class="btn icon-add-button"
-              type="button"
-              aria-label="Add title exclusion"
-              disabled={!titleRuleDraft.trim() || Boolean(titleRuleDraftError)}
-              onclick={addTitleRule}
-            >+</button>
-          </div>
-          <div class="settings-list">
-            {#if titleRuleValidationErrors.length > 0}
-              <div class="inline-validation">
-                {#each titleRuleValidationErrors as err}
-                  <p class="inline-validation__item">
-                    <span class="inline-validation__icon">!</span>
-                    <span>{err}</span>
-                  </p>
-                {/each}
-              </div>
-            {/if}
-            {#if draftBrowserTitleRules.length > 0}
-              {#each draftBrowserTitleRules as rule (rule.id)}
-                <div class="settings-list-item settings-list-item--rule">
-                  <Switch
-                    checked={rule.enabled}
-                    onCheckedChange={(enabled) => void setPrivacySourceEnabled(rule.id, enabled)}
-                    label={rule.pattern}
-                    description={formatTitleRuleDescription(rule)}
-                    disabled={privacyCommandInFlight}
-                  />
-                  <div class="rule-row-actions">
-                    <SelectMenu
-                      value={rule.matchType}
-                      onValueChange={(value) => updateTitleRuleMatchType(rule.id, value)}
-                      options={[
-                        { value: "substring", label: "Substring" },
-                        { value: "regex", label: "Regex" },
-                      ]}
-                    />
-                    <button class="btn btn--ghost btn--sm" type="button" disabled={privacyCommandInFlight} onclick={() => removeTitleRule(rule.id)}>Remove</button>
-                  </div>
-                </div>
-              {/each}
-            {:else}
-              <p class="empty-state">No title exclusions.</p>
-            {/if}
-          </div>
-        </div>
-
-        <div class="settings-group">
-          <Switch
-            checked={draftPrivateBrowserExclusionEnabled}
-            onCheckedChange={(enabled) => void setPrivateBrowserExclusionEnabled(enabled)}
-            label="Hide private browser windows"
-            description="Best-effort private/incognito detection from window titles and macOS Accessibility"
-            disabled={privacyCommandInFlight}
-          />
-          {#if draftPrivateBrowserExclusionEnabled && accessibilityPermission !== "granted"}
-            <div class="permission-callout">
-              <div class="permission-callout__copy">
-                <span class="permission-callout__eyebrow">Optional Accessibility</span>
-                <strong>Private-browser protection is limited</strong>
-                <p>Mnema will keep recording and use title-based detection until Accessibility is enabled.</p>
-              </div>
-              <button
-                class="btn btn--ghost"
-                type="button"
-                onclick={requestAccessibilityPermission}
-                disabled={requestingAccessibilityPermission}
-              >
-                {requestingAccessibilityPermission ? "Requesting" : "Enable Accessibility"}
-              </button>
-            </div>
-            {#if accessibilityPermissionError}
-              <p class="group-hint group-hint--warn">Accessibility request failed: {accessibilityPermissionError}</p>
-            {/if}
-          {/if}
-        </div>
-
-        <div class="settings-group">
-          <span class="group-label">Manage Redaction History</span>
-          <div class="settings-list">
-            {#if privacyHistoryError}
-              <p class="group-hint group-hint--warn">{privacyHistoryError}</p>
-            {/if}
-            {#if manageablePrivacySources.length > 0}
-              {#each manageablePrivacySources as source (source.sourceId)}
-                {@const sourceIconSrc = source.sourceKind === "excluded_app" && source.detail ? appIconSrcForBundleId(source.detail) : null}
-                <div class="settings-list-item settings-list-item--rule">
-                  <div class:app-rule-summary={source.sourceKind === "excluded_app"}>
-                    {#if source.sourceKind === "excluded_app"}
-                      <span class="app-rule-icon" aria-hidden="true">
-                        {#if sourceIconSrc}
-                          <img src={sourceIconSrc} alt="" loading="lazy" />
-                        {:else}
-                          <span>{appIconFallback(source.label, source.detail)}</span>
-                        {/if}
-                      </span>
-                    {/if}
-                    <div class="switch-text">
-                      <span class="switch-label">{source.label ?? "Deleted privacy rule"}</span>
-                      <span class="switch-description">
-                        {source.detail ?? (source.sourceKind === "website_rule" ? "Deleted website rule" : source.sourceKind === "title_rule" ? "Deleted title rule" : "Deleted app rule")}
-                        {#if source.restoreEnabled === false} · Restores disabled{/if}
-                      </span>
-                    </div>
-                  </div>
-                  <div class="rule-row-actions">
-                    <button class="btn btn--ghost btn--sm" type="button" disabled={privacyCommandInFlight || !source.restorable} onclick={() => restorePrivacySource(source.sourceId)}>Restore</button>
-                    <button class="btn btn--ghost btn--sm" type="button" disabled={privacyCommandInFlight} onclick={() => forgetPrivacySourceLabel(source.sourceId)}>Forget label</button>
-                  </div>
-                </div>
-              {/each}
-            {:else}
-              <div class="empty-state">
-                <strong>No deleted redaction labels.</strong>
-                <span>Deleted privacy rules with retained labels will appear here.</span>
-              </div>
-            {/if}
-          </div>
+          <p class="group-hint">
+            Mnema records visible content from non-excluded apps, including private/incognito browser windows. Exclude the whole browser app to keep browser content out of recordings.
+          </p>
         </div>
       </section>
     </div>
@@ -4924,17 +4510,6 @@
     align-items: center;
   }
 
-  .privacy-add-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 34px;
-    gap: 8px;
-    align-items: start;
-  }
-
-  .privacy-add-row--title {
-    grid-template-columns: minmax(128px, 0.32fr) minmax(0, 1fr) 34px;
-  }
-
   .app-combobox {
     position: relative;
     min-width: 0;
@@ -5043,19 +4618,6 @@
     font-style: italic;
   }
 
-  .rule-draft-field {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .rule-draft-error {
-    color: var(--app-warn);
-    font-size: 10px;
-    line-height: 1.4;
-  }
-
   .settings-list {
     display: flex;
     flex-direction: column;
@@ -5076,42 +4638,6 @@
 
   .settings-list-item--app-rule {
     grid-template-columns: 28px minmax(0, 1fr) auto;
-  }
-
-  .settings-list-item--rule {
-    grid-template-columns: minmax(0, 1fr) minmax(150px, auto);
-  }
-
-  .app-rule-summary {
-    display: grid;
-    min-width: 0;
-    grid-template-columns: 28px minmax(0, 1fr);
-    gap: 8px;
-    align-items: center;
-  }
-
-  .settings-list-item--rule .switch-text {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .settings-list-item--rule .switch-label {
-    overflow: hidden;
-    color: var(--app-text);
-    font-size: 12px;
-    font-weight: 500;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .settings-list-item--rule .switch-description {
-    overflow: hidden;
-    color: var(--app-text-muted);
-    font-size: 10px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .app-rule-icon {
@@ -5145,14 +4671,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .rule-row-actions {
-    display: grid;
-    min-width: 150px;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-    align-items: center;
   }
 
   .text-input {
@@ -5219,25 +4737,6 @@
   .btn--sm {
     padding: 3px 8px;
     font-size: 9px;
-  }
-
-  .icon-add-button {
-    width: 34px;
-    height: 34px;
-    padding: 0;
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    font-size: 18px;
-    line-height: 1;
-    letter-spacing: 0;
-    text-transform: none;
-  }
-
-  .icon-add-button:not(:disabled):hover {
-    border-color: var(--app-accent);
-    background: color-mix(in srgb, var(--app-accent-bg) 76%, var(--app-surface-hover));
-    color: var(--app-accent-strong);
   }
 
   .saved-badge {
@@ -5998,10 +5497,6 @@
     border-color: var(--app-border-hover);
   }
 
-  :global([data-theme="light"]) .rule-draft-error {
-    color: var(--app-warn);
-  }
-
   :global([data-theme="light"]) .btn--ghost {
     color: var(--app-text-muted);
     border-color: var(--app-border-strong);
@@ -6010,11 +5505,6 @@
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
-  }
-  :global([data-theme="light"]) .icon-add-button {
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-    border-color: var(--app-accent-border);
   }
   :global([data-theme="light"]) .saved-badge {
     color: var(--app-accent-strong);

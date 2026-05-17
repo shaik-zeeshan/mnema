@@ -6,10 +6,7 @@ mod session;
 
 use serde::Serialize;
 
-pub use capture_metadata::{
-    BrowserTitleRule, BrowserTitleRuleMatchType, BrowserUrlMode, ExcludedAppEntry,
-    MetadataSettings, PrivacySettings, WebsiteRule,
-};
+pub use capture_metadata::{BrowserUrlMode, ExcludedAppEntry, MetadataSettings, PrivacySettings};
 pub use inactivity::*;
 pub use logs::*;
 pub use microphone::*;

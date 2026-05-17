@@ -88,7 +88,6 @@ pub fn run() {
         .manage(native_capture::MetadataNotifierState::default())
         .manage(native_capture::PrivacyFilterRefreshState::default())
         .manage(native_capture::RecordingSettingsState::default())
-        .manage(privacy_redaction_sources::PrivacyRedactionSourcesState::default())
         .manage(native_capture::CaptureMetadataState::default())
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
@@ -199,7 +198,6 @@ pub fn run() {
             general_app_log::delete_general_app_log,
             native_capture::get_capture_support,
             native_capture::get_capture_permissions,
-            native_capture::request_accessibility_permission,
             native_capture::get_idle_debug,
             native_capture::get_app_notifications,
             native_capture::clear_app_notification,
@@ -211,17 +209,8 @@ pub fn run() {
             native_capture::get_recording_settings,
             native_capture::update_recording_settings,
             privacy_redaction_sources::add_privacy_excluded_app,
-            privacy_redaction_sources::add_privacy_website_rule,
-            privacy_redaction_sources::update_privacy_website_rule,
-            privacy_redaction_sources::add_privacy_title_rule,
-            privacy_redaction_sources::update_privacy_title_rule,
-            privacy_redaction_sources::set_privacy_source_enabled,
-            privacy_redaction_sources::remove_privacy_source,
-            privacy_redaction_sources::restore_privacy_redaction_source,
-            privacy_redaction_sources::forget_privacy_redaction_source_label,
-            privacy_redaction_sources::list_manageable_privacy_redaction_sources,
-            privacy_redaction_sources::resolve_privacy_redaction_sources,
-            privacy_redaction_sources::set_private_browser_exclusion_enabled,
+            privacy_redaction_sources::set_privacy_excluded_app_enabled,
+            privacy_redaction_sources::remove_privacy_excluded_app,
             native_capture::get_native_capture_debug_log_status,
             native_capture::delete_native_capture_debug_log,
             native_capture::get_microphone_controller_state,
@@ -240,7 +229,6 @@ pub fn run() {
         ])
         .setup(|app| {
             native_capture::initialize_recording_settings_from_disk(app.handle());
-            privacy_redaction_sources::initialize(app.handle());
             status_bar::initialize(app.handle())?;
             keyboard_bindings::initialize(app.handle());
             native_capture::install_panic_hook();
