@@ -11,6 +11,9 @@ use crate::{
 
 const DEFAULT_GROUP_LIMIT: u32 = 5;
 const MAX_GROUP_LIMIT: u32 = 50;
+const MIN_HIT_FETCH_LIMIT: i64 = 250;
+const MAX_HIT_FETCH_LIMIT: i64 = 5_000;
+const HIT_FETCH_OVERFETCH_PER_GROUP: i64 = 50;
 const AUDIO_GROUP_GAP_MS: u64 = 2_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,8 +115,34 @@ impl SearchStore {
             None => fetch_search_document_high_water_mark(&self.pool).await?,
         };
 
-        let frame_hits = fetch_frame_hits(&self.pool, &fts_query, snapshot_document_id).await?;
-        let audio_hits = fetch_audio_hits(&self.pool, &fts_query, snapshot_document_id).await?;
+        let frame_hit_limit = hit_fetch_limit(frame_offset, frame_limit);
+        let audio_hit_limit = hit_fetch_limit(audio_offset, audio_limit);
+        let frame_hits = if frame_limit == 0 {
+            Vec::new()
+        } else {
+            fetch_frame_hits(
+                &self.pool,
+                &fts_query,
+                snapshot_document_id,
+                frame_hit_limit,
+            )
+            .await?
+        };
+        let audio_hits = if audio_limit == 0 {
+            Vec::new()
+        } else {
+            fetch_audio_hits(
+                &self.pool,
+                &fts_query,
+                snapshot_document_id,
+                audio_hit_limit,
+            )
+            .await?
+        };
+        let frame_hits_may_have_more =
+            frame_limit > 0 && frame_hits.len() as i64 >= frame_hit_limit;
+        let audio_hits_may_have_more =
+            audio_limit > 0 && audio_hits.len() as i64 >= audio_hit_limit;
 
         let all_frame_groups = group_frame_hits(frame_hits);
         let all_audio_groups = group_audio_hits(audio_hits)?;
@@ -139,8 +168,8 @@ impl SearchStore {
             snapshot_document_id,
             frames,
             audio,
-            has_more_frames: all_frame_groups.len() > frame_end,
-            has_more_audio: all_audio_groups.len() > audio_end,
+            has_more_frames: all_frame_groups.len() > frame_end || frame_hits_may_have_more,
+            has_more_audio: all_audio_groups.len() > audio_end || audio_hits_may_have_more,
         })
     }
 }
@@ -223,11 +252,11 @@ async fn project_frame_ocr_result(
         .as_ref()
         .map(|metadata| (metadata.app_name.clone(), metadata.window_title.clone()))
         .unwrap_or((None, None));
-    let group_key = frame
-        .equivalence
-        .ready_parts()
-        .map(|(hint, _proof, version)| format!("frame:eq:{}:{version}:{hint}", frame.session_id))
-        .unwrap_or_else(|| format!("frame:{}", frame.id));
+    delete_equivalent_reuse_projections_for_source_result(transaction, result).await?;
+
+    let group_key = frame_search_group_key(&frame);
+    let searchable_text =
+        searchable_text_with_context(text, app_name.as_deref(), window_title.as_deref(), None);
 
     insert_search_document(
         transaction,
@@ -246,7 +275,160 @@ async fn project_frame_ocr_result(
             window_title: window_title.as_deref(),
             group_key: &group_key,
             text_source_kind: "direct",
-            searchable_text: text,
+            searchable_text: &searchable_text,
+        },
+    )
+    .await?;
+
+    project_equivalent_reuse_documents_for_source_frame(transaction, &frame, result.id, text).await
+}
+
+async fn delete_equivalent_reuse_projections_for_source_result(
+    transaction: &mut Transaction<'_, Sqlite>,
+    result: &ProcessingResult,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM search_documents \
+         WHERE text_source_kind = 'equivalent_reuse' \
+           AND processing_result_id IN (\
+                SELECT id FROM processing_results \
+                WHERE subject_type = ?1 AND subject_id = ?2 AND processor = ?3\
+           )",
+    )
+    .bind(&result.subject_type)
+    .bind(result.subject_id)
+    .bind(&result.processor)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn project_equivalent_frame_reuse_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    frame: &Frame,
+    related_frame_id: i64,
+) -> Result<()> {
+    let Some(source_doc) = sqlx::query(
+        "SELECT processing_result_id, searchable_text \
+         FROM search_documents \
+         WHERE anchor_type = 'frame' \
+           AND frame_id = ?1 \
+           AND text_source_kind = 'direct' \
+           AND processing_result_id IN (\
+                SELECT id FROM processing_results \
+                WHERE subject_type = 'frame' AND processor = ?2\
+           ) \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(related_frame_id)
+    .bind(OCR_PROCESSOR)
+    .fetch_optional(&mut **transaction)
+    .await?
+    else {
+        return Ok(());
+    };
+
+    project_equivalent_reuse_document_for_frame(
+        transaction,
+        frame,
+        source_doc.get("processing_result_id"),
+        source_doc.get::<String, _>("searchable_text").trim(),
+    )
+    .await
+}
+
+async fn project_equivalent_reuse_documents_for_source_frame(
+    transaction: &mut Transaction<'_, Sqlite>,
+    source_frame: &Frame,
+    processing_result_id: i64,
+    text: &str,
+) -> Result<()> {
+    let Some((hint, proof, version)) = source_frame.equivalence.ready_parts() else {
+        return Ok(());
+    };
+
+    let rows = sqlx::query(
+        "SELECT frames.id, session_id, file_path, captured_at, width, height, \
+                equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at \
+         FROM frames \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE frames.session_id = ?1 \
+           AND frames.id != ?2 \
+           AND frames.equivalence_hint = ?3 \
+           AND NOT EXISTS (\
+                SELECT 1 FROM search_documents \
+                WHERE search_documents.anchor_type = 'frame' \
+                  AND search_documents.frame_id = frames.id\
+           )",
+    )
+    .bind(&source_frame.session_id)
+    .bind(source_frame.id)
+    .bind(hint)
+    .fetch_all(&mut **transaction)
+    .await?;
+
+    for row in rows {
+        let frame = map_frame_for_search(row)?;
+        let Some((_target_hint, target_proof, target_version)) = frame.equivalence.ready_parts()
+        else {
+            continue;
+        };
+        if target_version != version
+            || !capture_screen::captured_frame_equivalence_proofs_match(
+                version,
+                proof,
+                target_proof,
+            )
+        {
+            continue;
+        }
+        project_equivalent_reuse_document_for_frame(
+            transaction,
+            &frame,
+            processing_result_id,
+            text,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn project_equivalent_reuse_document_for_frame(
+    transaction: &mut Transaction<'_, Sqlite>,
+    frame: &Frame,
+    processing_result_id: i64,
+    text: &str,
+) -> Result<()> {
+    let (app_name, window_title) = frame
+        .metadata_snapshot
+        .as_ref()
+        .map(|metadata| (metadata.app_name.clone(), metadata.window_title.clone()))
+        .unwrap_or((None, None));
+    let group_key = frame_search_group_key(frame);
+    let searchable_text =
+        searchable_text_with_context(text, app_name.as_deref(), window_title.as_deref(), None);
+
+    insert_search_document(
+        transaction,
+        NewSearchDocument {
+            anchor_type: "frame",
+            frame_id: Some(frame.id),
+            audio_segment_id: None,
+            processing_result_id,
+            span_start_ms: None,
+            span_end_ms: None,
+            absolute_start_at: &frame.captured_at,
+            absolute_end_at: &frame.captured_at,
+            source_kind: None,
+            session_id: &frame.session_id,
+            app_name: app_name.as_deref(),
+            window_title: window_title.as_deref(),
+            group_key: &group_key,
+            text_source_kind: "equivalent_reuse",
+            searchable_text: &searchable_text,
         },
     )
     .await
@@ -278,6 +460,8 @@ async fn project_audio_transcription_result(
         let absolute_start_at = timestamp_plus_ms(&segment.started_at, span.start_ms)?;
         let absolute_end_at = timestamp_plus_ms(&segment.started_at, span.end_ms)?;
         let group_key = format!("audio:{}:{index}", segment.id);
+        let searchable_text =
+            searchable_text_with_context(span_text, None, None, Some(segment.source_kind.as_str()));
         insert_search_document(
             transaction,
             NewSearchDocument {
@@ -295,7 +479,7 @@ async fn project_audio_transcription_result(
                 window_title: None,
                 group_key: &group_key,
                 text_source_kind: "direct",
-                searchable_text: span_text,
+                searchable_text: &searchable_text,
             },
         )
         .await?;
@@ -454,6 +638,54 @@ fn clamp_limit(limit: Option<u32>) -> u32 {
         .clamp(1, MAX_GROUP_LIMIT)
 }
 
+fn hit_fetch_limit(offset: usize, limit: u32) -> i64 {
+    let requested_groups = offset
+        .saturating_add(limit as usize)
+        .saturating_add(1)
+        .min((MAX_HIT_FETCH_LIMIT / HIT_FETCH_OVERFETCH_PER_GROUP) as usize);
+    ((requested_groups as i64) * HIT_FETCH_OVERFETCH_PER_GROUP)
+        .max(MIN_HIT_FETCH_LIMIT)
+        .min(MAX_HIT_FETCH_LIMIT)
+}
+
+fn frame_search_group_key(frame: &Frame) -> String {
+    frame
+        .equivalence
+        .ready_parts()
+        .map(|(hint, proof, version)| {
+            format!(
+                "frame:eq:{}:{version}:{hint}:{}",
+                frame.session_id,
+                proof_identity(proof)
+            )
+        })
+        .unwrap_or_else(|| format!("frame:{}", frame.id))
+}
+
+fn proof_identity(proof: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in proof {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn searchable_text_with_context(
+    body: &str,
+    app_name: Option<&str>,
+    window_title: Option<&str>,
+    source_kind: Option<&str>,
+) -> String {
+    [Some(body), app_name, window_title, source_kind]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[derive(Debug, Clone)]
 struct FrameHit {
     group_key: String,
@@ -487,6 +719,7 @@ async fn fetch_frame_hits(
     pool: &SqlitePool,
     fts_query: &str,
     snapshot_document_id: i64,
+    hit_limit: i64,
 ) -> Result<Vec<FrameHit>> {
     let rows = sqlx::query(
         "SELECT search_documents.group_key, search_documents.app_name, search_documents.window_title, \
@@ -505,10 +738,12 @@ async fn fetch_frame_hits(
          WHERE search_documents_fts MATCH ?1 \
            AND search_documents.anchor_type = 'frame' \
            AND search_documents.id <= ?2 \
-         ORDER BY rank ASC, search_documents.absolute_start_at DESC",
+         ORDER BY rank ASC, search_documents.absolute_start_at DESC
+         LIMIT ?3",
     )
     .bind(fts_query)
     .bind(snapshot_document_id)
+    .bind(hit_limit)
     .fetch_all(pool)
     .await?;
 
@@ -531,6 +766,7 @@ async fn fetch_audio_hits(
     pool: &SqlitePool,
     fts_query: &str,
     snapshot_document_id: i64,
+    hit_limit: i64,
 ) -> Result<Vec<AudioHit>> {
     let rows = sqlx::query(
         "SELECT search_documents.id AS document_id, search_documents.group_key, \
@@ -547,10 +783,12 @@ async fn fetch_audio_hits(
          WHERE search_documents_fts MATCH ?1 \
            AND search_documents.anchor_type = 'audio' \
            AND search_documents.id <= ?2 \
-         ORDER BY rank ASC, search_documents.absolute_start_at DESC",
+         ORDER BY rank ASC, search_documents.absolute_start_at DESC
+         LIMIT ?3",
     )
     .bind(fts_query)
     .bind(snapshot_document_id)
+    .bind(hit_limit)
     .fetch_all(pool)
     .await?;
 
@@ -595,23 +833,35 @@ fn group_frame_hits(hits: Vec<FrameHit>) -> Vec<FrameSearchResult> {
                 .max()
                 .unwrap_or(representative.frame.captured_at.as_str())
                 .to_string();
-            Some(FrameSearchResult {
-                group_key,
-                representative_frame: representative.frame.clone(),
-                group_start_at,
-                group_end_at,
-                match_count: hits.len() as u32,
-                snippet: hits[0].snippet.clone(),
-                app_name: representative.app_name.clone(),
-                window_title: representative.window_title.clone(),
-                thumbnail_frame_id: representative.frame.id,
-                text_source_kind: representative.text_source_kind.clone(),
-            })
+            let best_rank = hits
+                .iter()
+                .map(|hit| hit.rank)
+                .min_by(|a, b| a.total_cmp(b))
+                .unwrap_or(f64::INFINITY);
+            Some((
+                best_rank,
+                FrameSearchResult {
+                    group_key,
+                    representative_frame: representative.frame.clone(),
+                    group_start_at,
+                    group_end_at,
+                    match_count: hits.len() as u32,
+                    snippet: hits[0].snippet.clone(),
+                    app_name: representative.app_name.clone(),
+                    window_title: representative.window_title.clone(),
+                    thumbnail_frame_id: representative.frame.id,
+                    text_source_kind: representative.text_source_kind.clone(),
+                },
+            ))
         })
         .collect::<Vec<_>>();
 
-    results.sort_by(|a, b| b.group_end_at.cmp(&a.group_end_at));
-    results
+    results.sort_by(|(a_rank, a), (b_rank, b)| {
+        a_rank
+            .total_cmp(b_rank)
+            .then_with(|| b.group_end_at.cmp(&a.group_end_at))
+    });
+    results.into_iter().map(|(_rank, result)| result).collect()
 }
 
 fn frame_hits_are_equivalent(left: &FrameHit, right: &FrameHit) -> bool {
@@ -1047,6 +1297,182 @@ mod tests {
     }
 
     #[test]
+    fn frame_groups_preserve_best_relevance_before_recency() {
+        let frame = |id: i64, captured_at: &str| Frame {
+            id,
+            session_id: "screen-session".to_string(),
+            file_path: format!("/tmp/relevance-{id}.jpg"),
+            captured_at: captured_at.to_string(),
+            width: None,
+            height: None,
+            equivalence: crate::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            metadata_snapshot: None,
+            created_at: captured_at.to_string(),
+            updated_at: captured_at.to_string(),
+        };
+        let hit = |id, captured_at, rank| FrameHit {
+            group_key: format!("frame:{id}"),
+            frame: frame(id, captured_at),
+            snippet: format!("hit {id}"),
+            rank,
+            app_name: None,
+            window_title: None,
+            text_source_kind: "direct".to_string(),
+        };
+
+        let groups = group_frame_hits(vec![
+            hit(1, "2026-05-17T10:00:00Z", -10.0),
+            hit(2, "2026-05-17T10:10:00Z", -1.0),
+        ]);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].representative_frame.id, 1);
+        assert_eq!(groups[1].representative_frame.id, 2);
+    }
+
+    #[test]
+    fn search_indexes_frame_context_terms() {
+        run_async_test(async {
+            let dir = test_dir("frame-context");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-frame-context.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: Some("com.example.Linear".to_string()),
+                            app_name: Some("Linear".to_string()),
+                            window_title: Some("Roadmap Grooming".to_string()),
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("ordinary body text"),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "roadmap".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
+    fn search_projects_ocr_skipped_equivalent_frames() {
+        run_async_test(async {
+            let dir = test_dir("skipped-equivalent");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let first = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-skip-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(crate::FrameEquivalence {
+                        hint: Some("same-screen".to_string()),
+                        proof: Some(vec![7; 1024]),
+                        version: Some(1),
+                        status: Some(crate::FrameEquivalenceStatus::Ready),
+                        error: None,
+                    }),
+                    None,
+                )
+                .await
+                .expect("first frame should capture");
+            let job = first.job.expect("first frame should enqueue OCR");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("duplicate coverage target"),
+            )
+            .await;
+
+            let second = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-skip-duplicate.jpg",
+                        "2026-05-17T10:00:02Z",
+                    )
+                    .with_equivalence(crate::FrameEquivalence {
+                        hint: Some("same-screen".to_string()),
+                        proof: Some(vec![7; 1024]),
+                        version: Some(1),
+                        status: Some(crate::FrameEquivalenceStatus::Ready),
+                        error: None,
+                    }),
+                    None,
+                )
+                .await
+                .expect("second frame should capture");
+            assert!(second.job.is_none());
+            assert_eq!(
+                second
+                    .ocr_admission_decision
+                    .as_ref()
+                    .map(|decision| decision.reason),
+                Some(crate::OcrAdmissionReason::SkippedEquivalentFrame)
+            );
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "coverage".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].match_count, 2);
+            assert_eq!(response.frames[0].representative_frame.id, second.frame.id);
+            assert_eq!(response.frames[0].text_source_kind, "equivalent_reuse");
+        });
+    }
+
+    #[test]
     fn audio_search_aligns_to_latest_earlier_frame_without_ten_second_floor() {
         run_async_test(async {
             let dir = test_dir("audio-alignment-floor");
@@ -1264,7 +1690,9 @@ mod tests {
     fn replacing_search_projection_keeps_fts_delete_trigger_idempotent() {
         run_async_test(async {
             let dir = test_dir("fts-replace");
-            let infra = AppInfra::initialize(&dir).await.expect("infra should initialize");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
             let frame = infra
                 .insert_frame(&NewFrame::new(
                     "screen-session",
@@ -1279,8 +1707,12 @@ mod tests {
                     .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
                     .await
                     .expect("ocr job should enqueue");
-                complete_job(&infra, job, ProcessingResultDraft::new().with_result_text(text))
-                    .await;
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text(text),
+                )
+                .await;
             }
 
             let first = infra
@@ -1361,6 +1793,14 @@ mod tests {
                 .expect("search should succeed");
 
             assert_eq!(response.frames.len(), 2);
+            let mut group_keys = response
+                .frames
+                .iter()
+                .map(|frame| frame.group_key.as_str())
+                .collect::<Vec<_>>();
+            group_keys.sort_unstable();
+            group_keys.dedup();
+            assert_eq!(group_keys.len(), 2);
             assert_eq!(
                 response
                     .frames
