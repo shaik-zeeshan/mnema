@@ -228,6 +228,7 @@ pub fn run() {
             keyboard_bindings::update_keyboard_bindings_settings,
         ])
         .setup(|app| {
+            windows::install_macos_terminate_handler(app.handle());
             native_capture::initialize_recording_settings_from_disk(app.handle());
             status_bar::initialize(app.handle())?;
             keyboard_bindings::initialize(app.handle());

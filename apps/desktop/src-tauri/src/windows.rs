@@ -4,6 +4,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex, MutexGuard,
+        OnceLock,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -13,6 +14,11 @@ use crate::native_capture;
 
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
+
+#[cfg(target_os = "macos")]
+static MACOS_TERMINATE_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static MACOS_TERMINATE_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -463,6 +469,50 @@ fn refresh_macos_dock_icon_visibility(app: &tauri::AppHandle) {
 #[cfg(not(target_os = "macos"))]
 fn refresh_macos_dock_icon_visibility(_app: &tauri::AppHandle) {}
 
+#[cfg(target_os = "macos")]
+pub(crate) fn install_macos_terminate_handler(app: &tauri::AppHandle) {
+    use objc::{
+        class,
+        runtime::{class_getInstanceMethod, method_setImplementation, Object, Sel},
+        sel, sel_impl,
+    };
+
+    let _ = MACOS_TERMINATE_APP_HANDLE.set(app.clone());
+    if MACOS_TERMINATE_HANDLER_INSTALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    unsafe extern "C" fn terminate(_application: &Object, _cmd: Sel, _sender: *mut Object) {
+        if let Some(app) = MACOS_TERMINATE_APP_HANDLE.get() {
+            if is_final_graceful_exit_ready(app) {
+                macos_immediate_process_exit(0);
+            }
+
+            request_graceful_exit(app);
+        } else {
+            macos_immediate_process_exit(0);
+        }
+    }
+
+    unsafe {
+        let method = class_getInstanceMethod(class!(NSApplication), sel!(terminate:));
+        if method.is_null() {
+            crate::native_capture::debug_log::log_error(
+                "failed to install macOS terminate handler: NSApplication terminate: method not found",
+            );
+            return;
+        }
+
+        method_setImplementation(method.cast_mut(), std::mem::transmute(terminate as *const ()));
+        crate::native_capture::debug_log::log_info(
+            "installed macOS terminate handler for graceful app exit",
+        );
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn install_macos_terminate_handler(_app: &tauri::AppHandle) {}
+
 pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
     let exit_state = app.state::<AppExitCoordinatorState>();
     if !exit_state.begin_exit() {
@@ -472,21 +522,8 @@ pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         crate::native_capture::debug_log::log_info(
-            "starting graceful app exit; unloading cached Local Whisper contexts before stopping background workers",
+            "starting graceful app exit; stopping capture and background workers before unloading cached Local Whisper contexts",
         );
-
-        match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
-            Ok(unloaded) => {
-                crate::native_capture::debug_log::log_info(format!(
-                    "unloaded {unloaded} cached Local Whisper context(s) before background worker shutdown"
-                ));
-            }
-            Err(error) => {
-                crate::native_capture::debug_log::log_warn(format!(
-                    "failed to unload cached Local Whisper contexts before background worker shutdown: {error}"
-                ));
-            }
-        }
 
         let stop_app_handle = app_handle.clone();
         match tauri::async_runtime::spawn_blocking(move || {
@@ -519,11 +556,48 @@ pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
         );
         crate::app_infra::shutdown_background_workers_for_app_exit(&app_handle).await;
 
-        app_handle
-            .state::<AppExitCoordinatorState>()
-            .mark_final_graceful_exit_ready();
-        app_handle.exit(0);
+        match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
+            Ok(unloaded) => {
+                crate::native_capture::debug_log::log_info(format!(
+                    "unloaded {unloaded} cached Local Whisper context(s) after background worker shutdown"
+                ));
+            }
+            Err(error) => {
+                crate::native_capture::debug_log::log_warn(format!(
+                    "failed to unload cached Local Whisper contexts after background worker shutdown: {error}"
+                ));
+            }
+        }
+
+        complete_graceful_exit(&app_handle);
     });
+}
+
+fn complete_graceful_exit(app: &tauri::AppHandle) {
+    app.state::<AppExitCoordinatorState>()
+        .mark_final_graceful_exit_ready();
+
+    #[cfg(target_os = "macos")]
+    {
+        crate::native_capture::debug_log::log_info(
+            "completed graceful app exit; exiting without running process static destructors",
+        );
+        macos_immediate_process_exit(0);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        app.exit(0);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_immediate_process_exit(code: i32) -> ! {
+    unsafe extern "C" {
+        fn _exit(status: std::os::raw::c_int) -> !;
+    }
+
+    unsafe { _exit(code) }
 }
 
 pub(crate) fn is_graceful_exit_in_progress(app: &tauri::AppHandle) -> bool {

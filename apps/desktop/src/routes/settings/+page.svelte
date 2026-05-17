@@ -2261,7 +2261,7 @@
 {#if !loadingRecSettings}
   {#if activeTab === "privacy"}
     <div role="tabpanel" id="settings-panel-privacy" aria-labelledby="settings-tab-privacy" tabindex="0">
-      <section class="card">
+      <section class="card" class:card--combobox-open={privacyAppComboboxOpen}>
         <div class="card__header">
           <div class="card__heading">
             {@render settingsCardIcon("privacy")}
@@ -4240,6 +4240,11 @@
   .card:hover .card-icon {
     border-color: var(--app-accent-border);
     color: var(--app-accent);
+  }
+
+  .card--combobox-open {
+    overflow: visible;
+    z-index: 10;
   }
 
   .card--speaker .card-icon {
