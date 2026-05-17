@@ -1,4 +1,5 @@
 use capture_types::{CaptureErrorResponse, RecordingSettings};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::Manager;
 
 fn err(code: &str, message: &str) -> CaptureErrorResponse {
@@ -8,14 +9,80 @@ fn err(code: &str, message: &str) -> CaptureErrorResponse {
     }
 }
 
-fn new_app_source_id() -> String {
-    format!(
-        "excluded-app-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default()
-    )
+static NEXT_APP_SOURCE_ID_SUFFIX: AtomicU64 = AtomicU64::new(0);
+
+fn new_app_source_id(existing_apps: &[capture_metadata::ExcludedAppEntry]) -> String {
+    loop {
+        let candidate = format!(
+            "excluded-app-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default(),
+            NEXT_APP_SOURCE_ID_SUFFIX.fetch_add(1, Ordering::Relaxed)
+        );
+        if existing_apps.iter().all(|app| app.id != candidate) {
+            return candidate;
+        }
+    }
+}
+
+#[cfg(test)]
+fn test_app_source_id(prefix: &str, suffix: u64) -> String {
+    format!("excluded-app-{}-{}", prefix, suffix)
+}
+
+#[cfg(test)]
+fn new_app_source_id_with_generator(
+    existing_apps: &[capture_metadata::ExcludedAppEntry],
+    mut next_candidate: impl FnMut() -> String,
+) -> String {
+    loop {
+        let candidate = next_candidate();
+        if existing_apps.iter().all(|app| app.id != candidate) {
+            return candidate;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn excluded_app(id: &str) -> capture_metadata::ExcludedAppEntry {
+        capture_metadata::ExcludedAppEntry {
+            id: id.to_string(),
+            enabled: true,
+            bundle_id: format!("com.example.{id}"),
+            display_name: id.to_string(),
+        }
+    }
+
+    #[test]
+    fn generated_app_source_id_skips_existing_collision() {
+        let existing = vec![excluded_app(&test_app_source_id("same-tick", 0))];
+        let mut suffix = 0;
+
+        let id = new_app_source_id_with_generator(&existing, || {
+            let candidate = test_app_source_id("same-tick", suffix);
+            suffix += 1;
+            candidate
+        });
+
+        assert_eq!(id, test_app_source_id("same-tick", 1));
+    }
+
+    #[test]
+    fn generated_app_source_ids_are_unique_across_rapid_calls() {
+        let mut apps = Vec::new();
+        for _ in 0..100 {
+            let id = new_app_source_id(&apps);
+            assert!(apps
+                .iter()
+                .all(|app: &capture_metadata::ExcludedAppEntry| app.id != id));
+            apps.push(excluded_app(&id));
+        }
+    }
 }
 
 fn with_app_exclusion_mutation(
@@ -70,7 +137,7 @@ pub fn add_privacy_excluded_app(
             .privacy
             .excluded_apps
             .push(capture_metadata::ExcludedAppEntry {
-                id: new_app_source_id(),
+                id: new_app_source_id(&settings.privacy.excluded_apps),
                 enabled: true,
                 bundle_id,
                 display_name,
@@ -92,7 +159,10 @@ pub fn set_privacy_excluded_app_enabled(
             .iter_mut()
             .find(|app| app.id == source_id)
         else {
-            return Err(err("privacy_source_not_found", "Privacy app exclusion not found"));
+            return Err(err(
+                "privacy_source_not_found",
+                "Privacy app exclusion not found",
+            ));
         };
         app.enabled = enabled;
         Ok(())
@@ -111,7 +181,10 @@ pub fn remove_privacy_excluded_app(
             .excluded_apps
             .retain(|app| app.id != source_id);
         if settings.privacy.excluded_apps.len() == before {
-            return Err(err("privacy_source_not_found", "Privacy app exclusion not found"));
+            return Err(err(
+                "privacy_source_not_found",
+                "Privacy app exclusion not found",
+            ));
         }
         Ok(())
     })

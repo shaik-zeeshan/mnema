@@ -36,19 +36,6 @@ pub(super) fn frame_metadata_snapshot_provider(
 ) -> FrameMetadataSnapshotProvider {
     let app_handle = app_handle.clone();
     Arc::new(move || {
-        let settings = app_handle
-            .state::<crate::native_capture::RecordingSettingsState>()
-            .lock()
-            .expect("recording settings state poisoned")
-            .settings
-            .clone();
-        refresh_metadata_state(
-            app_handle
-                .state::<crate::native_capture::CaptureMetadataState>()
-                .inner(),
-            &settings.metadata,
-            &settings.privacy,
-        );
         latest_frame_metadata_snapshot(
             app_handle
                 .state::<crate::native_capture::CaptureMetadataState>()
@@ -644,5 +631,4 @@ mod tests {
             None
         );
     }
-
 }
