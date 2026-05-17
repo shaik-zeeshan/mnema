@@ -321,7 +321,7 @@ fn collect_active_window_metadata(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = metadata;
-        let _ = privacy;
+        let _ = _privacy;
         let _ = plan;
         ActiveWindowMetadata {
             snapshot: None,
