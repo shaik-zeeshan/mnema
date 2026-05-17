@@ -403,6 +403,7 @@
   };
   type TimelineAppGroup = {
     key: string;
+    boundaryFrameId: number | null;
     bundleId: string | null;
     appName: string | null;
     label: string;
@@ -2505,6 +2506,7 @@
       const variant = frameCount === 1 ? "single" : "range";
       groups.push({
         key: timelineAppGroupKey(runIdentity, frames, runEnd),
+        boundaryFrameId: endExclusive < frames.length ? frames[runEnd]?.id ?? null : null,
         bundleId: runBundleId,
         appName: runAppName,
         label,
@@ -2577,6 +2579,13 @@
       groups: groups.length,
     });
     return groups;
+  });
+  const timelineAppGroupBoundaryFrameIds = $derived.by<Set<number>>(() => {
+    return new Set(
+      timelineAppGroups
+        .map((group) => group.boundaryFrameId)
+        .filter((id): id is number => id != null),
+    );
   });
 
   $effect(() => {
@@ -6617,7 +6626,8 @@
           {#each timelineWindow as frame, j (frame.id)}
             {@const i = timelineWindowStart + j}
             {@const isActive = i === timelineActiveIndex}
-            {@const isMajor = i % 50 === 0}
+            {@const isAppGroupBoundary = timelineAppGroupBoundaryFrameIds.has(frame.id)}
+            {@const isMajor = isAppGroupBoundary}
             <!-- Ticks are intentionally presentational (no role, not
                  focusable) so the parent's role="slider" is valid. The slider
                  itself owns position semantics via aria-valuenow/text, and
@@ -6627,6 +6637,7 @@
               class="timeline-rail__slot"
               class:timeline-rail__slot--active={isActive}
               class:timeline-rail__slot--major={isMajor}
+              class:timeline-rail__slot--app-boundary={isAppGroupBoundary}
               style="right: {i * TIMELINE_SLOT_WIDTH}px"
               onpointerenter={(e) => onSlotPointerEnter(e, frame.id)}
               aria-hidden="true"
@@ -9240,51 +9251,16 @@
 
   .timeline-rail__app-group {
     position: absolute;
-    top: 2px;
+    top: 8px;
     z-index: 1;
-    height: 8px;
+    height: 20px;
     overflow: visible;
     pointer-events: none;
   }
 
-  .timeline-rail__app-group::before {
-    content: "";
-    position: absolute;
-    left: 2px;
-    right: 2px;
-    top: 4px;
-    height: 1px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--app-text-muted) 38%, transparent);
-  }
-
-  .timeline-rail__app-group--range::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 2px;
-    height: 5px;
-    border-left: 1px solid color-mix(in srgb, var(--app-text-muted) 45%, transparent);
-    border-right: 1px solid color-mix(in srgb, var(--app-text-muted) 45%, transparent);
-    opacity: 0.72;
-  }
-
-  .timeline-rail__app-group--single::before {
-    left: 50%;
-    right: auto;
-    top: 2px;
-    width: 5px;
-    height: 5px;
-    transform: translateX(-50%);
-    background: color-mix(in srgb, var(--app-text-muted) 72%, var(--app-info));
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-bg) 82%, transparent);
-    opacity: 0.9;
-  }
-
   .timeline-rail__app-group-icon {
     position: absolute;
-    top: -2px;
+    top: 0;
     left: var(--timeline-app-icon-left);
     width: 20px;
     height: 20px;
@@ -9319,7 +9295,7 @@
 
   .timeline-rail__slot {
     position: absolute;
-    top: 13px;
+    top: 8px;
     width: 8px;
     height: 18px;
     margin: 0;
@@ -9331,6 +9307,7 @@
     align-items: center;
     justify-content: center;
     outline: none;
+    z-index: 2;
   }
 
   /* ── Audio segment lane ────────────────────────────────────────
@@ -9545,6 +9522,10 @@
   .timeline-rail__slot:hover .timeline-rail__tick {
     background: var(--app-text-muted);
     height: 12px;
+  }
+
+  .timeline-rail__slot--app-boundary {
+    z-index: 3;
   }
 
   .timeline-rail__slot--active .timeline-rail__tick,
@@ -9971,7 +9952,7 @@
     border-color: var(--app-border);
   }
   :global([data-theme="light"]) .timeline-rail {
-    background: var(--app-surface);
+    background: var(--app-surface-raised);
   }
   :global([data-theme="light"]) .timeline-rail__track {
     background: var(--app-surface-raised);
