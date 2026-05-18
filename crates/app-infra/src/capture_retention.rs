@@ -1200,9 +1200,8 @@ async fn delete_search_documents_for_subjects(
 
     let mut document_ids: Vec<i64> = Vec::new();
     if !frame_ids.is_empty() {
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT id FROM search_documents WHERE frame_id IN (",
-        );
+        let mut query =
+            QueryBuilder::<Sqlite>::new("SELECT id FROM search_documents WHERE frame_id IN (");
         let mut separated = query.separated(", ");
         for id in frame_ids {
             separated.push_bind(id);

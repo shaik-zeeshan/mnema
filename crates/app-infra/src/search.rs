@@ -494,7 +494,8 @@ async fn project_audio_transcription_result(
     let Some(segment) = segment else {
         return Ok(());
     };
-    let spans = transcription_spans(result, text);
+    let fallback_span_end_ms = audio_segment_duration_ms(&segment)?;
+    let spans = transcription_spans(result, text, fallback_span_end_ms);
     for (index, span) in spans.into_iter().enumerate() {
         let span_text = span.text.trim();
         if span_text.is_empty() {
@@ -595,7 +596,11 @@ struct TranscriptSpan {
     text: String,
 }
 
-fn transcription_spans(result: &ProcessingResult, fallback_text: &str) -> Vec<TranscriptSpan> {
+fn transcription_spans(
+    result: &ProcessingResult,
+    fallback_text: &str,
+    fallback_end_ms: u64,
+) -> Vec<TranscriptSpan> {
     if let Some(payload) = result.structured_payload_json.as_deref() {
         if let Ok(metadata) = serde_json::from_str::<TranscriptionMetadata>(payload) {
             let segments = metadata
@@ -636,9 +641,26 @@ fn transcription_spans(result: &ProcessingResult, fallback_text: &str) -> Vec<Tr
 
     vec![TranscriptSpan {
         start_ms: 0,
-        end_ms: 0,
+        end_ms: fallback_end_ms,
         text: fallback_text.to_string(),
     }]
+}
+
+fn audio_segment_duration_ms(segment: &AudioSegment) -> Result<u64> {
+    let started_at = OffsetDateTime::parse(&segment.started_at, &Rfc3339).map_err(|error| {
+        AppInfraError::FrameBatchFinalize(format!(
+            "invalid audio segment start timestamp '{}': {error}",
+            segment.started_at
+        ))
+    })?;
+    let ended_at = OffsetDateTime::parse(&segment.ended_at, &Rfc3339).map_err(|error| {
+        AppInfraError::FrameBatchFinalize(format!(
+            "invalid audio segment end timestamp '{}': {error}",
+            segment.ended_at
+        ))
+    })?;
+    let duration_ms = (ended_at - started_at).whole_milliseconds().max(0);
+    Ok(duration_ms.try_into().unwrap_or(u64::MAX))
 }
 
 fn timestamp_plus_ms(started_at: &str, offset_ms: u64) -> Result<String> {
@@ -762,6 +784,7 @@ async fn fetch_frame_hits(
     pool: &SqlitePool,
     fts_query: &str,
     snapshot_document_id: i64,
+    hit_offset: i64,
     hit_limit: i64,
 ) -> Result<Vec<FrameHit>> {
     let rows = sqlx::query(
@@ -782,11 +805,12 @@ async fn fetch_frame_hits(
            AND search_documents.anchor_type = 'frame' \
            AND search_documents.id <= ?2 \
          ORDER BY rank ASC, search_documents.absolute_start_at DESC
-         LIMIT ?3",
+         LIMIT ?3 OFFSET ?4",
     )
     .bind(fts_query)
     .bind(snapshot_document_id)
     .bind(hit_limit)
+    .bind(hit_offset)
     .fetch_all(pool)
     .await?;
 
@@ -814,17 +838,19 @@ async fn fetch_grouped_frame_hits(
 ) -> Result<Vec<FrameSearchResult>> {
     let needed_groups = offset.saturating_add(limit as usize).saturating_add(1);
     let mut hit_limit = hit_fetch_limit(offset, limit);
+    let mut hit_offset = 0_i64;
+    let mut all_hits = Vec::new();
     loop {
-        let hits = fetch_frame_hits(pool, fts_query, snapshot_document_id, hit_limit).await?;
+        let hits =
+            fetch_frame_hits(pool, fts_query, snapshot_document_id, hit_offset, hit_limit).await?;
         let hit_count = hits.len() as i64;
-        let groups = group_frame_hits(hits);
-        if groups.len() >= needed_groups
-            || hit_count < hit_limit
-            || hit_limit >= MAX_HIT_FETCH_LIMIT
-        {
+        all_hits.extend(hits);
+        let groups = group_frame_hits(&all_hits);
+        if groups.len() >= needed_groups || hit_count < hit_limit {
             return Ok(groups);
         }
-        hit_limit = hit_limit.saturating_mul(2).min(MAX_HIT_FETCH_LIMIT);
+        hit_offset = hit_offset.saturating_add(hit_count);
+        hit_limit = MAX_HIT_FETCH_LIMIT;
     }
 }
 
@@ -832,6 +858,7 @@ async fn fetch_audio_hits(
     pool: &SqlitePool,
     fts_query: &str,
     snapshot_document_id: i64,
+    hit_offset: i64,
     hit_limit: i64,
 ) -> Result<Vec<AudioHit>> {
     let rows = sqlx::query(
@@ -850,11 +877,12 @@ async fn fetch_audio_hits(
            AND search_documents.anchor_type = 'audio' \
            AND search_documents.id <= ?2 \
          ORDER BY rank ASC, search_documents.absolute_start_at DESC
-         LIMIT ?3",
+         LIMIT ?3 OFFSET ?4",
     )
     .bind(fts_query)
     .bind(snapshot_document_id)
     .bind(hit_limit)
+    .bind(hit_offset)
     .fetch_all(pool)
     .await?;
 
@@ -870,21 +898,23 @@ async fn fetch_grouped_audio_hits(
 ) -> Result<Vec<AudioSearchResult>> {
     let needed_groups = offset.saturating_add(limit as usize).saturating_add(1);
     let mut hit_limit = hit_fetch_limit(offset, limit);
+    let mut hit_offset = 0_i64;
+    let mut all_hits = Vec::new();
     loop {
-        let hits = fetch_audio_hits(pool, fts_query, snapshot_document_id, hit_limit).await?;
+        let hits =
+            fetch_audio_hits(pool, fts_query, snapshot_document_id, hit_offset, hit_limit).await?;
         let hit_count = hits.len() as i64;
-        let groups = group_audio_hits(hits)?;
-        if groups.len() >= needed_groups
-            || hit_count < hit_limit
-            || hit_limit >= MAX_HIT_FETCH_LIMIT
-        {
+        all_hits.extend(hits);
+        let groups = group_audio_hits(&all_hits)?;
+        if groups.len() >= needed_groups || hit_count < hit_limit {
             return Ok(groups);
         }
-        hit_limit = hit_limit.saturating_mul(2).min(MAX_HIT_FETCH_LIMIT);
+        hit_offset = hit_offset.saturating_add(hit_count);
+        hit_limit = MAX_HIT_FETCH_LIMIT;
     }
 }
 
-fn group_frame_hits(hits: Vec<FrameHit>) -> Vec<FrameSearchResult> {
+fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
     let mut groups: Vec<(String, Vec<FrameHit>)> = Vec::new();
     for hit in hits {
         let group_index = groups.iter().position(|(_group_key, group_hits)| {
@@ -893,9 +923,9 @@ fn group_frame_hits(hits: Vec<FrameHit>) -> Vec<FrameSearchResult> {
                 .is_some_and(|representative| frame_hits_are_equivalent(representative, &hit))
         });
         if let Some(index) = group_index {
-            groups[index].1.push(hit);
+            groups[index].1.push(hit.clone());
         } else {
-            groups.push((hit.group_key.clone(), vec![hit]));
+            groups.push((hit.group_key.clone(), vec![hit.clone()]));
         }
     }
 
@@ -973,7 +1003,8 @@ fn frame_hits_are_equivalent(left: &FrameHit, right: &FrameHit) -> bool {
         )
 }
 
-fn group_audio_hits(mut hits: Vec<AudioHit>) -> Result<Vec<AudioSearchResult>> {
+fn group_audio_hits(hits: &[AudioHit]) -> Result<Vec<AudioSearchResult>> {
+    let mut hits = hits.to_vec();
     hits.sort_by(|a, b| {
         a.audio_segment
             .id
@@ -1171,10 +1202,9 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use audio_transcription::{TranscriptionMetadata, TranscriptionSegment};
-
     use super::*;
     use crate::{AppInfra, NewAudioSegment, NewFrame, ProcessingJobDraft, ProcessingResultDraft};
+    use audio_transcription::{TranscriptionMetadata, TranscriptionSegment};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1350,6 +1380,69 @@ mod tests {
     }
 
     #[test]
+    fn search_projects_untimed_transcript_fallback_over_full_audio_segment() {
+        run_async_test(async {
+            let dir = test_dir("audio-untimed-fallback");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-audio-untimed.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: Vec::new(),
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("untimed search target phrase")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "untimed".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(response.audio[0].span_start_ms, 0);
+            assert_eq!(response.audio[0].span_end_ms, 20_000);
+            assert_eq!(response.audio[0].absolute_start_at, "2026-05-17T10:00:00Z");
+            assert_eq!(response.audio[0].absolute_end_at, "2026-05-17T10:00:20Z");
+        });
+    }
+
+    #[test]
     fn audio_hits_group_chronologically_before_rank_ordering() {
         let segment = AudioSegment {
             id: 7,
@@ -1372,12 +1465,12 @@ mod tests {
             rank,
         };
 
-        let groups = group_audio_hits(vec![
+        let hits = vec![
             hit(4_000, 4_500, -10.0),
             hit(1_000, 1_500, -1.0),
             hit(2_200, 2_500, -5.0),
-        ])
-        .expect("grouping should succeed");
+        ];
+        let groups = group_audio_hits(&hits).expect("grouping should succeed");
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].span_start_ms, 1_000);
@@ -1415,10 +1508,11 @@ mod tests {
             text_source_kind: "direct".to_string(),
         };
 
-        let groups = group_frame_hits(vec![
+        let hits = vec![
             hit(1, "2026-05-17T10:00:00Z", -10.0),
             hit(2, "2026-05-17T10:10:00Z", -1.0),
-        ]);
+        ];
+        let groups = group_frame_hits(&hits);
 
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].representative_frame.id, 1);
@@ -1924,6 +2018,137 @@ mod tests {
 
             assert_eq!(response.audio.len(), 1);
             assert!(!response.has_more_audio);
+        });
+    }
+
+    #[test]
+    fn frame_search_paginates_beyond_hit_fetch_batch_cap() {
+        run_async_test(async {
+            let dir = test_dir("frame-beyond-hit-cap");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let mut transaction = infra.pool().begin().await.expect("tx should begin");
+            for index in 0..5_006_u64 {
+                let captured_at = timestamp_plus_ms("2026-05-17T10:00:00Z", index * 1_000)
+                    .expect("timestamp should format");
+                let insert = sqlx::query(
+                    "INSERT INTO frames (session_id, file_path, captured_at) VALUES (?1, ?2, ?3)",
+                )
+                .bind("screen-session")
+                .bind(format!("/tmp/search-deep-frame-{index}.jpg"))
+                .bind(&captured_at)
+                .execute(&mut *transaction)
+                .await
+                .expect("frame should insert");
+                let frame_id = insert.last_insert_rowid();
+                insert_search_document(
+                    &mut transaction,
+                    NewSearchDocument {
+                        anchor_type: "frame",
+                        frame_id: Some(frame_id),
+                        audio_segment_id: None,
+                        processing_result_id: None,
+                        span_start_ms: None,
+                        span_end_ms: None,
+                        absolute_start_at: &captured_at,
+                        absolute_end_at: &captured_at,
+                        source_kind: None,
+                        session_id: "screen-session",
+                        app_name: None,
+                        window_title: None,
+                        group_key: &format!("frame:{frame_id}"),
+                        text_source_kind: "direct",
+                        searchable_text: "deepframe target",
+                    },
+                )
+                .await
+                .expect("search document should insert");
+            }
+            transaction.commit().await.expect("tx should commit");
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "deepframe".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: Some(5_000),
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 5);
+            assert!(response.has_more_frames);
+        });
+    }
+
+    #[test]
+    fn audio_search_paginates_beyond_hit_fetch_batch_cap() {
+        run_async_test(async {
+            let dir = test_dir("audio-beyond-hit-cap");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-deep-audio.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T14:15:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let mut transaction = infra.pool().begin().await.expect("tx should begin");
+            for index in 0..5_006_u64 {
+                let start_ms = index * 3_000;
+                let end_ms = start_ms + 500;
+                let absolute_start_at = timestamp_plus_ms(&segment.started_at, start_ms)
+                    .expect("start timestamp should format");
+                let absolute_end_at = timestamp_plus_ms(&segment.started_at, end_ms)
+                    .expect("end timestamp should format");
+                insert_search_document(
+                    &mut transaction,
+                    NewSearchDocument {
+                        anchor_type: "audio",
+                        frame_id: None,
+                        audio_segment_id: Some(segment.id),
+                        processing_result_id: None,
+                        span_start_ms: Some(start_ms as i64),
+                        span_end_ms: Some(end_ms as i64),
+                        absolute_start_at: &absolute_start_at,
+                        absolute_end_at: &absolute_end_at,
+                        source_kind: Some(segment.source_kind.as_str()),
+                        session_id: &segment.source_session_id,
+                        app_name: None,
+                        window_title: None,
+                        group_key: &format!("audio:{}:{index}", segment.id),
+                        text_source_kind: "direct",
+                        searchable_text: "deepaudio target",
+                    },
+                )
+                .await
+                .expect("search document should insert");
+            }
+            transaction.commit().await.expect("tx should commit");
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "deepaudio".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: Some(5_000),
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 5);
+            assert!(response.has_more_audio);
         });
     }
 
