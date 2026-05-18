@@ -3533,6 +3533,7 @@
 
   async function runSearch(options: { appendFrames?: boolean; appendAudio?: boolean } = {}): Promise<void> {
     const query = searchQuery.trim();
+    const normalizedQuery = query.split(/\s+/).filter(Boolean).join(" ");
     searchGeneration += 1;
     const gen = searchGeneration;
     if (query.length < 2) {
@@ -3549,8 +3550,12 @@
       return;
     }
 
-    const appendFrames = options.appendFrames === true;
-    const appendAudio = options.appendAudio === true;
+    let appendFrames = options.appendFrames === true;
+    let appendAudio = options.appendAudio === true;
+    if ((appendFrames || appendAudio) && normalizedQuery !== searchNormalizedQuery) {
+      appendFrames = false;
+      appendAudio = false;
+    }
     if (!appendFrames && !appendAudio) {
       searchSnapshotDocumentId = null;
     }

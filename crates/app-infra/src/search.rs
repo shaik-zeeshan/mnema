@@ -4,6 +4,7 @@ use sqlx::{sqlite::SqliteRow, Executor, Row, Sqlite, SqlitePool, Transaction};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 use crate::{
+    captured_frame_equivalence::CapturedFrameEquivalenceScope,
     processing::{map_frame_for_search, Frame},
     AppInfraError, AudioSegment, AudioSegmentSourceKind, ProcessingResult, Result,
     AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE, OCR_PROCESSOR,
@@ -244,7 +245,7 @@ async fn project_frame_ocr_result(
         .as_ref()
         .map(|metadata| (metadata.app_name.clone(), metadata.window_title.clone()))
         .unwrap_or((None, None));
-    delete_equivalent_reuse_projections_for_source_result(transaction, result).await?;
+    delete_equivalent_reuse_projections_for_source_result(transaction, result, &frame).await?;
 
     let group_key = frame_search_group_key(&frame);
     let searchable_text =
@@ -256,7 +257,7 @@ async fn project_frame_ocr_result(
             anchor_type: "frame",
             frame_id: Some(frame.id),
             audio_segment_id: None,
-            processing_result_id: result.id,
+            processing_result_id: Some(result.id),
             span_start_ms: None,
             span_end_ms: None,
             absolute_start_at: &frame.captured_at,
@@ -278,6 +279,7 @@ async fn project_frame_ocr_result(
 async fn delete_equivalent_reuse_projections_for_source_result(
     transaction: &mut Transaction<'_, Sqlite>,
     result: &ProcessingResult,
+    source_frame: &Frame,
 ) -> Result<()> {
     sqlx::query(
         "DELETE FROM search_documents \
@@ -292,6 +294,19 @@ async fn delete_equivalent_reuse_projections_for_source_result(
     .bind(&result.processor)
     .execute(&mut **transaction)
     .await?;
+
+    for frame in equivalent_reuse_candidate_frames(transaction, source_frame).await? {
+        sqlx::query(
+            "DELETE FROM search_documents \
+             WHERE text_source_kind = 'equivalent_reuse' \
+               AND anchor_type = 'frame' \
+               AND frame_id = ?1",
+        )
+        .bind(frame.id)
+        .execute(&mut **transaction)
+        .await?;
+    }
+
     Ok(())
 }
 
@@ -305,10 +320,12 @@ pub(crate) async fn project_equivalent_frame_reuse_in_transaction(
          FROM search_documents \
          WHERE anchor_type = 'frame' \
            AND frame_id = ?1 \
-           AND text_source_kind = 'direct' \
-           AND processing_result_id IN (\
-                SELECT id FROM processing_results \
-                WHERE subject_type = 'frame' AND processor = ?2\
+           AND (\
+                processing_result_id IS NULL \
+                OR processing_result_id IN (\
+                    SELECT id FROM processing_results \
+                    WHERE subject_type = 'frame' AND processor = ?2\
+                )\
            ) \
          ORDER BY id DESC LIMIT 1",
     )
@@ -335,8 +352,40 @@ async fn project_equivalent_reuse_documents_for_source_frame(
     processing_result_id: i64,
     text: &str,
 ) -> Result<()> {
+    let frames = equivalent_reuse_candidate_frames(transaction, source_frame).await?;
+
+    for frame in frames {
+        let exists = sqlx::query(
+            "SELECT 1 FROM search_documents \
+             WHERE search_documents.anchor_type = 'frame' \
+               AND search_documents.frame_id = ?1 \
+             LIMIT 1",
+        )
+        .bind(frame.id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .is_some();
+        if exists {
+            continue;
+        }
+        project_equivalent_reuse_document_for_frame(
+            transaction,
+            &frame,
+            Some(processing_result_id),
+            text,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn equivalent_reuse_candidate_frames(
+    transaction: &mut Transaction<'_, Sqlite>,
+    source_frame: &Frame,
+) -> Result<Vec<Frame>> {
     let Some((hint, proof, version)) = source_frame.equivalence.ready_parts() else {
-        return Ok(());
+        return Ok(Vec::new());
     };
 
     let rows = sqlx::query(
@@ -348,12 +397,7 @@ async fn project_equivalent_reuse_documents_for_source_frame(
          LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
          WHERE frames.session_id = ?1 \
            AND frames.id != ?2 \
-           AND frames.equivalence_hint = ?3 \
-           AND NOT EXISTS (\
-                SELECT 1 FROM search_documents \
-                WHERE search_documents.anchor_type = 'frame' \
-                  AND search_documents.frame_id = frames.id\
-           )",
+           AND frames.equivalence_hint = ?3",
     )
     .bind(&source_frame.session_id)
     .bind(source_frame.id)
@@ -361,8 +405,12 @@ async fn project_equivalent_reuse_documents_for_source_frame(
     .fetch_all(&mut **transaction)
     .await?;
 
+    let mut frames = Vec::new();
     for row in rows {
         let frame = map_frame_for_search(row)?;
+        if !equivalent_reuse_scope_allows_source(&frame, source_frame) {
+            continue;
+        }
         let Some((_target_hint, target_proof, target_version)) = frame.equivalence.ready_parts()
         else {
             continue;
@@ -376,22 +424,25 @@ async fn project_equivalent_reuse_documents_for_source_frame(
         {
             continue;
         }
-        project_equivalent_reuse_document_for_frame(
-            transaction,
-            &frame,
-            processing_result_id,
-            text,
-        )
-        .await?;
+        frames.push(frame);
     }
 
-    Ok(())
+    Ok(frames)
+}
+
+fn equivalent_reuse_scope_allows_source(target_frame: &Frame, source_frame: &Frame) -> bool {
+    match CapturedFrameEquivalenceScope::from_frame(target_frame) {
+        CapturedFrameEquivalenceScope::Session => true,
+        CapturedFrameEquivalenceScope::HiddenSegmentWorkspace { frames_dir_prefix } => {
+            source_frame.file_path.starts_with(&frames_dir_prefix)
+        }
+    }
 }
 
 async fn project_equivalent_reuse_document_for_frame(
     transaction: &mut Transaction<'_, Sqlite>,
     frame: &Frame,
-    processing_result_id: i64,
+    processing_result_id: Option<i64>,
     text: &str,
 ) -> Result<()> {
     let (app_name, window_title) = frame
@@ -460,7 +511,7 @@ async fn project_audio_transcription_result(
                 anchor_type: "audio",
                 frame_id: None,
                 audio_segment_id: Some(segment.id),
-                processing_result_id: result.id,
+                processing_result_id: Some(result.id),
                 span_start_ms: Some(span.start_ms as i64),
                 span_end_ms: Some(span.end_ms as i64),
                 absolute_start_at: &absolute_start_at,
@@ -484,7 +535,7 @@ struct NewSearchDocument<'a> {
     anchor_type: &'a str,
     frame_id: Option<i64>,
     audio_segment_id: Option<i64>,
-    processing_result_id: i64,
+    processing_result_id: Option<i64>,
     span_start_ms: Option<i64>,
     span_end_ms: Option<i64>,
     absolute_start_at: &'a str,
@@ -1507,6 +1558,249 @@ mod tests {
             assert_eq!(response.frames[0].match_count, 2);
             assert_eq!(response.frames[0].representative_frame.id, second.frame.id);
             assert_eq!(response.frames[0].text_source_kind, "equivalent_reuse");
+        });
+    }
+
+    #[test]
+    fn search_projects_equivalent_reuse_through_duplicate_chain() {
+        run_async_test(async {
+            let dir = test_dir("skipped-equivalent-chain");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-chain".to_string()),
+                proof: Some(vec![9; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            let first = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-chain-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("first frame should capture");
+            let job = first.job.expect("first frame should enqueue OCR");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("duplicate chain target"),
+            )
+            .await;
+
+            let second = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-chain-second.jpg",
+                        "2026-05-17T10:00:01Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("second frame should capture");
+            assert!(second.job.is_none());
+
+            let third = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-chain-third.jpg",
+                        "2026-05-17T10:00:02Z",
+                    )
+                    .with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("third frame should capture");
+            assert!(third.job.is_none());
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "chain".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].match_count, 3);
+            assert_eq!(response.frames[0].representative_frame.id, third.frame.id);
+        });
+    }
+
+    #[test]
+    fn source_ocr_reprojection_replaces_orphaned_equivalent_reuse_text() {
+        run_async_test(async {
+            let dir = test_dir("reuse-source-reproject");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-reproject".to_string()),
+                proof: Some(vec![19; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            let first = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-reproject-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("first frame should capture");
+            let source_job = first.job.expect("first frame should enqueue OCR");
+            let source_job_id = source_job.id;
+            complete_job(
+                &infra,
+                source_job,
+                ProcessingResultDraft::new().with_result_text("stale reuse target"),
+            )
+            .await;
+
+            let second = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-reproject-target.jpg",
+                        "2026-05-17T10:00:01Z",
+                    )
+                    .with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("second frame should capture");
+            assert!(second.job.is_none());
+
+            sqlx::query("DELETE FROM processing_results WHERE job_id = ?1")
+                .bind(source_job_id)
+                .execute(infra.pool())
+                .await
+                .expect("source processing result delete should orphan reuse search");
+
+            let replacement_job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(first.frame.id))
+                .await
+                .expect("replacement job should enqueue");
+            complete_job(
+                &infra,
+                replacement_job,
+                ProcessingResultDraft::new().with_result_text("fresh reuse target"),
+            )
+            .await;
+
+            let stale = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "stale".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("stale search should succeed");
+            assert!(stale.frames.is_empty());
+
+            let fresh = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "fresh".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("fresh search should succeed");
+            assert_eq!(fresh.frames.len(), 1);
+            assert_eq!(fresh.frames[0].match_count, 2);
+            assert_eq!(fresh.frames[0].representative_frame.id, second.frame.id);
+        });
+    }
+
+    #[test]
+    fn source_ocr_projection_respects_hidden_workspace_equivalence_scope() {
+        run_async_test(async {
+            let dir = test_dir("reuse-hidden-scope");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-scope".to_string()),
+                proof: Some(vec![23; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            let source = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-hidden-scope-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                )
+                .await
+                .expect("source frame should insert");
+            let hidden_frame_path = dir
+                .join("recordings/2026/05/17/.screen-session-segment-0001/frames/frame-1.jpg")
+                .to_string_lossy()
+                .to_string();
+            infra
+                .insert_frame(
+                    &NewFrame::new("screen-session", &hidden_frame_path, "2026-05-17T10:00:01Z")
+                        .with_equivalence(equivalence),
+                )
+                .await
+                .expect("hidden frame should insert");
+
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(source.id))
+                .await
+                .expect("source job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("scope reuse target"),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "scope".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].match_count, 1);
+            assert_eq!(response.frames[0].representative_frame.id, source.id);
+            assert_eq!(response.frames[0].text_source_kind, "direct");
         });
     }
 
