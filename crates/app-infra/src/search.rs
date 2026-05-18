@@ -115,40 +115,32 @@ impl SearchStore {
             None => fetch_search_document_high_water_mark(&self.pool).await?,
         };
 
-        let frame_hit_limit = hit_fetch_limit(frame_offset, frame_limit);
-        let audio_hit_limit = hit_fetch_limit(audio_offset, audio_limit);
-        let frame_hits = if frame_limit == 0 {
-            Vec::new()
-        } else {
-            fetch_frame_hits(
-                &self.pool,
-                &fts_query,
-                snapshot_document_id,
-                frame_hit_limit,
-            )
-            .await?
-        };
-        let audio_hits = if audio_limit == 0 {
-            Vec::new()
-        } else {
-            fetch_audio_hits(
-                &self.pool,
-                &fts_query,
-                snapshot_document_id,
-                audio_hit_limit,
-            )
-            .await?
-        };
-        let frame_hits_may_have_more =
-            frame_limit > 0 && frame_hits.len() as i64 >= frame_hit_limit;
-        let audio_hits_may_have_more =
-            audio_limit > 0 && audio_hits.len() as i64 >= audio_hit_limit;
-
-        let all_frame_groups = group_frame_hits(frame_hits);
-        let all_audio_groups = group_audio_hits(audio_hits)?;
-
         let frame_end = frame_offset.saturating_add(frame_limit as usize);
         let audio_end = audio_offset.saturating_add(audio_limit as usize);
+        let all_frame_groups = if frame_limit == 0 {
+            Vec::new()
+        } else {
+            fetch_grouped_frame_hits(
+                &self.pool,
+                &fts_query,
+                snapshot_document_id,
+                frame_offset,
+                frame_limit,
+            )
+            .await?
+        };
+        let all_audio_groups = if audio_limit == 0 {
+            Vec::new()
+        } else {
+            fetch_grouped_audio_hits(
+                &self.pool,
+                &fts_query,
+                snapshot_document_id,
+                audio_offset,
+                audio_limit,
+            )
+            .await?
+        };
         let frames = all_frame_groups
             .iter()
             .skip(frame_offset)
@@ -168,8 +160,8 @@ impl SearchStore {
             snapshot_document_id,
             frames,
             audio,
-            has_more_frames: all_frame_groups.len() > frame_end || frame_hits_may_have_more,
-            has_more_audio: all_audio_groups.len() > audio_end || audio_hits_may_have_more,
+            has_more_frames: all_frame_groups.len() > frame_end,
+            has_more_audio: all_audio_groups.len() > audio_end,
         })
     }
 }
@@ -762,6 +754,29 @@ async fn fetch_frame_hits(
         .collect()
 }
 
+async fn fetch_grouped_frame_hits(
+    pool: &SqlitePool,
+    fts_query: &str,
+    snapshot_document_id: i64,
+    offset: usize,
+    limit: u32,
+) -> Result<Vec<FrameSearchResult>> {
+    let needed_groups = offset.saturating_add(limit as usize).saturating_add(1);
+    let mut hit_limit = hit_fetch_limit(offset, limit);
+    loop {
+        let hits = fetch_frame_hits(pool, fts_query, snapshot_document_id, hit_limit).await?;
+        let hit_count = hits.len() as i64;
+        let groups = group_frame_hits(hits);
+        if groups.len() >= needed_groups
+            || hit_count < hit_limit
+            || hit_limit >= MAX_HIT_FETCH_LIMIT
+        {
+            return Ok(groups);
+        }
+        hit_limit = hit_limit.saturating_mul(2).min(MAX_HIT_FETCH_LIMIT);
+    }
+}
+
 async fn fetch_audio_hits(
     pool: &SqlitePool,
     fts_query: &str,
@@ -793,6 +808,29 @@ async fn fetch_audio_hits(
     .await?;
 
     rows.into_iter().map(map_audio_hit).collect()
+}
+
+async fn fetch_grouped_audio_hits(
+    pool: &SqlitePool,
+    fts_query: &str,
+    snapshot_document_id: i64,
+    offset: usize,
+    limit: u32,
+) -> Result<Vec<AudioSearchResult>> {
+    let needed_groups = offset.saturating_add(limit as usize).saturating_add(1);
+    let mut hit_limit = hit_fetch_limit(offset, limit);
+    loop {
+        let hits = fetch_audio_hits(pool, fts_query, snapshot_document_id, hit_limit).await?;
+        let hit_count = hits.len() as i64;
+        let groups = group_audio_hits(hits)?;
+        if groups.len() >= needed_groups
+            || hit_count < hit_limit
+            || hit_limit >= MAX_HIT_FETCH_LIMIT
+        {
+            return Ok(groups);
+        }
+        hit_limit = hit_limit.saturating_mul(2).min(MAX_HIT_FETCH_LIMIT);
+    }
 }
 
 fn group_frame_hits(hits: Vec<FrameHit>) -> Vec<FrameSearchResult> {
@@ -1467,6 +1505,202 @@ mod tests {
 
             assert_eq!(response.frames.len(), 1);
             assert_eq!(response.frames[0].match_count, 2);
+            assert_eq!(response.frames[0].representative_frame.id, second.frame.id);
+            assert_eq!(response.frames[0].text_source_kind, "equivalent_reuse");
+        });
+    }
+
+    #[test]
+    fn search_has_more_uses_grouped_frame_results() {
+        run_async_test(async {
+            let dir = test_dir("grouped-has-more");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-screen".to_string()),
+                proof: Some(vec![11; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            for index in 0..260 {
+                let frame = infra
+                    .insert_frame(
+                        &NewFrame::new(
+                            "screen-session",
+                            &format!("/tmp/search-grouped-has-more-{index}.jpg"),
+                            &format!("2026-05-17T10:{:02}:{:02}Z", index / 60, index % 60),
+                        )
+                        .with_equivalence(equivalence.clone()),
+                    )
+                    .await
+                    .expect("frame should insert");
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("collapsed target phrase"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "collapsed".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: Some(0),
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert!(!response.has_more_frames);
+        });
+    }
+
+    #[test]
+    fn search_has_more_uses_grouped_audio_results() {
+        run_async_test(async {
+            let dir = test_dir("grouped-audio-has-more");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-grouped-audio.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:05:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let spans = (0..260)
+                .map(|index| TranscriptionSegment {
+                    start_ms: index * 1_000,
+                    end_ms: index * 1_000 + 500,
+                    text: "collapsed audio target".to_string(),
+                    confidence: None,
+                })
+                .collect::<Vec<_>>();
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: spans,
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("collapsed audio target")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "collapsed".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: Some(0),
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            assert!(!response.has_more_audio);
+        });
+    }
+
+    #[test]
+    fn equivalent_reuse_search_survives_source_result_delete() {
+        run_async_test(async {
+            let dir = test_dir("reuse-source-delete");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-screen".to_string()),
+                proof: Some(vec![17; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            let first = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-reuse-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("first frame should capture");
+            let source_job = first.job.expect("first frame should enqueue OCR");
+            let source_job_id = source_job.id;
+            complete_job(
+                &infra,
+                source_job,
+                ProcessingResultDraft::new().with_result_text("retained reuse target"),
+            )
+            .await;
+
+            let second = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-reuse-target.jpg",
+                        "2026-05-17T10:00:02Z",
+                    )
+                    .with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("second frame should capture");
+            assert!(second.job.is_none());
+
+            sqlx::query("DELETE FROM processing_results WHERE job_id = ?1")
+                .bind(source_job_id)
+                .execute(infra.pool())
+                .await
+                .expect("source processing result delete should not remove reuse search");
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "retained".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
             assert_eq!(response.frames[0].representative_frame.id, second.frame.id);
             assert_eq!(response.frames[0].text_source_kind, "equivalent_reuse");
         });

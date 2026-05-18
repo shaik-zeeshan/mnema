@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS search_documents (
     anchor_type TEXT NOT NULL CHECK (anchor_type IN ('frame', 'audio')),
     frame_id INTEGER REFERENCES frames (id) ON DELETE CASCADE,
     audio_segment_id INTEGER REFERENCES audio_segments (id) ON DELETE CASCADE,
-    processing_result_id INTEGER NOT NULL REFERENCES processing_results (id) ON DELETE CASCADE,
+    processing_result_id INTEGER REFERENCES processing_results (id) ON DELETE SET NULL,
     span_start_ms INTEGER,
     span_end_ms INTEGER,
     absolute_start_at TEXT NOT NULL CHECK (LENGTH(TRIM(absolute_start_at)) > 0),
@@ -43,4 +43,12 @@ AFTER DELETE ON search_documents
 BEGIN
     INSERT INTO search_documents_fts(search_documents_fts, rowid, searchable_text)
     VALUES('delete', OLD.id, OLD.searchable_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS search_documents_direct_after_result_delete
+AFTER DELETE ON processing_results
+BEGIN
+    DELETE FROM search_documents
+    WHERE text_source_kind = 'direct'
+      AND processing_result_id IS NULL;
 END;

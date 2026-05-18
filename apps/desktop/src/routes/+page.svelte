@@ -458,12 +458,11 @@
   // Monotonic token to discard stale `list_audio_segments` responses when a
   // newer fetch supersedes one in flight (e.g. timeline reset, head poll).
   let audioSegmentsGeneration = 0;
-  // Currently selected audio segment for the inline player. The user picks a
-  // segment by clicking its bar in the timeline rail; the selection survives
-  // refreshes as long as the segment row is still in `audioSegments`. If a
-  // window/range refresh drops the row we clear the selection (see effect
-  // below) so the player doesn't keep pointing at a stale path.
+  // Currently selected audio segment for the inline player. Search-result
+  // selections are pinned from the result payload so an aligned-frame jump can
+  // move the visible lane without immediately closing the drawer.
   let selectedAudioSegmentId = $state<number | null>(null);
+  let selectedAudioSegmentPinned = $state<AudioSegmentRecord | null>(null);
   let pendingAudioSeekMs = $state<number | null>(null);
   // Monotonic token used to discard stale `list_frames` responses. A reset
   // bumps this so any in-flight page request resolves into a no-op rather
@@ -685,7 +684,10 @@
   const selectedAudioSegment = $derived(
     selectedAudioSegmentId == null
       ? null
-      : audioSegments.find((s) => s.id === selectedAudioSegmentId) ?? null,
+      : audioSegments.find((s) => s.id === selectedAudioSegmentId) ??
+        (selectedAudioSegmentPinned?.id === selectedAudioSegmentId
+          ? selectedAudioSegmentPinned
+          : null),
   );
   let selectedAudioSrc = $state<string | null>(null);
   let selectedAudioMediaLoading = $state(false);
@@ -726,6 +728,10 @@
   $effect(() => {
     // Clear the prior errors whenever the selected segment changes.
     void selectedAudioSegmentId;
+    if (selectedAudioSegmentId == null) {
+      pendingAudioSeekMs = null;
+      selectedAudioSegmentPinned = null;
+    }
     selectedAudioLoadError = null;
     selectedAudioTranscriptRerunError = null;
     selectedAudioTranscriptRerunLoading = false;
@@ -2218,6 +2224,7 @@
   $effect(() => {
     if (selectedAudioSegmentId == null) return;
     if (!audioSegments.some((s) => s.id === selectedAudioSegmentId)) {
+      if (selectedAudioSegmentPinned?.id === selectedAudioSegmentId) return;
       selectedAudioSegmentId = null;
     }
   });
@@ -2237,6 +2244,8 @@
   let audioDrawerReturnFocusEl: HTMLElement | null = null;
 
   function closeAudioDrawer() {
+    pendingAudioSeekMs = null;
+    selectedAudioSegmentPinned = null;
     selectedAudioSegmentId = null;
   }
 
@@ -3645,6 +3654,7 @@
     if (mapped && !audioSegments.some((segment) => segment.id === mapped.id)) {
       audioSegments = [...audioSegments, mapped].sort((a, b) => a.startUnixMs - b.startUnixMs);
     }
+    selectedAudioSegmentPinned = mapped;
     selectedAudioSegmentId = result.audioSegment.id;
     pendingAudioSeekMs = result.spanStartMs;
     if (result.alignedFrame) {
@@ -4776,10 +4786,12 @@
     event.stopPropagation();
     if (suppressNextAudioSegmentBarClick) {
       clearPendingSuppressedAudioSegmentBarClick();
-      selectedAudioSegmentId = null;
+      closeAudioDrawer();
       return;
     }
     clearPendingSuppressedAudioSegmentBarClick();
+    selectedAudioSegmentPinned = null;
+    pendingAudioSeekMs = null;
     selectedAudioSegmentId = selectedAudioSegmentId === id ? null : id;
   }
   function onAudioSegmentBarKeyDown(event: KeyboardEvent) {
