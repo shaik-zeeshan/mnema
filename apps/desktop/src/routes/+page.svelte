@@ -4657,13 +4657,15 @@
   function onTimelineWheel(event: WheelEvent) {
     if (!timelineRail) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
-    // Don't hijack wheel events that originate inside the date/time picker
-    // popover — its calendar and scrollable time list need normal vertical
-    // scrolling. The picker is rendered inside the same `<section>` that owns
-    // this listener, so without this guard wheeling over the time list would
-    // scrub the timeline instead of scrolling the list.
+    // Don't hijack wheel events that originate inside timeline-owned overlays
+    // with their own scroll surfaces. These overlays are rendered inside the
+    // same `<section>` that owns this listener, so without this guard their
+    // native vertical scroll is cancelled and converted into rail scrubbing.
     const target = event.target;
-    if (target instanceof Element && target.closest(".timeline__picker")) {
+    if (
+      target instanceof Element &&
+      target.closest(".timeline__picker, .search-modal")
+    ) {
       return;
     }
     const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
