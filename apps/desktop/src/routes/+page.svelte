@@ -48,6 +48,7 @@
     FrameSummaryDto,
     FocusedFrameWindowDto,
     FrameScrubPreviewsDto,
+    GetFramePreviewRequest,
     GetEarliestEarlierEquivalentFrameRequest,
     GetScrubPreviewAvailabilityRequest,
     GetProcessingJobRequest,
@@ -66,6 +67,7 @@
     SpeakerAnalysisSkipReason,
     ScrubPreviewAvailabilityDto,
     ScrubPreviewAvailabilityIntervalDto,
+    FramePreviewVideoScope,
     SpeakerAnalysisStructuredPayload,
     SearchCaptureResponse,
     SystemAudioSpeechActivityReprocessingResultDto,
@@ -3821,7 +3823,10 @@
    * `previewInFlight`. Errors are swallowed so a single bad frame doesn't
    * break the whole rail; the slot simply renders without an image.
    */
-  async function ensurePreview(frameId: number): Promise<void> {
+  async function ensurePreview(
+    frameId: number,
+    options: { videoScope?: FramePreviewVideoScope } = {},
+  ): Promise<void> {
     const startedAt = performance.now();
     if (previewCache.has(frameId)) {
       previewCacheHitCount += 1;
@@ -3849,7 +3854,10 @@
     try {
       const invokeStartedAt = performance.now();
       const dto = await invoke<FramePreviewDto | null>("get_frame_preview", {
-        request: { frameId },
+        request: {
+          frameId,
+          videoScope: options.videoScope,
+        } satisfies GetFramePreviewRequest,
       });
       const invokeDurationMs = performance.now() - invokeStartedAt;
       if (!dto) {
@@ -3920,7 +3928,7 @@
     activeExactPreviewInFlight = true;
     activeExactPreviewPendingFrameId = null;
     try {
-      await ensurePreview(frameId);
+      await ensurePreview(frameId, { videoScope: "active_frame" });
     } finally {
       activeExactPreviewInFlight = false;
       const pendingActive = timelineActive;
@@ -4056,7 +4064,7 @@
       const request: GetScrubPreviewAvailabilityRequest = {
         startUnixMs: timeWindow.startUnixMs,
         endUnixMs: timeWindow.endUnixMs,
-        enqueueMissing: false,
+        enqueueMissing: true,
       };
       const dto = await invoke<ScrubPreviewAvailabilityDto>("get_scrub_preview_availability", {
         request,
@@ -4989,10 +4997,7 @@
     clearActivePreviewFetchTimer();
     clearScrubPreviewFetchTimer();
     clearScrubPreviewWarmTimer();
-    if (
-      activeFrameChanged &&
-      (activeExactPreviewInFlight || scrubPreviewBatchInFlight || scrubPreviewWarmInFlight)
-    ) {
+    if (activeFrameChanged && activeExactPreviewInFlight) {
       void cancelActivePreviewVideoRequests();
     }
     if (!active) {

@@ -54,8 +54,11 @@ export interface FramePreviewDto {
 	sourceKind: FramePreviewSourceKind;
 }
 
+export type FramePreviewVideoScope = "active_frame";
+
 export interface GetFramePreviewRequest {
 	frameId: number;
+	videoScope?: FramePreviewVideoScope;
 }
 
 export type ScrubPreviewMissingReason =

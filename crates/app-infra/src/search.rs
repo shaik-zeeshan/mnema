@@ -1197,14 +1197,80 @@ fn map_processing_result_for_search(row: SqliteRow) -> Result<ProcessingResult> 
 
 async fn align_audio_results(pool: &SqlitePool, results: &mut [AudioSearchResult]) -> Result<()> {
     for result in results {
-        result.aligned_frame = find_aligned_frame(
-            pool,
-            &result.audio_segment.source_session_id,
-            &result.absolute_start_at,
-        )
-        .await?;
+        let mut candidate_session_ids = Vec::new();
+        if let Some(screen_source_session_id) =
+            screen_source_session_id_for_audio_alignment(pool, &result.audio_segment).await?
+        {
+            candidate_session_ids.push(screen_source_session_id);
+        }
+        if !candidate_session_ids
+            .iter()
+            .any(|session_id| session_id == &result.audio_segment.source_session_id)
+        {
+            candidate_session_ids.push(result.audio_segment.source_session_id.clone());
+        }
+
+        result.aligned_frame = None;
+        for session_id in candidate_session_ids {
+            if let Some(frame) =
+                find_aligned_frame(pool, &session_id, &result.absolute_start_at).await?
+            {
+                result.aligned_frame = Some(frame);
+                break;
+            }
+        }
     }
     Ok(())
+}
+
+async fn screen_source_session_id_for_audio_alignment(
+    pool: &SqlitePool,
+    segment: &AudioSegment,
+) -> Result<Option<String>> {
+    if let Some(capture_segment_id) = segment.capture_segment_id {
+        let row = sqlx::query(
+            "SELECT capture_sessions.screen_source_session_id \
+             FROM capture_segments \
+             JOIN capture_sessions ON capture_sessions.capture_session_id = capture_segments.capture_session_id \
+             WHERE capture_segments.id = ?1 \
+             ORDER BY capture_sessions.id DESC LIMIT 1",
+        )
+        .bind(capture_segment_id)
+        .fetch_optional(pool)
+        .await?;
+        if let Some(session_id) =
+            row.and_then(|row| normalized_source_session_id(row.get("screen_source_session_id")))
+        {
+            return Ok(Some(session_id));
+        }
+    }
+
+    let source_column = match segment.source_kind {
+        AudioSegmentSourceKind::Microphone => "microphone_source_session_id",
+        AudioSegmentSourceKind::SystemAudio => "system_audio_source_session_id",
+    };
+    let query = format!(
+        "SELECT screen_source_session_id \
+         FROM capture_sessions \
+         WHERE {source_column} = ?1 \
+         ORDER BY id DESC LIMIT 1",
+    );
+    let row = sqlx::query(&query)
+        .bind(&segment.source_session_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.and_then(|row| normalized_source_session_id(row.get("screen_source_session_id"))))
+}
+
+fn normalized_source_session_id(session_id: Option<String>) -> Option<String> {
+    session_id.and_then(|session_id| {
+        let trimmed = session_id.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 async fn find_aligned_frame(
@@ -1342,7 +1408,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
-    use crate::{AppInfra, NewAudioSegment, NewFrame, ProcessingJobDraft, ProcessingResultDraft};
+    use crate::{
+        AppInfra, NewAudioSegment, NewCaptureSession, NewFrame, ProcessingJobDraft,
+        ProcessingResultDraft,
+    };
     use audio_transcription::{TranscriptionMetadata, TranscriptionSegment};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1582,6 +1651,100 @@ mod tests {
             assert_eq!(response.audio.len(), 1);
             assert_eq!(response.audio[0].span_start_ms, 1_000);
             assert_eq!(response.audio[0].span_end_ms, 2_500);
+        });
+    }
+
+    #[test]
+    fn audio_search_alignment_uses_mapped_screen_source_session() {
+        run_async_test(async {
+            let dir = test_dir("audio-screen-alignment");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            infra
+                .capture_retention()
+                .create_capture_session(&NewCaptureSession {
+                    capture_session_id: "capture-session".to_string(),
+                    started_at: "2026-05-17T10:00:00Z".to_string(),
+                    requested_screen: true,
+                    requested_microphone: true,
+                    requested_system_audio: false,
+                    screen_source_session_id: Some("screen-session".to_string()),
+                    microphone_source_session_id: Some("mic-session".to_string()),
+                    system_audio_source_session_id: None,
+                    segment_duration_seconds: 300,
+                })
+                .await
+                .expect("capture session should insert");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-aligned-screen.jpg",
+                    "2026-05-17T10:00:01Z",
+                ))
+                .await
+                .expect("screen frame should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-aligned-audio.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![TranscriptionSegment {
+                    start_ms: 1_000,
+                    end_ms: 2_000,
+                    text: "aligned audio target".to_string(),
+                    confidence: None,
+                }],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("aligned audio target")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "aligned".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(
+                response.audio[0]
+                    .aligned_frame
+                    .as_ref()
+                    .map(|frame| frame.id),
+                Some(frame.id)
+            );
         });
     }
 

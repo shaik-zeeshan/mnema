@@ -4330,10 +4330,16 @@ mod tests {
                 .await
                 .expect("frame should be inserted");
 
-            let preview = get_frame_preview_inner(&infra, &cache, None, stored_frame.id)
-                .await
-                .expect("preview should load")
-                .expect("preview should exist");
+            let preview = get_frame_preview_inner(
+                &infra,
+                &cache,
+                None,
+                stored_frame.id,
+                VideoPreviewRequestScope::Shared,
+            )
+            .await
+            .expect("preview should load")
+            .expect("preview should exist");
 
             assert_eq!(preview.mime_type, "image/png");
             assert_eq!(
@@ -4380,10 +4386,16 @@ mod tests {
                 .await
                 .expect("sibling frame should be inserted");
 
-            let preview = get_frame_preview_inner(&infra, &cache, None, target_frame.id)
-                .await
-                .expect("preview should load")
-                .expect("preview should exist");
+            let preview = get_frame_preview_inner(
+                &infra,
+                &cache,
+                None,
+                target_frame.id,
+                VideoPreviewRequestScope::Shared,
+            )
+            .await
+            .expect("preview should load")
+            .expect("preview should exist");
 
             assert_eq!(preview.mime_type, "image/png");
             assert_eq!(
@@ -4435,10 +4447,16 @@ mod tests {
                 .await
                 .expect("sibling frame should be inserted");
 
-            let preview = get_frame_preview_inner(&infra, &cache, None, target_frame.id)
-                .await
-                .expect("preview should load")
-                .expect("preview should exist");
+            let preview = get_frame_preview_inner(
+                &infra,
+                &cache,
+                None,
+                target_frame.id,
+                VideoPreviewRequestScope::Shared,
+            )
+            .await
+            .expect("preview should load")
+            .expect("preview should exist");
 
             assert_eq!(preview.mime_type, "image/png");
             assert_eq!(
@@ -4477,9 +4495,15 @@ mod tests {
                 .await
                 .expect("target frame should be inserted");
 
-            let error = get_frame_preview_inner(&infra, &cache, None, target_frame.id)
-                .await
-                .expect_err("empty visible video without persisted fallback should error");
+            let error = get_frame_preview_inner(
+                &infra,
+                &cache,
+                None,
+                target_frame.id,
+                VideoPreviewRequestScope::Shared,
+            )
+            .await
+            .expect_err("empty visible video without persisted fallback should error");
 
             let error_message = error.to_string();
             assert!(error_message.contains("segment video is empty"));
@@ -4560,7 +4584,14 @@ mod tests {
                 let infra = Arc::clone(&infra);
                 let cache = Arc::clone(&cache);
                 tasks.push(tokio::spawn(async move {
-                    get_frame_preview_inner(&infra, &cache, None, frame_id).await
+                    get_frame_preview_inner(
+                        &infra,
+                        &cache,
+                        None,
+                        frame_id,
+                        VideoPreviewRequestScope::Shared,
+                    )
+                    .await
                 }));
             }
 
@@ -4648,10 +4679,10 @@ mod tests {
             let video_path = Path::new("/tmp/segment-0001.mov");
 
             let token = state
-                .begin_video_request(video_path)
+                .begin_video_request(video_path, VideoPreviewRequestScope::Shared)
                 .expect("first request should become the in-flight video leader");
             let waiter = state
-                .begin_video_request(video_path)
+                .begin_video_request(video_path, VideoPreviewRequestScope::Shared)
                 .expect_err("second request should subscribe to the in-flight video leader");
             assert_eq!(state.video_in_flight_len(), 1);
 
@@ -4669,10 +4700,10 @@ mod tests {
             let video_path = Path::new("/tmp/segment-0001.mov");
 
             let token = state
-                .begin_video_request(video_path)
+                .begin_video_request(video_path, VideoPreviewRequestScope::ActiveFrame)
                 .expect("first request should become the in-flight video leader");
             let waiter = state
-                .begin_video_request(video_path)
+                .begin_video_request(video_path, VideoPreviewRequestScope::ActiveFrame)
                 .expect_err("second request should subscribe to the in-flight video leader");
 
             assert_eq!(state.cancel_active_video_requests(), 1);
@@ -4684,6 +4715,47 @@ mod tests {
 
             state.finish_video_request(&token, Ok(()));
             assert_eq!(state.video_in_flight_len(), 0);
+        });
+    }
+
+    #[test]
+    fn frame_preview_state_cancel_active_video_requests_preserves_shared_work() {
+        run_async_test(async {
+            let mut state = FramePreviewState::default();
+            let video_path = Path::new("/tmp/segment-0001.mov");
+
+            let shared_token = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::Shared)
+                .expect("shared request should become the shared in-flight leader");
+            let mut shared_waiter = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::Shared)
+                .expect_err("second shared request should subscribe to shared work");
+            let active_token = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::ActiveFrame)
+                .expect("active request should use a separate in-flight lane");
+            let active_waiter = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::ActiveFrame)
+                .expect_err("second active request should subscribe to active work");
+
+            assert_eq!(state.video_in_flight_len(), 2);
+            assert_eq!(state.cancel_active_video_requests(), 1);
+            assert_eq!(state.video_in_flight_len(), 1);
+            assert!(active_waiter
+                .await
+                .expect("active waiter should receive cancellation")
+                .is_err());
+            assert!(shared_waiter.try_recv().is_err());
+
+            state.finish_video_request(&active_token, Ok(()));
+            assert_eq!(state.video_in_flight_len(), 1);
+            state.finish_video_request(&shared_token, Ok(()));
+            assert_eq!(state.video_in_flight_len(), 0);
+            assert_eq!(
+                shared_waiter
+                    .await
+                    .expect("shared waiter should receive result"),
+                Ok(())
+            );
         });
     }
 

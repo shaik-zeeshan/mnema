@@ -77,6 +77,42 @@ struct ScrubIntervalWorkKey {
     interval_start_video_offset_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FramePreviewVideoScopeDto {
+    ActiveFrame,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum VideoPreviewRequestScope {
+    Shared,
+    ActiveFrame,
+}
+
+impl From<Option<FramePreviewVideoScopeDto>> for VideoPreviewRequestScope {
+    fn from(scope: Option<FramePreviewVideoScopeDto>) -> Self {
+        match scope {
+            Some(FramePreviewVideoScopeDto::ActiveFrame) => Self::ActiveFrame,
+            None => Self::Shared,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct VideoPreviewWorkKey {
+    scope: VideoPreviewRequestScope,
+    video_path: PathBuf,
+}
+
+impl VideoPreviewWorkKey {
+    fn new(video_path: &Path, scope: VideoPreviewRequestScope) -> Self {
+        Self {
+            scope,
+            video_path: video_path.to_path_buf(),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ActiveVideoPreviewWork {
     work_id: u64,
@@ -86,7 +122,7 @@ struct ActiveVideoPreviewWork {
 
 #[derive(Debug)]
 pub(super) struct VideoPreviewRequestToken {
-    video_path: PathBuf,
+    key: VideoPreviewWorkKey,
     work_id: u64,
     cancel_requested: Arc<AtomicBool>,
 }
@@ -118,7 +154,7 @@ pub struct FramePreviewState {
     cache: FramePreviewCache,
     scrub_cache: FrameScrubPreviewCache,
     in_flight: HashMap<i64, Vec<oneshot::Sender<Result<Option<FramePreviewDto>, String>>>>,
-    video_in_flight: HashMap<PathBuf, ActiveVideoPreviewWork>,
+    video_in_flight: HashMap<VideoPreviewWorkKey, ActiveVideoPreviewWork>,
     next_video_work_id: u64,
     scrub_interval_in_flight: HashSet<ScrubIntervalWorkKey>,
 }
@@ -155,11 +191,10 @@ impl FramePreviewState {
     }
 
     pub(super) fn clear(&mut self) {
-        self.cancel_active_video_requests();
+        self.cancel_all_video_requests();
         self.cache.clear();
         self.scrub_cache.clear();
         self.in_flight.clear();
-        self.video_in_flight.clear();
     }
 
     pub(super) fn insert_scrub(
@@ -239,8 +274,10 @@ impl FramePreviewState {
     pub(super) fn begin_video_request(
         &mut self,
         video_path: &Path,
+        scope: VideoPreviewRequestScope,
     ) -> Result<VideoPreviewRequestToken, oneshot::Receiver<Result<(), String>>> {
-        if let Some(work) = self.video_in_flight.get_mut(video_path) {
+        let key = VideoPreviewWorkKey::new(video_path, scope);
+        if let Some(work) = self.video_in_flight.get_mut(&key) {
             let (tx, rx) = oneshot::channel();
             work.waiters.push(tx);
             return Err(rx);
@@ -250,12 +287,12 @@ impl FramePreviewState {
         self.next_video_work_id = self.next_video_work_id.wrapping_add(1);
         let cancel_requested = Arc::new(AtomicBool::new(false));
         let token = VideoPreviewRequestToken {
-            video_path: video_path.to_path_buf(),
+            key,
             work_id,
             cancel_requested: Arc::clone(&cancel_requested),
         };
         self.video_in_flight.insert(
-            token.video_path.clone(),
+            token.key.clone(),
             ActiveVideoPreviewWork {
                 work_id,
                 cancel_requested,
@@ -272,7 +309,7 @@ impl FramePreviewState {
     ) {
         let should_finish = self
             .video_in_flight
-            .get(&token.video_path)
+            .get(&token.key)
             .is_some_and(|work| work.work_id == token.work_id);
         if !should_finish {
             return;
@@ -280,7 +317,7 @@ impl FramePreviewState {
 
         let work = self
             .video_in_flight
-            .remove(&token.video_path)
+            .remove(&token.key)
             .expect("matching video preview work should exist");
         for waiter in work.waiters {
             let _ = waiter.send(result.clone());
@@ -288,13 +325,28 @@ impl FramePreviewState {
     }
 
     pub(super) fn cancel_active_video_requests(&mut self) -> usize {
+        self.cancel_video_requests(|key| key.scope == VideoPreviewRequestScope::ActiveFrame)
+    }
+
+    fn cancel_all_video_requests(&mut self) -> usize {
+        self.cancel_video_requests(|_| true)
+    }
+
+    fn cancel_video_requests(
+        &mut self,
+        should_cancel: impl Fn(&VideoPreviewWorkKey) -> bool,
+    ) -> usize {
         let active = self
             .video_in_flight
-            .drain()
-            .map(|(_, work)| work)
+            .keys()
+            .filter(|key| should_cancel(key))
+            .cloned()
             .collect::<Vec<_>>();
         let cancelled = active.len();
-        for work in active {
+        for key in active {
+            let Some(work) = self.video_in_flight.remove(&key) else {
+                continue;
+            };
             work.cancel_requested.store(true, Ordering::SeqCst);
             for waiter in work.waiters {
                 let _ = waiter.send(Err(PREVIEW_GENERATION_CANCELLED.to_string()));
@@ -497,6 +549,7 @@ impl FrameScrubPreviewCache {
 #[serde(rename_all = "camelCase")]
 pub struct GetFramePreviewRequest {
     pub frame_id: i64,
+    pub video_scope: Option<FramePreviewVideoScopeDto>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1860,6 +1913,7 @@ pub(super) async fn get_frame_preview_inner(
     cache: &FramePreviewCacheState,
     app_handle: Option<&tauri::AppHandle>,
     frame_id: i64,
+    video_scope: VideoPreviewRequestScope,
 ) -> ::app_infra::Result<Option<FramePreviewDto>> {
     let Some(frame) = infra.get_frame(frame_id).await? else {
         return Ok(None);
@@ -1990,7 +2044,7 @@ pub(super) async fn get_frame_preview_inner(
     let (bytes, mime_type) = loop {
         let video_request_guard = {
             let mut preview_state = cache.lock().expect("frame preview cache poisoned");
-            match preview_state.begin_video_request(&segment_paths.video_path) {
+            match preview_state.begin_video_request(&segment_paths.video_path, video_scope) {
                 Ok(token) => Ok(token),
                 Err(rx) => Err(rx),
             }
@@ -2092,9 +2146,10 @@ pub(super) async fn get_frame_preview_inner_with_logging(
     cache: &FramePreviewCacheState,
     app_handle: Option<&tauri::AppHandle>,
     frame_id: i64,
+    video_scope: VideoPreviewRequestScope,
 ) -> ::app_infra::Result<Option<FramePreviewDto>> {
     let started_at = Instant::now();
-    let result = get_frame_preview_inner(infra, cache, app_handle, frame_id).await;
+    let result = get_frame_preview_inner(infra, cache, app_handle, frame_id, video_scope).await;
     let elapsed_ms = started_at.elapsed().as_millis();
 
     match &result {
@@ -3376,6 +3431,7 @@ pub async fn get_frame_preview(
 ) -> Result<Option<FramePreviewDto>, String> {
     let infra = Arc::clone(&*state);
     let ttl = preview_cache_ttl(&settings);
+    let video_scope = VideoPreviewRequestScope::from(request.video_scope);
 
     if ttl.is_zero() {
         cache.lock().expect("frame preview cache poisoned").clear();
@@ -3384,6 +3440,7 @@ pub async fn get_frame_preview(
             &cache,
             Some(&app_handle),
             request.frame_id,
+            video_scope,
         )
         .await
         .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
@@ -3409,6 +3466,7 @@ pub async fn get_frame_preview(
                 &cache,
                 Some(&app_handle),
                 request.frame_id,
+                video_scope,
             )
             .await
             .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
@@ -3564,7 +3622,9 @@ pub async fn get_frame_scrub_previews(
 
             let video_request_guard = {
                 let mut preview_state = cache.lock().expect("frame preview cache poisoned");
-                match preview_state.begin_video_request(&video_path) {
+                match preview_state
+                    .begin_video_request(&video_path, VideoPreviewRequestScope::Shared)
+                {
                     Ok(token) => Ok(token),
                     Err(rx) => Err(rx),
                 }
