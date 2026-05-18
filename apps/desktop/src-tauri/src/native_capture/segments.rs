@@ -900,6 +900,7 @@ fn commit_suspended_screen_system_outputs(
                 runtime.current_segment_index,
                 Some(&output_files),
             );
+            warm_scrub_previews_for_committed_screen_outputs(app_handle, Some(&output_files));
         }
         Err(error) => {
             super::debug_log::log(format!(
@@ -1549,6 +1550,36 @@ pub(super) fn persist_committed_audio_segments(
 
     if let Err(error) = persistence {
         super::debug_log::log(format!("native audio segment persistence failed: {error}"));
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn warm_scrub_previews_for_committed_screen_outputs(
+    app_handle: Option<&tauri::AppHandle>,
+    output_files: Option<&CaptureOutputFiles>,
+) {
+    let (Some(app_handle), Some(output_files)) = (app_handle, output_files) else {
+        return;
+    };
+    let screen_files = if output_files.screen_files.is_empty() {
+        output_files.screen_file.iter().cloned().collect::<Vec<_>>()
+    } else {
+        output_files.screen_files.clone()
+    };
+    if screen_files.is_empty() {
+        return;
+    }
+
+    match crate::app_infra::frame_preview::enqueue_scrub_preview_generation_for_screen_files(
+        app_handle,
+        &screen_files,
+    ) {
+        Ok(_) => {}
+        Err(error) => {
+            super::debug_log::log_warn(format!(
+                "failed to enqueue scrub previews for finalized screen segment: {error}"
+            ));
+        }
     }
 }
 
@@ -2239,6 +2270,10 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
             runtime.source_sessions.as_ref(),
             runtime.segment_schedule.as_ref(),
             runtime.current_segment_index,
+            current_segment_output_files.as_ref(),
+        );
+        warm_scrub_previews_for_committed_screen_outputs(
+            app_handle,
             current_segment_output_files.as_ref(),
         );
     }
@@ -2955,6 +2990,10 @@ where
             runtime.source_sessions.as_ref(),
             runtime.segment_schedule.as_ref(),
             runtime.current_segment_index,
+            previous_screen_outputs.as_ref(),
+        );
+        warm_scrub_previews_for_committed_screen_outputs(
+            app_handle,
             previous_screen_outputs.as_ref(),
         );
     }
@@ -4088,6 +4127,10 @@ pub(super) fn stop_capture_runtime(
                 runtime.source_sessions.as_ref(),
                 runtime.segment_schedule.as_ref(),
                 runtime.current_segment_index,
+                current_segment_output_files.as_ref(),
+            );
+            warm_scrub_previews_for_committed_screen_outputs(
+                app_handle,
                 current_segment_output_files.as_ref(),
             );
             close_frame_batches_for_stopped_screen_session(

@@ -130,7 +130,8 @@
   const AUDIO_TRANSCRIPT_POLL_INTERVAL_MS = 1000;
   const OCR_POLL_INTERVAL_MS = 1000;
   const ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS = 50;
-  const ACTIVE_PREVIEW_EXACT_SETTLE_MS = 300;
+  const ACTIVE_PREVIEW_SCRUB_WARM_SETTLE_MS = 1200;
+  const ACTIVE_PREVIEW_EXACT_SETTLE_MS = 1000;
   const ACTIVE_PREVIEW_SCRUB_RADIUS = 12;
   const ACTIVE_PREVIEW_SCRUB_MEDIUM_RADIUS = 8;
   const ACTIVE_PREVIEW_SCRUB_FAST_RADIUS = 5;
@@ -523,7 +524,9 @@
   let activeExactPreviewPendingFrameId: number | null = null;
   let scrubPreviewFetchGeneration = 0;
   let scrubPreviewFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let scrubPreviewWarmTimer: ReturnType<typeof setTimeout> | null = null;
   let scrubPreviewBatchInFlight = false;
+  let scrubPreviewWarmInFlight = false;
   let scrubPreviewPendingActiveIndex: number | null = null;
   let previousActivePreviewIndex = 0;
   let previousActivePreviewFrameId: number | null = null;
@@ -542,6 +545,8 @@
   let scrubPreviewBatchCount = $state(0);
   let scrubPreviewGeneratedCount = $state(0);
   let scrubPreviewMissingCount = $state(0);
+  let scrubPreviewWarmCount = $state(0);
+  let scrubPreviewQueuedCount = $state(0);
   let activePreviewLoadErrorFrameId = $state<number | null>(null);
   let timelineAppIconPathsByBundleId = $state<Record<string, string>>({});
   const requestedTimelineAppIconBundleIds = new Set<string>();
@@ -2961,6 +2966,13 @@
     }
   }
 
+  function clearScrubPreviewWarmTimer(): void {
+    if (scrubPreviewWarmTimer != null) {
+      clearTimeout(scrubPreviewWarmTimer);
+      scrubPreviewWarmTimer = null;
+    }
+  }
+
   function scheduleLatestScrubPreviews(activeIndex: number, generation: number, delayMs: number): void {
     clearScrubPreviewFetchTimer();
     scrubPreviewFetchTimer = setTimeout(() => {
@@ -2968,6 +2980,15 @@
       if (generation !== scrubPreviewFetchGeneration) return;
       void ensureLatestScrubPreviews(activeIndex, generation);
     }, delayMs);
+  }
+
+  function scheduleScrubPreviewWarm(activeIndex: number, generation: number): void {
+    clearScrubPreviewWarmTimer();
+    scrubPreviewWarmTimer = setTimeout(() => {
+      scrubPreviewWarmTimer = null;
+      if (generation !== scrubPreviewFetchGeneration) return;
+      void warmLatestScrubPreviews(activeIndex, generation);
+    }, ACTIVE_PREVIEW_SCRUB_WARM_SETTLE_MS);
   }
 
   function trimPreviewCache(): void {
@@ -3936,6 +3957,59 @@
     }
   }
 
+  async function warmLatestScrubPreviews(activeIndex: number, generation: number): Promise<void> {
+    if (generation !== scrubPreviewFetchGeneration) return;
+    if (activeIndex !== timelineActiveIndex) return;
+    if (scrubPreviewWarmInFlight) return;
+
+    const timeWindow = scrubPreviewTimeWindowAround(activeIndex);
+    if (!timeWindow) return;
+
+    scrubPreviewWarmInFlight = true;
+    scrubPreviewWarmCount += 1;
+    try {
+      const startedAt = performance.now();
+      const dto = await invoke<ScrubPreviewAvailabilityDto>("get_scrub_preview_availability", {
+        request: {
+          startUnixMs: timeWindow.startUnixMs,
+          endUnixMs: timeWindow.endUnixMs,
+          enqueueMissing: true,
+        } satisfies GetScrubPreviewAvailabilityRequest,
+      });
+      if (!scrubPreviewResponseShouldApply(generation, scrubPreviewFetchGeneration)) {
+        scrubPerfLog("scrub_preview_warm_stale", {
+          returned: dto.intervals.length,
+          durationMs: performance.now() - startedAt,
+        });
+        return;
+      }
+
+      let ready = 0;
+      let queued = 0;
+      let missing = 0;
+      for (const interval of dto.intervals) {
+        if (interval.preview) {
+          touchScrubPreviewIntervalCache(interval);
+          ready += 1;
+        } else if (interval.status === "queued") {
+          queued += 1;
+        } else {
+          missing += 1;
+        }
+      }
+      scrubPreviewQueuedCount += queued;
+      scrubPreviewGeneratedCount += ready;
+      scrubPerfLogSlow("scrub_preview_warm", performance.now() - startedAt, {
+        returned: dto.intervals.length,
+        ready,
+        queued,
+        missing,
+      }, SCRUB_PERF_SLOW_PREVIEW_MS);
+    } finally {
+      scrubPreviewWarmInFlight = false;
+    }
+  }
+
   async function ensureScrubPreviews(frameIds: number[], generation: number): Promise<void> {
     const startedAt = performance.now();
     const timeWindow = scrubPreviewTimeWindowAround(timelineActiveIndex);
@@ -3955,7 +4029,7 @@
       const request: GetScrubPreviewAvailabilityRequest = {
         startUnixMs: timeWindow.startUnixMs,
         endUnixMs: timeWindow.endUnixMs,
-        enqueueMissing: true,
+        enqueueMissing: false,
       };
       const dto = await invoke<ScrubPreviewAvailabilityDto>("get_scrub_preview_availability", {
         request,
@@ -3982,51 +4056,11 @@
           scrubPreviewGeneratedCount += 1;
         } else if (interval.status === "queued") {
           queued += 1;
+          scrubPreviewQueuedCount += 1;
         } else {
           scrubPreviewMissingCount += 1;
           missing += 1;
         }
-      }
-      const activeHasIntervalPreview = Boolean(scrubPreviewIntervalForFrame(timelineActive)?.preview);
-      if (!activeHasIntervalPreview && frameIds.length > 0) {
-        const activeFrameId = timelineActive?.id ?? null;
-        const frameScrubIds =
-          activeFrameId != null && frameIds.includes(activeFrameId)
-            ? [activeFrameId]
-            : frameIds.slice(0, 1);
-        const frameScrubStartedAt = performance.now();
-        const frameScrubDto = await invoke<FrameScrubPreviewsDto>("get_frame_scrub_previews", {
-          request: { frameIds: frameScrubIds },
-        });
-        if (!scrubPreviewResponseShouldApply(generation, scrubPreviewFetchGeneration)) {
-          scrubPerfLog("scrub_preview_frame_stale", {
-            requested: frameScrubIds.length,
-            returned: frameScrubDto.previews.length,
-          });
-          return;
-        }
-        let frameReady = 0;
-        let frameMissing = 0;
-        for (const result of frameScrubDto.previews) {
-          if (result.preview) {
-            clearScrubPreviewFailure(result.frameId);
-            touchScrubPreviewCache(result.frameId, result.preview.filePath, {
-              mimeType: result.preview.mimeType,
-              sourceKind: result.preview.sourceKind,
-              loadMs: performance.now() - frameScrubStartedAt,
-            });
-            frameReady += 1;
-          } else {
-            rememberScrubPreviewFailure(result.frameId);
-            frameMissing += 1;
-          }
-        }
-        scrubPerfLogSlow("scrub_preview_frame_batch", performance.now() - frameScrubStartedAt, {
-          requested: frameScrubIds.length,
-          returned: frameScrubDto.previews.length,
-          ready: frameReady,
-          missing: frameMissing,
-        }, SCRUB_PERF_SLOW_PREVIEW_MS);
       }
       scrubPerfLogSlow("scrub_preview_batch", performance.now() - startedAt, {
         requested: frameIds.length,
@@ -4920,10 +4954,16 @@
     scrubPreviewFetchGeneration += 1;
     const gen = activePreviewFetchGeneration;
     const scrubGen = scrubPreviewFetchGeneration;
+    const cleanupPreviewTimers = () => {
+      clearActivePreviewFetchTimer();
+      clearScrubPreviewFetchTimer();
+      clearScrubPreviewWarmTimer();
+    };
     clearActivePreviewFetchTimer();
     clearScrubPreviewFetchTimer();
+    clearScrubPreviewWarmTimer();
     if (!active) {
-      return;
+      return cleanupPreviewTimers;
     }
 
     if (shouldScheduleScrubPreview) {
@@ -4934,17 +4974,22 @@
           velocity: previewScrubVelocityPxPerMs,
         });
       } else {
-        void ensureLatestScrubPreviews(activeIndex, scrubGen);
+        scheduleLatestScrubPreviews(
+          activeIndex,
+          scrubGen,
+          ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS,
+        );
       }
+      scheduleScrubPreviewWarm(activeIndex, scrubGen);
     }
 
     if (previewCache.has(active.id) || previewInFlight.has(active.id)) {
-      return;
+      return cleanupPreviewTimers;
     }
     if (activeExactPreviewInFlight) {
       activeExactPreviewPendingFrameId = active.id;
       scrubPerfLog("exact_preview_deferred", { frameId: active.id });
-      return;
+      return cleanupPreviewTimers;
     }
     scheduleLatestActivePreview(
       active.id,
@@ -4954,10 +4999,7 @@
         ACTIVE_PREVIEW_EXACT_SETTLE_MS,
       ),
     );
-    return () => {
-      clearActivePreviewFetchTimer();
-      clearScrubPreviewFetchTimer();
-    };
+    return cleanupPreviewTimers;
   });
 
   // ─── On-demand OCR for the active frame ──────────────────────────────────
@@ -6343,7 +6385,11 @@
     listen("scrub_preview_cache_changed", () => {
       const activeIndex = timelineActiveIndex;
       scrubPreviewFetchGeneration += 1;
-      void ensureLatestScrubPreviews(activeIndex, scrubPreviewFetchGeneration);
+      scheduleLatestScrubPreviews(
+        activeIndex,
+        scrubPreviewFetchGeneration,
+        ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS,
+      );
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenScrubPreviewCacheChanged = fn;
@@ -6909,7 +6955,7 @@
         <div class="timeline__overlay-row">
           <span class="timeline__overlay-key">scrub</span>
           <span class="timeline__overlay-val timeline__overlay-truncate">
-            hit {scrubPreviewHitCount} miss {scrubPreviewMissCount} batch {scrubPreviewBatchCount} gen {scrubPreviewGeneratedCount} missing {scrubPreviewMissingCount}
+            hit {scrubPreviewHitCount} req {scrubPreviewMissCount} batch {scrubPreviewBatchCount} ready {scrubPreviewGeneratedCount} queued {scrubPreviewQueuedCount} warm {scrubPreviewWarmCount} unavailable {scrubPreviewMissingCount}
           </span>
         </div>
         <div class="timeline__overlay-row">

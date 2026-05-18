@@ -2484,6 +2484,99 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalized_screen_segment_scrub_preview_job_plans_indexed_buckets() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let video_path = temp_dir.path().join("session-segment-0001.mov");
+        fs::write(
+            &video_path,
+            b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10moovtrak",
+        )
+        .unwrap();
+        let index = capture_screen::ScreenSegmentFrameIndex {
+            version: capture_screen::SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: vec![
+                capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 10_000,
+                    frame_index: 0,
+                    video_offset_ms: 0,
+                },
+                capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 10_400,
+                    frame_index: 1,
+                    video_offset_ms: 400,
+                },
+                capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 11_000,
+                    frame_index: 2,
+                    video_offset_ms: 1_000,
+                },
+            ],
+        };
+        fs::write(
+            capture_screen::screen_segment_frame_index_path(&video_path),
+            capture_screen::encode_screen_segment_frame_index(&index),
+        )
+        .unwrap();
+
+        let job = scrub_preview_generation_job_for_video_path(temp_dir.path(), video_path)
+            .unwrap()
+            .expect("finalized segment should queue scrub previews");
+
+        assert_eq!(job.started_unix_ms, 10_000);
+        assert_eq!(job.intervals, vec![(0, 0), (1_000, 1_000)]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalized_screen_segment_scrub_preview_job_skips_cached_intervals() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let video_path = temp_dir.path().join("session-segment-0002.mov");
+        fs::write(
+            &video_path,
+            b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10moovtrak",
+        )
+        .unwrap();
+        let index = capture_screen::ScreenSegmentFrameIndex {
+            version: capture_screen::SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: vec![
+                capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 20_000,
+                    frame_index: 0,
+                    video_offset_ms: 0,
+                },
+                capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 21_000,
+                    frame_index: 1,
+                    video_offset_ms: 1_000,
+                },
+            ],
+        };
+        let frame_index_path = capture_screen::screen_segment_frame_index_path(&video_path);
+        fs::write(
+            &frame_index_path,
+            capture_screen::encode_screen_segment_frame_index(&index),
+        )
+        .unwrap();
+        let segment_cache_key = segment_cache_key(&video_path, Some(&frame_index_path));
+        let segment_dir = scrub_preview_segment_dir(temp_dir.path(), &segment_cache_key);
+        write_scrub_preview_metadata(
+            &segment_dir,
+            &segment_cache_key,
+            &video_path,
+            Some(&frame_index_path),
+        )
+        .unwrap();
+        fs::write(scrub_preview_interval_path(&segment_dir, 0), b"cached").unwrap();
+
+        let job = scrub_preview_generation_job_for_video_path(temp_dir.path(), video_path)
+            .unwrap()
+            .expect("uncached interval should still queue");
+
+        assert_eq!(job.intervals, vec![(1_000, 1_000)]);
+    }
+
     fn count_scrub_preview_jpegs(cache_root: &Path) -> usize {
         fs::read_dir(cache_root)
             .unwrap()
@@ -2693,6 +2786,111 @@ async fn generate_scrub_preview_job(job: ScrubPreviewGenerationJob, app_handle: 
         .lock()
         .expect("frame preview cache poisoned")
         .finish_scrub_interval_work(&accepted);
+}
+
+fn scrub_preview_generation_job_for_video_path(
+    cache_root: &Path,
+    video_path: PathBuf,
+) -> Result<Option<ScrubPreviewGenerationJob>, String> {
+    if !cfg!(target_os = "macos")
+        || !video_path.is_file()
+        || fs::metadata(&video_path)
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true)
+        || !mov_file_appears_openable_for_preview(&video_path).unwrap_or(false)
+    {
+        return Ok(None);
+    }
+
+    let index = match load_screen_segment_frame_index(&video_path) {
+        Ok(Some(index)) if !index.entries.is_empty() => index,
+        Ok(_) => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to load screen segment frame index for {}: {error}",
+                video_path.display()
+            ));
+        }
+    };
+    let indexed_start_unix_ms = index
+        .entries
+        .iter()
+        .map(|entry| entry.captured_at_unix_ms as i64)
+        .min()
+        .unwrap_or(0);
+    let indexed_end_unix_ms = index
+        .entries
+        .iter()
+        .map(|entry| entry.captured_at_unix_ms as i64)
+        .max()
+        .unwrap_or(indexed_start_unix_ms);
+    let (started_unix_ms, _) =
+        scrub_preview_segment_bounds_unix_ms(indexed_start_unix_ms, indexed_end_unix_ms, &index);
+    let frame_index_path = screen_frame_index_existing_path(&video_path);
+    let segment_cache_key = segment_cache_key(&video_path, frame_index_path.as_deref());
+    let segment_dir = scrub_preview_segment_dir(cache_root, &segment_cache_key);
+    let metadata_valid = scrub_preview_metadata_valid(
+        &segment_dir,
+        &segment_cache_key,
+        &video_path,
+        frame_index_path.as_deref(),
+    );
+    let mut intervals = indexed_scrub_preview_offsets(&index)
+        .into_iter()
+        .filter(|(bucket, _)| {
+            !(metadata_valid && scrub_preview_interval_path(&segment_dir, *bucket).is_file())
+        })
+        .collect::<Vec<_>>();
+    intervals.sort_by_key(|(bucket, _)| *bucket);
+
+    if intervals.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(ScrubPreviewGenerationJob {
+        segment_cache_key,
+        segment_dir,
+        video_path,
+        frame_index_path,
+        started_unix_ms,
+        intervals,
+    }))
+}
+
+pub fn enqueue_scrub_preview_generation_for_screen_files(
+    app_handle: &tauri::AppHandle,
+    screen_files: &[String],
+) -> Result<usize, String> {
+    if !cfg!(target_os = "macos") || screen_files.is_empty() {
+        return Ok(0);
+    }
+
+    let cache_root = scrub_preview_cache_root(app_handle)?;
+    let mut seen = HashSet::new();
+    let mut scheduled_intervals = 0usize;
+
+    for screen_file in screen_files {
+        if !seen.insert(screen_file.clone()) {
+            continue;
+        }
+        match scrub_preview_generation_job_for_video_path(&cache_root, PathBuf::from(screen_file)) {
+            Ok(Some(job)) => {
+                scheduled_intervals += job.intervals.len();
+                let app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    generate_scrub_preview_job(job, app_handle).await;
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                crate::native_capture::debug_log::log_warn(format!(
+                    "failed to enqueue finalized screen segment scrub previews for {screen_file}: {error}"
+                ));
+            }
+        }
+    }
+
+    Ok(scheduled_intervals)
 }
 
 #[tauri::command]
