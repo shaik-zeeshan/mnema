@@ -177,6 +177,7 @@ pub fn run() {
             app_infra::frame_preview::get_scrub_preview_availability,
             app_infra::frame_preview::get_scrub_preview_cache_status,
             app_infra::frame_preview::clear_scrub_preview_cache,
+            app_infra::frame_preview::cancel_active_frame_preview_video_requests,
             app_infra::list_processing_jobs,
             app_infra::get_processing_job,
             app_infra::get_processing_result,

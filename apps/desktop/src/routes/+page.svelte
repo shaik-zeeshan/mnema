@@ -145,6 +145,7 @@
   const ACTIVE_PREVIEW_EXTREME_SCRUB_PX_PER_MS = 8;
   const PREVIEW_CACHE_MAX_ENTRIES = 192;
   const PREVIEW_FAILURE_CACHE_TTL_MS = 5_000;
+  const PREVIEW_GENERATION_CANCELLED_MESSAGE = "preview generation cancelled";
   const SCRUB_PERF_LOG_PREFIX = "[DEBUG-scrub-perf]";
   const SCRUB_PERF_SCROLL_WINDOW_MS = 500;
   const SCRUB_PERF_SLOW_DERIVED_MS = 4;
@@ -209,6 +210,10 @@
   ): void {
     if (durationMs < thresholdMs) return;
     scrubPerfLog(event, { durationMs, ...fields });
+  }
+
+  function isPreviewGenerationCancelled(message: string): boolean {
+    return message.toLowerCase().includes(PREVIEW_GENERATION_CANCELLED_MESSAGE);
   }
 
   function scrubPerfRecordScroll(
@@ -2959,6 +2964,19 @@
     }, delayMs);
   }
 
+  async function cancelActivePreviewVideoRequests(): Promise<void> {
+    try {
+      const cancelled = await invoke<number>("cancel_active_frame_preview_video_requests");
+      if (cancelled > 0) {
+        scrubPerfLog("preview_video_generation_cancelled", { cancelled });
+      }
+    } catch (error) {
+      scrubPerfLog("preview_video_generation_cancel_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   function clearScrubPreviewFetchTimer(): void {
     if (scrubPreviewFetchTimer != null) {
       clearTimeout(scrubPreviewFetchTimer);
@@ -3862,8 +3880,17 @@
         active: isTimelineActiveFrame(frameId),
       }, SCRUB_PERF_SLOW_PREVIEW_MS);
     } catch (error) {
-      rememberPreviewFailure(frameId);
       const message = error instanceof Error ? error.message : String(error);
+      if (isPreviewGenerationCancelled(message)) {
+        scrubPerfLog("exact_preview_cancelled", {
+          frameId,
+          durationMs: performance.now() - startedAt,
+          active: isTimelineActiveFrame(frameId),
+        });
+        return;
+      }
+
+      rememberPreviewFailure(frameId);
       if (isTimelineActiveFrame(frameId)) {
         setFrameActionStatus(prettifyFramePreviewError(message), {
           detail: message,
@@ -3973,7 +4000,7 @@
         request: {
           startUnixMs: timeWindow.startUnixMs,
           endUnixMs: timeWindow.endUnixMs,
-          enqueueMissing: true,
+          enqueueMissing: false,
         } satisfies GetScrubPreviewAvailabilityRequest,
       });
       if (!scrubPreviewResponseShouldApply(generation, scrubPreviewFetchGeneration)) {
@@ -4962,7 +4989,17 @@
     clearActivePreviewFetchTimer();
     clearScrubPreviewFetchTimer();
     clearScrubPreviewWarmTimer();
+    if (
+      activeFrameChanged &&
+      (activeExactPreviewInFlight || scrubPreviewBatchInFlight || scrubPreviewWarmInFlight)
+    ) {
+      void cancelActivePreviewVideoRequests();
+    }
     if (!active) {
+      return cleanupPreviewTimers;
+    }
+
+    if (previewCache.has(active.id) || previewInFlight.has(active.id)) {
       return cleanupPreviewTimers;
     }
 
@@ -4983,9 +5020,6 @@
       scheduleScrubPreviewWarm(activeIndex, scrubGen);
     }
 
-    if (previewCache.has(active.id) || previewInFlight.has(active.id)) {
-      return cleanupPreviewTimers;
-    }
     if (activeExactPreviewInFlight) {
       activeExactPreviewPendingFrameId = active.id;
       scrubPerfLog("exact_preview_deferred", { frameId: active.id });

@@ -4647,16 +4647,43 @@ mod tests {
             let mut state = FramePreviewState::default();
             let video_path = Path::new("/tmp/segment-0001.mov");
 
-            assert!(state.begin_video_request(video_path).is_ok());
+            let token = state
+                .begin_video_request(video_path)
+                .expect("first request should become the in-flight video leader");
             let waiter = state
                 .begin_video_request(video_path)
                 .expect_err("second request should subscribe to the in-flight video leader");
             assert_eq!(state.video_in_flight_len(), 1);
 
-            state.finish_video_request(video_path, Ok(()));
+            state.finish_video_request(&token, Ok(()));
 
             assert_eq!(state.video_in_flight_len(), 0);
             assert_eq!(waiter.await.expect("waiter should receive result"), Ok(()));
+        });
+    }
+
+    #[test]
+    fn frame_preview_state_cancels_in_flight_video_requests() {
+        run_async_test(async {
+            let mut state = FramePreviewState::default();
+            let video_path = Path::new("/tmp/segment-0001.mov");
+
+            let token = state
+                .begin_video_request(video_path)
+                .expect("first request should become the in-flight video leader");
+            let waiter = state
+                .begin_video_request(video_path)
+                .expect_err("second request should subscribe to the in-flight video leader");
+
+            assert_eq!(state.cancel_active_video_requests(), 1);
+            assert_eq!(state.video_in_flight_len(), 0);
+            assert!(waiter
+                .await
+                .expect("waiter should receive cancellation")
+                .is_err());
+
+            state.finish_video_request(&token, Ok(()));
+            assert_eq!(state.video_in_flight_len(), 0);
         });
     }
 
