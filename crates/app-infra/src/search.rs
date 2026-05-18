@@ -249,8 +249,7 @@ async fn project_frame_ocr_result(
         .unwrap_or((None, None));
 
     let group_key = frame_search_group_key(&frame);
-    let searchable_text =
-        searchable_text_with_context(text, app_name.as_deref(), window_title.as_deref(), None);
+    let context_text = search_context_text(app_name.as_deref(), window_title.as_deref(), None);
 
     insert_search_document(
         transaction,
@@ -269,7 +268,8 @@ async fn project_frame_ocr_result(
             window_title: window_title.as_deref(),
             group_key: &group_key,
             text_source_kind: "direct",
-            searchable_text: &searchable_text,
+            body_text: text,
+            context_text: &context_text,
         },
     )
     .await?;
@@ -318,7 +318,7 @@ pub(crate) async fn project_equivalent_frame_reuse_in_transaction(
 ) -> Result<()> {
     let Some(source_doc) = sqlx::query(
         "SELECT search_documents.processing_result_id, \
-                COALESCE(processing_results.result_text, search_documents.searchable_text) AS source_text \
+                COALESCE(processing_results.result_text, search_documents.body_text) AS source_text \
          FROM search_documents \
          LEFT JOIN processing_results ON processing_results.id = search_documents.processing_result_id \
          WHERE search_documents.anchor_type = 'frame' \
@@ -455,8 +455,7 @@ async fn project_equivalent_reuse_document_for_frame(
         .map(|metadata| (metadata.app_name.clone(), metadata.window_title.clone()))
         .unwrap_or((None, None));
     let group_key = frame_search_group_key(frame);
-    let searchable_text =
-        searchable_text_with_context(text, app_name.as_deref(), window_title.as_deref(), None);
+    let context_text = search_context_text(app_name.as_deref(), window_title.as_deref(), None);
 
     delete_equivalent_reuse_projection_for_frame(transaction, frame.id).await?;
 
@@ -477,7 +476,8 @@ async fn project_equivalent_reuse_document_for_frame(
             window_title: window_title.as_deref(),
             group_key: &group_key,
             text_source_kind: "equivalent_reuse",
-            searchable_text: &searchable_text,
+            body_text: text,
+            context_text: &context_text,
         },
     )
     .await
@@ -527,8 +527,7 @@ async fn project_audio_transcription_result(
         let absolute_start_at = timestamp_plus_ms(&segment.started_at, span.start_ms)?;
         let absolute_end_at = timestamp_plus_ms(&segment.started_at, span.end_ms)?;
         let group_key = format!("audio:{}:{index}", segment.id);
-        let searchable_text =
-            searchable_text_with_context(span_text, None, None, Some(segment.source_kind.as_str()));
+        let context_text = search_context_text(None, None, Some(segment.source_kind.as_str()));
         insert_search_document(
             transaction,
             NewSearchDocument {
@@ -546,7 +545,8 @@ async fn project_audio_transcription_result(
                 window_title: None,
                 group_key: &group_key,
                 text_source_kind: "direct",
-                searchable_text: &searchable_text,
+                body_text: span_text,
+                context_text: &context_text,
             },
         )
         .await?;
@@ -570,7 +570,8 @@ struct NewSearchDocument<'a> {
     window_title: Option<&'a str>,
     group_key: &'a str,
     text_source_kind: &'a str,
-    searchable_text: &'a str,
+    body_text: &'a str,
+    context_text: &'a str,
 }
 
 async fn insert_search_document(
@@ -581,8 +582,8 @@ async fn insert_search_document(
         "INSERT INTO search_documents (\
             anchor_type, frame_id, audio_segment_id, processing_result_id, span_start_ms, span_end_ms, \
             absolute_start_at, absolute_end_at, source_kind, session_id, app_name, window_title, \
-            group_key, text_source_kind, searchable_text\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            group_key, text_source_kind, body_text, context_text\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
     )
     .bind(doc.anchor_type)
     .bind(doc.frame_id)
@@ -598,16 +599,20 @@ async fn insert_search_document(
     .bind(doc.window_title)
     .bind(doc.group_key)
     .bind(doc.text_source_kind)
-    .bind(doc.searchable_text)
+    .bind(doc.body_text)
+    .bind(doc.context_text)
     .execute(&mut **transaction)
     .await?;
     let rowid = insert.last_insert_rowid();
 
-    sqlx::query("INSERT INTO search_documents_fts(rowid, searchable_text) VALUES (?1, ?2)")
-        .bind(rowid)
-        .bind(doc.searchable_text)
-        .execute(&mut **transaction)
-        .await?;
+    sqlx::query(
+        "INSERT INTO search_documents_fts(rowid, body_text, context_text) VALUES (?1, ?2, ?3)",
+    )
+    .bind(rowid)
+    .bind(doc.body_text)
+    .bind(doc.context_text)
+    .execute(&mut **transaction)
+    .await?;
 
     Ok(())
 }
@@ -709,9 +714,20 @@ fn normalize_query(query: &str) -> String {
 }
 
 fn fts_query_for_plain_text(query: &str) -> String {
-    query
+    let terms = query
         .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>();
+    let mut searchable_terms = terms
+        .iter()
+        .copied()
         .filter(|term| term.chars().count() >= 2)
+        .collect::<Vec<_>>();
+    if searchable_terms.is_empty() && query.chars().count() >= 2 {
+        searchable_terms = terms;
+    }
+    searchable_terms
+        .into_iter()
         .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" ")
@@ -772,13 +788,12 @@ fn proof_identity(proof: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
-fn searchable_text_with_context(
-    body: &str,
+fn search_context_text(
     app_name: Option<&str>,
     window_title: Option<&str>,
     source_kind: Option<&str>,
 ) -> String {
-    [Some(body), app_name, window_title, source_kind]
+    [app_name, window_title, source_kind]
         .into_iter()
         .flatten()
         .map(str::trim)
@@ -826,8 +841,12 @@ async fn fetch_frame_hits(
     let rows = sqlx::query(
         "SELECT search_documents.group_key, search_documents.app_name, search_documents.window_title, \
                 search_documents.text_source_kind, \
-                snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12) AS snippet, \
-                bm25(search_documents_fts) AS rank, \
+                CASE \
+                    WHEN instr(snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12), '<mark>') > 0 \
+                    THEN snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12) \
+                    ELSE snippet(search_documents_fts, 1, '<mark>', '</mark>', '...', 12) \
+                END AS snippet, \
+                bm25(search_documents_fts, 5.0, 1.0) AS rank, \
                 frames.id, frames.session_id, frames.file_path, frames.captured_at, frames.width, frames.height, \
                 frames.equivalence_hint, frames.equivalence_proof, frames.equivalence_version, \
                 frames.equivalence_status, frames.equivalence_error, \
@@ -901,8 +920,12 @@ async fn fetch_audio_hits(
         "SELECT search_documents.id AS document_id, search_documents.group_key, \
                 search_documents.span_start_ms, search_documents.span_end_ms, \
                 search_documents.absolute_start_at, search_documents.absolute_end_at, \
-                snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12) AS snippet, \
-                bm25(search_documents_fts) AS rank, \
+                CASE \
+                    WHEN instr(snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12), '<mark>') > 0 \
+                    THEN snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12) \
+                    ELSE snippet(search_documents_fts, 1, '<mark>', '</mark>', '...', 12) \
+                END AS snippet, \
+                bm25(search_documents_fts, 5.0, 1.0) AS rank, \
                 audio_segments.id, audio_segments.source_kind, audio_segments.source_session_id, \
                 audio_segments.segment_index, audio_segments.file_path, audio_segments.started_at, \
                 audio_segments.ended_at, audio_segments.capture_segment_id, audio_segments.created_at, audio_segments.updated_at \
@@ -1615,6 +1638,140 @@ mod tests {
     }
 
     #[test]
+    fn search_ranks_body_matches_ahead_of_context_matches() {
+        run_async_test(async {
+            let dir = test_dir("body-context-rank");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let context_match = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-context-rank-a.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: Some("com.example.Roadmap".to_string()),
+                            app_name: Some("Roadmap".to_string()),
+                            window_title: None,
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("context frame should insert");
+            let body_match = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-context-rank-b.jpg",
+                        "2026-05-17T10:00:01Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: Some("com.example.Notes".to_string()),
+                            app_name: Some("Notes".to_string()),
+                            window_title: None,
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("body frame should insert");
+
+            let context_job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(context_match.id))
+                .await
+                .expect("context job should enqueue");
+            complete_job(
+                &infra,
+                context_job,
+                ProcessingResultDraft::new().with_result_text("ordinary body text"),
+            )
+            .await;
+            let body_job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(body_match.id))
+                .await
+                .expect("body job should enqueue");
+            complete_job(
+                &infra,
+                body_job,
+                ProcessingResultDraft::new().with_result_text("roadmap appears in captured text"),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "roadmap".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 2);
+            assert_eq!(response.frames[0].representative_frame.id, body_match.id);
+            assert_eq!(response.frames[1].representative_frame.id, context_match.id);
+        });
+    }
+
+    #[test]
+    fn search_preserves_short_symbol_qualified_terms() {
+        run_async_test(async {
+            let dir = test_dir("short-symbol-query");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-short-symbol.jpg",
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("C# compiler notes"),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "C#".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
     fn search_projects_ocr_skipped_equivalent_frames() {
         run_async_test(async {
             let dir = test_dir("skipped-equivalent");
@@ -2281,7 +2438,8 @@ mod tests {
                         window_title: None,
                         group_key: &format!("frame:{frame_id}"),
                         text_source_kind: "direct",
-                        searchable_text: "deepframe target",
+                        body_text: "deepframe target",
+                        context_text: "",
                     },
                 )
                 .await
@@ -2349,7 +2507,8 @@ mod tests {
                         window_title: None,
                         group_key: &format!("audio:{}:{index}", segment.id),
                         text_source_kind: "direct",
-                        searchable_text: "deepaudio target",
+                        body_text: "deepaudio target",
+                        context_text: "",
                     },
                 )
                 .await

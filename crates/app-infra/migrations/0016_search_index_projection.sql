@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS search_documents (
     window_title TEXT,
     group_key TEXT NOT NULL CHECK (LENGTH(TRIM(group_key)) > 0),
     text_source_kind TEXT NOT NULL CHECK (text_source_kind IN ('direct', 'equivalent_reuse')),
-    searchable_text TEXT NOT NULL CHECK (LENGTH(TRIM(searchable_text)) > 0),
+    body_text TEXT NOT NULL CHECK (LENGTH(TRIM(body_text)) > 0),
+    context_text TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (
         (anchor_type = 'frame' AND frame_id IS NOT NULL AND audio_segment_id IS NULL)
@@ -32,7 +33,8 @@ CREATE INDEX IF NOT EXISTS search_documents_result_idx
     ON search_documents (processing_result_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5(
-    searchable_text,
+    body_text,
+    context_text,
     content='search_documents',
     content_rowid='id',
     tokenize='unicode61'
@@ -41,8 +43,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5(
 CREATE TRIGGER IF NOT EXISTS search_documents_fts_after_delete
 AFTER DELETE ON search_documents
 BEGIN
-    INSERT INTO search_documents_fts(search_documents_fts, rowid, searchable_text)
-    VALUES('delete', OLD.id, OLD.searchable_text);
+    INSERT INTO search_documents_fts(search_documents_fts, rowid, body_text, context_text)
+    VALUES('delete', OLD.id, OLD.body_text, OLD.context_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS search_documents_direct_after_result_delete

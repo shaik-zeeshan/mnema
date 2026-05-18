@@ -483,7 +483,8 @@
   let searchLoadingMoreAudio = $state(false);
   let searchError = $state<string | null>(null);
   let searchSnapshotDocumentId: number | null = null;
-  let searchGeneration = 0;
+  let searchFrameGeneration = 0;
+  let searchAudioGeneration = 0;
   let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Preview file paths keyed by frame id. Reactive so the rail re-renders as
@@ -3526,16 +3527,48 @@
     });
   }
 
+  function clearSearchDebounceTimer(): void {
+    if (!searchDebounceTimer) return;
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = null;
+  }
+
   function closeSearch(): void {
+    clearSearchDebounceTimer();
+    searchFrameGeneration += 1;
+    searchAudioGeneration += 1;
     searchOpen = false;
     searchError = null;
+    searchLoading = false;
+    searchLoadingMoreFrames = false;
+    searchLoadingMoreAudio = false;
   }
 
   async function runSearch(options: { appendFrames?: boolean; appendAudio?: boolean } = {}): Promise<void> {
     const query = searchQuery.trim();
     const normalizedQuery = query.split(/\s+/).filter(Boolean).join(" ");
-    searchGeneration += 1;
-    const gen = searchGeneration;
+    let appendFrames = options.appendFrames === true;
+    let appendAudio = options.appendAudio === true;
+    if ((appendFrames || appendAudio) && normalizedQuery !== searchNormalizedQuery) {
+      appendFrames = false;
+      appendAudio = false;
+    }
+    const requestKind = appendFrames ? "frames" : appendAudio ? "audio" : "all";
+    if (requestKind === "frames") {
+      searchFrameGeneration += 1;
+    } else if (requestKind === "audio") {
+      searchAudioGeneration += 1;
+    } else {
+      searchFrameGeneration += 1;
+      searchAudioGeneration += 1;
+    }
+    const frameGen = searchFrameGeneration;
+    const audioGen = searchAudioGeneration;
+    const requestIsCurrent = () => {
+      if (requestKind === "frames") return frameGen === searchFrameGeneration;
+      if (requestKind === "audio") return audioGen === searchAudioGeneration;
+      return frameGen === searchFrameGeneration && audioGen === searchAudioGeneration;
+    };
     if (query.length < 2) {
       searchNormalizedQuery = query;
       searchFrames = [];
@@ -3550,12 +3583,6 @@
       return;
     }
 
-    let appendFrames = options.appendFrames === true;
-    let appendAudio = options.appendAudio === true;
-    if ((appendFrames || appendAudio) && normalizedQuery !== searchNormalizedQuery) {
-      appendFrames = false;
-      appendAudio = false;
-    }
     if (!appendFrames && !appendAudio) {
       searchSnapshotDocumentId = null;
     }
@@ -3574,7 +3601,7 @@
           snapshotDocumentId: searchSnapshotDocumentId ?? undefined,
         },
       });
-      if (gen !== searchGeneration) return;
+      if (!requestIsCurrent()) return;
       searchNormalizedQuery = response.normalizedQuery;
       searchSnapshotDocumentId = response.snapshotDocumentId;
       if (!appendAudio) {
@@ -3587,13 +3614,13 @@
         searchHasMoreAudio = response.hasMoreAudio;
       }
     } catch (err) {
-      if (gen !== searchGeneration) return;
+      if (!requestIsCurrent()) return;
       searchError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
-      if (gen === searchGeneration) {
-        searchLoading = false;
-        searchLoadingMoreFrames = false;
-        searchLoadingMoreAudio = false;
+      if (requestIsCurrent()) {
+        if (requestKind === "all") searchLoading = false;
+        if (requestKind === "frames") searchLoadingMoreFrames = false;
+        if (requestKind === "audio") searchLoadingMoreAudio = false;
       }
     }
   }
@@ -3623,7 +3650,7 @@
   }
 
   function scheduleSearch(): void {
-    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    clearSearchDebounceTimer();
     searchDebounceTimer = setTimeout(() => {
       searchDebounceTimer = null;
       void runSearch();
@@ -3637,12 +3664,13 @@
   function onSearchKeydown(event: KeyboardEvent): void {
     if (event.key === "Enter") {
       event.preventDefault();
-      if (searchDebounceTimer) {
-        clearTimeout(searchDebounceTimer);
-        searchDebounceTimer = null;
-      }
+      clearSearchDebounceTimer();
       void runSearch();
-    } else if (event.key === "Escape") {
+    }
+  }
+
+  function onSearchModalKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
       event.preventDefault();
       closeSearch();
     }
@@ -6548,7 +6576,14 @@
   </header>
 
   {#if searchOpen}
-    <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search captured content">
+    <div
+      class="search-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Search captured content"
+      tabindex="-1"
+      onkeydown={onSearchModalKeydown}
+    >
       <div class="search-modal__panel">
         <header class="search-modal__header">
           <input
