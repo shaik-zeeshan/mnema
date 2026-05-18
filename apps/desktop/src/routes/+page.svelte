@@ -3579,6 +3579,13 @@
     searchFrameGeneration += 1;
     searchAudioGeneration += 1;
     searchOpen = false;
+    searchQuery = "";
+    searchNormalizedQuery = "";
+    searchFrames = [];
+    searchAudio = [];
+    searchHasMoreFrames = false;
+    searchHasMoreAudio = false;
+    searchSnapshotDocumentId = null;
     searchError = null;
     searchLoading = false;
     searchLoadingMoreFrames = false;
@@ -6680,7 +6687,27 @@
             placeholder="Search captured text or audio"
             aria-label="Search captured text or audio"
           />
-          <button class="btn btn--ghost btn--sm" onclick={closeSearch} aria-label="Close search">close</button>
+          <button
+            type="button"
+            class="search-modal__close"
+            onclick={closeSearch}
+            aria-label="Close search"
+            title="Close search"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 14 14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M3.5 3.5 10.5 10.5" />
+              <path d="M10.5 3.5 3.5 10.5" />
+            </svg>
+          </button>
         </header>
         <div class="search-modal__tabs" role="tablist" aria-label="Search result sections">
           <button class:search-modal__tab--active={searchView === "all"} onclick={() => (searchView = "all")}>All</button>
@@ -7819,6 +7846,32 @@
     background: var(--app-surface-raised);
     color: var(--app-text-strong);
     font: inherit;
+  }
+
+  .search-modal__close {
+    width: 36px;
+    height: 36px;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition:
+      background 0.12s,
+      border-color 0.12s,
+      color 0.12s;
+  }
+
+  .search-modal__close:hover,
+  .search-modal__close:focus-visible {
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+    outline: none;
   }
 
   .search-modal__tabs {
