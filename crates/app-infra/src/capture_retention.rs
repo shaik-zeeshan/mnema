@@ -7,6 +7,8 @@ use time::{format_description::well_known::Rfc3339, Date, Duration, OffsetDateTi
 
 use crate::{processing::ProcessingJobStatus, Result};
 
+const SQLITE_BIND_CHUNK_SIZE: usize = 500;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum RetentionPolicy {
@@ -1199,11 +1201,11 @@ async fn delete_search_documents_for_subjects(
     }
 
     let mut document_ids: Vec<i64> = Vec::new();
-    if !frame_ids.is_empty() {
+    for frame_chunk in frame_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
         let mut query =
             QueryBuilder::<Sqlite>::new("SELECT id FROM search_documents WHERE frame_id IN (");
         let mut separated = query.separated(", ");
-        for id in frame_ids {
+        for id in frame_chunk {
             separated.push_bind(id);
         }
         separated.push_unseparated(")");
@@ -1216,12 +1218,12 @@ async fn delete_search_documents_for_subjects(
                 .map(|row| row.get::<i64, _>("id")),
         );
     }
-    if !audio_ids.is_empty() {
+    for audio_chunk in audio_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
         let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT id FROM search_documents WHERE audio_segment_id IN (",
         );
         let mut separated = query.separated(", ");
-        for id in audio_ids {
+        for id in audio_chunk {
             separated.push_bind(id);
         }
         separated.push_unseparated(")");
@@ -1238,13 +1240,16 @@ async fn delete_search_documents_for_subjects(
         return Ok(());
     }
 
-    let mut doc_query = QueryBuilder::<Sqlite>::new("DELETE FROM search_documents WHERE id IN (");
-    let mut doc_separated = doc_query.separated(", ");
-    for id in &document_ids {
-        doc_separated.push_bind(*id);
+    for document_chunk in document_ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
+        let mut doc_query =
+            QueryBuilder::<Sqlite>::new("DELETE FROM search_documents WHERE id IN (");
+        let mut doc_separated = doc_query.separated(", ");
+        for id in document_chunk {
+            doc_separated.push_bind(*id);
+        }
+        doc_separated.push_unseparated(")");
+        doc_query.build().execute(&mut **tx).await?;
     }
-    doc_separated.push_unseparated(")");
-    doc_query.build().execute(&mut **tx).await?;
 
     Ok(())
 }
@@ -1264,13 +1269,17 @@ async fn delete_by_ids(
     if ids.is_empty() {
         return Ok(0);
     }
-    let mut query = QueryBuilder::<Sqlite>::new(format!("DELETE FROM {table} WHERE id IN ("));
-    let mut separated = query.separated(", ");
-    for id in ids {
-        separated.push_bind(id);
+    let mut deleted = 0;
+    for chunk in ids.chunks(SQLITE_BIND_CHUNK_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(format!("DELETE FROM {table} WHERE id IN ("));
+        let mut separated = query.separated(", ");
+        for id in chunk {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        deleted += query.build().execute(&mut **tx).await?.rows_affected() as i64;
     }
-    separated.push_unseparated(")");
-    Ok(query.build().execute(&mut **tx).await?.rows_affected() as i64)
+    Ok(deleted)
 }
 
 async fn cleanup_unreferenced_frame_metadata_snapshots(

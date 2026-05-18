@@ -3672,6 +3672,7 @@
   function onSearchModalKeydown(event: KeyboardEvent): void {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       closeSearch();
     }
   }

@@ -351,6 +351,8 @@ async fn delete_equivalent_reuse_projections_for_source_result(
         .await?;
     }
 
+    delete_equivalent_reuse_projection_for_frame(transaction, source_frame.id).await?;
+
     Ok(())
 }
 
@@ -2175,6 +2177,112 @@ mod tests {
             let fresh = infra
                 .search_capture(SearchCaptureRequest {
                     query: "fresh".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("fresh search should succeed");
+            assert_eq!(fresh.frames.len(), 1);
+            assert_eq!(fresh.frames[0].match_count, 2);
+            assert_eq!(fresh.frames[0].representative_frame.id, second.frame.id);
+        });
+    }
+
+    #[test]
+    fn direct_ocr_reprojection_clears_current_frames_orphaned_equivalent_reuse_text() {
+        run_async_test(async {
+            let dir = test_dir("reuse-current-frame-reproject");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-current-reproject".to_string()),
+                proof: Some(vec![20; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            let first = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-current-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("first frame should capture");
+            let source_job = first.job.expect("first frame should enqueue OCR");
+            let source_job_id = source_job.id;
+            complete_job(
+                &infra,
+                source_job,
+                ProcessingResultDraft::new().with_result_text("old duplicate text"),
+            )
+            .await;
+
+            let second = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-current-target.jpg",
+                        "2026-05-17T10:00:01Z",
+                    )
+                    .with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("second frame should capture");
+            assert!(second.job.is_none());
+
+            sqlx::query("DELETE FROM processing_results WHERE job_id = ?1")
+                .bind(source_job_id)
+                .execute(infra.pool())
+                .await
+                .expect("source processing result delete should orphan reuse search");
+
+            let replacement_job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(second.frame.id))
+                .await
+                .expect("replacement job should enqueue");
+            complete_job(
+                &infra,
+                replacement_job,
+                ProcessingResultDraft::new().with_result_text("new direct text"),
+            )
+            .await;
+
+            let old = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "old".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("old search should succeed");
+            assert!(old.frames.is_empty());
+
+            let equivalent_reuse_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'equivalent_reuse'",
+            )
+            .bind(second.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("reuse count should load");
+            assert_eq!(equivalent_reuse_count, 0);
+
+            let fresh = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "new".to_string(),
                     frame_limit: Some(5),
                     frame_offset: None,
                     audio_limit: Some(0),
