@@ -177,14 +177,7 @@ impl SearchStore {
         let all_audio_groups = if audio_limit == 0 {
             Vec::new()
         } else {
-            fetch_grouped_audio_hits(
-                &self.pool,
-                &fts_query,
-                snapshot_document_id,
-                audio_offset,
-                audio_limit,
-            )
-            .await?
+            fetch_grouped_audio_hits(&self.pool, &fts_query, snapshot_document_id).await?
         };
         let frames = all_frame_groups
             .iter()
@@ -998,24 +991,26 @@ async fn fetch_grouped_audio_hits(
     pool: &SqlitePool,
     fts_query: &str,
     snapshot_document_id: i64,
-    offset: usize,
-    limit: u32,
 ) -> Result<Vec<AudioSearchResult>> {
-    let needed_groups = offset.saturating_add(limit as usize).saturating_add(1);
-    let mut hit_limit = hit_fetch_limit(offset, limit);
+    // Audio grouping is transitive by time adjacency, so a lower-ranked hit can
+    // bridge two higher-ranked groups. Drain the snapshot before paginating.
     let mut hit_offset = 0_i64;
     let mut all_hits = Vec::new();
     loop {
-        let hits =
-            fetch_audio_hits(pool, fts_query, snapshot_document_id, hit_offset, hit_limit).await?;
+        let hits = fetch_audio_hits(
+            pool,
+            fts_query,
+            snapshot_document_id,
+            hit_offset,
+            MAX_HIT_FETCH_LIMIT,
+        )
+        .await?;
         let hit_count = hits.len() as i64;
         all_hits.extend(hits);
-        let groups = group_audio_hits(&all_hits)?;
-        if groups.len() >= needed_groups || hit_count < hit_limit {
-            return Ok(groups);
+        if hit_count < MAX_HIT_FETCH_LIMIT {
+            return group_audio_hits(&all_hits);
         }
         hit_offset = hit_offset.saturating_add(hit_count);
-        hit_limit = MAX_HIT_FETCH_LIMIT;
     }
 }
 
@@ -2974,6 +2969,113 @@ mod tests {
                 .expect("search should succeed");
 
             assert_eq!(response.audio.len(), 5);
+            assert!(response.has_more_audio);
+        });
+    }
+
+    #[test]
+    fn grouped_audio_search_drains_lower_ranked_bridge_hits_before_paging() {
+        run_async_test(async {
+            let dir = test_dir("audio-bridge-drain");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-bridged-audio.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:30:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let mut transaction = infra.pool().begin().await.expect("tx should begin");
+
+            for (start_ms, end_ms, body_text, context_text) in [
+                (1_000_u64, 1_500_u64, "bridgeword bridgeword bridgeword", ""),
+                (6_000_u64, 6_500_u64, "bridgeword bridgeword bridgeword", ""),
+                (3_500_u64, 4_000_u64, "lower relevance bridge", "bridgeword"),
+            ] {
+                let absolute_start_at = timestamp_plus_ms(&segment.started_at, start_ms)
+                    .expect("start timestamp should format");
+                let absolute_end_at = timestamp_plus_ms(&segment.started_at, end_ms)
+                    .expect("end timestamp should format");
+                insert_search_document(
+                    &mut transaction,
+                    NewSearchDocument {
+                        anchor_type: "audio",
+                        frame_id: None,
+                        audio_segment_id: Some(segment.id),
+                        processing_result_id: None,
+                        span_start_ms: Some(start_ms as i64),
+                        span_end_ms: Some(end_ms as i64),
+                        absolute_start_at: &absolute_start_at,
+                        absolute_end_at: &absolute_end_at,
+                        source_kind: Some(segment.source_kind.as_str()),
+                        session_id: &segment.source_session_id,
+                        app_name: None,
+                        window_title: None,
+                        group_key: &format!("audio:{}:{start_ms}", segment.id),
+                        text_source_kind: "direct",
+                        body_text,
+                        context_text,
+                    },
+                )
+                .await
+                .expect("bridged search document should insert");
+            }
+
+            for index in 0..248_u64 {
+                let start_ms = 60_000 + index * 3_000;
+                let end_ms = start_ms + 500;
+                let absolute_start_at = timestamp_plus_ms(&segment.started_at, start_ms)
+                    .expect("start timestamp should format");
+                let absolute_end_at = timestamp_plus_ms(&segment.started_at, end_ms)
+                    .expect("end timestamp should format");
+                insert_search_document(
+                    &mut transaction,
+                    NewSearchDocument {
+                        anchor_type: "audio",
+                        frame_id: None,
+                        audio_segment_id: Some(segment.id),
+                        processing_result_id: None,
+                        span_start_ms: Some(start_ms as i64),
+                        span_end_ms: Some(end_ms as i64),
+                        absolute_start_at: &absolute_start_at,
+                        absolute_end_at: &absolute_end_at,
+                        source_kind: Some(segment.source_kind.as_str()),
+                        session_id: &segment.source_session_id,
+                        app_name: None,
+                        window_title: None,
+                        group_key: &format!("audio:{}:filler-{index}", segment.id),
+                        text_source_kind: "direct",
+                        body_text: "bridgeword",
+                        context_text: "",
+                    },
+                )
+                .await
+                .expect("filler search document should insert");
+            }
+            transaction.commit().await.expect("tx should commit");
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "bridgeword".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(2),
+                    audio_offset: Some(0),
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 2);
+            assert_eq!(response.audio[0].span_start_ms, 1_000);
+            assert_eq!(response.audio[0].span_end_ms, 6_500);
+            assert_eq!(response.audio[0].match_count, 3);
             assert!(response.has_more_audio);
         });
     }
