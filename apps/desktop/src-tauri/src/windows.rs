@@ -3,8 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, MutexGuard,
-        OnceLock,
+        Mutex, MutexGuard, OnceLock,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -503,7 +502,10 @@ pub(crate) fn install_macos_terminate_handler(app: &tauri::AppHandle) {
             return;
         }
 
-        method_setImplementation(method.cast_mut(), std::mem::transmute(terminate as *const ()));
+        method_setImplementation(
+            method.cast_mut(),
+            std::mem::transmute(terminate as *const ()),
+        );
         crate::native_capture::debug_log::log_info(
             "installed macOS terminate handler for graceful app exit",
         );

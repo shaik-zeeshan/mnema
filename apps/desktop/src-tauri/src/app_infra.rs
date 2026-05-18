@@ -736,7 +736,13 @@ impl From<::app_infra::Frame> for FrameDto {
     fn from(frame: ::app_infra::Frame) -> Self {
         let (app_bundle_id, app_name, window_title) = frame
             .metadata_snapshot
-            .map(|metadata| (metadata.app_bundle_id, metadata.app_name, metadata.window_title))
+            .map(|metadata| {
+                (
+                    metadata.app_bundle_id,
+                    metadata.app_name,
+                    metadata.window_title,
+                )
+            })
             .unwrap_or((None, None, None));
 
         Self {

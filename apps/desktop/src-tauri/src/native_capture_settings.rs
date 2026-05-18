@@ -11,9 +11,8 @@ use capture_types::{
     default_system_audio_activity_sensitivity, default_video_bitrate, AudioSpeechDetectionSettings,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
-    SpeakerAnalysisSettings, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
-    VideoBitrateSettings,
+    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
+    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

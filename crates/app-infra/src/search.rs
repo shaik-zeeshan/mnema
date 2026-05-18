@@ -355,17 +355,18 @@ async fn project_equivalent_reuse_documents_for_source_frame(
     let frames = equivalent_reuse_candidate_frames(transaction, source_frame).await?;
 
     for frame in frames {
-        let exists = sqlx::query(
+        let has_direct_projection = sqlx::query(
             "SELECT 1 FROM search_documents \
              WHERE search_documents.anchor_type = 'frame' \
                AND search_documents.frame_id = ?1 \
+               AND search_documents.text_source_kind = 'direct' \
              LIMIT 1",
         )
         .bind(frame.id)
         .fetch_optional(&mut **transaction)
         .await?
         .is_some();
-        if exists {
+        if has_direct_projection {
             continue;
         }
         project_equivalent_reuse_document_for_frame(
@@ -454,6 +455,8 @@ async fn project_equivalent_reuse_document_for_frame(
     let searchable_text =
         searchable_text_with_context(text, app_name.as_deref(), window_title.as_deref(), None);
 
+    delete_equivalent_reuse_projection_for_frame(transaction, frame.id).await?;
+
     insert_search_document(
         transaction,
         NewSearchDocument {
@@ -475,6 +478,23 @@ async fn project_equivalent_reuse_document_for_frame(
         },
     )
     .await
+}
+
+async fn delete_equivalent_reuse_projection_for_frame(
+    transaction: &mut Transaction<'_, Sqlite>,
+    frame_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM search_documents \
+         WHERE text_source_kind = 'equivalent_reuse' \
+           AND anchor_type = 'frame' \
+           AND frame_id = ?1",
+    )
+    .bind(frame_id)
+    .execute(&mut **transaction)
+    .await?;
+
+    Ok(())
 }
 
 async fn project_audio_transcription_result(
@@ -995,7 +1015,9 @@ fn frame_hits_are_equivalent(left: &FrameHit, right: &FrameHit) -> bool {
     else {
         return false;
     };
-    left_version == right_version
+    CapturedFrameEquivalenceScope::from_frame(&left.frame)
+        == CapturedFrameEquivalenceScope::from_frame(&right.frame)
+        && left_version == right_version
         && capture_screen::captured_frame_equivalence_proofs_match(
             left_version,
             left_proof,
@@ -2554,6 +2576,75 @@ mod tests {
             group_keys.sort_unstable();
             group_keys.dedup();
             assert_eq!(group_keys.len(), 2);
+            assert_eq!(
+                response
+                    .frames
+                    .iter()
+                    .map(|frame| frame.match_count)
+                    .collect::<Vec<_>>(),
+                vec![1, 1]
+            );
+        });
+    }
+
+    #[test]
+    fn frame_search_does_not_group_equivalent_proofs_across_hidden_workspaces() {
+        run_async_test(async {
+            let dir = test_dir("frame-hidden-workspace-grouping");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-hidden-proof".to_string()),
+                proof: Some(vec![31; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+
+            for (index, segment) in ["0001", "0002"].into_iter().enumerate() {
+                let frame_path = dir
+                    .join(format!(
+                        "recordings/2026/05/17/.screen-session-segment-{segment}/frames/frame-1.jpg"
+                    ))
+                    .to_string_lossy()
+                    .to_string();
+                let frame = infra
+                    .insert_frame(
+                        &NewFrame::new(
+                            "screen-session",
+                            &frame_path,
+                            &format!("2026-05-17T10:00:0{index}Z"),
+                        )
+                        .with_equivalence(equivalence.clone()),
+                    )
+                    .await
+                    .expect("frame should insert");
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("hidden scope phrase"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "hidden".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 2);
             assert_eq!(
                 response
                     .frames
