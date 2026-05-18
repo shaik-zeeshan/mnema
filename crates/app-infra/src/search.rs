@@ -16,6 +16,7 @@ const MIN_HIT_FETCH_LIMIT: i64 = 250;
 const MAX_HIT_FETCH_LIMIT: i64 = 5_000;
 const HIT_FETCH_OVERFETCH_PER_GROUP: i64 = 50;
 const AUDIO_GROUP_GAP_MS: u64 = 2_000;
+const AUDIO_FRAME_ALIGNMENT_WINDOW_SECONDS: i64 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1216,8 +1217,17 @@ async fn find_aligned_frame(
             "invalid search timestamp '{absolute_start_at}': {error}"
         ))
     })?;
+    let before_start = target
+        .checked_sub(Duration::seconds(AUDIO_FRAME_ALIGNMENT_WINDOW_SECONDS))
+        .ok_or_else(|| {
+            AppInfraError::FrameBatchFinalize("search alignment timestamp overflow".to_string())
+        })?
+        .format(&Rfc3339)
+        .map_err(|error| {
+            AppInfraError::FrameBatchFinalize(format!("failed to format search timestamp: {error}"))
+        })?;
     let after_end = target
-        .checked_add(Duration::seconds(10))
+        .checked_add(Duration::seconds(AUDIO_FRAME_ALIGNMENT_WINDOW_SECONDS))
         .ok_or_else(|| {
             AppInfraError::FrameBatchFinalize("search alignment timestamp overflow".to_string())
         })?
@@ -1233,10 +1243,11 @@ async fn find_aligned_frame(
                 frames.created_at, frames.updated_at \
          FROM frames \
          LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
-         WHERE session_id = ?1 AND captured_at <= ?2 \
+         WHERE session_id = ?1 AND captured_at >= ?2 AND captured_at <= ?3 \
          ORDER BY captured_at DESC, frames.id DESC LIMIT 1",
     )
     .bind(session_id)
+    .bind(before_start)
     .bind(absolute_start_at)
     .fetch_optional(pool)
     .await?;
@@ -2878,13 +2889,92 @@ mod tests {
     }
 
     #[test]
-    fn audio_search_aligns_to_latest_earlier_frame_without_ten_second_floor() {
+    fn audio_search_aligns_to_near_earlier_frame() {
         run_async_test(async {
-            let dir = test_dir("audio-alignment-floor");
+            let dir = test_dir("audio-alignment-near-earlier");
             let infra = AppInfra::initialize(&dir)
                 .await
                 .expect("infra should initialize");
             let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "shared-session",
+                    "/tmp/alignment-near-frame.jpg",
+                    "2026-05-17T10:00:56Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "shared-session",
+                    1,
+                    "/tmp/search-audio-alignment-near.m4a",
+                    "2026-05-17T10:01:00Z",
+                    "2026-05-17T10:01:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![TranscriptionSegment {
+                    start_ms: 1_000,
+                    end_ms: 2_500,
+                    text: "alignment target phrase".to_string(),
+                    confidence: None,
+                }],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("alignment target phrase")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "alignment".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(
+                response.audio[0]
+                    .aligned_frame
+                    .as_ref()
+                    .map(|frame| frame.id),
+                Some(frame.id)
+            );
+        });
+    }
+
+    #[test]
+    fn audio_search_does_not_align_stale_earlier_frame() {
+        run_async_test(async {
+            let dir = test_dir("audio-alignment-stale-earlier");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            infra
                 .insert_frame(&NewFrame::new(
                     "shared-session",
                     "/tmp/alignment-frame.jpg",
@@ -2951,7 +3041,7 @@ mod tests {
                     .aligned_frame
                     .as_ref()
                     .map(|frame| frame.id),
-                Some(frame.id)
+                None
             );
         });
     }
