@@ -118,6 +118,7 @@ impl SearchStore {
             )
             .await?;
         }
+        backfill_missing_equivalent_reuse_projections(&mut transaction).await?;
 
         transaction.commit().await?;
         Ok(())
@@ -248,23 +249,71 @@ async fn delete_projection_for_subject_processor(
     Ok(())
 }
 
+async fn backfill_missing_equivalent_reuse_projections(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT processing_results.id, processing_results.job_id, \
+                processing_results.subject_type, processing_results.subject_id, \
+                processing_results.processor, processing_results.result_text, \
+                processing_results.structured_payload_json, \
+                processing_results.processor_version, processing_results.created_at \
+         FROM processing_results \
+         JOIN (\
+            SELECT subject_type, subject_id, processor, MAX(id) AS id \
+            FROM processing_results \
+            WHERE subject_type = ?1 AND processor = ?2 \
+            GROUP BY subject_type, subject_id, processor\
+         ) latest_results ON latest_results.id = processing_results.id \
+         JOIN frames AS source_frames ON source_frames.id = processing_results.subject_id \
+         WHERE LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
+           AND source_frames.equivalence_status = 'ready' \
+           AND source_frames.equivalence_hint IS NOT NULL \
+           AND source_frames.equivalence_proof IS NOT NULL \
+           AND source_frames.equivalence_version IS NOT NULL \
+           AND EXISTS (\
+                SELECT 1 FROM frames AS target_frames \
+                WHERE target_frames.session_id = source_frames.session_id \
+                  AND target_frames.id != source_frames.id \
+                  AND target_frames.equivalence_status = 'ready' \
+                  AND target_frames.equivalence_hint = source_frames.equivalence_hint \
+                  AND NOT EXISTS (\
+                        SELECT 1 FROM search_documents AS direct_docs \
+                        WHERE direct_docs.anchor_type = 'frame' \
+                          AND direct_docs.frame_id = target_frames.id \
+                          AND direct_docs.text_source_kind = 'direct'\
+                  ) \
+                  AND NOT EXISTS (\
+                        SELECT 1 FROM search_documents AS reuse_docs \
+                        WHERE reuse_docs.anchor_type = 'frame' \
+                          AND reuse_docs.frame_id = target_frames.id \
+                          AND reuse_docs.text_source_kind = 'equivalent_reuse'\
+                  )\
+           ) \
+         ORDER BY processing_results.id ASC",
+    )
+    .bind(FRAME_SUBJECT_TYPE)
+    .bind(OCR_PROCESSOR)
+    .fetch_all(&mut **transaction)
+    .await?;
+
+    for row in rows {
+        project_missing_equivalent_reuse_documents_for_processing_result(
+            transaction,
+            &map_processing_result_for_search(row)?,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
 async fn project_frame_ocr_result(
     transaction: &mut Transaction<'_, Sqlite>,
     result: &ProcessingResult,
 ) -> Result<()> {
-    let row = sqlx::query(
-        "SELECT frames.id, session_id, file_path, captured_at, width, height, \
-                equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
-                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
-                frames.created_at, frames.updated_at \
-         FROM frames \
-         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
-         WHERE frames.id = ?1",
-    )
-    .bind(result.subject_id)
-    .fetch_optional(&mut **transaction)
-    .await?;
-    let Some(frame) = row.map(map_frame_for_search).transpose()? else {
+    let Some(frame) = get_frame_for_search_in_transaction(transaction, result.subject_id).await?
+    else {
         return Ok(());
     };
 
@@ -312,6 +361,33 @@ async fn project_frame_ocr_result(
     .await?;
 
     project_equivalent_reuse_documents_for_source_frame(transaction, &frame, result.id, text).await
+}
+
+async fn project_missing_equivalent_reuse_documents_for_processing_result(
+    transaction: &mut Transaction<'_, Sqlite>,
+    result: &ProcessingResult,
+) -> Result<()> {
+    let Some(frame) = get_frame_for_search_in_transaction(transaction, result.subject_id).await?
+    else {
+        return Ok(());
+    };
+
+    let Some(text) = result
+        .result_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    else {
+        return Ok(());
+    };
+
+    project_missing_equivalent_reuse_documents_for_source_frame(
+        transaction,
+        &frame,
+        result.id,
+        text,
+    )
+    .await
 }
 
 async fn delete_equivalent_reuse_projections_for_source_result(
@@ -397,18 +473,33 @@ async fn project_equivalent_reuse_documents_for_source_frame(
     let frames = equivalent_reuse_candidate_frames(transaction, source_frame).await?;
 
     for frame in frames {
-        let has_direct_projection = sqlx::query(
-            "SELECT 1 FROM search_documents \
-             WHERE search_documents.anchor_type = 'frame' \
-               AND search_documents.frame_id = ?1 \
-               AND search_documents.text_source_kind = 'direct' \
-             LIMIT 1",
+        if frame_has_projection(transaction, frame.id, "direct").await? {
+            continue;
+        }
+        project_equivalent_reuse_document_for_frame(
+            transaction,
+            &frame,
+            Some(processing_result_id),
+            text,
         )
-        .bind(frame.id)
-        .fetch_optional(&mut **transaction)
-        .await?
-        .is_some();
-        if has_direct_projection {
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn project_missing_equivalent_reuse_documents_for_source_frame(
+    transaction: &mut Transaction<'_, Sqlite>,
+    source_frame: &Frame,
+    processing_result_id: i64,
+    text: &str,
+) -> Result<()> {
+    let frames = equivalent_reuse_candidate_frames(transaction, source_frame).await?;
+
+    for frame in frames {
+        if frame_has_projection(transaction, frame.id, "direct").await?
+            || frame_has_projection(transaction, frame.id, "equivalent_reuse").await?
+        {
             continue;
         }
         project_equivalent_reuse_document_for_frame(
@@ -471,6 +562,45 @@ async fn equivalent_reuse_candidate_frames(
     }
 
     Ok(frames)
+}
+
+async fn get_frame_for_search_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    frame_id: i64,
+) -> Result<Option<Frame>> {
+    let row = sqlx::query(
+        "SELECT frames.id, session_id, file_path, captured_at, width, height, \
+                equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                frames.created_at, frames.updated_at \
+         FROM frames \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE frames.id = ?1",
+    )
+    .bind(frame_id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+
+    row.map(map_frame_for_search).transpose()
+}
+
+async fn frame_has_projection(
+    transaction: &mut Transaction<'_, Sqlite>,
+    frame_id: i64,
+    text_source_kind: &str,
+) -> Result<bool> {
+    Ok(sqlx::query(
+        "SELECT 1 FROM search_documents \
+         WHERE search_documents.anchor_type = 'frame' \
+           AND search_documents.frame_id = ?1 \
+           AND search_documents.text_source_kind = ?2 \
+         LIMIT 1",
+    )
+    .bind(frame_id)
+    .bind(text_source_kind)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .is_some())
 }
 
 fn equivalent_reuse_scope_allows_source(target_frame: &Frame, source_frame: &Frame) -> bool {
@@ -1579,6 +1709,96 @@ mod tests {
                 .expect("fresh search should succeed");
             assert_eq!(fresh.frames.len(), 1);
             assert_eq!(fresh.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
+    fn startup_backfills_missing_equivalent_reuse_projection_when_direct_projection_exists() {
+        run_async_test(async {
+            let dir = test_dir("startup-backfill-equivalent-reuse");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-startup-reuse".to_string()),
+                proof: Some(vec![31; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            let first = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-startup-reuse-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("first frame should capture");
+            let job = first.job.expect("first frame should enqueue OCR");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("historical reuse target"),
+            )
+            .await;
+
+            let second = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-startup-reuse-duplicate.jpg",
+                        "2026-05-17T10:00:02Z",
+                    )
+                    .with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("second frame should capture");
+            assert!(second.job.is_none());
+
+            sqlx::query(
+                "DELETE FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'equivalent_reuse'",
+            )
+            .bind(second.frame.id)
+            .execute(infra.pool())
+            .await
+            .expect("equivalent reuse projection should delete");
+
+            let direct_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'direct'",
+            )
+            .bind(first.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("direct projection count should load");
+            assert_eq!(direct_count, 1);
+            drop(infra);
+
+            let reopened = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should reopen");
+            let response = reopened
+                .search_capture(SearchCaptureRequest {
+                    query: "historical".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].match_count, 2);
+            assert_eq!(response.frames[0].representative_frame.id, second.frame.id);
+            assert_eq!(response.frames[0].text_source_kind, "equivalent_reuse");
         });
     }
 
