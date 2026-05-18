@@ -79,6 +79,49 @@ impl SearchStore {
         Self { pool }
     }
 
+    pub(crate) async fn backfill_missing_projections(&self) -> Result<()> {
+        let mut transaction = self.pool.begin().await?;
+        let rows = sqlx::query(
+            "SELECT processing_results.id, processing_results.job_id, \
+                    processing_results.subject_type, processing_results.subject_id, \
+                    processing_results.processor, processing_results.result_text, \
+                    processing_results.structured_payload_json, \
+                    processing_results.processor_version, processing_results.created_at \
+             FROM processing_results \
+             JOIN (\
+                SELECT subject_type, subject_id, processor, MAX(id) AS id \
+                FROM processing_results \
+                WHERE (subject_type = ?1 AND processor = ?2) \
+                   OR (subject_type = ?3 AND processor = ?4) \
+                GROUP BY subject_type, subject_id, processor\
+             ) latest_results ON latest_results.id = processing_results.id \
+             WHERE LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
+               AND NOT EXISTS (\
+                    SELECT 1 FROM search_documents \
+                    WHERE search_documents.text_source_kind = 'direct' \
+                      AND search_documents.processing_result_id = processing_results.id\
+               ) \
+             ORDER BY processing_results.id ASC",
+        )
+        .bind(FRAME_SUBJECT_TYPE)
+        .bind(OCR_PROCESSOR)
+        .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+        .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+        .fetch_all(&mut *transaction)
+        .await?;
+
+        for row in rows {
+            project_processing_result_in_transaction(
+                &mut transaction,
+                &map_processing_result_for_search(row)?,
+            )
+            .await?;
+        }
+
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn search_capture(
         &self,
         request: SearchCaptureRequest,
@@ -859,7 +902,7 @@ async fn fetch_frame_hits(
          WHERE search_documents_fts MATCH ?1 \
            AND search_documents.anchor_type = 'frame' \
            AND search_documents.id <= ?2 \
-         ORDER BY rank ASC, search_documents.absolute_start_at DESC
+         ORDER BY rank ASC, search_documents.absolute_start_at DESC, search_documents.id DESC
          LIMIT ?3 OFFSET ?4",
     )
     .bind(fts_query)
@@ -935,7 +978,7 @@ async fn fetch_audio_hits(
          WHERE search_documents_fts MATCH ?1 \
            AND search_documents.anchor_type = 'audio' \
            AND search_documents.id <= ?2 \
-         ORDER BY rank ASC, search_documents.absolute_start_at DESC
+         ORDER BY rank ASC, search_documents.absolute_start_at DESC, search_documents.id DESC
          LIMIT ?3 OFFSET ?4",
     )
     .bind(fts_query)
@@ -1106,25 +1149,47 @@ fn group_audio_hits(hits: &[AudioHit]) -> Result<Vec<AudioSearchResult>> {
             .unwrap_or(span_start_ms);
         let absolute_start_at = timestamp_plus_ms(&first.audio_segment.started_at, span_start_ms)?;
         let absolute_end_at = timestamp_plus_ms(&first.audio_segment.started_at, span_end_ms)?;
-        results.push(AudioSearchResult {
-            group_key: format!(
-                "audio:{}:{}-{}",
-                first.audio_segment.id, span_start_ms, span_end_ms
-            ),
-            audio_segment: first.audio_segment.clone(),
-            source_kind: first.source_kind.clone(),
-            span_start_ms,
-            span_end_ms,
-            absolute_start_at,
-            absolute_end_at,
-            match_count: group.len() as u32,
-            snippet: first.snippet.clone(),
-            aligned_frame: None,
-        });
+        results.push((
+            first.rank,
+            AudioSearchResult {
+                group_key: format!(
+                    "audio:{}:{}-{}",
+                    first.audio_segment.id, span_start_ms, span_end_ms
+                ),
+                audio_segment: first.audio_segment.clone(),
+                source_kind: first.source_kind.clone(),
+                span_start_ms,
+                span_end_ms,
+                absolute_start_at,
+                absolute_end_at,
+                match_count: group.len() as u32,
+                snippet: first.snippet.clone(),
+                aligned_frame: None,
+            },
+        ));
     }
 
-    results.sort_by(|a, b| b.absolute_start_at.cmp(&a.absolute_start_at));
-    Ok(results)
+    results.sort_by(|(a_rank, a), (b_rank, b)| {
+        a_rank
+            .total_cmp(b_rank)
+            .then_with(|| b.absolute_start_at.cmp(&a.absolute_start_at))
+            .then_with(|| a.group_key.cmp(&b.group_key))
+    });
+    Ok(results.into_iter().map(|(_rank, result)| result).collect())
+}
+
+fn map_processing_result_for_search(row: SqliteRow) -> Result<ProcessingResult> {
+    Ok(ProcessingResult {
+        id: row.get("id"),
+        job_id: row.get("job_id"),
+        subject_type: row.get("subject_type"),
+        subject_id: row.get("subject_id"),
+        processor: row.get("processor"),
+        result_text: row.get("result_text"),
+        structured_payload_json: row.get("structured_payload_json"),
+        processor_version: row.get("processor_version"),
+        created_at: row.get("created_at"),
+    })
 }
 
 async fn align_audio_results(pool: &SqlitePool, results: &mut [AudioSearchResult]) -> Result<()> {
@@ -1374,6 +1439,73 @@ mod tests {
     }
 
     #[test]
+    fn startup_backfills_search_projection_for_existing_latest_results() {
+        run_async_test(async {
+            let dir = test_dir("startup-backfill");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-startup-backfill.jpg",
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+
+            for text in ["old upgraded text", "fresh upgraded text"] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text(text),
+                )
+                .await;
+            }
+
+            sqlx::query("DELETE FROM search_documents")
+                .execute(infra.pool())
+                .await
+                .expect("search documents should delete");
+            drop(infra);
+
+            let reopened = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should reopen");
+            let stale = reopened
+                .search_capture(SearchCaptureRequest {
+                    query: "old".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("stale search should succeed");
+            assert!(stale.frames.is_empty());
+
+            let fresh = reopened
+                .search_capture(SearchCaptureRequest {
+                    query: "fresh".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                })
+                .await
+                .expect("fresh search should succeed");
+            assert_eq!(fresh.frames.len(), 1);
+            assert_eq!(fresh.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
     fn search_projects_transcript_segments_and_sanitizes_plain_query() {
         run_async_test(async {
             let dir = test_dir("audio-segments");
@@ -1537,6 +1669,37 @@ mod tests {
         assert_eq!(groups[0].span_start_ms, 1_000);
         assert_eq!(groups[0].span_end_ms, 4_500);
         assert_eq!(groups[0].match_count, 3);
+    }
+
+    #[test]
+    fn audio_groups_preserve_best_relevance_before_recency() {
+        let segment = AudioSegment {
+            id: 7,
+            source_kind: AudioSegmentSourceKind::Microphone,
+            source_session_id: "mic-session".to_string(),
+            segment_index: 1,
+            file_path: "/tmp/audio.m4a".to_string(),
+            started_at: "2026-05-17T10:00:00Z".to_string(),
+            ended_at: "2026-05-17T10:00:20Z".to_string(),
+            capture_segment_id: None,
+            created_at: "2026-05-17T10:00:00Z".to_string(),
+            updated_at: "2026-05-17T10:00:00Z".to_string(),
+        };
+        let hit = |span_start_ms, rank| AudioHit {
+            audio_segment: segment.clone(),
+            source_kind: AudioSegmentSourceKind::Microphone,
+            span_start_ms,
+            span_end_ms: span_start_ms + 500,
+            snippet: format!("hit {span_start_ms}"),
+            rank,
+        };
+
+        let hits = vec![hit(10_000, -1.0), hit(1_000, -10.0)];
+        let groups = group_audio_hits(&hits).expect("grouping should succeed");
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].span_start_ms, 1_000);
+        assert_eq!(groups[1].span_start_ms, 10_000);
     }
 
     #[test]

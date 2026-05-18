@@ -280,6 +280,7 @@ impl AppInfra {
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
         processing.clear_model_cleanup_locks().await?;
         processing.backfill_frame_equivalence().await?;
+        search.backfill_missing_projections().await?;
         jobs.reconcile_orphaned_running_jobs().await?;
         processing.reconcile_orphaned_running_jobs().await?;
         frame_batches
