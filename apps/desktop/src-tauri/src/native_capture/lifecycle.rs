@@ -243,6 +243,9 @@ impl RecordingLifecycle {
             self.runtime.active_screen_session = started.4;
             self.runtime.active_microphone_session = started.5;
             self.runtime.current_segment_index = next_index;
+            self.runtime.runtime_controller = Default::default();
+            apply_runtime_signal(&mut self.runtime, RuntimeSignal::StartRequested)?;
+            apply_runtime_signal(&mut self.runtime, RuntimeSignal::SourcesReady)?;
         }
         self.runtime.user_capture_paused = false;
         self.runtime.current_segment_sources = self.runtime.requested_sources.clone();

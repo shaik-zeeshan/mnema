@@ -38,7 +38,7 @@ use super::segments::{
     recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
-    segment_loop_sleep_duration, StartedSegmentState,
+    segment_loop_sleep_duration, stop_capture_runtime, StartedSegmentState,
 };
 use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
@@ -1581,6 +1581,23 @@ fn user_paused_screen_session_still_reports_running_for_resume_controls() {
 
     assert!(session.is_running);
     assert!(session.is_user_paused);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn stop_capture_runtime_accepts_idle_recording_boundary() {
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        user_capture_paused: true,
+        runtime_controller: RuntimeController::default(),
+        runtime_state: RuntimeState::Idle,
+        ..Default::default()
+    };
+
+    stop_capture_runtime(&mut runtime, None)
+        .expect("idle recording boundary should not request another stop transition");
+
+    assert_eq!(runtime.runtime_state, RuntimeState::Idle);
 }
 
 #[test]
