@@ -343,6 +343,12 @@ impl CapturedFramePipeline {
                     skipped.outcome = OcrAdmissionOutcome::Skipped;
                     skipped.reason = OcrAdmissionReason::SkippedEquivalentFrame;
                     skipped.related_frame_id = Some(related.id);
+                    crate::search::project_equivalent_frame_reuse_in_transaction(
+                        transaction,
+                        frame,
+                        related.id,
+                    )
+                    .await?;
                     return Ok((None, Some(skipped)));
                 }
 

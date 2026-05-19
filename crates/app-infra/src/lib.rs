@@ -11,6 +11,7 @@ mod hidden_segment_workspace;
 pub mod jobs;
 mod ocr_budget;
 pub mod processing;
+mod search;
 pub mod status;
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -70,6 +71,9 @@ pub use processing::{
     FRAME_SUBJECT_TYPE, HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR,
     SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY, SPEAKER_ANALYSIS_PROCESSOR,
     SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+};
+pub use search::{
+    AudioSearchResult, FrameSearchResult, SearchCaptureRequest, SearchCaptureResponse, SearchStore,
 };
 pub use status::AppInfraStatus;
 
@@ -247,6 +251,7 @@ pub struct AppInfra {
     frame_batches: FrameBatchStore,
     capture_retention: CaptureRetentionStore,
     processing: ProcessingStore,
+    search: SearchStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
     runtime: JobRuntime,
@@ -269,11 +274,13 @@ impl AppInfra {
         let frame_batches = FrameBatchStore::new(database.pool().clone());
         let capture_retention = CaptureRetentionStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
+        let search = SearchStore::new(database.pool().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
         processing.clear_model_cleanup_locks().await?;
         processing.backfill_frame_equivalence().await?;
+        search.backfill_missing_projections().await?;
         jobs.reconcile_orphaned_running_jobs().await?;
         processing.reconcile_orphaned_running_jobs().await?;
         frame_batches
@@ -293,6 +300,7 @@ impl AppInfra {
             frame_batches,
             capture_retention,
             processing,
+            search,
             captured_frame_equivalence,
             captured_frame_pipeline,
             runtime,
@@ -1352,6 +1360,13 @@ impl AppInfra {
         result: &ProcessingResultDraft,
     ) -> Result<ProcessingJobCompletion> {
         self.processing.complete_job(job_id, result).await
+    }
+
+    pub async fn search_capture(
+        &self,
+        request: SearchCaptureRequest,
+    ) -> Result<SearchCaptureResponse> {
+        self.search.search_capture(request).await
     }
 
     pub async fn get_processing_result_for_job(
@@ -5950,6 +5965,16 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let latest_snapshot = capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.Latest".to_string()),
+                app_name: Some("Latest".to_string()),
+                window_title: Some("Latest Window".to_string()),
+                window_id: None,
+                browser_url: None,
+                display_id: None,
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            };
 
             let earliest = infra
                 .insert_frame(&test_frame_at(
@@ -5968,11 +5993,10 @@ mod tests {
                 .await
                 .expect("first tied frame should persist");
             let tied_second = infra
-                .insert_frame(&test_frame_at(
-                    "session-c",
-                    "frame-tied-second.png",
-                    "2026-04-12T09:30:00Z",
-                ))
+                .insert_frame(
+                    &test_frame_at("session-c", "frame-tied-second.png", "2026-04-12T09:30:00Z")
+                        .with_metadata_snapshot(latest_snapshot.clone()),
+                )
                 .await
                 .expect("second tied frame should persist");
 
@@ -5984,6 +6008,7 @@ mod tests {
 
             assert_eq!(latest.id, tied_second.id);
             assert_eq!(latest.captured_at, tied_first.captured_at);
+            assert_eq!(latest.metadata_snapshot.as_ref(), Some(&latest_snapshot));
 
             let missing = infra
                 .get_latest_frame_in_range("2026-04-12T07:00:00Z", "2026-04-12T07:59:59Z")
@@ -6002,21 +6027,60 @@ mod tests {
             let infra = AppInfra::initialize(dir.path())
                 .await
                 .expect("app infra should initialize");
+            let second_snapshot = capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.Second".to_string()),
+                app_name: Some("Second".to_string()),
+                window_title: Some("Second Window".to_string()),
+                window_id: None,
+                browser_url: None,
+                display_id: None,
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            };
+            let third_snapshot = capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.Third".to_string()),
+                app_name: Some("Third".to_string()),
+                window_title: Some("Third Window".to_string()),
+                window_id: None,
+                browser_url: None,
+                display_id: None,
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            };
+            let fourth_snapshot = capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.example.Fourth".to_string()),
+                app_name: Some("Fourth".to_string()),
+                window_title: Some("Fourth Window".to_string()),
+                window_id: None,
+                browser_url: None,
+                display_id: None,
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            };
 
             let first = infra
                 .insert_frame(&test_frame("session-a", "frame-1.png"))
                 .await
                 .expect("first frame should persist");
             let second = infra
-                .insert_frame(&test_frame("session-a", "frame-2.png"))
+                .insert_frame(
+                    &test_frame("session-a", "frame-2.png")
+                        .with_metadata_snapshot(second_snapshot.clone()),
+                )
                 .await
                 .expect("second frame should persist");
             let third = infra
-                .insert_frame(&test_frame("session-a", "frame-3.png"))
+                .insert_frame(
+                    &test_frame("session-a", "frame-3.png")
+                        .with_metadata_snapshot(third_snapshot.clone()),
+                )
                 .await
                 .expect("third frame should persist");
             let fourth = infra
-                .insert_frame(&test_frame("session-a", "frame-4.png"))
+                .insert_frame(
+                    &test_frame("session-a", "frame-4.png")
+                        .with_metadata_snapshot(fourth_snapshot.clone()),
+                )
                 .await
                 .expect("fourth frame should persist");
             let fifth = infra
@@ -6036,6 +6100,18 @@ mod tests {
                     .map(|frame| frame.id)
                     .collect::<Vec<_>>(),
                 vec![fourth.id, third.id, second.id]
+            );
+            assert_eq!(
+                window.frames[0].metadata_snapshot.as_ref(),
+                Some(&fourth_snapshot)
+            );
+            assert_eq!(
+                window.frames[1].metadata_snapshot.as_ref(),
+                Some(&third_snapshot)
+            );
+            assert_eq!(
+                window.frames[2].metadata_snapshot.as_ref(),
+                Some(&second_snapshot)
             );
             assert_eq!(window.target_index, 1);
             assert!(window.has_newer);

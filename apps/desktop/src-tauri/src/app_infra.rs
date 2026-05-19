@@ -463,9 +463,62 @@ pub struct FrameDto {
     pub height: Option<i64>,
     pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
+    pub window_title: Option<String>,
     pub equivalence_hint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCaptureRequest {
+    pub query: String,
+    pub frame_limit: Option<u32>,
+    pub frame_offset: Option<u32>,
+    pub audio_limit: Option<u32>,
+    pub audio_offset: Option<u32>,
+    pub snapshot_document_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCaptureResponseDto {
+    pub normalized_query: String,
+    pub snapshot_document_id: i64,
+    pub frames: Vec<FrameSearchResultDto>,
+    pub audio: Vec<AudioSearchResultDto>,
+    pub has_more_frames: bool,
+    pub has_more_audio: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameSearchResultDto {
+    pub group_key: String,
+    pub representative_frame: FrameDto,
+    pub group_start_at: String,
+    pub group_end_at: String,
+    pub match_count: u32,
+    pub snippet: String,
+    pub app_name: Option<String>,
+    pub window_title: Option<String>,
+    pub thumbnail_frame_id: i64,
+    pub text_source_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSearchResultDto {
+    pub group_key: String,
+    pub audio_segment: AudioSegmentDto,
+    pub source_kind: ::app_infra::AudioSegmentSourceKind,
+    pub span_start_ms: u64,
+    pub span_end_ms: u64,
+    pub absolute_start_at: String,
+    pub absolute_end_at: String,
+    pub match_count: u32,
+    pub snippet: String,
+    pub aligned_frame: Option<FrameDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -681,10 +734,16 @@ impl From<::app_infra::BackgroundJob> for AppJobDto {
 
 impl From<::app_infra::Frame> for FrameDto {
     fn from(frame: ::app_infra::Frame) -> Self {
-        let (app_bundle_id, app_name) = frame
+        let (app_bundle_id, app_name, window_title) = frame
             .metadata_snapshot
-            .map(|metadata| (metadata.app_bundle_id, metadata.app_name))
-            .unwrap_or((None, None));
+            .map(|metadata| {
+                (
+                    metadata.app_bundle_id,
+                    metadata.app_name,
+                    metadata.window_title,
+                )
+            })
+            .unwrap_or((None, None, None));
 
         Self {
             id: frame.id,
@@ -695,6 +754,7 @@ impl From<::app_infra::Frame> for FrameDto {
             height: frame.height,
             app_bundle_id,
             app_name,
+            window_title,
             equivalence_hint: frame.equivalence.hint,
             created_at: frame.created_at,
             updated_at: frame.updated_at,
@@ -718,6 +778,61 @@ impl From<::app_infra::FocusedFrameWindow> for FocusedFrameWindowDto {
             target_index: window.target_index,
             has_newer: window.has_newer,
             has_older: window.has_older,
+        }
+    }
+}
+
+impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
+    fn from(result: ::app_infra::FrameSearchResult) -> Self {
+        Self {
+            group_key: result.group_key,
+            representative_frame: FrameDto::from(result.representative_frame),
+            group_start_at: result.group_start_at,
+            group_end_at: result.group_end_at,
+            match_count: result.match_count,
+            snippet: result.snippet,
+            app_name: result.app_name,
+            window_title: result.window_title,
+            thumbnail_frame_id: result.thumbnail_frame_id,
+            text_source_kind: result.text_source_kind,
+        }
+    }
+}
+
+impl From<::app_infra::AudioSearchResult> for AudioSearchResultDto {
+    fn from(result: ::app_infra::AudioSearchResult) -> Self {
+        Self {
+            group_key: result.group_key,
+            audio_segment: AudioSegmentDto::from(result.audio_segment),
+            source_kind: result.source_kind,
+            span_start_ms: result.span_start_ms,
+            span_end_ms: result.span_end_ms,
+            absolute_start_at: result.absolute_start_at,
+            absolute_end_at: result.absolute_end_at,
+            match_count: result.match_count,
+            snippet: result.snippet,
+            aligned_frame: result.aligned_frame.map(FrameDto::from),
+        }
+    }
+}
+
+impl From<::app_infra::SearchCaptureResponse> for SearchCaptureResponseDto {
+    fn from(response: ::app_infra::SearchCaptureResponse) -> Self {
+        Self {
+            normalized_query: response.normalized_query,
+            snapshot_document_id: response.snapshot_document_id,
+            frames: response
+                .frames
+                .into_iter()
+                .map(FrameSearchResultDto::from)
+                .collect(),
+            audio: response
+                .audio
+                .into_iter()
+                .map(AudioSearchResultDto::from)
+                .collect(),
+            has_more_frames: response.has_more_frames,
+            has_more_audio: response.has_more_audio,
         }
     }
 }
@@ -3274,6 +3389,26 @@ pub async fn get_timeline_window_around_frame(
 }
 
 #[tauri::command]
+pub async fn search_capture(
+    request: SearchCaptureRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<SearchCaptureResponseDto, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .search_capture(::app_infra::SearchCaptureRequest {
+            query: request.query,
+            frame_limit: request.frame_limit,
+            frame_offset: request.frame_offset,
+            audio_limit: request.audio_limit,
+            audio_offset: request.audio_offset,
+            snapshot_document_id: request.snapshot_document_id,
+        })
+        .await
+        .map(SearchCaptureResponseDto::from)
+        .map_err(|error| format!("failed to search captured content: {error}"))
+}
+
+#[tauri::command]
 pub async fn list_processing_jobs(
     request: ListProcessingJobsRequest,
     state: tauri::State<'_, AppInfraState>,
@@ -4195,10 +4330,16 @@ mod tests {
                 .await
                 .expect("frame should be inserted");
 
-            let preview = get_frame_preview_inner(&infra, &cache, None, stored_frame.id)
-                .await
-                .expect("preview should load")
-                .expect("preview should exist");
+            let preview = get_frame_preview_inner(
+                &infra,
+                &cache,
+                None,
+                stored_frame.id,
+                VideoPreviewRequestScope::Shared,
+            )
+            .await
+            .expect("preview should load")
+            .expect("preview should exist");
 
             assert_eq!(preview.mime_type, "image/png");
             assert_eq!(
@@ -4245,10 +4386,16 @@ mod tests {
                 .await
                 .expect("sibling frame should be inserted");
 
-            let preview = get_frame_preview_inner(&infra, &cache, None, target_frame.id)
-                .await
-                .expect("preview should load")
-                .expect("preview should exist");
+            let preview = get_frame_preview_inner(
+                &infra,
+                &cache,
+                None,
+                target_frame.id,
+                VideoPreviewRequestScope::Shared,
+            )
+            .await
+            .expect("preview should load")
+            .expect("preview should exist");
 
             assert_eq!(preview.mime_type, "image/png");
             assert_eq!(
@@ -4300,10 +4447,16 @@ mod tests {
                 .await
                 .expect("sibling frame should be inserted");
 
-            let preview = get_frame_preview_inner(&infra, &cache, None, target_frame.id)
-                .await
-                .expect("preview should load")
-                .expect("preview should exist");
+            let preview = get_frame_preview_inner(
+                &infra,
+                &cache,
+                None,
+                target_frame.id,
+                VideoPreviewRequestScope::Shared,
+            )
+            .await
+            .expect("preview should load")
+            .expect("preview should exist");
 
             assert_eq!(preview.mime_type, "image/png");
             assert_eq!(
@@ -4342,9 +4495,15 @@ mod tests {
                 .await
                 .expect("target frame should be inserted");
 
-            let error = get_frame_preview_inner(&infra, &cache, None, target_frame.id)
-                .await
-                .expect_err("empty visible video without persisted fallback should error");
+            let error = get_frame_preview_inner(
+                &infra,
+                &cache,
+                None,
+                target_frame.id,
+                VideoPreviewRequestScope::Shared,
+            )
+            .await
+            .expect_err("empty visible video without persisted fallback should error");
 
             let error_message = error.to_string();
             assert!(error_message.contains("segment video is empty"));
@@ -4425,7 +4584,14 @@ mod tests {
                 let infra = Arc::clone(&infra);
                 let cache = Arc::clone(&cache);
                 tasks.push(tokio::spawn(async move {
-                    get_frame_preview_inner(&infra, &cache, None, frame_id).await
+                    get_frame_preview_inner(
+                        &infra,
+                        &cache,
+                        None,
+                        frame_id,
+                        VideoPreviewRequestScope::Shared,
+                    )
+                    .await
                 }));
             }
 
@@ -4512,16 +4678,84 @@ mod tests {
             let mut state = FramePreviewState::default();
             let video_path = Path::new("/tmp/segment-0001.mov");
 
-            assert!(state.begin_video_request(video_path).is_ok());
+            let token = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::Shared)
+                .expect("first request should become the in-flight video leader");
             let waiter = state
-                .begin_video_request(video_path)
+                .begin_video_request(video_path, VideoPreviewRequestScope::Shared)
                 .expect_err("second request should subscribe to the in-flight video leader");
             assert_eq!(state.video_in_flight_len(), 1);
 
-            state.finish_video_request(video_path, Ok(()));
+            state.finish_video_request(&token, Ok(()));
 
             assert_eq!(state.video_in_flight_len(), 0);
             assert_eq!(waiter.await.expect("waiter should receive result"), Ok(()));
+        });
+    }
+
+    #[test]
+    fn frame_preview_state_cancels_in_flight_video_requests() {
+        run_async_test(async {
+            let mut state = FramePreviewState::default();
+            let video_path = Path::new("/tmp/segment-0001.mov");
+
+            let token = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::ActiveFrame)
+                .expect("first request should become the in-flight video leader");
+            let waiter = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::ActiveFrame)
+                .expect_err("second request should subscribe to the in-flight video leader");
+
+            assert_eq!(state.cancel_active_video_requests(), 1);
+            assert_eq!(state.video_in_flight_len(), 0);
+            assert!(waiter
+                .await
+                .expect("waiter should receive cancellation")
+                .is_err());
+
+            state.finish_video_request(&token, Ok(()));
+            assert_eq!(state.video_in_flight_len(), 0);
+        });
+    }
+
+    #[test]
+    fn frame_preview_state_cancel_active_video_requests_preserves_shared_work() {
+        run_async_test(async {
+            let mut state = FramePreviewState::default();
+            let video_path = Path::new("/tmp/segment-0001.mov");
+
+            let shared_token = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::Shared)
+                .expect("shared request should become the shared in-flight leader");
+            let mut shared_waiter = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::Shared)
+                .expect_err("second shared request should subscribe to shared work");
+            let active_token = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::ActiveFrame)
+                .expect("active request should use a separate in-flight lane");
+            let active_waiter = state
+                .begin_video_request(video_path, VideoPreviewRequestScope::ActiveFrame)
+                .expect_err("second active request should subscribe to active work");
+
+            assert_eq!(state.video_in_flight_len(), 2);
+            assert_eq!(state.cancel_active_video_requests(), 1);
+            assert_eq!(state.video_in_flight_len(), 1);
+            assert!(active_waiter
+                .await
+                .expect("active waiter should receive cancellation")
+                .is_err());
+            assert!(shared_waiter.try_recv().is_err());
+
+            state.finish_video_request(&active_token, Ok(()));
+            assert_eq!(state.video_in_flight_len(), 1);
+            state.finish_video_request(&shared_token, Ok(()));
+            assert_eq!(state.video_in_flight_len(), 0);
+            assert_eq!(
+                shared_waiter
+                    .await
+                    .expect("shared waiter should receive result"),
+                Ok(())
+            );
         });
     }
 

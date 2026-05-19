@@ -253,14 +253,20 @@ pub fn browser_url_metadata_supported(bundle_id: &str) -> bool {
 
 pub const REDACTION_REASON_EXCLUDED_APP: &str = "excluded_app";
 
-pub fn evaluate_privacy(settings: &PrivacySettings, _context: &MetadataContext) -> PrivacyFilterDecision {
+pub fn evaluate_privacy(
+    settings: &PrivacySettings,
+    _context: &MetadataContext,
+) -> PrivacyFilterDecision {
     let mut bundle_source_ids = BTreeMap::new();
     let mut bundle_ids = Vec::new();
     let mut matched_rule_ids = Vec::new();
 
     for app in &settings.excluded_apps {
         let bundle_id = app.bundle_id.trim();
-        if !app.enabled || bundle_id.is_empty() || bundle_ids.iter().any(|existing| existing == bundle_id) {
+        if !app.enabled
+            || bundle_id.is_empty()
+            || bundle_ids.iter().any(|existing| existing == bundle_id)
+        {
             continue;
         }
         let bundle_id = bundle_id.to_string();

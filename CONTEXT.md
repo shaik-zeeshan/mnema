@@ -101,6 +101,10 @@ _Avoid_: audio file, raw microphone file, sound clip
 Recognized speech text, with optional timing relative to its **Audio Segment**, language, confidence, provider, and model metadata, derived from one **Audio Segment**.
 _Avoid_: transcript blob, transcription result, speech text
 
+**Audio Transcription Span**:
+A searchable time range of recognized speech inside one **Audio Segment**.
+_Avoid_: transcript chunk, audio hit, audio clip
+
 **Audio Transcription Job**:
 Background work that recognizes speech for one **Audio Segment**.
 _Avoid_: transcription task, transcript worker item, speech job
@@ -172,6 +176,42 @@ _Avoid_: cleanup interval, TTL
 **Retention Cleanup**:
 The app-infra deletion flow that removes eligible **Capture Segment** values and their derived frames, audio segments, processing jobs/results, speaker rows, segment-derived voice embeddings, and rejections while preserving user-authored **Person Profile** rows.
 _Avoid_: purge, vacuum, file cleanup
+
+**Search Result Anchor**:
+The domain object and time position a search result opens, either a **Captured Frame** or an **Audio Transcription Span**.
+_Avoid_: result row, search document, record match
+
+**Text Search**:
+The search tier that matches query terms against recognized screen text, recognized speech text, and capture context.
+_Avoid_: keyword-only search, exact search, string filter
+
+**Semantic Search**:
+The search tier that matches meaning rather than only literal query terms across searchable captured content.
+_Avoid_: embedding support, vector lookup, AI search
+
+**Semantic Search Model**:
+A local model asset used to derive meaning vectors for **Semantic Search**.
+_Avoid_: cloud embedding service, embedding API, vector model
+
+**Hybrid Search**:
+The product search policy that combines **Text Search** and **Semantic Search** so literal and meaning-based matches can rank together.
+_Avoid_: search mode toggle, vector-only search, fuzzy search
+
+**Search Index Projection**:
+A durable derived view of searchable capture content used to answer search queries.
+_Avoid_: search cache, search result table, indexing job output
+
+**Search Context**:
+Captured contextual labels that help find or filter a **Search Result Anchor**, such as app name, window title, browser URL, or speaker label.
+_Avoid_: metadata blob, result decoration, search tags
+
+**Search Snippet**:
+A query-specific preview of why a **Search Result Anchor** matched.
+_Avoid_: saved preview text, stored excerpt, result summary
+
+**Search Result Group**:
+A collapsed search result that represents multiple equivalent **Search Result Anchor** values.
+_Avoid_: duplicate result, grouped row, result cluster
 
 ## Relationships
 
@@ -247,8 +287,10 @@ _Avoid_: purge, vacuum, file cleanup
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.
 - A **Recording Lifecycle** creates one **Capture Session** for a user recording and **Capture Segment** rows only for produced artifacts.
+- A **Capture Session** can filter or group search results, but is not itself a content-bearing **Search Result Anchor**.
 - **Capture Segment Duration** applies to each rotated **Capture Segment**, not to total **Capture Session** length.
 - **Capture Segment Duration** is capped at 5 minutes in persisted settings, runtime validation, and user-facing settings surfaces.
+- A **Capture Segment** supports storage, recovery, and retention boundaries rather than acting as a **Search Result Anchor**.
 - An **Audio Segment** comes from exactly one recording source, such as microphone or system audio.
 - A **Retention Policy** applies only to the active **Managed Storage Layout** and active app-infra database.
 - **Retention Cleanup** skips active capture segments and subjects with running processing/finalize jobs.
@@ -286,6 +328,71 @@ _Avoid_: purge, vacuum, file cleanup
 - If the selected **Audio Transcription Provider** or required **Audio Transcription Model** is unavailable, the microphone **Audio Segment** remains eligible but does not get an **Audio Transcription Job** until backfill can enqueue it.
 - Missing selected **Audio Transcription Model** status is surfaced when recording starts and in a dedicated Transcription settings surface, not once per committed microphone **Audio Segment**.
 - An **Audio Transcription** is derived from exactly one **Audio Segment**.
+- An **Audio Transcription** contains zero or more **Audio Transcription Span** values.
+- An **Audio Transcription Span** belongs to exactly one **Audio Segment** and is derived from transcript timing when available.
+- **Audio Transcription Span** derivation prefers provider transcript segments, falls back to word-derived windows only when segments are absent, and falls back to the whole **Audio Segment** only for untimed transcript text.
+- Speaker turns may decorate an **Audio Transcription Span** when available, but they do not define the searchable audio unit.
+- **Audio Transcription Span** results may come from microphone or system-audio **Audio Segment** values.
+- **Search Context** for an **Audio Transcription Span** should include its recording source.
+- Adjacent or overlapping **Audio Transcription Span** hits from the same **Audio Segment** may collapse into one **Search Result Group**.
+- **Audio Transcription Span** hits from different **Audio Segment** values or separated moments should remain separate results.
+- A search result for screen text should anchor to a **Captured Frame**.
+- A **Captured Frame** should be indexed as one searchable screen document even when OCR returns multiple text observations.
+- OCR observations may provide highlight context for a **Captured Frame** search result, but they are not separate **Search Result Anchor** values.
+- Equivalent **Captured Frame** values that reuse the same OCR text should remain searchable at their own capture times.
+- Equivalent **Captured Frame** search hits should collapse into a **Search Result Group** so unchanged screens do not flood the result list.
+- A **Search Result Group** for equivalent **Captured Frame** hits should open the newest matching frame by default.
+- A search result for audio speech should anchor to an **Audio Transcription Span** when timing is available.
+- Selecting a **Search Result Anchor** should navigate the existing dashboard timeline or audio player to that captured point.
+- Selecting a search result from the modal should close the modal after navigation starts.
+- Selecting an **Audio Transcription Span** should open the audio player at that span and align the dashboard timeline to the **Captured Frame** at the same recording time when such a frame exists.
+- Audio-to-frame alignment should prefer the latest **Captured Frame** at or before the **Audio Transcription Span** start time.
+- An **Audio Transcription Span** remains a valid **Search Result Anchor** even when no nearby **Captured Frame** exists.
+- Search results should not require the dashboard timeline to hide non-matching capture data.
+- **Text Search** is the first search tier for searchable **Captured Frame** and **Audio Transcription Span** content.
+- **Text Search** should search recognized screen or speech body text plus typed **Search Context** fields.
+- Recognized screen or speech body text should rank higher than **Search Context** matches by default.
+- **Search Context** should include only context Mnema actually captured and retained.
+- **Search Context** should enrich content-bearing search results rather than create standalone search results.
+- **Text Search** entries should be updated transactionally with completed OCR or transcription results.
+- **Text Search** should be enabled as part of completed OCR and transcription rather than as a separate user-facing setting.
+- **Text Search** should include completed OCR and transcription results only.
+- Empty completed OCR or transcription results should not create **Search Result Anchor** values.
+- Search should not create OCR or transcription work by itself.
+- Reprocessing a **Captured Frame** or **Audio Segment** should replace its existing **Search Index Projection** when the new result completes.
+- **Semantic Search** augments **Text Search** rather than replacing it.
+- **Semantic Search** is local-only.
+- **Semantic Search** indexing may run as separate background work because embedding generation is model work, not simple projection maintenance.
+- **Semantic Search** uses a **Semantic Search Model** rather than sending searchable capture content to a cloud embedding service.
+- **Hybrid Search** is the product direction once **Semantic Search** exists.
+- A **Search Index Projection** should produce one mixed result stream over typed **Search Result Anchor** values.
+- A **Search Index Projection** may carry type-specific anchor data for **Captured Frame** and **Audio Transcription Span** results.
+- A **Search Result Group** should preserve the time coverage of the grouped anchors while presenting one result.
+- **Search Result Group** creation should happen before result pagination is presented to the user.
+- Search results should rank by relevance with a recency bias by default.
+- Search input should be plain text by default rather than requiring users to learn advanced query syntax.
+- The first user-facing search surface should prioritize one plain search box, with lightweight result-type filtering at most.
+- The first user-facing search result surface should be a large dashboard modal.
+- The search result modal should not show captured text results for an empty query.
+- Search should run live for plain-text queries after a small character threshold, and explicit submit should run immediately.
+- Open search results should not automatically reshuffle as new OCR or transcription work completes.
+- The search result modal should present **Captured Frame** results and **Audio Transcription Span** results as separate areas.
+- The search result modal should initially focus on a small top set of results rather than overwhelming the user with the full match set.
+- The default search result modal should show up to five **Captured Frame** results and up to five **Audio Transcription Span** results.
+- Search result limits should count visible result cards or **Search Result Group** values, not raw grouped anchors.
+- The search result modal should let the user request more **Captured Frame** results independently from more **Audio Transcription Span** results.
+- Requesting more search results should preserve separate **Captured Frame** and **Audio Transcription Span** result ranking.
+- The search result modal should use result-type tabs or segmented controls rather than side-by-side result columns.
+- **Captured Frame** result cards should use image thumbnails.
+- **Captured Frame** result-card thumbnails are navigation previews and should not replace exact frame inspection.
+- A **Captured Frame** search result should remain visible when its result-card thumbnail is unavailable.
+- **Audio Transcription Span** result cards should emphasize recording source, time range, and transcript match rather than speaker labels.
+- Processing provenance may support search debugging or invalidation, but normal result cards should not display provider/model details by default.
+- Search filters such as source, app, date range, or result type should be explicit UI controls when they are added.
+- A **Search Index Projection** may be rebuilt from retained OCR and transcription results.
+- A **Search Index Projection** is user data because it duplicates searchable recognized text.
+- A **Search Snippet** should be generated when the user searches rather than stored ahead of time.
+- **Retention Cleanup** must remove **Search Index Projection** rows for deleted **Captured Frame** and **Audio Segment** sources in the same cleanup transaction.
 - An empty no-speech **Audio Transcription** is a successful **Audio Transcription**, not a failed job.
 - An **Audio Transcription** is produced by an **Audio Transcription Job**.
 - A **Managed Storage Layout** is derived from one `saveDirectory` value.
@@ -423,6 +530,12 @@ _Avoid_: purge, vacuum, file cleanup
 > **Dev:** "Is `microphoneActivityLastUnixMs` the same thing as the audio signal the inactivity policy uses?"
 > **Domain expert:** "No — that timestamp is an **Audio Activity Sample**; the inactivity pause logic uses an **Audio Activity Decision** derived from threshold-qualified activity."
 
+> **Dev:** "Should users have to choose between exact text matching and meaning-based search?"
+> **Domain expert:** "No — start with **Text Search**, then move toward **Hybrid Search** so literal and semantic matches work together."
+
+> **Dev:** "Should speaker turns define the searchable audio result?"
+> **Domain expert:** "No — **Audio Transcription Span** comes from transcript timing; speaker turns can label who spoke when that annotation exists."
+
 ## Flagged ambiguities
 
 - "pipeline" previously meant both frame intake and OCR execution; resolved: **Captured Frame Pipeline** means frame intake through batch-finalization readiness, while **OCR Job** means the recognition work for one frame.
@@ -433,3 +546,4 @@ _Avoid_: purge, vacuum, file cleanup
 - "audio activity" previously referred to both raw probe output and inactivity-policy state; resolved: raw probe output is an **Audio Activity Sample**, while policy-facing threshold-qualified state is an **Audio Activity Decision**.
 - "audio file" was used to mean the persisted unit for transcription; resolved: use **Audio Segment** for the time-bounded persisted recording file.
 - "provider" was considered for both cloud and local transcription services; resolved: **Audio Transcription Provider** means local-only for v1.
+- "search support" was used to mean both literal matching and embedding-based retrieval; resolved: **Text Search** is the first tier, while **Hybrid Search** is the direction once **Semantic Search** exists.

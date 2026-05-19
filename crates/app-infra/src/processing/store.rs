@@ -568,12 +568,14 @@ impl ProcessingStore {
         let target = self.get_required_frame(frame_id).await?;
 
         let newer_rows = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, \
+            "SELECT frames.id, session_id, file_path, captured_at, width, height, \
                     equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
-                    created_at, updated_at \
+                    frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                    frames.created_at, frames.updated_at \
              FROM frames \
-             WHERE id > ?1 \
-             ORDER BY id ASC \
+             LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+             WHERE frames.id > ?1 \
+             ORDER BY frames.id ASC \
              LIMIT ?2",
         )
         .bind(frame_id)
@@ -582,12 +584,14 @@ impl ProcessingStore {
         .await?;
 
         let older_rows = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, \
+            "SELECT frames.id, session_id, file_path, captured_at, width, height, \
                     equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
-                    created_at, updated_at \
+                    frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                    frames.created_at, frames.updated_at \
              FROM frames \
-             WHERE id < ?1 \
-             ORDER BY id DESC \
+             LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+             WHERE frames.id < ?1 \
+             ORDER BY frames.id DESC \
              LIMIT ?2",
         )
         .bind(frame_id)
@@ -644,12 +648,14 @@ impl ProcessingStore {
         captured_at_end: &str,
     ) -> Result<Option<Frame>> {
         let row = sqlx::query(
-            "SELECT id, session_id, file_path, captured_at, width, height, \
+            "SELECT frames.id, session_id, file_path, captured_at, width, height, \
                     equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
-                    created_at, updated_at \
+                    frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
+                    frames.created_at, frames.updated_at \
              FROM frames \
-             WHERE captured_at >= ?1 AND captured_at <= ?2 \
-             ORDER BY captured_at DESC, id DESC \
+             LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+             WHERE frames.captured_at >= ?1 AND frames.captured_at <= ?2 \
+             ORDER BY frames.captured_at DESC, frames.id DESC \
              LIMIT 1",
         )
         .bind(captured_at_start)
@@ -1463,6 +1469,8 @@ impl ProcessingStore {
         {
             refresh_speaker_turn_transcript_texts(&mut transaction, job.subject_id).await?;
         }
+        crate::search::project_processing_result_in_transaction(&mut transaction, &stored_result)
+            .await?;
 
         transaction.commit().await?;
 
@@ -2983,6 +2991,10 @@ fn map_frame(row: SqliteRow) -> Result<Frame> {
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
+}
+
+pub(crate) fn map_frame_for_search(row: SqliteRow) -> Result<Frame> {
+    map_frame(row)
 }
 
 fn map_frame_summary(row: SqliteRow) -> Result<FrameSummary> {

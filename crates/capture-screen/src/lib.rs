@@ -152,7 +152,7 @@ impl PrivacyFilterApplicationState {
     }
 
     fn satisfies_request(&self, requested_key: &capture_metadata::PrivacyFilterKey) -> bool {
-            self.requested_key == *requested_key
+        self.requested_key == *requested_key
             && self.unresolved_bundle_ids.is_empty()
             && !self.requires_content_refresh()
     }

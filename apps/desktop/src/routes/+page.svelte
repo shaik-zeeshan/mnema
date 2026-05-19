@@ -38,14 +38,17 @@
   import type {
     AudioSegmentDto,
     AudioSegmentMediaDto,
+    AudioSearchResultDto,
     AudioSegmentTranscriptionReprocessingResultDto,
     CapturedFrameReprocessingResultDto,
     FrameDto,
+    FrameSearchResultDto,
     FramePreviewDto,
     FrameRangeRequest,
     FrameSummaryDto,
     FocusedFrameWindowDto,
     FrameScrubPreviewsDto,
+    GetFramePreviewRequest,
     GetEarliestEarlierEquivalentFrameRequest,
     GetScrubPreviewAvailabilityRequest,
     GetProcessingJobRequest,
@@ -64,7 +67,9 @@
     SpeakerAnalysisSkipReason,
     ScrubPreviewAvailabilityDto,
     ScrubPreviewAvailabilityIntervalDto,
+    FramePreviewVideoScope,
     SpeakerAnalysisStructuredPayload,
+    SearchCaptureResponse,
     SystemAudioSpeechActivityReprocessingResultDto,
     SpeakerClusterDto,
     SpeakerTurnDto,
@@ -127,7 +132,8 @@
   const AUDIO_TRANSCRIPT_POLL_INTERVAL_MS = 1000;
   const OCR_POLL_INTERVAL_MS = 1000;
   const ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS = 50;
-  const ACTIVE_PREVIEW_EXACT_SETTLE_MS = 300;
+  const ACTIVE_PREVIEW_SCRUB_WARM_SETTLE_MS = 1200;
+  const ACTIVE_PREVIEW_EXACT_SETTLE_MS = 1000;
   const ACTIVE_PREVIEW_SCRUB_RADIUS = 12;
   const ACTIVE_PREVIEW_SCRUB_MEDIUM_RADIUS = 8;
   const ACTIVE_PREVIEW_SCRUB_FAST_RADIUS = 5;
@@ -141,6 +147,7 @@
   const ACTIVE_PREVIEW_EXTREME_SCRUB_PX_PER_MS = 8;
   const PREVIEW_CACHE_MAX_ENTRIES = 192;
   const PREVIEW_FAILURE_CACHE_TTL_MS = 5_000;
+  const PREVIEW_GENERATION_CANCELLED_MESSAGE = "preview generation cancelled";
   const SCRUB_PERF_LOG_PREFIX = "[DEBUG-scrub-perf]";
   const SCRUB_PERF_SCROLL_WINDOW_MS = 500;
   const SCRUB_PERF_SLOW_DERIVED_MS = 4;
@@ -205,6 +212,10 @@
   ): void {
     if (durationMs < thresholdMs) return;
     scrubPerfLog(event, { durationMs, ...fields });
+  }
+
+  function isPreviewGenerationCancelled(message: string): boolean {
+    return message.toLowerCase().includes(PREVIEW_GENERATION_CANCELLED_MESSAGE);
   }
 
   function scrubPerfRecordScroll(
@@ -455,16 +466,34 @@
   // Monotonic token to discard stale `list_audio_segments` responses when a
   // newer fetch supersedes one in flight (e.g. timeline reset, head poll).
   let audioSegmentsGeneration = 0;
-  // Currently selected audio segment for the inline player. The user picks a
-  // segment by clicking its bar in the timeline rail; the selection survives
-  // refreshes as long as the segment row is still in `audioSegments`. If a
-  // window/range refresh drops the row we clear the selection (see effect
-  // below) so the player doesn't keep pointing at a stale path.
+  // Currently selected audio segment for the inline player. Search-result
+  // selections are pinned from the result payload so an aligned-frame jump can
+  // move the visible lane without immediately closing the drawer.
   let selectedAudioSegmentId = $state<number | null>(null);
+  let selectedAudioSegmentPinned = $state<AudioSegmentRecord | null>(null);
+  let pendingAudioSeekMs = $state<number | null>(null);
   // Monotonic token used to discard stale `list_frames` responses. A reset
   // bumps this so any in-flight page request resolves into a no-op rather
   // than appending mismatched frames.
   let timelineGeneration = 0;
+
+  type SearchView = "all" | "frames" | "audio";
+  let searchOpen = $state(false);
+  let searchView = $state<SearchView>("all");
+  let searchQuery = $state("");
+  let searchNormalizedQuery = $state("");
+  let searchFrames = $state<FrameSearchResultDto[]>([]);
+  let searchAudio = $state<AudioSearchResultDto[]>([]);
+  let searchHasMoreFrames = $state(false);
+  let searchHasMoreAudio = $state(false);
+  let searchLoading = $state(false);
+  let searchLoadingMoreFrames = $state(false);
+  let searchLoadingMoreAudio = $state(false);
+  let searchError = $state<string | null>(null);
+  let searchSnapshotDocumentId: number | null = null;
+  let searchFrameGeneration = 0;
+  let searchAudioGeneration = 0;
+  let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Preview file paths keyed by frame id. Reactive so the rail re-renders as
   // previews stream in without any extra plumbing.
@@ -502,7 +531,9 @@
   let activeExactPreviewPendingFrameId: number | null = null;
   let scrubPreviewFetchGeneration = 0;
   let scrubPreviewFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let scrubPreviewWarmTimer: ReturnType<typeof setTimeout> | null = null;
   let scrubPreviewBatchInFlight = false;
+  let scrubPreviewWarmInFlight = false;
   let scrubPreviewPendingActiveIndex: number | null = null;
   let previousActivePreviewIndex = 0;
   let previousActivePreviewFrameId: number | null = null;
@@ -521,6 +552,8 @@
   let scrubPreviewBatchCount = $state(0);
   let scrubPreviewGeneratedCount = $state(0);
   let scrubPreviewMissingCount = $state(0);
+  let scrubPreviewWarmCount = $state(0);
+  let scrubPreviewQueuedCount = $state(0);
   let activePreviewLoadErrorFrameId = $state<number | null>(null);
   let timelineAppIconPathsByBundleId = $state<Record<string, string>>({});
   const requestedTimelineAppIconBundleIds = new Set<string>();
@@ -664,7 +697,10 @@
   const selectedAudioSegment = $derived(
     selectedAudioSegmentId == null
       ? null
-      : audioSegments.find((s) => s.id === selectedAudioSegmentId) ?? null,
+      : audioSegments.find((s) => s.id === selectedAudioSegmentId) ??
+        (selectedAudioSegmentPinned?.id === selectedAudioSegmentId
+          ? selectedAudioSegmentPinned
+          : null),
   );
   let selectedAudioSrc = $state<string | null>(null);
   let selectedAudioMediaLoading = $state(false);
@@ -705,6 +741,10 @@
   $effect(() => {
     // Clear the prior errors whenever the selected segment changes.
     void selectedAudioSegmentId;
+    if (selectedAudioSegmentId == null) {
+      pendingAudioSeekMs = null;
+      selectedAudioSegmentPinned = null;
+    }
     selectedAudioLoadError = null;
     selectedAudioTranscriptRerunError = null;
     selectedAudioTranscriptRerunLoading = false;
@@ -2077,6 +2117,22 @@
     audioCurrentTime = nextTime;
   }
 
+  $effect(() => {
+    const seekMs = pendingAudioSeekMs;
+    const el = audioEl;
+    if (seekMs == null || !el || selectedAudioSrc == null) return;
+    const applySeek = () => {
+      seekAudioToTimeMs(seekMs);
+      pendingAudioSeekMs = null;
+    };
+    if (el.readyState >= 1) {
+      applySeek();
+      return;
+    }
+    el.addEventListener("loadedmetadata", applySeek, { once: true });
+    return () => el.removeEventListener("loadedmetadata", applySeek);
+  });
+
   /** `M:SS` for the player transport. Distinct from the segment-duration
    *  helper above because the transport ticks per second and a leading dash
    *  while metadata is still loading reads better as `0:00`. */
@@ -2181,6 +2237,7 @@
   $effect(() => {
     if (selectedAudioSegmentId == null) return;
     if (!audioSegments.some((s) => s.id === selectedAudioSegmentId)) {
+      if (selectedAudioSegmentPinned?.id === selectedAudioSegmentId) return;
       selectedAudioSegmentId = null;
     }
   });
@@ -2200,6 +2257,8 @@
   let audioDrawerReturnFocusEl: HTMLElement | null = null;
 
   function closeAudioDrawer() {
+    pendingAudioSeekMs = null;
+    selectedAudioSegmentPinned = null;
     selectedAudioSegmentId = null;
   }
 
@@ -2809,6 +2868,17 @@
     return d.toLocaleString();
   }
 
+  function formatCapturedAtCompact(ts: string): string {
+    const d = parseCapturedAt(ts);
+    if (isNaN(d.getTime())) return ts;
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
   function formatUnixMs(ms: number): string {
     const d = new Date(ms);
     if (isNaN(d.getTime())) return "unknown";
@@ -2896,10 +2966,30 @@
     }, delayMs);
   }
 
+  async function cancelActivePreviewVideoRequests(): Promise<void> {
+    try {
+      const cancelled = await invoke<number>("cancel_active_frame_preview_video_requests");
+      if (cancelled > 0) {
+        scrubPerfLog("preview_video_generation_cancelled", { cancelled });
+      }
+    } catch (error) {
+      scrubPerfLog("preview_video_generation_cancel_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   function clearScrubPreviewFetchTimer(): void {
     if (scrubPreviewFetchTimer != null) {
       clearTimeout(scrubPreviewFetchTimer);
       scrubPreviewFetchTimer = null;
+    }
+  }
+
+  function clearScrubPreviewWarmTimer(): void {
+    if (scrubPreviewWarmTimer != null) {
+      clearTimeout(scrubPreviewWarmTimer);
+      scrubPreviewWarmTimer = null;
     }
   }
 
@@ -2910,6 +3000,15 @@
       if (generation !== scrubPreviewFetchGeneration) return;
       void ensureLatestScrubPreviews(activeIndex, generation);
     }, delayMs);
+  }
+
+  function scheduleScrubPreviewWarm(activeIndex: number, generation: number): void {
+    clearScrubPreviewWarmTimer();
+    scrubPreviewWarmTimer = setTimeout(() => {
+      scrubPreviewWarmTimer = null;
+      if (generation !== scrubPreviewFetchGeneration) return;
+      void warmLatestScrubPreviews(activeIndex, generation);
+    }, ACTIVE_PREVIEW_SCRUB_WARM_SETTLE_MS);
   }
 
   function trimPreviewCache(): void {
@@ -3457,6 +3556,194 @@
     };
   }
 
+  function plainSearchSnippet(snippet: string): string {
+    return snippet.replaceAll("<mark>", "").replaceAll("</mark>", "");
+  }
+
+  function openSearch(): void {
+    searchOpen = true;
+    searchView = "all";
+    void tick().then(() => {
+      document.querySelector<HTMLInputElement>(".search-modal__input")?.focus();
+    });
+  }
+
+  function clearSearchDebounceTimer(): void {
+    if (!searchDebounceTimer) return;
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = null;
+  }
+
+  function closeSearch(): void {
+    clearSearchDebounceTimer();
+    searchFrameGeneration += 1;
+    searchAudioGeneration += 1;
+    searchOpen = false;
+    searchQuery = "";
+    searchNormalizedQuery = "";
+    searchFrames = [];
+    searchAudio = [];
+    searchHasMoreFrames = false;
+    searchHasMoreAudio = false;
+    searchSnapshotDocumentId = null;
+    searchError = null;
+    searchLoading = false;
+    searchLoadingMoreFrames = false;
+    searchLoadingMoreAudio = false;
+  }
+
+  async function runSearch(options: { appendFrames?: boolean; appendAudio?: boolean } = {}): Promise<void> {
+    const query = searchQuery.trim();
+    const normalizedQuery = query.split(/\s+/).filter(Boolean).join(" ");
+    let appendFrames = options.appendFrames === true;
+    let appendAudio = options.appendAudio === true;
+    if ((appendFrames || appendAudio) && normalizedQuery !== searchNormalizedQuery) {
+      appendFrames = false;
+      appendAudio = false;
+    }
+    const requestKind = appendFrames ? "frames" : appendAudio ? "audio" : "all";
+    if (requestKind === "frames") {
+      searchFrameGeneration += 1;
+    } else if (requestKind === "audio") {
+      searchAudioGeneration += 1;
+    } else {
+      searchFrameGeneration += 1;
+      searchAudioGeneration += 1;
+    }
+    const frameGen = searchFrameGeneration;
+    const audioGen = searchAudioGeneration;
+    const requestIsCurrent = () => {
+      if (requestKind === "frames") return frameGen === searchFrameGeneration;
+      if (requestKind === "audio") return audioGen === searchAudioGeneration;
+      return frameGen === searchFrameGeneration && audioGen === searchAudioGeneration;
+    };
+    if (query.length < 2) {
+      searchNormalizedQuery = query;
+      searchFrames = [];
+      searchAudio = [];
+      searchHasMoreFrames = false;
+      searchHasMoreAudio = false;
+      searchSnapshotDocumentId = null;
+      searchLoading = false;
+      searchLoadingMoreFrames = false;
+      searchLoadingMoreAudio = false;
+      searchError = null;
+      return;
+    }
+
+    if (!appendFrames && !appendAudio) {
+      searchSnapshotDocumentId = null;
+    }
+    searchLoading = !appendFrames && !appendAudio;
+    searchLoadingMoreFrames = appendFrames;
+    searchLoadingMoreAudio = appendAudio;
+    searchError = null;
+    try {
+      const response = await invoke<SearchCaptureResponse>("search_capture", {
+        request: {
+          query,
+          frameLimit: appendAudio ? 0 : 5,
+          frameOffset: appendFrames ? searchFrames.length : 0,
+          audioLimit: appendFrames ? 0 : 5,
+          audioOffset: appendAudio ? searchAudio.length : 0,
+          snapshotDocumentId: searchSnapshotDocumentId ?? undefined,
+        },
+      });
+      if (!requestIsCurrent()) return;
+      searchNormalizedQuery = response.normalizedQuery;
+      searchSnapshotDocumentId = response.snapshotDocumentId;
+      if (!appendAudio) {
+        searchFrames = appendFrames ? [...searchFrames, ...response.frames] : response.frames;
+        searchHasMoreFrames = response.hasMoreFrames;
+        void loadSearchFrameThumbnails(response.frames);
+      }
+      if (!appendFrames) {
+        searchAudio = appendAudio ? [...searchAudio, ...response.audio] : response.audio;
+        searchHasMoreAudio = response.hasMoreAudio;
+      }
+    } catch (err) {
+      if (!requestIsCurrent()) return;
+      searchError = typeof err === "string" ? err : JSON.stringify(err);
+    } finally {
+      if (requestIsCurrent()) {
+        if (requestKind === "all") searchLoading = false;
+        if (requestKind === "frames") searchLoadingMoreFrames = false;
+        if (requestKind === "audio") searchLoadingMoreAudio = false;
+      }
+    }
+  }
+
+  async function loadSearchFrameThumbnails(results: FrameSearchResultDto[]): Promise<void> {
+    const frameIds = results
+      .map((result) => result.thumbnailFrameId)
+      .filter((frameId) => !scrubPreviewCache.has(frameId) && !scrubPreviewInFlight.has(frameId));
+    if (frameIds.length === 0) return;
+    for (const frameId of frameIds) scrubPreviewInFlight.add(frameId);
+    try {
+      const dto = await invoke<FrameScrubPreviewsDto>("get_frame_scrub_previews", {
+        request: { frameIds },
+      });
+      for (const result of dto.previews) {
+        if (result.preview) {
+          touchScrubPreviewCache(result.frameId, result.preview.filePath, {
+            mimeType: result.preview.mimeType,
+            sourceKind: result.preview.sourceKind,
+            loadMs: 0,
+          });
+        }
+      }
+    } finally {
+      for (const frameId of frameIds) scrubPreviewInFlight.delete(frameId);
+    }
+  }
+
+  function scheduleSearch(): void {
+    clearSearchDebounceTimer();
+    searchDebounceTimer = setTimeout(() => {
+      searchDebounceTimer = null;
+      void runSearch();
+    }, 250);
+  }
+
+  function onSearchInput(): void {
+    scheduleSearch();
+  }
+
+  function onSearchKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      clearSearchDebounceTimer();
+      void runSearch();
+    }
+  }
+
+  function onSearchModalKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSearch();
+    }
+  }
+
+  async function selectFrameSearchResult(result: FrameSearchResultDto): Promise<void> {
+    closeSearch();
+    await jumpToFrame(result.representativeFrame, false);
+  }
+
+  async function selectAudioSearchResult(result: AudioSearchResultDto): Promise<void> {
+    closeSearch();
+    const mapped = mapAudioSegmentDto(result.audioSegment);
+    if (mapped && !audioSegments.some((segment) => segment.id === mapped.id)) {
+      audioSegments = [...audioSegments, mapped].sort((a, b) => a.startUnixMs - b.startUnixMs);
+    }
+    selectedAudioSegmentPinned = mapped;
+    selectedAudioSegmentId = result.audioSegment.id;
+    pendingAudioSeekMs = result.spanStartMs;
+    if (result.alignedFrame) {
+      await jumpToFrame(result.alignedFrame, false);
+    }
+  }
+
   /**
    * Refresh the DB-sourced audio segment lane against the currently loaded
    * frame window. Uses the newest/oldest loaded `capturedAt` values as the
@@ -3543,7 +3830,10 @@
    * `previewInFlight`. Errors are swallowed so a single bad frame doesn't
    * break the whole rail; the slot simply renders without an image.
    */
-  async function ensurePreview(frameId: number): Promise<void> {
+  async function ensurePreview(
+    frameId: number,
+    options: { videoScope?: FramePreviewVideoScope } = {},
+  ): Promise<void> {
     const startedAt = performance.now();
     if (previewCache.has(frameId)) {
       previewCacheHitCount += 1;
@@ -3571,7 +3861,10 @@
     try {
       const invokeStartedAt = performance.now();
       const dto = await invoke<FramePreviewDto | null>("get_frame_preview", {
-        request: { frameId },
+        request: {
+          frameId,
+          videoScope: options.videoScope,
+        } satisfies GetFramePreviewRequest,
       });
       const invokeDurationMs = performance.now() - invokeStartedAt;
       if (!dto) {
@@ -3602,8 +3895,17 @@
         active: isTimelineActiveFrame(frameId),
       }, SCRUB_PERF_SLOW_PREVIEW_MS);
     } catch (error) {
-      rememberPreviewFailure(frameId);
       const message = error instanceof Error ? error.message : String(error);
+      if (isPreviewGenerationCancelled(message)) {
+        scrubPerfLog("exact_preview_cancelled", {
+          frameId,
+          durationMs: performance.now() - startedAt,
+          active: isTimelineActiveFrame(frameId),
+        });
+        return;
+      }
+
+      rememberPreviewFailure(frameId);
       if (isTimelineActiveFrame(frameId)) {
         setFrameActionStatus(prettifyFramePreviewError(message), {
           detail: message,
@@ -3633,7 +3935,7 @@
     activeExactPreviewInFlight = true;
     activeExactPreviewPendingFrameId = null;
     try {
-      await ensurePreview(frameId);
+      await ensurePreview(frameId, { videoScope: "active_frame" });
     } finally {
       activeExactPreviewInFlight = false;
       const pendingActive = timelineActive;
@@ -3697,6 +3999,59 @@
     }
   }
 
+  async function warmLatestScrubPreviews(activeIndex: number, generation: number): Promise<void> {
+    if (generation !== scrubPreviewFetchGeneration) return;
+    if (activeIndex !== timelineActiveIndex) return;
+    if (scrubPreviewWarmInFlight) return;
+
+    const timeWindow = scrubPreviewTimeWindowAround(activeIndex);
+    if (!timeWindow) return;
+
+    scrubPreviewWarmInFlight = true;
+    scrubPreviewWarmCount += 1;
+    try {
+      const startedAt = performance.now();
+      const dto = await invoke<ScrubPreviewAvailabilityDto>("get_scrub_preview_availability", {
+        request: {
+          startUnixMs: timeWindow.startUnixMs,
+          endUnixMs: timeWindow.endUnixMs,
+          enqueueMissing: false,
+        } satisfies GetScrubPreviewAvailabilityRequest,
+      });
+      if (!scrubPreviewResponseShouldApply(generation, scrubPreviewFetchGeneration)) {
+        scrubPerfLog("scrub_preview_warm_stale", {
+          returned: dto.intervals.length,
+          durationMs: performance.now() - startedAt,
+        });
+        return;
+      }
+
+      let ready = 0;
+      let queued = 0;
+      let missing = 0;
+      for (const interval of dto.intervals) {
+        if (interval.preview) {
+          touchScrubPreviewIntervalCache(interval);
+          ready += 1;
+        } else if (interval.status === "queued") {
+          queued += 1;
+        } else {
+          missing += 1;
+        }
+      }
+      scrubPreviewQueuedCount += queued;
+      scrubPreviewGeneratedCount += ready;
+      scrubPerfLogSlow("scrub_preview_warm", performance.now() - startedAt, {
+        returned: dto.intervals.length,
+        ready,
+        queued,
+        missing,
+      }, SCRUB_PERF_SLOW_PREVIEW_MS);
+    } finally {
+      scrubPreviewWarmInFlight = false;
+    }
+  }
+
   async function ensureScrubPreviews(frameIds: number[], generation: number): Promise<void> {
     const startedAt = performance.now();
     const timeWindow = scrubPreviewTimeWindowAround(timelineActiveIndex);
@@ -3743,51 +4098,11 @@
           scrubPreviewGeneratedCount += 1;
         } else if (interval.status === "queued") {
           queued += 1;
+          scrubPreviewQueuedCount += 1;
         } else {
           scrubPreviewMissingCount += 1;
           missing += 1;
         }
-      }
-      const activeHasIntervalPreview = Boolean(scrubPreviewIntervalForFrame(timelineActive)?.preview);
-      if (!activeHasIntervalPreview && frameIds.length > 0) {
-        const activeFrameId = timelineActive?.id ?? null;
-        const frameScrubIds =
-          activeFrameId != null && frameIds.includes(activeFrameId)
-            ? [activeFrameId]
-            : frameIds.slice(0, 1);
-        const frameScrubStartedAt = performance.now();
-        const frameScrubDto = await invoke<FrameScrubPreviewsDto>("get_frame_scrub_previews", {
-          request: { frameIds: frameScrubIds },
-        });
-        if (!scrubPreviewResponseShouldApply(generation, scrubPreviewFetchGeneration)) {
-          scrubPerfLog("scrub_preview_frame_stale", {
-            requested: frameScrubIds.length,
-            returned: frameScrubDto.previews.length,
-          });
-          return;
-        }
-        let frameReady = 0;
-        let frameMissing = 0;
-        for (const result of frameScrubDto.previews) {
-          if (result.preview) {
-            clearScrubPreviewFailure(result.frameId);
-            touchScrubPreviewCache(result.frameId, result.preview.filePath, {
-              mimeType: result.preview.mimeType,
-              sourceKind: result.preview.sourceKind,
-              loadMs: performance.now() - frameScrubStartedAt,
-            });
-            frameReady += 1;
-          } else {
-            rememberScrubPreviewFailure(result.frameId);
-            frameMissing += 1;
-          }
-        }
-        scrubPerfLogSlow("scrub_preview_frame_batch", performance.now() - frameScrubStartedAt, {
-          requested: frameScrubIds.length,
-          returned: frameScrubDto.previews.length,
-          ready: frameReady,
-          missing: frameMissing,
-        }, SCRUB_PERF_SLOW_PREVIEW_MS);
       }
       scrubPerfLogSlow("scrub_preview_batch", performance.now() - startedAt, {
         requested: frameIds.length,
@@ -4342,13 +4657,15 @@
   function onTimelineWheel(event: WheelEvent) {
     if (!timelineRail) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
-    // Don't hijack wheel events that originate inside the date/time picker
-    // popover — its calendar and scrollable time list need normal vertical
-    // scrolling. The picker is rendered inside the same `<section>` that owns
-    // this listener, so without this guard wheeling over the time list would
-    // scrub the timeline instead of scrolling the list.
+    // Don't hijack wheel events that originate inside timeline-owned overlays
+    // with their own scroll surfaces. These overlays are rendered inside the
+    // same `<section>` that owns this listener, so without this guard their
+    // native vertical scroll is cancelled and converted into rail scrubbing.
     const target = event.target;
-    if (target instanceof Element && target.closest(".timeline__picker")) {
+    if (
+      target instanceof Element &&
+      target.closest(".timeline__picker, .search-modal")
+    ) {
       return;
     }
     const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
@@ -4581,10 +4898,12 @@
     event.stopPropagation();
     if (suppressNextAudioSegmentBarClick) {
       clearPendingSuppressedAudioSegmentBarClick();
-      selectedAudioSegmentId = null;
+      closeAudioDrawer();
       return;
     }
     clearPendingSuppressedAudioSegmentBarClick();
+    selectedAudioSegmentPinned = null;
+    pendingAudioSeekMs = null;
     selectedAudioSegmentId = selectedAudioSegmentId === id ? null : id;
   }
   function onAudioSegmentBarKeyDown(event: KeyboardEvent) {
@@ -4679,10 +4998,23 @@
     scrubPreviewFetchGeneration += 1;
     const gen = activePreviewFetchGeneration;
     const scrubGen = scrubPreviewFetchGeneration;
+    const cleanupPreviewTimers = () => {
+      clearActivePreviewFetchTimer();
+      clearScrubPreviewFetchTimer();
+      clearScrubPreviewWarmTimer();
+    };
     clearActivePreviewFetchTimer();
     clearScrubPreviewFetchTimer();
+    clearScrubPreviewWarmTimer();
+    if (activeFrameChanged && activeExactPreviewInFlight) {
+      void cancelActivePreviewVideoRequests();
+    }
     if (!active) {
-      return;
+      return cleanupPreviewTimers;
+    }
+
+    if (previewCache.has(active.id) || previewInFlight.has(active.id)) {
+      return cleanupPreviewTimers;
     }
 
     if (shouldScheduleScrubPreview) {
@@ -4693,17 +5025,19 @@
           velocity: previewScrubVelocityPxPerMs,
         });
       } else {
-        void ensureLatestScrubPreviews(activeIndex, scrubGen);
+        scheduleLatestScrubPreviews(
+          activeIndex,
+          scrubGen,
+          ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS,
+        );
       }
+      scheduleScrubPreviewWarm(activeIndex, scrubGen);
     }
 
-    if (previewCache.has(active.id) || previewInFlight.has(active.id)) {
-      return;
-    }
     if (activeExactPreviewInFlight) {
       activeExactPreviewPendingFrameId = active.id;
       scrubPerfLog("exact_preview_deferred", { frameId: active.id });
-      return;
+      return cleanupPreviewTimers;
     }
     scheduleLatestActivePreview(
       active.id,
@@ -4713,10 +5047,7 @@
         ACTIVE_PREVIEW_EXACT_SETTLE_MS,
       ),
     );
-    return () => {
-      clearActivePreviewFetchTimer();
-      clearScrubPreviewFetchTimer();
-    };
+    return cleanupPreviewTimers;
   });
 
   // ─── On-demand OCR for the active frame ──────────────────────────────────
@@ -6102,7 +6433,11 @@
     listen("scrub_preview_cache_changed", () => {
       const activeIndex = timelineActiveIndex;
       scrubPreviewFetchGeneration += 1;
-      void ensureLatestScrubPreviews(activeIndex, scrubPreviewFetchGeneration);
+      scheduleLatestScrubPreviews(
+        activeIndex,
+        scrubPreviewFetchGeneration,
+        ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS,
+      );
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenScrubPreviewCacheChanged = fn;
@@ -6303,6 +6638,11 @@
         >{ocrRerunButtonLabel}</button>
       {/if}
       <button
+        class="btn btn--ghost btn--sm timeline__search-btn"
+        onclick={openSearch}
+        title="Search captured frames and audio"
+      >search</button>
+      <button
         class="btn btn--ghost btn--sm timeline__ocr-btn"
         class:timeline__ocr-btn--running={ocrStatus === "running"}
         class:timeline__ocr-btn--error={ocrStatus === "error"}
@@ -6329,6 +6669,143 @@
       >refresh</button>
     </div>
   </header>
+
+  {#if searchOpen}
+    <div
+      class="search-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Search captured content"
+      tabindex="-1"
+      onkeydown={onSearchModalKeydown}
+    >
+      <div class="search-modal__panel">
+        <header class="search-modal__header">
+          <input
+            class="search-modal__input"
+            bind:value={searchQuery}
+            oninput={onSearchInput}
+            onkeydown={onSearchKeydown}
+            placeholder="Search captured text or audio"
+            aria-label="Search captured text or audio"
+          />
+          <button
+            type="button"
+            class="search-modal__close"
+            onclick={closeSearch}
+            aria-label="Close search"
+            title="Close search"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 14 14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M3.5 3.5 10.5 10.5" />
+              <path d="M10.5 3.5 3.5 10.5" />
+            </svg>
+          </button>
+        </header>
+        <div class="search-modal__tabs" role="tablist" aria-label="Search result sections">
+          <button class:search-modal__tab--active={searchView === "all"} onclick={() => (searchView = "all")}>All</button>
+          <button class:search-modal__tab--active={searchView === "frames"} onclick={() => (searchView = "frames")}>Frames</button>
+          <button class:search-modal__tab--active={searchView === "audio"} onclick={() => (searchView = "audio")}>Audio</button>
+        </div>
+        {#if searchError}
+          <p class="search-modal__error">{searchError}</p>
+        {:else if searchLoading}
+          <p class="search-modal__empty">searching…</p>
+        {:else if searchQuery.trim().length < 2}
+          <p class="search-modal__empty">Type at least 2 characters.</p>
+        {:else}
+          <div class="search-modal__body">
+            {#if searchView === "all" || searchView === "frames"}
+              <section class="search-modal__section">
+                <div class="search-modal__section-head">
+                  <h2>Frames</h2>
+                  <span>{searchFrames.length}</span>
+                </div>
+                {#if searchFrames.length === 0}
+                  <p class="search-modal__empty">No frame matches.</p>
+                {:else}
+                  <div class="search-modal__results">
+                    {#each searchFrames as result (result.groupKey)}
+                      <button class="search-card search-card--frame" onclick={() => void selectFrameSearchResult(result)}>
+                        <div class="search-card__thumb">
+                          {#if scrubPreviewCache.get(result.thumbnailFrameId)}
+                            <img src={framePreviewAssetUrl(scrubPreviewCache.get(result.thumbnailFrameId) ?? "")} alt="" />
+                          {:else}
+                            <span>frame</span>
+                          {/if}
+                        </div>
+                        <div class="search-card__content">
+                          <div class="search-card__meta">
+                            <span>{result.appName ?? "Unknown app"}</span>
+                            <span>{formatCapturedAtCompact(result.groupEndAt)}</span>
+                          </div>
+                          {#if result.windowTitle}
+                            <div class="search-card__title">{result.windowTitle}</div>
+                          {/if}
+                          <p>{plainSearchSnippet(result.snippet)}</p>
+                          {#if result.matchCount > 1}
+                            <span class="search-card__badge">{result.matchCount} matches</span>
+                          {/if}
+                        </div>
+                      </button>
+                    {/each}
+                  </div>
+                  {#if searchHasMoreFrames}
+                    <button class="btn btn--ghost btn--sm search-modal__more" disabled={searchLoadingMoreFrames} onclick={() => void runSearch({ appendFrames: true })}>
+                      {searchLoadingMoreFrames ? "loading…" : "More frames"}
+                    </button>
+                  {/if}
+                {/if}
+              </section>
+            {/if}
+            {#if searchView === "all" || searchView === "audio"}
+              <section class="search-modal__section">
+                <div class="search-modal__section-head">
+                  <h2>Audio</h2>
+                  <span>{searchAudio.length}</span>
+                </div>
+                {#if searchAudio.length === 0}
+                  <p class="search-modal__empty">No audio matches.</p>
+                {:else}
+                  <div class="search-modal__results">
+                    {#each searchAudio as result (result.groupKey)}
+                      <button class="search-card" onclick={() => void selectAudioSearchResult(result)}>
+                        <div class="search-card__content">
+                          <div class="search-card__meta">
+                            <span class="search-card__badge">{audioSourceLabel(result.sourceKind === "microphone" ? "microphone" : "systemAudio")}</span>
+                            <span>{formatCapturedAtCompact(result.absoluteStartAt)}</span>
+                            <span>{formatDurationSeconds(Math.max(0, (result.spanEndMs - result.spanStartMs) / 1000))}</span>
+                          </div>
+                          <p>{plainSearchSnippet(result.snippet)}</p>
+                          {#if result.matchCount > 1}
+                            <span class="search-card__badge">{result.matchCount} adjacent matches</span>
+                          {/if}
+                        </div>
+                      </button>
+                    {/each}
+                  </div>
+                  {#if searchHasMoreAudio}
+                    <button class="btn btn--ghost btn--sm search-modal__more" disabled={searchLoadingMoreAudio} onclick={() => void runSearch({ appendAudio: true })}>
+                      {searchLoadingMoreAudio ? "loading…" : "More audio"}
+                    </button>
+                  {/if}
+                {/if}
+              </section>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
 
   {#if timelineError}
     <div class="timeline__error">
@@ -6546,7 +7023,7 @@
         <div class="timeline__overlay-row">
           <span class="timeline__overlay-key">scrub</span>
           <span class="timeline__overlay-val timeline__overlay-truncate">
-            hit {scrubPreviewHitCount} miss {scrubPreviewMissCount} batch {scrubPreviewBatchCount} gen {scrubPreviewGeneratedCount} missing {scrubPreviewMissingCount}
+            hit {scrubPreviewHitCount} req {scrubPreviewMissCount} batch {scrubPreviewBatchCount} ready {scrubPreviewGeneratedCount} queued {scrubPreviewQueuedCount} warm {scrubPreviewWarmCount} unavailable {scrubPreviewMissingCount}
           </span>
         </div>
         <div class="timeline__overlay-row">
@@ -7329,6 +7806,225 @@
 
   .timeline__bar-group--secondary {
     margin-left: auto;
+  }
+
+  .search-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: grid;
+    place-items: start center;
+    padding: 8vh 24px 24px;
+    background: rgba(0, 0, 0, 0.42);
+  }
+
+  .search-modal__panel {
+    width: min(980px, 100%);
+    max-height: 82vh;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.34);
+    overflow: hidden;
+  }
+
+  .search-modal__header {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .search-modal__input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 36px;
+    padding: 0 12px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-strong);
+    font: inherit;
+  }
+
+  .search-modal__close {
+    width: 36px;
+    height: 36px;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition:
+      background 0.12s,
+      border-color 0.12s,
+      color 0.12s;
+  }
+
+  .search-modal__close:hover,
+  .search-modal__close:focus-visible {
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+    outline: none;
+  }
+
+  .search-modal__tabs {
+    display: flex;
+    gap: 6px;
+  }
+
+  .search-modal__tabs button {
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--app-text-muted);
+    padding: 5px 10px;
+    font: inherit;
+  }
+
+  .search-modal__tab--active {
+    background: var(--app-surface-raised) !important;
+    color: var(--app-text-strong) !important;
+    border-color: var(--app-border-strong) !important;
+  }
+
+  .search-modal__body {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .search-modal__section {
+    min-width: 0;
+  }
+
+  .search-modal__section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    color: var(--app-text-muted);
+  }
+
+  .search-modal__section-head h2 {
+    margin: 0;
+    font-size: 13px;
+    color: var(--app-text-strong);
+  }
+
+  .search-modal__results {
+    display: grid;
+    gap: 8px;
+  }
+
+  .search-card {
+    width: 100%;
+    display: flex;
+    gap: 10px;
+    padding: 10px;
+    text-align: left;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface-raised);
+    color: var(--app-text);
+    font: inherit;
+  }
+
+  .search-card:hover {
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+  }
+
+  .search-card__thumb {
+    width: 88px;
+    aspect-ratio: 16 / 10;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--app-bg);
+    color: var(--app-text-subtle);
+    font-size: 11px;
+  }
+
+  .search-card__thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .search-card__content {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+  }
+
+  .search-card__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    color: var(--app-text-muted);
+    font-size: 11px;
+  }
+
+  .search-card__title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--app-text-strong);
+    font-size: 12px;
+  }
+
+  .search-card p,
+  .search-modal__empty,
+  .search-modal__error {
+    margin: 0;
+    color: var(--app-text);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .search-modal__empty {
+    color: var(--app-text-muted);
+  }
+
+  .search-modal__error {
+    color: var(--app-danger);
+  }
+
+  .search-card__badge {
+    width: fit-content;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    padding: 1px 6px;
+    color: var(--app-text-muted);
+    font-size: 11px;
+  }
+
+  .search-modal__more {
+    margin-top: 8px;
+  }
+
+  @media (max-width: 760px) {
+    .search-modal {
+      padding: 12px;
+      place-items: stretch;
+    }
+
+    .search-modal__body {
+      grid-template-columns: 1fr;
+    }
   }
 
   /* ── Recording control cluster ─────────────────────────────

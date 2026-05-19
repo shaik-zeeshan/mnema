@@ -68,9 +68,9 @@ use capture_types::{
     default_speaker_analysis_settings, default_video_bitrate, AppearanceSetting,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, CaptureOutputFiles, CaptureSources, CaptureSupportResponse,
-    InactivityActivityMode, MicrophoneControllerState,
-    MicrophoneDisconnectPolicy, MicrophonePreference, MicrophonePreferenceMode, OcrProvider,
-    RecordingSettings, ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
+    InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
+    MicrophonePreference, MicrophonePreferenceMode, OcrProvider, RecordingSettings,
+    ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
     StartNativeCaptureRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
     VideoBitratePreset, VideoBitrateSettings,
 };

@@ -23,6 +23,7 @@ pub use runtime::{ProcessingJobRunOutcome, ProcessingRuntime};
 pub use speaker_analysis::{
     SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend, HELPER_TIMEOUT_SECONDS_OPTION,
 };
+pub(crate) use store::map_frame_for_search;
 pub use store::{
     FocusedFrameWindow, FrameProcessingJob, PersonProfile, ProcessingJobCompletion,
     ProcessingModelCleanupLock, ProcessingStore, SegmentWorkspaceOcrReference, SpeakerClusterView,

@@ -4,7 +4,10 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -28,6 +31,8 @@ pub(super) const FRAME_PREVIEW_CACHE_MAX_ENTRIES: usize = 256;
 pub(super) const FRAME_PREVIEW_VIDEO_FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
 const FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS: f64 = 5.0;
 const FRAME_PREVIEW_EXACT_VIDEO_TIMEOUT: Duration = Duration::from_secs(5);
+const PREVIEW_GENERATION_CANCELLED: &str = "preview generation cancelled";
+const PREVIEW_GENERATION_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const SCRUB_PREVIEW_DEFAULT_MAX_PIXEL_SIZE: u32 = 200;
 const SCRUB_PREVIEW_MIN_MAX_PIXEL_SIZE: u32 = 200;
 const SCRUB_PREVIEW_MAX_MAX_PIXEL_SIZE: u32 = 1280;
@@ -72,6 +77,56 @@ struct ScrubIntervalWorkKey {
     interval_start_video_offset_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FramePreviewVideoScopeDto {
+    ActiveFrame,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum VideoPreviewRequestScope {
+    Shared,
+    ActiveFrame,
+}
+
+impl From<Option<FramePreviewVideoScopeDto>> for VideoPreviewRequestScope {
+    fn from(scope: Option<FramePreviewVideoScopeDto>) -> Self {
+        match scope {
+            Some(FramePreviewVideoScopeDto::ActiveFrame) => Self::ActiveFrame,
+            None => Self::Shared,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct VideoPreviewWorkKey {
+    scope: VideoPreviewRequestScope,
+    video_path: PathBuf,
+}
+
+impl VideoPreviewWorkKey {
+    fn new(video_path: &Path, scope: VideoPreviewRequestScope) -> Self {
+        Self {
+            scope,
+            video_path: video_path.to_path_buf(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ActiveVideoPreviewWork {
+    work_id: u64,
+    cancel_requested: Arc<AtomicBool>,
+    waiters: Vec<oneshot::Sender<Result<(), String>>>,
+}
+
+#[derive(Debug)]
+pub(super) struct VideoPreviewRequestToken {
+    key: VideoPreviewWorkKey,
+    work_id: u64,
+    cancel_requested: Arc<AtomicBool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct IndexedFramePreviewOffset {
     pub(super) video_offset_ms: u64,
@@ -99,7 +154,8 @@ pub struct FramePreviewState {
     cache: FramePreviewCache,
     scrub_cache: FrameScrubPreviewCache,
     in_flight: HashMap<i64, Vec<oneshot::Sender<Result<Option<FramePreviewDto>, String>>>>,
-    video_in_flight: HashMap<PathBuf, Vec<oneshot::Sender<Result<(), String>>>>,
+    video_in_flight: HashMap<VideoPreviewWorkKey, ActiveVideoPreviewWork>,
+    next_video_work_id: u64,
     scrub_interval_in_flight: HashSet<ScrubIntervalWorkKey>,
 }
 
@@ -135,10 +191,10 @@ impl FramePreviewState {
     }
 
     pub(super) fn clear(&mut self) {
+        self.cancel_all_video_requests();
         self.cache.clear();
         self.scrub_cache.clear();
         self.in_flight.clear();
-        self.video_in_flight.clear();
     }
 
     pub(super) fn insert_scrub(
@@ -218,23 +274,85 @@ impl FramePreviewState {
     pub(super) fn begin_video_request(
         &mut self,
         video_path: &Path,
-    ) -> Result<(), oneshot::Receiver<Result<(), String>>> {
-        if let Some(waiters) = self.video_in_flight.get_mut(video_path) {
+        scope: VideoPreviewRequestScope,
+    ) -> Result<VideoPreviewRequestToken, oneshot::Receiver<Result<(), String>>> {
+        let key = VideoPreviewWorkKey::new(video_path, scope);
+        if let Some(work) = self.video_in_flight.get_mut(&key) {
             let (tx, rx) = oneshot::channel();
-            waiters.push(tx);
+            work.waiters.push(tx);
             return Err(rx);
         }
 
-        self.video_in_flight
-            .insert(video_path.to_path_buf(), Vec::new());
-        Ok(())
+        let work_id = self.next_video_work_id;
+        self.next_video_work_id = self.next_video_work_id.wrapping_add(1);
+        let cancel_requested = Arc::new(AtomicBool::new(false));
+        let token = VideoPreviewRequestToken {
+            key,
+            work_id,
+            cancel_requested: Arc::clone(&cancel_requested),
+        };
+        self.video_in_flight.insert(
+            token.key.clone(),
+            ActiveVideoPreviewWork {
+                work_id,
+                cancel_requested,
+                waiters: Vec::new(),
+            },
+        );
+        Ok(token)
     }
 
-    pub(super) fn finish_video_request(&mut self, video_path: &Path, result: Result<(), String>) {
-        let waiters = self.video_in_flight.remove(video_path).unwrap_or_default();
-        for waiter in waiters {
+    pub(super) fn finish_video_request(
+        &mut self,
+        token: &VideoPreviewRequestToken,
+        result: Result<(), String>,
+    ) {
+        let should_finish = self
+            .video_in_flight
+            .get(&token.key)
+            .is_some_and(|work| work.work_id == token.work_id);
+        if !should_finish {
+            return;
+        }
+
+        let work = self
+            .video_in_flight
+            .remove(&token.key)
+            .expect("matching video preview work should exist");
+        for waiter in work.waiters {
             let _ = waiter.send(result.clone());
         }
+    }
+
+    pub(super) fn cancel_active_video_requests(&mut self) -> usize {
+        self.cancel_video_requests(|key| key.scope == VideoPreviewRequestScope::ActiveFrame)
+    }
+
+    fn cancel_all_video_requests(&mut self) -> usize {
+        self.cancel_video_requests(|_| true)
+    }
+
+    fn cancel_video_requests(
+        &mut self,
+        should_cancel: impl Fn(&VideoPreviewWorkKey) -> bool,
+    ) -> usize {
+        let active = self
+            .video_in_flight
+            .keys()
+            .filter(|key| should_cancel(key))
+            .cloned()
+            .collect::<Vec<_>>();
+        let cancelled = active.len();
+        for key in active {
+            let Some(work) = self.video_in_flight.remove(&key) else {
+                continue;
+            };
+            work.cancel_requested.store(true, Ordering::SeqCst);
+            for waiter in work.waiters {
+                let _ = waiter.send(Err(PREVIEW_GENERATION_CANCELLED.to_string()));
+            }
+        }
+        cancelled
     }
 
     fn begin_scrub_interval_work(
@@ -431,6 +549,7 @@ impl FrameScrubPreviewCache {
 #[serde(rename_all = "camelCase")]
 pub struct GetFramePreviewRequest {
     pub frame_id: i64,
+    pub video_scope: Option<FramePreviewVideoScopeDto>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1290,35 +1409,6 @@ fn run_test_video_preview_extractor(
 }
 
 #[cfg(target_os = "macos")]
-fn block_on_waker_driven_future<F>(future: F) -> F::Output
-where
-    F: std::future::Future,
-{
-    struct ThreadWaker(std::thread::Thread);
-
-    impl std::task::Wake for ThreadWaker {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-
-    let waker = std::task::Waker::from(Arc::new(ThreadWaker(std::thread::current())));
-    let mut context = std::task::Context::from_waker(&waker);
-    let mut future = std::pin::pin!(future);
-
-    loop {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(output) => return output,
-            std::task::Poll::Pending => std::thread::park(),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
 fn image_bytes_from_cg_image(
     image: &cidre::cg::Image,
     ut_type: &cidre::ut::Type,
@@ -1435,15 +1525,20 @@ fn extract_preview_image_from_video_blocking(
     exact_offset_ms: Option<u64>,
     offset_seconds: f64,
     require_exact_time: bool,
+    cancel_requested: Arc<AtomicBool>,
 ) -> Result<(Vec<u8>, &'static str), String> {
     #[cfg(test)]
     if let Some(result) = run_test_video_preview_extractor(&video_path, offset_seconds) {
         return result;
     }
 
+    if cancel_requested.load(Ordering::SeqCst) {
+        return Err(PREVIEW_GENERATION_CANCELLED.to_string());
+    }
+
     let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
     let result = {
-        use cidre::{av, cm, ns};
+        use cidre::{av, blocks, cg, cm, ns};
 
         let video_url = ns::Url::with_fs_path_str(&video_path.to_string_lossy(), false);
         let asset = av::UrlAsset::with_url(&video_url, None)
@@ -1465,15 +1560,83 @@ fn extract_preview_image_from_video_blocking(
             image_generator.set_requested_time_tolerance_after(cm::Time::zero());
         }
 
-        let (cg_image, actual_time) =
-            block_on_waker_driven_future(image_generator.cg_image_for_time(requested_time))
-                .map_err(|error| {
-                    format!(
-                        "failed to generate preview image from video {} at {}s: {error}",
-                        video_path.display(),
-                        clamped_offset_seconds,
-                    )
-                })?;
+        struct ExactPreviewState {
+            result: Option<Result<(Vec<u8>, &'static str, cm::Time), String>>,
+        }
+
+        let state = Arc::new((
+            Mutex::new(ExactPreviewState { result: None }),
+            Condvar::new(),
+        ));
+        let callback_state = Arc::clone(&state);
+        let callback_cancel_requested = Arc::clone(&cancel_requested);
+        let mut block = blocks::EscBlock::new3(
+            move |image: Option<&cg::Image>, actual_time: cm::Time, error: Option<&ns::Error>| {
+                let image_result = if callback_cancel_requested.load(Ordering::SeqCst) {
+                    Err(PREVIEW_GENERATION_CANCELLED.to_string())
+                } else if let Some(error) = error {
+                    Err(format!(
+                        "failed to generate preview image from video: {error}"
+                    ))
+                } else {
+                    image
+                        .ok_or_else(|| "preview generation succeeded without image".to_string())
+                        .and_then(preview_image_bytes_from_cg_image)
+                        .map(|(bytes, mime_type)| (bytes, mime_type, actual_time))
+                };
+
+                let (lock, cvar) = &*callback_state;
+                let mut state = lock.lock().expect("exact preview state poisoned");
+                state.result = Some(image_result);
+                cvar.notify_one();
+            },
+        );
+        image_generator.cg_image_for_time_ch(requested_time, &mut block);
+
+        let (lock, cvar) = &*state;
+        let mut state = lock.lock().expect("exact preview state poisoned");
+        let wait_started_at = Instant::now();
+        let mut cancelled = false;
+        while state.result.is_none() {
+            if cancel_requested.load(Ordering::SeqCst) {
+                cancelled = true;
+                break;
+            }
+
+            let remaining_timeout = FRAME_PREVIEW_EXACT_VIDEO_TIMEOUT
+                .checked_sub(wait_started_at.elapsed())
+                .unwrap_or_default();
+            if remaining_timeout.is_zero() {
+                break;
+            }
+            let wait_for = remaining_timeout.min(PREVIEW_GENERATION_CANCEL_POLL_INTERVAL);
+            let (next_state, _) = cvar
+                .wait_timeout(state, wait_for)
+                .expect("exact preview state poisoned while waiting");
+            state = next_state;
+        }
+
+        let result = state.result.take();
+        drop(state);
+        image_generator.cancel_all_cg_image_gen();
+
+        if cancelled {
+            return Err(PREVIEW_GENERATION_CANCELLED.to_string());
+        }
+
+        let (bytes, mime_type, actual_time) = match result {
+            Some(Ok(result)) => result,
+            Some(Err(error)) => return Err(error),
+            None if cancel_requested.load(Ordering::SeqCst) => {
+                return Err(PREVIEW_GENERATION_CANCELLED.to_string());
+            }
+            None => {
+                return Err(format!(
+                    "timed out generating exact frame preview after {}s",
+                    FRAME_PREVIEW_EXACT_VIDEO_TIMEOUT.as_secs()
+                ));
+            }
+        };
 
         if requested_time.is_valid() && actual_time.is_valid() && requested_time != actual_time {
             log_video_preview_exact_miss(
@@ -1487,9 +1650,7 @@ fn extract_preview_image_from_video_blocking(
             );
         }
 
-        let preview = preview_image_bytes_from_cg_image(cg_image.as_ref());
-        image_generator.cancel_all_cg_image_gen();
-        preview
+        Ok((bytes, mime_type))
     };
 
     result
@@ -1502,12 +1663,15 @@ async fn extract_preview_image_from_video(
     exact_offset_ms: Option<u64>,
     offset_seconds: f64,
     require_exact_time: bool,
+    cancel_requested: Arc<AtomicBool>,
 ) -> Result<(Vec<u8>, &'static str), String> {
+    let cancel_on_timeout = Arc::clone(&cancel_requested);
     tokio::time::timeout(
         FRAME_PREVIEW_EXACT_VIDEO_TIMEOUT,
         tokio::task::spawn_blocking({
             let video_path = video_path.to_path_buf();
             let frame = frame.clone();
+            let cancel_requested = Arc::clone(&cancel_requested);
             move || {
                 extract_preview_image_from_video_blocking(
                     video_path,
@@ -1515,12 +1679,14 @@ async fn extract_preview_image_from_video(
                     exact_offset_ms,
                     offset_seconds,
                     require_exact_time,
+                    cancel_requested,
                 )
             }
         }),
     )
     .await
     .map_err(|_| {
+        cancel_on_timeout.store(true, Ordering::SeqCst);
         format!(
             "timed out generating exact frame preview after {}s",
             FRAME_PREVIEW_EXACT_VIDEO_TIMEOUT.as_secs()
@@ -1534,6 +1700,7 @@ fn extract_scrub_preview_images_from_video_batch_blocking(
     video_path: PathBuf,
     video_offset_ms: Vec<u64>,
     max_pixel_size: u32,
+    cancel_requested: Arc<AtomicBool>,
 ) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
     #[cfg(test)]
     if test_video_preview_extractor_state()
@@ -1554,6 +1721,9 @@ fn extract_scrub_preview_images_from_video_batch_blocking(
 
     if video_offset_ms.is_empty() {
         return Ok(HashMap::new());
+    }
+    if cancel_requested.load(Ordering::SeqCst) {
+        return Err(PREVIEW_GENERATION_CANCELLED.to_string());
     }
 
     let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
@@ -1626,18 +1796,25 @@ fn extract_scrub_preview_images_from_video_batch_blocking(
     let (lock, cvar) = &*state;
     let mut state = lock.lock().expect("scrub preview batch state poisoned");
     let wait_started_at = Instant::now();
+    let mut cancelled = false;
     while state.remaining > 0 {
+        if cancel_requested.load(Ordering::SeqCst) {
+            cancelled = true;
+            break;
+        }
         let remaining_timeout = SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT
             .checked_sub(wait_started_at.elapsed())
             .unwrap_or_default();
         if remaining_timeout.is_zero() {
             break;
         }
+        let wait_for = remaining_timeout.min(PREVIEW_GENERATION_CANCEL_POLL_INTERVAL);
+        let waited_until_timeout = wait_for == remaining_timeout;
         let (next_state, wait_result) = cvar
-            .wait_timeout(state, remaining_timeout)
+            .wait_timeout(state, wait_for)
             .expect("scrub preview batch state poisoned while waiting");
         state = next_state;
-        if wait_result.timed_out() {
+        if wait_result.timed_out() && waited_until_timeout {
             break;
         }
     }
@@ -1645,6 +1822,10 @@ fn extract_scrub_preview_images_from_video_batch_blocking(
     let results_by_time = std::mem::take(&mut state.results);
     drop(state);
     image_generator.cancel_all_cg_image_gen();
+
+    if cancelled {
+        return Err(PREVIEW_GENERATION_CANCELLED.to_string());
+    }
 
     if timed_out {
         return Err(format!(
@@ -1675,23 +1856,28 @@ async fn extract_scrub_preview_images_from_video_batch(
     video_path: &Path,
     video_offset_ms: &[u64],
     max_pixel_size: u32,
+    cancel_requested: Arc<AtomicBool>,
 ) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
+    let cancel_on_timeout = Arc::clone(&cancel_requested);
     tokio::time::timeout(
         SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT,
         tokio::task::spawn_blocking({
             let video_path = video_path.to_path_buf();
             let video_offset_ms = video_offset_ms.to_vec();
+            let cancel_requested = Arc::clone(&cancel_requested);
             move || {
                 extract_scrub_preview_images_from_video_batch_blocking(
                     video_path,
                     video_offset_ms,
                     max_pixel_size,
+                    cancel_requested,
                 )
             }
         }),
     )
     .await
     .map_err(|_| {
+        cancel_on_timeout.store(true, Ordering::SeqCst);
         format!(
             "timed out joining scrub preview extraction task after {}s",
             SCRUB_PREVIEW_VIDEO_BATCH_TIMEOUT.as_secs()
@@ -1705,6 +1891,7 @@ async fn extract_scrub_preview_images_from_video_batch(
     _video_path: &Path,
     _video_offset_ms: &[u64],
     _max_pixel_size: u32,
+    _cancel_requested: Arc<AtomicBool>,
 ) -> Result<HashMap<u64, Result<Vec<u8>, String>>, String> {
     Err("scrub preview video generation is only supported on macOS".to_string())
 }
@@ -1716,6 +1903,7 @@ async fn extract_preview_image_from_video(
     _exact_offset_ms: Option<u64>,
     _offset_seconds: f64,
     _require_exact_time: bool,
+    _cancel_requested: Arc<AtomicBool>,
 ) -> Result<(Vec<u8>, &'static str), String> {
     Err("video frame preview fallback is only supported on macOS".to_string())
 }
@@ -1725,6 +1913,7 @@ pub(super) async fn get_frame_preview_inner(
     cache: &FramePreviewCacheState,
     app_handle: Option<&tauri::AppHandle>,
     frame_id: i64,
+    video_scope: VideoPreviewRequestScope,
 ) -> ::app_infra::Result<Option<FramePreviewDto>> {
     let Some(frame) = infra.get_frame(frame_id).await? else {
         return Ok(None);
@@ -1855,31 +2044,41 @@ pub(super) async fn get_frame_preview_inner(
     let (bytes, mime_type) = loop {
         let video_request_guard = {
             let mut preview_state = cache.lock().expect("frame preview cache poisoned");
-            match preview_state.begin_video_request(&segment_paths.video_path) {
-                Ok(()) => Ok(()),
+            match preview_state.begin_video_request(&segment_paths.video_path, video_scope) {
+                Ok(token) => Ok(token),
                 Err(rx) => Err(rx),
             }
         };
 
         match video_request_guard {
-            Ok(()) => {
-                let result = extract_preview_image_from_video(
+            Ok(token) => {
+                let mut result = extract_preview_image_from_video(
                     &segment_paths.video_path,
                     &frame,
                     exact_offset_ms,
                     offset_seconds,
                     require_exact_time,
+                    Arc::clone(&token.cancel_requested),
                 )
                 .await;
+                if token.cancel_requested.load(Ordering::SeqCst) {
+                    result = Err(PREVIEW_GENERATION_CANCELLED.to_string());
+                }
                 let notify_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
                 cache
                     .lock()
                     .expect("frame preview cache poisoned")
-                    .finish_video_request(&segment_paths.video_path, notify_result);
+                    .finish_video_request(&token, notify_result);
 
                 match result {
                     Ok(result) => break result,
                     Err(video_error) => {
+                        if video_error == PREVIEW_GENERATION_CANCELLED {
+                            return Err(::app_infra::AppInfraError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Interrupted,
+                                video_error,
+                            )));
+                        }
                         cache
                             .lock()
                             .expect("frame preview cache poisoned")
@@ -1908,6 +2107,12 @@ pub(super) async fn get_frame_preview_inner(
                 })?;
 
                 if let Err(video_error) = leader_result {
+                    if video_error == PREVIEW_GENERATION_CANCELLED {
+                        return Err(::app_infra::AppInfraError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            video_error,
+                        )));
+                    }
                     return read_segment_frame_preview_or_return_video_error(
                         &frame,
                         infra,
@@ -1941,9 +2146,10 @@ pub(super) async fn get_frame_preview_inner_with_logging(
     cache: &FramePreviewCacheState,
     app_handle: Option<&tauri::AppHandle>,
     frame_id: i64,
+    video_scope: VideoPreviewRequestScope,
 ) -> ::app_infra::Result<Option<FramePreviewDto>> {
     let started_at = Instant::now();
-    let result = get_frame_preview_inner(infra, cache, app_handle, frame_id).await;
+    let result = get_frame_preview_inner(infra, cache, app_handle, frame_id, video_scope).await;
     let elapsed_ms = started_at.elapsed().as_millis();
 
     match &result {
@@ -2484,6 +2690,99 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalized_screen_segment_scrub_preview_job_plans_indexed_buckets() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let video_path = temp_dir.path().join("session-segment-0001.mov");
+        fs::write(
+            &video_path,
+            b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10moovtrak",
+        )
+        .unwrap();
+        let index = capture_screen::ScreenSegmentFrameIndex {
+            version: capture_screen::SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: vec![
+                capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 10_000,
+                    frame_index: 0,
+                    video_offset_ms: 0,
+                },
+                capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 10_400,
+                    frame_index: 1,
+                    video_offset_ms: 400,
+                },
+                capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 11_000,
+                    frame_index: 2,
+                    video_offset_ms: 1_000,
+                },
+            ],
+        };
+        fs::write(
+            capture_screen::screen_segment_frame_index_path(&video_path),
+            capture_screen::encode_screen_segment_frame_index(&index),
+        )
+        .unwrap();
+
+        let job = scrub_preview_generation_job_for_video_path(temp_dir.path(), video_path)
+            .unwrap()
+            .expect("finalized segment should queue scrub previews");
+
+        assert_eq!(job.started_unix_ms, 10_000);
+        assert_eq!(job.intervals, vec![(0, 0), (1_000, 1_000)]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalized_screen_segment_scrub_preview_job_skips_cached_intervals() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let video_path = temp_dir.path().join("session-segment-0002.mov");
+        fs::write(
+            &video_path,
+            b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10moovtrak",
+        )
+        .unwrap();
+        let index = capture_screen::ScreenSegmentFrameIndex {
+            version: capture_screen::SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+            entries: vec![
+                capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 20_000,
+                    frame_index: 0,
+                    video_offset_ms: 0,
+                },
+                capture_screen::ScreenSegmentFrameIndexEntry {
+                    captured_at_unix_ms: 21_000,
+                    frame_index: 1,
+                    video_offset_ms: 1_000,
+                },
+            ],
+        };
+        let frame_index_path = capture_screen::screen_segment_frame_index_path(&video_path);
+        fs::write(
+            &frame_index_path,
+            capture_screen::encode_screen_segment_frame_index(&index),
+        )
+        .unwrap();
+        let segment_cache_key = segment_cache_key(&video_path, Some(&frame_index_path));
+        let segment_dir = scrub_preview_segment_dir(temp_dir.path(), &segment_cache_key);
+        write_scrub_preview_metadata(
+            &segment_dir,
+            &segment_cache_key,
+            &video_path,
+            Some(&frame_index_path),
+        )
+        .unwrap();
+        fs::write(scrub_preview_interval_path(&segment_dir, 0), b"cached").unwrap();
+
+        let job = scrub_preview_generation_job_for_video_path(temp_dir.path(), video_path)
+            .unwrap()
+            .expect("uncached interval should still queue");
+
+        assert_eq!(job.intervals, vec![(1_000, 1_000)]);
+    }
+
     fn count_scrub_preview_jpegs(cache_root: &Path) -> usize {
         fs::read_dir(cache_root)
             .unwrap()
@@ -2653,6 +2952,7 @@ async fn generate_scrub_preview_job(job: ScrubPreviewGenerationJob, app_handle: 
             &job.video_path,
             &offsets,
             SCRUB_PREVIEW_MAX_PIXEL_SIZE,
+            Arc::new(AtomicBool::new(false)),
         )
         .await;
         if let Ok(decoded_by_offset) = result {
@@ -2693,6 +2993,111 @@ async fn generate_scrub_preview_job(job: ScrubPreviewGenerationJob, app_handle: 
         .lock()
         .expect("frame preview cache poisoned")
         .finish_scrub_interval_work(&accepted);
+}
+
+fn scrub_preview_generation_job_for_video_path(
+    cache_root: &Path,
+    video_path: PathBuf,
+) -> Result<Option<ScrubPreviewGenerationJob>, String> {
+    if !cfg!(target_os = "macos")
+        || !video_path.is_file()
+        || fs::metadata(&video_path)
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true)
+        || !mov_file_appears_openable_for_preview(&video_path).unwrap_or(false)
+    {
+        return Ok(None);
+    }
+
+    let index = match load_screen_segment_frame_index(&video_path) {
+        Ok(Some(index)) if !index.entries.is_empty() => index,
+        Ok(_) => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to load screen segment frame index for {}: {error}",
+                video_path.display()
+            ));
+        }
+    };
+    let indexed_start_unix_ms = index
+        .entries
+        .iter()
+        .map(|entry| entry.captured_at_unix_ms as i64)
+        .min()
+        .unwrap_or(0);
+    let indexed_end_unix_ms = index
+        .entries
+        .iter()
+        .map(|entry| entry.captured_at_unix_ms as i64)
+        .max()
+        .unwrap_or(indexed_start_unix_ms);
+    let (started_unix_ms, _) =
+        scrub_preview_segment_bounds_unix_ms(indexed_start_unix_ms, indexed_end_unix_ms, &index);
+    let frame_index_path = screen_frame_index_existing_path(&video_path);
+    let segment_cache_key = segment_cache_key(&video_path, frame_index_path.as_deref());
+    let segment_dir = scrub_preview_segment_dir(cache_root, &segment_cache_key);
+    let metadata_valid = scrub_preview_metadata_valid(
+        &segment_dir,
+        &segment_cache_key,
+        &video_path,
+        frame_index_path.as_deref(),
+    );
+    let mut intervals = indexed_scrub_preview_offsets(&index)
+        .into_iter()
+        .filter(|(bucket, _)| {
+            !(metadata_valid && scrub_preview_interval_path(&segment_dir, *bucket).is_file())
+        })
+        .collect::<Vec<_>>();
+    intervals.sort_by_key(|(bucket, _)| *bucket);
+
+    if intervals.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(ScrubPreviewGenerationJob {
+        segment_cache_key,
+        segment_dir,
+        video_path,
+        frame_index_path,
+        started_unix_ms,
+        intervals,
+    }))
+}
+
+pub fn enqueue_scrub_preview_generation_for_screen_files(
+    app_handle: &tauri::AppHandle,
+    screen_files: &[String],
+) -> Result<usize, String> {
+    if !cfg!(target_os = "macos") || screen_files.is_empty() {
+        return Ok(0);
+    }
+
+    let cache_root = scrub_preview_cache_root(app_handle)?;
+    let mut seen = HashSet::new();
+    let mut scheduled_intervals = 0usize;
+
+    for screen_file in screen_files {
+        if !seen.insert(screen_file.clone()) {
+            continue;
+        }
+        match scrub_preview_generation_job_for_video_path(&cache_root, PathBuf::from(screen_file)) {
+            Ok(Some(job)) => {
+                scheduled_intervals += job.intervals.len();
+                let app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    generate_scrub_preview_job(job, app_handle).await;
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                crate::native_capture::debug_log::log_warn(format!(
+                    "failed to enqueue finalized screen segment scrub previews for {screen_file}: {error}"
+                ));
+            }
+        }
+    }
+
+    Ok(scheduled_intervals)
 }
 
 #[tauri::command]
@@ -2954,6 +3359,16 @@ pub fn clear_scrub_preview_cache(
     get_scrub_preview_cache_status(app_handle)
 }
 
+#[tauri::command]
+pub fn cancel_active_frame_preview_video_requests(
+    cache: tauri::State<'_, FramePreviewCacheState>,
+) -> Result<usize, String> {
+    Ok(cache
+        .lock()
+        .expect("frame preview cache poisoned")
+        .cancel_active_video_requests())
+}
+
 pub fn clear_scrub_preview_cache_for_video_paths(
     app_handle: tauri::AppHandle,
     video_paths: &[String],
@@ -3016,6 +3431,7 @@ pub async fn get_frame_preview(
 ) -> Result<Option<FramePreviewDto>, String> {
     let infra = Arc::clone(&*state);
     let ttl = preview_cache_ttl(&settings);
+    let video_scope = VideoPreviewRequestScope::from(request.video_scope);
 
     if ttl.is_zero() {
         cache.lock().expect("frame preview cache poisoned").clear();
@@ -3024,6 +3440,7 @@ pub async fn get_frame_preview(
             &cache,
             Some(&app_handle),
             request.frame_id,
+            video_scope,
         )
         .await
         .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
@@ -3049,6 +3466,7 @@ pub async fn get_frame_preview(
                 &cache,
                 Some(&app_handle),
                 request.frame_id,
+                video_scope,
             )
             .await
             .map_err(|error| format!("failed to get frame preview {}: {error}", request.frame_id));
@@ -3204,14 +3622,16 @@ pub async fn get_frame_scrub_previews(
 
             let video_request_guard = {
                 let mut preview_state = cache.lock().expect("frame preview cache poisoned");
-                match preview_state.begin_video_request(&video_path) {
-                    Ok(()) => Ok(()),
+                match preview_state
+                    .begin_video_request(&video_path, VideoPreviewRequestScope::Shared)
+                {
+                    Ok(token) => Ok(token),
                     Err(rx) => Err(rx),
                 }
             };
 
             match video_request_guard {
-                Ok(()) => {
+                Ok(token) => {
                     let batch_started_at = Instant::now();
                     let mut offsets = Vec::new();
                     for candidate in &still_pending {
@@ -3219,17 +3639,21 @@ pub async fn get_frame_scrub_previews(
                             offsets.push(candidate.video_offset_ms);
                         }
                     }
-                    let result = extract_scrub_preview_images_from_video_batch(
+                    let mut result = extract_scrub_preview_images_from_video_batch(
                         &video_path,
                         &offsets,
                         max_pixel_size,
+                        Arc::clone(&token.cancel_requested),
                     )
                     .await;
+                    if token.cancel_requested.load(Ordering::SeqCst) {
+                        result = Err(PREVIEW_GENERATION_CANCELLED.to_string());
+                    }
                     let notify_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
                     cache
                         .lock()
                         .expect("frame preview cache poisoned")
-                        .finish_video_request(&video_path, notify_result);
+                        .finish_video_request(&token, notify_result);
 
                     let batch_duration_ms = batch_started_at.elapsed().as_millis();
                     if batch_duration_ms >= SCRUB_PREVIEW_PERF_LOG_THRESHOLD_MS {

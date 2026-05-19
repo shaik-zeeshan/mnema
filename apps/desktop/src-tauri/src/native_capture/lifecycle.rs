@@ -760,6 +760,10 @@ impl RecordingLifecycle {
                 self.runtime.current_segment_index,
                 previous_segment_output_files.as_ref(),
             );
+            super::segments::warm_scrub_previews_for_committed_screen_outputs(
+                Some(app_handle),
+                previous_segment_output_files.as_ref(),
+            );
         }
 
         self.runtime.current_segment_index = next_index;
