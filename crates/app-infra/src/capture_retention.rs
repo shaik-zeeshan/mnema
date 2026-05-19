@@ -680,13 +680,36 @@ impl CaptureRetentionStore {
         Ok(summary)
     }
 
-    async fn pending_file_tombstone_count(&self) -> Result<i64> {
+    pub async fn pending_file_tombstone_count(&self) -> Result<i64> {
         Ok(sqlx::query(
             "SELECT COUNT(*) AS count FROM retention_file_tombstones WHERE status IN ('pending', 'failed')",
         )
         .fetch_one(&self.pool)
         .await?
         .get("count"))
+    }
+
+    pub async fn insert_file_tombstone(
+        &self,
+        cleanup_run_id: Option<i64>,
+        capture_segment_id: Option<i64>,
+        path: &str,
+        path_kind: &str,
+        last_error: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO retention_file_tombstones
+                (cleanup_run_id, capture_segment_id, path, path_kind, status, last_error, attempt_count)
+             VALUES (?1, ?2, ?3, ?4, 'failed', ?5, 1)",
+        )
+        .bind(cleanup_run_id)
+        .bind(capture_segment_id)
+        .bind(path)
+        .bind(path_kind)
+        .bind(last_error)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn delete_segment_files_and_tombstone(
@@ -699,22 +722,25 @@ impl CaptureRetentionStore {
         for path in paths {
             if let Err(error) = delete_path_if_safe(&path.path, context) {
                 failures += 1;
-                sqlx::query(
-                    "INSERT INTO retention_file_tombstones
-                        (cleanup_run_id, capture_segment_id, path, path_kind, status, last_error, attempt_count)
-                     VALUES (?1, ?2, ?3, ?4, 'failed', ?5, 1)",
+                self.insert_file_tombstone(
+                    Some(cleanup_run_id),
+                    path.capture_segment_id,
+                    &path.path,
+                    &path.path_kind,
+                    &error,
                 )
-                .bind(cleanup_run_id)
-                .bind(path.capture_segment_id)
-                .bind(&path.path)
-                .bind(&path.path_kind)
-                .bind(error)
-                .execute(&self.pool)
                 .await?;
             }
         }
         Ok(failures)
     }
+}
+
+pub fn delete_capture_artifact_path_if_safe(
+    path: &str,
+    context: &RetentionCleanupContext,
+) -> std::result::Result<(), String> {
+    delete_path_if_safe(path, context)
 }
 
 pub fn cutoff_ended_before(policy: RetentionPolicy, local_now: OffsetDateTime) -> Option<String> {

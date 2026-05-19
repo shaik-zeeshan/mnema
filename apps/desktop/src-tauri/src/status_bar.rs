@@ -6,7 +6,7 @@ use tauri::{
     tray::{TrayIcon, TrayIconBuilder},
     Manager,
 };
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 const TRAY_ID: &str = "mnema-status-bar";
 const COMPLETE_SETUP_ID: &str = "tray_complete_setup";
@@ -481,21 +481,42 @@ fn confirm_delete_recent(app: &tauri::AppHandle, seconds: i64) {
         .message(format!(
             "Delete the {label} from Mnema's library? This removes whole overlapping capture segments and cannot be undone."
         ))
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Delete".to_string(),
+            "Cancel".to_string(),
+        ))
         .kind(MessageDialogKind::Warning)
         .title("Delete Recent Capture")
         .show(move |confirmed| {
             if confirmed {
                 tauri::async_runtime::spawn(async move {
-                    if let Err(error) =
-                        crate::app_infra::delete_recent_capture_from_app_handle(&app_handle, seconds)
-                            .await
+                    match crate::app_infra::delete_recent_capture_from_app_handle(
+                        &app_handle,
+                        seconds,
+                    )
+                    .await
                     {
-                        app_handle
-                            .dialog()
-                            .message(error)
-                            .kind(MessageDialogKind::Error)
-                            .title("Delete Recent Capture Failed")
-                            .show(|_| {});
+                        Ok(summary) if summary.file_delete_errors > 0 => {
+                            app_handle
+                                .dialog()
+                                .message(format!(
+                                    "Mnema removed the matching library rows, but {} file path(s) could not be deleted from disk. They have been queued for retry. Pending file tombstones: {}.",
+                                    summary.file_delete_errors,
+                                    summary.pending_file_tombstones
+                                ))
+                                .kind(MessageDialogKind::Warning)
+                                .title("Delete Recent Capture Incomplete")
+                                .show(|_| {});
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            app_handle
+                                .dialog()
+                                .message(error)
+                                .kind(MessageDialogKind::Error)
+                                .title("Delete Recent Capture Failed")
+                                .show(|_| {});
+                        }
                     }
                 });
             }

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     fs::File,
     path::{Path, PathBuf},
@@ -2892,6 +2893,8 @@ pub struct DeleteRecentCaptureSummaryDto {
     pub deleted_audio_segments: i64,
     pub deleted_processing_jobs: i64,
     pub deleted_processing_results: i64,
+    pub deleted_background_jobs: i64,
+    pub deleted_frame_batches: i64,
     pub deleted_search_documents: i64,
     pub pending_file_tombstones: i64,
     pub file_delete_errors: i64,
@@ -2901,15 +2904,23 @@ pub struct DeleteRecentCaptureSummaryDto {
 struct DeleteRecentCaptureDeletion {
     frame_ids: Vec<i64>,
     audio_segment_ids: Vec<i64>,
-    file_paths: Vec<String>,
-    directory_paths: Vec<String>,
+    paths: Vec<DeleteRecentCapturePath>,
     capture_segment_media_paths: Vec<String>,
     deleted_capture_segments: i64,
     deleted_frames: i64,
     deleted_audio_segments: i64,
     deleted_processing_jobs: i64,
     deleted_processing_results: i64,
+    deleted_background_jobs: i64,
+    deleted_frame_batches: i64,
     deleted_search_documents: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeleteRecentCapturePath {
+    capture_segment_id: Option<i64>,
+    path: String,
+    path_kind: String,
 }
 
 fn app_retention_policy(policy: SettingsRetentionPolicy) -> ::app_infra::RetentionPolicy {
@@ -3168,6 +3179,62 @@ async fn cleanup_unreferenced_delete_recent_frame_metadata_snapshots(
     .rows_affected() as i64)
 }
 
+async fn delete_recent_frame_batch_ids_deletable_with_frames(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    frame_ids: &[i64],
+) -> Result<Vec<i64>, sqlx::Error> {
+    if frame_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+        "SELECT DISTINCT candidate.frame_batch_id AS id
+         FROM frames candidate
+         WHERE candidate.frame_batch_id IS NOT NULL
+           AND candidate.id IN (",
+    );
+    let mut separated = query.separated(", ");
+    for id in frame_ids {
+        separated.push_bind(*id);
+    }
+    separated.push_unseparated(
+        ")
+           AND NOT EXISTS (
+               SELECT 1 FROM frames retained
+               WHERE retained.frame_batch_id = candidate.frame_batch_id
+                 AND retained.id NOT IN (",
+    );
+    let mut separated = query.separated(", ");
+    for id in frame_ids {
+        separated.push_bind(*id);
+    }
+    separated.push_unseparated("))");
+
+    query.build_query_scalar().fetch_all(&mut **tx).await
+}
+
+async fn delete_recent_background_job_ids_for_frame_batches(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    frame_batch_ids: &[i64],
+) -> Result<Vec<i64>, sqlx::Error> {
+    if frame_batch_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+        "SELECT DISTINCT finalize_job_id AS id
+         FROM frame_batches
+         WHERE finalize_job_id IS NOT NULL AND id IN (",
+    );
+    let mut separated = query.separated(", ");
+    for id in frame_batch_ids {
+        separated.push_bind(*id);
+    }
+    separated.push_unseparated(")");
+
+    query.build_query_scalar().fetch_all(&mut **tx).await
+}
+
 async fn delete_recent_speaker_rows_for_audio_segments(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     audio_segment_ids: &[i64],
@@ -3219,6 +3286,23 @@ async fn delete_recent_speaker_rows_for_audio_segments(
     Ok(())
 }
 
+fn delete_recent_path_sort_key(path: &DeleteRecentCapturePath) -> (u8, &str) {
+    let rank = match path.path_kind.as_str() {
+        "media_file" | "sidecar_file" => 0,
+        "frame_dir" => 1,
+        _ => 2,
+    };
+    (rank, path.path.as_str())
+}
+
+fn dedupe_delete_recent_paths(paths: &mut Vec<DeleteRecentCapturePath>) {
+    paths.sort_by(|left, right| {
+        delete_recent_path_sort_key(left).cmp(&delete_recent_path_sort_key(right))
+    });
+    let mut seen = BTreeSet::new();
+    paths.retain(|path| seen.insert(path.path.clone()));
+}
+
 async fn delete_recent_capture_rows(
     infra: &::app_infra::AppInfra,
     started_at: &str,
@@ -3266,34 +3350,42 @@ async fn delete_recent_capture_rows(
     .await
     .map_err(|error| format!("failed to list deleted capture segment media paths: {error}"))?;
 
-    let file_paths: Vec<String> = sqlx::query_scalar(
-        "SELECT file_path FROM frames
+    let mut paths: Vec<DeleteRecentCapturePath> = sqlx::query_as::<_, (Option<i64>, String, String)>(
+        "SELECT capture_segment_id, file_path AS path, 'media_file' AS path_kind FROM frames
          WHERE (captured_at >= ?1 AND captured_at <= ?2)
             OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
          UNION
-         SELECT file_path FROM audio_segments
+         SELECT capture_segment_id, file_path AS path, 'media_file' AS path_kind FROM audio_segments
          WHERE (started_at <= ?2 AND ended_at >= ?1)
             OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
          UNION
-         SELECT media_file_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND media_file_path IS NOT NULL
+         SELECT id AS capture_segment_id, media_file_path AS path, 'media_file' AS path_kind
+         FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND media_file_path IS NOT NULL
          UNION
-         SELECT sidecar_file_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND sidecar_file_path IS NOT NULL",
+         SELECT id AS capture_segment_id, sidecar_file_path AS path, 'sidecar_file' AS path_kind
+         FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND sidecar_file_path IS NOT NULL
+         UNION
+         SELECT id AS capture_segment_id, workspace_dir_path AS path, 'workspace_dir' AS path_kind
+         FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND workspace_dir_path IS NOT NULL
+         UNION
+         SELECT id AS capture_segment_id, frame_dir_path AS path, 'frame_dir' AS path_kind
+         FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND frame_dir_path IS NOT NULL",
     )
     .bind(started_at)
     .bind(ended_at)
     .fetch_all(&mut *tx)
     .await
-    .map_err(|error| format!("failed to list files for deletion: {error}"))?;
-    let directory_paths: Vec<String> = sqlx::query_scalar(
-        "SELECT workspace_dir_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND workspace_dir_path IS NOT NULL
-         UNION
-         SELECT frame_dir_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND frame_dir_path IS NOT NULL",
+    .map_err(|error| format!("failed to list paths for deletion: {error}"))?
+    .into_iter()
+    .map(
+        |(capture_segment_id, path, path_kind)| DeleteRecentCapturePath {
+            capture_segment_id,
+            path,
+            path_kind,
+        },
     )
-    .bind(started_at)
-    .bind(ended_at)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to list directories for deletion: {error}"))?;
+    .collect();
+    dedupe_delete_recent_paths(&mut paths);
 
     let deleted_processing_jobs = sqlx::query(
         "DELETE FROM processing_jobs
@@ -3359,6 +3451,14 @@ async fn delete_recent_capture_rows(
         .await
         .map_err(|error| format!("failed to delete speaker analysis rows: {error}"))?;
 
+    let frame_batch_ids = delete_recent_frame_batch_ids_deletable_with_frames(&mut tx, &frame_ids)
+        .await
+        .map_err(|error| format!("failed to list frame batches for deletion: {error}"))?;
+    let background_job_ids =
+        delete_recent_background_job_ids_for_frame_batches(&mut tx, &frame_batch_ids)
+            .await
+            .map_err(|error| format!("failed to list frame batch jobs for deletion: {error}"))?;
+
     let deleted_frames = sqlx::query(
         "DELETE FROM frames
          WHERE (captured_at >= ?1 AND captured_at <= ?2)
@@ -3378,6 +3478,15 @@ async fn delete_recent_capture_rows(
         .map_err(|error| {
             format!("failed to delete unreferenced frame metadata snapshots: {error}")
         })?;
+
+    let deleted_frame_batches =
+        delete_recent_by_ids(&mut tx, "frame_batches", "id", &frame_batch_ids)
+            .await
+            .map_err(|error| format!("failed to delete frame batches: {error}"))?;
+    let deleted_background_jobs =
+        delete_recent_by_ids(&mut tx, "background_jobs", "id", &background_job_ids)
+            .await
+            .map_err(|error| format!("failed to delete frame batch jobs: {error}"))?;
 
     let deleted_audio_segments = sqlx::query(
         "DELETE FROM audio_segments
@@ -3409,16 +3518,50 @@ async fn delete_recent_capture_rows(
     Ok(DeleteRecentCaptureDeletion {
         frame_ids,
         audio_segment_ids,
-        file_paths,
-        directory_paths,
+        paths,
         capture_segment_media_paths,
         deleted_capture_segments,
         deleted_frames,
         deleted_audio_segments,
         deleted_processing_jobs,
         deleted_processing_results,
+        deleted_background_jobs,
+        deleted_frame_batches,
         deleted_search_documents,
     })
+}
+
+async fn delete_recent_capture_files_and_tombstone(
+    infra: &::app_infra::AppInfra,
+    deletion: &DeleteRecentCaptureDeletion,
+    context: &::app_infra::RetentionCleanupContext,
+) -> Result<i64, String> {
+    let mut file_delete_errors = 0_i64;
+    for path in &deletion.paths {
+        if path.path.trim().is_empty() {
+            continue;
+        }
+        if let Err(error) = ::app_infra::delete_capture_artifact_path_if_safe(&path.path, context) {
+            file_delete_errors += 1;
+            infra
+                .capture_retention()
+                .insert_file_tombstone(
+                    None,
+                    path.capture_segment_id,
+                    &path.path,
+                    &path.path_kind,
+                    &error,
+                )
+                .await
+                .map_err(|insert_error| {
+                    format!(
+                        "failed to record delete recent file tombstone for {}: {insert_error}",
+                        path.path
+                    )
+                })?;
+        }
+    }
+    Ok(file_delete_errors)
 }
 
 async fn delete_recent_capture_inner(
@@ -3465,6 +3608,7 @@ async fn delete_recent_capture_inner(
         }
     }
     let deletion = deletion_result?;
+    let retention_context = retention_context_for_app(app_handle, infra).await;
     if !deletion.capture_segment_media_paths.is_empty() {
         let _ = frame_preview::clear_scrub_preview_cache_for_video_paths(
             app_handle.clone(),
@@ -3483,27 +3627,13 @@ async fn delete_recent_capture_inner(
             deleted_audio_segment_ids: deletion.audio_segment_ids.clone(),
         },
     );
-    let mut file_delete_errors = 0;
-    for path in &deletion.file_paths {
-        if path.trim().is_empty() {
-            continue;
-        }
-        match std::fs::remove_file(path) {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => file_delete_errors += 1,
-        }
-    }
-    for path in &deletion.directory_paths {
-        if path.trim().is_empty() {
-            continue;
-        }
-        match std::fs::remove_dir_all(path) {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => file_delete_errors += 1,
-        }
-    }
+    let file_delete_errors =
+        delete_recent_capture_files_and_tombstone(infra, &deletion, &retention_context).await?;
+    let pending_file_tombstones = infra
+        .capture_retention()
+        .pending_file_tombstone_count()
+        .await
+        .map_err(|error| format!("failed to count pending file tombstones: {error}"))?;
     if should_resume_after_boundary {
         crate::native_capture::resume_native_capture_from_app_handle(app_handle).map_err(
             |error| {
@@ -3524,8 +3654,10 @@ async fn delete_recent_capture_inner(
         deleted_audio_segments: deletion.deleted_audio_segments,
         deleted_processing_jobs: deletion.deleted_processing_jobs,
         deleted_processing_results: deletion.deleted_processing_results,
+        deleted_background_jobs: deletion.deleted_background_jobs,
+        deleted_frame_batches: deletion.deleted_frame_batches,
         deleted_search_documents: deletion.deleted_search_documents,
-        pending_file_tombstones: file_delete_errors,
+        pending_file_tombstones,
         file_delete_errors,
     })
 }
@@ -4421,6 +4553,165 @@ mod tests {
                 .await
                 .expect("person count should load");
             assert_eq!(person_count, 1);
+        });
+    }
+
+    #[test]
+    fn delete_recent_capture_rows_prunes_empty_frame_batches() {
+        run_async_test(async {
+            let dir = TestDir::new("delete-recent-frame-batches");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let pool = infra.pool();
+
+            sqlx::query(
+                "INSERT INTO capture_sessions (
+                    capture_session_id, started_at, stopped_at, status,
+                    requested_screen, requested_microphone, requested_system_audio,
+                    screen_source_session_id, segment_duration_seconds
+                 ) VALUES ('cap-delete-batch', '2026-05-19T10:00:00Z', NULL, 'recording', 1, 0, 0, 'screen-delete-batch', 60)",
+            )
+            .execute(pool)
+            .await
+            .expect("capture session should insert");
+            let segment_id: i64 = sqlx::query_scalar(
+                "INSERT INTO capture_segments (
+                    capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, started_at, ended_at, status
+                 ) VALUES (
+                    'cap-delete-batch', 'screen', 'screen-delete-batch', 1,
+                    '/tmp/delete-batch-segment.mov', '2026-05-19T10:00:00Z', '2026-05-19T10:00:30Z', 'completed'
+                 ) RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("capture segment should insert");
+            let job_id: i64 = sqlx::query_scalar(
+                "INSERT INTO background_jobs (kind, status, payload_json)
+                 VALUES ('frame_batch_finalize', 'queued', '{}') RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("background job should insert");
+            let frame_batch_id: i64 = sqlx::query_scalar(
+                "INSERT INTO frame_batches (
+                    session_id, batch_key, batch_started_at, batch_ended_at, status,
+                    frame_count, finalize_job_id
+                 ) VALUES (
+                    'screen-delete-batch', 'batch-1',
+                    '2026-05-19T10:00:00Z', '2026-05-19T10:00:30Z', 'closed',
+                    1, ?1
+                 ) RETURNING id",
+            )
+            .bind(job_id)
+            .fetch_one(pool)
+            .await
+            .expect("frame batch should insert");
+            sqlx::query(
+                "INSERT INTO frames (
+                    session_id, file_path, captured_at, capture_segment_id, frame_batch_id
+                 ) VALUES (
+                    'screen-delete-batch', '/tmp/delete-batch-frame.jpg',
+                    '2026-05-19T10:00:05Z', ?1, ?2
+                 )",
+            )
+            .bind(segment_id)
+            .bind(frame_batch_id)
+            .execute(pool)
+            .await
+            .expect("frame should insert");
+
+            let deletion =
+                delete_recent_capture_rows(&infra, "2026-05-19T09:59:00Z", "2026-05-19T10:01:00Z")
+                    .await
+                    .expect("delete recent rows should complete");
+
+            assert_eq!(deletion.deleted_frames, 1);
+            assert_eq!(deletion.deleted_frame_batches, 1);
+            assert_eq!(deletion.deleted_background_jobs, 1);
+            let frame_batch_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM frame_batches")
+                .fetch_one(pool)
+                .await
+                .expect("frame batch count should load");
+            let background_job_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM background_jobs")
+                    .fetch_one(pool)
+                    .await
+                    .expect("background job count should load");
+            assert_eq!(frame_batch_count, 0);
+            assert_eq!(background_job_count, 0);
+        });
+    }
+
+    #[test]
+    fn delete_recent_capture_files_guard_save_directory_and_tombstone_failures() {
+        run_async_test(async {
+            let save_dir = TestDir::new("delete-recent-safe-files");
+            let outside_dir = TestDir::new("delete-recent-outside-files");
+            let infra = ::app_infra::AppInfra::initialize(save_dir.path())
+                .await
+                .expect("app infra should initialize");
+            let inside_file = save_dir.path().join("recordings/inside-frame.jpg");
+            fs::create_dir_all(
+                inside_file
+                    .parent()
+                    .expect("inside file should have parent"),
+            )
+            .expect("inside parent should be created");
+            fs::write(&inside_file, b"inside").expect("inside file should be written");
+            let outside_file = outside_dir.path().join("outside-frame.jpg");
+            fs::write(&outside_file, b"outside").expect("outside file should be written");
+
+            let deletion = DeleteRecentCaptureDeletion {
+                frame_ids: Vec::new(),
+                audio_segment_ids: Vec::new(),
+                paths: vec![
+                    DeleteRecentCapturePath {
+                        capture_segment_id: Some(1),
+                        path: inside_file.to_string_lossy().to_string(),
+                        path_kind: "media_file".to_string(),
+                    },
+                    DeleteRecentCapturePath {
+                        capture_segment_id: Some(2),
+                        path: outside_file.to_string_lossy().to_string(),
+                        path_kind: "media_file".to_string(),
+                    },
+                ],
+                capture_segment_media_paths: Vec::new(),
+                deleted_capture_segments: 0,
+                deleted_frames: 0,
+                deleted_audio_segments: 0,
+                deleted_processing_jobs: 0,
+                deleted_processing_results: 0,
+                deleted_background_jobs: 0,
+                deleted_frame_batches: 0,
+                deleted_search_documents: 0,
+            };
+            let context = ::app_infra::RetentionCleanupContext {
+                save_directory: Some(save_dir.path().display().to_string()),
+                ..Default::default()
+            };
+
+            let failures = delete_recent_capture_files_and_tombstone(&infra, &deletion, &context)
+                .await
+                .expect("file deletion should record tombstones");
+
+            assert_eq!(failures, 1);
+            assert!(
+                !inside_file.exists(),
+                "inside saveDirectory file should be deleted"
+            );
+            assert!(
+                outside_file.exists(),
+                "outside saveDirectory file should not be deleted"
+            );
+            let tombstone_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM retention_file_tombstones")
+                    .fetch_one(infra.pool())
+                    .await
+                    .expect("tombstone count should load");
+            assert_eq!(tombstone_count, 1);
         });
     }
 

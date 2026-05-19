@@ -186,6 +186,8 @@
   const requestedAppIconBundleIds = new Set<string>();
   let privacyCommandInFlight = $state(false);
   let sensitiveRecommendations = $state<SensitiveCaptureRecommendations | null>(null);
+  let sensitiveRecommendationPromptActionInFlight = $state(false);
+  let sensitiveRecommendationPromptMarkedId = $state<string | null>(null);
   let privacyAppComboboxQuery = $state("");
   let privacyAppComboboxOpen = $state(false);
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
@@ -842,9 +844,21 @@
     (sensitiveRecommendations?.recommendedApps ?? []).filter((app) => app.exclusionState !== "enabled")
   );
 
+  const showSensitiveRecommendationPrompt = $derived(
+    Boolean(sensitiveRecommendations?.shouldShowExistingUserPrompt && pendingRecommendedApps.length > 0)
+  );
+
   const visibleBrowserDisclosureApps = $derived(
     (sensitiveRecommendations?.browserDisclosures ?? []).filter((app) => app.running || app.exclusionState !== "missing")
   );
+
+  $effect(() => {
+    const promptId = sensitiveRecommendations?.promptId;
+    if (!promptId || !showSensitiveRecommendationPrompt) return;
+    if (sensitiveRecommendationPromptMarkedId === promptId) return;
+    sensitiveRecommendationPromptMarkedId = promptId;
+    void invoke("mark_one_time_prompt_shown", { promptId });
+  });
 
   $effect(() => {
     if (!privacyAppComboboxOpen) return;
@@ -861,6 +875,10 @@
     privacyAppComboboxOpen = false;
   }
 
+  function sameBundleId(left: string, right: string): boolean {
+    return left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
+  }
+
   function addRecommendedPrivacyApp(app: RecommendedAppExclusion | BrowserDisclosureApp) {
     void runPrivacySettingsCommand("add_privacy_excluded_app", {
       bundleId: app.bundleId,
@@ -869,7 +887,7 @@
   }
 
   function reenableRecommendedPrivacyApp(app: RecommendedAppExclusion | BrowserDisclosureApp) {
-    const existing = draftExcludedApps.find((entry) => entry.bundleId === app.bundleId);
+    const existing = draftExcludedApps.find((entry) => sameBundleId(entry.bundleId, app.bundleId));
     if (!existing) {
       addRecommendedPrivacyApp(app);
       return;
@@ -887,6 +905,80 @@
       reenableRecommendedPrivacyApp(app);
     } else {
       addRecommendedPrivacyApp(app);
+    }
+  }
+
+  async function dismissSensitiveRecommendationPrompt() {
+    const promptId = sensitiveRecommendations?.promptId;
+    if (!promptId || sensitiveRecommendationPromptActionInFlight) return;
+    sensitiveRecommendationPromptActionInFlight = true;
+    try {
+      await invoke("dismiss_one_time_prompt", { promptId });
+      if (sensitiveRecommendations) {
+        sensitiveRecommendations = {
+          ...sensitiveRecommendations,
+          shouldShowExistingUserPrompt: false,
+        };
+      }
+    } catch (err) {
+      recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      sensitiveRecommendationPromptActionInFlight = false;
+    }
+  }
+
+  async function applyAllRecommendedPrivacyApps() {
+    const promptId = sensitiveRecommendations?.promptId;
+    const recommendations = [...pendingRecommendedApps];
+    if (!promptId || recommendations.length === 0 || sensitiveRecommendationPromptActionInFlight) return;
+
+    if (recAutoSaveTimer !== null) {
+      clearTimeout(recAutoSaveTimer);
+      recAutoSaveTimer = null;
+    }
+    sensitiveRecommendationPromptActionInFlight = true;
+    privacyCommandInFlight = true;
+    recError = null;
+    try {
+      let updatedSettings: RecordingSettings | null = null;
+      for (const app of recommendations) {
+        if (app.exclusionState === "disabled") {
+          const existing = draftExcludedApps.find((entry) => sameBundleId(entry.bundleId, app.bundleId));
+          if (existing) {
+            updatedSettings = await invoke<RecordingSettings>("set_privacy_excluded_app_enabled", {
+              sourceId: existing.id,
+              enabled: true,
+            });
+          } else {
+            updatedSettings = await invoke<RecordingSettings>("add_privacy_excluded_app", {
+              bundleId: app.bundleId,
+              displayName: app.displayName,
+            });
+          }
+        } else {
+          updatedSettings = await invoke<RecordingSettings>("add_privacy_excluded_app", {
+            bundleId: app.bundleId,
+            displayName: app.displayName,
+          });
+        }
+        if (updatedSettings) {
+          recordingSettings = updatedSettings;
+          syncRecDrafts(updatedSettings);
+        }
+      }
+      await invoke("complete_one_time_prompt", { promptId });
+      if (sensitiveRecommendations) {
+        sensitiveRecommendations = {
+          ...sensitiveRecommendations,
+          shouldShowExistingUserPrompt: false,
+        };
+      }
+      await loadSensitiveCaptureRecommendations();
+    } catch (err) {
+      recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      privacyCommandInFlight = false;
+      sensitiveRecommendationPromptActionInFlight = false;
     }
   }
 
@@ -2220,6 +2312,42 @@
         </span>
       </li>
     </ul>
+  {/if}
+
+  {#if showSensitiveRecommendationPrompt}
+    <section class="sensitive-prompt" aria-label="Sensitive capture recommendation">
+      <div class="sensitive-prompt__main">
+        <span class="sensitive-prompt__eyebrow">Sensitive Capture Protection</span>
+        <strong>{pendingRecommendedApps.length} recommended app exclusion{pendingRecommendedApps.length === 1 ? "" : "s"} pending</strong>
+        <p>Password managers and Apple Passwords can be excluded from future screen capture.</p>
+      </div>
+      <div class="sensitive-prompt__actions">
+        <button
+          class="btn btn--primary btn--sm"
+          type="button"
+          disabled={privacyCommandInFlight || sensitiveRecommendationPromptActionInFlight}
+          onclick={() => void applyAllRecommendedPrivacyApps()}
+        >
+          Add exclusions
+        </button>
+        <button
+          class="btn btn--ghost btn--sm"
+          type="button"
+          disabled={sensitiveRecommendationPromptActionInFlight}
+          onclick={() => { activeTab = "privacy"; }}
+        >
+          Review
+        </button>
+        <button
+          class="btn btn--ghost btn--sm"
+          type="button"
+          disabled={sensitiveRecommendationPromptActionInFlight}
+          onclick={() => void dismissSensitiveRecommendationPrompt()}
+        >
+          Dismiss
+        </button>
+      </div>
+    </section>
   {/if}
 </header>
 
@@ -4315,6 +4443,55 @@
     color: var(--app-accent-strong);
   }
 
+  .sensitive-prompt {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 12px;
+    border: 1px solid var(--app-warn-border);
+    border-radius: 6px;
+    background: var(--app-warn-bg);
+  }
+
+  .sensitive-prompt__main {
+    flex: 999 1 260px;
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .sensitive-prompt__eyebrow {
+    color: var(--app-warn);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .sensitive-prompt__main strong {
+    color: var(--app-text-strong);
+    font-size: 12px;
+    line-height: 1.25;
+  }
+
+  .sensitive-prompt__main p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .sensitive-prompt__actions {
+    flex: 1 1 220px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
   /* ── Card ──────────────────────────────────────────────────── */
   .card {
     position: relative;
@@ -4883,6 +5060,17 @@
     background: var(--app-surface-hover);
     color: var(--app-text);
     border-color: var(--app-border-hover);
+  }
+
+  .btn--primary {
+    background: var(--app-accent);
+    color: var(--app-bg);
+    border-color: var(--app-accent);
+  }
+
+  .btn--primary:not(:disabled):hover {
+    background: var(--app-accent-strong);
+    border-color: var(--app-accent-strong);
   }
 
   .btn--sm {
@@ -5598,6 +5786,10 @@
   }
   :global([data-theme="light"]) .status-pill--on .status-pill__label {
     color: var(--app-accent-strong);
+  }
+  :global([data-theme="light"]) .sensitive-prompt {
+    background: var(--app-warn-bg);
+    border-color: var(--app-warn-border);
   }
 
   :global([data-theme="light"]) .card {
