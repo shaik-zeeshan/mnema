@@ -1,4 +1,4 @@
-# ADR 0003: OCR Throughput Budget
+# ADR 0004: OCR Throughput Budget
 
 ## Status
 
