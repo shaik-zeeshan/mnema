@@ -765,6 +765,14 @@
     return [...new Set(bundleIds.map((bundleId) => bundleId?.trim() ?? "").filter(Boolean))];
   }
 
+  function canonicalBundleIdForComparison(value: string): string {
+    return value.trim().toLowerCase();
+  }
+
+  function sameBundleId(left: string, right: string): boolean {
+    return canonicalBundleIdForComparison(left) === canonicalBundleIdForComparison(right);
+  }
+
   async function resolveAppIcons(bundleIds: Array<string | null | undefined>) {
     const unresolvedBundleIds = uniqueBundleIds(bundleIds).filter((bundleId) => (
       !appIconPathsByBundleId[bundleId] && !requestedAppIconBundleIds.has(bundleId)
@@ -797,7 +805,7 @@
 
   const availablePrivacyAppCandidates = $derived(
     privacyAppCandidates.filter((candidate) => (
-      !draftExcludedApps.some((item) => item.bundleId === candidate.bundleId)
+      !draftExcludedApps.some((item) => sameBundleId(item.bundleId, candidate.bundleId))
     ))
   );
 
@@ -866,17 +874,13 @@
   });
 
   function addPrivacyAppCandidate(candidate: PrivacyAppCandidate | null) {
-    if (!candidate || draftExcludedApps.some((item) => item.bundleId === candidate.bundleId)) return;
+    if (!candidate || draftExcludedApps.some((item) => sameBundleId(item.bundleId, candidate.bundleId))) return;
     void runPrivacySettingsCommand("add_privacy_excluded_app", {
       bundleId: candidate.bundleId,
       displayName: candidate.displayName,
     });
     privacyAppComboboxQuery = "";
     privacyAppComboboxOpen = false;
-  }
-
-  function sameBundleId(left: string, right: string): boolean {
-    return left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
   }
 
   function addRecommendedPrivacyApp(app: RecommendedAppExclusion | BrowserDisclosureApp) {

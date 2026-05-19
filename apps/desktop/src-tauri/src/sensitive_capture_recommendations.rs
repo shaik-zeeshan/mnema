@@ -103,11 +103,26 @@ pub struct SensitiveCaptureRecommendationsResponse {
     pub browser_disclosures: Vec<BrowserDisclosureAppDto>,
 }
 
+fn same_bundle_id(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
+}
+
+fn matching_candidate<'a>(
+    candidates: &'a [crate::native_capture::PrivacyAppCandidate],
+    bundle_id: &str,
+) -> Option<&'a crate::native_capture::PrivacyAppCandidate> {
+    candidates
+        .iter()
+        .find(|candidate| same_bundle_id(&candidate.bundle_id, bundle_id))
+}
+
 fn exclusion_state(settings: &RecordingSettings, bundle_id: &str) -> RecommendedExclusionState {
-    let canonical = crate::native_capture::settings::canonicalize_app_bundle_id(bundle_id);
-    match settings.privacy.excluded_apps.iter().find(|app| {
-        crate::native_capture::settings::canonicalize_app_bundle_id(&app.bundle_id) == canonical
-    }) {
+    match settings
+        .privacy
+        .excluded_apps
+        .iter()
+        .find(|app| same_bundle_id(&app.bundle_id, bundle_id))
+    {
         Some(entry) if entry.enabled => RecommendedExclusionState::Enabled,
         Some(_) => RecommendedExclusionState::Disabled,
         None => RecommendedExclusionState::Missing,
@@ -132,9 +147,7 @@ pub async fn get_sensitive_capture_recommendations(
     let recommended_apps = SENSITIVE_APP_CATALOG
         .iter()
         .map(|entry| {
-            let candidate = candidates
-                .iter()
-                .find(|candidate| candidate.bundle_id == entry.bundle_id);
+            let candidate = matching_candidate(&candidates, entry.bundle_id);
             RecommendedAppExclusionDto {
                 bundle_id: entry.bundle_id.to_string(),
                 display_name: candidate
@@ -142,7 +155,9 @@ pub async fn get_sensitive_capture_recommendations(
                     .unwrap_or_else(|| entry.display_name.to_string()),
                 category: entry.category.as_str().to_string(),
                 category_label: entry.category.label().to_string(),
-                running: candidate.map(|candidate| candidate.running).unwrap_or(false),
+                running: candidate
+                    .map(|candidate| candidate.running)
+                    .unwrap_or(false),
                 icon_path: candidate.and_then(|candidate| candidate.icon_path.clone()),
                 exclusion_state: exclusion_state(&settings, entry.bundle_id),
             }
@@ -152,15 +167,15 @@ pub async fn get_sensitive_capture_recommendations(
     let browser_disclosures = capture_metadata::KNOWN_BROWSER_APPS
         .iter()
         .map(|browser| {
-            let candidate = candidates
-                .iter()
-                .find(|candidate| candidate.bundle_id == browser.bundle_id);
+            let candidate = matching_candidate(&candidates, browser.bundle_id);
             BrowserDisclosureAppDto {
                 bundle_id: browser.bundle_id.to_string(),
                 display_name: candidate
                     .map(|candidate| candidate.display_name.clone())
                     .unwrap_or_else(|| browser.display_name.to_string()),
-                running: candidate.map(|candidate| candidate.running).unwrap_or(false),
+                running: candidate
+                    .map(|candidate| candidate.running)
+                    .unwrap_or(false),
                 icon_path: candidate.and_then(|candidate| candidate.icon_path.clone()),
                 exclusion_state: exclusion_state(&settings, browser.bundle_id),
             }
@@ -181,4 +196,47 @@ pub async fn get_sensitive_capture_recommendations(
         should_show_existing_user_prompt,
         browser_disclosures,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn privacy_app_candidate(bundle_id: &str) -> crate::native_capture::PrivacyAppCandidate {
+        crate::native_capture::PrivacyAppCandidate {
+            bundle_id: bundle_id.to_string(),
+            display_name: "Candidate".to_string(),
+            running: true,
+            icon_path: Some("/tmp/icon.png".to_string()),
+            bundle_path: None,
+        }
+    }
+
+    #[test]
+    fn recommendation_candidate_lookup_matches_bundle_ids_case_insensitively() {
+        let candidates = vec![privacy_app_candidate("COM.APPLE.PASSWORDS")];
+
+        let candidate = matching_candidate(&candidates, "com.apple.Passwords")
+            .expect("candidate should match ignoring bundle ID case");
+
+        assert_eq!(candidate.display_name, "Candidate");
+        assert!(candidate.running);
+        assert_eq!(candidate.icon_path.as_deref(), Some("/tmp/icon.png"));
+    }
+
+    #[test]
+    fn recommendation_exclusion_state_matches_bundle_ids_case_insensitively() {
+        let mut settings = crate::native_capture::settings::default_recording_settings();
+        settings.privacy.excluded_apps = vec![capture_metadata::ExcludedAppEntry {
+            id: "app-a".to_string(),
+            enabled: false,
+            bundle_id: "COM.APPLE.PASSWORDS".to_string(),
+            display_name: "Apple Passwords".to_string(),
+        }];
+
+        assert_eq!(
+            exclusion_state(&settings, "com.apple.Passwords"),
+            RecommendedExclusionState::Disabled
+        );
+    }
 }

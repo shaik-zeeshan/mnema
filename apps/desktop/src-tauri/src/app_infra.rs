@@ -3589,25 +3589,32 @@ fn should_resume_delete_recent_capture_boundary(session: &NativeCaptureSession) 
     session.is_running && !session.is_user_paused && !session.is_inactivity_paused
 }
 
+fn format_delete_recent_capture_window(
+    window_seconds: i64,
+    ended: OffsetDateTime,
+) -> Result<(String, String), String> {
+    let started = ended - time::Duration::seconds(window_seconds);
+    let started_at = started
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| format!("failed to format delete window start: {error}"))?;
+    let ended_at = ended
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| format!("failed to format delete window end: {error}"))?;
+
+    Ok((started_at, ended_at))
+}
+
 async fn delete_recent_capture_inner(
     app_handle: &tauri::AppHandle,
     infra: &::app_infra::AppInfra,
     window_seconds: i64,
 ) -> Result<DeleteRecentCaptureSummaryDto, String> {
     let window_seconds = validate_delete_recent_window(window_seconds)?;
-    let now = OffsetDateTime::now_utc();
-    let started = now - time::Duration::seconds(window_seconds);
-    let started_at = started
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| format!("failed to format delete window start: {error}"))?;
-    let ended_at = now
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| format!("failed to format delete window end: {error}"))?;
 
     let session_before_delete = crate::native_capture::current_native_capture_session(app_handle);
     let should_resume_after_boundary =
         should_resume_delete_recent_capture_boundary(&session_before_delete);
-    if session_before_delete.is_running {
+    if should_resume_after_boundary {
         crate::native_capture::pause_native_capture_from_app_handle(app_handle).map_err(
             |error| {
                 format!(
@@ -3617,6 +3624,8 @@ async fn delete_recent_capture_inner(
             },
         )?;
     }
+    let (started_at, ended_at) =
+        format_delete_recent_capture_window(window_seconds, OffsetDateTime::now_utc())?;
 
     let deletion = match delete_recent_capture_rows(infra, &started_at, &ended_at).await {
         Ok(deletion) => deletion,
@@ -4430,6 +4439,35 @@ mod tests {
         };
 
         assert!(!should_resume_delete_recent_capture_boundary(&session));
+    }
+
+    #[test]
+    fn delete_recent_capture_boundary_does_not_resume_when_user_paused() {
+        let session = NativeCaptureSession {
+            is_running: true,
+            is_inactivity_paused: false,
+            is_user_paused: true,
+            requested_sources: None,
+            output_files: None,
+            source_sessions: None,
+        };
+
+        assert!(!should_resume_delete_recent_capture_boundary(&session));
+    }
+
+    #[test]
+    fn delete_recent_capture_window_uses_boundary_end() {
+        let ended = OffsetDateTime::parse(
+            "2026-05-19T10:01:03Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .expect("boundary time should parse");
+
+        let (started_at, ended_at) =
+            format_delete_recent_capture_window(60, ended).expect("window should format");
+
+        assert_eq!(started_at, "2026-05-19T10:00:03Z");
+        assert_eq!(ended_at, "2026-05-19T10:01:03Z");
     }
 
     #[test]
