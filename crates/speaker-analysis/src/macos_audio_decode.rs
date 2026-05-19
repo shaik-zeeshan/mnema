@@ -1,7 +1,10 @@
+#[cfg(any(test, all(target_os = "macos", feature = "sherpa-onnx")))]
 use crate::{SpeakerAnalysisError, SpeakerAnalysisResult};
 
 #[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
-use std::{path::Path, time::Duration};
+use std::path::Path;
+#[cfg(any(test, all(target_os = "macos", feature = "sherpa-onnx")))]
+use std::time::{Duration, Instant};
 
 #[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
 use tempfile::NamedTempFile;
@@ -11,6 +14,31 @@ use tempfile::NamedTempFile;
 pub(crate) struct DecodedAudio {
     pub(crate) samples: Vec<f32>,
     pub(crate) sample_rate_hz: u32,
+}
+
+#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+const AVASSETREADER_WRITER_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
+const AVASSETREADER_WRITER_READY_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+#[cfg(any(test, all(target_os = "macos", feature = "sherpa-onnx")))]
+fn wait_for_writer_input_ready(
+    mut is_ready: impl FnMut() -> bool,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> bool {
+    let started_at = Instant::now();
+    loop {
+        if is_ready() {
+            return true;
+        }
+        let elapsed = started_at.elapsed();
+        if elapsed >= timeout {
+            return false;
+        }
+        std::thread::sleep(poll_interval.min(timeout - elapsed));
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "sherpa-onnx"))]
@@ -24,6 +52,7 @@ pub(crate) fn decode_audio_to_mono_with_avassetreader_fallback(
     )
 }
 
+#[cfg(any(test, all(target_os = "macos", feature = "sherpa-onnx")))]
 fn decode_with_fallback<T, FPrimary, FFallback>(
     primary: FPrimary,
     fallback: FFallback,
@@ -294,9 +323,17 @@ fn transcode_audio_to_wav_with_asset_reader(
 
         let mut current_buf = Some(first_buf);
         loop {
-            if !input.is_ready_for_more_media_data() {
-                std::thread::sleep(Duration::from_millis(1));
-                continue;
+            if !wait_for_writer_input_ready(
+                || input.is_ready_for_more_media_data(),
+                AVASSETREADER_WRITER_READY_TIMEOUT,
+                AVASSETREADER_WRITER_READY_POLL_INTERVAL,
+            ) {
+                reader.cancel_reading();
+                writer.cancel_writing();
+                return Err(SpeakerAnalysisError::Analysis(format!(
+                    "AVAssetWriter timed out waiting for input readiness while transcoding {} to WAV",
+                    source_path.display()
+                )));
             }
 
             let Some(buf) = current_buf.take() else {
@@ -458,5 +495,29 @@ mod tests {
 
         assert!(error.to_string().contains("primary failed"));
         assert!(error.to_string().contains("fallback failed"));
+    }
+
+    #[test]
+    fn writer_input_ready_wait_times_out() {
+        assert!(!wait_for_writer_input_ready(
+            || false,
+            Duration::ZERO,
+            Duration::ZERO,
+        ));
+    }
+
+    #[test]
+    fn writer_input_ready_wait_returns_when_ready() {
+        let mut attempts = 0;
+
+        assert!(wait_for_writer_input_ready(
+            || {
+                attempts += 1;
+                attempts == 3
+            },
+            Duration::from_secs(1),
+            Duration::ZERO,
+        ));
+        assert_eq!(attempts, 3);
     }
 }

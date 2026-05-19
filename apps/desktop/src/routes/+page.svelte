@@ -169,6 +169,10 @@
   // so scroll-position-based active-index math is unaffected. The rail is
   // dense (8px ticks) so a generous buffer is cheap and avoids visible churn.
   const TIMELINE_VIEWPORT_BUFFER = 80;
+  const TIMELINE_RENDER_REANCHOR_DISTANCE = Math.max(
+    1,
+    Math.floor(TIMELINE_VIEWPORT_BUFFER / 2),
+  );
   // Conservative fallback viewport width (px) used only on the very first
   // render before ResizeObserver measures the rail. Picked to comfortably
   // cover wide displays (~2560px) so the centered window includes every
@@ -427,6 +431,16 @@
     fallback: string;
     variant: "single" | "range";
   };
+  type TimelineAppRun = Omit<TimelineAppGroup, "iconLeftPx" | "iconSrc" | "showIcon"> & {
+    startIndex: number;
+    endIndex: number;
+  };
+  type PendingTimelineScrollSample = {
+    clientWidth: number;
+    handlerStartedAt: number;
+    scrollLeft: number;
+    scrollWidth: number;
+  };
 
   let timelineFrames = $state<FrameDto[]>([]);
   let timelineActiveIndex = $state(0);
@@ -442,6 +456,7 @@
   // is `maxScrollLeft - scrollLeft` because slot 0 is anchored to the track's
   // right edge.
   let timelineScrollLeft = $state(0);
+  let timelineRenderAnchorIndex = $state(0);
   let timelineViewportWidth = $state(0);
   // Last `clientWidth` of the rail acknowledged by the `ResizeObserver`. Used
   // by `onTimelineScroll` to discriminate user-driven scroll events from
@@ -538,6 +553,10 @@
   let previousActivePreviewIndex = 0;
   let previousActivePreviewFrameId: number | null = null;
   let lastTimelineScrollSample = { left: 0, at: 0 };
+  let latestTimelineScrollLeft = 0;
+  let latestTimelineScrubVelocityPxPerMs = 0;
+  let pendingTimelineScrollSample: PendingTimelineScrollSample | null = null;
+  let timelineScrollAnimationFrame: number | null = null;
   let previewScrubVelocityPxPerMs = $state(0);
   let previewCacheReuseCount = $state(0);
   let previewCacheHitCount = $state(0);
@@ -586,13 +605,21 @@
   }
 
   const timelineActive = $derived(timelineFrames[timelineActiveIndex] ?? null);
+  const timelineFrameById = $derived.by<Map<number, FrameDto>>(() => {
+    const framesById = new Map<number, FrameDto>();
+    for (const frame of timelineFrames) framesById.set(frame.id, frame);
+    return framesById;
+  });
+  const activeScrubPreviewInterval = $derived(
+    scrubPreviewIntervalForFrame(timelineActive),
+  );
   const activePreviewPath = $derived(
     timelineActive ? previewCache.get(timelineActive.id) ?? null : null,
   );
   const activeDisplayPreviewPath = $derived(
     timelineActive && previewCache.has(timelineActive.id)
       ? previewCache.get(timelineActive.id) ?? null
-      : scrubPreviewIntervalForFrame(timelineActive)?.preview?.filePath ??
+      : activeScrubPreviewInterval?.preview?.filePath ??
         activeDisplayPreviewPathForFrame(
           timelineActive?.id ?? null,
           previewCache,
@@ -602,7 +629,7 @@
   const activeDisplayPreviewSource = $derived<"exact" | "scrub" | "none">(
     timelineActive && previewCache.has(timelineActive.id)
       ? "exact"
-      : scrubPreviewIntervalForFrame(timelineActive)?.preview
+      : activeScrubPreviewInterval?.preview
         ? "scrub"
         : activeDisplayPreviewSourceForFrame(
           timelineActive?.id ?? null,
@@ -615,7 +642,7 @@
       ? activeDisplayPreviewSource === "exact"
         ? previewSourceKindCache.get(timelineActive.id) ?? "none"
         : activeDisplayPreviewSource === "scrub"
-          ? scrubPreviewIntervalForFrame(timelineActive)?.preview?.sourceKind ??
+          ? activeScrubPreviewInterval?.preview?.sourceKind ??
             scrubPreviewSourceKindCache.get(timelineActive.id) ??
             "none"
           : "none"
@@ -631,6 +658,7 @@
   let lastPreviewReuseFrameId = $state<number | null>(null);
   let timelineActiveDuplicateOf = $state<FrameDto | null>(null);
   let timelineActiveDuplicateLookupGeneration = 0;
+  let timelineActiveDuplicateLookupTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Preview load/error state belongs to the currently selected frame only.
   // Clear it on frame switches so a stale message from an older request does
@@ -664,29 +692,43 @@
     const shouldLookup = !!active && developerOptions.value;
     timelineActiveDuplicateLookupGeneration += 1;
     const gen = timelineActiveDuplicateLookupGeneration;
+    if (timelineActiveDuplicateLookupTimer != null) {
+      clearTimeout(timelineActiveDuplicateLookupTimer);
+      timelineActiveDuplicateLookupTimer = null;
+    }
     timelineActiveDuplicateOf = null;
 
     if (!shouldLookup || !active) {
-      return;
+      return () => {};
     }
 
-    void (async () => {
-      try {
-        const duplicateOf = await invoke<FrameDto | null>(
-          "get_earliest_earlier_equivalent_frame",
-          {
-            request: {
-              frameId: active.id,
-            } satisfies GetEarliestEarlierEquivalentFrameRequest,
-          },
-        );
-        if (gen !== timelineActiveDuplicateLookupGeneration) return;
-        timelineActiveDuplicateOf = duplicateOf;
-      } catch {
-        if (gen !== timelineActiveDuplicateLookupGeneration) return;
-        timelineActiveDuplicateOf = null;
+    timelineActiveDuplicateLookupTimer = setTimeout(() => {
+      timelineActiveDuplicateLookupTimer = null;
+      void (async () => {
+        try {
+          const duplicateOf = await invoke<FrameDto | null>(
+            "get_earliest_earlier_equivalent_frame",
+            {
+              request: {
+                frameId: active.id,
+              } satisfies GetEarliestEarlierEquivalentFrameRequest,
+            },
+          );
+          if (gen !== timelineActiveDuplicateLookupGeneration) return;
+          timelineActiveDuplicateOf = duplicateOf;
+        } catch {
+          if (gen !== timelineActiveDuplicateLookupGeneration) return;
+          timelineActiveDuplicateOf = null;
+        }
+      })();
+    }, 200);
+
+    return () => {
+      if (timelineActiveDuplicateLookupTimer != null) {
+        clearTimeout(timelineActiveDuplicateLookupTimer);
+        timelineActiveDuplicateLookupTimer = null;
       }
-    })();
+    };
   });
 
   // Selected audio segment for the inline player. Resolved from the current
@@ -2467,12 +2509,20 @@
   // cursor, so the user always has a readable timestamp readout for the frame
   // they're parked on.
   let timelineRailWrap: HTMLDivElement | null = $state(null);
+  let timelineAudioLaneTrack: HTMLDivElement | null = $state(null);
+  let activeTimelineSlotElement: HTMLElement | null = null;
+  let timelineActiveTickSyncGeneration = 0;
   let hoveredFrameId = $state<number | null>(null);
   let hoveredX = $state<number | null>(null);
 
+  $effect(() => {
+    if (!timelineAudioLaneTrack) return;
+    syncTimelineAudioLaneScroll(latestTimelineScrollLeft);
+  });
+
   const tooltipFrame = $derived(
     hoveredFrameId != null
-      ? (timelineFrames.find((f) => f.id === hoveredFrameId) ?? timelineActive)
+      ? (timelineFrameById.get(hoveredFrameId) ?? timelineActive)
       : timelineActive,
   );
   const tooltipIsHovered = $derived(
@@ -2486,12 +2536,6 @@
   // Clamped non-negative for the empty/short-list case.
   const timelineMaxScroll = $derived(
     Math.max(0, timelineFrames.length * TIMELINE_SLOT_WIDTH - 8),
-  );
-
-  // Positive "advance" distance: how far the user has scrolled past slot 0
-  // (the newest frame, anchored to the right edge) toward older frames.
-  const timelineAdvance = $derived(
-    Math.max(0, timelineMaxScroll - timelineScrollLeft),
   );
 
   // The active frame sits centered under the static cursor at the rail's
@@ -2515,7 +2559,7 @@
   const timelineWindowStart = $derived(
     Math.max(
       0,
-      Math.floor(timelineAdvance / TIMELINE_SLOT_WIDTH) -
+      timelineRenderAnchorIndex -
         timelineHalfViewportSlots -
         TIMELINE_VIEWPORT_BUFFER,
     ),
@@ -2523,7 +2567,8 @@
   const timelineWindowEnd = $derived(
     Math.min(
       timelineFrames.length,
-      Math.ceil(timelineAdvance / TIMELINE_SLOT_WIDTH) +
+      timelineRenderAnchorIndex +
+        1 +
         timelineHalfViewportSlots +
         TIMELINE_VIEWPORT_BUFFER,
     ),
@@ -2531,14 +2576,56 @@
   const timelineWindow = $derived(
     timelineFrames.slice(timelineWindowStart, timelineWindowEnd),
   );
-  const timelineAppGroups = $derived.by<TimelineAppGroup[]>(() => {
+  $effect(() => {
+    timelineActiveTickSyncGeneration += 1;
+    const gen = timelineActiveTickSyncGeneration;
+    const activeIndex = timelineActiveIndex;
+    if (
+      timelineFrames.length === 0 ||
+      activeIndex < timelineWindowStart ||
+      activeIndex >= timelineWindowEnd
+    ) {
+      activeTimelineSlotElement?.classList.remove("timeline-rail__slot--active");
+      activeTimelineSlotElement = null;
+      return;
+    }
+
+    void tick().then(() => {
+      if (gen !== timelineActiveTickSyncGeneration) return;
+      syncTimelineActiveTick(activeIndex);
+    });
+  });
+  $effect(() => {
+    const frameCount = timelineFrames.length;
+    if (frameCount === 0) {
+      if (timelineRenderAnchorIndex !== 0) timelineRenderAnchorIndex = 0;
+      return;
+    }
+    const clampedAnchor = Math.max(
+      0,
+      Math.min(frameCount - 1, timelineRenderAnchorIndex),
+    );
+    if (clampedAnchor !== timelineRenderAnchorIndex) {
+      timelineRenderAnchorIndex = clampedAnchor;
+      return;
+    }
+    const clampedActive = Math.max(
+      0,
+      Math.min(frameCount - 1, timelineActiveIndex),
+    );
+    if (
+      Math.abs(clampedActive - timelineRenderAnchorIndex) >=
+      TIMELINE_RENDER_REANCHOR_DISTANCE
+    ) {
+      timelineRenderAnchorIndex = clampedActive;
+    }
+  });
+  const timelineAppRuns = $derived.by<TimelineAppRun[]>(() => {
     const startedAt = performance.now();
     const frames = timelineFrames;
-    const windowStart = timelineWindowStart;
-    const windowEnd = timelineWindowEnd;
-    if (frames.length === 0 || windowStart >= windowEnd) return [];
+    if (frames.length === 0) return [];
 
-    const groups: TimelineAppGroup[] = [];
+    const runs: TimelineAppRun[] = [];
     let runIdentity: string | null = null;
     let runBundleId: string | null = null;
     let runAppName: string | null = null;
@@ -2549,38 +2636,20 @@
       if (!runIdentity) return;
       const runEnd = endExclusive - 1;
       const frameCount = runEnd - runStart + 1;
-      const intersectsWindow = runStart < windowEnd && runEnd >= windowStart;
-      if (!intersectsWindow) {
-        return;
-      }
-
-      const visibleStart = Math.max(runStart, windowStart);
-      const visibleEnd = Math.min(runEnd, windowEnd - 1);
-      const visibleWidthPx = (visibleEnd - visibleStart + 1) * TIMELINE_SLOT_WIDTH;
-      const iconCenterOffsetFromRight =
-        (visibleStart - runStart) * TIMELINE_SLOT_WIDTH + visibleWidthPx / 2;
       const widthPx = frameCount * TIMELINE_SLOT_WIDTH;
-      const iconSizePx = 20;
       const label = runAppName ?? runBundleId ?? "Unknown app";
       const variant = frameCount === 1 ? "single" : "range";
-      groups.push({
+      runs.push({
         key: timelineAppGroupKey(runIdentity, frames, runEnd),
         boundaryFrameId: endExclusive < frames.length ? frames[runEnd]?.id ?? null : null,
         bundleId: runBundleId,
         appName: runAppName,
         label,
         frameCount,
+        startIndex: runStart,
+        endIndex: runEnd,
         rightPx: runStart * TIMELINE_SLOT_WIDTH,
         widthPx,
-        iconLeftPx: Math.max(
-          2,
-          Math.min(
-            Math.max(2, widthPx - iconSizePx - 2),
-            widthPx - iconCenterOffsetFromRight - iconSizePx / 2,
-          ),
-        ),
-        iconSrc: runBundleId ? timelineAppIconSrc(runBundleId) : null,
-        showIcon: variant === "range" && visibleWidthPx >= iconSizePx + 24,
         fallback: timelineAppIconFallback(runAppName, runBundleId),
         variant,
       });
@@ -2631,8 +2700,66 @@
     }
     flushRun(frames.length);
 
-    scrubPerfLogSlow("timeline_app_groups", performance.now() - startedAt, {
+    scrubPerfLogSlow("timeline_app_runs", performance.now() - startedAt, {
       frames: frames.length,
+      runs: runs.length,
+    });
+    return runs;
+  });
+
+  function firstTimelineAppRunEndingAtOrAfter(
+    runs: TimelineAppRun[],
+    frameIndex: number,
+  ): number {
+    let low = 0;
+    let high = runs.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if ((runs[mid]?.endIndex ?? -1) < frameIndex) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    return low;
+  }
+
+  const timelineAppGroups = $derived.by<TimelineAppGroup[]>(() => {
+    const startedAt = performance.now();
+    const runs = timelineAppRuns;
+    const windowStart = timelineWindowStart;
+    const windowEnd = timelineWindowEnd;
+    if (runs.length === 0 || windowStart >= windowEnd) return [];
+
+    const groups: TimelineAppGroup[] = [];
+    const iconSizePx = 20;
+    const firstRun = firstTimelineAppRunEndingAtOrAfter(runs, windowStart);
+    for (let i = firstRun; i < runs.length; i++) {
+      const run = runs[i]!;
+      if (run.startIndex >= windowEnd) break;
+      if (run.endIndex < windowStart) continue;
+
+      const visibleStart = Math.max(run.startIndex, windowStart);
+      const visibleEnd = Math.min(run.endIndex, windowEnd - 1);
+      const visibleWidthPx = (visibleEnd - visibleStart + 1) * TIMELINE_SLOT_WIDTH;
+      const iconCenterOffsetFromRight =
+        (visibleStart - run.startIndex) * TIMELINE_SLOT_WIDTH + visibleWidthPx / 2;
+      groups.push({
+        ...run,
+        iconLeftPx: Math.max(
+          2,
+          Math.min(
+            Math.max(2, run.widthPx - iconSizePx - 2),
+            run.widthPx - iconCenterOffsetFromRight - iconSizePx / 2,
+          ),
+        ),
+        iconSrc: run.bundleId ? timelineAppIconSrc(run.bundleId) : null,
+        showIcon: run.variant === "range" && visibleWidthPx >= iconSizePx + 24,
+      });
+    }
+
+    scrubPerfLogSlow("timeline_app_groups", performance.now() - startedAt, {
+      runs: runs.length,
       windowStart,
       windowEnd,
       groups: groups.length,
@@ -2847,10 +2974,31 @@
     }
   }
 
+  function syncTimelineAudioLaneScroll(scrollLeft: number): void {
+    if (!timelineAudioLaneTrack) return;
+    timelineAudioLaneTrack.style.transform = `translateX(${-scrollLeft}px)`;
+  }
+
+  function syncTimelineActiveTick(activeIndex: number): void {
+    const next = timelineRail?.querySelector<HTMLElement>(
+      `.timeline-rail__slot[data-timeline-slot-index="${activeIndex}"]`,
+    ) ?? null;
+    if (activeTimelineSlotElement === next) return;
+    activeTimelineSlotElement?.classList.remove("timeline-rail__slot--active");
+    next?.classList.add("timeline-rail__slot--active");
+    activeTimelineSlotElement = next;
+  }
+
+  function commitTimelineScrollPosition(scrollLeft: number): void {
+    latestTimelineScrollLeft = scrollLeft;
+    syncTimelineAudioLaneScroll(scrollLeft);
+    timelineScrollLeft = scrollLeft;
+  }
+
   async function syncTimelineScrollToActiveFrame(): Promise<void> {
     await tick();
     if (!timelineRail) {
-      timelineScrollLeft = 0;
+      commitTimelineScrollPosition(0);
       return;
     }
     const max = timelineRail.scrollWidth - timelineRail.clientWidth;
@@ -2859,7 +3007,7 @@
       Math.min(max, max - timelineActiveIndex * TIMELINE_SLOT_WIDTH),
     );
     timelineRail.scrollLeft = targetScrollLeft;
-    timelineScrollLeft = targetScrollLeft;
+    commitTimelineScrollPosition(targetScrollLeft);
   }
 
   function formatCapturedAt(ts: string): string {
@@ -4407,7 +4555,7 @@
         if (timelineRail) {
           const max = timelineRail.scrollWidth - timelineRail.clientWidth;
           timelineRail.scrollLeft = max;
-          timelineScrollLeft = max;
+          commitTimelineScrollPosition(max);
         }
         // Empty → populated: kick off an audio segment fetch for the new
         // window. Subsequent prepends below also refresh after merging.
@@ -4569,37 +4717,9 @@
     return () => clearInterval(id);
   });
 
-  function onTimelineScroll(event: Event) {
-    const handlerStartedAt = performance.now();
-    const el = event.currentTarget as HTMLDivElement;
-    const now = handlerStartedAt;
-    const deltaMs = now - lastTimelineScrollSample.at;
-    if (deltaMs > 0) {
-      previewScrubVelocityPxPerMs = Math.abs(el.scrollLeft - lastTimelineScrollSample.left) / deltaMs;
-    }
-    lastTimelineScrollSample = { left: el.scrollLeft, at: now };
-    timelineScrollLeft = el.scrollLeft;
-    // Resize-induced scroll guard: when the window grows, `cqi`-based track
-    // margins recompute non-atomically with `clientWidth`, so the browser
-    // emits a `scroll` event against a transiently inconsistent
-    // `(scrollLeft, scrollWidth, clientWidth)` triple before the
-    // `ResizeObserver` can re-sync us. Recomputing the active index from
-    // that triple jumps the user to a different frame on every enlarge.
-    // Detect this by comparing `clientWidth` to the value the observer last
-    // acknowledged: load-more grows `scrollWidth` but not `clientWidth`, so
-    // genuine user scrubs during pagination still pass through.
-    if (el.clientWidth !== lastTimelineRailClientWidth) {
-      scrubPerfRecordScroll(performance.now() - handlerStartedAt, {
-        ignored: true,
-        reason: "resize_client_width",
-        scrollLeft: el.scrollLeft,
-        velocity: previewScrubVelocityPxPerMs,
-        activeIndex: timelineActiveIndex,
-      });
-      return;
-    }
-    const maxScroll = el.scrollWidth - el.clientWidth;
-    const advance = Math.max(0, maxScroll - el.scrollLeft);
+  function commitTimelineScrollSample(sample: PendingTimelineScrollSample): void {
+    const maxScroll = sample.scrollWidth - sample.clientWidth;
+    const advance = Math.max(0, maxScroll - sample.scrollLeft);
     const idx = Math.max(
       0,
       Math.min(
@@ -4609,12 +4729,14 @@
     );
     const activeChanged = idx !== timelineActiveIndex;
     if (activeChanged) {
+      previewScrubVelocityPxPerMs = latestTimelineScrubVelocityPxPerMs;
+      commitTimelineScrollPosition(sample.scrollLeft);
       timelineActiveIndex = idx;
     }
-    scrubPerfRecordScroll(performance.now() - handlerStartedAt, {
+    scrubPerfRecordScroll(performance.now() - sample.handlerStartedAt, {
       ignored: false,
-      scrollLeft: el.scrollLeft,
-      velocity: previewScrubVelocityPxPerMs,
+      scrollLeft: sample.scrollLeft,
+      velocity: latestTimelineScrubVelocityPxPerMs,
       activeIndex: idx,
       activeChanged,
       frames: timelineFrames.length,
@@ -4640,6 +4762,69 @@
       loadTimelinePage(false);
     }
   }
+
+  function commitPendingTimelineScrollSample(): void {
+    timelineScrollAnimationFrame = null;
+    const sample = pendingTimelineScrollSample;
+    pendingTimelineScrollSample = null;
+    if (!sample) return;
+    commitTimelineScrollSample(sample);
+  }
+
+  function scheduleTimelineScrollCommit(sample: PendingTimelineScrollSample): void {
+    pendingTimelineScrollSample = sample;
+    if (timelineScrollAnimationFrame != null) return;
+    timelineScrollAnimationFrame = requestAnimationFrame(commitPendingTimelineScrollSample);
+  }
+
+  function onTimelineScroll(event: Event) {
+    const handlerStartedAt = performance.now();
+    const el = event.currentTarget as HTMLDivElement;
+    const now = handlerStartedAt;
+    const scrollLeft = el.scrollLeft;
+    latestTimelineScrollLeft = scrollLeft;
+    const deltaMs = now - lastTimelineScrollSample.at;
+    if (deltaMs > 0) {
+      latestTimelineScrubVelocityPxPerMs = Math.abs(scrollLeft - lastTimelineScrollSample.left) / deltaMs;
+    }
+    lastTimelineScrollSample = { left: scrollLeft, at: now };
+    syncTimelineAudioLaneScroll(scrollLeft);
+    // Resize-induced scroll guard: when the window grows, `cqi`-based track
+    // margins recompute non-atomically with `clientWidth`, so the browser
+    // emits a `scroll` event against a transiently inconsistent
+    // `(scrollLeft, scrollWidth, clientWidth)` triple before the
+    // `ResizeObserver` can re-sync us. Recomputing the active index from
+    // that triple jumps the user to a different frame on every enlarge.
+    // Detect this by comparing `clientWidth` to the value the observer last
+    // acknowledged: load-more grows `scrollWidth` but not `clientWidth`, so
+    // genuine user scrubs during pagination still pass through.
+    if (el.clientWidth !== lastTimelineRailClientWidth) {
+      scrubPerfRecordScroll(performance.now() - handlerStartedAt, {
+        ignored: true,
+        reason: "resize_client_width",
+        scrollLeft,
+        velocity: latestTimelineScrubVelocityPxPerMs,
+        activeIndex: timelineActiveIndex,
+      });
+      return;
+    }
+    scheduleTimelineScrollCommit({
+      clientWidth: el.clientWidth,
+      handlerStartedAt,
+      scrollLeft,
+      scrollWidth: el.scrollWidth,
+    });
+  }
+
+  $effect(() => {
+    return () => {
+      if (timelineScrollAnimationFrame != null) {
+        cancelAnimationFrame(timelineScrollAnimationFrame);
+        timelineScrollAnimationFrame = null;
+      }
+      pendingTimelineScrollSample = null;
+    };
+  });
 
   // Translate wheel events anywhere on the page into horizontal scroll on the
   // rail so the user can scrub from anywhere — they don't have to find and
@@ -7102,7 +7287,6 @@
           {/each}
           {#each timelineWindow as frame, j (frame.id)}
             {@const i = timelineWindowStart + j}
-            {@const isActive = i === timelineActiveIndex}
             {@const isAppGroupBoundary = timelineAppGroupBoundaryFrameIds.has(frame.id)}
             {@const isMajor = isAppGroupBoundary}
             <!-- Ticks are intentionally presentational (no role, not
@@ -7112,9 +7296,9 @@
                  (newest) is anchored to the right of the track via `right:`. -->
             <div
               class="timeline-rail__slot"
-              class:timeline-rail__slot--active={isActive}
               class:timeline-rail__slot--major={isMajor}
               class:timeline-rail__slot--app-boundary={isAppGroupBoundary}
+              data-timeline-slot-index={i}
               style="right: {i * TIMELINE_SLOT_WIDTH}px"
               onpointerenter={(e) => onSlotPointerEnter(e, frame.id)}
               aria-hidden="true"
@@ -7123,7 +7307,6 @@
             </div>
           {/each}
         </div>
-         <span class="timeline-rail__cursor" aria-hidden="true"></span>
       </div>
       <!-- Audio segment lane. Lives as a sibling of the slider rail (not
            inside it, and not on top of it) so:
@@ -7150,8 +7333,9 @@
           {#if positionedAudioSegments.length > 0}
             <div
               class="timeline-rail__audio-lane-track"
+              bind:this={timelineAudioLaneTrack}
               style="width: {timelineFrames.length *
-                TIMELINE_SLOT_WIDTH}px; transform: translateX({-timelineScrollLeft}px)"
+                TIMELINE_SLOT_WIDTH}px"
             >
               <div class="timeline-rail__audio-row timeline-rail__audio-row--microphone" role="presentation">
                 {#each positionedAudioSegments as seg (seg.id)}
@@ -10083,7 +10267,7 @@
        position as the slot tick at `right: N*8px` inside the rail. */
     margin-left: calc(50cqi - 4px);
     margin-right: calc(50cqi - 4px);
-    /* `transform` is set inline based on `timelineScrollLeft`. */
+    transform: translateX(0px);
     will-change: transform;
   }
 
@@ -10224,46 +10408,12 @@
     z-index: 3;
   }
 
-  .timeline-rail__slot--active .timeline-rail__tick,
-  .timeline-rail__slot--active.timeline-rail__slot--major .timeline-rail__tick {
+  :global(.timeline-rail__slot--active) .timeline-rail__tick,
+  :global(.timeline-rail__slot--active.timeline-rail__slot--major) .timeline-rail__tick {
     width: 2px;
     height: 22px;
     background: var(--app-danger-strong);
     box-shadow: 0 0 6px color-mix(in srgb, var(--app-danger-strong) 70%, transparent);
-  }
-
-  /* Static center indicator — the rail scrolls beneath it, so the active
-     frame is always whichever tick is centered under this caret. */
-  .timeline-rail__cursor {
-    position: absolute;
-    top: -1px;
-    bottom: -1px;
-    left: 50%;
-    width: 1px;
-    background: color-mix(in srgb, var(--app-danger-strong) 35%, transparent);
-    pointer-events: none;
-  }
-
-  .timeline-rail__cursor::before,
-  .timeline-rail__cursor::after {
-    content: "";
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-  }
-
-  .timeline-rail__cursor::before {
-    top: -1px;
-    border-top: 4px solid var(--app-danger-strong);
-  }
-
-  .timeline-rail__cursor::after {
-    bottom: -1px;
-    border-bottom: 4px solid var(--app-danger-strong);
   }
 
   .timeline-rail--placeholder {

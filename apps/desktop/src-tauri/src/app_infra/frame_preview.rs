@@ -47,7 +47,7 @@ pub const SCRUB_PREVIEW_CACHE_CHANGED_EVENT: &str = "scrub_preview_cache_changed
 const GENERATED_FRAME_PREVIEW_CACHE_DIR: &str = "frame-previews";
 const GENERATED_SCRUB_PREVIEW_CACHE_DIR: &str = "scrub-previews";
 const GENERATED_FRAME_SCRUB_PREVIEW_CACHE_DIR: &str = "frame-v1-jpeg-q72";
-const GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES: usize = 512;
+pub(super) const GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES: usize = 512;
 const GENERATED_FRAME_PREVIEW_CACHE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24);
 const GENERATED_SCRUB_PREVIEW_CACHE_MAX_FILES: usize = 4096;
 const GENERATED_SCRUB_PREVIEW_CACHE_MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -982,7 +982,8 @@ fn persist_generated_frame_preview_in_dir(
         )
     })?;
     let output_path = cache_dir.join(generated_frame_preview_file_name(frame_id, mime_type));
-    if !output_path.is_file() {
+    let created = !output_path.is_file();
+    if created {
         let temp_file = tempfile::NamedTempFile::new_in(cache_dir).map_err(|error| {
             format!(
                 "failed to create temporary preview file in {}: {error}",
@@ -1001,6 +1002,9 @@ fn persist_generated_frame_preview_in_dir(
                 output_path.display()
             )
         })?;
+    }
+    if created {
+        cleanup_generated_frame_preview_cache_dir(cache_dir)?;
     }
     Ok(output_path)
 }
@@ -1033,7 +1037,8 @@ fn persist_generated_scrub_preview_in_dir(
     })?;
     let output_path =
         generated_scrub_preview_path(cache_dir, frame_id, max_pixel_size, source_hash);
-    if !output_path.is_file() {
+    let created = !output_path.is_file();
+    if created {
         let temp_file = tempfile::NamedTempFile::new_in(cache_dir).map_err(|error| {
             format!(
                 "failed to create temporary scrub preview file in {}: {error}",
@@ -1052,6 +1057,9 @@ fn persist_generated_scrub_preview_in_dir(
                 output_path.display()
             )
         })?;
+    }
+    if created {
+        cleanup_generated_frame_preview_cache_dir(cache_dir)?;
     }
     Ok(output_path)
 }
@@ -1130,6 +1138,7 @@ pub(super) fn generate_scrub_preview_derivative_in_dir(
             cached_path.display()
         )
     })?;
+    cleanup_generated_frame_preview_cache_dir(cache_dir)?;
     Ok(cached_path)
 }
 
@@ -2384,6 +2393,13 @@ pub(crate) fn run_generated_frame_preview_cache_startup_pass(app_handle: &tauri:
         .resolve(GENERATED_SCRUB_PREVIEW_CACHE_DIR, BaseDirectory::AppCache)
     {
         Ok(cache_dir) => {
+            let frame_scrub_cache_dir = cache_dir.join(GENERATED_FRAME_SCRUB_PREVIEW_CACHE_DIR);
+            if let Err(error) = cleanup_generated_frame_preview_cache_dir(&frame_scrub_cache_dir) {
+                crate::native_capture::debug_log::log_warn(format!(
+                    "failed generated frame scrub preview cache startup cleanup at {}: {error}",
+                    frame_scrub_cache_dir.display()
+                ));
+            }
             let cache_dir = cache_dir.join(SCRUB_PREVIEW_RENDITION);
             if let Err(error) = cleanup_generated_scrub_preview_cache_dir(&cache_dir) {
                 crate::native_capture::debug_log::log_warn(format!(

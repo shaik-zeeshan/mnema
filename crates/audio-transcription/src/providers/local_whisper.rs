@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "local-whisper")]
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[cfg(all(feature = "local-whisper", target_os = "macos"))]
+use crate::macos_audio_decode::decode_audio_to_mono_with_avassetreader_fallback;
 #[cfg(any(test, feature = "local-whisper"))]
-use crate::macos_audio_decode::{
-    decode_audio_to_mono_with_avassetreader_fallback, resample_linear,
-};
+use crate::macos_audio_decode::resample_linear;
 use crate::{
     model_install_dir, TranscriptionError, TranscriptionOutput, TranscriptionProvider,
     TranscriptionRequest, TranscriptionResult, LOCAL_WHISPER_PROVIDER_ID,

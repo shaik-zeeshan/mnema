@@ -1,4 +1,7 @@
-use std::path::Path;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -7,8 +10,6 @@ use crate::{
     processing::{ProcessingStore, SegmentWorkspaceOcrReference},
     AppInfraError, Result,
 };
-
-use std::path::PathBuf;
 
 fn visible_segment_appears_openable(path: &Path) -> bool {
     const SEARCH_WINDOW_BYTES: u64 = 256 * 1024;
@@ -90,7 +91,7 @@ pub struct HiddenSegmentWorkspaceRepairResult {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HiddenSegmentWorkspaceRepairContext {
-    pub active_screen_session_id: Option<String>,
+    pub active_workspace_dirs: BTreeSet<String>,
 }
 
 #[derive(Clone)]
@@ -224,10 +225,7 @@ impl HiddenSegmentWorkspaceRepair {
                 continue;
             };
 
-            if matches_active_screen_session_workspace(
-                &paths,
-                context.active_screen_session_id.as_deref(),
-            ) {
+            if matches_active_workspace(&paths, &context.active_workspace_dirs) {
                 capture_runtime::debug_log!(
                     "[app-infra][hidden-segment-workspaces] skipped active workspace {}",
                     paths.workspace_dir
@@ -315,19 +313,11 @@ fn collect_hidden_segment_workspace_dirs_inner(
     Ok(())
 }
 
-fn matches_active_screen_session_workspace(
+fn matches_active_workspace(
     paths: &HiddenSegmentWorkspacePaths,
-    active_screen_session_id: Option<&str>,
+    active_workspace_dirs: &BTreeSet<String>,
 ) -> bool {
-    let Some(active_screen_session_id) = active_screen_session_id else {
-        return false;
-    };
-
-    let expected_workspace_prefix = format!(".{active_screen_session_id}-segment-");
-    Path::new(&paths.workspace_dir)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with(&expected_workspace_prefix))
+    active_workspace_dirs.contains(&paths.workspace_dir)
 }
 
 fn hidden_workspace_has_frame_artifacts(frames_dir: &Path) -> bool {
@@ -1040,7 +1030,9 @@ mod tests {
                 .repair_hidden_segment_workspaces_with_context(
                     &recordings_root,
                     &HiddenSegmentWorkspaceRepairContext {
-                        active_screen_session_id: Some("active-screen-session".to_string()),
+                        active_workspace_dirs: BTreeSet::from([workspace_dir
+                            .to_string_lossy()
+                            .to_string()]),
                     },
                 )
                 .await
@@ -1052,6 +1044,56 @@ mod tests {
             assert!(
                 workspace_dir.exists(),
                 "active workspace should be preserved"
+            );
+        });
+    }
+
+    #[test]
+    fn repair_hidden_segment_workspaces_with_context_skips_only_current_active_segment_workspace() {
+        run_async_test(async {
+            let dir = TestDir::new("repair-active-session-current-only");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let pool = database.pool().clone();
+            let repair = HiddenSegmentWorkspaceRepair::new(
+                crate::FrameBatchStore::new(pool.clone()),
+                crate::ProcessingStore::new(pool),
+            );
+            let recordings_root = dir.path().join("recordings");
+            let day_dir = recordings_root.join("2026/04/12");
+            let old_workspace_dir = day_dir.join(".active-screen-session-segment-0001");
+            let current_workspace_dir = day_dir.join(".active-screen-session-segment-0002");
+
+            std::fs::create_dir_all(old_workspace_dir.join("frames"))
+                .expect("old frames dir should exist");
+            std::fs::create_dir_all(current_workspace_dir.join("frames"))
+                .expect("current frames dir should exist");
+            write_openable_visible_segment(&day_dir.join("active-screen-session-segment-0001.mov"));
+            write_openable_visible_segment(&day_dir.join("active-screen-session-segment-0002.mov"));
+
+            let result = repair
+                .repair_hidden_segment_workspaces_with_context(
+                    &recordings_root,
+                    &HiddenSegmentWorkspaceRepairContext {
+                        active_workspace_dirs: BTreeSet::from([current_workspace_dir
+                            .to_string_lossy()
+                            .to_string()]),
+                    },
+                )
+                .await
+                .expect("repair should succeed");
+
+            assert_eq!(result.scanned_workspace_count, 2);
+            assert_eq!(result.removed_workspace_count, 1);
+            assert_eq!(result.skipped_workspace_count, 1);
+            assert!(
+                !old_workspace_dir.exists(),
+                "old safe workspace from the same screen session should be removed"
+            );
+            assert!(
+                current_workspace_dir.exists(),
+                "current active workspace should be preserved"
             );
         });
     }

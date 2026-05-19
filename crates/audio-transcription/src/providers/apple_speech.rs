@@ -20,8 +20,8 @@ use objc2::{rc::Retained, AnyThread};
 use objc2_foundation::{NSError, NSLocale, NSString, NSURL};
 #[cfg(target_os = "macos")]
 use objc2_speech::{
-    SFSpeechRecognitionResult, SFSpeechRecognizer, SFSpeechRecognizerAuthorizationStatus,
-    SFSpeechURLRecognitionRequest,
+    SFSpeechRecognitionResult, SFSpeechRecognitionTask, SFSpeechRecognizer,
+    SFSpeechRecognizerAuthorizationStatus, SFSpeechURLRecognitionRequest,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -187,7 +187,7 @@ fn transcribe_with_apple_speech(
         },
     );
 
-    let _task = unsafe {
+    let task: Retained<SFSpeechRecognitionTask> = unsafe {
         recognizer
             .recognizer
             .recognitionTaskWithRequest_resultHandler(&request_object, &result_handler)
@@ -196,9 +196,14 @@ fn transcribe_with_apple_speech(
     match receiver.recv_timeout(Duration::from_secs(300)) {
         Ok(AppleSpeechRecognitionEvent::Completed(output)) => Ok(output),
         Ok(AppleSpeechRecognitionEvent::Failed(error)) => Err(error),
-        Err(_) => Err(TranscriptionError::Transcription(
-            "timed out waiting for Apple Speech recognition result".to_string(),
-        )),
+        Err(_) => {
+            unsafe {
+                task.cancel();
+            }
+            Err(TranscriptionError::Transcription(
+                "timed out waiting for Apple Speech recognition result".to_string(),
+            ))
+        }
     }
 }
 
