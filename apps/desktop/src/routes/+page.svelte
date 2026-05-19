@@ -411,6 +411,8 @@
   type TimelineDataChangedPayload = {
     reason: "retention" | string;
     deletedBefore: string | null;
+    startedAt?: string | null;
+    endedAt?: string | null;
     deletedFrameIds?: number[];
     deletedAudioSegmentIds?: number[];
   };
@@ -6750,7 +6752,7 @@
     });
 
     listen<TimelineDataChangedPayload>("timeline_data_changed", (event) => {
-      if (event.payload.reason !== "retention" || !event.payload.deletedBefore) return;
+      if (event.payload.reason !== "retention" && event.payload.reason !== "delete_recent_capture") return;
       invalidateLoadedPickerSummaryMonths();
       const deletedFrameIds = new Set(event.payload.deletedFrameIds ?? []);
       const deletedAudioSegmentIds = new Set(event.payload.deletedAudioSegmentIds ?? []);
@@ -8264,6 +8266,7 @@
 
   .search-modal__section {
     min-width: 0;
+    overflow: hidden;
   }
 
   .search-modal__section-head {
@@ -8287,9 +8290,11 @@
 
   .search-card {
     width: 100%;
+    min-width: 0;
     display: flex;
     gap: 10px;
     padding: 10px;
+    overflow: hidden;
     text-align: left;
     border: 1px solid var(--app-border);
     border-radius: 8px;
@@ -8324,8 +8329,10 @@
 
   .search-card__content {
     min-width: 0;
+    width: 100%;
     display: grid;
     gap: 5px;
+    overflow: hidden;
   }
 
   .search-card__meta {
@@ -8351,6 +8358,11 @@
     color: var(--app-text);
     font-size: 12px;
     line-height: 1.45;
+  }
+
+  .search-card p {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .search-modal__empty {

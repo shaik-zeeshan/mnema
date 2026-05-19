@@ -80,6 +80,34 @@
     iconPath: string | null;
   };
 
+  type RecommendedExclusionState = "missing" | "disabled" | "enabled";
+
+  type RecommendedAppExclusion = {
+    bundleId: string;
+    displayName: string;
+    category: string;
+    categoryLabel: string;
+    running: boolean;
+    iconPath: string | null;
+    exclusionState: RecommendedExclusionState;
+  };
+
+  type BrowserDisclosureApp = {
+    bundleId: string;
+    displayName: string;
+    running: boolean;
+    iconPath: string | null;
+    exclusionState: RecommendedExclusionState;
+  };
+
+  type SensitiveCaptureRecommendations = {
+    promptId: string;
+    recommendedApps: RecommendedAppExclusion[];
+    actionableRecommendationCount: number;
+    shouldShowExistingUserPrompt: boolean;
+    browserDisclosures: BrowserDisclosureApp[];
+  };
+
   type RetentionCleanupSummary = {
     policy: string;
     cutoffEndedBefore: string | null;
@@ -157,6 +185,9 @@
   let appIconPathsByBundleId = $state<Record<string, string>>({});
   const requestedAppIconBundleIds = new Set<string>();
   let privacyCommandInFlight = $state(false);
+  let sensitiveRecommendations = $state<SensitiveCaptureRecommendations | null>(null);
+  let sensitiveRecommendationPromptActionInFlight = $state(false);
+  let sensitiveRecommendationPromptMarkedId = $state<string | null>(null);
   let privacyAppComboboxQuery = $state("");
   let privacyAppComboboxOpen = $state(false);
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
@@ -717,8 +748,29 @@
     }
   }
 
+  async function loadSensitiveCaptureRecommendations() {
+    try {
+      sensitiveRecommendations = await invoke<SensitiveCaptureRecommendations>("get_sensitive_capture_recommendations");
+      const bundleIds = [
+        ...(sensitiveRecommendations?.recommendedApps ?? []).map((app) => app.bundleId),
+        ...(sensitiveRecommendations?.browserDisclosures ?? []).map((app) => app.bundleId),
+      ];
+      void resolveAppIcons(bundleIds);
+    } catch {
+      sensitiveRecommendations = null;
+    }
+  }
+
   function uniqueBundleIds(bundleIds: Array<string | null | undefined>): string[] {
     return [...new Set(bundleIds.map((bundleId) => bundleId?.trim() ?? "").filter(Boolean))];
+  }
+
+  function canonicalBundleIdForComparison(value: string): string {
+    return value.trim().toLowerCase();
+  }
+
+  function sameBundleId(left: string, right: string): boolean {
+    return canonicalBundleIdForComparison(left) === canonicalBundleIdForComparison(right);
   }
 
   async function resolveAppIcons(bundleIds: Array<string | null | undefined>) {
@@ -753,7 +805,7 @@
 
   const availablePrivacyAppCandidates = $derived(
     privacyAppCandidates.filter((candidate) => (
-      !draftExcludedApps.some((item) => item.bundleId === candidate.bundleId)
+      !draftExcludedApps.some((item) => sameBundleId(item.bundleId, candidate.bundleId))
     ))
   );
 
@@ -796,19 +848,142 @@
       .slice(0, 12);
   })());
 
+  const pendingRecommendedApps = $derived(
+    (sensitiveRecommendations?.recommendedApps ?? []).filter((app) => app.exclusionState !== "enabled")
+  );
+
+  const showSensitiveRecommendationPrompt = $derived(
+    Boolean(sensitiveRecommendations?.shouldShowExistingUserPrompt && pendingRecommendedApps.length > 0)
+  );
+
+  const visibleBrowserDisclosureApps = $derived(
+    (sensitiveRecommendations?.browserDisclosures ?? []).filter((app) => app.running || app.exclusionState !== "missing")
+  );
+
+  $effect(() => {
+    const promptId = sensitiveRecommendations?.promptId;
+    if (!promptId || !showSensitiveRecommendationPrompt) return;
+    if (sensitiveRecommendationPromptMarkedId === promptId) return;
+    sensitiveRecommendationPromptMarkedId = promptId;
+    void invoke("mark_one_time_prompt_shown", { promptId });
+  });
+
   $effect(() => {
     if (!privacyAppComboboxOpen) return;
     void resolveAppIcons(filteredPrivacyAppCandidates.map((candidate) => candidate.bundleId));
   });
 
   function addPrivacyAppCandidate(candidate: PrivacyAppCandidate | null) {
-    if (!candidate || draftExcludedApps.some((item) => item.bundleId === candidate.bundleId)) return;
+    if (!candidate || draftExcludedApps.some((item) => sameBundleId(item.bundleId, candidate.bundleId))) return;
     void runPrivacySettingsCommand("add_privacy_excluded_app", {
       bundleId: candidate.bundleId,
       displayName: candidate.displayName,
     });
     privacyAppComboboxQuery = "";
     privacyAppComboboxOpen = false;
+  }
+
+  function addRecommendedPrivacyApp(app: RecommendedAppExclusion | BrowserDisclosureApp) {
+    void runPrivacySettingsCommand("add_privacy_excluded_app", {
+      bundleId: app.bundleId,
+      displayName: app.displayName,
+    }).then(loadSensitiveCaptureRecommendations);
+  }
+
+  function reenableRecommendedPrivacyApp(app: RecommendedAppExclusion | BrowserDisclosureApp) {
+    const existing = draftExcludedApps.find((entry) => sameBundleId(entry.bundleId, app.bundleId));
+    if (!existing) {
+      addRecommendedPrivacyApp(app);
+      return;
+    }
+    void setPrivacyExcludedAppEnabled(existing.id, true).then(loadSensitiveCaptureRecommendations);
+  }
+
+  function recommendationActionLabel(state: RecommendedExclusionState): string {
+    return state === "disabled" ? "Re-enable" : "Exclude";
+  }
+
+  function applyRecommendation(app: RecommendedAppExclusion | BrowserDisclosureApp) {
+    if (app.exclusionState === "enabled") return;
+    if (app.exclusionState === "disabled") {
+      reenableRecommendedPrivacyApp(app);
+    } else {
+      addRecommendedPrivacyApp(app);
+    }
+  }
+
+  async function dismissSensitiveRecommendationPrompt() {
+    const promptId = sensitiveRecommendations?.promptId;
+    if (!promptId || sensitiveRecommendationPromptActionInFlight) return;
+    sensitiveRecommendationPromptActionInFlight = true;
+    try {
+      await invoke("dismiss_one_time_prompt", { promptId });
+      if (sensitiveRecommendations) {
+        sensitiveRecommendations = {
+          ...sensitiveRecommendations,
+          shouldShowExistingUserPrompt: false,
+        };
+      }
+    } catch (err) {
+      recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      sensitiveRecommendationPromptActionInFlight = false;
+    }
+  }
+
+  async function applyAllRecommendedPrivacyApps() {
+    const promptId = sensitiveRecommendations?.promptId;
+    const recommendations = [...pendingRecommendedApps];
+    if (!promptId || recommendations.length === 0 || sensitiveRecommendationPromptActionInFlight) return;
+
+    if (recAutoSaveTimer !== null) {
+      clearTimeout(recAutoSaveTimer);
+      recAutoSaveTimer = null;
+    }
+    sensitiveRecommendationPromptActionInFlight = true;
+    privacyCommandInFlight = true;
+    recError = null;
+    try {
+      let updatedSettings: RecordingSettings | null = null;
+      for (const app of recommendations) {
+        if (app.exclusionState === "disabled") {
+          const existing = draftExcludedApps.find((entry) => sameBundleId(entry.bundleId, app.bundleId));
+          if (existing) {
+            updatedSettings = await invoke<RecordingSettings>("set_privacy_excluded_app_enabled", {
+              sourceId: existing.id,
+              enabled: true,
+            });
+          } else {
+            updatedSettings = await invoke<RecordingSettings>("add_privacy_excluded_app", {
+              bundleId: app.bundleId,
+              displayName: app.displayName,
+            });
+          }
+        } else {
+          updatedSettings = await invoke<RecordingSettings>("add_privacy_excluded_app", {
+            bundleId: app.bundleId,
+            displayName: app.displayName,
+          });
+        }
+        if (updatedSettings) {
+          recordingSettings = updatedSettings;
+          syncRecDrafts(updatedSettings);
+        }
+      }
+      await invoke("complete_one_time_prompt", { promptId });
+      if (sensitiveRecommendations) {
+        sensitiveRecommendations = {
+          ...sensitiveRecommendations,
+          shouldShowExistingUserPrompt: false,
+        };
+      }
+      await loadSensitiveCaptureRecommendations();
+    } catch (err) {
+      recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      privacyCommandInFlight = false;
+      sensitiveRecommendationPromptActionInFlight = false;
+    }
   }
 
   $effect(() => {
@@ -1932,6 +2107,7 @@
     loadDebugLogStatus();
     loadGeneralLogStatus();
     loadPrivacyAppCandidates();
+    loadSensitiveCaptureRecommendations();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -1966,6 +2142,7 @@
       recordingSettings = event.payload;
       syncRecDrafts(event.payload);
       recError = null;
+      void loadSensitiveCaptureRecommendations();
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenRecordingSettingsChanged = fn;
@@ -2141,6 +2318,42 @@
       </li>
     </ul>
   {/if}
+
+  {#if showSensitiveRecommendationPrompt}
+    <section class="sensitive-prompt" aria-label="Sensitive capture recommendation">
+      <div class="sensitive-prompt__main">
+        <span class="sensitive-prompt__eyebrow">Sensitive Capture Protection</span>
+        <strong>{pendingRecommendedApps.length} recommended app exclusion{pendingRecommendedApps.length === 1 ? "" : "s"} pending</strong>
+        <p>Password managers and Apple Passwords can be excluded from future screen capture.</p>
+      </div>
+      <div class="sensitive-prompt__actions">
+        <button
+          class="btn btn--primary btn--sm"
+          type="button"
+          disabled={privacyCommandInFlight || sensitiveRecommendationPromptActionInFlight}
+          onclick={() => void applyAllRecommendedPrivacyApps()}
+        >
+          Add exclusions
+        </button>
+        <button
+          class="btn btn--ghost btn--sm"
+          type="button"
+          disabled={sensitiveRecommendationPromptActionInFlight}
+          onclick={() => { activeTab = "privacy"; }}
+        >
+          Review
+        </button>
+        <button
+          class="btn btn--ghost btn--sm"
+          type="button"
+          disabled={sensitiveRecommendationPromptActionInFlight}
+          onclick={() => void dismissSensitiveRecommendationPrompt()}
+        >
+          Dismiss
+        </button>
+      </div>
+    </section>
+  {/if}
 </header>
 
 <!-- ── Tab navigation ─────────────────────────────────────────────────────
@@ -2297,6 +2510,72 @@
 
         <div class="settings-group">
           <span class="group-label">Excluded Apps</span>
+          <div class="settings-stack">
+            <div class="privacy-disclosure">
+              <p>Browsers are recorded unless the browser app is excluded.</p>
+              <p>Private/incognito browser windows are recorded unless the browser app is excluded.</p>
+              <p>Mnema does not detect browser password pages or password fields.</p>
+              <p>Browser extensions and websites are not excluded separately.</p>
+            </div>
+
+            {#if pendingRecommendedApps.length > 0}
+              <div class="recommendation-section">
+                <span class="group-label">Recommended App Exclusions</span>
+                <div class="recommendation-section__list">
+                  {#each pendingRecommendedApps as app (app.bundleId)}
+                    {@const iconSrc = appIconSrcForBundleId(app.bundleId)}
+                    <div class="settings-list-item settings-list-item--app-rule">
+                      <span class="app-rule-icon" aria-hidden="true">
+                        {#if iconSrc}
+                          <img src={iconSrc} alt="" loading="lazy" />
+                        {:else}
+                          <span>{appIconFallback(app.displayName, app.bundleId)}</span>
+                        {/if}
+                      </span>
+                      <div class="settings-list-item__main">
+                        <span class="settings-list-item__title">{app.displayName}</span>
+                        <span class="settings-list-item__description">{app.categoryLabel} · {app.bundleId}</span>
+                      </div>
+                      <button class="btn btn--ghost btn--sm" type="button" disabled={privacyCommandInFlight} onclick={() => applyRecommendation(app)}>
+                        {recommendationActionLabel(app.exclusionState)}
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            {#if visibleBrowserDisclosureApps.length > 0}
+              <div class="recommendation-section">
+                <span class="group-label">Known Browsers</span>
+                <div class="recommendation-section__list">
+                  {#each visibleBrowserDisclosureApps as app (app.bundleId)}
+                    {@const iconSrc = appIconSrcForBundleId(app.bundleId)}
+                    <div class="settings-list-item settings-list-item--app-rule">
+                      <span class="app-rule-icon" aria-hidden="true">
+                        {#if iconSrc}
+                          <img src={iconSrc} alt="" loading="lazy" />
+                        {:else}
+                          <span>{appIconFallback(app.displayName, app.bundleId)}</span>
+                        {/if}
+                      </span>
+                      <div class="settings-list-item__main">
+                        <span class="settings-list-item__title">{app.displayName}</span>
+                        <span class="settings-list-item__description">Browser screen content is recorded unless this app is excluded.</span>
+                      </div>
+                      {#if app.exclusionState === "enabled"}
+                        <span class="badge badge--ok badge--sm">Excluded</span>
+                      {:else}
+                        <button class="btn btn--ghost btn--sm" type="button" disabled={privacyCommandInFlight} onclick={() => applyRecommendation(app)}>
+                          {recommendationActionLabel(app.exclusionState)}
+                        </button>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
           <div class="app-combobox">
             <input
               class="text-input app-combobox__input"
@@ -4169,6 +4448,55 @@
     color: var(--app-accent-strong);
   }
 
+  .sensitive-prompt {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 12px;
+    border: 1px solid var(--app-warn-border);
+    border-radius: 6px;
+    background: var(--app-warn-bg);
+  }
+
+  .sensitive-prompt__main {
+    flex: 999 1 260px;
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .sensitive-prompt__eyebrow {
+    color: var(--app-warn);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .sensitive-prompt__main strong {
+    color: var(--app-text-strong);
+    font-size: 12px;
+    line-height: 1.25;
+  }
+
+  .sensitive-prompt__main p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .sensitive-prompt__actions {
+    flex: 1 1 220px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
   /* ── Card ──────────────────────────────────────────────────── */
   .card {
     position: relative;
@@ -4737,6 +5065,17 @@
     background: var(--app-surface-hover);
     color: var(--app-text);
     border-color: var(--app-border-hover);
+  }
+
+  .btn--primary {
+    background: var(--app-accent);
+    color: var(--app-bg);
+    border-color: var(--app-accent);
+  }
+
+  .btn--primary:not(:disabled):hover {
+    background: var(--app-accent-strong);
+    border-color: var(--app-accent-strong);
   }
 
   .btn--sm {
@@ -5453,6 +5792,10 @@
   :global([data-theme="light"]) .status-pill--on .status-pill__label {
     color: var(--app-accent-strong);
   }
+  :global([data-theme="light"]) .sensitive-prompt {
+    background: var(--app-warn-bg);
+    border-color: var(--app-warn-border);
+  }
 
   :global([data-theme="light"]) .card {
     background: var(--app-surface);
@@ -5697,5 +6040,54 @@
   :global([data-theme="light"]) .btn--danger:not(:disabled):hover {
     background: var(--app-danger-bg);
     border-color: var(--app-danger-strong);
+  }
+
+  .privacy-disclosure {
+    display: grid;
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface-subtle);
+  }
+
+  .privacy-disclosure p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .recommendation-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .recommendation-section__list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .settings-list-item__main {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+    flex: 1;
+  }
+
+  .settings-list-item__title {
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .settings-list-item__description {
+    color: var(--app-text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 </style>

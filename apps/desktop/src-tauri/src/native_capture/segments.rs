@@ -4036,9 +4036,7 @@ pub(super) fn stop_capture_runtime(
 ) -> Result<(), CaptureErrorResponse> {
     #[cfg(target_os = "macos")]
     {
-        if runtime.is_running {
-            apply_runtime_signal(runtime, RuntimeSignal::StopRequested)?;
-        }
+        request_runtime_stop_transition_if_needed(runtime)?;
 
         let mut current_segment_output_files = runtime.current_segment_output_files.clone();
         let recording_file = runtime.recording_file.clone().or_else(|| {
@@ -4154,5 +4152,23 @@ pub(super) fn stop_capture_runtime(
         let _ = runtime;
         let _ = app_handle;
         Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn request_runtime_stop_transition_if_needed(
+    runtime: &mut NativeCaptureRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    match runtime.runtime_controller.state() {
+        RuntimeState::Idle => {
+            runtime.runtime_state = RuntimeState::Idle;
+            Ok(())
+        }
+        RuntimeState::Stopping => {
+            runtime.runtime_state = RuntimeState::Stopping;
+            Ok(())
+        }
+        _ if runtime.is_running => apply_runtime_signal(runtime, RuntimeSignal::StopRequested),
+        _ => Ok(()),
     }
 }

@@ -65,6 +65,7 @@ pub struct SourceSessions {
 pub struct NativeCaptureSession {
     pub is_running: bool,
     pub is_inactivity_paused: bool,
+    pub is_user_paused: bool,
     pub requested_sources: Option<CaptureSources>,
     pub output_files: Option<CaptureOutputFiles>,
     pub source_sessions: Option<SourceSessions>,

@@ -146,6 +146,39 @@ pub fn add_privacy_excluded_app(
     })
 }
 
+pub(crate) fn add_or_enable_privacy_excluded_app_from_app_handle(
+    app_handle: tauri::AppHandle,
+    bundle_id: String,
+    display_name: String,
+) -> Result<RecordingSettings, CaptureErrorResponse> {
+    with_app_exclusion_mutation(app_handle, |settings| {
+        let bundle_id = crate::native_capture::settings::canonicalize_app_bundle_id(&bundle_id);
+        let display_name = display_name.trim().to_string();
+        if bundle_id.is_empty() || display_name.is_empty() {
+            return Err(err(
+                "invalid_privacy_rule",
+                "App bundle and display name are required",
+            ));
+        }
+        if let Some(existing) = settings.privacy.excluded_apps.iter_mut().find(|app| {
+            crate::native_capture::settings::canonicalize_app_bundle_id(&app.bundle_id) == bundle_id
+        }) {
+            existing.enabled = true;
+            return Ok(());
+        }
+        settings
+            .privacy
+            .excluded_apps
+            .push(capture_metadata::ExcludedAppEntry {
+                id: new_app_source_id(&settings.privacy.excluded_apps),
+                enabled: true,
+                bundle_id,
+                display_name,
+            });
+        Ok(())
+    })
+}
+
 #[tauri::command]
 pub fn set_privacy_excluded_app_enabled(
     source_id: String,

@@ -15,6 +15,7 @@ const _state = $state<{
   recordingSettings: RecordingSettings | null;
   loadingStart: boolean;
   loadingStop: boolean;
+  loadingPause: boolean;
   loadingSettings: boolean;
   bootstrapped: boolean;
   error: string | null;
@@ -24,6 +25,7 @@ const _state = $state<{
   recordingSettings: null,
   loadingStart: false,
   loadingStop: false,
+  loadingPause: false,
   loadingSettings: false,
   bootstrapped: false,
   error: null,
@@ -49,6 +51,9 @@ export const captureControls = {
   get loadingStop(): boolean {
     return _state.loadingStop;
   },
+  get loadingPause(): boolean {
+    return _state.loadingPause;
+  },
   get loadingSettings(): boolean {
     return _state.loadingSettings;
   },
@@ -68,7 +73,7 @@ export const captureControls = {
     return captureSession.value?.isRunning === true;
   },
   get paused(): boolean {
-    return captureSession.value?.isInactivityPaused === true;
+    return captureSession.value?.isInactivityPaused === true || captureSession.value?.isUserPaused === true;
   },
   get isRunning(): boolean {
     return captureSession.value?.isRunning === true;
@@ -76,15 +81,18 @@ export const captureControls = {
   get isInactivityPaused(): boolean {
     return captureSession.value?.isInactivityPaused === true;
   },
+  get isUserPaused(): boolean {
+    return captureSession.value?.isUserPaused === true;
+  },
   get statusLabel(): string {
     if (captureControls.isRunning) {
-      return captureControls.isInactivityPaused ? "Paused" : "Recording";
+      return captureControls.paused ? "Paused" : "Recording";
     }
     return captureSession.value?.isRunning === false ? "Stopped" : "Idle";
   },
   get statusModifier(): "idle" | "running" | "paused" {
     if (captureControls.isRunning) {
-      return captureControls.isInactivityPaused ? "paused" : "running";
+      return captureControls.paused ? "paused" : "running";
     }
     return "idle";
   },
@@ -140,11 +148,52 @@ function applyCaptureSession(session: CaptureSession): void {
   }
   _state.loadingStart = false;
   _state.loadingStop = false;
+  _state.loadingPause = false;
   _state.error = null;
   if (session.isRunning) {
     void refreshRuntimeSources();
   } else {
     _state.runtimeSources = null;
+  }
+}
+
+export async function pauseCapture(): Promise<void> {
+  if (
+    _state.loadingStart ||
+    _state.loadingStop ||
+    _state.loadingPause ||
+    !captureControls.isRunning ||
+    captureControls.isUserPaused
+  ) return;
+  _state.loadingPause = true;
+  _state.error = null;
+  try {
+    const result = await invoke<{ session: CaptureSession }>("pause_native_capture");
+    applyCaptureSession(result.session);
+  } catch (err) {
+    _state.error = serializeError(err);
+  } finally {
+    _state.loadingPause = false;
+  }
+}
+
+export async function resumeCapture(): Promise<void> {
+  if (
+    _state.loadingStart ||
+    _state.loadingStop ||
+    _state.loadingPause ||
+    !captureControls.isRunning ||
+    !captureControls.isUserPaused
+  ) return;
+  _state.loadingPause = true;
+  _state.error = null;
+  try {
+    const result = await invoke<{ session: CaptureSession }>("resume_native_capture");
+    applyCaptureSession(result.session);
+  } catch (err) {
+    _state.error = serializeError(err);
+  } finally {
+    _state.loadingPause = false;
   }
 }
 

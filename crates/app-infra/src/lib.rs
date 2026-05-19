@@ -23,9 +23,9 @@ pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };
 pub use capture_retention::{
-    CaptureRetentionStore, CaptureSegment, CaptureSourceKind, NewCaptureSegment, NewCaptureSession,
-    RetentionCleanupContext, RetentionCleanupMode, RetentionCleanupSummary, RetentionPolicy,
-    ScreenCaptureSegmentWindow,
+    delete_capture_artifact_path_if_safe, CaptureRetentionStore, CaptureSegment, CaptureSourceKind,
+    NewCaptureSegment, NewCaptureSession, RetentionCleanupContext, RetentionCleanupMode,
+    RetentionCleanupSummary, RetentionPolicy, ScreenCaptureSegmentWindow,
 };
 pub use captured_frame_equivalence::{
     CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,

@@ -22,7 +22,7 @@ use super::runtime::{
     active_sources_for_inactivity_paused_state, current_segment_sources_for_runtime,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
     mark_runtime_session_stopped, microphone_backend_active_for_runtime,
-    microphone_planner_for_runtime, reset_runtime_after_start_error,
+    microphone_planner_for_runtime, reset_runtime_after_start_error, session_from_runtime,
     should_recover_from_segment_finalize_error, should_rotate_segment,
     stopped_session_from_runtime, system_audio_planner_for_runtime,
     system_audio_writer_active_for_runtime, validate_start_request, NativeCaptureRuntime,
@@ -38,7 +38,7 @@ use super::segments::{
     recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
-    segment_loop_sleep_duration, StartedSegmentState,
+    segment_loop_sleep_duration, stop_capture_runtime, StartedSegmentState,
 };
 use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
@@ -1526,6 +1526,7 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
+        user_capture_paused: false,
         microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
             screen: Some(SourceSessionMeta {
@@ -1556,6 +1557,47 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
     assert!(runtime.requested_sources.is_some());
     assert!(runtime.output_files.is_some());
     assert!(runtime.frame_artifact_tx.is_none());
+}
+
+#[test]
+fn user_paused_screen_session_still_reports_running_for_resume_controls() {
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        }),
+        user_capture_paused: true,
+        ..Default::default()
+    };
+    #[cfg(target_os = "macos")]
+    {
+        runtime.recording_file = None;
+        runtime.active_screen_session = None;
+    }
+
+    let session = session_from_runtime(&runtime);
+
+    assert!(session.is_running);
+    assert!(session.is_user_paused);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn stop_capture_runtime_accepts_idle_recording_boundary() {
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        user_capture_paused: true,
+        runtime_controller: RuntimeController::default(),
+        runtime_state: RuntimeState::Idle,
+        ..Default::default()
+    };
+
+    stop_capture_runtime(&mut runtime, None)
+        .expect("idle recording boundary should not request another stop transition");
+
+    assert_eq!(runtime.runtime_state, RuntimeState::Idle);
 }
 
 #[test]
@@ -1605,6 +1647,7 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
+        user_capture_paused: false,
         microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
             screen: Some(SourceSessionMeta {
@@ -2289,6 +2332,7 @@ fn should_reconnect_waiting_microphone_session_when_device_returns() {
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
+        user_capture_paused: false,
         microphone_vad: Default::default(),
         source_sessions: None,
     };
@@ -2358,6 +2402,7 @@ fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
+        user_capture_paused: false,
         microphone_vad: Default::default(),
         source_sessions: None,
     };
@@ -2463,6 +2508,7 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
+        user_capture_paused: false,
         microphone_vad: Default::default(),
         source_sessions: None,
     };

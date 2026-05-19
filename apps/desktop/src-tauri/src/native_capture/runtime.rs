@@ -95,6 +95,7 @@ pub struct NativeCaptureRuntime {
     pub runtime_controller: RuntimeController,
     pub runtime_state: RuntimeState,
     pub inactivity: InactivityState,
+    pub user_capture_paused: bool,
     pub microphone_vad: MicrophoneVadRuntime,
     /// Per-source session metadata. Populated when a recording starts, cleared on reset.
     pub source_sessions: Option<SourceSessions>,
@@ -214,6 +215,7 @@ pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCapt
     NativeCaptureSession {
         is_running: session_reports_running(runtime),
         is_inactivity_paused: runtime.inactivity.is_paused,
+        is_user_paused: runtime.user_capture_paused,
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
@@ -223,6 +225,10 @@ pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCapt
 fn session_reports_running(runtime: &NativeCaptureRuntime) -> bool {
     if !runtime.is_running {
         return false;
+    }
+
+    if runtime.user_capture_paused {
+        return true;
     }
 
     #[cfg(target_os = "macos")]
@@ -252,6 +258,7 @@ pub(super) fn stopped_session_from_runtime(runtime: &NativeCaptureRuntime) -> Na
     NativeCaptureSession {
         is_running: false,
         is_inactivity_paused: false,
+        is_user_paused: false,
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
@@ -301,6 +308,7 @@ pub(super) fn validate_start_request(
 pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
     runtime.inactivity = InactivityState::default();
+    runtime.user_capture_paused = false;
     runtime.microphone_vad = MicrophoneVadRuntime::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;

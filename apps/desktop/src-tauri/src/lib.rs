@@ -5,8 +5,10 @@ mod keyboard_bindings;
 mod managed_storage_layout;
 mod native_capture;
 mod ocr_budget;
+mod one_time_prompts;
 mod ocr_models;
 mod privacy_redaction_sources;
+mod sensitive_capture_recommendations;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;
@@ -88,6 +90,7 @@ pub fn run() {
         .manage(native_capture::MetadataNotifierState::default())
         .manage(native_capture::PrivacyFilterRefreshState::default())
         .manage(native_capture::RecordingSettingsState::default())
+        .manage(one_time_prompts::OneTimePromptStateStore::default())
         .manage(native_capture::CaptureMetadataState::default())
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
@@ -138,6 +141,12 @@ pub fn run() {
             app_infra::preview_retention_cleanup,
             app_infra::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
+            app_infra::delete_recent_capture,
+            one_time_prompts::get_one_time_prompt_state,
+            one_time_prompts::mark_one_time_prompt_shown,
+            one_time_prompts::dismiss_one_time_prompt,
+            one_time_prompts::complete_one_time_prompt,
+            sensitive_capture_recommendations::get_sensitive_capture_recommendations,
             audio_transcription_models::get_audio_transcription_model_status,
             audio_transcription_models::start_audio_transcription_model_download,
             audio_transcription_models::cancel_audio_transcription_model_download,
@@ -218,6 +227,8 @@ pub fn run() {
             native_capture::get_microphone_controller_state,
             native_capture::update_microphone_controller,
             native_capture::start_native_capture,
+            native_capture::pause_native_capture,
+            native_capture::resume_native_capture,
             native_capture::stop_native_capture,
             windows::open_settings_window,
             windows::open_settings_window_to_tab,
@@ -232,6 +243,7 @@ pub fn run() {
         .setup(|app| {
             windows::install_macos_terminate_handler(app.handle());
             native_capture::initialize_recording_settings_from_disk(app.handle());
+            one_time_prompts::initialize(app.handle());
             status_bar::initialize(app.handle())?;
             keyboard_bindings::initialize(app.handle());
             native_capture::install_panic_hook();

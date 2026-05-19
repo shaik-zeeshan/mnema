@@ -2373,6 +2373,30 @@ pub(crate) fn stop_native_capture_from_app_handle(
     Ok(response)
 }
 
+pub(crate) fn pause_native_capture_from_app_handle(
+    app_handle: &tauri::AppHandle,
+) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    let state = app_handle.state::<NativeCaptureState>();
+    let mut runtime = state.lock().expect("native capture state poisoned");
+    let session = runtime.pause_user_capture(app_handle)?;
+    drop(runtime);
+    emit_native_capture_session_changed(app_handle, &session);
+    crate::status_bar::refresh(app_handle);
+    Ok(NativeCaptureSessionResponse { session })
+}
+
+pub(crate) fn resume_native_capture_from_app_handle(
+    app_handle: &tauri::AppHandle,
+) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    let state = app_handle.state::<NativeCaptureState>();
+    let mut runtime = state.lock().expect("native capture state poisoned");
+    let session = runtime.resume_user_capture(app_handle)?;
+    drop(runtime);
+    emit_native_capture_session_changed(app_handle, &session);
+    crate::status_bar::refresh(app_handle);
+    Ok(NativeCaptureSessionResponse { session })
+}
+
 #[tauri::command]
 pub fn get_recording_settings(
     state: tauri::State<'_, RecordingSettingsState>,
@@ -2431,6 +2455,20 @@ pub fn start_native_capture(
     emit_native_capture_session_changed(&app_handle, &response.session);
     crate::status_bar::refresh(&app_handle);
     Ok(response)
+}
+
+#[tauri::command]
+pub fn pause_native_capture(
+    app_handle: tauri::AppHandle,
+) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    pause_native_capture_from_app_handle(&app_handle)
+}
+
+#[tauri::command]
+pub fn resume_native_capture(
+    app_handle: tauri::AppHandle,
+) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    resume_native_capture_from_app_handle(&app_handle)
 }
 
 fn stop_native_capture_with_state(
