@@ -143,6 +143,115 @@ impl RecordingLifecycle {
         Ok(stopped_session_from_runtime(&self.runtime))
     }
 
+    pub(crate) fn pause_user_capture(
+        &mut self,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<NativeCaptureSession, CaptureErrorResponse> {
+        if !self.runtime.is_running {
+            return Err(CaptureErrorResponse {
+                code: "capture_session_not_running".to_string(),
+                message: "No native capture session is running".to_string(),
+            });
+        }
+        if self.runtime.user_capture_paused {
+            return Ok(self.session());
+        }
+        stop_capture_runtime(&mut self.runtime, Some(app_handle))?;
+        self.runtime.user_capture_paused = true;
+        self.runtime.current_segment_sources = Some(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: false,
+        });
+        Ok(self.session())
+    }
+
+    pub(crate) fn resume_user_capture(
+        &mut self,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<NativeCaptureSession, CaptureErrorResponse> {
+        if !self.runtime.is_running {
+            return Err(CaptureErrorResponse {
+                code: "capture_session_not_running".to_string(),
+                message: "No native capture session is running".to_string(),
+            });
+        }
+        if !self.runtime.user_capture_paused {
+            return Ok(self.session());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let sources = self.runtime.requested_sources.clone().ok_or_else(|| {
+                CaptureErrorResponse {
+                    code: "capture_resume_missing_sources".to_string(),
+                    message: "Cannot resume recording because the requested sources are missing"
+                        .to_string(),
+                }
+            })?;
+            let screen_planner = screen_planner_for_runtime(&self.runtime)
+                .cloned()
+                .ok_or_else(|| CaptureErrorResponse {
+                    code: "capture_resume_missing_planner".to_string(),
+                    message: "Cannot resume recording because the segment planner is missing"
+                        .to_string(),
+                })?;
+            let microphone_planner = microphone_planner_for_runtime(&self.runtime).cloned();
+            let system_audio_planner = if sources.system_audio {
+                ensure_system_audio_planner_for_runtime(&mut self.runtime, "resuming user pause")?
+            } else {
+                system_audio_planner_for_runtime(&self.runtime).cloned()
+            };
+            let next_index = self.runtime.current_segment_index.saturating_add(1);
+            let segment_dir = screen_planner.segment_dir(next_index);
+            let screen_output_file = screen_planner.segment_screen_output(next_index);
+            let microphone_output_path = sources
+                .microphone
+                .then(|| microphone_planner.as_ref().map(|planner| planner.microphone_file(next_index)))
+                .flatten();
+            let system_audio_output_path = sources
+                .system_audio
+                .then(|| {
+                    system_audio_planner
+                        .as_ref()
+                        .map(|planner| planner.system_audio_file(next_index))
+                })
+                .flatten();
+            create_segment_output_dirs(
+                &segment_dir,
+                microphone_output_path.as_deref().and_then(|path| path.parent()),
+                system_audio_output_path.as_deref().and_then(|path| path.parent()),
+                &sources,
+            )?;
+            let started = start_segment_with_current_privacy_filter(
+                app_handle,
+                &segment_dir,
+                sources.screen.then_some(screen_output_file.as_path()),
+                system_audio_output_path.as_deref(),
+                &sources,
+                self.runtime.screen_frame_rate,
+                &self.runtime.screen_resolution,
+                self.runtime.effective_screen_bitrate_bps,
+                self.runtime.microphone_device_id_for_capture.as_deref(),
+                self.runtime.frame_artifact_tx.clone(),
+                microphone_output_path.as_deref(),
+            )?;
+            self.runtime.current_segment_output_files = Some(started.0.clone());
+            self.runtime.output_files.get_or_insert_with(empty_output_files);
+            self.runtime.recording_file = started.1;
+            self.runtime.microphone_recording_file = started.2;
+            self.runtime.system_audio_recording_file = started.3;
+            self.runtime.active_screen_session = started.4;
+            self.runtime.active_microphone_session = started.5;
+            self.runtime.current_segment_index = next_index;
+        }
+        self.runtime.user_capture_paused = false;
+        self.runtime.current_segment_sources = self.runtime.requested_sources.clone();
+        if let Some(control) = self.runtime.segment_loop_control.as_ref() {
+            control.notify();
+        }
+        Ok(self.session())
+    }
+
     pub(crate) fn recover_after_wake(
         &mut self,
         app_handle: Option<&tauri::AppHandle>,
@@ -179,6 +288,9 @@ impl RecordingLifecycle {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn tick_inactivity(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
+        if self.runtime.user_capture_paused {
+            return TickOutcome::SkipRotation;
+        }
         if let Some(error) = capture_screen::take_screen_capture_session_stop_error(
             self.runtime.active_screen_session.as_mut(),
         ) {

@@ -11,6 +11,11 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 const TRAY_ID: &str = "mnema-status-bar";
 const COMPLETE_SETUP_ID: &str = "tray_complete_setup";
 const RECORDING_TOGGLE_ID: &str = "tray_recording_toggle";
+const PAUSE_TOGGLE_ID: &str = "tray_pause_toggle";
+const DELETE_LAST_1_MINUTE_ID: &str = "tray_delete_recent_60";
+const DELETE_LAST_5_MINUTES_ID: &str = "tray_delete_recent_300";
+const DELETE_LAST_15_MINUTES_ID: &str = "tray_delete_recent_900";
+const EXCLUDE_CURRENT_APP_ID: &str = "tray_exclude_current_app";
 const SOURCE_SCREEN_ID: &str = "tray_source_screen";
 const SOURCE_MICROPHONE_ID: &str = "tray_source_microphone";
 const SOURCE_SYSTEM_AUDIO_ID: &str = "tray_source_system_audio";
@@ -57,6 +62,8 @@ struct StatusBarMenuModel {
     onboarding_complete: bool,
     recording_label: Option<&'static str>,
     recording_enabled: bool,
+    pause_label: Option<&'static str>,
+    pause_enabled: bool,
     source_items: Vec<SourceItemModel>,
     tooltip: &'static str,
 }
@@ -151,6 +158,7 @@ fn source_item_enabled(
 fn build_menu_model(
     onboarding_complete: bool,
     recording: bool,
+    user_paused: bool,
     settings: &RecordingSettings,
     support: &CaptureSources,
     operation: StatusBarOperation,
@@ -160,6 +168,8 @@ fn build_menu_model(
             onboarding_complete: false,
             recording_label: None,
             recording_enabled: false,
+            pause_label: None,
+            pause_enabled: false,
             source_items: Vec::new(),
             tooltip: "Mnema",
         };
@@ -205,6 +215,12 @@ fn build_menu_model(
         onboarding_complete: true,
         recording_label: Some(recording_label),
         recording_enabled: operation == StatusBarOperation::Idle,
+        pause_label: recording.then_some(if user_paused {
+            "Resume Recording"
+        } else {
+            "Pause Recording"
+        }),
+        pause_enabled: recording && operation == StatusBarOperation::Idle,
         source_items,
         tooltip,
     }
@@ -227,10 +243,12 @@ fn set_operation(app: &tauri::AppHandle, operation: StatusBarOperation) {
 fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
     let settings = crate::native_capture::current_recording_settings_from_app_handle(app);
     let support = crate::native_capture::get_capture_support().supported_sources;
-    let recording = crate::native_capture::current_native_capture_session(app).is_running;
+    let session = crate::native_capture::current_native_capture_session(app);
+    let recording = session.is_running;
     build_menu_model(
         crate::windows::is_onboarding_complete(app),
         recording,
+        session.is_user_paused,
         &settings,
         &support,
         operation(app),
@@ -270,6 +288,25 @@ fn build_menu(
         .build(app)?;
     let sources =
         Submenu::with_items(app, "Sources", true, &[&screen, &microphone, &system_audio])?;
+    let pause =
+        MenuItemBuilder::with_id(PAUSE_TOGGLE_ID, model.pause_label.unwrap_or("Pause Recording"))
+            .enabled(model.pause_enabled)
+            .build(app)?;
+    let exclude_current =
+        MenuItemBuilder::with_id(EXCLUDE_CURRENT_APP_ID, "Exclude Current App From Now On...")
+            .build(app)?;
+    let delete_1 =
+        MenuItemBuilder::with_id(DELETE_LAST_1_MINUTE_ID, "Delete Last 1 Minute...").build(app)?;
+    let delete_5 =
+        MenuItemBuilder::with_id(DELETE_LAST_5_MINUTES_ID, "Delete Last 5 Minutes...").build(app)?;
+    let delete_15 =
+        MenuItemBuilder::with_id(DELETE_LAST_15_MINUTES_ID, "Delete Last 15 Minutes...").build(app)?;
+    let delete_recent = Submenu::with_items(
+        app,
+        "Delete Recent Capture",
+        true,
+        &[&delete_1, &delete_5, &delete_15],
+    )?;
     let open_main = MenuItemBuilder::with_id(OPEN_MAIN_ID, "Open Mnema").build(app)?;
     let settings = MenuItemBuilder::with_id(OPEN_SETTINGS_ID, "Settings").build(app)?;
     let quit = MenuItemBuilder::with_id(QUIT_ID, "Quit Mnema").build(app)?;
@@ -280,7 +317,10 @@ fn build_menu(
         app,
         &[
             &recording,
+            &pause,
             &sources,
+            &exclude_current,
+            &delete_recent,
             &separator_two,
             &open_main,
             &settings,
@@ -410,12 +450,120 @@ fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
     }
 }
 
+fn handle_pause_toggle(app: &tauri::AppHandle) {
+    let session = crate::native_capture::current_native_capture_session(app);
+    if !session.is_running {
+        return;
+    }
+    let result = if session.is_user_paused {
+        crate::native_capture::resume_native_capture_from_app_handle(app)
+            .map(|_| ())
+            .map_err(|error| ("Recording could not resume", error))
+    } else {
+        crate::native_capture::pause_native_capture_from_app_handle(app)
+            .map(|_| ())
+            .map_err(|error| ("Recording could not pause", error))
+    };
+    if let Err((title, error)) = result {
+        show_capture_error(app, title, error);
+    }
+}
+
+fn confirm_delete_recent(app: &tauri::AppHandle, seconds: i64) {
+    let label = match seconds {
+        60 => "last 1 minute",
+        300 => "last 5 minutes",
+        900 => "last 15 minutes",
+        _ => "recent capture",
+    };
+    let app_handle = app.clone();
+    app.dialog()
+        .message(format!(
+            "Delete the {label} from Mnema's library? This removes whole overlapping capture segments and cannot be undone."
+        ))
+        .kind(MessageDialogKind::Warning)
+        .title("Delete Recent Capture")
+        .show(move |confirmed| {
+            if confirmed {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) =
+                        crate::app_infra::delete_recent_capture_from_app_handle(&app_handle, seconds)
+                            .await
+                    {
+                        app_handle
+                            .dialog()
+                            .message(error)
+                            .kind(MessageDialogKind::Error)
+                            .title("Delete Recent Capture Failed")
+                            .show(|_| {});
+                    }
+                });
+            }
+        });
+}
+
+fn handle_exclude_current_app(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let snapshot = crate::native_capture::metadata::collect_native_active_window_snapshot();
+        let bundle_id = snapshot.bundle_id.unwrap_or_default();
+        let display_name = snapshot.app_name.unwrap_or_else(|| bundle_id.clone());
+        if bundle_id.trim().is_empty() || bundle_id == "com.shaikzeeshan.mnema" {
+            app.dialog()
+                .message("Mnema could not identify a frontmost app to exclude from screen capture.")
+                .kind(MessageDialogKind::Info)
+                .title("Exclude Current App")
+                .show(|_| {});
+            return;
+        }
+        let app_handle = app.clone();
+        app.dialog()
+            .message(format!(
+                "Exclude {display_name} from screen content capture from now on? This does not delete historical capture."
+            ))
+            .kind(MessageDialogKind::Warning)
+            .title("Exclude Current App")
+            .show(move |confirmed| {
+                if !confirmed {
+                    return;
+                }
+                if let Err(error) = crate::privacy_redaction_sources::add_or_enable_privacy_excluded_app_from_app_handle(
+                    app_handle.clone(),
+                    bundle_id,
+                    display_name,
+                ) {
+                    show_capture_error(&app_handle, "Could not exclude app", error);
+                } else {
+                    app_handle
+                        .dialog()
+                        .message("The app is excluded from future screen content capture. Historical capture was not deleted.")
+                        .kind(MessageDialogKind::Info)
+                        .title("App Excluded")
+                        .show(|_| {});
+                }
+            });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        app.dialog()
+            .message("Exclude Current App is currently available only on macOS.")
+            .kind(MessageDialogKind::Info)
+            .title("Exclude Current App")
+            .show(|_| {});
+    }
+}
+
 fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
     match id {
         COMPLETE_SETUP_ID => {
             let _ = crate::windows::open_onboarding_window(app);
         }
         RECORDING_TOGGLE_ID => handle_recording_toggle(app),
+        PAUSE_TOGGLE_ID => handle_pause_toggle(app),
+        EXCLUDE_CURRENT_APP_ID => handle_exclude_current_app(app),
+        DELETE_LAST_1_MINUTE_ID => confirm_delete_recent(app, 60),
+        DELETE_LAST_5_MINUTES_ID => confirm_delete_recent(app, 300),
+        DELETE_LAST_15_MINUTES_ID => confirm_delete_recent(app, 900),
         SOURCE_SCREEN_ID | SOURCE_MICROPHONE_ID | SOURCE_SYSTEM_AUDIO_ID => {
             handle_source_toggle(app, id)
         }
@@ -461,6 +609,7 @@ mod tests {
         let model = build_menu_model(
             false,
             false,
+            false,
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -474,6 +623,7 @@ mod tests {
     fn post_onboarding_idle_model_shows_start_and_enabled_sources() {
         let model = build_menu_model(
             true,
+            false,
             false,
             &settings_with_sources(true, true, false),
             &support_all(),
@@ -511,6 +661,7 @@ mod tests {
         let model = build_menu_model(
             true,
             true,
+            false,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -526,6 +677,7 @@ mod tests {
             let model = build_menu_model(
                 true,
                 false,
+            false,
                 &settings_with_sources(true, true, true),
                 &support_all(),
                 operation,
@@ -540,6 +692,7 @@ mod tests {
         let screen = build_menu_model(
             true,
             false,
+            false,
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -548,6 +701,7 @@ mod tests {
 
         let microphone = build_menu_model(
             true,
+            false,
             false,
             &settings_with_sources(false, true, false),
             &support_all(),
@@ -560,6 +714,7 @@ mod tests {
     fn screen_with_only_system_audio_cannot_be_unchecked() {
         let model = build_menu_model(
             true,
+            false,
             false,
             &settings_with_sources(true, false, true),
             &support_all(),
@@ -592,6 +747,7 @@ mod tests {
         let model = build_menu_model(
             true,
             false,
+            false,
             &settings_with_sources(false, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -603,6 +759,7 @@ mod tests {
     fn unsupported_sources_are_disabled_without_mutating_checked_state() {
         let model = build_menu_model(
             true,
+            false,
             false,
             &settings_with_sources(true, true, true),
             &CaptureSources {

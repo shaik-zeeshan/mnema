@@ -405,6 +405,8 @@
   type TimelineDataChangedPayload = {
     reason: "retention" | string;
     deletedBefore: string | null;
+    startedAt?: string | null;
+    endedAt?: string | null;
     deletedFrameIds?: number[];
     deletedAudioSegmentIds?: number[];
   };
@@ -6393,7 +6395,7 @@
     });
 
     listen<TimelineDataChangedPayload>("timeline_data_changed", (event) => {
-      if (event.payload.reason !== "retention" || !event.payload.deletedBefore) return;
+      if (event.payload.reason !== "retention" && event.payload.reason !== "delete_recent_capture") return;
       invalidateLoadedPickerSummaryMonths();
       const deletedFrameIds = new Set(event.payload.deletedFrameIds ?? []);
       const deletedAudioSegmentIds = new Set(event.payload.deletedAudioSegmentIds ?? []);

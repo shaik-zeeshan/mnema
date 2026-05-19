@@ -43,7 +43,7 @@
   const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
   const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
 
-  type OnboardingStep = "about" | "permissions" | "sources" | "video" | "storage" | "processing" | "done";
+  type OnboardingStep = "about" | "permissions" | "sources" | "video" | "storage" | "privacy" | "processing" | "done";
   type ProcessingPanel = "ocr" | "transcription";
   type PermissionValue = PermissionStatus | "unsupported" | "unknown";
   type PermissionKey = "screen" | "microphone" | "systemAudio";
@@ -54,6 +54,7 @@
     { id: "sources", label: "Capture" },
     { id: "video", label: "Video" },
     { id: "storage", label: "Storage" },
+    { id: "privacy", label: "Privacy" },
     { id: "processing", label: "Processing" },
     { id: "done", label: "Ready" },
   ];
@@ -1116,10 +1117,30 @@
                 </div>
               </div>
             </article>
-          {:else if activeStep === "processing"}
+          {:else if activeStep === "privacy"}
             <article class="card">
               <header class="card__header">
                 <span class="card__index">04</span>
+                <div class="card__heading">
+                  <h2 class="card__title">Privacy expectations</h2>
+                  <p class="card__subtitle">Screen content is controlled by app exclusions.</p>
+                </div>
+              </header>
+
+              <div class="settings-stack">
+                <div class="privacy-disclosure">
+                  <p>Browsers are recorded unless the browser app is excluded.</p>
+                  <p>Private/incognito browser windows are recorded unless the browser app is excluded.</p>
+                  <p>Mnema does not detect browser password pages or password fields.</p>
+                  <p>Browser extensions and websites are not excluded separately.</p>
+                </div>
+                <p class="hint">You can add password manager, authenticator, and browser app exclusions in Privacy settings before your first recording.</p>
+              </div>
+            </article>
+          {:else if activeStep === "processing"}
+            <article class="card">
+              <header class="card__header">
+                <span class="card__index">05</span>
                 <div class="card__heading">
                   <h2 class="card__title">OCR &amp; transcription</h2>
                   <p class="card__subtitle">How mnema indexes captured frames and microphone audio.</p>
@@ -2501,6 +2522,22 @@
   .btn--link:not(:disabled):hover {
     color: var(--app-accent);
     background: transparent;
+  }
+
+  .privacy-disclosure {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface-raised);
+  }
+
+  .privacy-disclosure p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 13px;
+    line-height: 1.45;
   }
 
   .ob__foot--minimal { border-top: 0; padding-top: 0; }

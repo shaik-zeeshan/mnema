@@ -80,6 +80,34 @@
     iconPath: string | null;
   };
 
+  type RecommendedExclusionState = "missing" | "disabled" | "enabled";
+
+  type RecommendedAppExclusion = {
+    bundleId: string;
+    displayName: string;
+    category: string;
+    categoryLabel: string;
+    running: boolean;
+    iconPath: string | null;
+    exclusionState: RecommendedExclusionState;
+  };
+
+  type BrowserDisclosureApp = {
+    bundleId: string;
+    displayName: string;
+    running: boolean;
+    iconPath: string | null;
+    exclusionState: RecommendedExclusionState;
+  };
+
+  type SensitiveCaptureRecommendations = {
+    promptId: string;
+    recommendedApps: RecommendedAppExclusion[];
+    actionableRecommendationCount: number;
+    shouldShowExistingUserPrompt: boolean;
+    browserDisclosures: BrowserDisclosureApp[];
+  };
+
   type RetentionCleanupSummary = {
     policy: string;
     cutoffEndedBefore: string | null;
@@ -157,6 +185,7 @@
   let appIconPathsByBundleId = $state<Record<string, string>>({});
   const requestedAppIconBundleIds = new Set<string>();
   let privacyCommandInFlight = $state(false);
+  let sensitiveRecommendations = $state<SensitiveCaptureRecommendations | null>(null);
   let privacyAppComboboxQuery = $state("");
   let privacyAppComboboxOpen = $state(false);
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
@@ -717,6 +746,19 @@
     }
   }
 
+  async function loadSensitiveCaptureRecommendations() {
+    try {
+      sensitiveRecommendations = await invoke<SensitiveCaptureRecommendations>("get_sensitive_capture_recommendations");
+      const bundleIds = [
+        ...(sensitiveRecommendations?.recommendedApps ?? []).map((app) => app.bundleId),
+        ...(sensitiveRecommendations?.browserDisclosures ?? []).map((app) => app.bundleId),
+      ];
+      void resolveAppIcons(bundleIds);
+    } catch {
+      sensitiveRecommendations = null;
+    }
+  }
+
   function uniqueBundleIds(bundleIds: Array<string | null | undefined>): string[] {
     return [...new Set(bundleIds.map((bundleId) => bundleId?.trim() ?? "").filter(Boolean))];
   }
@@ -796,6 +838,14 @@
       .slice(0, 12);
   })());
 
+  const pendingRecommendedApps = $derived(
+    (sensitiveRecommendations?.recommendedApps ?? []).filter((app) => app.exclusionState !== "enabled")
+  );
+
+  const visibleBrowserDisclosureApps = $derived(
+    (sensitiveRecommendations?.browserDisclosures ?? []).filter((app) => app.running || app.exclusionState !== "missing")
+  );
+
   $effect(() => {
     if (!privacyAppComboboxOpen) return;
     void resolveAppIcons(filteredPrivacyAppCandidates.map((candidate) => candidate.bundleId));
@@ -809,6 +859,35 @@
     });
     privacyAppComboboxQuery = "";
     privacyAppComboboxOpen = false;
+  }
+
+  function addRecommendedPrivacyApp(app: RecommendedAppExclusion | BrowserDisclosureApp) {
+    void runPrivacySettingsCommand("add_privacy_excluded_app", {
+      bundleId: app.bundleId,
+      displayName: app.displayName,
+    }).then(loadSensitiveCaptureRecommendations);
+  }
+
+  function reenableRecommendedPrivacyApp(app: RecommendedAppExclusion | BrowserDisclosureApp) {
+    const existing = draftExcludedApps.find((entry) => entry.bundleId === app.bundleId);
+    if (!existing) {
+      addRecommendedPrivacyApp(app);
+      return;
+    }
+    void setPrivacyExcludedAppEnabled(existing.id, true).then(loadSensitiveCaptureRecommendations);
+  }
+
+  function recommendationActionLabel(state: RecommendedExclusionState): string {
+    return state === "disabled" ? "Re-enable" : "Exclude";
+  }
+
+  function applyRecommendation(app: RecommendedAppExclusion | BrowserDisclosureApp) {
+    if (app.exclusionState === "enabled") return;
+    if (app.exclusionState === "disabled") {
+      reenableRecommendedPrivacyApp(app);
+    } else {
+      addRecommendedPrivacyApp(app);
+    }
   }
 
   $effect(() => {
@@ -1932,6 +2011,7 @@
     loadDebugLogStatus();
     loadGeneralLogStatus();
     loadPrivacyAppCandidates();
+    loadSensitiveCaptureRecommendations();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -2297,6 +2377,72 @@
 
         <div class="settings-group">
           <span class="group-label">Excluded Apps</span>
+          <div class="settings-stack">
+            <div class="privacy-disclosure">
+              <p>Browsers are recorded unless the browser app is excluded.</p>
+              <p>Private/incognito browser windows are recorded unless the browser app is excluded.</p>
+              <p>Mnema does not detect browser password pages or password fields.</p>
+              <p>Browser extensions and websites are not excluded separately.</p>
+            </div>
+
+            {#if pendingRecommendedApps.length > 0}
+              <div class="recommendation-section">
+                <span class="group-label">Recommended App Exclusions</span>
+                <div class="recommendation-section__list">
+                  {#each pendingRecommendedApps as app (app.bundleId)}
+                    {@const iconSrc = appIconSrcForBundleId(app.bundleId)}
+                    <div class="settings-list-item settings-list-item--app-rule">
+                      <span class="app-rule-icon" aria-hidden="true">
+                        {#if iconSrc}
+                          <img src={iconSrc} alt="" loading="lazy" />
+                        {:else}
+                          <span>{appIconFallback(app.displayName, app.bundleId)}</span>
+                        {/if}
+                      </span>
+                      <div class="settings-list-item__main">
+                        <span class="settings-list-item__title">{app.displayName}</span>
+                        <span class="settings-list-item__description">{app.categoryLabel} · {app.bundleId}</span>
+                      </div>
+                      <button class="btn btn--ghost btn--sm" type="button" disabled={privacyCommandInFlight} onclick={() => applyRecommendation(app)}>
+                        {recommendationActionLabel(app.exclusionState)}
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            {#if visibleBrowserDisclosureApps.length > 0}
+              <div class="recommendation-section">
+                <span class="group-label">Known Browsers</span>
+                <div class="recommendation-section__list">
+                  {#each visibleBrowserDisclosureApps as app (app.bundleId)}
+                    {@const iconSrc = appIconSrcForBundleId(app.bundleId)}
+                    <div class="settings-list-item settings-list-item--app-rule">
+                      <span class="app-rule-icon" aria-hidden="true">
+                        {#if iconSrc}
+                          <img src={iconSrc} alt="" loading="lazy" />
+                        {:else}
+                          <span>{appIconFallback(app.displayName, app.bundleId)}</span>
+                        {/if}
+                      </span>
+                      <div class="settings-list-item__main">
+                        <span class="settings-list-item__title">{app.displayName}</span>
+                        <span class="settings-list-item__description">Browser screen content is recorded unless this app is excluded.</span>
+                      </div>
+                      {#if app.exclusionState === "enabled"}
+                        <span class="badge badge--ok badge--sm">Excluded</span>
+                      {:else}
+                        <button class="btn btn--ghost btn--sm" type="button" disabled={privacyCommandInFlight} onclick={() => applyRecommendation(app)}>
+                          {recommendationActionLabel(app.exclusionState)}
+                        </button>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
           <div class="app-combobox">
             <input
               class="text-input app-combobox__input"
@@ -5697,5 +5843,54 @@
   :global([data-theme="light"]) .btn--danger:not(:disabled):hover {
     background: var(--app-danger-bg);
     border-color: var(--app-danger-strong);
+  }
+
+  .privacy-disclosure {
+    display: grid;
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-surface-subtle);
+  }
+
+  .privacy-disclosure p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .recommendation-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .recommendation-section__list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .settings-list-item__main {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+    flex: 1;
+  }
+
+  .settings-list-item__title {
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .settings-list-item__description {
+    color: var(--app-text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 </style>

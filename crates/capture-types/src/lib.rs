@@ -56,6 +56,7 @@ mod tests {
         let session = NativeCaptureSession {
             is_running: true,
             is_inactivity_paused: false,
+            is_user_paused: false,
             requested_sources: None,
             output_files: None,
             source_sessions: Some(SourceSessions {

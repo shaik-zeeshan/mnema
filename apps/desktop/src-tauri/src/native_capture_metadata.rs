@@ -319,7 +319,7 @@ fn collect_active_window_metadata(
 }
 
 #[cfg(target_os = "macos")]
-fn collect_native_active_window_snapshot() -> NativeActiveWindowSnapshot {
+pub(crate) fn collect_native_active_window_snapshot() -> NativeActiveWindowSnapshot {
     let Some((pid, bundle_id, app_name)) = frontmost_running_app_snapshot() else {
         return NativeActiveWindowSnapshot::default();
     };

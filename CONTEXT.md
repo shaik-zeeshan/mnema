@@ -93,6 +93,62 @@ _Avoid_: website exclusion, title exclusion, private browser exclusion, per-wind
 The native screen-capture filtering mechanism that applies **App Privacy Exclusion** before frames are delivered to Mnema.
 _Avoid_: privacy promise, metadata redaction, post-capture filtering
 
+**Sensitive Capture Protection V1**:
+The product scope for helping users avoid accidental sensitive capture without expanding Mnema's live screen-capture privacy guarantee beyond **App Privacy Exclusion**.
+_Avoid_: password-page blocking, website privacy filter, private-window protection
+
+**Recommended App Exclusions**:
+A user-confirmed recommendation surface for adding high-confidence sensitive apps to **App Privacy Exclusion**.
+_Avoid_: silent privacy defaults, sensitive-content detection, automatic browser blocking
+
+**One-Time Prompt State**:
+App-owned UX state that records whether dismissible one-time prompts have already been shown or dismissed.
+_Avoid_: recording setting, browser local storage, per-component flag
+
+**One-Time Prompt**:
+A dismissible app prompt identified by a stable prompt id and tracked with shown, dismissed, and completed timestamps.
+_Avoid_: recurring alert, local component state, boolean-only banner flag
+
+**Sensitive App Recommendation Catalog**:
+An auditable exact-bundle-id list used to propose **Recommended App Exclusions**.
+_Avoid_: fuzzy sensitive-app classifier, name keyword matcher, category inference
+
+**Browser Capture Disclosure**:
+An explicit notice that browser screen content is recorded unless the browser app is added to **App Privacy Exclusion**.
+_Avoid_: browser privacy mode, incognito protection, website blocking
+
+**Known Browser App**:
+A browser app identity used for browser-related product disclosure and metadata support.
+_Avoid_: sensitive app recommendation, browser privacy rule, website filter
+
+**Exclude This App**:
+A just-in-time user action that adds one app identity to **App Privacy Exclusion** for future capture.
+_Avoid_: retroactive exclusion, delete this app's history, sensitive content removal
+
+**Exclude Current App**:
+A status-bar shortcut that confirms and then adds the current frontmost app to **App Privacy Exclusion** for future capture.
+_Avoid_: app picker replacement, retroactive cleanup, timeline privacy action
+
+**Delete Recent Capture**:
+A user-triggered recovery action that deletes capture data in a recent time window across screen, microphone, and system-audio sources.
+_Avoid_: OCR-only cleanup, search-only cleanup, hide from results
+
+**Pause Capture**:
+A user control that temporarily stops recording requested sources without changing **App Privacy Exclusion**.
+_Avoid_: private mode, sensitive mode, privacy filter
+
+**User Capture Pause**:
+A user-initiated paused recording state that persists until the user resumes capture.
+_Avoid_: inactivity pause, stopped recording, private mode
+
+**Downstream Capture Access**:
+Access to retained capture content after capture, including search, timeline preview, export, and future local AI features.
+_Avoid_: raw SQLite access, direct frame-file access, agent bypass
+
+**Secure Field Capture Suspension**:
+A future ADR-backed product concept that would suspend capture while secure text entry is focused, rather than filtering by app, window, website, or recognized text.
+_Avoid_: password-page filter, secure-field redaction, browser login exclusion
+
 **Audio Segment**:
 A time-bounded persisted audio recording file produced from one recording source during a recording session.
 _Avoid_: audio file, raw microphone file, sound clip
@@ -219,6 +275,82 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Captured Frame Pipeline** persists one **Captured Frame**.
 - A **Captured Frame Pipeline** attaches each **Captured Frame** to exactly one **Frame Batch**.
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
+- **Sensitive Capture Protection V1** remains inside **App Privacy Exclusion** and does not promise website-level, private-window, password-page, or secure-field protection.
+- **Sensitive Capture Protection V1** is UX and recovery around **App Privacy Exclusion**, not detection of sensitive screen content.
+- **Recommended App Exclusions** become **App Privacy Exclusion** rules only after user confirmation.
+- **Recommended App Exclusions** are shown during onboarding and through a one-time non-blocking prompt for existing users after upgrade when at least one detected recommended app is missing from **App Privacy Exclusion** or has its exclusion disabled.
+- **Recommended App Exclusions** prompt dismissal is persisted in **One-Time Prompt State** rather than recording settings or browser local storage.
+- The existing-user **Recommended App Exclusions** prompt is one-time for V1 and does not reappear just because a new catalog app is installed later.
+- Privacy settings continue to show actionable **Recommended App Exclusions** after the one-time prompt is dismissed.
+- Changes to the **Sensitive App Recommendation Catalog** do not retrigger the V1 existing-user **One-Time Prompt** after it has been dismissed or completed.
+- A recommended app with an existing disabled **App Privacy Exclusion** is shown as currently off and can be re-enabled instead of added as a duplicate rule.
+- **Recommended App Exclusions** may include password managers, authenticator apps, Keychain/Passwords, and high-confidence app-based banking matches, but browser apps are called out separately rather than silently preselected.
+- **Recommended App Exclusions** may include installed or running apps when they exactly match the **Sensitive App Recommendation Catalog**.
+- User-facing copy for **Recommended App Exclusions** should name concrete categories such as password managers and authenticator apps rather than relying on vague "sensitive app" language.
+- **Recommended App Exclusions** should not include broad workflow apps such as System Settings, Terminal, developer tools, messaging, or email by default.
+- App-based banking entries belong in **Recommended App Exclusions** only when they are exact high-confidence native app matches that Mnema is willing to maintain.
+- Future dismissible one-time dialogs should reuse **One-Time Prompt State** instead of adding prompt-specific persistence files.
+- **One-Time Prompt State** stores stable **One-Time Prompt** ids with shown, dismissed, and completed timestamps.
+- **One-Time Prompt** ids are stable and versioned, such as a V1 suffix for a V1 prompt.
+- The **Sensitive App Recommendation Catalog** uses exact bundle identifiers rather than fuzzy app-name, category, website, title, or content matching.
+- The **Sensitive App Recommendation Catalog** and recommendation matching are Rust-owned; frontend surfaces render app-owned recommendation results.
+- Entries in the **Sensitive App Recommendation Catalog** include a finite curated category or reason such as password manager, authenticator, Apple Passwords, or banking.
+- **Known Browser App** values are kept separate from the **Sensitive App Recommendation Catalog**.
+- **Browser Capture Disclosure** may offer one-click browser app exclusion, but it does not imply browser-domain, private-window, or password-page protection.
+- **Browser Capture Disclosure** is persistent onboarding/settings copy; a **One-Time Prompt** may point existing users to it when screen capture is enabled and a known browser is not excluded.
+- **Browser Capture Disclosure** is based on known browser app identity, not URL, domain, title, private-window state, or login-page signals.
+- **Browser Capture Disclosure** explicitly says private or incognito browser windows are recorded unless the browser app is excluded.
+- **Browser Capture Disclosure** explicitly says Mnema does not detect browser password pages or password fields.
+- Browser extensions and websites are not separate **Recommended App Exclusions** in V1; browser extension content is covered only if the whole browser app is excluded.
+- **Exclude This App** applies from the time the app exclusion is added and does not remove already persisted **Captured Frame** or **Audio Transcription** data.
+- **Exclude Current App** is a native status-bar shortcut for the frontmost app, while Privacy settings remains the full app-picker surface.
+- **Exclude Current App** is available while recording and while stopped; while recording it affects future frames in the current recording, and while stopped it affects future recordings.
+- **Exclude Current App** is disabled when the current app is Mnema itself or another target that cannot be meaningfully excluded.
+- **Exclude Current App** targets the frontmost app captured when the action is invoked and keeps that target through confirmation rather than recomputing after the confirmation dialog opens.
+- **Exclude Current App** reports an app as already excluded when it has an enabled **App Privacy Exclusion** instead of mutating settings again.
+- **Exclude Current App** re-enables an existing disabled **App Privacy Exclusion** for the target app instead of adding a duplicate rule.
+- **Exclude Current App** may offer **Delete Recent Capture** as an explicit second confirmed step, but it must not automatically delete prior capture.
+- **Exclude Current App** does not offer historical per-app cleanup in V1.
+- **App Privacy Exclusion** does not remove or hide historical search, timeline, frame, or audio results that were already captured before the exclusion was added.
+- If a live app-exclusion change cannot be applied while recording, Mnema reports that screen/system-audio capture is suspended because privacy exclusions could not be applied, reusing the existing privacy suspension path.
+- **Delete Recent Capture** removes the selected recent capture window's **Capture Segment** data, **Captured Frame** data, OCR/search data, **Audio Segment** data, transcription data, speaker-derived data, and derived preview cache where applicable.
+- When invoked during recording, **Delete Recent Capture** first creates a recording boundary so active writer-owned data becomes finalized **Capture Segment** data before deletion.
+- **Delete Recent Capture** deletes finalized **Capture Segment** values whose time ranges overlap the selected recent window; bounded over-delete is acceptable because **Capture Segment Duration** is capped.
+- **Delete Recent Capture** deletes whole overlapping screen **Capture Segment** media rather than trimming video files or rewriting frame indexes.
+- **Delete Recent Capture** deletes whole overlapping **Audio Segment** values rather than trimming media or retiming transcripts.
+- **Delete Recent Capture** exposes fixed fast-recovery windows, with the last one minute as the primary/default action and longer windows such as five or fifteen minutes as secondary choices.
+- **Delete Recent Capture** computes the selected recent window from app wall-clock time rather than stretching backward to the latest retained capture.
+- **Delete Recent Capture** always requires explicit confirmation and describes that overlapping **Capture Segment** values may be removed.
+- **Delete Recent Capture** does not need additional dynamic warnings based on **Capture Segment Duration** beyond explaining overlap deletion.
+- **Delete Recent Capture** does not run a preview/count step before confirmation in the V1 fast recovery flow.
+- If **Delete Recent Capture** cannot create the needed recording boundary while recording, it fails clearly instead of silently performing a partial older-segment deletion.
+- **Delete Recent Capture** does not stop recording by itself; after the deletion boundary, recording continues with the same requested sources unless the user separately stops or pauses capture.
+- **Delete Recent Capture** may run during **User Capture Pause** and leaves the **Capture Session** paused afterward.
+- **Delete Recent Capture** feedback reports deletion counts and tombstone status without displaying content-bearing filenames, app/window titles, OCR text, or transcripts.
+- **Delete Recent Capture** is separate from **Retention Cleanup** even if it reuses app-infra deletion helpers.
+- **Delete Recent Capture** should cancel, retire, or otherwise make affected running processing work non-runnable rather than silently skipping matching retained data.
+- If **Delete Recent Capture** removes app-infra rows but file deletion fails, the content is treated as removed from Mnema's app library and the remaining file work is tracked as tombstone status.
+- **Delete Recent Capture** should best-effort clear generated and exact preview caches for affected retained data.
+- **Delete Recent Capture** removes data from Mnema's app library and does not promise secure erase from storage media, snapshots, or backups.
+- **Delete Recent Capture** does not create a content-bearing deletion history in V1.
+- **Delete Recent Capture** is available from the status-bar recovery flow first and may also appear near dashboard recording controls.
+- **Pause Capture** creates a **User Capture Pause** for all requested sources; V1 avoids "private mode" naming because no sensitive-content detection is promised.
+- **User Capture Pause** is distinct from automatic inactivity pause and must not resume because activity is detected.
+- **User Capture Pause** keeps the **Capture Session** alive, finalizes the active **Capture Segment**, records nothing during the pause, and starts new **Capture Segment** values when the user resumes.
+- **Pause Capture** may offer **Delete Recent Capture** as an explicit separately confirmed recovery action after pausing.
+- User-facing labels for **Pause Capture** should use "Pause Recording" and "Resume Recording" to match existing recording controls.
+- User-facing controls should expose **Pause Capture** in addition to stop recording, because pause preserves the **Capture Session** while stop ends it.
+- **Pause Capture** does not stop processing work for already retained data; deletion of queued or completed processing work belongs to **Delete Recent Capture**.
+- **Pause Capture** and **Delete Recent Capture** are available even for audio-only recording, while app-exclusion actions clearly apply to screen capture privacy.
+- **Pause Capture** may be exposed through global shortcut preferences without a default shortcut, while **Delete Recent Capture** has no default destructive shortcut in V1.
+- **User Capture Pause** is exposed through capture session state/events so native status-bar and frontend surfaces stay synchronized.
+- User-facing **App Privacy Exclusion** copy should refer to screen content rather than all capture sources.
+- V1 does not change default browser URL metadata settings.
+- **Browser Capture Disclosure** may mention browser URL metadata in Privacy settings, but not in fast status-bar recovery flows.
+- **OCR Admission Budget** is not a privacy layer and does not skip **Captured Frame** values based on inferred sensitive content in V1.
+- **Downstream Capture Access** in app-owned surfaces operates only over retained app-infra data reachable through app-owned APIs.
+- Raw SQLite or frame-file access by external agents is outside the **Sensitive Capture Protection V1** privacy guarantee until Mnema introduces an explicit brokered access boundary.
+- **Secure Field Capture Suspension** is separate from the **Live Privacy Filter** and requires its own ADR before becoming a product guarantee.
 - A **Scrub Preview** represents a screen segment time position, not **Captured Frame** identity.
 - Multiple nearby **Captured Frame** values may share one **Scrub Preview** when they fall within the same preview interval.
 - A generated **Scrub Preview** interval is one second and is represented by the first indexed screen position inside that one-second video-offset bucket.

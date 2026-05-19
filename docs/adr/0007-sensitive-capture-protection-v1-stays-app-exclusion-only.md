@@ -1,0 +1,7 @@
+# Sensitive Capture Protection V1 stays app-exclusion-only
+
+Mnema will ship **Sensitive Capture Protection V1** as UX and recovery around **App Privacy Exclusion**, without expanding the live screen-capture privacy guarantee beyond app identity exclusion. V1 adds user-confirmed **Recommended App Exclusions**, **Browser Capture Disclosure**, **Exclude Current App**, **Pause Capture**, and confirmed **Delete Recent Capture** recovery, while explicitly rejecting browser-domain, private-window, password-page, OCR-redaction, and secure-field protection as V1 guarantees.
+
+## Consequences
+
+Users are told that browser content is recorded unless the browser app is excluded, including private or incognito windows, and that Mnema does not detect browser password pages or password fields. **Exclude Current App** applies only from the time the exclusion is added. **Delete Recent Capture** is the recovery path for already persisted capture data, deleting whole overlapping capture segments/audio segments from Mnema's app library without promising secure erase from storage media, snapshots, or backups. **Pause Capture** is a user-initiated recording pause that preserves the capture session but records no requested sources until the user resumes. If secure text field protection becomes a hard product requirement, it should be introduced as a separate ADR-backed **Secure Field Capture Suspension** concept owned by the **Recording Lifecycle**, not as **Live Privacy Filter** behavior.

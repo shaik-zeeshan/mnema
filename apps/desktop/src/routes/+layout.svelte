@@ -10,6 +10,8 @@
     bootstrapCaptureControls,
     captureControls,
     sourceSelection,
+    pauseCapture,
+    resumeCapture,
     startCapture,
     stopCapture,
     subscribeRuntimeSources,
@@ -164,6 +166,7 @@
   const isCapturing = $derived(captureControls.running);
   const captureLoadingStart = $derived(captureControls.loadingStart);
   const captureLoadingStop = $derived(captureControls.loadingStop);
+  const captureLoadingPause = $derived(captureControls.loadingPause);
   const captureLoadingSettings = $derived(captureControls.loadingSettings);
   const captureStatusLabel = $derived(captureControls.statusLabel);
   const captureStatusModifier = $derived(captureControls.statusModifier);
@@ -613,6 +616,16 @@
           <span class="titlebar__status-label">{captureStatusLabel}</span>
         </span>
         {#if isCapturing}
+          <button
+            type="button"
+            class="titlebar__record"
+            onclick={captureControls.isUserPaused ? resumeCapture : pauseCapture}
+            disabled={captureLoadingPause}
+            title={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
+            aria-label={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
+          >
+            <span>{captureLoadingPause ? "Working…" : captureControls.isUserPaused ? "Resume" : "Pause"}</span>
+          </button>
           <button
             type="button"
             class="titlebar__record titlebar__record--stop"

@@ -50,6 +50,7 @@ export interface CaptureSession {
 	outputFiles: CaptureOutputFiles | null;
 	sourceSessions: SourceSessions | null;
 	isInactivityPaused: boolean;
+	isUserPaused: boolean;
 }
 
 export interface GetPermissionsResponse {

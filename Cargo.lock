@@ -3539,6 +3539,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "speaker-analysis",
+ "sqlx",
  "tar",
  "tauri",
  "tauri-build",
