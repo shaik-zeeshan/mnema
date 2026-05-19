@@ -2897,6 +2897,21 @@ pub struct DeleteRecentCaptureSummaryDto {
     pub file_delete_errors: i64,
 }
 
+#[derive(Debug)]
+struct DeleteRecentCaptureDeletion {
+    frame_ids: Vec<i64>,
+    audio_segment_ids: Vec<i64>,
+    file_paths: Vec<String>,
+    directory_paths: Vec<String>,
+    capture_segment_media_paths: Vec<String>,
+    deleted_capture_segments: i64,
+    deleted_frames: i64,
+    deleted_audio_segments: i64,
+    deleted_processing_jobs: i64,
+    deleted_processing_results: i64,
+    deleted_search_documents: i64,
+}
+
 fn app_retention_policy(policy: SettingsRetentionPolicy) -> ::app_infra::RetentionPolicy {
     match policy {
         SettingsRetentionPolicy::Never => ::app_infra::RetentionPolicy::Never,
@@ -3105,6 +3120,307 @@ pub async fn delete_recent_capture_from_app_handle(
     delete_recent_capture_inner(app_handle, &infra, window_seconds).await
 }
 
+async fn delete_recent_by_ids(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    table: &str,
+    column: &str,
+    ids: &[i64],
+) -> Result<i64, sqlx::Error> {
+    let mut deleted = 0;
+    for chunk in ids.chunks(900) {
+        if chunk.is_empty() {
+            continue;
+        }
+
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(format!(
+            "DELETE FROM {table} WHERE {column} IN ("
+        ));
+        let mut separated = query.separated(", ");
+        for id in chunk {
+            separated.push_bind(*id);
+        }
+        separated.push_unseparated(")");
+        deleted += query.build().execute(&mut **tx).await?.rows_affected() as i64;
+    }
+    Ok(deleted)
+}
+
+async fn cleanup_unreferenced_delete_recent_frame_metadata_snapshots(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<i64, sqlx::Error> {
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'frame_metadata_snapshots'",
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+    if exists.is_none() {
+        return Ok(0);
+    }
+
+    Ok(sqlx::query(
+        "DELETE FROM frame_metadata_snapshots
+         WHERE NOT EXISTS (
+            SELECT 1 FROM frames WHERE frames.metadata_snapshot_id = frame_metadata_snapshots.id
+         )",
+    )
+    .execute(&mut **tx)
+    .await?
+    .rows_affected() as i64)
+}
+
+async fn delete_recent_speaker_rows_for_audio_segments(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    audio_segment_ids: &[i64],
+) -> Result<(), sqlx::Error> {
+    if audio_segment_ids.is_empty() {
+        return Ok(());
+    }
+
+    delete_recent_by_ids(tx, "speaker_turns", "audio_segment_id", audio_segment_ids).await?;
+    delete_recent_by_ids(
+        tx,
+        "speaker_segment_clusters",
+        "audio_segment_id",
+        audio_segment_ids,
+    )
+    .await?;
+
+    let orphan_cluster_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM recording_speaker_clusters
+         WHERE NOT EXISTS (
+            SELECT 1 FROM speaker_turns WHERE speaker_turns.cluster_id = recording_speaker_clusters.id
+         )
+           AND NOT EXISTS (
+            SELECT 1 FROM speaker_segment_clusters
+            WHERE speaker_segment_clusters.stable_cluster_id = recording_speaker_clusters.id
+         )",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    if orphan_cluster_ids.is_empty() {
+        return Ok(());
+    }
+
+    delete_recent_by_ids(
+        tx,
+        "person_voice_embeddings",
+        "source_cluster_id",
+        &orphan_cluster_ids,
+    )
+    .await?;
+    delete_recent_by_ids(
+        tx,
+        "speaker_recognition_rejections",
+        "source_cluster_id",
+        &orphan_cluster_ids,
+    )
+    .await?;
+    delete_recent_by_ids(tx, "recording_speaker_clusters", "id", &orphan_cluster_ids).await?;
+    Ok(())
+}
+
+async fn delete_recent_capture_rows(
+    infra: &::app_infra::AppInfra,
+    started_at: &str,
+    ended_at: &str,
+) -> Result<DeleteRecentCaptureDeletion, String> {
+    let mut tx = infra
+        .pool()
+        .begin()
+        .await
+        .map_err(|error| format!("failed to begin delete transaction: {error}"))?;
+
+    let frame_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM frames
+         WHERE (captured_at >= ?1 AND captured_at <= ?2)
+            OR capture_segment_id IN (
+                SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1
+            )",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to list frames for deletion: {error}"))?;
+
+    let audio_segment_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM audio_segments
+         WHERE (started_at <= ?2 AND ended_at >= ?1)
+            OR capture_segment_id IN (
+                SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1
+            )",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to list audio segments for deletion: {error}"))?;
+
+    let capture_segment_media_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT media_file_path FROM capture_segments
+         WHERE started_at <= ?2 AND ended_at >= ?1 AND media_file_path IS NOT NULL",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to list deleted capture segment media paths: {error}"))?;
+
+    let file_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT file_path FROM frames
+         WHERE (captured_at >= ?1 AND captured_at <= ?2)
+            OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
+         UNION
+         SELECT file_path FROM audio_segments
+         WHERE (started_at <= ?2 AND ended_at >= ?1)
+            OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
+         UNION
+         SELECT media_file_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND media_file_path IS NOT NULL
+         UNION
+         SELECT sidecar_file_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND sidecar_file_path IS NOT NULL",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to list files for deletion: {error}"))?;
+    let directory_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT workspace_dir_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND workspace_dir_path IS NOT NULL
+         UNION
+         SELECT frame_dir_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND frame_dir_path IS NOT NULL",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to list directories for deletion: {error}"))?;
+
+    let deleted_processing_jobs = sqlx::query(
+        "DELETE FROM processing_jobs
+         WHERE (subject_type = 'frame' AND subject_id IN (
+                SELECT id FROM frames
+                WHERE (captured_at >= ?1 AND captured_at <= ?2)
+                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
+            ))
+            OR (subject_type = 'audio_segment' AND subject_id IN (
+                SELECT id FROM audio_segments
+                WHERE (started_at <= ?2 AND ended_at >= ?1)
+                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
+            ))",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to delete processing jobs: {error}"))?
+    .rows_affected() as i64;
+
+    let deleted_processing_results = sqlx::query(
+        "DELETE FROM processing_results
+         WHERE (subject_type = 'frame' AND subject_id IN (
+                SELECT id FROM frames
+                WHERE (captured_at >= ?1 AND captured_at <= ?2)
+                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
+            ))
+            OR (subject_type = 'audio_segment' AND subject_id IN (
+                SELECT id FROM audio_segments
+                WHERE (started_at <= ?2 AND ended_at >= ?1)
+                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
+            ))",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to delete processing results: {error}"))?
+    .rows_affected() as i64;
+
+    let deleted_search_documents = sqlx::query(
+        "DELETE FROM search_documents
+         WHERE (frame_id IN (
+                SELECT id FROM frames
+                WHERE (captured_at >= ?1 AND captured_at <= ?2)
+                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
+            ))
+            OR (audio_segment_id IN (
+                SELECT id FROM audio_segments
+                WHERE (started_at <= ?2 AND ended_at >= ?1)
+                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
+            ))",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to delete search documents: {error}"))?
+    .rows_affected() as i64;
+
+    delete_recent_speaker_rows_for_audio_segments(&mut tx, &audio_segment_ids)
+        .await
+        .map_err(|error| format!("failed to delete speaker analysis rows: {error}"))?;
+
+    let deleted_frames = sqlx::query(
+        "DELETE FROM frames
+         WHERE (captured_at >= ?1 AND captured_at <= ?2)
+            OR capture_segment_id IN (
+                SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1
+            )",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to delete frames: {error}"))?
+    .rows_affected() as i64;
+
+    cleanup_unreferenced_delete_recent_frame_metadata_snapshots(&mut tx)
+        .await
+        .map_err(|error| {
+            format!("failed to delete unreferenced frame metadata snapshots: {error}")
+        })?;
+
+    let deleted_audio_segments = sqlx::query(
+        "DELETE FROM audio_segments
+             WHERE (started_at <= ?2 AND ended_at >= ?1)
+                OR capture_segment_id IN (
+                    SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1
+                )",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to delete audio segments: {error}"))?
+    .rows_affected() as i64;
+
+    let deleted_capture_segments =
+        sqlx::query("DELETE FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1")
+            .bind(started_at)
+            .bind(ended_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| format!("failed to delete capture segments: {error}"))?
+            .rows_affected() as i64;
+
+    tx.commit()
+        .await
+        .map_err(|error| format!("failed to commit delete transaction: {error}"))?;
+
+    Ok(DeleteRecentCaptureDeletion {
+        frame_ids,
+        audio_segment_ids,
+        file_paths,
+        directory_paths,
+        capture_segment_media_paths,
+        deleted_capture_segments,
+        deleted_frames,
+        deleted_audio_segments,
+        deleted_processing_jobs,
+        deleted_processing_results,
+        deleted_search_documents,
+    })
+}
+
 async fn delete_recent_capture_inner(
     app_handle: &tauri::AppHandle,
     infra: &::app_infra::AppInfra,
@@ -3134,176 +3450,27 @@ async fn delete_recent_capture_inner(
         )?;
     }
 
-    let mut tx = infra
-        .pool()
-        .begin()
-        .await
-        .map_err(|error| format!("failed to begin delete transaction: {error}"))?;
-
-    let _capture_segment_ids: Vec<i64> = sqlx::query_scalar(
-        "SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1",
-    )
-    .bind(&started_at)
-    .bind(&ended_at)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to list capture segments for deletion: {error}"))?;
-
-    let frame_ids: Vec<i64> = sqlx::query_scalar(
-        "SELECT id FROM frames
-         WHERE (captured_at >= ?1 AND captured_at <= ?2)
-            OR capture_segment_id IN (
-                SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1
-            )",
-    )
-    .bind(&started_at)
-    .bind(&ended_at)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to list frames for deletion: {error}"))?;
-
-    let audio_segment_ids: Vec<i64> = sqlx::query_scalar(
-        "SELECT id FROM audio_segments
-         WHERE (started_at <= ?2 AND ended_at >= ?1)
-            OR capture_segment_id IN (
-                SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1
-            )",
-    )
-    .bind(&started_at)
-    .bind(&ended_at)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to list audio segments for deletion: {error}"))?;
-
-    let file_paths: Vec<String> = sqlx::query_scalar(
-        "SELECT file_path FROM frames
-         WHERE (captured_at >= ?1 AND captured_at <= ?2)
-            OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
-         UNION
-         SELECT file_path FROM audio_segments
-         WHERE (started_at <= ?2 AND ended_at >= ?1)
-            OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
-         UNION
-         SELECT media_file_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND media_file_path IS NOT NULL
-         UNION
-         SELECT sidecar_file_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND sidecar_file_path IS NOT NULL",
-    )
-    .bind(&started_at)
-    .bind(&ended_at)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to list files for deletion: {error}"))?;
-    let directory_paths: Vec<String> = sqlx::query_scalar(
-        "SELECT workspace_dir_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND workspace_dir_path IS NOT NULL
-         UNION
-         SELECT frame_dir_path FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1 AND frame_dir_path IS NOT NULL",
-    )
-    .bind(&started_at)
-    .bind(&ended_at)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to list directories for deletion: {error}"))?;
-
-    let deleted_processing_jobs = sqlx::query(
-        "DELETE FROM processing_jobs
-         WHERE (subject_type = 'frame' AND subject_id IN (
-                SELECT id FROM frames
-                WHERE (captured_at >= ?1 AND captured_at <= ?2)
-                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
-            ))
-            OR (subject_type = 'audio_segment' AND subject_id IN (
-                SELECT id FROM audio_segments
-                WHERE (started_at <= ?2 AND ended_at >= ?1)
-                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
-            ))",
-    )
-    .bind(&started_at)
-    .bind(&ended_at)
-    .execute(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to delete processing jobs: {error}"))?
-    .rows_affected() as i64;
-
-    let deleted_processing_results = sqlx::query(
-        "DELETE FROM processing_results
-         WHERE (subject_type = 'frame' AND subject_id IN (
-                SELECT id FROM frames
-                WHERE (captured_at >= ?1 AND captured_at <= ?2)
-                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
-            ))
-            OR (subject_type = 'audio_segment' AND subject_id IN (
-                SELECT id FROM audio_segments
-                WHERE (started_at <= ?2 AND ended_at >= ?1)
-                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
-            ))",
-    )
-    .bind(&started_at)
-    .bind(&ended_at)
-    .execute(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to delete processing results: {error}"))?
-    .rows_affected() as i64;
-
-    let deleted_search_documents = sqlx::query(
-        "DELETE FROM search_documents
-         WHERE (frame_id IN (
-                SELECT id FROM frames
-                WHERE (captured_at >= ?1 AND captured_at <= ?2)
-                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
-            ))
-            OR (audio_segment_id IN (
-                SELECT id FROM audio_segments
-                WHERE (started_at <= ?2 AND ended_at >= ?1)
-                   OR capture_segment_id IN (SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1)
-            ))",
-    )
-    .bind(&started_at)
-    .bind(&ended_at)
-    .execute(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to delete search documents: {error}"))?
-    .rows_affected() as i64;
-
-    let deleted_frames = sqlx::query(
-        "DELETE FROM frames
-         WHERE (captured_at >= ?1 AND captured_at <= ?2)
-            OR capture_segment_id IN (
-                SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1
-            )",
-    )
-    .bind(&started_at)
-    .bind(&ended_at)
-    .execute(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to delete frames: {error}"))?
-    .rows_affected() as i64;
-
-    let deleted_audio_segments = sqlx::query(
-        "DELETE FROM audio_segments
-             WHERE (started_at <= ?2 AND ended_at >= ?1)
-                OR capture_segment_id IN (
-                    SELECT id FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1
-                )",
-    )
-    .bind(&started_at)
-    .bind(&ended_at)
-    .execute(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to delete audio segments: {error}"))?
-    .rows_affected() as i64;
-
-    let deleted_capture_segments =
-        sqlx::query("DELETE FROM capture_segments WHERE started_at <= ?2 AND ended_at >= ?1")
-            .bind(&started_at)
-            .bind(&ended_at)
-            .execute(&mut *tx)
-            .await
-            .map_err(|error| format!("failed to delete capture segments: {error}"))?
-            .rows_affected() as i64;
-
-    tx.commit()
-        .await
-        .map_err(|error| format!("failed to commit delete transaction: {error}"))?;
+    let deletion_result = delete_recent_capture_rows(infra, &started_at, &ended_at).await;
+    if let Err(delete_error) = deletion_result.as_ref() {
+        if should_resume_after_boundary {
+            if let Err(resume_error) =
+                crate::native_capture::resume_native_capture_from_app_handle(app_handle)
+            {
+                return Err(format!(
+                    "{}; additionally failed to resume recording after delete recent capture boundary: {}",
+                    delete_error,
+                    resume_error.message
+                ));
+            }
+        }
+    }
+    let deletion = deletion_result?;
+    if !deletion.capture_segment_media_paths.is_empty() {
+        let _ = frame_preview::clear_scrub_preview_cache_for_video_paths(
+            app_handle.clone(),
+            &deletion.capture_segment_media_paths,
+        );
+    }
 
     let _ = app_handle.emit(
         TIMELINE_DATA_CHANGED_EVENT,
@@ -3312,26 +3479,26 @@ async fn delete_recent_capture_inner(
             deleted_before: None,
             started_at: Some(started_at.clone()),
             ended_at: Some(ended_at.clone()),
-            deleted_frame_ids: frame_ids,
-            deleted_audio_segment_ids: audio_segment_ids,
+            deleted_frame_ids: deletion.frame_ids.clone(),
+            deleted_audio_segment_ids: deletion.audio_segment_ids.clone(),
         },
     );
     let mut file_delete_errors = 0;
-    for path in file_paths {
+    for path in &deletion.file_paths {
         if path.trim().is_empty() {
             continue;
         }
-        match std::fs::remove_file(&path) {
+        match std::fs::remove_file(path) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => file_delete_errors += 1,
         }
     }
-    for path in directory_paths {
+    for path in &deletion.directory_paths {
         if path.trim().is_empty() {
             continue;
         }
-        match std::fs::remove_dir_all(&path) {
+        match std::fs::remove_dir_all(path) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => file_delete_errors += 1,
@@ -3352,12 +3519,12 @@ async fn delete_recent_capture_inner(
         window_seconds,
         started_at,
         ended_at,
-        deleted_capture_segments,
-        deleted_frames,
-        deleted_audio_segments,
-        deleted_processing_jobs,
-        deleted_processing_results,
-        deleted_search_documents,
+        deleted_capture_segments: deletion.deleted_capture_segments,
+        deleted_frames: deletion.deleted_frames,
+        deleted_audio_segments: deletion.deleted_audio_segments,
+        deleted_processing_jobs: deletion.deleted_processing_jobs,
+        deleted_processing_results: deletion.deleted_processing_results,
+        deleted_search_documents: deletion.deleted_search_documents,
         pending_file_tombstones: file_delete_errors,
         file_delete_errors,
     })
@@ -4048,6 +4215,213 @@ mod tests {
             .build()
             .expect("test runtime should build")
             .block_on(test);
+    }
+
+    #[test]
+    fn delete_recent_capture_rows_prunes_unreferenced_metadata_snapshots() {
+        run_async_test(async {
+            let dir = TestDir::new("delete-recent-metadata-snapshots");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let pool = infra.pool();
+            let deleted_media_path = dir
+                .path()
+                .join("recordings/2026/05/19/session-segment-0001.mov")
+                .to_string_lossy()
+                .to_string();
+
+            sqlx::query(
+                "INSERT INTO capture_sessions (
+                    capture_session_id, started_at, stopped_at, status,
+                    requested_screen, requested_microphone, requested_system_audio,
+                    screen_source_session_id, segment_duration_seconds
+                 ) VALUES ('cap-delete-recent', '2026-05-19T10:00:00Z', NULL, 'recording', 1, 0, 0, 'screen-delete-recent', 60)",
+            )
+            .execute(pool)
+            .await
+            .expect("capture session should insert");
+            let segment_id: i64 = sqlx::query_scalar(
+                "INSERT INTO capture_segments (
+                    capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, started_at, ended_at, status
+                 ) VALUES (
+                    'cap-delete-recent', 'screen', 'screen-delete-recent', 1,
+                    ?1, '2026-05-19T10:00:00Z', '2026-05-19T10:00:30Z', 'completed'
+                 ) RETURNING id",
+            )
+            .bind(&deleted_media_path)
+            .fetch_one(pool)
+            .await
+            .expect("capture segment should insert");
+            let deleted_snapshot_id: i64 = sqlx::query_scalar(
+                "INSERT INTO frame_metadata_snapshots (normalized_hash, snapshot_json)
+                 VALUES ('deleted-hash', '{\"app\":\"deleted\"}') RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("deleted metadata snapshot should insert");
+            let retained_snapshot_id: i64 = sqlx::query_scalar(
+                "INSERT INTO frame_metadata_snapshots (normalized_hash, snapshot_json)
+                 VALUES ('retained-hash', '{\"app\":\"retained\"}') RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("retained metadata snapshot should insert");
+            sqlx::query(
+                "INSERT INTO frames (
+                    session_id, file_path, captured_at, capture_segment_id, metadata_snapshot_id
+                 ) VALUES ('screen-delete-recent', '/tmp/deleted-frame.jpg', '2026-05-19T10:00:05Z', ?1, ?2)",
+            )
+            .bind(segment_id)
+            .bind(deleted_snapshot_id)
+            .execute(pool)
+            .await
+            .expect("deleted frame should insert");
+            sqlx::query(
+                "INSERT INTO frames (
+                    session_id, file_path, captured_at, metadata_snapshot_id
+                 ) VALUES ('screen-retained', '/tmp/retained-frame.jpg', '2026-05-19T09:00:00Z', ?1)",
+            )
+            .bind(retained_snapshot_id)
+            .execute(pool)
+            .await
+            .expect("retained frame should insert");
+
+            let deletion =
+                delete_recent_capture_rows(&infra, "2026-05-19T09:59:00Z", "2026-05-19T10:01:00Z")
+                    .await
+                    .expect("delete recent rows should complete");
+
+            assert_eq!(deletion.deleted_frames, 1);
+            assert_eq!(deletion.deleted_capture_segments, 1);
+            assert_eq!(
+                deletion.capture_segment_media_paths,
+                vec![deleted_media_path]
+            );
+            let deleted_snapshot_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM frame_metadata_snapshots WHERE id = ?1")
+                    .bind(deleted_snapshot_id)
+                    .fetch_one(pool)
+                    .await
+                    .expect("deleted snapshot count should load");
+            let retained_snapshot_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM frame_metadata_snapshots WHERE id = ?1")
+                    .bind(retained_snapshot_id)
+                    .fetch_one(pool)
+                    .await
+                    .expect("retained snapshot count should load");
+
+            assert_eq!(deleted_snapshot_count, 0);
+            assert_eq!(retained_snapshot_count, 1);
+        });
+    }
+
+    #[test]
+    fn delete_recent_capture_rows_prunes_speaker_analysis_rows() {
+        run_async_test(async {
+            let dir = TestDir::new("delete-recent-speaker-rows");
+            let infra = ::app_infra::AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let pool = infra.pool();
+
+            let audio_segment_id: i64 = sqlx::query_scalar(
+                "INSERT INTO audio_segments (
+                    source_kind, source_session_id, segment_index, file_path, started_at, ended_at
+                 ) VALUES (
+                    'microphone', 'mic-delete-recent', 1, '/tmp/delete-recent-audio.m4a',
+                    '2026-05-19T10:00:00Z', '2026-05-19T10:00:30Z'
+                 ) RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("audio segment should insert");
+            let person_id: i64 = sqlx::query_scalar(
+                "INSERT INTO person_profiles (display_name) VALUES ('Speaker') RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("person profile should insert");
+            let cluster_id: i64 = sqlx::query_scalar(
+                "INSERT INTO recording_speaker_clusters (
+                    session_id, provider, model_id, provider_cluster_id, stable_label
+                 ) VALUES (
+                    'mic-delete-recent', 'test-provider', 'test-model', 'cluster-1', 'Speaker 1'
+                 ) RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("speaker cluster should insert");
+            sqlx::query(
+                "INSERT INTO speaker_segment_clusters (
+                    audio_segment_id, session_id, provider, model_id, provider_cluster_id,
+                    stable_cluster_id, stable_label
+                 ) VALUES (?1, 'mic-delete-recent', 'test-provider', 'test-model', 'segment-cluster-1', ?2, 'Speaker 1')",
+            )
+            .bind(audio_segment_id)
+            .bind(cluster_id)
+            .execute(pool)
+            .await
+            .expect("speaker segment cluster should insert");
+            sqlx::query(
+                "INSERT INTO speaker_turns (
+                    audio_segment_id, session_id, cluster_id, start_ms, end_ms, transcript_text
+                 ) VALUES (?1, 'mic-delete-recent', ?2, 0, 1000, 'hello')",
+            )
+            .bind(audio_segment_id)
+            .bind(cluster_id)
+            .execute(pool)
+            .await
+            .expect("speaker turn should insert");
+            sqlx::query(
+                "INSERT INTO person_voice_embeddings (
+                    person_id, provider, model_id, embedding, source_session_id, source_cluster_id
+                 ) VALUES (?1, 'test-provider', 'test-model', X'010203', 'mic-delete-recent', ?2)",
+            )
+            .bind(person_id)
+            .bind(cluster_id)
+            .execute(pool)
+            .await
+            .expect("voice embedding should insert");
+            sqlx::query(
+                "INSERT INTO speaker_recognition_rejections (
+                    person_id, provider, model_id, embedding, source_session_id, source_cluster_id
+                 ) VALUES (?1, 'test-provider', 'test-model', X'040506', 'mic-delete-recent', ?2)",
+            )
+            .bind(person_id)
+            .bind(cluster_id)
+            .execute(pool)
+            .await
+            .expect("speaker rejection should insert");
+
+            let deletion =
+                delete_recent_capture_rows(&infra, "2026-05-19T09:59:00Z", "2026-05-19T10:01:00Z")
+                    .await
+                    .expect("delete recent rows should complete");
+
+            assert_eq!(deletion.deleted_audio_segments, 1);
+            for table in [
+                "audio_segments",
+                "speaker_turns",
+                "speaker_segment_clusters",
+                "recording_speaker_clusters",
+                "person_voice_embeddings",
+                "speaker_recognition_rejections",
+            ] {
+                let sql = format!("SELECT COUNT(*) FROM {table}");
+                let count: i64 = sqlx::query_scalar(&sql)
+                    .fetch_one(pool)
+                    .await
+                    .expect("row count should load");
+                assert_eq!(count, 0, "{table} should be pruned");
+            }
+            let person_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM person_profiles")
+                .fetch_one(pool)
+                .await
+                .expect("person count should load");
+            assert_eq!(person_count, 1);
+        });
     }
 
     #[test]
