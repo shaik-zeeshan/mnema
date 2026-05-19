@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     fs::File,
     path::{Path, PathBuf},
@@ -2044,10 +2045,11 @@ fn run_hidden_segment_workspace_repair_startup_pass(
             .recordings_root();
     let recordings_root_display = recordings_root.display().to_string();
 
+    let active_workspace_dirs = BTreeSet::new();
     match tauri::async_runtime::block_on(repair_hidden_segment_workspaces_once(
         infra,
         &recordings_root,
-        None,
+        &active_workspace_dirs,
     )) {
         Ok(result) => {
             crate::native_capture::debug_log::log_info(format!(
@@ -2313,13 +2315,13 @@ fn spawn_hidden_segment_workspace_repair_worker(
                 break;
             }
 
-            let active_screen_session_id =
-                active_screen_session_id_for_hidden_workspace_repair(&app_handle);
+            let active_workspace_dirs =
+                active_workspace_dirs_for_hidden_workspace_repair(&app_handle);
 
             match repair_hidden_segment_workspaces_once(
                 &infra,
                 &recordings_root,
-                active_screen_session_id.as_deref(),
+                &active_workspace_dirs,
             )
             .await
             {
@@ -2586,34 +2588,79 @@ fn convert_frame_index_sidecars_once(
 async fn repair_hidden_segment_workspaces_once(
     infra: &::app_infra::AppInfra,
     recordings_root: &Path,
-    active_screen_session_id: Option<&str>,
+    active_workspace_dirs: &BTreeSet<String>,
 ) -> ::app_infra::Result<::app_infra::HiddenSegmentWorkspaceRepairResult> {
     infra
         .repair_hidden_segment_workspaces_with_context(
             recordings_root,
             &::app_infra::HiddenSegmentWorkspaceRepairContext {
-                active_screen_session_id: active_screen_session_id.map(str::to_owned),
+                active_workspace_dirs: active_workspace_dirs.clone(),
             },
         )
         .await
 }
 
-fn active_screen_session_id_for_hidden_workspace_repair(
+fn active_workspace_dirs_for_hidden_workspace_repair(
     app_handle: &tauri::AppHandle,
-) -> Option<String> {
+) -> BTreeSet<String> {
     let state = app_handle.state::<crate::native_capture::NativeCaptureState>();
-    let runtime = state.lock().ok()?;
+    let Ok(runtime) = state.lock() else {
+        return BTreeSet::new();
+    };
     let runtime = runtime.runtime();
     if !runtime.is_running {
-        return None;
+        return BTreeSet::new();
     }
 
-    runtime
-        .source_sessions
-        .as_ref()?
-        .screen
-        .as_ref()
-        .map(|screen| screen.session_id.clone())
+    let mut active_workspace_dirs = BTreeSet::new();
+    for screen_file in [
+        runtime.recording_file.as_deref(),
+        runtime
+            .current_segment_output_files
+            .as_ref()
+            .and_then(|files| files.screen_file.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(workspace_dir) = hidden_workspace_dir_for_screen_recording_file(screen_file) {
+            active_workspace_dirs.insert(workspace_dir);
+        }
+    }
+
+    if active_workspace_dirs.is_empty()
+        && runtime
+            .source_sessions
+            .as_ref()
+            .and_then(|source_sessions| source_sessions.screen.as_ref())
+            .is_some()
+    {
+        if let Some(planner) = runtime.segment_planner.as_ref() {
+            active_workspace_dirs.insert(
+                planner
+                    .segment_workspace_dir(runtime.current_segment_index)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+    }
+
+    active_workspace_dirs
+}
+
+fn hidden_workspace_dir_for_screen_recording_file(screen_file: &str) -> Option<String> {
+    let path = Path::new(screen_file);
+    if let Some(parent) = path.parent() {
+        if ::app_infra::HiddenSegmentWorkspacePaths::from_workspace_dir(parent).is_some() {
+            return Some(parent.to_string_lossy().to_string());
+        }
+    }
+
+    let parent = path.parent()?;
+    let stem = path.file_stem()?.to_str()?;
+    let workspace_dir = parent.join(format!(".{stem}"));
+    ::app_infra::HiddenSegmentWorkspacePaths::from_workspace_dir(&workspace_dir)?;
+    Some(workspace_dir.to_string_lossy().to_string())
 }
 
 async fn process_pending_jobs_once(
@@ -4843,6 +4890,37 @@ mod tests {
     }
 
     #[test]
+    fn generated_scrub_preview_derivative_prunes_cache_after_write() {
+        let dir = TestDir::new("scrub-preview-derivative-prune");
+        let source_path = dir.path().join("source.png");
+        let cache_dir = dir.path().join("cache");
+        fs::create_dir_all(&cache_dir).expect("cache dir should exist");
+        for index in 0..GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES {
+            fs::write(cache_dir.join(format!("old-{index}.jpg")), b"old")
+                .expect("old preview fixture should be written");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        image::RgbImage::from_pixel(320, 240, image::Rgb([32, 64, 128]))
+            .save(&source_path)
+            .expect("source image fixture should be written");
+
+        let derivative_path =
+            generate_scrub_preview_derivative_in_dir(&cache_dir, 99, 200, &source_path)
+                .expect("scrub derivative should generate");
+
+        let files = fs::read_dir(&cache_dir)
+            .expect("cache dir should list")
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .count();
+        assert_eq!(files, GENERATED_FRAME_PREVIEW_CACHE_MAX_FILES);
+        assert!(
+            derivative_path.is_file(),
+            "newly generated derivative should be retained"
+        );
+    }
+
+    #[test]
     fn scrub_preview_cache_keys_include_max_pixel_size() {
         let dir = TestDir::new("scrub-preview-cache-key");
         let preview_200_path = dir.path().join("scrub-v2-frame-42-200.jpg");
@@ -5326,9 +5404,10 @@ mod tests {
             )
             .expect("visible segment should be written");
 
-            let result = repair_hidden_segment_workspaces_once(&infra, &recordings_root, None)
-                .await
-                .expect("repair should succeed");
+            let result =
+                repair_hidden_segment_workspaces_once(&infra, &recordings_root, &BTreeSet::new())
+                    .await
+                    .expect("repair should succeed");
 
             assert_eq!(result.scanned_workspace_count, 1);
             assert_eq!(result.removed_workspace_count, 1);
@@ -5354,9 +5433,10 @@ mod tests {
             fs::write(frames_dir.join("frame-1.jpg"), b"fake frame")
                 .expect("workspace frame artifact should be created");
 
-            let result = repair_hidden_segment_workspaces_once(&infra, &recordings_root, None)
-                .await
-                .expect("repair should succeed");
+            let result =
+                repair_hidden_segment_workspaces_once(&infra, &recordings_root, &BTreeSet::new())
+                    .await
+                    .expect("repair should succeed");
 
             assert_eq!(result.scanned_workspace_count, 1);
             assert_eq!(result.removed_workspace_count, 0);
@@ -5391,7 +5471,7 @@ mod tests {
             let result = repair_hidden_segment_workspaces_once(
                 &infra,
                 &recordings_root,
-                Some("active-screen-session"),
+                &BTreeSet::from([workspace_dir.to_string_lossy().to_string()]),
             )
             .await
             .expect("repair should succeed");
