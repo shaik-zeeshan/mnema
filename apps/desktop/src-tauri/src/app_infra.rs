@@ -13,8 +13,8 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
 use capture_types::{
-    AudioSpeechDetector, AudioTranscriptionSettings, CaptureSources, OcrProvider, OcrSettings,
-    RetentionPolicy as SettingsRetentionPolicy, SpeakerAnalysisSettings,
+    AudioSpeechDetector, AudioTranscriptionSettings, CaptureSources, NativeCaptureSession,
+    OcrProvider, OcrSettings, RetentionPolicy as SettingsRetentionPolicy, SpeakerAnalysisSettings,
 };
 use fs2::FileExt;
 use futures_util::{
@@ -3585,6 +3585,10 @@ fn complete_delete_recent_capture_boundary<T>(
     }
 }
 
+fn should_resume_delete_recent_capture_boundary(session: &NativeCaptureSession) -> bool {
+    session.is_running && !session.is_user_paused && !session.is_inactivity_paused
+}
+
 async fn delete_recent_capture_inner(
     app_handle: &tauri::AppHandle,
     infra: &::app_infra::AppInfra,
@@ -3602,7 +3606,7 @@ async fn delete_recent_capture_inner(
 
     let session_before_delete = crate::native_capture::current_native_capture_session(app_handle);
     let should_resume_after_boundary =
-        session_before_delete.is_running && !session_before_delete.is_user_paused;
+        should_resume_delete_recent_capture_boundary(&session_before_delete);
     if session_before_delete.is_running {
         crate::native_capture::pause_native_capture_from_app_handle(app_handle).map_err(
             |error| {
@@ -4412,6 +4416,20 @@ mod tests {
         );
 
         assert_eq!(result, Err("delete failed".to_string()));
+    }
+
+    #[test]
+    fn delete_recent_capture_boundary_does_not_resume_when_inactivity_paused() {
+        let session = NativeCaptureSession {
+            is_running: true,
+            is_inactivity_paused: true,
+            is_user_paused: false,
+            requested_sources: None,
+            output_files: None,
+            source_sessions: None,
+        };
+
+        assert!(!should_resume_delete_recent_capture_boundary(&session));
     }
 
     #[test]

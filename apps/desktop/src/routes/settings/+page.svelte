@@ -2138,6 +2138,7 @@
       recordingSettings = event.payload;
       syncRecDrafts(event.payload);
       recError = null;
+      void loadSensitiveCaptureRecommendations();
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenRecordingSettingsChanged = fn;
