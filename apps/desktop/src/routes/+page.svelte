@@ -18,8 +18,6 @@
   import { developerOptions } from "$lib/developer-options.svelte";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import {
-    activeDisplayPreviewPathForFrame,
-    activeDisplayPreviewSourceForFrame,
     activeExactPreviewDelayMs,
     scrubPreviewResponseShouldApply,
     timelineMovementShouldScheduleScrubPreview,
@@ -131,20 +129,24 @@
   const AUDIO_SEGMENT_REFRESH_DEBOUNCE_MS = 100;
   const AUDIO_TRANSCRIPT_POLL_INTERVAL_MS = 1000;
   const OCR_POLL_INTERVAL_MS = 1000;
-  const ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS = 50;
+  const ACTIVE_PREVIEW_SCRUB_REQUEST_INTERVAL_MS = 160;
+  const ACTIVE_PREVIEW_SCRUB_FAST_REQUEST_INTERVAL_MS = 240;
+  const ACTIVE_PREVIEW_DISPLAY_SCRUB_THROTTLE_MS = 80;
+  const ACTIVE_PREVIEW_DISPLAY_SETTLE_MS = 180;
   const ACTIVE_PREVIEW_SCRUB_WARM_SETTLE_MS = 1200;
-  const ACTIVE_PREVIEW_EXACT_SETTLE_MS = 1000;
-  const ACTIVE_PREVIEW_SCRUB_RADIUS = 12;
-  const ACTIVE_PREVIEW_SCRUB_MEDIUM_RADIUS = 8;
-  const ACTIVE_PREVIEW_SCRUB_FAST_RADIUS = 5;
-  const ACTIVE_PREVIEW_SCRUB_VERY_FAST_RADIUS = 3;
-  const ACTIVE_PREVIEW_SCRUB_MAX_UNCACHED = 32;
-  const ACTIVE_PREVIEW_SCRUB_MEDIUM_MAX_UNCACHED = 17;
-  const ACTIVE_PREVIEW_SCRUB_FAST_MAX_UNCACHED = 11;
-  const ACTIVE_PREVIEW_SCRUB_VERY_FAST_MAX_UNCACHED = 7;
+  const ACTIVE_PREVIEW_EXACT_SETTLE_MS = 500;
+  const ACTIVE_PREVIEW_SCRUB_RADIUS = 4;
+  const ACTIVE_PREVIEW_SCRUB_MEDIUM_RADIUS = 3;
+  const ACTIVE_PREVIEW_SCRUB_FAST_RADIUS = 2;
+  const ACTIVE_PREVIEW_SCRUB_VERY_FAST_RADIUS = 1;
+  const ACTIVE_PREVIEW_SCRUB_MAX_UNCACHED = 9;
+  const ACTIVE_PREVIEW_SCRUB_MEDIUM_MAX_UNCACHED = 7;
+  const ACTIVE_PREVIEW_SCRUB_FAST_MAX_UNCACHED = 5;
+  const ACTIVE_PREVIEW_SCRUB_VERY_FAST_MAX_UNCACHED = 3;
   const ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS = 2;
   const ACTIVE_PREVIEW_VERY_FAST_SCRUB_PX_PER_MS = 4;
   const ACTIVE_PREVIEW_EXTREME_SCRUB_PX_PER_MS = 8;
+  const ACTIVE_PREVIEW_DEFERRED_LOG_MIN_DELTA = 40;
   const PREVIEW_CACHE_MAX_ENTRIES = 192;
   const PREVIEW_FAILURE_CACHE_TTL_MS = 5_000;
   const PREVIEW_GENERATION_CANCELLED_MESSAGE = "preview generation cancelled";
@@ -441,6 +443,13 @@
     scrollLeft: number;
     scrollWidth: number;
   };
+  type TimelinePreviewDisplayMode = "parked" | "scrubbing";
+  type TimelinePreviewDisplay = {
+    filePath: string;
+    frameId: number;
+    source: "exact" | "scrub";
+    sourceKind: FramePreviewDto["sourceKind"] | "none";
+  };
 
   let timelineFrames = $state<FrameDto[]>([]);
   let timelineActiveIndex = $state(0);
@@ -546,6 +555,8 @@
   let activeExactPreviewPendingFrameId: number | null = null;
   let scrubPreviewFetchGeneration = 0;
   let scrubPreviewFetchTimer: ReturnType<typeof setTimeout> | null = null;
+  let scheduledScrubPreviewActiveIndex: number | null = null;
+  let scheduledScrubPreviewGeneration = 0;
   let scrubPreviewWarmTimer: ReturnType<typeof setTimeout> | null = null;
   let scrubPreviewBatchInFlight = false;
   let scrubPreviewWarmInFlight = false;
@@ -610,43 +621,8 @@
     for (const frame of timelineFrames) framesById.set(frame.id, frame);
     return framesById;
   });
-  const activeScrubPreviewInterval = $derived(
-    scrubPreviewIntervalForFrame(timelineActive),
-  );
   const activePreviewPath = $derived(
     timelineActive ? previewCache.get(timelineActive.id) ?? null : null,
-  );
-  const activeDisplayPreviewPath = $derived(
-    timelineActive && previewCache.has(timelineActive.id)
-      ? previewCache.get(timelineActive.id) ?? null
-      : activeScrubPreviewInterval?.preview?.filePath ??
-        activeDisplayPreviewPathForFrame(
-          timelineActive?.id ?? null,
-          previewCache,
-          scrubPreviewCache,
-        ),
-  );
-  const activeDisplayPreviewSource = $derived<"exact" | "scrub" | "none">(
-    timelineActive && previewCache.has(timelineActive.id)
-      ? "exact"
-      : activeScrubPreviewInterval?.preview
-        ? "scrub"
-        : activeDisplayPreviewSourceForFrame(
-          timelineActive?.id ?? null,
-          previewCache,
-          scrubPreviewCache,
-        ),
-  );
-  const activeDisplayPreviewSourceKind = $derived<FramePreviewDto["sourceKind"] | "none">(
-    timelineActive
-      ? activeDisplayPreviewSource === "exact"
-        ? previewSourceKindCache.get(timelineActive.id) ?? "none"
-        : activeDisplayPreviewSource === "scrub"
-          ? activeScrubPreviewInterval?.preview?.sourceKind ??
-            scrubPreviewSourceKindCache.get(timelineActive.id) ??
-            "none"
-          : "none"
-      : "none",
   );
   const activeExactPreviewLoadMs = $derived(
     timelineActive ? previewLoadMsCache.get(timelineActive.id) ?? null : null,
@@ -659,6 +635,130 @@
   let timelineActiveDuplicateOf = $state<FrameDto | null>(null);
   let timelineActiveDuplicateLookupGeneration = 0;
   let timelineActiveDuplicateLookupTimer: ReturnType<typeof setTimeout> | null = null;
+  let timelinePreviewDisplay = $state<TimelinePreviewDisplay | null>(null);
+  let timelinePreviewDisplayMode = $state<TimelinePreviewDisplayMode>("parked");
+  let timelinePreviewDisplaySettleTimer: ReturnType<typeof setTimeout> | null = null;
+  let timelinePreviewDisplayLastScrubAt = 0;
+
+  function previewDisplayCandidateForFrame(
+    frame: FrameDto | null,
+    options: { allowExact: boolean },
+  ): TimelinePreviewDisplay | null {
+    if (!frame) return null;
+    if (options.allowExact) {
+      const exactPath = previewCache.get(frame.id);
+      if (exactPath) {
+        return {
+          filePath: exactPath,
+          frameId: frame.id,
+          source: "exact",
+          sourceKind: previewSourceKindCache.get(frame.id) ?? "none",
+        };
+      }
+    }
+
+    const interval = scrubPreviewIntervalForFrame(frame);
+    if (interval?.preview) {
+      return {
+        filePath: interval.preview.filePath,
+        frameId: frame.id,
+        source: "scrub",
+        sourceKind: interval.preview.sourceKind,
+      };
+    }
+
+    const scrubPath = scrubPreviewCache.get(frame.id);
+    if (scrubPath) {
+      return {
+        filePath: scrubPath,
+        frameId: frame.id,
+        source: "scrub",
+        sourceKind: scrubPreviewSourceKindCache.get(frame.id) ?? "scrub_preview",
+      };
+    }
+
+    return null;
+  }
+
+  function applyTimelinePreviewDisplay(
+    candidate: TimelinePreviewDisplay | null,
+    mode: TimelinePreviewDisplayMode,
+    options: { clearOnMissing: boolean },
+  ): void {
+    if (timelinePreviewDisplayMode !== mode) {
+      timelinePreviewDisplayMode = mode;
+    }
+    if (!candidate) {
+      if (options.clearOnMissing && timelinePreviewDisplay !== null) {
+        timelinePreviewDisplay = null;
+      }
+      return;
+    }
+    const current = timelinePreviewDisplay;
+    if (
+      current &&
+      current.frameId === candidate.frameId &&
+      current.filePath === candidate.filePath &&
+      current.source === candidate.source &&
+      current.sourceKind === candidate.sourceKind
+    ) {
+      return;
+    }
+    timelinePreviewDisplay = candidate;
+  }
+
+  function updateTimelinePreviewDisplayForFrame(
+    frame: FrameDto | null,
+    mode: TimelinePreviewDisplayMode,
+    options: { allowExact: boolean; clearOnMissing: boolean },
+  ): void {
+    applyTimelinePreviewDisplay(
+      previewDisplayCandidateForFrame(frame, { allowExact: options.allowExact }),
+      mode,
+      { clearOnMissing: options.clearOnMissing },
+    );
+  }
+
+  function refreshScrubbingTimelinePreviewDisplay(): void {
+    if (timelinePreviewDisplayMode !== "scrubbing") return;
+    updateTimelinePreviewDisplayForFrame(timelineActive, "scrubbing", {
+      allowExact: true,
+      clearOnMissing: false,
+    });
+  }
+
+  function clearTimelinePreviewDisplaySettleTimer(): void {
+    if (timelinePreviewDisplaySettleTimer == null) return;
+    clearTimeout(timelinePreviewDisplaySettleTimer);
+    timelinePreviewDisplaySettleTimer = null;
+  }
+
+  function resetTimelinePreviewDisplay(): void {
+    clearTimelinePreviewDisplaySettleTimer();
+    timelinePreviewDisplay = null;
+    timelinePreviewDisplayMode = "parked";
+    timelinePreviewDisplayLastScrubAt = 0;
+  }
+
+  $effect(() => {
+    if (timelinePreviewDisplayMode === "scrubbing") return;
+    updateTimelinePreviewDisplayForFrame(timelineActive, "parked", {
+      allowExact: true,
+      clearOnMissing: true,
+    });
+  });
+
+  $effect(() => {
+    return () => {
+      clearTimelinePreviewDisplaySettleTimer();
+    };
+  });
+
+  $effect(() => {
+    return () => {
+      clearScrubPreviewFetchTimer();
+    };
+  });
 
   // Preview load/error state belongs to the currently selected frame only.
   // Clear it on frame switches so a stale message from an older request does
@@ -3132,6 +3232,8 @@
       clearTimeout(scrubPreviewFetchTimer);
       scrubPreviewFetchTimer = null;
     }
+    scheduledScrubPreviewActiveIndex = null;
+    scheduledScrubPreviewGeneration = 0;
   }
 
   function clearScrubPreviewWarmTimer(): void {
@@ -3142,11 +3244,18 @@
   }
 
   function scheduleLatestScrubPreviews(activeIndex: number, generation: number, delayMs: number): void {
-    clearScrubPreviewFetchTimer();
+    scheduledScrubPreviewActiveIndex = activeIndex;
+    scheduledScrubPreviewGeneration = generation;
+    if (scrubPreviewFetchTimer != null) return;
     scrubPreviewFetchTimer = setTimeout(() => {
       scrubPreviewFetchTimer = null;
-      if (generation !== scrubPreviewFetchGeneration) return;
-      void ensureLatestScrubPreviews(activeIndex, generation);
+      const scheduledActiveIndex = scheduledScrubPreviewActiveIndex;
+      const scheduledGeneration = scheduledScrubPreviewGeneration;
+      scheduledScrubPreviewActiveIndex = null;
+      scheduledScrubPreviewGeneration = 0;
+      if (scheduledActiveIndex == null) return;
+      if (scheduledGeneration !== scrubPreviewFetchGeneration) return;
+      void ensureLatestScrubPreviews(scheduledActiveIndex, scheduledGeneration);
     }, delayMs);
   }
 
@@ -3242,6 +3351,9 @@
       previewLoadMsCache = nextLoadMs;
     }
     trimPreviewCache();
+    if (timelineActive?.id === frameId) {
+      refreshScrubbingTimelinePreviewDisplay();
+    }
   }
 
   function touchScrubPreviewCache(
@@ -3269,6 +3381,9 @@
       scrubPreviewLoadMsCache = nextLoadMs;
     }
     trimScrubPreviewCache();
+    if (timelineActive?.id === frameId) {
+      refreshScrubbingTimelinePreviewDisplay();
+    }
   }
 
   function scrubPreviewIntervalKey(interval: Pick<ScrubPreviewAvailabilityIntervalDto, "segmentCacheKey" | "intervalStartVideoOffsetMs">): string {
@@ -3445,6 +3560,12 @@
       radius: ACTIVE_PREVIEW_SCRUB_RADIUS,
       maxUncached: ACTIVE_PREVIEW_SCRUB_MAX_UNCACHED,
     };
+  }
+
+  function scrubPreviewScheduleDelayMs(): number {
+    return previewScrubVelocityPxPerMs >= ACTIVE_PREVIEW_FAST_SCRUB_PX_PER_MS
+      ? ACTIVE_PREVIEW_SCRUB_FAST_REQUEST_INTERVAL_MS
+      : ACTIVE_PREVIEW_SCRUB_REQUEST_INTERVAL_MS;
   }
 
   function scrubPreviewFrameIdsAround(
@@ -4113,11 +4234,17 @@
     if (generation !== scrubPreviewFetchGeneration) return;
     if (activeIndex !== timelineActiveIndex) return;
     if (scrubPreviewBatchInFlight) {
+      const previousPendingIndex = scrubPreviewPendingActiveIndex;
       scrubPreviewPendingActiveIndex = activeIndex;
-      scrubPerfLog("scrub_preview_deferred", {
-        activeIndex,
-        velocity: previewScrubVelocityPxPerMs,
-      });
+      if (
+        previousPendingIndex == null ||
+        Math.abs(previousPendingIndex - activeIndex) >= ACTIVE_PREVIEW_DEFERRED_LOG_MIN_DELTA
+      ) {
+        scrubPerfLog("scrub_preview_deferred", {
+          activeIndex,
+          velocity: previewScrubVelocityPxPerMs,
+        });
+      }
       return;
     }
 
@@ -4142,7 +4269,7 @@
       scheduleLatestScrubPreviews(
         pendingIndex,
         nextGeneration,
-        ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS,
+        scrubPreviewScheduleDelayMs(),
       );
     }
   }
@@ -4195,6 +4322,9 @@
         queued,
         missing,
       }, SCRUB_PERF_SLOW_PREVIEW_MS);
+      if (ready > 0) {
+        refreshScrubbingTimelinePreviewDisplay();
+      }
     } finally {
       scrubPreviewWarmInFlight = false;
     }
@@ -4263,6 +4393,9 @@
         invokeMs: invokeDurationMs,
         applyMs: performance.now() - applyStartedAt,
       }, SCRUB_PERF_SLOW_PREVIEW_MS);
+      if (ready > 0) {
+        refreshScrubbingTimelinePreviewDisplay();
+      }
     } finally {
       for (const frameId of frameIds) scrubPreviewInFlight.delete(frameId);
     }
@@ -4327,6 +4460,7 @@
         scrubPreviewLoadMsCache = new Map();
         scrubPreviewFailedAt = new Map();
         scrubPreviewIntervalCache = new Map();
+        resetTimelinePreviewDisplay();
         activePreviewLoadErrorFrameId = null;
         // Targeted picker invalidation: only invalidate months actually
         // covered by the freshly loaded frames. Wholesale clearing of
@@ -4731,6 +4865,7 @@
     if (activeChanged) {
       previewScrubVelocityPxPerMs = latestTimelineScrubVelocityPxPerMs;
       commitTimelineScrollPosition(sample.scrollLeft);
+      markTimelinePreviewScrubbing(idx);
       timelineActiveIndex = idx;
     }
     scrubPerfRecordScroll(performance.now() - sample.handlerStartedAt, {
@@ -4775,6 +4910,38 @@
     pendingTimelineScrollSample = sample;
     if (timelineScrollAnimationFrame != null) return;
     timelineScrollAnimationFrame = requestAnimationFrame(commitPendingTimelineScrollSample);
+  }
+
+  function scheduleTimelinePreviewDisplaySettle(frameId: number): void {
+    clearTimelinePreviewDisplaySettleTimer();
+    timelinePreviewDisplaySettleTimer = setTimeout(() => {
+      timelinePreviewDisplaySettleTimer = null;
+      if ((timelineActive?.id ?? null) !== frameId) return;
+      updateTimelinePreviewDisplayForFrame(timelineActive, "parked", {
+        allowExact: true,
+        clearOnMissing: true,
+      });
+    }, ACTIVE_PREVIEW_DISPLAY_SETTLE_MS);
+  }
+
+  function markTimelinePreviewScrubbing(activeIndex: number): void {
+    const frame = timelineFrames[activeIndex] ?? null;
+    if (!frame) return;
+
+    const now = performance.now();
+    const shouldSwapPreview =
+      timelinePreviewDisplay == null ||
+      now - timelinePreviewDisplayLastScrubAt >= ACTIVE_PREVIEW_DISPLAY_SCRUB_THROTTLE_MS;
+    if (shouldSwapPreview) {
+      timelinePreviewDisplayLastScrubAt = now;
+      updateTimelinePreviewDisplayForFrame(frame, "scrubbing", {
+        allowExact: true,
+        clearOnMissing: true,
+      });
+    } else if (timelinePreviewDisplayMode !== "scrubbing") {
+      timelinePreviewDisplayMode = "scrubbing";
+    }
+    scheduleTimelinePreviewDisplaySettle(frame.id);
   }
 
   function onTimelineScroll(event: Event) {
@@ -5185,11 +5352,9 @@
     const scrubGen = scrubPreviewFetchGeneration;
     const cleanupPreviewTimers = () => {
       clearActivePreviewFetchTimer();
-      clearScrubPreviewFetchTimer();
       clearScrubPreviewWarmTimer();
     };
     clearActivePreviewFetchTimer();
-    clearScrubPreviewFetchTimer();
     clearScrubPreviewWarmTimer();
     if (activeFrameChanged && activeExactPreviewInFlight) {
       void cancelActivePreviewVideoRequests();
@@ -5204,16 +5369,22 @@
 
     if (shouldScheduleScrubPreview) {
       if (scrubPreviewBatchInFlight) {
+        const previousPendingIndex = scrubPreviewPendingActiveIndex;
         scrubPreviewPendingActiveIndex = activeIndex;
-        scrubPerfLog("scrub_preview_deferred", {
-          activeIndex,
-          velocity: previewScrubVelocityPxPerMs,
-        });
+        if (
+          previousPendingIndex == null ||
+          Math.abs(previousPendingIndex - activeIndex) >= ACTIVE_PREVIEW_DEFERRED_LOG_MIN_DELTA
+        ) {
+          scrubPerfLog("scrub_preview_deferred", {
+            activeIndex,
+            velocity: previewScrubVelocityPxPerMs,
+          });
+        }
       } else {
         scheduleLatestScrubPreviews(
           activeIndex,
           scrubGen,
-          ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS,
+          scrubPreviewScheduleDelayMs(),
         );
       }
       scheduleScrubPreviewWarm(activeIndex, scrubGen);
@@ -6107,6 +6278,7 @@
       scrubPreviewLoadMsCache = new Map();
       scrubPreviewFailedAt = new Map();
       scrubPreviewIntervalCache = new Map();
+      resetTimelinePreviewDisplay();
       await syncTimelineScrollToActiveFrame();
       void refreshAudioSegments();
       // Keep picker selection state in sync with the resolved target frame
@@ -6621,7 +6793,7 @@
       scheduleLatestScrubPreviews(
         activeIndex,
         scrubPreviewFetchGeneration,
-        ACTIVE_PREVIEW_SCRUB_DEBOUNCE_MS,
+        scrubPreviewScheduleDelayMs(),
       );
     }).then((fn) => {
       if (destroyed) fn();
@@ -7016,7 +7188,8 @@
         <span class="timeline__empty-hint">capture a session to populate the timeline</span>
       </div>
     {:else if timelineActive}
-      {@const previewPath = activeDisplayPreviewPath}
+      {@const previewDisplay = timelinePreviewDisplay}
+      {@const previewPath = previewDisplay?.filePath ?? null}
       {@const previewUrl = previewPath ? framePreviewAssetUrl(previewPath) : null}
       {#if frameActionStatus}
         <div
@@ -7034,8 +7207,9 @@
         </div>
       {/if}
       {#if previewUrl}
-        {@const exactPreviewReady = previewCache.has(timelineActive.id)}
-        {#if exactPreviewReady}
+        {@const activeExactPreviewReady = previewCache.has(timelineActive.id)}
+        {@const displayedActiveExactPreview = previewDisplay?.frameId === timelineActive.id && previewDisplay.source === "exact"}
+        {#if activeExactPreviewReady}
         <div
           class="timeline__stage-actions"
           class:timeline__stage-actions--open={stageActionsMenuOpen}
@@ -7082,7 +7256,7 @@
         <div
           class="timeline__preview"
           role="img"
-          aria-label={`frame ${timelineActive.id}`}
+          aria-label={`frame ${previewDisplay?.frameId ?? timelineActive.id}`}
           style={`background-image: url("${previewUrl}");`}
         ></div>
         <img
@@ -7090,7 +7264,7 @@
           src={previewUrl}
           alt=""
           aria-hidden="true"
-          onerror={() => handleActivePreviewLoadError(timelineActive.id)}
+          onerror={() => handleActivePreviewLoadError(previewDisplay?.frameId ?? timelineActive.id)}
         />
         <!-- OCR overlay: anchored to the painted background-image rect
              (background-size: contain, centered) inside the stage. The
@@ -7100,7 +7274,7 @@
              scrub/click on the stage. Boxes and labels only render once
              the exact active-frame preview is painted and an OCR run has
              produced observations for the currently active frame. -->
-        {#if exactPreviewReady && ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0 && renderedImageRect.width > 0 && renderedImageRect.height > 0}
+        {#if displayedActiveExactPreview && ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0 && renderedImageRect.width > 0 && renderedImageRect.height > 0}
           <div
             class="timeline__ocr-overlay"
             aria-hidden="true"
@@ -7175,11 +7349,11 @@
         {/if}
         <div class="timeline__overlay-row">
           <span class="timeline__overlay-key">image</span>
-          <span class="timeline__overlay-val">{activeDisplayPreviewSource}</span>
+          <span class="timeline__overlay-val">{timelinePreviewDisplay?.source ?? "none"}</span>
         </div>
         <div class="timeline__overlay-row">
           <span class="timeline__overlay-key">source</span>
-          <span class="timeline__overlay-val">{activeDisplayPreviewSourceKind}</span>
+          <span class="timeline__overlay-val">{timelinePreviewDisplay?.sourceKind ?? "none"}</span>
         </div>
         <div class="timeline__overlay-row">
           <span class="timeline__overlay-key">fetch</span>
