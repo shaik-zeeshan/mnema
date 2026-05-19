@@ -3564,6 +3564,27 @@ async fn delete_recent_capture_files_and_tombstone(
     Ok(file_delete_errors)
 }
 
+fn complete_delete_recent_capture_boundary<T>(
+    should_resume_after_boundary: bool,
+    primary_result: Result<T, String>,
+    resume: impl FnOnce() -> Result<(), String>,
+) -> Result<T, String> {
+    if !should_resume_after_boundary {
+        return primary_result;
+    }
+
+    match (primary_result, resume()) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(resume_error)) => Err(format!(
+            "deleted recent capture, but failed to resume recording: {resume_error}"
+        )),
+        (Err(primary_error), Ok(())) => Err(primary_error),
+        (Err(primary_error), Err(resume_error)) => Err(format!(
+            "{primary_error}; additionally failed to resume recording after delete recent capture boundary: {resume_error}"
+        )),
+    }
+}
+
 async fn delete_recent_capture_inner(
     app_handle: &tauri::AppHandle,
     infra: &::app_infra::AppInfra,
@@ -3593,21 +3614,20 @@ async fn delete_recent_capture_inner(
         )?;
     }
 
-    let deletion_result = delete_recent_capture_rows(infra, &started_at, &ended_at).await;
-    if let Err(delete_error) = deletion_result.as_ref() {
-        if should_resume_after_boundary {
-            if let Err(resume_error) =
-                crate::native_capture::resume_native_capture_from_app_handle(app_handle)
-            {
-                return Err(format!(
-                    "{}; additionally failed to resume recording after delete recent capture boundary: {}",
-                    delete_error,
-                    resume_error.message
-                ));
-            }
+    let deletion = match delete_recent_capture_rows(infra, &started_at, &ended_at).await {
+        Ok(deletion) => deletion,
+        Err(error) => {
+            return complete_delete_recent_capture_boundary(
+                should_resume_after_boundary,
+                Err(error),
+                || {
+                    crate::native_capture::resume_native_capture_from_app_handle(app_handle)
+                        .map(|_| ())
+                        .map_err(|error| error.message)
+                },
+            );
         }
-    }
-    let deletion = deletion_result?;
+    };
     let retention_context = retention_context_for_app(app_handle, infra).await;
     if !deletion.capture_segment_media_paths.is_empty() {
         let _ = frame_preview::clear_scrub_preview_cache_for_video_paths(
@@ -3627,23 +3647,26 @@ async fn delete_recent_capture_inner(
             deleted_audio_segment_ids: deletion.audio_segment_ids.clone(),
         },
     );
-    let file_delete_errors =
-        delete_recent_capture_files_and_tombstone(infra, &deletion, &retention_context).await?;
-    let pending_file_tombstones = infra
-        .capture_retention()
-        .pending_file_tombstone_count()
-        .await
-        .map_err(|error| format!("failed to count pending file tombstones: {error}"))?;
-    if should_resume_after_boundary {
-        crate::native_capture::resume_native_capture_from_app_handle(app_handle).map_err(
-            |error| {
-                format!(
-                    "deleted recent capture, but failed to resume recording: {}",
-                    error.message
-                )
-            },
-        )?;
+    let post_delete_result = async {
+        let file_delete_errors =
+            delete_recent_capture_files_and_tombstone(infra, &deletion, &retention_context).await?;
+        let pending_file_tombstones = infra
+            .capture_retention()
+            .pending_file_tombstone_count()
+            .await
+            .map_err(|error| format!("failed to count pending file tombstones: {error}"))?;
+        Ok((file_delete_errors, pending_file_tombstones))
     }
+    .await;
+    let (file_delete_errors, pending_file_tombstones) = complete_delete_recent_capture_boundary(
+        should_resume_after_boundary,
+        post_delete_result,
+        || {
+            crate::native_capture::resume_native_capture_from_app_handle(app_handle)
+                .map(|_| ())
+                .map_err(|error| error.message)
+        },
+    )?;
 
     Ok(DeleteRecentCaptureSummaryDto {
         window_seconds,
@@ -4347,6 +4370,48 @@ mod tests {
             .build()
             .expect("test runtime should build")
             .block_on(test);
+    }
+
+    #[test]
+    fn delete_recent_capture_boundary_resumes_on_primary_error() {
+        let mut resume_calls = 0;
+
+        let result = complete_delete_recent_capture_boundary::<()>(
+            true,
+            Err("file tombstone failed".to_string()),
+            || {
+                resume_calls += 1;
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err("file tombstone failed".to_string()));
+        assert_eq!(resume_calls, 1);
+    }
+
+    #[test]
+    fn delete_recent_capture_boundary_reports_resume_failure_with_primary_error() {
+        let result = complete_delete_recent_capture_boundary::<()>(
+            true,
+            Err("file tombstone failed".to_string()),
+            || Err("resume failed".to_string()),
+        );
+
+        assert_eq!(
+            result,
+            Err("file tombstone failed; additionally failed to resume recording after delete recent capture boundary: resume failed".to_string())
+        );
+    }
+
+    #[test]
+    fn delete_recent_capture_boundary_does_not_resume_when_not_required() {
+        let result = complete_delete_recent_capture_boundary::<()>(
+            false,
+            Err("delete failed".to_string()),
+            || panic!("resume should not be called"),
+        );
+
+        assert_eq!(result, Err("delete failed".to_string()));
     }
 
     #[test]

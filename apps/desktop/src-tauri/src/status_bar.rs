@@ -542,6 +542,10 @@ fn handle_exclude_current_app(app: &tauri::AppHandle) {
             .message(format!(
                 "Exclude {display_name} from screen content capture from now on? This does not delete historical capture."
             ))
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Exclude".to_string(),
+                "Cancel".to_string(),
+            ))
             .kind(MessageDialogKind::Warning)
             .title("Exclude Current App")
             .show(move |confirmed| {

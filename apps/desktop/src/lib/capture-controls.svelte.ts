@@ -158,7 +158,13 @@ function applyCaptureSession(session: CaptureSession): void {
 }
 
 export async function pauseCapture(): Promise<void> {
-  if (_state.loadingPause || !captureControls.isRunning || captureControls.isUserPaused) return;
+  if (
+    _state.loadingStart ||
+    _state.loadingStop ||
+    _state.loadingPause ||
+    !captureControls.isRunning ||
+    captureControls.isUserPaused
+  ) return;
   _state.loadingPause = true;
   _state.error = null;
   try {
@@ -172,7 +178,13 @@ export async function pauseCapture(): Promise<void> {
 }
 
 export async function resumeCapture(): Promise<void> {
-  if (_state.loadingPause || !captureControls.isRunning || !captureControls.isUserPaused) return;
+  if (
+    _state.loadingStart ||
+    _state.loadingStop ||
+    _state.loadingPause ||
+    !captureControls.isRunning ||
+    !captureControls.isUserPaused
+  ) return;
   _state.loadingPause = true;
   _state.error = null;
   try {
