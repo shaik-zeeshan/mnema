@@ -618,7 +618,8 @@
         {#if isCapturing}
           <button
             type="button"
-            class="titlebar__record"
+            class="titlebar__record titlebar__record--pause"
+            class:titlebar__record--resume={captureControls.isUserPaused}
             onclick={captureControls.isUserPaused ? resumeCapture : pauseCapture}
             disabled={captureLoadingPause}
             title={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
@@ -1683,6 +1684,26 @@
   .titlebar__record:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+  .titlebar__record--pause {
+    background: var(--app-surface-raised);
+    color: var(--app-text);
+    border-color: var(--app-border-strong);
+  }
+  .titlebar__record--pause:not(:disabled):hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+    border-color: var(--app-border-hover);
+  }
+  .titlebar__record--resume {
+    background: var(--app-warn-bg);
+    color: var(--app-warn);
+    border-color: var(--app-warn-border);
+  }
+  .titlebar__record--resume:not(:disabled):hover {
+    background: color-mix(in srgb, var(--app-warn-bg) 74%, var(--app-warn) 26%);
+    color: var(--app-text-strong);
+    border-color: var(--app-warn-strong);
   }
   .titlebar__record--start {
     background: var(--app-record-start-bg);
