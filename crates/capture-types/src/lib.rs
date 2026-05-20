@@ -57,6 +57,10 @@ mod tests {
             is_running: true,
             is_inactivity_paused: false,
             is_user_paused: false,
+            is_capture_safety_suspended: false,
+            capture_safety_suspension_reason: None,
+            capture_safety_available: true,
+            capture_safety_unavailable_reason: None,
             requested_sources: None,
             output_files: None,
             source_sessions: Some(SourceSessions {
@@ -163,6 +167,7 @@ mod tests {
             audio_speech_detection: default_audio_speech_detection_settings(),
             metadata: default_metadata_settings(),
             privacy: default_privacy_settings(),
+            capture_safety: default_capture_safety_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

@@ -169,6 +169,10 @@ _Avoid_: password-page filter, secure-field redaction, browser login exclusion
 A future ADR-backed **Capture Safety Suspension** while trusted secure text-entry signals indicate that the user is entering credentials or secrets.
 _Avoid_: browser login protection, password-page detection, URL password filter
 
+**Browser Secure-Entry Signal**:
+A first-party browser-extension signal that reports only whether focused browser DOM structure indicates active credential entry.
+_Avoid_: browser-page detection, login-page classifier, URL credential signal
+
 **Capture Safety Suspension**:
 A future ADR-backed automatic paused recording state caused by a live privacy or security trigger that pauses all requested capture sources until the trigger clears.
 _Avoid_: sensitive mode, hidden privacy filter, redaction
@@ -343,7 +347,9 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **App Privacy Exclusion** remains handled through the native **Live Privacy Filter**, not through app-based automatic pause.
 - **Credential Entry Capture Suspension** should start from trusted secure text-entry signals, not URL, title, OCR, browser-page, or domain guessing.
 - **Credential Entry Capture Suspension** may use OS, accessibility, or native framework signals that identify secure text entry without inspecting typed content.
-- **Credential Entry Capture Suspension** should leave unsupported browsers or apps uncovered rather than falling back to URL, title, OCR, DOM, extension, domain-list, screenshot, or classifier guessing.
+- **Credential Entry Capture Suspension** may use a first-party **Browser Secure-Entry Signal** for browser credential entry when native secure text-entry signals are unreliable.
+- A **Browser Secure-Entry Signal** may inspect focused DOM control structure but must not send or persist URL, title, domain, page text, field value, field label, placeholder, selector, form action, screenshot, OCR, or media-derived data.
+- **Credential Entry Capture Suspension** should leave unsupported browsers or apps uncovered rather than falling back to URL, title, OCR, domain-list, screenshot, or classifier guessing.
 - **Credential Entry Capture Suspension** may require Accessibility permission, and missing permission must be shown as unavailable rather than silently falling back to heuristics.
 - **Credential Entry Capture Suspension** runs independently of frame context metadata and browser URL metadata settings.
 - **Credential Entry Capture Suspension** suspends immediately when a trusted secure text-entry signal appears and resumes only after a short clear delay so flickering focus does not create unsafe resumes or tiny timeline gaps.
