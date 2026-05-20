@@ -73,7 +73,9 @@ pub use processing::{
     SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 pub use search::{
-    AudioSearchResult, FrameSearchResult, SearchCaptureRequest, SearchCaptureResponse, SearchStore,
+    AudioSearchResult, FrameSearchResult, SearchAppRefinement, SearchAppRefinementKind,
+    SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
+    SearchDateRangeRefinement, SearchStore,
 };
 pub use status::AppInfraStatus;
 

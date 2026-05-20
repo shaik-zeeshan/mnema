@@ -181,13 +181,16 @@ impl RecordingLifecycle {
         }
         #[cfg(target_os = "macos")]
         {
-            let sources = self.runtime.requested_sources.clone().ok_or_else(|| {
-                CaptureErrorResponse {
-                    code: "capture_resume_missing_sources".to_string(),
-                    message: "Cannot resume recording because the requested sources are missing"
-                        .to_string(),
-                }
-            })?;
+            let sources =
+                self.runtime
+                    .requested_sources
+                    .clone()
+                    .ok_or_else(|| CaptureErrorResponse {
+                        code: "capture_resume_missing_sources".to_string(),
+                        message:
+                            "Cannot resume recording because the requested sources are missing"
+                                .to_string(),
+                    })?;
             let screen_planner = screen_planner_for_runtime(&self.runtime)
                 .cloned()
                 .ok_or_else(|| CaptureErrorResponse {
@@ -206,7 +209,11 @@ impl RecordingLifecycle {
             let screen_output_file = screen_planner.segment_screen_output(next_index);
             let microphone_output_path = sources
                 .microphone
-                .then(|| microphone_planner.as_ref().map(|planner| planner.microphone_file(next_index)))
+                .then(|| {
+                    microphone_planner
+                        .as_ref()
+                        .map(|planner| planner.microphone_file(next_index))
+                })
                 .flatten();
             let system_audio_output_path = sources
                 .system_audio
@@ -218,8 +225,12 @@ impl RecordingLifecycle {
                 .flatten();
             create_segment_output_dirs(
                 &segment_dir,
-                microphone_output_path.as_deref().and_then(|path| path.parent()),
-                system_audio_output_path.as_deref().and_then(|path| path.parent()),
+                microphone_output_path
+                    .as_deref()
+                    .and_then(|path| path.parent()),
+                system_audio_output_path
+                    .as_deref()
+                    .and_then(|path| path.parent()),
                 &sources,
             )?;
             let started = start_segment_with_current_privacy_filter(
@@ -236,7 +247,9 @@ impl RecordingLifecycle {
                 microphone_output_path.as_deref(),
             )?;
             self.runtime.current_segment_output_files = Some(started.0.clone());
-            self.runtime.output_files.get_or_insert_with(empty_output_files);
+            self.runtime
+                .output_files
+                .get_or_insert_with(empty_output_files);
             self.runtime.recording_file = started.1;
             self.runtime.microphone_recording_file = started.2;
             self.runtime.system_audio_recording_file = started.3;

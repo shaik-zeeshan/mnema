@@ -288,19 +288,22 @@ fn build_menu(
         .build(app)?;
     let sources =
         Submenu::with_items(app, "Sources", true, &[&screen, &microphone, &system_audio])?;
-    let pause =
-        MenuItemBuilder::with_id(PAUSE_TOGGLE_ID, model.pause_label.unwrap_or("Pause Recording"))
-            .enabled(model.pause_enabled)
-            .build(app)?;
+    let pause = MenuItemBuilder::with_id(
+        PAUSE_TOGGLE_ID,
+        model.pause_label.unwrap_or("Pause Recording"),
+    )
+    .enabled(model.pause_enabled)
+    .build(app)?;
     let exclude_current =
         MenuItemBuilder::with_id(EXCLUDE_CURRENT_APP_ID, "Exclude Current App From Now On...")
             .build(app)?;
     let delete_1 =
         MenuItemBuilder::with_id(DELETE_LAST_1_MINUTE_ID, "Delete Last 1 Minute...").build(app)?;
-    let delete_5 =
-        MenuItemBuilder::with_id(DELETE_LAST_5_MINUTES_ID, "Delete Last 5 Minutes...").build(app)?;
+    let delete_5 = MenuItemBuilder::with_id(DELETE_LAST_5_MINUTES_ID, "Delete Last 5 Minutes...")
+        .build(app)?;
     let delete_15 =
-        MenuItemBuilder::with_id(DELETE_LAST_15_MINUTES_ID, "Delete Last 15 Minutes...").build(app)?;
+        MenuItemBuilder::with_id(DELETE_LAST_15_MINUTES_ID, "Delete Last 15 Minutes...")
+            .build(app)?;
     let delete_recent = Submenu::with_items(
         app,
         "Delete Recent Capture",
@@ -702,7 +705,7 @@ mod tests {
             let model = build_menu_model(
                 true,
                 false,
-            false,
+                false,
                 &settings_with_sources(true, true, true),
                 &support_all(),
                 operation,

@@ -1,7 +1,7 @@
 use audio_transcription::TranscriptionMetadata;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteRow, Executor, Row, Sqlite, SqlitePool, Transaction};
-use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
+use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime, UtcOffset};
 
 use crate::{
     captured_frame_equivalence::CapturedFrameEquivalenceScope,
@@ -27,6 +27,46 @@ pub struct SearchCaptureRequest {
     pub audio_limit: Option<u32>,
     pub audio_offset: Option<u32>,
     pub snapshot_document_id: Option<i64>,
+    pub refinements: Option<SearchCaptureRefinements>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCaptureRefinements {
+    pub date_range: Option<SearchDateRangeRefinement>,
+    pub app: Option<SearchAppRefinement>,
+    pub audio_source: Option<AudioSegmentSourceKind>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchDateRangeRefinement {
+    pub start_at: String,
+    pub end_at: String,
+    pub origin: Option<SearchDateRangeOrigin>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchDateRangeOrigin {
+    VisibleTimeline,
+    Today,
+    LastHour,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchAppRefinement {
+    pub kind: SearchAppRefinementKind,
+    pub value: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchAppRefinementKind {
+    BundleId,
+    AppName,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,6 +78,7 @@ pub struct SearchCaptureResponse {
     pub audio: Vec<AudioSearchResult>,
     pub has_more_frames: bool,
     pub has_more_audio: bool,
+    pub applied_refinements: SearchCaptureRefinements,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +109,26 @@ pub struct AudioSearchResult {
     pub match_count: u32,
     pub snippet: String,
     pub aligned_frame: Option<Frame>,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedSearchRefinements {
+    date_range: Option<NormalizedDateRange>,
+    app: Option<NormalizedAppRefinement>,
+    audio_source: Option<AudioSegmentSourceKind>,
+    applied: SearchCaptureRefinements,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedDateRange {
+    start_at: String,
+    end_at: String,
+}
+
+#[derive(Debug, Clone)]
+enum NormalizedAppRefinement {
+    BundleId { value: String },
+    AppName { search_key: String },
 }
 
 #[derive(Clone)]
@@ -119,6 +180,8 @@ impl SearchStore {
             .await?;
         }
         backfill_missing_equivalent_reuse_projections(&mut transaction).await?;
+        backfill_missing_app_bundle_id_projection(&mut transaction).await?;
+        backfill_missing_app_name_search_key_projection(&mut transaction).await?;
 
         transaction.commit().await?;
         Ok(())
@@ -129,6 +192,7 @@ impl SearchStore {
         request: SearchCaptureRequest,
     ) -> Result<SearchCaptureResponse> {
         let normalized_query = normalize_query(&request.query);
+        let refinements = normalize_search_refinements(request.refinements)?;
         if normalized_query.chars().count() < 2 {
             return Ok(SearchCaptureResponse {
                 normalized_query,
@@ -137,6 +201,7 @@ impl SearchStore {
                 audio: Vec::new(),
                 has_more_frames: false,
                 has_more_audio: false,
+                applied_refinements: refinements.applied,
             });
         }
 
@@ -149,6 +214,7 @@ impl SearchStore {
                 audio: Vec::new(),
                 has_more_frames: false,
                 has_more_audio: false,
+                applied_refinements: refinements.applied,
             });
         }
 
@@ -163,7 +229,7 @@ impl SearchStore {
 
         let frame_end = frame_offset.saturating_add(frame_limit as usize);
         let audio_end = audio_offset.saturating_add(audio_limit as usize);
-        let all_frame_groups = if frame_limit == 0 {
+        let all_frame_groups = if frame_limit == 0 || refinements.audio_source.is_some() {
             Vec::new()
         } else {
             fetch_grouped_frame_hits(
@@ -172,13 +238,15 @@ impl SearchStore {
                 snapshot_document_id,
                 frame_offset,
                 frame_limit,
+                &refinements,
             )
             .await?
         };
-        let all_audio_groups = if audio_limit == 0 {
+        let all_audio_groups = if audio_limit == 0 || refinements.app.is_some() {
             Vec::new()
         } else {
-            fetch_grouped_audio_hits(&self.pool, &fts_query, snapshot_document_id).await?
+            fetch_grouped_audio_hits(&self.pool, &fts_query, snapshot_document_id, &refinements)
+                .await?
         };
         let frames = all_frame_groups
             .iter()
@@ -201,8 +269,110 @@ impl SearchStore {
             audio,
             has_more_frames: all_frame_groups.len() > frame_end,
             has_more_audio: all_audio_groups.len() > audio_end,
+            applied_refinements: refinements.applied,
         })
     }
+}
+
+fn normalize_search_refinements(
+    refinements: Option<SearchCaptureRefinements>,
+) -> Result<NormalizedSearchRefinements> {
+    let refinements = refinements.unwrap_or_default();
+    if refinements.app.is_some() && refinements.audio_source.is_some() {
+        return Err(AppInfraError::InvalidSearchRequest(
+            "app and audioSource refinements cannot be combined".to_string(),
+        ));
+    }
+    let date_range = refinements
+        .date_range
+        .map(|range| {
+            let start = OffsetDateTime::parse(range.start_at.trim(), &Rfc3339).map_err(|_| {
+                AppInfraError::InvalidSearchRequest(
+                    "dateRange.startAt must be a valid RFC3339 timestamp".to_string(),
+                )
+            })?;
+            let end = OffsetDateTime::parse(range.end_at.trim(), &Rfc3339).map_err(|_| {
+                AppInfraError::InvalidSearchRequest(
+                    "dateRange.endAt must be a valid RFC3339 timestamp".to_string(),
+                )
+            })?;
+            if start > end {
+                return Err(AppInfraError::InvalidSearchRequest(
+                    "dateRange.startAt must be before or equal to dateRange.endAt".to_string(),
+                ));
+            }
+            let start_at = format_rfc3339_for_search(start)?;
+            let end_at = format_rfc3339_for_search(end)?;
+            Ok((
+                NormalizedDateRange {
+                    start_at: start_at.clone(),
+                    end_at: end_at.clone(),
+                },
+                SearchDateRangeRefinement {
+                    start_at,
+                    end_at,
+                    origin: range.origin,
+                },
+            ))
+        })
+        .transpose()?;
+
+    let app = refinements
+        .app
+        .map(|app| {
+            let value = app.value.trim().to_string();
+            let display_name = app.display_name.trim().to_string();
+            if value.is_empty() {
+                return Err(AppInfraError::InvalidSearchRequest(
+                    "app.value must be non-empty".to_string(),
+                ));
+            }
+            let normalized = match app.kind {
+                SearchAppRefinementKind::BundleId => NormalizedAppRefinement::BundleId {
+                    value: value.clone(),
+                },
+                SearchAppRefinementKind::AppName => NormalizedAppRefinement::AppName {
+                    search_key: normalize_app_name_for_search(&value).ok_or_else(|| {
+                        AppInfraError::InvalidSearchRequest(
+                            "app.value must be non-empty".to_string(),
+                        )
+                    })?,
+                },
+            };
+            Ok((
+                normalized,
+                SearchAppRefinement {
+                    kind: app.kind,
+                    value,
+                    display_name: if display_name.is_empty() {
+                        app.value.trim().to_string()
+                    } else {
+                        display_name
+                    },
+                },
+            ))
+        })
+        .transpose()?;
+
+    Ok(NormalizedSearchRefinements {
+        date_range: date_range
+            .as_ref()
+            .map(|(normalized, _)| normalized.clone()),
+        app: app.as_ref().map(|(normalized, _)| normalized.clone()),
+        audio_source: refinements.audio_source.clone(),
+        applied: SearchCaptureRefinements {
+            date_range: date_range.map(|(_, applied)| applied),
+            app: app.map(|(_, applied)| applied),
+            audio_source: refinements.audio_source,
+        },
+    })
+}
+
+fn format_rfc3339_for_search(value: OffsetDateTime) -> Result<String> {
+    value
+        .to_offset(UtcOffset::UTC)
+        .format(&Rfc3339)
+        .map_err(|error| AppInfraError::InvalidSearchRequest(error.to_string()))
 }
 
 pub(crate) async fn project_processing_result_in_transaction(
@@ -308,6 +478,86 @@ async fn backfill_missing_equivalent_reuse_projections(
     Ok(())
 }
 
+async fn backfill_missing_app_bundle_id_projection(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT search_documents.id, frame_metadata_snapshots.snapshot_json \
+         FROM search_documents \
+         JOIN frames ON frames.id = search_documents.frame_id \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE search_documents.anchor_type = 'frame' \
+           AND search_documents.app_bundle_id IS NULL",
+    )
+    .fetch_all(&mut **transaction)
+    .await?;
+
+    for row in rows {
+        let bundle_id = row
+            .get::<Option<String>, _>("snapshot_json")
+            .map(|snapshot_json| {
+                serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(&snapshot_json)
+            })
+            .transpose()?
+            .and_then(|snapshot| snapshot.app_bundle_id)
+            .and_then(|bundle_id| {
+                normalize_app_bundle_id_for_search(&bundle_id).map(str::to_string)
+            });
+        if let Some(bundle_id) = bundle_id {
+            sqlx::query("UPDATE search_documents SET app_bundle_id = ?1 WHERE id = ?2")
+                .bind(bundle_id)
+                .bind(row.get::<i64, _>("id"))
+                .execute(&mut **transaction)
+                .await?;
+        } else {
+            sqlx::query("UPDATE search_documents SET app_bundle_id = '' WHERE id = ?1")
+                .bind(row.get::<i64, _>("id"))
+                .execute(&mut **transaction)
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn backfill_missing_app_name_search_key_projection(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT id, app_name \
+         FROM search_documents \
+         WHERE app_name_search_key IS NULL",
+    )
+    .fetch_all(&mut **transaction)
+    .await?;
+
+    for row in rows {
+        let id: i64 = row.get("id");
+        let search_key = row
+            .get::<Option<String>, _>("app_name")
+            .as_deref()
+            .and_then(normalize_app_name_for_search)
+            .unwrap_or_default();
+        sqlx::query("UPDATE search_documents SET app_name_search_key = ?1 WHERE id = ?2")
+            .bind(search_key)
+            .bind(id)
+            .execute(&mut **transaction)
+            .await?;
+    }
+
+    Ok(())
+}
+
+fn normalize_app_bundle_id_for_search(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn normalize_app_name_for_search(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_lowercase())
+}
+
 async fn project_frame_ocr_result(
     transaction: &mut Transaction<'_, Sqlite>,
     result: &ProcessingResult,
@@ -328,14 +578,21 @@ async fn project_frame_ocr_result(
         return Ok(());
     };
 
-    let (app_name, window_title) = frame
+    let (app_bundle_id, app_name, window_title) = frame
         .metadata_snapshot
         .as_ref()
-        .map(|metadata| (metadata.app_name.clone(), metadata.window_title.clone()))
-        .unwrap_or((None, None));
+        .map(|metadata| {
+            (
+                metadata.app_bundle_id.clone(),
+                metadata.app_name.clone(),
+                metadata.window_title.clone(),
+            )
+        })
+        .unwrap_or((None, None, None));
 
     let group_key = frame_search_group_key(&frame);
     let context_text = search_context_text(app_name.as_deref(), window_title.as_deref(), None);
+    let app_name_search_key = app_name.as_deref().and_then(normalize_app_name_for_search);
 
     insert_search_document(
         transaction,
@@ -350,7 +607,9 @@ async fn project_frame_ocr_result(
             absolute_end_at: &frame.captured_at,
             source_kind: None,
             session_id: &frame.session_id,
+            app_bundle_id: app_bundle_id.as_deref(),
             app_name: app_name.as_deref(),
+            app_name_search_key: app_name_search_key.as_deref(),
             window_title: window_title.as_deref(),
             group_key: &group_key,
             text_source_kind: "direct",
@@ -618,13 +877,20 @@ async fn project_equivalent_reuse_document_for_frame(
     processing_result_id: Option<i64>,
     text: &str,
 ) -> Result<()> {
-    let (app_name, window_title) = frame
+    let (app_bundle_id, app_name, window_title) = frame
         .metadata_snapshot
         .as_ref()
-        .map(|metadata| (metadata.app_name.clone(), metadata.window_title.clone()))
-        .unwrap_or((None, None));
+        .map(|metadata| {
+            (
+                metadata.app_bundle_id.clone(),
+                metadata.app_name.clone(),
+                metadata.window_title.clone(),
+            )
+        })
+        .unwrap_or((None, None, None));
     let group_key = frame_search_group_key(frame);
     let context_text = search_context_text(app_name.as_deref(), window_title.as_deref(), None);
+    let app_name_search_key = app_name.as_deref().and_then(normalize_app_name_for_search);
 
     delete_equivalent_reuse_projection_for_frame(transaction, frame.id).await?;
 
@@ -641,7 +907,9 @@ async fn project_equivalent_reuse_document_for_frame(
             absolute_end_at: &frame.captured_at,
             source_kind: None,
             session_id: &frame.session_id,
+            app_bundle_id: app_bundle_id.as_deref(),
             app_name: app_name.as_deref(),
+            app_name_search_key: app_name_search_key.as_deref(),
             window_title: window_title.as_deref(),
             group_key: &group_key,
             text_source_kind: "equivalent_reuse",
@@ -710,7 +978,9 @@ async fn project_audio_transcription_result(
                 absolute_end_at: &absolute_end_at,
                 source_kind: Some(segment.source_kind.as_str()),
                 session_id: &segment.source_session_id,
+                app_bundle_id: None,
                 app_name: None,
+                app_name_search_key: None,
                 window_title: None,
                 group_key: &group_key,
                 text_source_kind: "direct",
@@ -735,7 +1005,9 @@ struct NewSearchDocument<'a> {
     absolute_end_at: &'a str,
     source_kind: Option<&'a str>,
     session_id: &'a str,
+    app_bundle_id: Option<&'a str>,
     app_name: Option<&'a str>,
+    app_name_search_key: Option<&'a str>,
     window_title: Option<&'a str>,
     group_key: &'a str,
     text_source_kind: &'a str,
@@ -750,9 +1022,9 @@ async fn insert_search_document(
     let insert = sqlx::query(
         "INSERT INTO search_documents (\
             anchor_type, frame_id, audio_segment_id, processing_result_id, span_start_ms, span_end_ms, \
-            absolute_start_at, absolute_end_at, source_kind, session_id, app_name, window_title, \
+            absolute_start_at, absolute_end_at, source_kind, session_id, app_bundle_id, app_name, app_name_search_key, window_title, \
             group_key, text_source_kind, body_text, context_text\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
     )
     .bind(doc.anchor_type)
     .bind(doc.frame_id)
@@ -764,7 +1036,13 @@ async fn insert_search_document(
     .bind(doc.absolute_end_at)
     .bind(doc.source_kind)
     .bind(doc.session_id)
+    .bind(
+        doc.app_bundle_id
+            .and_then(normalize_app_bundle_id_for_search)
+            .unwrap_or_default(),
+    )
     .bind(doc.app_name)
+    .bind(doc.app_name_search_key.unwrap_or_default())
     .bind(doc.window_title)
     .bind(doc.group_key)
     .bind(doc.text_source_kind)
@@ -1000,14 +1278,50 @@ async fn fetch_search_document_high_water_mark(pool: &SqlitePool) -> Result<i64>
     Ok(row.get("snapshot_document_id"))
 }
 
+fn push_search_refinement_predicates(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    refinements: &NormalizedSearchRefinements,
+) {
+    if let Some(range) = &refinements.date_range {
+        query.push(" AND julianday(search_documents.absolute_end_at) >= julianday(");
+        query.push_bind(range.start_at.clone());
+        query.push(") AND julianday(search_documents.absolute_start_at) <= julianday(");
+        query.push_bind(range.end_at.clone());
+        query.push(")");
+    }
+    if let Some(app) = &refinements.app {
+        match app {
+            NormalizedAppRefinement::BundleId { value } => {
+                query.push(
+                    " AND LOWER(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = LOWER(",
+                );
+                query.push_bind(value.clone());
+                query.push(")");
+            }
+            NormalizedAppRefinement::AppName { search_key, .. } => {
+                query.push(
+                    " AND LENGTH(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = 0 \
+                      AND search_documents.app_name_search_key = ",
+                );
+                query.push_bind(search_key.clone());
+            }
+        }
+    }
+    if let Some(source) = &refinements.audio_source {
+        query.push(" AND search_documents.source_kind = ");
+        query.push_bind(source.as_str().to_string());
+    }
+}
+
 async fn fetch_frame_hits(
     pool: &SqlitePool,
     fts_query: &str,
     snapshot_document_id: i64,
     hit_offset: i64,
     hit_limit: i64,
+    refinements: &NormalizedSearchRefinements,
 ) -> Result<Vec<FrameHit>> {
-    let rows = sqlx::query(
+    let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT search_documents.group_key, search_documents.app_name, search_documents.window_title, \
                 search_documents.text_source_kind, \
                 CASE \
@@ -1025,18 +1339,24 @@ async fn fetch_frame_hits(
          JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
          JOIN frames ON frames.id = search_documents.frame_id \
          LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
-         WHERE search_documents_fts MATCH ?1 \
+         WHERE search_documents_fts MATCH ",
+    );
+    query.push_bind(fts_query);
+    query.push(
+        " \
            AND search_documents.anchor_type = 'frame' \
-           AND search_documents.id <= ?2 \
-         ORDER BY rank ASC, search_documents.absolute_start_at DESC, search_documents.id DESC
-         LIMIT ?3 OFFSET ?4",
-    )
-    .bind(fts_query)
-    .bind(snapshot_document_id)
-    .bind(hit_limit)
-    .bind(hit_offset)
-    .fetch_all(pool)
-    .await?;
+           AND search_documents.id <= ",
+    );
+    query.push_bind(snapshot_document_id);
+    push_search_refinement_predicates(&mut query, refinements);
+    query.push(
+        " ORDER BY rank ASC, search_documents.absolute_start_at DESC, search_documents.id DESC LIMIT ",
+    );
+    query.push_bind(hit_limit);
+    query.push(" OFFSET ");
+    query.push_bind(hit_offset);
+
+    let rows = query.build().fetch_all(pool).await?;
 
     rows.into_iter()
         .map(|row| {
@@ -1059,14 +1379,22 @@ async fn fetch_grouped_frame_hits(
     snapshot_document_id: i64,
     offset: usize,
     limit: u32,
+    refinements: &NormalizedSearchRefinements,
 ) -> Result<Vec<FrameSearchResult>> {
     let needed_groups = offset.saturating_add(limit as usize).saturating_add(1);
     let mut hit_limit = hit_fetch_limit(offset, limit);
     let mut hit_offset = 0_i64;
     let mut all_hits = Vec::new();
     loop {
-        let hits =
-            fetch_frame_hits(pool, fts_query, snapshot_document_id, hit_offset, hit_limit).await?;
+        let hits = fetch_frame_hits(
+            pool,
+            fts_query,
+            snapshot_document_id,
+            hit_offset,
+            hit_limit,
+            refinements,
+        )
+        .await?;
         let hit_count = hits.len() as i64;
         all_hits.extend(hits);
         let groups = group_frame_hits(&all_hits);
@@ -1084,8 +1412,9 @@ async fn fetch_audio_hits(
     snapshot_document_id: i64,
     hit_offset: i64,
     hit_limit: i64,
+    refinements: &NormalizedSearchRefinements,
 ) -> Result<Vec<AudioHit>> {
-    let rows = sqlx::query(
+    let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT search_documents.id AS document_id, search_documents.group_key, \
                 search_documents.span_start_ms, search_documents.span_end_ms, \
                 search_documents.absolute_start_at, search_documents.absolute_end_at, \
@@ -1101,18 +1430,24 @@ async fn fetch_audio_hits(
          FROM search_documents_fts \
          JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
          JOIN audio_segments ON audio_segments.id = search_documents.audio_segment_id \
-         WHERE search_documents_fts MATCH ?1 \
+         WHERE search_documents_fts MATCH ",
+    );
+    query.push_bind(fts_query);
+    query.push(
+        " \
            AND search_documents.anchor_type = 'audio' \
-           AND search_documents.id <= ?2 \
-         ORDER BY rank ASC, search_documents.absolute_start_at DESC, search_documents.id DESC
-         LIMIT ?3 OFFSET ?4",
-    )
-    .bind(fts_query)
-    .bind(snapshot_document_id)
-    .bind(hit_limit)
-    .bind(hit_offset)
-    .fetch_all(pool)
-    .await?;
+           AND search_documents.id <= ",
+    );
+    query.push_bind(snapshot_document_id);
+    push_search_refinement_predicates(&mut query, refinements);
+    query.push(
+        " ORDER BY rank ASC, search_documents.absolute_start_at DESC, search_documents.id DESC LIMIT ",
+    );
+    query.push_bind(hit_limit);
+    query.push(" OFFSET ");
+    query.push_bind(hit_offset);
+
+    let rows = query.build().fetch_all(pool).await?;
 
     rows.into_iter().map(map_audio_hit).collect()
 }
@@ -1121,6 +1456,7 @@ async fn fetch_grouped_audio_hits(
     pool: &SqlitePool,
     fts_query: &str,
     snapshot_document_id: i64,
+    refinements: &NormalizedSearchRefinements,
 ) -> Result<Vec<AudioSearchResult>> {
     // Audio grouping is transitive by time adjacency, so a lower-ranked hit can
     // bridge two higher-ranked groups. Drain the snapshot before paginating.
@@ -1133,6 +1469,7 @@ async fn fetch_grouped_audio_hits(
             snapshot_document_id,
             hit_offset,
             MAX_HIT_FETCH_LIMIT,
+            refinements,
         )
         .await?;
         let hit_count = hits.len() as i64;
@@ -1571,6 +1908,54 @@ mod tests {
     }
 
     #[test]
+    fn search_refinement_dates_normalize_to_utc() {
+        let normalized = normalize_search_refinements(Some(SearchCaptureRefinements {
+            date_range: Some(SearchDateRangeRefinement {
+                start_at: "2026-05-17T04:59:00-05:00".to_string(),
+                end_at: "2026-05-17T05:01:00-05:00".to_string(),
+                origin: Some(SearchDateRangeOrigin::LastHour),
+            }),
+            app: None,
+            audio_source: None,
+        }))
+        .expect("refinements should normalize");
+
+        let range = normalized
+            .date_range
+            .as_ref()
+            .expect("date range should be present");
+        assert_eq!(range.start_at, "2026-05-17T09:59:00Z");
+        assert_eq!(range.end_at, "2026-05-17T10:01:00Z");
+        assert_eq!(
+            normalized
+                .applied
+                .date_range
+                .as_ref()
+                .map(|range| (range.start_at.as_str(), range.end_at.as_str())),
+            Some(("2026-05-17T09:59:00Z", "2026-05-17T10:01:00Z"))
+        );
+    }
+
+    #[test]
+    fn search_rejects_incompatible_app_and_audio_refinements() {
+        let error = normalize_search_refinements(Some(SearchCaptureRefinements {
+            date_range: None,
+            app: Some(SearchAppRefinement {
+                kind: SearchAppRefinementKind::BundleId,
+                value: "com.example.Linear".to_string(),
+                display_name: "Linear".to_string(),
+            }),
+            audio_source: Some(AudioSegmentSourceKind::Microphone),
+        }))
+        .expect_err("incompatible refinements should fail");
+
+        assert!(matches!(
+            error,
+            AppInfraError::InvalidSearchRequest(message) if message.contains("cannot be combined")
+        ));
+    }
+
+    #[test]
     fn search_projects_completed_ocr_and_groups_equivalent_frames() {
         run_async_test(async {
             let dir = test_dir("ocr-groups");
@@ -1634,6 +2019,7 @@ mod tests {
                     audio_limit: Some(5),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -1691,6 +2077,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("stale search should succeed");
@@ -1704,11 +2091,114 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("fresh search should succeed");
             assert_eq!(fresh.frames.len(), 1);
             assert_eq!(fresh.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
+    fn startup_backfill_marks_frames_without_app_bundle_id_as_checked() {
+        run_async_test(async {
+            let dir = test_dir("startup-backfill-empty-app-bundle");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-empty-app-bundle.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: None,
+                            app_name: Some("Notes".to_string()),
+                            window_title: Some("Planning".to_string()),
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("frame should insert");
+            let frame_without_metadata = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-no-metadata.jpg",
+                    "2026-05-17T10:00:01Z",
+                ))
+                .await
+                .expect("frame without metadata should insert");
+            for frame_id in [frame.id, frame_without_metadata.id] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame_id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("empty bundle target"),
+                )
+                .await;
+            }
+            let inserted_null_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) \
+                   AND (app_bundle_id IS NULL OR app_name_search_key IS NULL)",
+            )
+            .bind(frame.id)
+            .bind(frame_without_metadata.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("inserted null count should load");
+            let inserted_checked_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) \
+                   AND app_bundle_id = '' \
+                   AND app_name_search_key IS NOT NULL",
+            )
+            .bind(frame.id)
+            .bind(frame_without_metadata.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("inserted checked count should load");
+
+            assert_eq!(inserted_null_count, 0);
+            assert_eq!(inserted_checked_count, 2);
+            drop(infra);
+
+            let reopened = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should reopen");
+            let null_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) AND app_bundle_id IS NULL",
+            )
+            .bind(frame.id)
+            .bind(frame_without_metadata.id)
+            .fetch_one(reopened.pool())
+            .await
+            .expect("null count should load");
+            let checked_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) AND app_bundle_id = ''",
+            )
+            .bind(frame.id)
+            .bind(frame_without_metadata.id)
+            .fetch_one(reopened.pool())
+            .await
+            .expect("checked count should load");
+
+            assert_eq!(null_count, 0);
+            assert_eq!(checked_count, 2);
         });
     }
 
@@ -1791,6 +2281,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -1858,6 +2349,7 @@ mod tests {
                     audio_limit: Some(5),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -1948,6 +2440,7 @@ mod tests {
                     audio_limit: Some(5),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -2014,6 +2507,7 @@ mod tests {
                     audio_limit: Some(5),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -2182,12 +2676,362 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
 
             assert_eq!(response.frames.len(), 1);
             assert_eq!(response.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
+    fn search_refinements_filter_by_date_app_and_audio_source() {
+        run_async_test(async {
+            let dir = test_dir("search-refinements");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let linear = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-refinement-linear.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: Some(" com.example.Linear ".to_string()),
+                            app_name: Some("Linear".to_string()),
+                            window_title: Some("Planning".to_string()),
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("linear frame should insert");
+            let notes = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-refinement-notes.jpg",
+                        "2026-05-17T11:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: None,
+                            app_name: Some("Notes".to_string()),
+                            window_title: Some("Planning".to_string()),
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("notes frame should insert");
+            for frame in [&linear, &notes] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("refined target text"),
+                )
+                .await;
+            }
+
+            let mic = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/search-refinement-mic.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:10Z",
+                ))
+                .await
+                .expect("mic segment should insert");
+            let system = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::SystemAudio,
+                    "system-session",
+                    1,
+                    "/tmp/search-refinement-system.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:10Z",
+                ))
+                .await
+                .expect("system segment should insert");
+            for segment in [&mic, &system] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                        segment.id,
+                    ))
+                    .await
+                    .expect("transcription job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("refined target audio"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "refined".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: Some(SearchCaptureRefinements {
+                        date_range: Some(SearchDateRangeRefinement {
+                            start_at: "2026-05-17T04:59:00-05:00".to_string(),
+                            end_at: "2026-05-17T05:30:00-05:00".to_string(),
+                            origin: Some(SearchDateRangeOrigin::VisibleTimeline),
+                        }),
+                        app: Some(SearchAppRefinement {
+                            kind: SearchAppRefinementKind::BundleId,
+                            value: " COM.EXAMPLE.LINEAR ".to_string(),
+                            display_name: "Linear".to_string(),
+                        }),
+                        audio_source: None,
+                    }),
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, linear.id);
+            assert!(response.audio.is_empty());
+            assert_eq!(
+                response
+                    .applied_refinements
+                    .app
+                    .as_ref()
+                    .map(|app| app.value.as_str()),
+                Some("COM.EXAMPLE.LINEAR")
+            );
+            let indexed_bundle_id: Option<String> = sqlx::query_scalar(
+                "SELECT app_bundle_id FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'direct' LIMIT 1",
+            )
+            .bind(linear.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("indexed bundle id should load");
+            assert_eq!(indexed_bundle_id.as_deref(), Some("com.example.Linear"));
+            let plan_rows = sqlx::query(
+                "EXPLAIN QUERY PLAN \
+                 SELECT id FROM search_documents \
+                 WHERE anchor_type = 'frame' \
+                   AND LOWER(TRIM(COALESCE(app_bundle_id, ''))) = LOWER(?1)",
+            )
+            .bind("COM.EXAMPLE.LINEAR")
+            .fetch_all(infra.pool())
+            .await
+            .expect("query plan should load");
+            let plan = plan_rows
+                .iter()
+                .map(|row| row.get::<String, _>("detail"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                plan.contains("search_documents_frame_bundle_id_refinement_idx"),
+                "bundle-id refinement should use expression index, plan was:\n{plan}"
+            );
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "refined".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: Some(SearchCaptureRefinements {
+                        date_range: None,
+                        app: None,
+                        audio_source: Some(AudioSegmentSourceKind::SystemAudio),
+                    }),
+                })
+                .await
+                .expect("search should succeed");
+
+            assert!(response.frames.is_empty());
+            assert_eq!(response.audio.len(), 1);
+            assert_eq!(response.audio[0].audio_segment.id, system.id);
+            assert_eq!(
+                response.applied_refinements.audio_source,
+                Some(AudioSegmentSourceKind::SystemAudio)
+            );
+        });
+    }
+
+    #[test]
+    fn date_refinement_compares_mixed_precision_timestamps_chronologically() {
+        run_async_test(async {
+            let dir = test_dir("search-refinement-fractional-date");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let before_boundary = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-fractional-before.jpg",
+                    "2026-05-17T10:00:29.900Z",
+                ))
+                .await
+                .expect("before boundary frame should insert");
+            let after_boundary = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-fractional-after.jpg",
+                    "2026-05-17T10:00:30.100Z",
+                ))
+                .await
+                .expect("after boundary frame should insert");
+            for frame in [&before_boundary, &after_boundary] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("fractional boundary target"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "fractional".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: Some(SearchCaptureRefinements {
+                        date_range: Some(SearchDateRangeRefinement {
+                            start_at: "2026-05-17T10:00:29Z".to_string(),
+                            end_at: "2026-05-17T10:00:30Z".to_string(),
+                            origin: Some(SearchDateRangeOrigin::VisibleTimeline),
+                        }),
+                        app: None,
+                        audio_source: None,
+                    }),
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(
+                response.frames[0].representative_frame.id,
+                before_boundary.id
+            );
+        });
+    }
+
+    #[test]
+    fn app_name_search_refinement_is_unicode_trimmed_bundleless_fallback() {
+        run_async_test(async {
+            let dir = test_dir("app-name-refinement-fallback");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let fallback = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-app-name-fallback.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: None,
+                            app_name: Some(" ÉDITEUR ".to_string()),
+                            window_title: None,
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("fallback frame should insert");
+            let bundled = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-app-name-bundled.jpg",
+                        "2026-05-17T10:01:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: Some("com.example.Editor".to_string()),
+                            app_name: Some("éditeur".to_string()),
+                            window_title: None,
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("bundled frame should insert");
+
+            for frame in [&fallback, &bundled] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("unicode fallback target"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "unicode".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: Some(SearchCaptureRefinements {
+                        date_range: None,
+                        app: Some(SearchAppRefinement {
+                            kind: SearchAppRefinementKind::AppName,
+                            value: "éditeur".to_string(),
+                            display_name: "éditeur".to_string(),
+                        }),
+                        audio_source: None,
+                    }),
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, fallback.id);
         });
     }
 
@@ -2272,6 +3116,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -2316,6 +3161,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -2393,6 +3239,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -2474,6 +3321,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -2558,6 +3406,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("stale search should succeed");
@@ -2571,6 +3420,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("fresh search should succeed");
@@ -2654,6 +3504,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("old search should succeed");
@@ -2677,6 +3528,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("fresh search should succeed");
@@ -2753,6 +3605,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("stale search should succeed");
@@ -2840,6 +3693,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("source context search should succeed");
@@ -2858,6 +3712,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("target context search should succeed");
@@ -2926,6 +3781,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -2983,6 +3839,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3051,6 +3908,7 @@ mod tests {
                     audio_limit: Some(5),
                     audio_offset: Some(0),
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3094,7 +3952,9 @@ mod tests {
                         absolute_end_at: &captured_at,
                         source_kind: None,
                         session_id: "screen-session",
+                        app_bundle_id: None,
                         app_name: None,
+                        app_name_search_key: None,
                         window_title: None,
                         group_key: &format!("frame:{frame_id}"),
                         text_source_kind: "direct",
@@ -3115,6 +3975,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3163,7 +4024,9 @@ mod tests {
                         absolute_end_at: &absolute_end_at,
                         source_kind: Some(segment.source_kind.as_str()),
                         session_id: &segment.source_session_id,
+                        app_bundle_id: None,
                         app_name: None,
+                        app_name_search_key: None,
                         window_title: None,
                         group_key: &format!("audio:{}:{index}", segment.id),
                         text_source_kind: "direct",
@@ -3184,6 +4047,7 @@ mod tests {
                     audio_limit: Some(5),
                     audio_offset: Some(5_000),
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3235,7 +4099,9 @@ mod tests {
                         absolute_end_at: &absolute_end_at,
                         source_kind: Some(segment.source_kind.as_str()),
                         session_id: &segment.source_session_id,
+                        app_bundle_id: None,
                         app_name: None,
+                        app_name_search_key: None,
                         window_title: None,
                         group_key: &format!("audio:{}:{start_ms}", segment.id),
                         text_source_kind: "direct",
@@ -3267,7 +4133,9 @@ mod tests {
                         absolute_end_at: &absolute_end_at,
                         source_kind: Some(segment.source_kind.as_str()),
                         session_id: &segment.source_session_id,
+                        app_bundle_id: None,
                         app_name: None,
+                        app_name_search_key: None,
                         window_title: None,
                         group_key: &format!("audio:{}:filler-{index}", segment.id),
                         text_source_kind: "direct",
@@ -3288,6 +4156,7 @@ mod tests {
                     audio_limit: Some(2),
                     audio_offset: Some(0),
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3363,6 +4232,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3437,6 +4307,7 @@ mod tests {
                     audio_limit: Some(5),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3516,6 +4387,7 @@ mod tests {
                     audio_limit: Some(5),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3567,6 +4439,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("first page search should succeed");
@@ -3599,6 +4472,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: Some(first_page.snapshot_document_id),
+                    refinements: None,
                 })
                 .await
                 .expect("second page search should succeed");
@@ -3703,6 +4577,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3714,6 +4589,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3768,6 +4644,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");
@@ -3845,6 +4722,7 @@ mod tests {
                     audio_limit: Some(0),
                     audio_offset: None,
                     snapshot_document_id: None,
+                    refinements: None,
                 })
                 .await
                 .expect("search should succeed");

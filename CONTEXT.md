@@ -261,6 +261,38 @@ _Avoid_: search cache, search result table, indexing job output
 Captured contextual labels that help find or filter a **Search Result Anchor**, such as app name, window title, browser URL, or speaker label.
 _Avoid_: metadata blob, result decoration, search tags
 
+**Search Refinement**:
+An explicit user control that narrows an active search by retained capture context such as date range, app, source, or result type.
+_Avoid_: advanced search, search mode, query syntax
+
+**Search Entry Point**:
+A contextual user action that starts search with an initial scope derived from where the user is in Mnema.
+_Avoid_: search shortcut, preset search, smart search
+
+**Visible Timeline Search**:
+A **Search Entry Point** that scopes search to the captured time range currently visible in the dashboard timeline.
+_Avoid_: loaded timeline search, current page search, visible rows search
+
+**Current App Search**:
+A **Search Entry Point** that scopes search to the retained app context of the active dashboard **Captured Frame**.
+_Avoid_: frontmost app search, Mnema app search, system focus search
+
+**App Search Refinement**:
+A **Search Refinement** that narrows frame results by retained app identity, preferring bundle identifier and falling back to app name only when no bundle identifier was captured.
+_Avoid_: app-name filter, window filter, bundle filter
+
+**Audio Source Search Refinement**:
+A **Search Refinement** that narrows audio results by retained audio recording source, such as microphone or system audio.
+_Avoid_: result type filter, media filter, audio mode
+
+**Date Range Search Refinement**:
+A **Search Refinement** that narrows results to **Search Result Anchor** values whose captured time overlaps a selected time range.
+_Avoid_: loaded range, page window, result date label
+
+**Search Context Alignment**:
+A derived relationship that decorates a **Search Result Anchor** with nearby retained context from another capture source without treating that context as native to the anchor.
+_Avoid_: inferred source, guessed app, audio app context
+
 **Search Snippet**:
 A query-specific preview of why a **Search Result Anchor** matched.
 _Avoid_: saved preview text, stored excerpt, result summary
@@ -501,6 +533,10 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Search Index Projection** may carry type-specific anchor data for **Captured Frame** and **Audio Transcription Span** results.
 - A **Search Result Group** should preserve the time coverage of the grouped anchors while presenting one result.
 - **Search Result Group** creation should happen before result pagination is presented to the user.
+- **Search Refinement** should apply to **Search Result Anchor** values before choosing the representative anchor for a **Search Result Group**.
+- **Search Refinement** values should compose when their result-type constraints are compatible.
+- A **Search Result Group** should be included in a **Date Range Search Refinement** when at least one grouped **Search Result Anchor** overlaps the selected time range.
+- A **Search Result Group** shown under a **Date Range Search Refinement** should open a representative **Search Result Anchor** inside the selected time range.
 - Search results should rank by relevance with a recency bias by default.
 - Search input should be plain text by default rather than requiring users to learn advanced query syntax.
 - The first user-facing search surface should prioritize one plain search box, with lightweight result-type filtering at most.
@@ -519,7 +555,43 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Captured Frame** result-card thumbnails are navigation previews and should not replace exact frame inspection.
 - A **Captured Frame** search result should remain visible when its result-card thumbnail is unavailable.
 - **Audio Transcription Span** result cards should emphasize recording source, time range, and transcript match rather than speaker labels.
+- **Search Snippet** matches should be visibly highlighted in search result cards when highlight data is available.
+- **Search Snippet** highlight markup should be parsed into escaped text segments rather than rendered as trusted captured-content HTML.
 - Processing provenance may support search debugging or invalidation, but normal result cards should not display provider/model details by default.
+- **Search Refinement** controls should narrow the active search without requiring users to learn query syntax.
+- **Search Entry Point** values should prefill or scope the normal search surface rather than creating separate search result surfaces.
+- A **Search Entry Point** should appear as a visible removable **Search Refinement** when it scopes results.
+- **Search Entry Point** actions should live near the dashboard context that defines their scope, while the search modal remains the single result surface.
+- A **Search Entry Point** should be unavailable when its contextual scope cannot be derived.
+- Active **Search Refinement** values should be visible as removable controls near the search input.
+- Adding manual **Search Refinement** values should be secondary to the plain search input.
+- Removing a **Search Refinement** should rerun the active search with the remaining query and refinements rather than closing or resetting the search modal.
+- Opening global search should not retain **Search Refinement** values from a previous contextual **Search Entry Point**.
+- **Search Refinement** values should persist across query changes within the same open search modal until the user removes them or opens global search anew.
+- **Search Refinement** values should be applied by search query semantics before pagination rather than by frontend-only result filtering.
+- Search responses should expose the normalized **Search Refinement** values that were applied.
+- The first **Search Entry Point** values after global search should be visible timeline and current app.
+- The first **Search Refinement** controls after result type should be date range, app, and source.
+- **Visible Timeline Search** should derive a date-range **Search Refinement** from the timeline viewport time range rather than from the dashboard's loaded rows.
+- **Visible Timeline Search** should include both **Captured Frame** and **Audio Transcription Span** results by default.
+- **Visible Timeline Search** should freeze the timeline viewport time range when the entry point is invoked rather than tracking later timeline movement.
+- **Visible Timeline Search** should be unavailable when the dashboard has no valid timeline viewport time range.
+- Initial **Date Range Search Refinement** controls should use contextual or preset ranges rather than a custom date-time picker.
+- Preset **Date Range Search Refinement** values should resolve to concrete start and end timestamps when selected rather than rolling while the search modal stays open.
+- **Current App Search** from the dashboard should use the active **Captured Frame**'s retained app context rather than the current frontmost macOS app.
+- **Current App Search** should be unavailable when the active **Captured Frame** has no retained app identity.
+- **App Search Refinement** should use retained bundle identifier as canonical identity when available and app name only as a fallback.
+- Initial **App Search Refinement** should be added through **Current App Search** rather than through a full retained-app picker.
+- **App Search Refinement** should apply to **Captured Frame** results only until audio results have an explicit **Search Context Alignment** policy.
+- **Current App Search** should default to **Captured Frame** results while **App Search Refinement** is frame-only.
+- While **App Search Refinement** is frame-only, mixed or audio-only result views should not be selectable until the app refinement is removed.
+- Combining **App Search Refinement** with **Date Range Search Refinement** should produce frame results inside the selected time range.
+- Result type selection should remain separate from **Audio Source Search Refinement**.
+- **Audio Source Search Refinement** should apply only to **Audio Transcription Span** results.
+- Selecting an **Audio Source Search Refinement** should switch search to audio results rather than leaving frame results visible without that refinement.
+- Initial manual **Search Refinement** controls should be limited to preset date ranges and **Audio Source Search Refinement**.
+- Recent searches should be designed separately from the first **Search Refinement** and **Search Entry Point** UX pass.
+- Saved searches and watch queries should be designed separately from the first **Search Refinement** and **Search Entry Point** UX pass.
 - Search filters such as source, app, date range, or result type should be explicit UI controls when they are added.
 - A **Search Index Projection** may be rebuilt from retained OCR and transcription results.
 - A **Search Index Projection** is user data because it duplicates searchable recognized text.

@@ -73,7 +73,12 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
 
 pub(crate) fn current_state(app: &tauri::AppHandle) -> OneTimePromptState {
     app.try_state::<OneTimePromptStateStore>()
-        .map(|state| state.lock().expect("one-time prompt state poisoned").clone())
+        .map(|state| {
+            state
+                .lock()
+                .expect("one-time prompt state poisoned")
+                .clone()
+        })
         .unwrap_or_else(|| load_from_disk(app))
 }
 
@@ -127,7 +132,9 @@ pub fn dismiss_one_time_prompt(
     prompt_id: String,
     app: tauri::AppHandle,
 ) -> Result<OneTimePromptState, String> {
-    mutate_prompt(app, prompt_id, |record, now| record.dismissed_at = Some(now))
+    mutate_prompt(app, prompt_id, |record, now| {
+        record.dismissed_at = Some(now)
+    })
 }
 
 #[tauri::command]
@@ -135,7 +142,9 @@ pub fn complete_one_time_prompt(
     prompt_id: String,
     app: tauri::AppHandle,
 ) -> Result<OneTimePromptState, String> {
-    mutate_prompt(app, prompt_id, |record, now| record.completed_at = Some(now))
+    mutate_prompt(app, prompt_id, |record, now| {
+        record.completed_at = Some(now)
+    })
 }
 
 #[cfg(test)]
