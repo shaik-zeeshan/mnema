@@ -234,45 +234,65 @@ pub async fn decide_admission(
         high_queue_pressure,
     };
 
-    let mut decision = if first_candidate {
+    Ok(ocr_admission_decision_for_signals(
+        &signals,
+        queue_pressure,
+        recording_active,
+    ))
+}
+
+fn ocr_admission_decision_for_signals(
+    signals: &::app_infra::OcrAdmissionSignals,
+    queue_pressure: i64,
+    recording_active: bool,
+) -> ::app_infra::OcrAdmissionDecision {
+    let mut decision = if signals.first_candidate_in_scope {
         ::app_infra::OcrAdmissionDecision::admit(
             ::app_infra::OcrAdmissionReason::AdmittedInitial,
             queue_pressure,
             recording_active,
         )
-    } else if context_changed {
+    } else if signals.context_changed {
         ::app_infra::OcrAdmissionDecision::admit(
             ::app_infra::OcrAdmissionReason::AdmittedContextChange,
             queue_pressure,
             recording_active,
         )
-    } else if low_queue_pressure {
+    } else if recording_active {
+        if signals.low_queue_pressure && signals.representative_due {
+            ::app_infra::OcrAdmissionDecision::admit(
+                ::app_infra::OcrAdmissionReason::AdmittedRepresentative,
+                queue_pressure,
+                recording_active,
+            )
+        } else {
+            ::app_infra::OcrAdmissionDecision::skip(
+                ::app_infra::OcrAdmissionReason::SkippedLowOcrValue,
+                queue_pressure,
+                recording_active,
+            )
+        }
+    } else if signals.low_queue_pressure {
         ::app_infra::OcrAdmissionDecision::admit(
             ::app_infra::OcrAdmissionReason::AdmittedLowPressure,
             queue_pressure,
             recording_active,
         )
-    } else if representative_due {
+    } else if signals.representative_due {
         ::app_infra::OcrAdmissionDecision::admit(
             ::app_infra::OcrAdmissionReason::AdmittedRepresentative,
             queue_pressure,
             recording_active,
         )
-    } else if recording_active && high_queue_pressure {
+    } else {
         ::app_infra::OcrAdmissionDecision::skip(
             ::app_infra::OcrAdmissionReason::SkippedLowOcrValue,
             queue_pressure,
             recording_active,
         )
-    } else {
-        ::app_infra::OcrAdmissionDecision::admit(
-            ::app_infra::OcrAdmissionReason::AdmittedLowPressure,
-            queue_pressure,
-            recording_active,
-        )
     };
-    decision.signals = signals;
-    Ok(decision)
+    decision.signals = signals.clone();
+    decision
 }
 
 pub fn record_admission_result(
@@ -539,6 +559,74 @@ pub async fn get_ocr_budget_debug(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn admission_signals(
+        first_candidate_in_scope: bool,
+        context_changed: bool,
+        low_queue_pressure: bool,
+        representative_due: bool,
+        high_queue_pressure: bool,
+    ) -> ::app_infra::OcrAdmissionSignals {
+        ::app_infra::OcrAdmissionSignals {
+            first_candidate_in_scope,
+            context_changed,
+            low_queue_pressure,
+            representative_due,
+            high_queue_pressure,
+        }
+    }
+
+    #[test]
+    fn active_recording_skips_recent_low_pressure_frames() {
+        let signals = admission_signals(false, false, true, false, false);
+
+        let decision = ocr_admission_decision_for_signals(&signals, 0, true);
+
+        assert_eq!(decision.outcome, ::app_infra::OcrAdmissionOutcome::Skipped);
+        assert_eq!(
+            decision.reason,
+            ::app_infra::OcrAdmissionReason::SkippedLowOcrValue
+        );
+    }
+
+    #[test]
+    fn active_recording_admits_due_representative_frames() {
+        let signals = admission_signals(false, false, true, true, false);
+
+        let decision = ocr_admission_decision_for_signals(&signals, 0, true);
+
+        assert_eq!(decision.outcome, ::app_infra::OcrAdmissionOutcome::Admitted);
+        assert_eq!(
+            decision.reason,
+            ::app_infra::OcrAdmissionReason::AdmittedRepresentative
+        );
+    }
+
+    #[test]
+    fn active_recording_respects_high_queue_pressure_for_representatives() {
+        let signals = admission_signals(false, false, false, true, true);
+
+        let decision = ocr_admission_decision_for_signals(&signals, HIGH_PRESSURE_THRESHOLD, true);
+
+        assert_eq!(decision.outcome, ::app_infra::OcrAdmissionOutcome::Skipped);
+        assert_eq!(
+            decision.reason,
+            ::app_infra::OcrAdmissionReason::SkippedLowOcrValue
+        );
+    }
+
+    #[test]
+    fn catch_up_still_admits_low_pressure_frames_when_not_recording() {
+        let signals = admission_signals(false, false, true, false, false);
+
+        let decision = ocr_admission_decision_for_signals(&signals, 0, false);
+
+        assert_eq!(decision.outcome, ::app_infra::OcrAdmissionOutcome::Admitted);
+        assert_eq!(
+            decision.reason,
+            ::app_infra::OcrAdmissionReason::AdmittedLowPressure
+        );
+    }
 
     #[test]
     fn representative_window_detects_recent_admission() {

@@ -751,6 +751,7 @@ fn capture_session_options(
 
     capture_screen::ScreenCaptureSessionOptions {
         frame_export: Some(capture_screen::ScreenFrameExportConfig {
+            minimum_interval: capture_screen::DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL,
             on_frame_exported: Arc::new(move |artifact| {
                 let metadata_snapshot = metadata_snapshot_provider
                     .as_ref()

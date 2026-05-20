@@ -37,8 +37,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::mpsc;
 #[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 #[cfg(target_os = "macos")]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScreenCaptureSources {
@@ -69,6 +70,8 @@ pub use equivalence::{
 
 pub type ScreenFrameArtifactHandler =
     std::sync::Arc<dyn Fn(ScreenFrameArtifact) + Send + Sync + 'static>;
+
+pub const DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrivacyContentFilter {
@@ -234,11 +237,13 @@ pub struct ScreenSegmentFrameIndex {
 #[derive(Clone)]
 pub struct ScreenFrameExportConfig {
     pub on_frame_exported: ScreenFrameArtifactHandler,
+    pub minimum_interval: Duration,
 }
 
 impl std::fmt::Debug for ScreenFrameExportConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScreenFrameExportConfig")
+            .field("minimum_interval", &self.minimum_interval)
             .finish_non_exhaustive()
     }
 }
@@ -1254,6 +1259,8 @@ struct ScreenFrameExportRuntime {
     artifact_dir: PathBuf,
     callback_queue: cidre::arc::R<dispatch::Queue>,
     on_frame_exported: ScreenFrameArtifactHandler,
+    minimum_interval: Duration,
+    last_exported_at: Option<Instant>,
     first_error: Arc<Mutex<Option<CaptureErrorResponse>>>,
     segment_frame_index: Arc<Mutex<ScreenSegmentFrameIndexState>>,
     next_frame_index: u64,
@@ -1270,6 +1277,7 @@ impl std::fmt::Debug for ScreenFrameExportRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScreenFrameExportRuntime")
             .field("artifact_dir", &self.artifact_dir)
+            .field("minimum_interval", &self.minimum_interval)
             .field("next_frame_index", &self.next_frame_index)
             .finish_non_exhaustive()
     }
@@ -1645,6 +1653,19 @@ struct PreparedScreenFrameExport {
 }
 
 #[cfg(target_os = "macos")]
+fn should_export_screen_frame(
+    last_exported_at: Option<Instant>,
+    now: Instant,
+    minimum_interval: Duration,
+) -> bool {
+    minimum_interval.is_zero()
+        || last_exported_at
+            .and_then(|last| now.checked_duration_since(last))
+            .map(|elapsed| elapsed >= minimum_interval)
+            .unwrap_or(true)
+}
+
+#[cfg(target_os = "macos")]
 fn prepare_screen_frame_export(
     runtime: &mut ScreenFrameExportRuntime,
     sample_buf: &cidre::cm::SampleBuf,
@@ -1756,6 +1777,12 @@ fn export_screen_frame_artifact(
     sample_buf: cidre::arc::R<cidre::cm::SampleBuf>,
     captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 ) -> Result<(), CaptureErrorResponse> {
+    let now = Instant::now();
+    if !should_export_screen_frame(runtime.last_exported_at, now, runtime.minimum_interval) {
+        return Ok(());
+    }
+    runtime.last_exported_at = Some(now);
+
     let prepared =
         prepare_screen_frame_export(runtime, sample_buf.as_ref(), captured_frame_equivalence);
     let callback_queue = runtime.callback_queue.retained();
@@ -1839,6 +1866,8 @@ fn screen_frame_export_runtime(
         artifact_dir,
         callback_queue: dispatch::Queue::serial_with_ar_pool(),
         on_frame_exported: config.on_frame_exported,
+        minimum_interval: config.minimum_interval,
+        last_exported_at: None,
         first_error: Arc::new(Mutex::new(None)),
         segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
         next_frame_index: 0,
@@ -5379,6 +5408,40 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn screen_frame_export_cadence_allows_first_frame_and_due_frames() {
+        let first_export = Instant::now();
+
+        assert!(should_export_screen_frame(
+            None,
+            first_export,
+            DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL
+        ));
+        assert!(!should_export_screen_frame(
+            Some(first_export),
+            first_export + Duration::from_millis(999),
+            DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL
+        ));
+        assert!(should_export_screen_frame(
+            Some(first_export),
+            first_export + DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL,
+            DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screen_frame_export_cadence_can_be_disabled() {
+        let first_export = Instant::now();
+
+        assert!(should_export_screen_frame(
+            Some(first_export),
+            first_export,
+            Duration::ZERO
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn stream_output_context_requires_output_file_for_active_system_audio_writer() {
         let sources = ScreenCaptureSources {
             screen: true,
@@ -5411,6 +5474,8 @@ mod tests {
             artifact_dir: PathBuf::from("/tmp/frames"),
             callback_queue: dispatch::Queue::serial_with_ar_pool(),
             on_frame_exported: std::sync::Arc::new(|_| {}),
+            minimum_interval: DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL,
+            last_exported_at: None,
             first_error: Arc::new(Mutex::new(Some(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
                 message: "Failed to finalize JPEG screen frame artifact: boom".to_string(),
@@ -5433,6 +5498,8 @@ mod tests {
             artifact_dir: PathBuf::from("/tmp/frames"),
             callback_queue: dispatch::Queue::serial_with_ar_pool(),
             on_frame_exported: std::sync::Arc::new(|_| {}),
+            minimum_interval: DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL,
+            last_exported_at: None,
             first_error: Arc::new(Mutex::new(Some(CaptureErrorResponse {
                 code: "capture_output_processing_failed".to_string(),
                 message: "Failed to finalize JPEG screen frame artifact: boom".to_string(),
