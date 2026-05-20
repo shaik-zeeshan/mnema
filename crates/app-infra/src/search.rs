@@ -480,7 +480,7 @@ async fn backfill_missing_app_bundle_id_projection(
         "SELECT search_documents.id, frame_metadata_snapshots.snapshot_json \
          FROM search_documents \
          JOIN frames ON frames.id = search_documents.frame_id \
-         JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
          WHERE search_documents.anchor_type = 'frame' \
            AND search_documents.app_bundle_id IS NULL",
     )
@@ -488,15 +488,17 @@ async fn backfill_missing_app_bundle_id_projection(
     .await?;
 
     for row in rows {
-        let snapshot_json: String = row.get("snapshot_json");
-        let snapshot: capture_metadata::FrameMetadataSnapshot =
-            serde_json::from_str(&snapshot_json)?;
-        if let Some(bundle_id) = snapshot
-            .app_bundle_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
+        let bundle_id = row
+            .get::<Option<String>, _>("snapshot_json")
+            .map(|snapshot_json| {
+                serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(&snapshot_json)
+            })
+            .transpose()?
+            .and_then(|snapshot| snapshot.app_bundle_id)
+            .and_then(|bundle_id| {
+                normalize_app_bundle_id_for_search(&bundle_id).map(str::to_string)
+            });
+        if let Some(bundle_id) = bundle_id {
             sqlx::query("UPDATE search_documents SET app_bundle_id = ?1 WHERE id = ?2")
                 .bind(bundle_id)
                 .bind(row.get::<i64, _>("id"))
@@ -511,6 +513,11 @@ async fn backfill_missing_app_bundle_id_projection(
     }
 
     Ok(())
+}
+
+fn normalize_app_bundle_id_for_search(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 async fn project_frame_ocr_result(
@@ -985,7 +992,7 @@ async fn insert_search_document(
     .bind(doc.absolute_end_at)
     .bind(doc.source_kind)
     .bind(doc.session_id)
-    .bind(doc.app_bundle_id)
+    .bind(doc.app_bundle_id.and_then(normalize_app_bundle_id_for_search))
     .bind(doc.app_name)
     .bind(doc.window_title)
     .bind(doc.group_key)
@@ -1235,8 +1242,11 @@ fn push_search_refinement_predicates(
     if let Some(app) = &refinements.app {
         match app {
             NormalizedAppRefinement::BundleId { value } => {
-                query.push(" AND search_documents.app_bundle_id = ");
+                query.push(
+                    " AND LOWER(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = LOWER(",
+                );
                 query.push_bind(value.clone());
+                query.push(")");
             }
             NormalizedAppRefinement::AppName { value } => {
                 query.push(" AND LOWER(COALESCE(search_documents.app_name, '')) = LOWER(");
@@ -2067,38 +2077,52 @@ mod tests {
                 )
                 .await
                 .expect("frame should insert");
-            let job = infra
-                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+            let frame_without_metadata = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-no-metadata.jpg",
+                    "2026-05-17T10:00:01Z",
+                ))
                 .await
-                .expect("ocr job should enqueue");
-            complete_job(
-                &infra,
-                job,
-                ProcessingResultDraft::new().with_result_text("empty bundle target"),
-            )
-            .await;
+                .expect("frame without metadata should insert");
+            for frame_id in [frame.id, frame_without_metadata.id] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame_id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("empty bundle target"),
+                )
+                .await;
+            }
             drop(infra);
 
             let reopened = AppInfra::initialize(&dir)
                 .await
                 .expect("infra should reopen");
             let null_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM search_documents WHERE frame_id = ?1 AND app_bundle_id IS NULL",
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) AND app_bundle_id IS NULL",
             )
             .bind(frame.id)
+            .bind(frame_without_metadata.id)
             .fetch_one(reopened.pool())
             .await
             .expect("null count should load");
             let checked_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM search_documents WHERE frame_id = ?1 AND app_bundle_id = ''",
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) AND app_bundle_id = ''",
             )
             .bind(frame.id)
+            .bind(frame_without_metadata.id)
             .fetch_one(reopened.pool())
             .await
             .expect("checked count should load");
 
             assert_eq!(null_count, 0);
-            assert_eq!(checked_count, 1);
+            assert_eq!(checked_count, 2);
         });
     }
 
@@ -2602,7 +2626,7 @@ mod tests {
                     )
                     .with_metadata_snapshot(
                         capture_metadata::FrameMetadataSnapshot {
-                            app_bundle_id: Some("com.example.Linear".to_string()),
+                            app_bundle_id: Some(" com.example.Linear ".to_string()),
                             app_name: Some("Linear".to_string()),
                             window_title: Some("Planning".to_string()),
                             window_id: None,
@@ -2703,7 +2727,7 @@ mod tests {
                         }),
                         app: Some(SearchAppRefinement {
                             kind: SearchAppRefinementKind::BundleId,
-                            value: " com.example.Linear ".to_string(),
+                            value: " COM.EXAMPLE.LINEAR ".to_string(),
                             display_name: "Linear".to_string(),
                         }),
                         audio_source: None,
@@ -2721,8 +2745,17 @@ mod tests {
                     .app
                     .as_ref()
                     .map(|app| app.value.as_str()),
-                Some("com.example.Linear")
+                Some("COM.EXAMPLE.LINEAR")
             );
+            let indexed_bundle_id: Option<String> = sqlx::query_scalar(
+                "SELECT app_bundle_id FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'direct' LIMIT 1",
+            )
+            .bind(linear.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("indexed bundle id should load");
+            assert_eq!(indexed_bundle_id.as_deref(), Some("com.example.Linear"));
 
             let response = infra
                 .search_capture(SearchCaptureRequest {
