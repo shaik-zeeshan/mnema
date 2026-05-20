@@ -176,6 +176,25 @@ export interface SearchCaptureRequest {
 	audioLimit?: number;
 	audioOffset?: number;
 	snapshotDocumentId?: number;
+	refinements?: SearchCaptureRefinements;
+}
+
+export interface SearchCaptureRefinements {
+	dateRange?: SearchDateRangeRefinement;
+	app?: SearchAppRefinement;
+	audioSource?: AudioSegmentSourceKind;
+}
+
+export interface SearchDateRangeRefinement {
+	startAt: string;
+	endAt: string;
+	origin?: "visible_timeline" | "today" | "last_hour";
+}
+
+export interface SearchAppRefinement {
+	kind: "bundle_id" | "app_name";
+	value: string;
+	displayName: string;
 }
 
 export interface SearchCaptureResponse {
@@ -185,6 +204,7 @@ export interface SearchCaptureResponse {
 	audio: AudioSearchResultDto[];
 	hasMoreFrames: boolean;
 	hasMoreAudio: boolean;
+	appliedRefinements: SearchCaptureRefinements;
 }
 
 export interface FrameSearchResultDto {

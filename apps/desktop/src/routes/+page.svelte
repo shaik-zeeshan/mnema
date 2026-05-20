@@ -68,6 +68,7 @@
     FramePreviewVideoScope,
     SpeakerAnalysisStructuredPayload,
     SearchCaptureResponse,
+    SearchCaptureRefinements,
     SystemAudioSpeechActivityReprocessingResultDto,
     SpeakerClusterDto,
     SpeakerTurnDto,
@@ -510,6 +511,9 @@
   let searchNormalizedQuery = $state("");
   let searchFrames = $state<FrameSearchResultDto[]>([]);
   let searchAudio = $state<AudioSearchResultDto[]>([]);
+  let searchRefinements = $state<SearchCaptureRefinements>({});
+  let searchRefinementKey = "";
+  let searchRefineMenuOpen = $state(false);
   let searchHasMoreFrames = $state(false);
   let searchHasMoreAudio = $state(false);
   let searchLoading = $state(false);
@@ -3827,16 +3831,174 @@
     };
   }
 
-  function plainSearchSnippet(snippet: string): string {
-    return snippet.replaceAll("<mark>", "").replaceAll("</mark>", "");
+  type SearchSnippetSegment = { text: string; marked: boolean };
+
+  function parseSearchSnippet(snippet: string): SearchSnippetSegment[] {
+    const segments: SearchSnippetSegment[] = [];
+    let index = 0;
+    let marked = false;
+    while (index < snippet.length) {
+      const nextOpen = snippet.indexOf("<mark>", index);
+      const nextClose = snippet.indexOf("</mark>", index);
+      const next =
+        nextOpen >= 0 && (nextClose < 0 || nextOpen < nextClose)
+          ? { at: nextOpen, tag: "<mark>", markedAfter: true }
+          : nextClose >= 0
+            ? { at: nextClose, tag: "</mark>", markedAfter: false }
+            : null;
+      if (!next) {
+        if (index < snippet.length) segments.push({ text: snippet.slice(index), marked });
+        break;
+      }
+      if (next.at > index) segments.push({ text: snippet.slice(index, next.at), marked });
+      marked = next.markedAfter;
+      index = next.at + next.tag.length;
+    }
+    return segments;
+  }
+
+  function searchRefinementsKey(refinements: SearchCaptureRefinements): string {
+    return JSON.stringify(refinements);
+  }
+
+  function searchViewAllowed(view: SearchView, refinements = searchRefinements): boolean {
+    if (refinements.app && view !== "frames") return false;
+    if (refinements.audioSource && view !== "audio") return false;
+    return true;
+  }
+
+  function normalizeSearchViewForRefinements(view: SearchView, refinements: SearchCaptureRefinements): SearchView {
+    if (refinements.app) return "frames";
+    if (refinements.audioSource) return "audio";
+    return view;
+  }
+
+  function applySearchRefinements(refinements: SearchCaptureRefinements, view = searchView): void {
+    const next = { ...refinements };
+    searchRefinements = next;
+    const nextKey = searchRefinementsKey(next);
+    if (nextKey !== searchRefinementKey) {
+      searchRefinementKey = nextKey;
+      searchSnapshotDocumentId = null;
+      searchFrames = [];
+      searchAudio = [];
+      searchHasMoreFrames = false;
+      searchHasMoreAudio = false;
+    }
+    searchView = normalizeSearchViewForRefinements(view, next);
+    void runSearch();
+  }
+
+  function removeSearchRefinement(kind: "dateRange" | "app" | "audioSource"): void {
+    const next = { ...searchRefinements };
+    delete next[kind];
+    applySearchRefinements(next, searchView);
+  }
+
+  function applyDateSearchRefinement(origin: "today" | "last_hour"): void {
+    const now = new Date();
+    const start = origin === "today"
+      ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      : new Date(now.getTime() - 60 * 60 * 1000);
+    searchRefineMenuOpen = false;
+    applySearchRefinements({
+      ...searchRefinements,
+      dateRange: { startAt: start.toISOString(), endAt: now.toISOString(), origin },
+    });
+  }
+
+  function applyAudioSearchRefinement(audioSource: "microphone" | "system_audio"): void {
+    searchRefineMenuOpen = false;
+    applySearchRefinements({ ...searchRefinements, audioSource }, "audio");
+  }
+
+  function searchDateChipLabel(): string | null {
+    const range = searchRefinements.dateRange;
+    if (!range) return null;
+    if (range.origin === "visible_timeline") return "Visible timeline";
+    if (range.origin === "today") return "Today";
+    if (range.origin === "last_hour") return "Last hour";
+    return "Date range";
   }
 
   function openSearch(): void {
+    searchRefinements = {};
+    searchRefinementKey = searchRefinementsKey(searchRefinements);
+    searchFrames = [];
+    searchAudio = [];
+    searchHasMoreFrames = false;
+    searchHasMoreAudio = false;
+    searchSnapshotDocumentId = null;
+    searchRefineMenuOpen = false;
     searchOpen = true;
     searchView = "all";
     void tick().then(() => {
       document.querySelector<HTMLInputElement>(".search-modal__input")?.focus();
     });
+  }
+
+  function openSearchWithRefinements(refinements: SearchCaptureRefinements, initialView: SearchView): void {
+    searchRefinements = { ...refinements };
+    searchRefinementKey = searchRefinementsKey(searchRefinements);
+    searchFrames = [];
+    searchAudio = [];
+    searchHasMoreFrames = false;
+    searchHasMoreAudio = false;
+    searchSnapshotDocumentId = null;
+    searchRefineMenuOpen = false;
+    searchOpen = true;
+    searchView = normalizeSearchViewForRefinements(initialView, searchRefinements);
+    void tick().then(() => {
+      document.querySelector<HTMLInputElement>(".search-modal__input")?.focus();
+    });
+    void runSearch();
+  }
+
+  function visibleTimelineSearchRange(): SearchCaptureRefinements["dateRange"] | null {
+    if (timelineFrames.length === 0) return null;
+    const viewportWidth =
+      timelineRail?.clientWidth || timelineViewportWidth || TIMELINE_FALLBACK_VIEWPORT_WIDTH;
+    const halfSlots = Math.max(0, Math.floor(viewportWidth / TIMELINE_SLOT_WIDTH / 2));
+    const startIndex = Math.max(0, timelineActiveIndex - halfSlots);
+    const endIndex = Math.min(timelineFrames.length - 1, timelineActiveIndex + halfSlots);
+    const times = timelineFrames
+      .slice(startIndex, endIndex + 1)
+      .map((frame) => parseCapturedAt(frame.capturedAt).getTime())
+      .filter((time) => Number.isFinite(time));
+    if (times.length === 0) return null;
+    return {
+      startAt: new Date(Math.min(...times)).toISOString(),
+      endAt: new Date(Math.max(...times)).toISOString(),
+      origin: "visible_timeline",
+    };
+  }
+
+  function openSearchVisibleTimeline(): void {
+    const dateRange = visibleTimelineSearchRange();
+    if (!dateRange) return;
+    stageActionsMenuOpen = false;
+    openSearchWithRefinements({ dateRange }, "all");
+  }
+
+  function currentAppSearchRefinement(): SearchCaptureRefinements["app"] | null {
+    const frame = timelineActive;
+    if (!frame) return null;
+    const bundleId = frame.appBundleId?.trim();
+    const appName = frame.appName?.trim();
+    if (bundleId) {
+      return { kind: "bundle_id", value: bundleId, displayName: appName || bundleId };
+    }
+    if (appName) {
+      return { kind: "app_name", value: appName, displayName: appName };
+    }
+    return null;
+  }
+
+  function openSearchCurrentApp(): void {
+    const app = currentAppSearchRefinement();
+    if (!app) return;
+    stageActionsMenuOpen = false;
+    openSearchWithRefinements({ app }, "frames");
   }
 
   function clearSearchDebounceTimer(): void {
@@ -3868,6 +4030,13 @@
     const normalizedQuery = query.split(/\s+/).filter(Boolean).join(" ");
     let appendFrames = options.appendFrames === true;
     let appendAudio = options.appendAudio === true;
+    const currentRefinementKey = searchRefinementsKey(searchRefinements);
+    if (currentRefinementKey !== searchRefinementKey) {
+      searchRefinementKey = currentRefinementKey;
+      searchSnapshotDocumentId = null;
+      appendFrames = false;
+      appendAudio = false;
+    }
     if ((appendFrames || appendAudio) && normalizedQuery !== searchNormalizedQuery) {
       appendFrames = false;
       appendAudio = false;
@@ -3918,11 +4087,14 @@
           audioLimit: appendFrames ? 0 : 5,
           audioOffset: appendAudio ? searchAudio.length : 0,
           snapshotDocumentId: searchSnapshotDocumentId ?? undefined,
+          refinements: searchRefinements,
         },
       });
       if (!requestIsCurrent()) return;
       searchNormalizedQuery = response.normalizedQuery;
       searchSnapshotDocumentId = response.snapshotDocumentId;
+      searchRefinements = response.appliedRefinements ?? searchRefinements;
+      searchView = normalizeSearchViewForRefinements(searchView, searchRefinements);
       if (!appendAudio) {
         searchFrames = appendFrames ? [...searchFrames, ...response.frames] : response.frames;
         searchHasMoreFrames = response.hasMoreFrames;
@@ -7048,6 +7220,27 @@
             placeholder="Search captured text or audio"
             aria-label="Search captured text or audio"
           />
+          <div class="search-modal__refine">
+            <button
+              type="button"
+              class="search-modal__refine-trigger"
+              class:search-modal__refine-trigger--open={searchRefineMenuOpen}
+              onclick={() => (searchRefineMenuOpen = !searchRefineMenuOpen)}
+              aria-haspopup="menu"
+              aria-expanded={searchRefineMenuOpen}
+            >
+              <span>Refine</span>
+              <span class="search-modal__refine-caret" aria-hidden="true"></span>
+            </button>
+            {#if searchRefineMenuOpen}
+              <div class="search-modal__refine-menu" role="menu">
+                <button type="button" role="menuitem" onclick={() => applyDateSearchRefinement("today")}>Today</button>
+                <button type="button" role="menuitem" onclick={() => applyDateSearchRefinement("last_hour")}>Last hour</button>
+                <button type="button" role="menuitem" onclick={() => applyAudioSearchRefinement("microphone")}>Microphone</button>
+                <button type="button" role="menuitem" onclick={() => applyAudioSearchRefinement("system_audio")}>System audio</button>
+              </div>
+            {/if}
+          </div>
           <button
             type="button"
             class="search-modal__close"
@@ -7070,10 +7263,29 @@
             </svg>
           </button>
         </header>
+        {#if searchRefinements.dateRange || searchRefinements.app || searchRefinements.audioSource}
+          <div class="search-modal__chips" aria-label="Active search refinements">
+            {#if searchRefinements.dateRange}
+              <button type="button" class="search-modal__chip" onclick={() => removeSearchRefinement("dateRange")}>
+                {searchDateChipLabel()} <span aria-hidden="true">×</span>
+              </button>
+            {/if}
+            {#if searchRefinements.app}
+              <button type="button" class="search-modal__chip" onclick={() => removeSearchRefinement("app")}>
+                {searchRefinements.app.displayName} <span aria-hidden="true">×</span>
+              </button>
+            {/if}
+            {#if searchRefinements.audioSource}
+              <button type="button" class="search-modal__chip" onclick={() => removeSearchRefinement("audioSource")}>
+                {audioSourceLabel(searchRefinements.audioSource === "microphone" ? "microphone" : "systemAudio")} <span aria-hidden="true">×</span>
+              </button>
+            {/if}
+          </div>
+        {/if}
         <div class="search-modal__tabs" role="tablist" aria-label="Search result sections">
-          <button class:search-modal__tab--active={searchView === "all"} onclick={() => (searchView = "all")}>All</button>
-          <button class:search-modal__tab--active={searchView === "frames"} onclick={() => (searchView = "frames")}>Frames</button>
-          <button class:search-modal__tab--active={searchView === "audio"} onclick={() => (searchView = "audio")}>Audio</button>
+          <button disabled={!searchViewAllowed("all")} class:search-modal__tab--active={searchView === "all"} onclick={() => (searchView = "all")}>All</button>
+          <button disabled={!searchViewAllowed("frames")} class:search-modal__tab--active={searchView === "frames"} onclick={() => (searchView = "frames")}>Frames</button>
+          <button disabled={!searchViewAllowed("audio")} class:search-modal__tab--active={searchView === "audio"} onclick={() => (searchView = "audio")}>Audio</button>
         </div>
         {#if searchError}
           <p class="search-modal__error">{searchError}</p>
@@ -7110,7 +7322,11 @@
                           {#if result.windowTitle}
                             <div class="search-card__title">{result.windowTitle}</div>
                           {/if}
-                          <p>{plainSearchSnippet(result.snippet)}</p>
+                          <p>
+                            {#each parseSearchSnippet(result.snippet) as segment}
+                              {#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}
+                            {/each}
+                          </p>
                           {#if result.matchCount > 1}
                             <span class="search-card__badge">{result.matchCount} matches</span>
                           {/if}
@@ -7144,7 +7360,11 @@
                             <span>{formatCapturedAtCompact(result.absoluteStartAt)}</span>
                             <span>{formatDurationSeconds(Math.max(0, (result.spanEndMs - result.spanStartMs) / 1000))}</span>
                           </div>
-                          <p>{plainSearchSnippet(result.snippet)}</p>
+                          <p>
+                            {#each parseSearchSnippet(result.snippet) as segment}
+                              {#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}
+                            {/each}
+                          </p>
                           {#if result.matchCount > 1}
                             <span class="search-card__badge">{result.matchCount} adjacent matches</span>
                           {/if}
@@ -7211,7 +7431,6 @@
       {#if previewUrl}
         {@const activeExactPreviewReady = previewCache.has(timelineActive.id)}
         {@const displayedActiveExactPreview = previewDisplay?.frameId === timelineActive.id && previewDisplay.source === "exact"}
-        {#if activeExactPreviewReady}
         <div
           class="timeline__stage-actions"
           class:timeline__stage-actions--open={stageActionsMenuOpen}
@@ -7240,7 +7459,22 @@
               <button
                 type="button"
                 class="timeline__stage-action-menu-item"
+                onclick={openSearchVisibleTimeline}
+                disabled={!visibleTimelineSearchRange()}
+                aria-label="Search visible timeline"
+              >search visible timeline</button>
+              <button
+                type="button"
+                class="timeline__stage-action-menu-item"
+                onclick={openSearchCurrentApp}
+                disabled={!currentAppSearchRefinement()}
+                aria-label="Search current app"
+              >search current app</button>
+              <button
+                type="button"
+                class="timeline__stage-action-menu-item"
                 onclick={copyActiveFrameImage}
+                disabled={!activeExactPreviewReady}
                 aria-label="Copy active frame image"
                 title="Copy image (C)"
               >copy</button>
@@ -7248,13 +7482,13 @@
                 type="button"
                 class="timeline__stage-action-menu-item"
                 onclick={downloadActiveFrameImage}
+                disabled={!activeExactPreviewReady}
                 aria-label="Download active frame image"
                 title="Download image (D)"
               >download</button>
             </div>
           {/if}
         </div>
-        {/if}
         <div
           class="timeline__preview"
           role="img"
@@ -8189,7 +8423,7 @@
     border-radius: 8px;
     background: var(--app-surface);
     box-shadow: 0 24px 64px rgba(0, 0, 0, 0.34);
-    overflow: hidden;
+    overflow: visible;
   }
 
   .search-modal__header {
@@ -8208,6 +8442,100 @@
     background: var(--app-surface-raised);
     color: var(--app-text-strong);
     font: inherit;
+  }
+
+  .search-modal__refine {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .search-modal__refine-trigger {
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 10px 0 12px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition:
+      background 0.12s,
+      border-color 0.12s,
+      color 0.12s;
+  }
+
+  .search-modal__refine-trigger:hover,
+  .search-modal__refine-trigger:focus-visible,
+  .search-modal__refine-trigger--open {
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+    outline: none;
+  }
+
+  .search-modal__refine-caret {
+    width: 7px;
+    height: 7px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: translateY(-2px) rotate(45deg);
+  }
+
+  .search-modal__refine-trigger--open .search-modal__refine-caret {
+    transform: translateY(2px) rotate(225deg);
+  }
+
+  .search-modal__refine-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 5;
+    min-width: 150px;
+    padding: 6px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+    display: grid;
+    gap: 2px;
+  }
+
+  .search-modal__refine-menu button {
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--app-text);
+    padding: 6px 8px;
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .search-modal__refine-menu button:hover,
+  .search-modal__refine-menu button:focus-visible {
+    background: var(--app-surface-hover);
+    outline: none;
+  }
+
+  .search-modal__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .search-modal__chip {
+    border: 1px solid var(--app-border-strong);
+    border-radius: 999px;
+    background: var(--app-surface-raised);
+    color: var(--app-text);
+    padding: 4px 8px;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
   }
 
   .search-modal__close {
@@ -8248,6 +8576,11 @@
     color: var(--app-text-muted);
     padding: 5px 10px;
     font: inherit;
+  }
+
+  .search-modal__tabs button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
   }
 
   .search-modal__tab--active {
@@ -8363,6 +8696,13 @@
   .search-card p {
     min-width: 0;
     overflow-wrap: anywhere;
+  }
+
+  .search-card mark {
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--app-accent) 32%, transparent);
+    color: var(--app-text-strong);
+    padding: 0 1px;
   }
 
   .search-modal__empty {

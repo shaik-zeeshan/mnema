@@ -479,6 +479,7 @@ pub struct SearchCaptureRequest {
     pub audio_limit: Option<u32>,
     pub audio_offset: Option<u32>,
     pub snapshot_document_id: Option<i64>,
+    pub refinements: Option<::app_infra::SearchCaptureRefinements>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -490,6 +491,7 @@ pub struct SearchCaptureResponseDto {
     pub audio: Vec<AudioSearchResultDto>,
     pub has_more_frames: bool,
     pub has_more_audio: bool,
+    pub applied_refinements: ::app_infra::SearchCaptureRefinements,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -834,6 +836,7 @@ impl From<::app_infra::SearchCaptureResponse> for SearchCaptureResponseDto {
                 .collect(),
             has_more_frames: response.has_more_frames,
             has_more_audio: response.has_more_audio,
+            applied_refinements: response.applied_refinements,
         }
     }
 }
@@ -4095,6 +4098,7 @@ pub async fn search_capture(
             audio_limit: request.audio_limit,
             audio_offset: request.audio_offset,
             snapshot_document_id: request.snapshot_document_id,
+            refinements: request.refinements,
         })
         .await
         .map(SearchCaptureResponseDto::from)
