@@ -1,7 +1,7 @@
 use audio_transcription::TranscriptionMetadata;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
-use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime, UtcOffset};
 
 use crate::{
     captured_frame_equivalence::CapturedFrameEquivalenceScope,
@@ -277,6 +277,11 @@ fn normalize_search_refinements(
     refinements: Option<SearchCaptureRefinements>,
 ) -> Result<NormalizedSearchRefinements> {
     let refinements = refinements.unwrap_or_default();
+    if refinements.app.is_some() && refinements.audio_source.is_some() {
+        return Err(AppInfraError::InvalidSearchRequest(
+            "app and audioSource refinements cannot be combined".to_string(),
+        ));
+    }
     let date_range = refinements
         .date_range
         .map(|range| {
@@ -360,6 +365,7 @@ fn normalize_search_refinements(
 
 fn format_rfc3339_for_search(value: OffsetDateTime) -> Result<String> {
     value
+        .to_offset(UtcOffset::UTC)
         .format(&Rfc3339)
         .map_err(|error| AppInfraError::InvalidSearchRequest(error.to_string()))
 }
@@ -493,6 +499,11 @@ async fn backfill_missing_app_bundle_id_projection(
         {
             sqlx::query("UPDATE search_documents SET app_bundle_id = ?1 WHERE id = ?2")
                 .bind(bundle_id)
+                .bind(row.get::<i64, _>("id"))
+                .execute(&mut **transaction)
+                .await?;
+        } else {
+            sqlx::query("UPDATE search_documents SET app_bundle_id = '' WHERE id = ?1")
                 .bind(row.get::<i64, _>("id"))
                 .execute(&mut **transaction)
                 .await?;
@@ -1835,6 +1846,54 @@ mod tests {
     }
 
     #[test]
+    fn search_refinement_dates_normalize_to_utc() {
+        let normalized = normalize_search_refinements(Some(SearchCaptureRefinements {
+            date_range: Some(SearchDateRangeRefinement {
+                start_at: "2026-05-17T04:59:00-05:00".to_string(),
+                end_at: "2026-05-17T05:01:00-05:00".to_string(),
+                origin: Some(SearchDateRangeOrigin::LastHour),
+            }),
+            app: None,
+            audio_source: None,
+        }))
+        .expect("refinements should normalize");
+
+        let range = normalized
+            .date_range
+            .as_ref()
+            .expect("date range should be present");
+        assert_eq!(range.start_at, "2026-05-17T09:59:00Z");
+        assert_eq!(range.end_at, "2026-05-17T10:01:00Z");
+        assert_eq!(
+            normalized
+                .applied
+                .date_range
+                .as_ref()
+                .map(|range| (range.start_at.as_str(), range.end_at.as_str())),
+            Some(("2026-05-17T09:59:00Z", "2026-05-17T10:01:00Z"))
+        );
+    }
+
+    #[test]
+    fn search_rejects_incompatible_app_and_audio_refinements() {
+        let error = normalize_search_refinements(Some(SearchCaptureRefinements {
+            date_range: None,
+            app: Some(SearchAppRefinement {
+                kind: SearchAppRefinementKind::BundleId,
+                value: "com.example.Linear".to_string(),
+                display_name: "Linear".to_string(),
+            }),
+            audio_source: Some(AudioSegmentSourceKind::Microphone),
+        }))
+        .expect_err("incompatible refinements should fail");
+
+        assert!(matches!(
+            error,
+            AppInfraError::InvalidSearchRequest(message) if message.contains("cannot be combined")
+        ));
+    }
+
+    #[test]
     fn search_projects_completed_ocr_and_groups_equivalent_frames() {
         run_async_test(async {
             let dir = test_dir("ocr-groups");
@@ -1976,6 +2035,70 @@ mod tests {
                 .expect("fresh search should succeed");
             assert_eq!(fresh.frames.len(), 1);
             assert_eq!(fresh.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
+    fn startup_backfill_marks_frames_without_app_bundle_id_as_checked() {
+        run_async_test(async {
+            let dir = test_dir("startup-backfill-empty-app-bundle");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-empty-app-bundle.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: None,
+                            app_name: Some("Notes".to_string()),
+                            window_title: Some("Planning".to_string()),
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("ocr job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new().with_result_text("empty bundle target"),
+            )
+            .await;
+            drop(infra);
+
+            let reopened = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should reopen");
+            let null_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents WHERE frame_id = ?1 AND app_bundle_id IS NULL",
+            )
+            .bind(frame.id)
+            .fetch_one(reopened.pool())
+            .await
+            .expect("null count should load");
+            let checked_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents WHERE frame_id = ?1 AND app_bundle_id = ''",
+            )
+            .bind(frame.id)
+            .fetch_one(reopened.pool())
+            .await
+            .expect("checked count should load");
+
+            assert_eq!(null_count, 0);
+            assert_eq!(checked_count, 1);
         });
     }
 
@@ -2574,8 +2697,8 @@ mod tests {
                     snapshot_document_id: None,
                     refinements: Some(SearchCaptureRefinements {
                         date_range: Some(SearchDateRangeRefinement {
-                            start_at: "2026-05-17T09:59:00Z".to_string(),
-                            end_at: "2026-05-17T10:30:00Z".to_string(),
+                            start_at: "2026-05-17T04:59:00-05:00".to_string(),
+                            end_at: "2026-05-17T05:30:00-05:00".to_string(),
                             origin: Some(SearchDateRangeOrigin::VisibleTimeline),
                         }),
                         app: Some(SearchAppRefinement {

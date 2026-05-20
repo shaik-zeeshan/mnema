@@ -3873,8 +3873,14 @@
     return view;
   }
 
-  function applySearchRefinements(refinements: SearchCaptureRefinements, view = searchView): void {
+  function compatibleSearchRefinements(refinements: SearchCaptureRefinements): SearchCaptureRefinements {
     const next = { ...refinements };
+    if (next.app && next.audioSource) delete next.audioSource;
+    return next;
+  }
+
+  function applySearchRefinements(refinements: SearchCaptureRefinements, view = searchView): void {
+    const next = compatibleSearchRefinements(refinements);
     searchRefinements = next;
     const nextKey = searchRefinementsKey(next);
     if (nextKey !== searchRefinementKey) {
@@ -3909,7 +3915,9 @@
 
   function applyAudioSearchRefinement(audioSource: "microphone" | "system_audio"): void {
     searchRefineMenuOpen = false;
-    applySearchRefinements({ ...searchRefinements, audioSource }, "audio");
+    const next = { ...searchRefinements, audioSource };
+    delete next.app;
+    applySearchRefinements(next, "audio");
   }
 
   function searchDateChipLabel(): string | null {
@@ -3938,7 +3946,7 @@
   }
 
   function openSearchWithRefinements(refinements: SearchCaptureRefinements, initialView: SearchView): void {
-    searchRefinements = { ...refinements };
+    searchRefinements = compatibleSearchRefinements(refinements);
     searchRefinementKey = searchRefinementsKey(searchRefinements);
     searchFrames = [];
     searchAudio = [];
@@ -4094,6 +4102,7 @@
       searchNormalizedQuery = response.normalizedQuery;
       searchSnapshotDocumentId = response.snapshotDocumentId;
       searchRefinements = response.appliedRefinements ?? searchRefinements;
+      searchRefinementKey = searchRefinementsKey(searchRefinements);
       searchView = normalizeSearchViewForRefinements(searchView, searchRefinements);
       if (!appendAudio) {
         searchFrames = appendFrames ? [...searchFrames, ...response.frames] : response.frames;
