@@ -33,6 +33,10 @@ pub type BackgroundWorkersState = BackgroundWorkersControl;
 
 pub const TIMELINE_DATA_CHANGED_EVENT: &str = "timeline_data_changed";
 
+pub(crate) fn decode_broker_opaque_id(value: &str) -> Option<(String, i64)> {
+    ::app_infra::brokered_access::decode_opaque_id(value)
+}
+
 pub mod frame_preview;
 pub(crate) use frame_preview::{
     run_generated_frame_preview_cache_startup_pass, FramePreviewCacheState,
@@ -323,6 +327,12 @@ pub struct GetAudioSegmentMediaRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetAudioSegmentRequest {
+    pub audio_segment_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListSpeakerTurnsRequest {
     pub audio_segment_id: i64,
 }
@@ -507,6 +517,8 @@ pub struct FrameSearchResultDto {
     pub window_title: Option<String>,
     pub thumbnail_frame_id: i64,
     pub text_source_kind: String,
+    pub secret_redaction_count: u32,
+    pub has_secret_redactions: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -522,6 +534,8 @@ pub struct AudioSearchResultDto {
     pub match_count: u32,
     pub snippet: String,
     pub aligned_frame: Option<FrameDto>,
+    pub secret_redaction_count: u32,
+    pub has_secret_redactions: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -798,6 +812,8 @@ impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
             window_title: result.window_title,
             thumbnail_frame_id: result.thumbnail_frame_id,
             text_source_kind: result.text_source_kind,
+            secret_redaction_count: result.secret_redaction_count,
+            has_secret_redactions: result.has_secret_redactions,
         }
     }
 }
@@ -815,6 +831,8 @@ impl From<::app_infra::AudioSearchResult> for AudioSearchResultDto {
             match_count: result.match_count,
             snippet: result.snippet,
             aligned_frame: result.aligned_frame.map(FrameDto::from),
+            secret_redaction_count: result.secret_redaction_count,
+            has_secret_redactions: result.has_secret_redactions,
         }
     }
 }
@@ -3560,6 +3578,16 @@ async fn delete_recent_capture_rows(
             .map_err(|error| format!("failed to delete capture segments: {error}"))?
             .rows_affected() as i64;
 
+    sqlx::query(
+        "DELETE FROM capture_safety_gaps
+         WHERE started_at <= ?2 AND COALESCE(ended_at, started_at) >= ?1",
+    )
+    .bind(started_at)
+    .bind(ended_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| format!("failed to delete capture safety gaps: {error}"))?;
+
     tx.commit()
         .await
         .map_err(|error| format!("failed to commit delete transaction: {error}"))?;
@@ -3767,6 +3795,60 @@ pub async fn get_retention_cleanup_status(
         .latest_status(app_retention_policy(policy))
         .await
         .map_err(|error| format!("failed to read retention cleanup status: {error}"))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateBrokerGrantRequest {
+    pub label: Option<String>,
+    pub duration_hours: Option<u64>,
+    pub all_retained_history: Option<bool>,
+}
+
+fn broker_config_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app_handle
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("failed to resolve app config dir: {error}"))
+}
+
+#[tauri::command]
+pub async fn list_broker_grants(
+    app_handle: tauri::AppHandle,
+) -> Result<::app_infra::brokered_access::BrokerGrantFile, String> {
+    let config_dir = broker_config_dir(&app_handle)?;
+    ::app_infra::brokered_access::load_grants(&config_dir)
+        .map_err(|error| format!("failed to load broker grants: {error}"))
+}
+
+#[tauri::command]
+pub async fn create_broker_grant(
+    app_handle: tauri::AppHandle,
+    request: CreateBrokerGrantRequest,
+) -> Result<::app_infra::brokered_access::BrokerGrant, String> {
+    let config_dir = broker_config_dir(&app_handle)?;
+    let scope = if request.all_retained_history.unwrap_or(false) {
+        ::app_infra::brokered_access::BrokerGrantScope::AllRetainedHistory
+    } else {
+        ::app_infra::brokered_access::BrokerGrantScope::RecentDays { days: 1 }
+    };
+    ::app_infra::brokered_access::create_grant(
+        &config_dir,
+        request.label.unwrap_or_else(|| "Local agent".to_string()),
+        request.duration_hours.unwrap_or(24).clamp(1, 24 * 30),
+        scope,
+    )
+    .map_err(|error| format!("failed to create broker grant: {error}"))
+}
+
+#[tauri::command]
+pub async fn revoke_broker_grant(
+    app_handle: tauri::AppHandle,
+    grant_id: String,
+) -> Result<bool, String> {
+    let config_dir = broker_config_dir(&app_handle)?;
+    ::app_infra::brokered_access::revoke_grant(&config_dir, &grant_id)
+        .map_err(|error| format!("failed to revoke broker grant: {error}"))
 }
 
 #[tauri::command]
@@ -4011,6 +4093,24 @@ pub async fn get_audio_segment_media(
             )
         })?
         .ok_or_else(|| format!("audio segment {} not found", request.audio_segment_id))
+}
+
+#[tauri::command]
+pub async fn get_audio_segment(
+    request: GetAudioSegmentRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Option<AudioSegmentDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .get_audio_segment(request.audio_segment_id)
+        .await
+        .map(|segment| segment.map(AudioSegmentDto::from))
+        .map_err(|error| {
+            format!(
+                "failed to get audio segment {}: {error}",
+                request.audio_segment_id
+            )
+        })
 }
 
 #[tauri::command]
@@ -4483,6 +4583,10 @@ mod tests {
             is_running: true,
             is_inactivity_paused: true,
             is_user_paused: false,
+            is_capture_safety_suspended: false,
+            capture_safety_suspension_reason: None,
+            capture_safety_available: true,
+            capture_safety_unavailable_reason: None,
             requested_sources: None,
             output_files: None,
             source_sessions: None,
@@ -4497,6 +4601,10 @@ mod tests {
             is_running: true,
             is_inactivity_paused: false,
             is_user_paused: true,
+            is_capture_safety_suspended: false,
+            capture_safety_suspension_reason: None,
+            capture_safety_available: true,
+            capture_safety_unavailable_reason: None,
             requested_sources: None,
             output_files: None,
             source_sessions: None,
@@ -5771,6 +5879,8 @@ mod tests {
             mime_type: "image/png".to_string(),
             file_path: preview_path.to_string_lossy().to_string(),
             source_kind: FramePreviewSourceKindDto::OriginalFrame,
+            has_secret_redactions: false,
+            secret_redaction_count: 0,
         };
 
         cache.insert(42, preview.clone(), Duration::from_secs(60), now);
@@ -5789,6 +5899,8 @@ mod tests {
                 mime_type: "image/png".to_string(),
                 file_path: "/tmp/frame-preview.png".to_string(),
                 source_kind: FramePreviewSourceKindDto::OriginalFrame,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             },
             Duration::from_secs(1),
             now,
@@ -5810,6 +5922,8 @@ mod tests {
                 mime_type: "image/png".to_string(),
                 file_path: "/tmp/frame-preview.png".to_string(),
                 source_kind: FramePreviewSourceKindDto::OriginalFrame,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             },
             Duration::from_secs(60),
             Instant::now(),
@@ -6039,6 +6153,8 @@ mod tests {
                 mime_type: "image/jpeg".to_string(),
                 file_path: preview_200_path.to_string_lossy().to_string(),
                 source_kind: FramePreviewSourceKindDto::ScrubPreview,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             },
             ttl,
             now,
@@ -6050,6 +6166,8 @@ mod tests {
                 mime_type: "image/jpeg".to_string(),
                 file_path: preview_400_path.to_string_lossy().to_string(),
                 source_kind: FramePreviewSourceKindDto::ScrubPreview,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             },
             ttl,
             now,
@@ -6087,6 +6205,8 @@ mod tests {
                 mime_type: "image/jpeg".to_string(),
                 file_path: preview_path.to_string_lossy().to_string(),
                 source_kind: FramePreviewSourceKindDto::ScrubPreview,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             },
             ttl,
             now,
@@ -6129,6 +6249,8 @@ mod tests {
                     mime_type: "image/png".to_string(),
                     file_path: preview_path.to_string_lossy().to_string(),
                     source_kind: FramePreviewSourceKindDto::OriginalFrame,
+                    has_secret_redactions: false,
+                    secret_redaction_count: 0,
                 },
                 ttl,
                 now + Duration::from_millis(frame_id as u64),
@@ -6161,6 +6283,8 @@ mod tests {
                 mime_type: "image/png".to_string(),
                 file_path: "/tmp/frame-preview.png".to_string(),
                 source_kind: FramePreviewSourceKindDto::OriginalFrame,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             });
             state.finish_request(42, Ok(preview.clone()));
 

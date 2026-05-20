@@ -756,6 +756,7 @@ mod tests {
             audio_speech_detection: default_audio_speech_detection_settings(),
             metadata: default_metadata_settings(),
             privacy: default_privacy_settings(),
+            capture_safety: capture_types::default_capture_safety_settings(),
             pause_capture_on_inactivity: true,
             idle_timeout_seconds: 10,
             microphone_activity_sensitivity: 50,

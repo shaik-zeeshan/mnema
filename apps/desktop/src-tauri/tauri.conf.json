@@ -19,6 +19,13 @@
       }
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["mnema"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

@@ -176,6 +176,7 @@ pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
             let app_handle = app_handle.clone();
             move |_notification| {
                 crate::native_capture::privacy::request_privacy_filter_refresh(&app_handle, reason);
+                crate::native_capture::request_capture_safety_check(&app_handle);
             }
         }));
     }

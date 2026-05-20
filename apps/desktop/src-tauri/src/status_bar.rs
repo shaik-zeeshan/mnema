@@ -159,6 +159,7 @@ fn build_menu_model(
     onboarding_complete: bool,
     recording: bool,
     user_paused: bool,
+    capture_safety_suspended: bool,
     settings: &RecordingSettings,
     support: &CaptureSources,
     operation: StatusBarOperation,
@@ -183,6 +184,9 @@ fn build_menu_model(
         StatusBarOperation::Stopping => "Stopping...",
     };
     let tooltip = match operation {
+        StatusBarOperation::Idle if recording && capture_safety_suspended => {
+            "Mnema - Paused for credential entry"
+        }
         StatusBarOperation::Idle if recording => "Mnema - Recording",
         StatusBarOperation::Idle => "Mnema",
         StatusBarOperation::Starting => "Mnema - Starting...",
@@ -215,12 +219,16 @@ fn build_menu_model(
         onboarding_complete: true,
         recording_label: Some(recording_label),
         recording_enabled: operation == StatusBarOperation::Idle,
-        pause_label: recording.then_some(if user_paused {
+        pause_label: recording.then_some(if capture_safety_suspended {
+            "Paused for Credential Entry"
+        } else if user_paused {
             "Resume Recording"
         } else {
             "Pause Recording"
         }),
-        pause_enabled: recording && operation == StatusBarOperation::Idle,
+        pause_enabled: recording
+            && operation == StatusBarOperation::Idle
+            && !capture_safety_suspended,
         source_items,
         tooltip,
     }
@@ -249,6 +257,7 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
         crate::windows::is_onboarding_complete(app),
         recording,
         session.is_user_paused,
+        session.is_capture_safety_suspended,
         &settings,
         &support,
         operation(app),
@@ -380,6 +389,13 @@ pub(crate) fn refresh(app: &tauri::AppHandle) {
             "failed to set status-bar tooltip: {error}"
         ));
     }
+}
+
+pub(crate) fn refresh_deferred(app: &tauri::AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        refresh(&app);
+    });
 }
 
 fn show_capture_error(app: &tauri::AppHandle, title: &str, error: CaptureErrorResponse) {
@@ -638,6 +654,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -651,6 +668,7 @@ mod tests {
     fn post_onboarding_idle_model_shows_start_and_enabled_sources() {
         let model = build_menu_model(
             true,
+            false,
             false,
             false,
             &settings_with_sources(true, true, false),
@@ -690,6 +708,7 @@ mod tests {
             true,
             true,
             false,
+            false,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -704,6 +723,7 @@ mod tests {
         for operation in [StatusBarOperation::Starting, StatusBarOperation::Stopping] {
             let model = build_menu_model(
                 true,
+                false,
                 false,
                 false,
                 &settings_with_sources(true, true, true),
@@ -721,6 +741,7 @@ mod tests {
             true,
             false,
             false,
+            false,
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -729,6 +750,7 @@ mod tests {
 
         let microphone = build_menu_model(
             true,
+            false,
             false,
             false,
             &settings_with_sources(false, true, false),
@@ -742,6 +764,7 @@ mod tests {
     fn screen_with_only_system_audio_cannot_be_unchecked() {
         let model = build_menu_model(
             true,
+            false,
             false,
             false,
             &settings_with_sources(true, false, true),
@@ -776,6 +799,7 @@ mod tests {
             true,
             false,
             false,
+            false,
             &settings_with_sources(false, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -787,6 +811,7 @@ mod tests {
     fn unsupported_sources_are_disabled_without_mutating_checked_state() {
         let model = build_menu_model(
             true,
+            false,
             false,
             false,
             &settings_with_sources(true, true, true),

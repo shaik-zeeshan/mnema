@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
 use audio_transcription::{TranscriptionMetadata, TranscriptionSegment, TranscriptionWord};
+use ocr::OcrStructuredPayload;
+use secret_redaction::{redact_searchable_text, RedactionContext, RedactionResult};
 use serde::{Deserialize, Serialize};
 use speaker_analysis::{
     PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisOutput,
@@ -1315,6 +1317,8 @@ impl ProcessingStore {
             ));
         }
 
+        let redacted_result = redact_processing_result_draft(&job, result)?;
+
         let result_insert = sqlx::query(
             "INSERT INTO processing_results (\
                 job_id, subject_type, subject_id, processor, result_text, structured_payload_json, processor_version\
@@ -1324,9 +1328,9 @@ impl ProcessingStore {
         .bind(&job.subject_type)
         .bind(job.subject_id)
         .bind(&job.processor)
-        .bind(result.result_text.as_deref())
-        .bind(result.structured_payload_json.as_deref())
-        .bind(result.processor_version.as_deref())
+        .bind(redacted_result.draft.result_text.as_deref())
+        .bind(redacted_result.draft.structured_payload_json.as_deref())
+        .bind(redacted_result.draft.processor_version.as_deref())
         .execute(&mut *transaction)
         .await?;
 
@@ -1360,6 +1364,12 @@ impl ProcessingStore {
         let stored_result = get_processing_result_optional(&mut *transaction, result_id)
             .await?
             .ok_or(AppInfraError::ProcessingResultNotFound(result_id))?;
+        persist_secret_redactions_in_transaction(
+            &mut transaction,
+            &stored_result,
+            &redacted_result,
+        )
+        .await?;
 
         if job.processor == AUDIO_TRANSCRIPTION_PROCESSOR
             && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
@@ -1396,7 +1406,8 @@ impl ProcessingStore {
         if job.processor == SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR
             && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
         {
-            let speech_detected = result
+            let speech_detected = redacted_result
+                .draft
                 .structured_payload_json
                 .as_deref()
                 .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
@@ -1456,7 +1467,7 @@ impl ProcessingStore {
         if job.processor == SPEAKER_ANALYSIS_PROCESSOR
             && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
         {
-            if let Some(payload_json) = result.structured_payload_json.as_deref() {
+            if let Some(payload_json) = redacted_result.draft.structured_payload_json.as_deref() {
                 let output: SpeakerAnalysisOutput = serde_json::from_str(payload_json)?;
                 persist_speaker_analysis_output(&mut transaction, job.subject_id, &output).await?;
             }
@@ -3092,6 +3103,154 @@ fn speaker_analysis_model_key_for_job(job: &ProcessingJob) -> Result<Option<Stri
         .map(str::trim)
         .filter(|model_id| !model_id.is_empty())
         .map(|model_id| model_key(&payload.provider, model_id)))
+}
+
+#[derive(Debug, Clone)]
+struct RedactedProcessingResultDraft {
+    draft: ProcessingResultDraft,
+    redaction: Option<RedactionResult>,
+}
+
+fn redact_processing_result_draft(
+    job: &ProcessingJob,
+    draft: &ProcessingResultDraft,
+) -> Result<RedactedProcessingResultDraft> {
+    let context = match (job.subject_type.as_str(), job.processor.as_str()) {
+        (super::FRAME_SUBJECT_TYPE, OCR_PROCESSOR) => Some(RedactionContext::Ocr),
+        (AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR) => {
+            Some(RedactionContext::MicrophoneTranscript)
+        }
+        _ => None,
+    };
+    let Some(context) = context else {
+        return Ok(RedactedProcessingResultDraft {
+            draft: draft.clone(),
+            redaction: None,
+        });
+    };
+
+    let redaction = draft
+        .result_text
+        .as_deref()
+        .map(|text| redact_searchable_text(text, context));
+    let result_text = redaction
+        .as_ref()
+        .map(|result| result.redacted_text.clone())
+        .or_else(|| draft.result_text.clone());
+
+    let structured_payload_json = match (
+        job.processor.as_str(),
+        draft.structured_payload_json.as_deref(),
+    ) {
+        (OCR_PROCESSOR, Some(payload_json)) => {
+            Some(redact_structured_payload_or_keep_if_no_redactions(
+                payload_json,
+                &redaction,
+                |payload| redact_ocr_structured_payload(payload, context),
+            )?)
+        }
+        (AUDIO_TRANSCRIPTION_PROCESSOR, Some(payload_json)) => {
+            Some(redact_structured_payload_or_keep_if_no_redactions(
+                payload_json,
+                &redaction,
+                |payload| redact_transcription_structured_payload(payload, context),
+            )?)
+        }
+        (_, payload_json) => payload_json.map(ToString::to_string),
+    };
+
+    Ok(RedactedProcessingResultDraft {
+        draft: ProcessingResultDraft {
+            result_text,
+            structured_payload_json,
+            processor_version: draft.processor_version.clone(),
+        },
+        redaction,
+    })
+}
+
+fn redact_structured_payload_or_keep_if_no_redactions(
+    payload_json: &str,
+    redaction: &Option<RedactionResult>,
+    redact: impl FnOnce(&str) -> Result<String>,
+) -> Result<String> {
+    match redact(payload_json) {
+        Ok(redacted) => Ok(redacted),
+        Err(error)
+            if redaction
+                .as_ref()
+                .is_some_and(|result| result.spans.is_empty()) =>
+        {
+            let _ = error;
+            Ok(payload_json.to_string())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn redact_ocr_structured_payload(payload_json: &str, context: RedactionContext) -> Result<String> {
+    let mut payload: OcrStructuredPayload = serde_json::from_str(payload_json)?;
+    for observation in &mut payload.observations {
+        observation.text = redact_searchable_text(&observation.text, context).redacted_text;
+    }
+    Ok(serde_json::to_string(&payload)?)
+}
+
+fn redact_transcription_structured_payload(
+    payload_json: &str,
+    context: RedactionContext,
+) -> Result<String> {
+    let mut metadata: TranscriptionMetadata = serde_json::from_str(payload_json)?;
+    for segment in &mut metadata.segments {
+        segment.text = redact_searchable_text(&segment.text, context).redacted_text;
+    }
+    for word in &mut metadata.words {
+        word.text = redact_searchable_text(&word.text, context).redacted_text;
+    }
+    Ok(serde_json::to_string(&metadata)?)
+}
+
+async fn persist_secret_redactions_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    stored_result: &ProcessingResult,
+    redacted_result: &RedactedProcessingResultDraft,
+) -> Result<()> {
+    let Some(redaction) = &redacted_result.redaction else {
+        return Ok(());
+    };
+    if redaction.spans.is_empty() {
+        return Ok(());
+    }
+
+    let (anchor_type, frame_id, audio_segment_id) =
+        if stored_result.subject_type == super::FRAME_SUBJECT_TYPE {
+            ("frame", Some(stored_result.subject_id), None)
+        } else if stored_result.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE {
+            ("audio", None, Some(stored_result.subject_id))
+        } else {
+            return Ok(());
+        };
+
+    for span in &redaction.spans {
+        sqlx::query(
+            "INSERT INTO secret_redactions (\
+                anchor_type, frame_id, audio_segment_id, processing_result_id, category, \
+                redacted_start, redacted_end, detector_version\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(anchor_type)
+        .bind(frame_id)
+        .bind(audio_segment_id)
+        .bind(stored_result.id)
+        .bind(span.category.as_storage_str())
+        .bind(i64::try_from(span.start).unwrap_or(i64::MAX))
+        .bind(i64::try_from(span.end).unwrap_or(i64::MAX))
+        .bind(&redaction.detector_version)
+        .execute(&mut **transaction)
+        .await?;
+    }
+
+    Ok(())
 }
 
 fn map_processing_result(row: SqliteRow) -> Result<ProcessingResult> {

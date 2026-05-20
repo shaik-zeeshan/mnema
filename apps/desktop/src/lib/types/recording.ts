@@ -25,6 +25,10 @@ export interface PrivacySettings {
 	excludedApps: ExcludedAppEntry[];
 }
 
+export interface CaptureSafetySettings {
+	credentialEntrySuspensionEnabled: boolean;
+}
+
 export interface RecordingSettings {
 	captureScreen: boolean;
 	captureMicrophone: boolean;
@@ -45,6 +49,7 @@ export interface RecordingSettings {
 	audioSpeechDetection: AudioSpeechDetectionSettings;
 	metadata: MetadataSettings;
 	privacy: PrivacySettings;
+	captureSafety: CaptureSafetySettings;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
 	retentionPolicy: RetentionPolicy;

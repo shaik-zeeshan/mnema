@@ -66,9 +66,27 @@ pub struct NativeCaptureSession {
     pub is_running: bool,
     pub is_inactivity_paused: bool,
     pub is_user_paused: bool,
+    pub is_capture_safety_suspended: bool,
+    pub capture_safety_suspension_reason: Option<CaptureSafetySuspensionReason>,
+    pub capture_safety_available: bool,
+    pub capture_safety_unavailable_reason: Option<CaptureSafetyUnavailableReason>,
     pub requested_sources: Option<CaptureSources>,
     pub output_files: Option<CaptureOutputFiles>,
     pub source_sessions: Option<SourceSessions>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureSafetySuspensionReason {
+    CredentialEntry,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureSafetyUnavailableReason {
+    AccessibilityPermissionMissing,
+    UnsupportedPlatform,
+    DetectorError,
 }
 
 #[derive(Debug, Clone, Serialize)]

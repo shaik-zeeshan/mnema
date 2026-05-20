@@ -108,6 +108,19 @@
     browserDisclosures: BrowserDisclosureApp[];
   };
 
+  type BrokerGrant = {
+    id: string;
+    label: string;
+    createdAtUnixMs: number;
+    expiresAtUnixMs: number;
+    revoked: boolean;
+    scope: { recent_days: { days: number } } | "all_retained_history" | Record<string, unknown>;
+  };
+
+  type BrokerGrantFile = {
+    grants: BrokerGrant[];
+  };
+
   type RetentionCleanupSummary = {
     policy: string;
     cutoffEndedBefore: string | null;
@@ -180,6 +193,7 @@
   let draftRetentionPolicy = $state<RetentionPolicy>("never");
   let draftMetadataEnabled = $state(true);
   let draftBrowserUrlMode = $state<BrowserUrlMode>("sanitized");
+  let draftCredentialEntrySuspensionEnabled = $state(true);
   let draftExcludedApps = $state<ExcludedAppEntry[]>([]);
   let privacyAppCandidates = $state<PrivacyAppCandidate[]>([]);
   let appIconPathsByBundleId = $state<Record<string, string>>({});
@@ -193,6 +207,10 @@
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
   let retentionCleanupRunning = $state(false);
   let retentionCleanupError = $state<string | null>(null);
+  let brokerGrants = $state<BrokerGrant[]>([]);
+  let brokerGrantLoading = $state(false);
+  let brokerGrantSaving = $state(false);
+  let brokerGrantError = $state<string | null>(null);
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
   // runtime in `$lib/theme.svelte` and is persisted via recording settings.
@@ -542,6 +560,7 @@
     draftRetentionPolicy = s.retentionPolicy ?? "never";
     draftMetadataEnabled = s.metadata?.enabled ?? true;
     draftBrowserUrlMode = s.metadata?.browserUrlMode ?? "sanitized";
+    draftCredentialEntrySuspensionEnabled = s.captureSafety?.credentialEntrySuspensionEnabled ?? true;
     draftExcludedApps = [...(s.privacy?.excludedApps ?? [])];
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
     draftAppearance = s.appearance ?? "system";
@@ -645,6 +664,9 @@
       },
       privacy: recordingSettings?.privacy ?? {
         excludedApps: draftExcludedApps,
+      },
+      captureSafety: {
+        credentialEntrySuspensionEnabled: draftCredentialEntrySuspensionEnabled,
       },
       nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
       previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
@@ -758,6 +780,51 @@
       void resolveAppIcons(bundleIds);
     } catch {
       sensitiveRecommendations = null;
+    }
+  }
+
+  async function loadBrokerGrants() {
+    brokerGrantLoading = true;
+    brokerGrantError = null;
+    try {
+      const response = await invoke<BrokerGrantFile>("list_broker_grants");
+      brokerGrants = response.grants ?? [];
+    } catch (err) {
+      brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      brokerGrantLoading = false;
+    }
+  }
+
+  async function createAgentBrokerGrant() {
+    brokerGrantSaving = true;
+    brokerGrantError = null;
+    try {
+      await invoke<BrokerGrant>("create_broker_grant", {
+        request: {
+          label: "Local agent",
+          durationHours: 24,
+          allRetainedHistory: false,
+        },
+      });
+      await loadBrokerGrants();
+    } catch (err) {
+      brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      brokerGrantSaving = false;
+    }
+  }
+
+  async function revokeAgentBrokerGrant(grantId: string) {
+    brokerGrantSaving = true;
+    brokerGrantError = null;
+    try {
+      await invoke<boolean>("revoke_broker_grant", { grantId });
+      await loadBrokerGrants();
+    } catch (err) {
+      brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      brokerGrantSaving = false;
     }
   }
 
@@ -2108,6 +2175,7 @@
     loadGeneralLogStatus();
     loadPrivacyAppCandidates();
     loadSensitiveCaptureRecommendations();
+    loadBrokerGrants();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -2506,6 +2574,54 @@
             />
           </div>
           <p class="group-hint">Sanitized URLs keep scheme, host, port, and path while dropping query strings and fragments.</p>
+        </div>
+
+        <div class="settings-group">
+          <span class="group-label">Capture Safety</span>
+          <div class="settings-stack">
+            <Switch
+              bind:checked={draftCredentialEntrySuspensionEnabled}
+              label="Pause during credential entry"
+              description="When available, pause screen, microphone, and system audio while trusted native secure-entry signals are active"
+            />
+          </div>
+          <p class="group-hint">When this is off, original media may capture credentials. Mnema still redacts high-confidence secrets from searchable text.</p>
+        </div>
+
+        <div class="settings-group">
+          <span class="group-label">Agent Access</span>
+          <div class="settings-stack">
+            <div class="privacy-disclosure">
+              <p>Broker grants allow local tools to use redacted, bounded Mnema search through the mnema-broker CLI.</p>
+              <p>The broker does not return media paths, raw database rows, or original OCR/transcript dumps.</p>
+            </div>
+            <div class="row-actions">
+              <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading} onclick={createAgentBrokerGrant}>
+                Grant 24h access
+              </button>
+              <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading} onclick={loadBrokerGrants}>
+                Refresh
+              </button>
+            </div>
+            {#if brokerGrantError}
+              <p class="error-text">{brokerGrantError}</p>
+            {/if}
+            {#if brokerGrants.length > 0}
+              <div class="excluded-apps-list">
+                {#each brokerGrants as grant (grant.id)}
+                  <div class="excluded-app-row">
+                    <div class="excluded-app-row__meta">
+                      <span class="excluded-app-row__name">{grant.label}</span>
+                      <span class="excluded-app-row__bundle">
+                        {grant.revoked ? "Revoked" : `Expires ${new Date(grant.expiresAtUnixMs).toLocaleString()}`}
+                      </span>
+                    </div>
+                    <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || grant.revoked} onclick={() => revokeAgentBrokerGrant(grant.id)}>Revoke</button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
         </div>
 
         <div class="settings-group">

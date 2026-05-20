@@ -1,4 +1,5 @@
 mod activity;
+mod capture_safety;
 #[path = "native_capture_debug_log.rs"]
 pub(crate) mod debug_log;
 #[path = "native_capture_inactivity.rs"]
@@ -741,11 +742,23 @@ pub(crate) fn emit_recording_settings_changed(
     let _ = app_handle.emit(RECORDING_SETTINGS_CHANGED_EVENT, settings);
 }
 
-fn emit_native_capture_session_changed(
+pub(crate) fn emit_native_capture_session_changed(
     app_handle: &tauri::AppHandle,
     session: &capture_types::NativeCaptureSession,
 ) {
     let _ = app_handle.emit(NATIVE_CAPTURE_SESSION_CHANGED_EVENT, session);
+}
+
+pub(crate) fn request_capture_safety_check(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        return;
+    };
+    let Ok(runtime) = state.try_lock() else {
+        return;
+    };
+    if let Some(control) = runtime.runtime().segment_loop_control.as_ref() {
+        control.notify();
+    }
 }
 
 fn emit_app_notifications_changed(
@@ -1404,6 +1417,7 @@ fn update_recording_settings_request_from_settings(
         audio_speech_detection: settings.audio_speech_detection,
         metadata: settings.metadata,
         privacy: settings.privacy,
+        capture_safety: settings.capture_safety,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -2312,6 +2326,7 @@ fn finish_recording_settings_update(
     emit_recording_settings_changed(app_handle, &settings);
     let privacy_changed = previous_settings.privacy != settings.privacy;
     let metadata_changed = previous_settings.metadata != settings.metadata;
+    let capture_safety_changed = previous_settings.capture_safety != settings.capture_safety;
     if metadata_changed {
         privacy::request_privacy_filter_refresh(
             app_handle,
@@ -2322,6 +2337,9 @@ fn finish_recording_settings_update(
             app_handle,
             privacy::PrivacyRefreshReason::StaticAppRuleMutation,
         );
+    }
+    if capture_safety_changed {
+        request_capture_safety_check(app_handle);
     }
     crate::status_bar::refresh(app_handle);
 

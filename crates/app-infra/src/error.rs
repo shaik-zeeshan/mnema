@@ -75,6 +75,10 @@ pub enum AppInfraError {
     InvalidFrameBatchTimestamp(String),
     #[error("invalid search request: {0}")]
     InvalidSearchRequest(String),
+    #[error("invalid capture safety gap reason: {0}")]
+    InvalidCaptureSafetyGapReason(String),
+    #[error("capture index encryption error: {0}")]
+    CaptureIndexEncryption(String),
     #[error("frame batch {batch_id} is not ready because OCR is still pending")]
     FrameBatchOcrPending { batch_id: i64 },
     #[error("frame batch {batch_id} has no frames to finalize")]

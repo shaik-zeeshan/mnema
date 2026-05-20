@@ -3,6 +3,10 @@ name = "app-infra"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "mnema-broker"
+path = "src/bin/mnema_broker.rs"
+
 [dependencies]
 async-trait = "0.1"
 audio-transcription = { path = "../audio-transcription" }
@@ -14,13 +18,16 @@ capture-runtime = { path = "../capture-runtime" }
 capture-types = { path = "../capture-types" }
 capture-vad = { path = "../capture-vad" }
 capture-writers = { path = "../capture-writers" }
+secret-redaction = { path = "../secret-redaction" }
 chrono = "0.4"
+dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = "1"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls", "migrate"] }
+libsqlite3-sys = { version = "0.30.1", features = ["bundled-sqlcipher"] }
 thiserror = "2"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread"] }

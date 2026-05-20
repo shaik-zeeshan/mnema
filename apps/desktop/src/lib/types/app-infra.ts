@@ -52,6 +52,8 @@ export interface FramePreviewDto {
 	mimeType: string;
 	filePath: string;
 	sourceKind: FramePreviewSourceKind;
+	hasSecretRedactions: boolean;
+	secretRedactionCount: number;
 }
 
 export type FramePreviewVideoScope = "active_frame";
@@ -218,6 +220,8 @@ export interface FrameSearchResultDto {
 	windowTitle: string | null;
 	thumbnailFrameId: number;
 	textSourceKind: "direct" | "equivalent_reuse";
+	hasSecretRedactions: boolean;
+	secretRedactionCount: number;
 }
 
 export interface AudioSearchResultDto {
@@ -231,6 +235,8 @@ export interface AudioSearchResultDto {
 	matchCount: number;
 	snippet: string;
 	alignedFrame: FrameDto | null;
+	hasSecretRedactions: boolean;
+	secretRedactionCount: number;
 }
 
 export interface ListAudioSegmentsRequest {
@@ -239,6 +245,10 @@ export interface ListAudioSegmentsRequest {
 }
 
 export interface GetAudioSegmentMediaRequest {
+	audioSegmentId: number;
+}
+
+export interface GetAudioSegmentRequest {
 	audioSegmentId: number;
 }
 

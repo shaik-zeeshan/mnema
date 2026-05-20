@@ -51,6 +51,14 @@ export interface CaptureSession {
 	sourceSessions: SourceSessions | null;
 	isInactivityPaused: boolean;
 	isUserPaused: boolean;
+	isCaptureSafetySuspended: boolean;
+	captureSafetySuspensionReason: "credential_entry" | null;
+	captureSafetyAvailable: boolean;
+	captureSafetyUnavailableReason:
+		| "accessibility_permission_missing"
+		| "unsupported_platform"
+		| "detector_error"
+		| null;
 }
 
 export interface GetPermissionsResponse {
