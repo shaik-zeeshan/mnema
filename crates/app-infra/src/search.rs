@@ -128,7 +128,7 @@ struct NormalizedDateRange {
 #[derive(Debug, Clone)]
 enum NormalizedAppRefinement {
     BundleId { value: String },
-    AppName { value: String },
+    AppName { search_key: String },
 }
 
 #[derive(Clone)]
@@ -181,6 +181,7 @@ impl SearchStore {
         }
         backfill_missing_equivalent_reuse_projections(&mut transaction).await?;
         backfill_missing_app_bundle_id_projection(&mut transaction).await?;
+        backfill_missing_app_name_search_key_projection(&mut transaction).await?;
 
         transaction.commit().await?;
         Ok(())
@@ -330,9 +331,15 @@ fn normalize_search_refinements(
                 SearchAppRefinementKind::BundleId => NormalizedAppRefinement::BundleId {
                     value: value.clone(),
                 },
-                SearchAppRefinementKind::AppName => NormalizedAppRefinement::AppName {
-                    value: value.clone(),
-                },
+                SearchAppRefinementKind::AppName => {
+                    NormalizedAppRefinement::AppName {
+                        search_key: normalize_app_name_for_search(&value).ok_or_else(|| {
+                            AppInfraError::InvalidSearchRequest(
+                                "app.value must be non-empty".to_string(),
+                            )
+                        })?,
+                    }
+                }
             };
             Ok((
                 normalized,
@@ -515,9 +522,42 @@ async fn backfill_missing_app_bundle_id_projection(
     Ok(())
 }
 
+async fn backfill_missing_app_name_search_key_projection(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT id, app_name \
+         FROM search_documents \
+         WHERE app_name_search_key IS NULL",
+    )
+    .fetch_all(&mut **transaction)
+    .await?;
+
+    for row in rows {
+        let id: i64 = row.get("id");
+        let search_key = row
+            .get::<Option<String>, _>("app_name")
+            .as_deref()
+            .and_then(normalize_app_name_for_search)
+            .unwrap_or_default();
+        sqlx::query("UPDATE search_documents SET app_name_search_key = ?1 WHERE id = ?2")
+            .bind(search_key)
+            .bind(id)
+            .execute(&mut **transaction)
+            .await?;
+    }
+
+    Ok(())
+}
+
 fn normalize_app_bundle_id_for_search(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn normalize_app_name_for_search(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_lowercase())
 }
 
 async fn project_frame_ocr_result(
@@ -554,6 +594,7 @@ async fn project_frame_ocr_result(
 
     let group_key = frame_search_group_key(&frame);
     let context_text = search_context_text(app_name.as_deref(), window_title.as_deref(), None);
+    let app_name_search_key = app_name.as_deref().and_then(normalize_app_name_for_search);
 
     insert_search_document(
         transaction,
@@ -570,6 +611,7 @@ async fn project_frame_ocr_result(
             session_id: &frame.session_id,
             app_bundle_id: app_bundle_id.as_deref(),
             app_name: app_name.as_deref(),
+            app_name_search_key: app_name_search_key.as_deref(),
             window_title: window_title.as_deref(),
             group_key: &group_key,
             text_source_kind: "direct",
@@ -850,6 +892,7 @@ async fn project_equivalent_reuse_document_for_frame(
         .unwrap_or((None, None, None));
     let group_key = frame_search_group_key(frame);
     let context_text = search_context_text(app_name.as_deref(), window_title.as_deref(), None);
+    let app_name_search_key = app_name.as_deref().and_then(normalize_app_name_for_search);
 
     delete_equivalent_reuse_projection_for_frame(transaction, frame.id).await?;
 
@@ -868,6 +911,7 @@ async fn project_equivalent_reuse_document_for_frame(
             session_id: &frame.session_id,
             app_bundle_id: app_bundle_id.as_deref(),
             app_name: app_name.as_deref(),
+            app_name_search_key: app_name_search_key.as_deref(),
             window_title: window_title.as_deref(),
             group_key: &group_key,
             text_source_kind: "equivalent_reuse",
@@ -938,6 +982,7 @@ async fn project_audio_transcription_result(
                 session_id: &segment.source_session_id,
                 app_bundle_id: None,
                 app_name: None,
+                app_name_search_key: None,
                 window_title: None,
                 group_key: &group_key,
                 text_source_kind: "direct",
@@ -964,6 +1009,7 @@ struct NewSearchDocument<'a> {
     session_id: &'a str,
     app_bundle_id: Option<&'a str>,
     app_name: Option<&'a str>,
+    app_name_search_key: Option<&'a str>,
     window_title: Option<&'a str>,
     group_key: &'a str,
     text_source_kind: &'a str,
@@ -978,9 +1024,9 @@ async fn insert_search_document(
     let insert = sqlx::query(
         "INSERT INTO search_documents (\
             anchor_type, frame_id, audio_segment_id, processing_result_id, span_start_ms, span_end_ms, \
-            absolute_start_at, absolute_end_at, source_kind, session_id, app_bundle_id, app_name, window_title, \
+            absolute_start_at, absolute_end_at, source_kind, session_id, app_bundle_id, app_name, app_name_search_key, window_title, \
             group_key, text_source_kind, body_text, context_text\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
     )
     .bind(doc.anchor_type)
     .bind(doc.frame_id)
@@ -994,6 +1040,7 @@ async fn insert_search_document(
     .bind(doc.session_id)
     .bind(doc.app_bundle_id.and_then(normalize_app_bundle_id_for_search))
     .bind(doc.app_name)
+    .bind(doc.app_name_search_key)
     .bind(doc.window_title)
     .bind(doc.group_key)
     .bind(doc.text_source_kind)
@@ -1248,10 +1295,12 @@ fn push_search_refinement_predicates(
                 query.push_bind(value.clone());
                 query.push(")");
             }
-            NormalizedAppRefinement::AppName { value } => {
-                query.push(" AND LOWER(COALESCE(search_documents.app_name, '')) = LOWER(");
-                query.push_bind(value.clone());
-                query.push(")");
+            NormalizedAppRefinement::AppName { search_key, .. } => {
+                query.push(
+                    " AND LENGTH(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = 0 \
+                      AND search_documents.app_name_search_key = ",
+                );
+                query.push_bind(search_key.clone());
             }
         }
     }
@@ -2785,6 +2834,97 @@ mod tests {
     }
 
     #[test]
+    fn app_name_search_refinement_is_unicode_trimmed_bundleless_fallback() {
+        run_async_test(async {
+            let dir = test_dir("app-name-refinement-fallback");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let fallback = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-app-name-fallback.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: None,
+                            app_name: Some(" ÉDITEUR ".to_string()),
+                            window_title: None,
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("fallback frame should insert");
+            let bundled = infra
+                .insert_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-app-name-bundled.jpg",
+                        "2026-05-17T10:01:00Z",
+                    )
+                    .with_metadata_snapshot(
+                        capture_metadata::FrameMetadataSnapshot {
+                            app_bundle_id: Some("com.example.Editor".to_string()),
+                            app_name: Some("éditeur".to_string()),
+                            window_title: None,
+                            window_id: None,
+                            browser_url: None,
+                            display_id: Some(1),
+                            metadata_redaction_reason: None,
+                            metadata_redaction_source_id: None,
+                        },
+                    ),
+                )
+                .await
+                .expect("bundled frame should insert");
+
+            for frame in [&fallback, &bundled] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("unicode fallback target"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "unicode".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: Some(SearchCaptureRefinements {
+                        date_range: None,
+                        app: Some(SearchAppRefinement {
+                            kind: SearchAppRefinementKind::AppName,
+                            value: "éditeur".to_string(),
+                            display_name: "éditeur".to_string(),
+                        }),
+                        audio_source: None,
+                    }),
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, fallback.id);
+        });
+    }
+
+    #[test]
     fn search_ranks_body_matches_ahead_of_context_matches() {
         run_async_test(async {
             let dir = test_dir("body-context-rank");
@@ -3703,6 +3843,7 @@ mod tests {
                         session_id: "screen-session",
                         app_bundle_id: None,
                         app_name: None,
+                        app_name_search_key: None,
                         window_title: None,
                         group_key: &format!("frame:{frame_id}"),
                         text_source_kind: "direct",
@@ -3774,6 +3915,7 @@ mod tests {
                         session_id: &segment.source_session_id,
                         app_bundle_id: None,
                         app_name: None,
+                        app_name_search_key: None,
                         window_title: None,
                         group_key: &format!("audio:{}:{index}", segment.id),
                         text_source_kind: "direct",
@@ -3848,6 +3990,7 @@ mod tests {
                         session_id: &segment.source_session_id,
                         app_bundle_id: None,
                         app_name: None,
+                        app_name_search_key: None,
                         window_title: None,
                         group_key: &format!("audio:{}:{start_ms}", segment.id),
                         text_source_kind: "direct",
@@ -3881,6 +4024,7 @@ mod tests {
                         session_id: &segment.source_session_id,
                         app_bundle_id: None,
                         app_name: None,
+                        app_name_search_key: None,
                         window_title: None,
                         group_key: &format!("audio:{}:filler-{index}", segment.id),
                         text_source_kind: "direct",
