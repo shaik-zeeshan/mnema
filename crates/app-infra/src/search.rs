@@ -331,15 +331,13 @@ fn normalize_search_refinements(
                 SearchAppRefinementKind::BundleId => NormalizedAppRefinement::BundleId {
                     value: value.clone(),
                 },
-                SearchAppRefinementKind::AppName => {
-                    NormalizedAppRefinement::AppName {
-                        search_key: normalize_app_name_for_search(&value).ok_or_else(|| {
-                            AppInfraError::InvalidSearchRequest(
-                                "app.value must be non-empty".to_string(),
-                            )
-                        })?,
-                    }
-                }
+                SearchAppRefinementKind::AppName => NormalizedAppRefinement::AppName {
+                    search_key: normalize_app_name_for_search(&value).ok_or_else(|| {
+                        AppInfraError::InvalidSearchRequest(
+                            "app.value must be non-empty".to_string(),
+                        )
+                    })?,
+                },
             };
             Ok((
                 normalized,
@@ -1038,9 +1036,13 @@ async fn insert_search_document(
     .bind(doc.absolute_end_at)
     .bind(doc.source_kind)
     .bind(doc.session_id)
-    .bind(doc.app_bundle_id.and_then(normalize_app_bundle_id_for_search))
+    .bind(
+        doc.app_bundle_id
+            .and_then(normalize_app_bundle_id_for_search)
+            .unwrap_or_default(),
+    )
     .bind(doc.app_name)
-    .bind(doc.app_name_search_key)
+    .bind(doc.app_name_search_key.unwrap_or_default())
     .bind(doc.window_title)
     .bind(doc.group_key)
     .bind(doc.text_source_kind)
@@ -1281,10 +1283,11 @@ fn push_search_refinement_predicates(
     refinements: &NormalizedSearchRefinements,
 ) {
     if let Some(range) = &refinements.date_range {
-        query.push(" AND search_documents.absolute_end_at >= ");
+        query.push(" AND julianday(search_documents.absolute_end_at) >= julianday(");
         query.push_bind(range.start_at.clone());
-        query.push(" AND search_documents.absolute_start_at <= ");
+        query.push(") AND julianday(search_documents.absolute_start_at) <= julianday(");
         query.push_bind(range.end_at.clone());
+        query.push(")");
     }
     if let Some(app) = &refinements.app {
         match app {
@@ -2146,6 +2149,30 @@ mod tests {
                 )
                 .await;
             }
+            let inserted_null_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) \
+                   AND (app_bundle_id IS NULL OR app_name_search_key IS NULL)",
+            )
+            .bind(frame.id)
+            .bind(frame_without_metadata.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("inserted null count should load");
+            let inserted_checked_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE frame_id IN (?1, ?2) \
+                   AND app_bundle_id = '' \
+                   AND app_name_search_key IS NOT NULL",
+            )
+            .bind(frame.id)
+            .bind(frame_without_metadata.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("inserted checked count should load");
+
+            assert_eq!(inserted_null_count, 0);
+            assert_eq!(inserted_checked_count, 2);
             drop(infra);
 
             let reopened = AppInfra::initialize(&dir)
@@ -2805,6 +2832,25 @@ mod tests {
             .await
             .expect("indexed bundle id should load");
             assert_eq!(indexed_bundle_id.as_deref(), Some("com.example.Linear"));
+            let plan_rows = sqlx::query(
+                "EXPLAIN QUERY PLAN \
+                 SELECT id FROM search_documents \
+                 WHERE anchor_type = 'frame' \
+                   AND LOWER(TRIM(COALESCE(app_bundle_id, ''))) = LOWER(?1)",
+            )
+            .bind("COM.EXAMPLE.LINEAR")
+            .fetch_all(infra.pool())
+            .await
+            .expect("query plan should load");
+            let plan = plan_rows
+                .iter()
+                .map(|row| row.get::<String, _>("detail"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                plan.contains("search_documents_frame_bundle_id_refinement_idx"),
+                "bundle-id refinement should use expression index, plan was:\n{plan}"
+            );
 
             let response = infra
                 .search_capture(SearchCaptureRequest {
@@ -2829,6 +2875,71 @@ mod tests {
             assert_eq!(
                 response.applied_refinements.audio_source,
                 Some(AudioSegmentSourceKind::SystemAudio)
+            );
+        });
+    }
+
+    #[test]
+    fn date_refinement_compares_mixed_precision_timestamps_chronologically() {
+        run_async_test(async {
+            let dir = test_dir("search-refinement-fractional-date");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let before_boundary = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-fractional-before.jpg",
+                    "2026-05-17T10:00:29.900Z",
+                ))
+                .await
+                .expect("before boundary frame should insert");
+            let after_boundary = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    "/tmp/search-fractional-after.jpg",
+                    "2026-05-17T10:00:30.100Z",
+                ))
+                .await
+                .expect("after boundary frame should insert");
+            for frame in [&before_boundary, &after_boundary] {
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("fractional boundary target"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "fractional".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: Some(SearchCaptureRefinements {
+                        date_range: Some(SearchDateRangeRefinement {
+                            start_at: "2026-05-17T10:00:29Z".to_string(),
+                            end_at: "2026-05-17T10:00:30Z".to_string(),
+                            origin: Some(SearchDateRangeOrigin::VisibleTimeline),
+                        }),
+                        app: None,
+                        audio_source: None,
+                    }),
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(
+                response.frames[0].representative_frame.id,
+                before_boundary.id
             );
         });
     }
