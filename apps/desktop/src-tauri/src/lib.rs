@@ -188,6 +188,8 @@ pub fn run() {
             app_infra::list_broker_grants,
             app_infra::create_broker_grant,
             app_infra::revoke_broker_grant,
+            app_infra::get_mnema_cli_status,
+            app_infra::install_mnema_cli,
             app_infra::delete_recent_capture,
             one_time_prompts::get_one_time_prompt_state,
             one_time_prompts::mark_one_time_prompt_shown,

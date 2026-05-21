@@ -121,6 +121,16 @@
     grants: BrokerGrant[];
   };
 
+  type MnemaCliStatus = {
+    installPath: string;
+    installDir: string;
+    bundledCliPath: string;
+    bundledCliExists: boolean;
+    installed: boolean;
+    installDirInPath: boolean;
+    existingTarget: string | null;
+  };
+
   type RetentionCleanupSummary = {
     policy: string;
     cutoffEndedBefore: string | null;
@@ -210,6 +220,10 @@
   let brokerGrantLoading = $state(false);
   let brokerGrantSaving = $state(false);
   let brokerGrantError = $state<string | null>(null);
+  let mnemaCliStatus = $state<MnemaCliStatus | null>(null);
+  let mnemaCliLoading = $state(false);
+  let mnemaCliInstalling = $state(false);
+  let mnemaCliError = $state<string | null>(null);
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
   // runtime in `$lib/theme.svelte` and is persisted via recording settings.
@@ -788,6 +802,30 @@
       brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
       brokerGrantLoading = false;
+    }
+  }
+
+  async function loadMnemaCliStatus() {
+    mnemaCliLoading = true;
+    mnemaCliError = null;
+    try {
+      mnemaCliStatus = await invoke<MnemaCliStatus>("get_mnema_cli_status");
+    } catch (err) {
+      mnemaCliError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      mnemaCliLoading = false;
+    }
+  }
+
+  async function installMnemaCli() {
+    mnemaCliInstalling = true;
+    mnemaCliError = null;
+    try {
+      mnemaCliStatus = await invoke<MnemaCliStatus>("install_mnema_cli");
+    } catch (err) {
+      mnemaCliError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      mnemaCliInstalling = false;
     }
   }
 
@@ -2171,6 +2209,7 @@
     loadPrivacyAppCandidates();
     loadSensitiveCaptureRecommendations();
     loadBrokerGrants();
+    loadMnemaCliStatus();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -2575,17 +2614,31 @@
           <span class="group-label">Agent Access</span>
           <div class="settings-stack">
             <div class="privacy-disclosure">
-              <p>Broker grants allow local tools to use redacted, bounded Mnema search through the mnema-broker CLI.</p>
+              <p>Broker grants allow local tools to use redacted, bounded Mnema search through the mnema CLI.</p>
               <p>The broker does not return media paths, raw database rows, or original OCR/transcript dumps.</p>
+              {#if mnemaCliStatus}
+                <p>
+                  CLI: {mnemaCliStatus.installed ? `mnema installed at ${mnemaCliStatus.installPath}` : `mnema not installed at ${mnemaCliStatus.installPath}`}
+                </p>
+                {#if mnemaCliStatus.installed && !mnemaCliStatus.installDirInPath}
+                  <p>{mnemaCliStatus.installDir} is not in PATH for this app session.</p>
+                {/if}
+              {/if}
             </div>
             <div class="row-actions">
+              <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
+                {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
+              </button>
               <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading} onclick={createAgentBrokerGrant}>
                 Grant 24h access
               </button>
-              <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading} onclick={loadBrokerGrants}>
+              <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}>
                 Refresh
               </button>
             </div>
+            {#if mnemaCliError}
+              <p class="error-text">{mnemaCliError}</p>
+            {/if}
             {#if brokerGrantError}
               <p class="error-text">{brokerGrantError}</p>
             {/if}

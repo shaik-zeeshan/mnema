@@ -7,6 +7,10 @@ edition = "2021"
 name = "mnema-broker"
 path = "src/bin/mnema_broker.rs"
 
+[[bin]]
+name = "mnema-cli"
+path = "src/bin/mnema_cli.rs"
+
 [dependencies]
 async-trait = "0.1"
 audio-transcription = { path = "../audio-transcription" }

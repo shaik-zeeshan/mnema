@@ -48,6 +48,8 @@ const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETENTION_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+const MNEMA_CLI_COMMAND_NAME: &str = "mnema";
+const MNEMA_CLI_SIDECAR_NAME: &str = "mnema-cli";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppInfraInitializeError {
@@ -3795,11 +3797,157 @@ pub struct CreateBrokerGrantRequest {
     pub all_retained_history: Option<bool>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MnemaCliStatus {
+    pub install_path: String,
+    pub install_dir: String,
+    pub bundled_cli_path: String,
+    pub bundled_cli_exists: bool,
+    pub installed: bool,
+    pub install_dir_in_path: bool,
+    pub existing_target: Option<String>,
+}
+
 fn broker_config_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     app_handle
         .path()
         .app_config_dir()
         .map_err(|error| format!("failed to resolve app config dir: {error}"))
+}
+
+fn mnema_cli_sidecar_name() -> String {
+    #[cfg(windows)]
+    {
+        format!("{MNEMA_CLI_SIDECAR_NAME}.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        MNEMA_CLI_SIDECAR_NAME.to_string()
+    }
+}
+
+fn bundled_mnema_cli_path() -> Result<PathBuf, String> {
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current exe: {error}"))?;
+    let exe_dir = current_exe
+        .parent()
+        .ok_or_else(|| format!("current exe has no parent: {}", current_exe.display()))?;
+    Ok(exe_dir.join(mnema_cli_sidecar_name()))
+}
+
+fn mnema_cli_install_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let home_dir = app_handle
+        .path()
+        .home_dir()
+        .map_err(|error| format!("failed to resolve home dir: {error}"))?;
+    Ok(mnema_cli_install_path_for_home(&home_dir))
+}
+
+#[cfg(windows)]
+fn mnema_cli_install_path_for_home(home_dir: &Path) -> PathBuf {
+    home_dir
+        .join("AppData")
+        .join("Local")
+        .join("Microsoft")
+        .join("WindowsApps")
+        .join(format!("{MNEMA_CLI_COMMAND_NAME}.exe"))
+}
+
+#[cfg(not(windows))]
+fn mnema_cli_install_path_for_home(home_dir: &Path) -> PathBuf {
+    home_dir
+        .join(".local")
+        .join("bin")
+        .join(MNEMA_CLI_COMMAND_NAME)
+}
+
+#[cfg(not(windows))]
+fn terminal_shell_path_dirs() -> Vec<PathBuf> {
+    let shell = std::env::var_os("SHELL")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/bin/zsh".into());
+    let shell_path = std::process::Command::new(shell)
+        .args(["-lc", "printf %s \"$PATH\""])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok());
+
+    let mut path_dirs: Vec<PathBuf> = shell_path
+        .as_deref()
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .collect();
+    if let Some(process_path) = std::env::var_os("PATH") {
+        path_dirs.extend(std::env::split_paths(&process_path));
+    }
+    path_dirs
+}
+
+#[cfg(windows)]
+fn terminal_shell_path_dirs() -> Vec<PathBuf> {
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default()
+}
+
+fn resolve_link_target(link_path: &Path, target: PathBuf) -> PathBuf {
+    if target.is_absolute() {
+        target
+    } else {
+        link_path
+            .parent()
+            .map(|parent| parent.join(&target))
+            .unwrap_or(target)
+    }
+}
+
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn path_dir_in_shell_path(dir: &Path) -> bool {
+    terminal_shell_path_dirs()
+        .into_iter()
+        .any(|entry| paths_refer_to_same_file(&entry, dir))
+}
+
+fn mnema_cli_status_for_paths(install_path: PathBuf, bundled_cli_path: PathBuf) -> MnemaCliStatus {
+    let existing_target = fs::read_link(&install_path)
+        .ok()
+        .map(|target| resolve_link_target(&install_path, target));
+    let installed = existing_target
+        .as_deref()
+        .is_some_and(|target| paths_refer_to_same_file(target, &bundled_cli_path));
+    let install_dir_in_path = install_path.parent().is_some_and(path_dir_in_shell_path);
+
+    MnemaCliStatus {
+        install_dir: install_path
+            .parent()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        install_path: install_path.display().to_string(),
+        bundled_cli_exists: bundled_cli_path.is_file(),
+        bundled_cli_path: bundled_cli_path.display().to_string(),
+        installed,
+        install_dir_in_path,
+        existing_target: existing_target.map(|path| path.display().to_string()),
+    }
+}
+
+#[cfg(unix)]
+fn create_mnema_cli_link(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, destination)
+}
+
+#[cfg(windows)]
+fn create_mnema_cli_link(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(source, destination)
 }
 
 #[tauri::command]
@@ -3839,6 +3987,82 @@ pub async fn revoke_broker_grant(
     let config_dir = broker_config_dir(&app_handle)?;
     ::app_infra::brokered_access::revoke_grant(&config_dir, &grant_id)
         .map_err(|error| format!("failed to revoke broker grant: {error}"))
+}
+
+#[tauri::command]
+pub async fn get_mnema_cli_status(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
+    let install_path = mnema_cli_install_path(&app_handle)?;
+    let bundled_cli_path = bundled_mnema_cli_path()?;
+    Ok(mnema_cli_status_for_paths(install_path, bundled_cli_path))
+}
+
+#[tauri::command]
+pub async fn install_mnema_cli(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
+    let install_path = mnema_cli_install_path(&app_handle)?;
+    let bundled_cli_path = bundled_mnema_cli_path()?;
+
+    if !bundled_cli_path.is_file() {
+        return Err(format!(
+            "bundled Mnema CLI is missing at {}",
+            bundled_cli_path.display()
+        ));
+    }
+
+    let install_dir = install_path
+        .parent()
+        .ok_or_else(|| format!("CLI install path has no parent: {}", install_path.display()))?;
+    fs::create_dir_all(install_dir).map_err(|error| {
+        format!(
+            "failed to create CLI install directory {}: {error}",
+            install_dir.display()
+        )
+    })?;
+
+    if let Ok(metadata) = fs::symlink_metadata(&install_path) {
+        if metadata.file_type().is_symlink() {
+            let existing_target = fs::read_link(&install_path)
+                .map(|target| resolve_link_target(&install_path, target))
+                .map_err(|error| {
+                    format!(
+                        "failed to inspect existing CLI symlink {}: {error}",
+                        install_path.display()
+                    )
+                })?;
+            let expected_file_name = mnema_cli_sidecar_name();
+            let existing_file_name = existing_target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if existing_file_name != expected_file_name {
+                return Err(format!(
+                    "refusing to overwrite existing CLI symlink {} -> {}",
+                    install_path.display(),
+                    existing_target.display()
+                ));
+            }
+            fs::remove_file(&install_path).map_err(|error| {
+                format!(
+                    "failed to replace existing CLI symlink {}: {error}",
+                    install_path.display()
+                )
+            })?;
+        } else {
+            return Err(format!(
+                "refusing to overwrite existing non-symlink at {}",
+                install_path.display()
+            ));
+        }
+    }
+
+    create_mnema_cli_link(&bundled_cli_path, &install_path).map_err(|error| {
+        format!(
+            "failed to link {} to {}: {error}",
+            install_path.display(),
+            bundled_cli_path.display()
+        )
+    })?;
+
+    Ok(mnema_cli_status_for_paths(install_path, bundled_cli_path))
 }
 
 #[tauri::command]
@@ -4523,6 +4747,15 @@ mod tests {
             .build()
             .expect("test runtime should build")
             .block_on(test);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn mnema_cli_install_path_for_home_uses_user_local_bin() {
+        assert_eq!(
+            mnema_cli_install_path_for_home(Path::new("/Users/tester")),
+            PathBuf::from("/Users/tester/.local/bin/mnema")
+        );
     }
 
     #[test]

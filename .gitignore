@@ -12,6 +12,7 @@ vite.config.ts.timestamp-*
 
 .feature-details
 target
+apps/desktop/src-tauri/binaries/
 
 # AI coding agents
 .pi
