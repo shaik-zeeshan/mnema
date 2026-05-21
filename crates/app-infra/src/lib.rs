@@ -1,7 +1,6 @@
 mod audio_segments;
 pub mod brokered_access;
 mod capture_retention;
-mod capture_safety;
 mod captured_frame_equivalence;
 mod captured_frame_pipeline;
 mod db;
@@ -28,10 +27,6 @@ pub use capture_retention::{
     delete_capture_artifact_path_if_safe, CaptureRetentionStore, CaptureSegment, CaptureSourceKind,
     NewCaptureSegment, NewCaptureSession, RetentionCleanupContext, RetentionCleanupMode,
     RetentionCleanupSummary, RetentionPolicy, ScreenCaptureSegmentWindow,
-};
-pub use capture_safety::{
-    CaptureSafetyGap, CaptureSafetyGapReason, CaptureSafetyGapSourceFamily,
-    CaptureSafetyGapTerminalStatus, CaptureSafetyStore,
 };
 pub use captured_frame_equivalence::{
     CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,
@@ -258,7 +253,6 @@ pub struct AppInfra {
     audio_segments: AudioSegmentStore,
     frame_batches: FrameBatchStore,
     capture_retention: CaptureRetentionStore,
-    capture_safety: CaptureSafetyStore,
     processing: ProcessingStore,
     search: SearchStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
@@ -282,7 +276,6 @@ impl AppInfra {
         let audio_segments = AudioSegmentStore::new(database.pool().clone());
         let frame_batches = FrameBatchStore::new(database.pool().clone());
         let capture_retention = CaptureRetentionStore::new(database.pool().clone());
-        let capture_safety = CaptureSafetyStore::new(database.pool().clone());
         let processing = ProcessingStore::new(database.pool().clone());
         let search = SearchStore::new(database.pool().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
@@ -309,7 +302,6 @@ impl AppInfra {
             audio_segments,
             frame_batches,
             capture_retention,
-            capture_safety,
             processing,
             search,
             captured_frame_equivalence,
@@ -345,10 +337,6 @@ impl AppInfra {
 
     pub fn capture_retention(&self) -> &CaptureRetentionStore {
         &self.capture_retention
-    }
-
-    pub fn capture_safety(&self) -> &CaptureSafetyStore {
-        &self.capture_safety
     }
 
     pub async fn frame_secret_redaction_count(&self, frame_id: i64) -> Result<u32> {

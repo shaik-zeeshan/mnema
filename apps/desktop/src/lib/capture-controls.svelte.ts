@@ -75,8 +75,7 @@ export const captureControls = {
   get paused(): boolean {
     return (
       captureSession.value?.isInactivityPaused === true ||
-      captureSession.value?.isUserPaused === true ||
-      captureSession.value?.isCaptureSafetySuspended === true
+      captureSession.value?.isUserPaused === true
     );
   },
   get isRunning(): boolean {
@@ -88,12 +87,8 @@ export const captureControls = {
   get isUserPaused(): boolean {
     return captureSession.value?.isUserPaused === true;
   },
-  get isCaptureSafetySuspended(): boolean {
-    return captureSession.value?.isCaptureSafetySuspended === true;
-  },
   get statusLabel(): string {
     if (captureControls.isRunning) {
-      if (captureControls.isCaptureSafetySuspended) return "Paused for credential entry";
       return captureControls.paused ? "Paused" : "Recording";
     }
     return captureSession.value?.isRunning === false ? "Stopped" : "Idle";
@@ -381,7 +376,6 @@ function buildUpdatePayload(
     speakerAnalysis: base.speakerAnalysis,
     metadata: base.metadata,
     privacy: base.privacy,
-    captureSafety: base.captureSafety ?? { credentialEntrySuspensionEnabled: true },
     screenResolution: base.screenResolution,
     videoBitrate: base.videoBitrate,
   };

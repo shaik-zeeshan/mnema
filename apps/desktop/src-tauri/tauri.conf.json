@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.shaikzeeshan.mnema",
   "build": {
-    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml --bin mnema_browser_integration_host && bun run dev",
+    "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "cargo clean --manifest-path src-tauri/Cargo.toml && cargo build --manifest-path src-tauri/Cargo.toml --bin mnema_browser_integration_host --release && bun run build",
+    "beforeBuildCommand": "bun run build",
     "frontendDist": "../build"
   },
   "app": {
@@ -29,10 +29,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": [
-      "../browser-extension",
-      "resources/browser-integration-native-host.sh"
-    ],
     "macOS": {
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"

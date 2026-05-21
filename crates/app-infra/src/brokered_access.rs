@@ -544,18 +544,6 @@ pub async fn broker_timeline(
     let range = scoped_date_range(grants, Some(request.from), Some(request.to))?
         .expect("timeline always supplies a scoped date range");
     let mut intervals = Vec::new();
-    for gap in infra
-        .capture_safety()
-        .list_gaps_between(&range.start_at, &range.end_at, i64::from(limit))
-        .await?
-    {
-        intervals.push(BrokerTimelineInterval {
-            kind: "capture_safety_gap".to_string(),
-            started_at: gap.started_at,
-            ended_at: gap.ended_at,
-            reason: Some(gap.reason.as_str().to_string()),
-        });
-    }
     for audio in infra
         .list_audio_segments_overlapping_range(&range.start_at, &range.end_at, None, None)
         .await?

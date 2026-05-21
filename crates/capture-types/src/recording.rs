@@ -140,29 +140,6 @@ pub fn default_privacy_settings() -> PrivacySettings {
     PrivacySettings::default()
 }
 
-pub fn default_credential_entry_suspension_enabled() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CaptureSafetySettings {
-    #[serde(default = "default_credential_entry_suspension_enabled")]
-    pub credential_entry_suspension_enabled: bool,
-}
-
-pub fn default_capture_safety_settings() -> CaptureSafetySettings {
-    CaptureSafetySettings {
-        credential_entry_suspension_enabled: default_credential_entry_suspension_enabled(),
-    }
-}
-
-impl Default for CaptureSafetySettings {
-    fn default() -> Self {
-        default_capture_safety_settings()
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum RetentionPolicy {
@@ -499,8 +476,6 @@ pub struct RecordingSettings {
     pub metadata: MetadataSettings,
     #[serde(default = "default_privacy_settings")]
     pub privacy: PrivacySettings,
-    #[serde(default = "default_capture_safety_settings")]
-    pub capture_safety: CaptureSafetySettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -561,8 +536,6 @@ pub struct UpdateRecordingSettingsRequest {
     pub metadata: MetadataSettings,
     #[serde(default = "default_privacy_settings")]
     pub privacy: PrivacySettings,
-    #[serde(default = "default_capture_safety_settings")]
-    pub capture_safety: CaptureSafetySettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]

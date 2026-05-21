@@ -32,7 +32,6 @@
     RetentionPolicy,
     VideoBitrateMode,
     VideoBitratePreset,
-    BrowserIntegrationStatus,
   } from "$lib/types";
 
   type OnboardingState = {
@@ -44,7 +43,7 @@
   const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
   const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
 
-  type OnboardingStep = "about" | "permissions" | "sources" | "video" | "storage" | "privacy" | "browser" | "processing" | "done";
+  type OnboardingStep = "about" | "permissions" | "sources" | "video" | "storage" | "privacy" | "processing" | "done";
   type ProcessingPanel = "ocr" | "transcription";
   type PermissionValue = PermissionStatus | "unsupported" | "unknown";
   type PermissionKey = "screen" | "microphone" | "systemAudio";
@@ -56,7 +55,6 @@
     { id: "video", label: "Video" },
     { id: "storage", label: "Storage" },
     { id: "privacy", label: "Privacy" },
-    { id: "browser", label: "Browser" },
     { id: "processing", label: "Processing" },
     { id: "done", label: "Ready" },
   ];
@@ -91,7 +89,6 @@
   let completing = $state(false);
   let refreshingPerms = $state(false);
   let error = $state<string | null>(null);
-  let browserIntegrationStatus = $state<BrowserIntegrationStatus | null>(null);
 
   let draftCaptureScreen = $state(true);
   let draftCaptureMicrophone = $state(false);
@@ -206,10 +203,6 @@
       if (destroyed) fn();
       else unlistenRecordingSettingsChanged = fn;
     });
-    void invoke<BrowserIntegrationStatus>("get_browser_integration_status")
-      .then((status) => { browserIntegrationStatus = status; })
-      .catch(() => { browserIntegrationStatus = null; });
-
     return () => {
       destroyed = true;
       unlistenOcrDownloadProgress?.();
@@ -1141,29 +1134,6 @@
                   <p>Browser extensions and websites are not excluded separately.</p>
                 </div>
                 <p class="hint">You can add password manager, authenticator, and browser app exclusions in Privacy settings before your first recording.</p>
-              </div>
-            </article>
-          {:else if activeStep === "browser"}
-            <article class="card">
-              <header class="card__header">
-                <span class="card__index">05</span>
-                <div class="card__heading">
-                  <h2 class="card__title">Browser extension</h2>
-                  <p class="card__subtitle">Optional coverage for supported browser credential entry.</p>
-                </div>
-              </header>
-
-              <div class="settings-stack">
-                <div class="privacy-disclosure">
-                  <p>Mnema can pause during supported browser credential entry when extension coverage is available.</p>
-                  <p>No field values are inspected, and credential-entry suspension does not use URL, domain, title, or page guessing.</p>
-                  <p>Unsupported browsers or pages, denied website access, extension disconnects, and capture before a trusted signal arrives may still be recorded.</p>
-                </div>
-                {#if browserIntegrationStatus}
-                  <p class="hint">Safari: {browserIntegrationStatus.safari.coverageState}. Chromium: {browserIntegrationStatus.chromium.coverageState}. You can skip this setup and pair later in Privacy settings.</p>
-                {:else}
-                  <p class="hint">You can skip this setup and pair later in Privacy settings.</p>
-                {/if}
               </div>
             </article>
           {:else if activeStep === "processing"}

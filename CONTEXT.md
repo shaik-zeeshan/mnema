@@ -122,24 +122,12 @@ A browser app identity used for browser-related product disclosure and metadata 
 _Avoid_: sensitive app recommendation, browser privacy rule, website filter
 
 **Browser Metadata Collection**:
-The browser-integration metadata flow that records configured browser context for timeline and search context without making live capture privacy decisions.
+Native browser URL metadata, governed by metadata settings, for timeline and search context without making live capture privacy decisions.
 _Avoid_: metacollection, browser privacy signal, website privacy rule
 
-**Browser Metadata Signal**:
-A first-party browser-extension signal that reports configured browser metadata under **Browser Metadata Collection** settings.
-_Avoid_: browser safety signal, browser privacy signal, credential-entry signal
-
-**Browser Integration Coverage**:
-The user-visible availability state of first-party browser extension pairing, native messaging, browser support, and website access for browser-integrated capture features.
-_Avoid_: protection status, browser privacy mode, silent fallback
-
-**Browser Integration Runtime**:
-The Rust-owned native state that validates first-party browser integration events and exposes summarized metadata and safety state to Mnema.
-_Avoid_: Svelte browser bridge, extension-owned recorder state, frontend safety state
-
-**Browser Integration Pairing**:
-The explicit per-install trust relationship between Mnema and a first-party browser extension.
-_Avoid_: native messaging trust only, extension install state, browser permission
+**Automatic Browser Suspension Rule**:
+Mnema does not ship automatic credential-entry or browser add-on capture suspension in this branch; privacy controls stay explicit.
+_Avoid_: silent pause, password-page detector, browser add-on recorder
 
 **Exclude This App**:
 A just-in-time user action that adds one app identity to **App Privacy Exclusion** for future capture.
@@ -184,22 +172,6 @@ _Avoid_: capture prevention, media redaction, secure erase
 **Secure Field Capture Suspension**:
 A future ADR-backed product concept that would suspend capture while secure text entry is focused, rather than filtering by app, window, website, or recognized text.
 _Avoid_: password-page filter, secure-field redaction, browser login exclusion
-
-**Credential Entry Capture Suspension**:
-A future ADR-backed **Capture Safety Suspension** while trusted secure text-entry signals indicate that the user is entering credentials or secrets.
-_Avoid_: browser login protection, password-page detection, URL password filter
-
-**Browser Secure-Entry Signal**:
-A first-party browser-extension signal that reports only whether focused browser DOM structure indicates active credential entry.
-_Avoid_: browser-page detection, login-page classifier, URL credential signal
-
-**Capture Safety Suspension**:
-A future ADR-backed automatic paused recording state caused by a live privacy or security trigger that pauses all requested capture sources until the trigger clears.
-_Avoid_: sensitive mode, hidden privacy filter, redaction
-
-**Capture Safety Gap**:
-A non-content timeline interval representing time when **Capture Safety Suspension** intentionally recorded no requested sources.
-_Avoid_: missing recording, hidden pause, deleted segment
 
 **Audio Segment**:
 A time-bounded persisted audio recording file produced from one recording source during a recording session.
@@ -361,101 +333,13 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
 - **Sensitive Capture Protection V1** remains inside **App Privacy Exclusion** and does not promise website-level, private-window, password-page, or secure-field protection.
 - **Sensitive Capture Protection V1** is UX and recovery around **App Privacy Exclusion**, not detection of sensitive screen content.
-- **Capture Safety Suspension** pauses screen, microphone, and system-audio capture together when a live privacy or security trigger fires.
-- **Capture Safety Suspension** does not auto-resume over **User Capture Pause**.
-- **Capture Safety Suspension** is independent of **App Privacy Exclusion**; excluding an app from screen capture does not cause automatic pause.
 - **App Privacy Exclusion** remains handled through the native **Live Privacy Filter**, not through app-based automatic pause.
-- **Credential Entry Capture Suspension** should start from trusted secure text-entry signals, not URL, title, OCR, browser-page, or domain guessing.
-- **Credential Entry Capture Suspension** may use OS, accessibility, or native framework signals that identify secure text entry without inspecting typed content.
-- **Credential Entry Capture Suspension** may use a first-party **Browser Secure-Entry Signal** for browser credential entry when native secure text-entry signals are unreliable.
-- A **Browser Secure-Entry Signal** may inspect focused DOM control structure but must not send or persist URL, title, domain, page text, field value, field label, placeholder, selector, form action, screenshot, OCR, or media-derived data.
-- A browser extension integration may also provide **Browser Metadata Signal** values for **Browser Metadata Collection**, but those values are a separate contract from **Browser Secure-Entry Signal** values.
-- A **Browser Metadata Signal** may report the active tab URL only when **Browser Metadata Collection** is enabled and browser URL metadata mode is not off.
-- A **Browser Metadata Signal** must not report DOM text, selected text, page title, field labels, placeholders, selectors, form actions, favicon, screenshots, page summaries, credential-control structure, or credential-field state.
-- Browser URL metadata from a **Browser Metadata Signal** follows the existing browser URL metadata modes: off, sanitized, or full.
 - Mnema sanitizes browser URL metadata before persistence; full URL metadata remains an explicit user choice because query strings and fragments may contain secrets.
-- **Browser Metadata Collection** may feed timeline/search context according to metadata settings, but must not drive **Live Privacy Filter** decisions or **Credential Entry Capture Suspension**.
-- **Browser Secure-Entry Signal** remains live-only and independent of metadata settings; disabling **Browser Metadata Collection** must not disable credential-entry suspension.
-- Disabling **Credential Entry Capture Suspension** must not disable **Browser Metadata Collection**.
-- Reliable browser-integrated **Credential Entry Capture Suspension** requires **Browser Integration Coverage** with the extension installed, paired to Mnema, native messaging available, a supported browser, and all-sites website access.
-- Per-site browser extension access may provide partial **Browser Integration Coverage**, but must be labeled partial coverage rather than reliable browser credential-entry suspension.
-- Missing extension installation, pairing, native messaging, website permission, browser support, or page support makes browser-integrated credential-entry suspension unavailable for that browser or page rather than activating a heuristic fallback.
-- Browser `activeTab`-style temporary access is not sufficient for always-on **Browser Secure-Entry Signal** coverage.
-- Browser-integrated **Credential Entry Capture Suspension** should treat focused password controls as active credential entry.
-- Browser-integrated **Credential Entry Capture Suspension** should treat focused editable text controls in the same form or nearest credential group as a password control as active credential entry, so username or email entry can suspend before the password field is focused.
-- Browser-integrated **Credential Entry Capture Suspension** should treat focused text-like controls with standards-based credential autocomplete tokens such as `username`, `current-password`, `new-password`, or `one-time-code` as active credential entry when paired with credential structure.
-- Browser-integrated **Credential Entry Capture Suspension** may inspect DOM control type, focus, form/group relationship, and standards-based autocomplete tokens, but not visible labels, placeholders, button text, URL, title, copied field values, OCR, or classifier guesses.
 - One-time code entry is treated as credential entry even though many codes are not reusable after successful submission, because capture may persist the code before it is used or before it expires.
-- **Credential Entry Capture Suspension** suspends immediately when any trusted safety source reports active credential entry.
-- **Credential Entry Capture Suspension** resumes only after every currently tracked active safety source has reported clear and a short clear debounce has elapsed.
-- The initial clear debounce for **Credential Entry Capture Suspension** is 1500ms.
-- If a safety source that was active disconnects, becomes unavailable, or misses heartbeat before reporting clear, **Credential Entry Capture Suspension** stays suspended and reports the coverage failure.
-- A browser or page that is uncovered before any active secure-entry signal is shown as uncovered rather than causing automatic suspension.
-- **Capture Safety Gap** records should be coalesced across secure-entry flicker until the final resume rather than creating tiny repeated gaps.
-- **Capture Safety Gap** may persist start/end time, coarse trigger category, coarse source family, and coarse terminal status.
-- **Capture Safety Gap** must not persist the per-event secure-entry stream, safety-tied URL/title/domain, field type history, selector, form identity, frame identity, extension tab id, app/window title, page labels, placeholders, values, screenshots, OCR, transcript, or media-derived data.
-- **Browser Integration Coverage** audit may persist non-content coverage changes such as installed, paired, native messaging available, website permission available, supported, unsupported, and unavailable.
-- Live debug may show current **Browser Integration Coverage** and the latest non-content safety reason, but should not retain a detailed per-focus browser event timeline.
-- First-party browser integration events terminate in the Rust-owned **Browser Integration Runtime**, not in Svelte state.
-- The **Browser Integration Runtime** validates event schema, pairing/authenticity, sequence, heartbeat, browser support, and permission/coverage state before updating Mnema state.
-- The **Recording Lifecycle** consumes only summarized browser safety state from the **Browser Integration Runtime**, not raw extension events.
-- **Browser Metadata Collection** consumes only sanitized metadata state from the **Browser Integration Runtime**.
-- Svelte may configure browser integration and display coverage/debug state, but must not own safety debounce, fail-closed decisions, or recording pause/resume decisions.
-- Native Accessibility or native framework secure-entry signals are primary for non-browser apps and native secure text fields.
-- **Browser Secure-Entry Signal** is primary for Safari/Chromium browser credential entry.
-- Native Accessibility may supplement browser credential-entry suspension only when it reports a trusted secure-entry signal, but browser credential-entry coverage should not require native Accessibility and native Accessibility should not override an active **Browser Secure-Entry Signal**.
-- Missing **Browser Integration Coverage** means browser credential-entry coverage is unavailable or partial even if native Accessibility permission is present.
-- Missing native Accessibility permission means native-app secure-entry coverage is unavailable, but supported-browser **Browser Secure-Entry Signal** coverage may still work.
-- The app-facing **Browser Secure-Entry Signal** contract carries only version, kind, browser family, state, fixed non-content reason, observed timestamp, and sequence.
-- The app-facing **Browser Secure-Entry Signal** contract must not carry tab id, frame id, URL, domain, title, selector, field type, autocomplete token, or browser-specific permission object.
-- The app-facing **Browser Metadata Signal** contract carries only version, kind, browser family, state, fixed non-content reason, observed timestamp, sequence, and optional URL.
-- A **Browser Metadata Signal** URL is present only when metadata is enabled and browser URL metadata mode is not off.
-- The app-facing **Browser Metadata Signal** contract must not carry page title, selected text, DOM text, favicon, selector, field state, tab id, or frame id.
-- Onboarding should include a dedicated browser extension setup step for browser-integrated Sensitive Capture V2.
-- Browser extension setup is non-blocking; skipping it must not block first recording.
-- Skipping browser extension setup makes browser-integrated **Credential Entry Capture Suspension** and **Browser Metadata Collection** partial or unavailable according to **Browser Integration Coverage**.
-- Settings and onboarding should show **Browser Integration Coverage** per source family, including native apps, Safari, and Chromium browsers, with reliable, partial, and unavailable states.
-- Product copy should describe browser-integrated Sensitive Capture V2 as pausing during supported browser credential entry when coverage is available, not as a guarantee that passwords are never recorded.
-- Product copy should disclose that Mnema does not inspect field values and does not use URL/domain/title/page guessing for credential-entry suspension.
 - Product copy should disclose that unsupported browsers/pages, denied website access, extension disconnects before detection, and capture before a trusted signal arrives may still be recorded.
-- Product copy should avoid redaction, private browsing protection, website privacy, and password manager mode language for browser-integrated Sensitive Capture V2.
-- Browser-integrated **Credential Entry Capture Suspension** pauses screen, system audio, and microphone together when those sources are requested.
-- Browser-integrated **Credential Entry Capture Suspension** creates one **Capture Safety Gap** for the suspension, not per-source gaps.
-- Browser-integrated **Credential Entry Capture Suspension** resumes only the sources that were requested before the safety suspension; unrequested, stopped, or user-paused sources must not be started by safety resume.
-- If any requested source cannot finalize safely at a browser-integrated **Credential Entry Capture Suspension** boundary, the **Recording Lifecycle** fails closed for the whole suspension rather than continuing other sources as if protected.
-- **Browser Metadata Collection** should prefer **Browser Metadata Signal** URL metadata when browser integration is paired and covered.
 - Existing native browser URL probing may remain as a metadata-only fallback under metadata settings and browser URL metadata mode.
-- Native browser URL probing fallback must not affect **Browser Integration Coverage**, enable **Credential Entry Capture Suspension**, or imply browser credential-entry coverage.
 - Debug should label browser URL metadata source as `browser_extension`, `native_browser_url_probe`, or `unavailable`.
-- Current browser extension setup, pairing, and coverage state belongs in app config as app/runtime configuration.
-- Durable **Browser Integration Coverage** audit events belong in the **Encrypted Capture Index** when they are shown alongside the capture timeline or used to explain **Capture Safety Gap** records.
 - Low-level browser integration diagnostics and per-event extension errors should remain logs or live debug only, without content-bearing identifiers.
-- **Browser Integration Pairing** requires an explicit per-install pairing secret in addition to native messaging host registration.
-- **Browser Integration Pairing** secrets belong outside `saveDirectory`, preferably in platform secret storage, and must not be persisted in the capture index or logs.
-- The browser extension stores only the token needed to authenticate to Mnema's native host.
-- Settings should support rotating and revoking **Browser Integration Pairing**.
-- Browser integration events without valid **Browser Integration Pairing** are treated as `extension_not_paired`.
-- If **Browser Integration Pairing** is lost while a secure-entry signal was active, **Credential Entry Capture Suspension** fails closed until user-visible recovery.
-- **Credential Entry Capture Suspension** should leave unsupported browsers or apps uncovered rather than falling back to URL, title, OCR, domain-list, screenshot, or classifier guessing.
-- **Credential Entry Capture Suspension** may require Accessibility permission, and missing permission must be shown as unavailable rather than silently falling back to heuristics.
-- **Credential Entry Capture Suspension** runs independently of frame context metadata and browser URL metadata settings.
-- **Credential Entry Capture Suspension** suspends immediately when a trusted secure text-entry signal appears and resumes only after a short clear delay so flickering focus does not create unsafe resumes or tiny timeline gaps.
-- **Credential Entry Capture Suspension** creates a visible **Capture Safety Gap** rather than making the recording appear continuous.
-- **Capture Safety Gap** carries no screenshot preview, OCR, transcript, app title, window title, browser URL, or field content.
-- **Capture Safety Gap** may durably store a coarse reason category and start/end time, but not the triggering app identity, window title, URL, field label, recognized text, or transcript.
-- **Capture Safety Gap** records belong in the **Encrypted Capture Index** because they are timeline/privacy history.
-- **Capture Safety Gap** is written only when an active recording is suspended by a capture-safety trigger, not while recording is stopped or already under **User Capture Pause**.
-- **Capture Safety Gap** may appear as timeline context or in explicit gap filters, but it is not a searchable content result.
-- **Capture Safety Suspension** creates a recording boundary: active segments are finalized on suspend, no requested sources record while suspended, and new segments start on resume.
-- If a **Capture Safety Suspension** boundary cannot be finalized safely, the **Recording Lifecycle** fails closed by keeping capture suspended and reporting the failure clearly.
-- **Credential Entry Capture Suspension** does not automatically delete capture from before the trusted secure text-entry signal appeared; **Delete Recent Capture** remains the explicit recovery path.
-- **Credential Entry Capture Suspension** V1 has no one-click record-anyway override while the trusted secure text-entry signal remains active; users may stop recording or disable the feature in Settings.
-- **Credential Entry Capture Suspension** is enabled by default after first-run disclosure and remains user-configurable in Settings.
-- Disabling **Credential Entry Capture Suspension** should explicitly disclose that original media may capture credentials while the feature is off.
-- Active **Credential Entry Capture Suspension** should be visible in tray/titlebar status using non-content copy such as "Paused for credential entry", without app name, URL, window title, or field details.
-- **Credential Entry Capture Suspension** should not emit system notifications on each suspend or resume by default.
-- Settings should present **Credential Entry Capture Suspension** under **Capture Safety** rather than mixing it into **App Privacy Exclusion** controls.
-- Onboarding should disclose **Credential Entry Capture Suspension** and request needed permission, but skipped or denied permission should make the feature unavailable rather than blocking first recording.
 - **Secret Redaction Pipeline** affects searchable derived text, snippets, copy-text actions backed by OCR or transcripts, and agent-facing derived text access, not original frame, video, or audio media.
 - **Secret Redaction Pipeline** V1 targets high-confidence secrets such as API keys, access tokens, private keys, seed-like secrets, structurally obvious passwords, clearly labeled or formatted auth codes, and credential-bearing database connection strings.
 - **Secret Redaction Pipeline** V1 does not attempt broad PII, name, email, address, phone, sensitive-business-text, screenshot-region, or image redaction.
@@ -501,7 +385,6 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Brokered Capture Access** may provide an open-in-Mnema action for opaque result identifiers so original media inspection stays mediated by app UI warnings and confirmations.
 - **Brokered Capture Access** V1 does not include privileged original-media export, media-path return, raw DB dump, or raw OCR/transcript dump commands.
 - **Brokered Capture Access** may support app, source, and time refinements, but should minimize returned app/window/browser metadata and avoid returning full browser URLs by default.
-- **Brokered Capture Access** timeline responses may include **Capture Safety Gap** intervals within the grant scope as coarse non-content records.
 - **Recommended App Exclusions** become **App Privacy Exclusion** rules only after user confirmation.
 - **Recommended App Exclusions** are shown during onboarding and through a one-time non-blocking prompt for existing users after upgrade when at least one detected recommended app is missing from **App Privacy Exclusion** or has its exclusion disabled.
 - **Recommended App Exclusions** prompt dismissal is persisted in **One-Time Prompt State** rather than recording settings or browser local storage.
@@ -526,7 +409,6 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Browser Capture Disclosure** is based on known browser app identity, not URL, domain, title, private-window state, or login-page signals.
 - **Browser Capture Disclosure** explicitly says private or incognito browser windows are recorded unless the browser app is excluded.
 - **Browser Capture Disclosure** explicitly says Mnema does not detect browser password pages or password fields.
-- Browser extensions and websites are not separate **Recommended App Exclusions** in V1; browser extension content is covered only if the whole browser app is excluded.
 - **Exclude This App** applies from the time the app exclusion is added and does not remove already persisted **Captured Frame** or **Audio Transcription** data.
 - **Exclude Current App** is a native status-bar shortcut for the frontmost app, while Privacy settings remains the full app-picker surface.
 - **Exclude Current App** is available while recording and while stopped; while recording it affects future frames in the current recording, and while stopped it affects future recordings.
@@ -539,7 +421,6 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **App Privacy Exclusion** does not remove or hide historical search, timeline, frame, or audio results that were already captured before the exclusion was added.
 - If a live app-exclusion change cannot be applied while recording, Mnema reports that screen/system-audio capture is suspended because privacy exclusions could not be applied, reusing the existing privacy suspension path.
 - **Delete Recent Capture** removes the selected recent capture window's **Capture Segment** data, **Captured Frame** data, OCR/search data, **Audio Segment** data, transcription data, speaker-derived data, and derived preview cache where applicable.
-- **Delete Recent Capture** removes **Capture Safety Gap** records that overlap the selected recent window.
 - When invoked during recording, **Delete Recent Capture** first creates a recording boundary so active writer-owned data becomes finalized **Capture Segment** data before deletion.
 - **Delete Recent Capture** deletes finalized **Capture Segment** values whose time ranges overlap the selected recent window; bounded over-delete is acceptable because **Capture Segment Duration** is capped.
 - **Delete Recent Capture** deletes whole overlapping screen **Capture Segment** media rather than trimming video files or rewriting frame indexes.
@@ -591,7 +472,6 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Scrub Preview** availability returns only source-fresh cache files; missing or stale indexed intervals may be enqueued for background regeneration.
 - A generated **Scrub Preview** cache interval is keyed by source segment video offset, while dashboard availability is requested and displayed by timeline time.
 - Dashboard timeline mapping for generated **Scrub Preview** intervals uses **Capture Segment** timing plus segment video offset rather than per-frame captured timestamp jitter.
-- Generated **Scrub Preview** coverage is derived from indexed screen positions, not raw segment recording duration.
 - A timeline interval with a usable frame index but no indexed screen position is unavailable for **Scrub Preview** without treating the whole frame index as missing.
 - The generated **Scrub Preview** cache defaults to a 512 MB budget and 7-day last-access window, pruned by segment cache directory rather than individual preview file.
 - Generated **Scrub Preview** cache policy is separate from exact frame preview cache policy.
@@ -652,7 +532,6 @@ _Avoid_: duplicate result, grouped row, result cluster
 - An **Audio Segment** comes from exactly one recording source, such as microphone or system audio.
 - A **Retention Policy** applies only to the active **Managed Storage Layout** and active app-infra database.
 - **Retention Cleanup** skips active capture segments and subjects with running processing/finalize jobs.
-- **Retention Cleanup** removes **Capture Safety Gap** records according to the active **Retention Policy**.
 - **Retention Cleanup** preserves **Person Profile** values even when derived speaker rows are deleted.
 - **Retention Cleanup** best-effort removes generated **Scrub Preview** cache directories for deleted screen **Capture Segment** values, while cache validation and pruning remain responsible for stale orphan safety.
 - **Retention Cleanup** reaches generated **Scrub Preview** cache through the desktop Tauri cache service rather than app-infra owning Tauri app-cache paths.
@@ -726,7 +605,6 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Hybrid Search** is the product direction once **Semantic Search** exists.
 - A **Search Index Projection** should produce one mixed result stream over typed **Search Result Anchor** values.
 - A **Search Index Projection** may carry type-specific anchor data for **Captured Frame** and **Audio Transcription Span** results.
-- A **Search Result Group** should preserve the time coverage of the grouped anchors while presenting one result.
 - **Search Result Group** creation should happen before result pagination is presented to the user.
 - **Search Refinement** should apply to **Search Result Anchor** values before choosing the representative anchor for a **Search Result Group**.
 - **Search Refinement** values should compose when their result-type constraints are compatible.

@@ -1,9 +1,0 @@
-{
-  "name": "com.shaikzeeshan.mnema.browser_integration",
-  "description": "Mnema browser integration native messaging host",
-  "path": "/Applications/Mnema.app/Contents/MacOS/mnema-browser-integration-host",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://bnnoebfihdapbhcalgddficdehgggnng/"
-  ]
-}

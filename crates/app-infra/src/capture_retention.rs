@@ -5,10 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, QueryBuilder, Row, Sqlite, SqlitePool};
 use time::{format_description::well_known::Rfc3339, Date, Duration, OffsetDateTime, UtcOffset};
 
-use crate::{
-    capture_safety::delete_capture_safety_gaps_overlapping_in_transaction,
-    processing::ProcessingJobStatus, Result,
-};
+use crate::{processing::ProcessingJobStatus, Result};
 
 const SQLITE_BIND_CHUNK_SIZE: usize = 500;
 
@@ -537,12 +534,6 @@ impl CaptureRetentionStore {
         summary.deleted_audio_segment_ids = deleted_audio_segment_ids;
         summary.deleted_capture_segments =
             delete_by_ids(&mut tx, "capture_segments", &segment_ids).await?;
-        delete_capture_safety_gaps_overlapping_in_transaction(
-            &mut tx,
-            "0000-01-01T00:00:00Z",
-            &cutoff,
-        )
-        .await?;
         summary.deleted_capture_segment_media_paths = deleted_capture_segment_media_paths;
         let cleanup_run_id =
             insert_cleanup_run(&mut tx, &summary, mode.as_str(), "completed").await?;

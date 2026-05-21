@@ -1,11 +1,10 @@
 ---
-status: superseded by ADR-0013
+status: rejected by ADR-0013
 ---
 
-# Add credential entry capture suspension
+# Do not add credential entry capture suspension
 
-Mnema will add **Credential Entry Capture Suspension** as an ADR-backed **Capture Safety Suspension** that pauses all requested capture sources when trusted OS, accessibility, or native framework secure text-entry signals indicate credential entry. It runs independently of frame context metadata and browser URL metadata settings. It must not use URL, title, OCR, browser-page, DOM, extension, domain-list, screenshot, or classifier guessing as fallbacks; unsupported apps remain uncovered rather than creating a misleading guarantee.
+Mnema will not add automatic credential-entry capture suspension in this branch. ADR 0013 rejected this approach because predictable recording, explicit pause, app exclusions, delete-recent recovery, downstream redaction, and brokered access are preferable to unstable automatic suspension.
 
 ## Consequences
 
-The feature is enabled by default after first-run disclosure and remains configurable in Settings. Missing Accessibility or platform permission is shown as unavailable rather than silently degrading. Suspension starts immediately when a trusted signal appears, resumes only after a short clear delay, and creates a visible **Capture Safety Gap** only when an active recording is suspended by the trigger. Suspension creates a recording boundary: active segments are finalized on suspend, no requested sources record while suspended, and new segments start on resume; if the boundary cannot be finalized safely, the **Recording Lifecycle** fails closed by keeping capture suspended and reporting the failure clearly. V1 has no one-click record-anyway override while the trusted secure text-entry signal remains active. The gap stores only coarse reason and time bounds, not app identity, window title, URL, field label, recognized text, transcript, screenshot preview, or other content-bearing data.

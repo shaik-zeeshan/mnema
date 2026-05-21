@@ -101,7 +101,7 @@ pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
 }
 
 pub fn refresh_metadata_state(
-    app_handle: Option<&tauri::AppHandle>,
+    _app_handle: Option<&tauri::AppHandle>,
     state: &CaptureMetadataState,
     metadata: &MetadataSettings,
     privacy: &PrivacySettings,
@@ -111,14 +111,7 @@ pub fn refresh_metadata_state(
         .expect("capture metadata state poisoned")
         .browser_url_probe_cache
         .clone();
-    let extension_url = app_handle
-        .and_then(crate::native_capture::browser_integration::latest_browser_extension_metadata_url);
-    let active = collect_active_window_metadata(
-        metadata,
-        privacy,
-        &browser_url_probe_cache,
-        extension_url,
-    );
+    let active = collect_active_window_metadata(metadata, privacy, &browser_url_probe_cache, None);
     let snapshot = metadata.enabled.then(|| active.snapshot.clone()).flatten();
     let context = active.context;
     let decision = evaluate_privacy(privacy, &context);
@@ -184,7 +177,6 @@ pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
             let app_handle = app_handle.clone();
             move |_notification| {
                 crate::native_capture::privacy::request_privacy_filter_refresh(&app_handle, reason);
-                crate::native_capture::request_capture_safety_check(&app_handle);
             }
         }));
     }

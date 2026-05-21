@@ -96,10 +96,6 @@ pub struct NativeCaptureRuntime {
     pub runtime_state: RuntimeState,
     pub inactivity: InactivityState,
     pub user_capture_paused: bool,
-    pub capture_safety_suspended: bool,
-    pub capture_safety_clear_since: Option<Instant>,
-    pub capture_safety_available: bool,
-    pub capture_safety_unavailable_reason: Option<capture_types::CaptureSafetyUnavailableReason>,
     pub microphone_vad: MicrophoneVadRuntime,
     /// Per-source session metadata. Populated when a recording starts, cleared on reset.
     pub source_sessions: Option<SourceSessions>,
@@ -220,12 +216,6 @@ pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCapt
         is_running: session_reports_running(runtime),
         is_inactivity_paused: runtime.inactivity.is_paused,
         is_user_paused: runtime.user_capture_paused,
-        is_capture_safety_suspended: runtime.capture_safety_suspended,
-        capture_safety_suspension_reason: runtime
-            .capture_safety_suspended
-            .then_some(capture_types::CaptureSafetySuspensionReason::CredentialEntry),
-        capture_safety_available: runtime.capture_safety_available,
-        capture_safety_unavailable_reason: runtime.capture_safety_unavailable_reason.clone(),
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
@@ -243,10 +233,6 @@ fn session_reports_running(runtime: &NativeCaptureRuntime) -> bool {
 
     #[cfg(target_os = "macos")]
     {
-        if runtime.capture_safety_suspended {
-            return true;
-        }
-
         if runtime.privacy_capture_suspension.is_some() {
             return true;
         }
@@ -273,14 +259,6 @@ pub(super) fn stopped_session_from_runtime(runtime: &NativeCaptureRuntime) -> Na
         is_running: false,
         is_inactivity_paused: false,
         is_user_paused: false,
-        is_capture_safety_suspended: false,
-        capture_safety_suspension_reason: None,
-        capture_safety_available: cfg!(target_os = "macos"),
-        capture_safety_unavailable_reason: if cfg!(target_os = "macos") {
-            None
-        } else {
-            Some(capture_types::CaptureSafetyUnavailableReason::UnsupportedPlatform)
-        },
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
@@ -331,14 +309,6 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
     runtime.inactivity = InactivityState::default();
     runtime.user_capture_paused = false;
-    runtime.capture_safety_suspended = false;
-    runtime.capture_safety_clear_since = None;
-    runtime.capture_safety_available = cfg!(target_os = "macos");
-    runtime.capture_safety_unavailable_reason = if cfg!(target_os = "macos") {
-        None
-    } else {
-        Some(capture_types::CaptureSafetyUnavailableReason::UnsupportedPlatform)
-    };
     runtime.microphone_vad = MicrophoneVadRuntime::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;

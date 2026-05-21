@@ -1,6 +1,4 @@
 mod activity;
-pub(crate) mod browser_integration;
-mod capture_safety;
 #[path = "native_capture_debug_log.rs"]
 pub(crate) mod debug_log;
 #[path = "native_capture_inactivity.rs"]
@@ -176,8 +174,15 @@ pub struct BrowserUrlSupportResponse {
 pub struct CapturePrivacyDebugResponse {
     pub metadata_enabled: bool,
     pub browser_url_mode: capture_metadata::BrowserUrlMode,
-    pub browser_url_metadata_source: capture_types::BrowserMetadataSource,
+    pub browser_url_metadata_source: BrowserUrlMetadataDebugSource,
     pub privacy_debug: metadata::CapturePrivacyDebugInfo,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserUrlMetadataDebugSource {
+    NativeBrowserUrlProbe,
+    Unavailable,
 }
 
 #[derive(Debug, Default)]
@@ -209,7 +214,6 @@ impl AppNotificationsRuntime {
 
 pub type AppNotificationsState = Mutex<AppNotificationsRuntime>;
 pub use metadata::{start_metadata_notifier, CaptureMetadataState};
-pub use browser_integration::BrowserIntegrationState;
 
 #[tauri::command]
 pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
@@ -719,7 +723,7 @@ pub async fn check_browser_url_support(
 
 #[tauri::command]
 pub fn get_capture_privacy_debug(
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     metadata_state: tauri::State<'_, CaptureMetadataState>,
     settings_state: tauri::State<'_, RecordingSettingsState>,
 ) -> CapturePrivacyDebugResponse {
@@ -727,22 +731,18 @@ pub fn get_capture_privacy_debug(
     CapturePrivacyDebugResponse {
         metadata_enabled: settings.metadata.enabled,
         browser_url_mode: settings.metadata.browser_url_mode,
-        browser_url_metadata_source: browser_url_metadata_source(&app_handle, &settings.metadata),
+        browser_url_metadata_source: browser_url_metadata_source(&settings.metadata),
         privacy_debug: metadata::capture_privacy_debug_info(metadata_state.inner()),
     }
 }
 
 fn browser_url_metadata_source(
-    app_handle: &tauri::AppHandle,
     metadata: &capture_metadata::MetadataSettings,
-) -> capture_types::BrowserMetadataSource {
-    if browser_integration::latest_browser_extension_metadata_url(app_handle).is_some() {
-        capture_types::BrowserMetadataSource::BrowserExtension
-    } else if metadata.enabled && metadata.browser_url_mode != capture_metadata::BrowserUrlMode::Off
-    {
-        capture_types::BrowserMetadataSource::NativeBrowserUrlProbe
+) -> BrowserUrlMetadataDebugSource {
+    if metadata.enabled && metadata.browser_url_mode != capture_metadata::BrowserUrlMode::Off {
+        BrowserUrlMetadataDebugSource::NativeBrowserUrlProbe
     } else {
-        capture_types::BrowserMetadataSource::Unavailable
+        BrowserUrlMetadataDebugSource::Unavailable
     }
 }
 
@@ -766,18 +766,6 @@ pub(crate) fn emit_native_capture_session_changed(
     session: &capture_types::NativeCaptureSession,
 ) {
     let _ = app_handle.emit(NATIVE_CAPTURE_SESSION_CHANGED_EVENT, session);
-}
-
-pub(crate) fn request_capture_safety_check(app_handle: &tauri::AppHandle) {
-    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
-        return;
-    };
-    let Ok(runtime) = state.try_lock() else {
-        return;
-    };
-    if let Some(control) = runtime.runtime().segment_loop_control.as_ref() {
-        control.notify();
-    }
 }
 
 fn emit_app_notifications_changed(
@@ -1436,7 +1424,6 @@ fn update_recording_settings_request_from_settings(
         audio_speech_detection: settings.audio_speech_detection,
         metadata: settings.metadata,
         privacy: settings.privacy,
-        capture_safety: settings.capture_safety,
         pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
         idle_timeout_seconds: settings.idle_timeout_seconds,
         microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
@@ -2345,7 +2332,6 @@ fn finish_recording_settings_update(
     emit_recording_settings_changed(app_handle, &settings);
     let privacy_changed = previous_settings.privacy != settings.privacy;
     let metadata_changed = previous_settings.metadata != settings.metadata;
-    let capture_safety_changed = previous_settings.capture_safety != settings.capture_safety;
     if metadata_changed {
         privacy::request_privacy_filter_refresh(
             app_handle,
@@ -2356,9 +2342,6 @@ fn finish_recording_settings_update(
             app_handle,
             privacy::PrivacyRefreshReason::StaticAppRuleMutation,
         );
-    }
-    if capture_safety_changed {
-        request_capture_safety_check(app_handle);
     }
     crate::status_bar::refresh(app_handle);
 

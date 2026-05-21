@@ -25,7 +25,6 @@ use tauri::Manager;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc;
 
-use super::capture_safety::detect_credential_entry;
 use super::emit_audio_segments_changed;
 use super::lifecycle::TickOutcome;
 use super::runtime::{
@@ -45,7 +44,6 @@ use super::NativeCaptureState;
 // non-blocking.
 const FRAME_ARTIFACT_BUFFER_CAPACITY: usize = 64;
 const SEGMENT_LOOP_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const CAPTURE_SAFETY_SUSPENDED_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const PRIVACY_FILTER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[cfg(target_os = "macos")]
@@ -3486,18 +3484,14 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                     break;
                 }
 
-                if runtime.capture_safety_suspended {
-                    CAPTURE_SAFETY_SUSPENDED_POLL_INTERVAL
-                } else {
-                    let Some(schedule) = runtime.segment_schedule.as_ref() else {
-                        break;
-                    };
-                    let Some(clock) = runtime.capture_clock.as_ref() else {
-                        break;
-                    };
+                let Some(schedule) = runtime.segment_schedule.as_ref() else {
+                    break;
+                };
+                let Some(clock) = runtime.capture_clock.as_ref() else {
+                    break;
+                };
 
-                    segment_loop_sleep_duration(schedule, clock)
-                }
+                segment_loop_sleep_duration(schedule, clock)
             };
 
             if !sleep_duration.is_zero() {
@@ -3519,7 +3513,6 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
             let privacy_filter_update = privacy::take_completed_privacy_filter_update(&app_handle);
             privacy::maybe_start_privacy_filter_collection(&app_handle);
 
-            let capture_safety_state = detect_credential_entry();
             let capture_state = app_handle.state::<NativeCaptureState>();
             let mut runtime = match capture_state.lock() {
                 Ok(runtime) => runtime,
@@ -3603,7 +3596,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 }
             }
 
-            match runtime.tick_inactivity(&app_handle, capture_safety_state) {
+            match runtime.tick_inactivity(&app_handle) {
                 TickOutcome::Continue => {}
                 TickOutcome::SkipRotation => continue,
                 TickOutcome::StopLoop => break,

@@ -1,6 +1,4 @@
 use super::activity::current_activity_snapshot;
-use super::capture_safety::CaptureSafetyDetectorState;
-use super::browser_integration::BrowserSafetyAggregate;
 use super::output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
     finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
@@ -33,97 +31,6 @@ use capture_types::{
     CaptureErrorResponse, CaptureSources, NativeCaptureSession, RecordingSettings,
 };
 use capture_vad::MicrophoneVadFallbackNotice;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
-use tauri::Manager;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-
-static CAPTURE_SAFETY_ACTIVE_GAP_ID: Mutex<Option<i64>> = Mutex::new(None);
-const CAPTURE_SAFETY_CLEAR_DELAY: Duration = Duration::from_millis(1_500);
-
-fn now_rfc3339() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-}
-
-#[cfg(target_os = "macos")]
-fn start_capture_safety_gap(
-    app_handle: &tauri::AppHandle,
-    source_session_id: Option<String>,
-    source_family: ::app_infra::CaptureSafetyGapSourceFamily,
-) {
-    let Some(source_session_id) = source_session_id else {
-        return;
-    };
-    let infra = app_handle
-        .state::<crate::app_infra::AppInfraState>()
-        .inner()
-        .clone();
-    let started_at = now_rfc3339();
-    tauri::async_runtime::spawn(async move {
-        let session_id = match infra
-            .capture_session_id_for_source_session(&source_session_id)
-            .await
-        {
-            Ok(Some(session_id)) => session_id,
-            Ok(None) => return,
-            Err(error) => {
-                super::debug_log::log(format!(
-                    "failed to resolve capture session for safety gap: {error}"
-                ));
-                return;
-            }
-        };
-        match infra
-            .capture_safety()
-            .start_gap(
-                &session_id,
-                ::app_infra::CaptureSafetyGapReason::CredentialEntry,
-                source_family,
-                &started_at,
-            )
-            .await
-        {
-            Ok(gap) => {
-                if let Ok(mut active_gap) = CAPTURE_SAFETY_ACTIVE_GAP_ID.lock() {
-                    *active_gap = Some(gap.id);
-                }
-            }
-            Err(error) => {
-                super::debug_log::log(format!("failed to write capture safety gap start: {error}"))
-            }
-        }
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn end_capture_safety_gap(
-    app_handle: &tauri::AppHandle,
-    terminal_status: ::app_infra::CaptureSafetyGapTerminalStatus,
-) {
-    let gap_id = CAPTURE_SAFETY_ACTIVE_GAP_ID
-        .lock()
-        .ok()
-        .and_then(|mut gap| gap.take());
-    let Some(gap_id) = gap_id else {
-        return;
-    };
-    let infra = app_handle
-        .state::<crate::app_infra::AppInfraState>()
-        .inner()
-        .clone();
-    let ended_at = now_rfc3339();
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = infra
-            .capture_safety()
-            .end_gap(gap_id, &ended_at, terminal_status)
-            .await
-        {
-            super::debug_log::log(format!("failed to write capture safety gap end: {error}"));
-        }
-    });
-}
 
 #[derive(Debug, Default)]
 pub(crate) struct RecordingLifecycle {
@@ -228,23 +135,11 @@ impl RecordingLifecycle {
 
             request_segment_loop_stop(&self.runtime);
             mark_runtime_session_stopped(&mut self.runtime);
-            self.runtime.capture_safety_suspended = false;
-            self.runtime.capture_safety_clear_since = None;
-            end_capture_safety_gap(
-                app_handle,
-                ::app_infra::CaptureSafetyGapTerminalStatus::RecordingStopped,
-            );
             return Err(error);
         }
 
         request_segment_loop_stop(&self.runtime);
         mark_runtime_session_stopped(&mut self.runtime);
-        self.runtime.capture_safety_suspended = false;
-        self.runtime.capture_safety_clear_since = None;
-        end_capture_safety_gap(
-            app_handle,
-            ::app_infra::CaptureSafetyGapTerminalStatus::RecordingStopped,
-        );
         Ok(stopped_session_from_runtime(&self.runtime))
     }
 
@@ -408,160 +303,7 @@ impl RecordingLifecycle {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn tick_inactivity(
-        &mut self,
-        app_handle: &tauri::AppHandle,
-        capture_safety_state: CaptureSafetyDetectorState,
-    ) -> TickOutcome {
-        let capture_safety_enabled = super::current_recording_settings_from_app_handle(app_handle)
-            .capture_safety
-            .credential_entry_suspension_enabled;
-        let browser_safety_state = if capture_safety_enabled {
-            super::browser_integration::aggregate_browser_safety(app_handle)
-        } else {
-            BrowserSafetyAggregate::Clear
-        };
-        let native_safety_state = if capture_safety_enabled {
-            capture_safety_state
-        } else {
-            CaptureSafetyDetectorState::Available {
-                credential_entry_active: false,
-            }
-        };
-        let browser_active = browser_safety_state != BrowserSafetyAggregate::Clear;
-        let native_active = matches!(
-            native_safety_state,
-            CaptureSafetyDetectorState::Available {
-                credential_entry_active: true
-            }
-        );
-        let source_family = match (native_active, browser_active) {
-            (true, true) => ::app_infra::CaptureSafetyGapSourceFamily::Mixed,
-            (false, true) => ::app_infra::CaptureSafetyGapSourceFamily::BrowserSecureEntry,
-            _ => ::app_infra::CaptureSafetyGapSourceFamily::NativeSecureEntry,
-        };
-        if self.runtime.capture_safety_suspended
-            && browser_safety_state == BrowserSafetyAggregate::SourceLostFailClosed
-        {
-            self.runtime.capture_safety_available = false;
-            self.runtime.capture_safety_unavailable_reason =
-                Some(capture_types::CaptureSafetyUnavailableReason::DetectorError);
-            self.runtime.capture_safety_clear_since = None;
-            return TickOutcome::SkipRotation;
-        }
-        match if browser_safety_state == BrowserSafetyAggregate::SourceLostFailClosed {
-            CaptureSafetyDetectorState::Available {
-                credential_entry_active: true,
-            }
-        } else if browser_active {
-            CaptureSafetyDetectorState::Available {
-                credential_entry_active: true,
-            }
-        } else {
-            native_safety_state
-        } {
-            CaptureSafetyDetectorState::Available {
-                credential_entry_active: true,
-            } if self.runtime.is_running
-                && !self.runtime.user_capture_paused
-                && !self.runtime.capture_safety_suspended =>
-            {
-                self.runtime.capture_safety_available = true;
-                self.runtime.capture_safety_unavailable_reason = None;
-                if let Err(error) = stop_capture_runtime(&mut self.runtime, Some(app_handle)) {
-                    super::debug_log::log(format!(
-                        "failed to suspend capture for credential entry: [{}] {}",
-                        error.code, error.message
-                    ));
-                    return TickOutcome::SkipRotation;
-                }
-                self.runtime.capture_safety_suspended = true;
-                self.runtime.capture_safety_clear_since = None;
-                self.runtime.current_segment_sources = Some(CaptureSources {
-                    screen: false,
-                    microphone: false,
-                    system_audio: false,
-                });
-                let source_session_id = self
-                    .runtime
-                    .source_sessions
-                    .as_ref()
-                    .and_then(|sessions| {
-                        sessions
-                            .screen
-                            .as_ref()
-                            .or(sessions.microphone.as_ref())
-                            .or(sessions.system_audio.as_ref())
-                    })
-                    .map(|session| session.session_id.clone());
-                start_capture_safety_gap(app_handle, source_session_id, source_family);
-                let session = self.session();
-                super::emit_native_capture_session_changed(app_handle, &session);
-                crate::status_bar::refresh_deferred(app_handle);
-                super::debug_log::log("paused native capture for credential entry".to_string());
-                return TickOutcome::SkipRotation;
-            }
-            CaptureSafetyDetectorState::Available {
-                credential_entry_active: false,
-            } if self.runtime.capture_safety_suspended
-                && browser_safety_state != BrowserSafetyAggregate::SourceLostFailClosed =>
-            {
-                self.runtime.capture_safety_available = true;
-                self.runtime.capture_safety_unavailable_reason = None;
-                let now = Instant::now();
-                let clear_since = self.runtime.capture_safety_clear_since.get_or_insert(now);
-                if now.duration_since(*clear_since) < CAPTURE_SAFETY_CLEAR_DELAY {
-                    return TickOutcome::SkipRotation;
-                }
-                self.runtime.user_capture_paused = true;
-                match self.resume_user_capture(app_handle) {
-                    Ok(_) => {
-                        self.runtime.capture_safety_suspended = false;
-                        self.runtime.capture_safety_clear_since = None;
-                        end_capture_safety_gap(
-                            app_handle,
-                            ::app_infra::CaptureSafetyGapTerminalStatus::Cleared,
-                        );
-                        let session = self.session();
-                        super::emit_native_capture_session_changed(app_handle, &session);
-                        crate::status_bar::refresh_deferred(app_handle);
-                        super::debug_log::log(
-                            "resumed native capture after credential entry".to_string(),
-                        );
-                    }
-                    Err(error) => {
-                        self.runtime.user_capture_paused = false;
-                        self.runtime.capture_safety_clear_since = None;
-                        super::debug_log::log(format!(
-                            "failed to resume capture after credential entry: [{}] {}",
-                            error.code, error.message
-                        ));
-                    }
-                }
-                return TickOutcome::SkipRotation;
-            }
-            CaptureSafetyDetectorState::Available { .. } => {
-                self.runtime.capture_safety_available = true;
-                self.runtime.capture_safety_unavailable_reason = None;
-            }
-            CaptureSafetyDetectorState::AccessibilityPermissionMissing => {
-                self.runtime.capture_safety_available = false;
-                self.runtime.capture_safety_unavailable_reason = Some(
-                    capture_types::CaptureSafetyUnavailableReason::AccessibilityPermissionMissing,
-                );
-            }
-            CaptureSafetyDetectorState::UnsupportedPlatform => {
-                self.runtime.capture_safety_available = false;
-                self.runtime.capture_safety_unavailable_reason =
-                    Some(capture_types::CaptureSafetyUnavailableReason::UnsupportedPlatform);
-            }
-            CaptureSafetyDetectorState::DetectorError => {
-                self.runtime.capture_safety_available = false;
-                self.runtime.capture_safety_unavailable_reason =
-                    Some(capture_types::CaptureSafetyUnavailableReason::DetectorError);
-            }
-        }
-
+    pub(crate) fn tick_inactivity(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
         if self.runtime.user_capture_paused {
             return TickOutcome::SkipRotation;
         }

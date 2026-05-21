@@ -3578,16 +3578,6 @@ async fn delete_recent_capture_rows(
             .map_err(|error| format!("failed to delete capture segments: {error}"))?
             .rows_affected() as i64;
 
-    sqlx::query(
-        "DELETE FROM capture_safety_gaps
-         WHERE started_at <= ?2 AND COALESCE(ended_at, started_at) >= ?1",
-    )
-    .bind(started_at)
-    .bind(ended_at)
-    .execute(&mut *tx)
-    .await
-    .map_err(|error| format!("failed to delete capture safety gaps: {error}"))?;
-
     tx.commit()
         .await
         .map_err(|error| format!("failed to commit delete transaction: {error}"))?;
@@ -4583,10 +4573,6 @@ mod tests {
             is_running: true,
             is_inactivity_paused: true,
             is_user_paused: false,
-            is_capture_safety_suspended: false,
-            capture_safety_suspension_reason: None,
-            capture_safety_available: true,
-            capture_safety_unavailable_reason: None,
             requested_sources: None,
             output_files: None,
             source_sessions: None,
@@ -4601,10 +4587,6 @@ mod tests {
             is_running: true,
             is_inactivity_paused: false,
             is_user_paused: true,
-            is_capture_safety_suspended: false,
-            capture_safety_suspension_reason: None,
-            capture_safety_available: true,
-            capture_safety_unavailable_reason: None,
             requested_sources: None,
             output_files: None,
             source_sessions: None,
