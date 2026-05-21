@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    mnema_lib::maybe_run_browser_integration_host_and_exit();
     mnema_lib::maybe_run_speaker_analysis_helper_and_exit();
     mnema_lib::run()
 }

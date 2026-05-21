@@ -1,5 +1,6 @@
 mod app_infra;
 mod audio_transcription_models;
+pub mod browser_integration_host;
 mod general_app_log;
 mod keyboard_bindings;
 mod managed_storage_layout;
@@ -379,6 +380,10 @@ pub fn run() {
 
 pub fn maybe_run_speaker_analysis_helper_and_exit() {
     speaker_analysis_runtime::maybe_run_subprocess_helper_and_exit();
+}
+
+pub fn maybe_run_browser_integration_host_and_exit() {
+    browser_integration_host::maybe_run_browser_integration_host_and_exit();
 }
 
 #[cfg(test)]

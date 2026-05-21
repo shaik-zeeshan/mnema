@@ -21,6 +21,8 @@ const SECURE_ENTRY_KIND: &str = "browser_secure_entry_signal";
 const METADATA_KIND: &str = "browser_metadata_signal";
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(3_000);
 const PAIRING_TTL_MS: u64 = 10 * 60 * 1_000;
+const CHROMIUM_EXTENSION_ID: &str = "bnnoebfihdapbhcalgddficdehgggnng";
+const NATIVE_HOST_NAME: &str = "com.shaikzeeshan.mnema.browser_integration";
 
 pub type BrowserIntegrationState = Mutex<BrowserIntegrationRuntime>;
 const IPC_CONFIG_FILE_NAME: &str = "browser-integration-runtime.json";
@@ -34,7 +36,8 @@ pub struct BrowserIntegrationFamilyRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallBrowserIntegrationNativeHostRequest {
-    pub extension_id: String,
+    #[serde(default)]
+    pub extension_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -257,7 +260,6 @@ impl BrowserIntegrationRuntime {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(crate) fn accept_secure_entry_signal(
         &mut self,
         token: &str,
@@ -317,6 +319,11 @@ impl BrowserIntegrationRuntime {
 }
 
 pub(crate) fn initialize(app_handle: tauri::AppHandle) {
+    if let Err(error) = install_known_chromium_native_host(&app_handle) {
+        super::debug_log::log_warn(format!(
+            "browser integration native host auto-install skipped: {error}"
+        ));
+    }
     tauri::async_runtime::spawn(async move {
         if let Err(error) = start_ipc_listener(app_handle.clone()).await {
             super::debug_log::log_warn(format!("browser integration IPC failed to start: {error}"));
@@ -605,9 +612,26 @@ pub fn rotate_browser_integration_pairing(
 
 #[tauri::command]
 pub fn install_browser_integration_native_host(
+    app_handle: tauri::AppHandle,
     request: InstallBrowserIntegrationNativeHostRequest,
 ) -> Result<InstallBrowserIntegrationNativeHostResponse, String> {
-    let extension_id = request.extension_id.trim();
+    let extension_id = request
+        .extension_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(CHROMIUM_EXTENSION_ID);
+    install_chromium_native_host_for_extension(&app_handle, extension_id)
+}
+
+fn install_known_chromium_native_host(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    install_chromium_native_host_for_extension(app_handle, CHROMIUM_EXTENSION_ID).map(|_| ())
+}
+
+fn install_chromium_native_host_for_extension(
+    app_handle: &tauri::AppHandle,
+    extension_id: &str,
+) -> Result<InstallBrowserIntegrationNativeHostResponse, String> {
     if !extension_id
         .chars()
         .all(|ch| matches!(ch, 'a'..='p'))
@@ -615,9 +639,9 @@ pub fn install_browser_integration_native_host(
     {
         return Err("Enter the Chromium extension ID from the extension details page.".to_string());
     }
-    let host_path = browser_integration_host_path()?;
+    let host_path = browser_integration_host_path(app_handle)?;
     let manifest = serde_json::json!({
-        "name": "com.shaikzeeshan.mnema.browser_integration",
+        "name": NATIVE_HOST_NAME,
         "description": "Mnema browser integration native messaging host",
         "path": host_path,
         "type": "stdio",
@@ -629,7 +653,7 @@ pub fn install_browser_integration_native_host(
     for dir in native_host_manifest_dirs() {
         std::fs::create_dir_all(&dir)
             .map_err(|error| format!("create native messaging host directory {}: {error}", dir.display()))?;
-        let path = dir.join("com.shaikzeeshan.mnema.browser_integration.json");
+        let path = dir.join(format!("{NATIVE_HOST_NAME}.json"));
         std::fs::write(&path, &raw)
             .map_err(|error| format!("write native messaging host manifest {}: {error}", path.display()))?;
         written.push(path.to_string_lossy().to_string());
@@ -640,18 +664,53 @@ pub fn install_browser_integration_native_host(
     })
 }
 
-fn browser_integration_host_path() -> Result<String, String> {
+fn browser_integration_host_path(app_handle: &tauri::AppHandle) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|error| format!("resolve current executable: {error}"))?;
     let exe_dir = exe
         .parent()
         .ok_or_else(|| "current executable has no parent directory".to_string())?;
-    let candidates = [
+    let mut candidates = vec![
         exe_dir.join("mnema_browser_integration_host"),
+        exe_dir
+            .parent()
+            .unwrap_or(exe_dir)
+            .join("Resources")
+            .join("browser-integration-native-host.sh"),
+    ];
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        candidates.push(resource_dir.join("browser-integration-native-host.sh"));
+        candidates.push(resource_dir.join("mnema_browser_integration_host"));
+        candidates.push(
+            resource_dir
+                .join("target")
+                .join("release")
+                .join("mnema_browser_integration_host"),
+        );
+    }
+    candidates.extend([
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("debug")
             .join("mnema_browser_integration_host"),
-    ];
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("release")
+            .join("mnema_browser_integration_host"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("debug")
+            .join("mnema_browser_integration_host"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("release")
+            .join("mnema_browser_integration_host"),
+    ]);
     candidates
         .into_iter()
         .find(|path| path.exists())

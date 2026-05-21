@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Mnema Browser Integration",
   "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs7j9lwLBEfIv6CD25W2c1ZxBrc8pxXIdl6gXdkrqmQgP8BQ1VTwFFXpCDgfA/dYDZM6z4uX5I1b/UWG6jeeybulwcBzTdNO/fsM1MIxfDDESXiGNRcV4vAwDt+8ojaORRKwkTIluI5y8GdHfqIvEZwQSrGeSfYMQr/TGKlM2yFrWXE1LG1VbltpaWZDS8mx8nWUUj1yWcU9zukw0TROczaNtIH89WWlTDvBkQH0UVKn45Q1/CIFvX7vNj/k+cmJLza65f6wXG3imFho7LrpjdDYFrww0aA/oIoN2eU2TnVhYIY+PIbdkh1WFJih97M2QCI8iWFIp6hikPtmJn+m1mQIDAQAB",
   "description": "Sends non-content browser integration signals to Mnema.",
   "permissions": ["nativeMessaging", "storage", "activeTab", "scripting"],
   "host_permissions": ["<all_urls>"],

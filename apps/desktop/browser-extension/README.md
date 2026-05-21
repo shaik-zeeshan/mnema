@@ -17,5 +17,6 @@ Metadata is a separate channel and may send active-tab URL only when Mnema metad
 Development flow:
 
 1. Load this directory as an unpacked extension in a supported browser.
-2. Pair from Mnema Privacy settings.
-3. The native host bridge is intentionally a thin transport; pause/resume decisions stay in Rust.
+2. Start Mnema once so it can register the Chromium native messaging host for the stable extension ID.
+3. Pair from Mnema Privacy settings.
+4. The native host bridge is intentionally a thin transport; pause/resume decisions stay in Rust.

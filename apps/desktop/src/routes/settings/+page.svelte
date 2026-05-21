@@ -218,7 +218,6 @@
   let browserIntegrationStatus = $state<BrowserIntegrationStatus | null>(null);
   let browserIntegrationInFlight = $state<BrowserFamily | null>(null);
   let browserIntegrationPairingAction = $state<BrowserIntegrationPairingAction | null>(null);
-  let browserIntegrationExtensionId = $state("");
   let browserIntegrationInstallMessage = $state<string | null>(null);
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
@@ -802,7 +801,7 @@
     try {
       const response = await invoke<{ manifestPaths: string[]; hostPath: string }>(
         "install_browser_integration_native_host",
-        { request: { extensionId: browserIntegrationExtensionId.trim() } }
+        { request: {} }
       );
       browserIntegrationInstallMessage = `Installed native host for ${response.manifestPaths.length} Chromium profile locations.`;
     } catch (err) {
@@ -2674,18 +2673,12 @@
                   </div>
                 {/if}
                 <div class="browser-native-host-install">
-                  <input
-                    class="text-input"
-                    type="text"
-                    bind:value={browserIntegrationExtensionId}
-                    placeholder="Chromium extension ID"
-                    spellcheck="false"
-                  />
+                  <span>Native host registration is installed by Mnema for the bundled Chromium extension.</span>
                   <button
                     class="btn btn--ghost btn--sm"
                     type="button"
                     onclick={() => void installBrowserIntegrationNativeHost()}
-                  >Install native host</button>
+                  >Reinstall native host</button>
                 </div>
                 {#if browserIntegrationInstallMessage}
                   <p class="group-hint">{browserIntegrationInstallMessage}</p>
