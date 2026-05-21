@@ -2,13 +2,27 @@
 set -euo pipefail
 
 profile="${1:-debug}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
 case "$profile" in
   debug | release) ;;
   *)
-    echo "usage: $0 [debug|release]" >&2
+    echo "usage: $0 [debug|release] [--locked]" >&2
     exit 2
     ;;
 esac
+
+cargo_extra_args=()
+for arg in "$@"; do
+  case "$arg" in
+    --locked) cargo_extra_args+=("$arg") ;;
+    *)
+      echo "usage: $0 [debug|release] [--locked]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target_triple="${CARGO_BUILD_TARGET:-${TAURI_TARGET_TRIPLE:-${TARGET:-}}}"
@@ -27,6 +41,7 @@ esac
 
 cargo_args=(
   build
+  "${cargo_extra_args[@]}"
   --manifest-path "$repo_root/Cargo.toml"
   -p app-infra
   --bin mnema-cli

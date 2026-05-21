@@ -55,5 +55,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Prepare Mnema CLI sidecar
+        run: ./scripts/prepare-mnema-cli-sidecar.sh debug --locked
+
       - name: Check Rust workspace
         run: cargo check --workspace --all-targets --locked
