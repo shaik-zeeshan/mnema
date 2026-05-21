@@ -13,10 +13,10 @@ case "$profile" in
     ;;
 esac
 
-cargo_extra_args=()
+cargo_locked=false
 for arg in "$@"; do
   case "$arg" in
-    --locked) cargo_extra_args+=("$arg") ;;
+    --locked) cargo_locked=true ;;
     *)
       echo "usage: $0 [debug|release] [--locked]" >&2
       exit 2
@@ -41,12 +41,14 @@ esac
 
 cargo_args=(
   build
-  "${cargo_extra_args[@]}"
   --manifest-path "$repo_root/Cargo.toml"
   -p app-infra
   --bin mnema-cli
   --target "$target_triple"
 )
+if [[ "$cargo_locked" == true ]]; then
+  cargo_args+=(--locked)
+fi
 if [[ "$profile" == "release" ]]; then
   cargo_args+=(--release)
 fi
