@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Mnema Browser Integration</title>
+    <style>
+      body { font: 13px system-ui, sans-serif; margin: 24px; max-width: 560px; }
+      label { display: grid; gap: 6px; margin-bottom: 12px; }
+      input, select, button { font: inherit; padding: 8px; }
+      button { width: fit-content; }
+      .status { margin-top: 12px; color: #276749; }
+    </style>
+  </head>
+  <body>
+    <h1>Mnema Browser Integration</h1>
+    <p id="extensionId"></p>
+    <label>
+      Browser family
+      <select id="browserFamily">
+        <option value="chromium">Chromium</option>
+        <option value="safari">Safari</option>
+      </select>
+    </label>
+    <label>
+      Pairing token
+      <input id="pairingToken" autocomplete="off" spellcheck="false">
+    </label>
+    <button id="save">Pair</button>
+    <div class="status" id="status"></div>
+    <script src="options.js"></script>
+  </body>
+</html>

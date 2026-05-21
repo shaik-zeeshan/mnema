@@ -1,5 +1,6 @@
 use super::activity::current_activity_snapshot;
 use super::capture_safety::CaptureSafetyDetectorState;
+use super::browser_integration::BrowserSafetyAggregate;
 use super::output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
     finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
@@ -38,7 +39,7 @@ use tauri::Manager;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 static CAPTURE_SAFETY_ACTIVE_GAP_ID: Mutex<Option<i64>> = Mutex::new(None);
-const CAPTURE_SAFETY_CLEAR_DELAY: Duration = Duration::from_secs(8);
+const CAPTURE_SAFETY_CLEAR_DELAY: Duration = Duration::from_millis(1_500);
 
 fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
@@ -47,7 +48,11 @@ fn now_rfc3339() -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn start_capture_safety_gap(app_handle: &tauri::AppHandle, source_session_id: Option<String>) {
+fn start_capture_safety_gap(
+    app_handle: &tauri::AppHandle,
+    source_session_id: Option<String>,
+    source_family: ::app_infra::CaptureSafetyGapSourceFamily,
+) {
     let Some(source_session_id) = source_session_id else {
         return;
     };
@@ -75,6 +80,7 @@ fn start_capture_safety_gap(app_handle: &tauri::AppHandle, source_session_id: Op
             .start_gap(
                 &session_id,
                 ::app_infra::CaptureSafetyGapReason::CredentialEntry,
+                source_family,
                 &started_at,
             )
             .await
@@ -92,7 +98,10 @@ fn start_capture_safety_gap(app_handle: &tauri::AppHandle, source_session_id: Op
 }
 
 #[cfg(target_os = "macos")]
-fn end_capture_safety_gap(app_handle: &tauri::AppHandle) {
+fn end_capture_safety_gap(
+    app_handle: &tauri::AppHandle,
+    terminal_status: ::app_infra::CaptureSafetyGapTerminalStatus,
+) {
     let gap_id = CAPTURE_SAFETY_ACTIVE_GAP_ID
         .lock()
         .ok()
@@ -106,7 +115,11 @@ fn end_capture_safety_gap(app_handle: &tauri::AppHandle) {
         .clone();
     let ended_at = now_rfc3339();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = infra.capture_safety().end_gap(gap_id, &ended_at).await {
+        if let Err(error) = infra
+            .capture_safety()
+            .end_gap(gap_id, &ended_at, terminal_status)
+            .await
+        {
             super::debug_log::log(format!("failed to write capture safety gap end: {error}"));
         }
     });
@@ -217,7 +230,10 @@ impl RecordingLifecycle {
             mark_runtime_session_stopped(&mut self.runtime);
             self.runtime.capture_safety_suspended = false;
             self.runtime.capture_safety_clear_since = None;
-            end_capture_safety_gap(app_handle);
+            end_capture_safety_gap(
+                app_handle,
+                ::app_infra::CaptureSafetyGapTerminalStatus::RecordingStopped,
+            );
             return Err(error);
         }
 
@@ -225,7 +241,10 @@ impl RecordingLifecycle {
         mark_runtime_session_stopped(&mut self.runtime);
         self.runtime.capture_safety_suspended = false;
         self.runtime.capture_safety_clear_since = None;
-        end_capture_safety_gap(app_handle);
+        end_capture_safety_gap(
+            app_handle,
+            ::app_infra::CaptureSafetyGapTerminalStatus::RecordingStopped,
+        );
         Ok(stopped_session_from_runtime(&self.runtime))
     }
 
@@ -397,12 +416,49 @@ impl RecordingLifecycle {
         let capture_safety_enabled = super::current_recording_settings_from_app_handle(app_handle)
             .capture_safety
             .credential_entry_suspension_enabled;
-        match if capture_safety_enabled {
+        let browser_safety_state = if capture_safety_enabled {
+            super::browser_integration::aggregate_browser_safety(app_handle)
+        } else {
+            BrowserSafetyAggregate::Clear
+        };
+        let native_safety_state = if capture_safety_enabled {
             capture_safety_state
         } else {
             CaptureSafetyDetectorState::Available {
                 credential_entry_active: false,
             }
+        };
+        let browser_active = browser_safety_state != BrowserSafetyAggregate::Clear;
+        let native_active = matches!(
+            native_safety_state,
+            CaptureSafetyDetectorState::Available {
+                credential_entry_active: true
+            }
+        );
+        let source_family = match (native_active, browser_active) {
+            (true, true) => ::app_infra::CaptureSafetyGapSourceFamily::Mixed,
+            (false, true) => ::app_infra::CaptureSafetyGapSourceFamily::BrowserSecureEntry,
+            _ => ::app_infra::CaptureSafetyGapSourceFamily::NativeSecureEntry,
+        };
+        if self.runtime.capture_safety_suspended
+            && browser_safety_state == BrowserSafetyAggregate::SourceLostFailClosed
+        {
+            self.runtime.capture_safety_available = false;
+            self.runtime.capture_safety_unavailable_reason =
+                Some(capture_types::CaptureSafetyUnavailableReason::DetectorError);
+            self.runtime.capture_safety_clear_since = None;
+            return TickOutcome::SkipRotation;
+        }
+        match if browser_safety_state == BrowserSafetyAggregate::SourceLostFailClosed {
+            CaptureSafetyDetectorState::Available {
+                credential_entry_active: true,
+            }
+        } else if browser_active {
+            CaptureSafetyDetectorState::Available {
+                credential_entry_active: true,
+            }
+        } else {
+            native_safety_state
         } {
             CaptureSafetyDetectorState::Available {
                 credential_entry_active: true,
@@ -438,7 +494,7 @@ impl RecordingLifecycle {
                             .or(sessions.system_audio.as_ref())
                     })
                     .map(|session| session.session_id.clone());
-                start_capture_safety_gap(app_handle, source_session_id);
+                start_capture_safety_gap(app_handle, source_session_id, source_family);
                 let session = self.session();
                 super::emit_native_capture_session_changed(app_handle, &session);
                 crate::status_bar::refresh_deferred(app_handle);
@@ -447,7 +503,9 @@ impl RecordingLifecycle {
             }
             CaptureSafetyDetectorState::Available {
                 credential_entry_active: false,
-            } if self.runtime.capture_safety_suspended => {
+            } if self.runtime.capture_safety_suspended
+                && browser_safety_state != BrowserSafetyAggregate::SourceLostFailClosed =>
+            {
                 self.runtime.capture_safety_available = true;
                 self.runtime.capture_safety_unavailable_reason = None;
                 let now = Instant::now();
@@ -460,7 +518,10 @@ impl RecordingLifecycle {
                     Ok(_) => {
                         self.runtime.capture_safety_suspended = false;
                         self.runtime.capture_safety_clear_since = None;
-                        end_capture_safety_gap(app_handle);
+                        end_capture_safety_gap(
+                            app_handle,
+                            ::app_infra::CaptureSafetyGapTerminalStatus::Cleared,
+                        );
                         let session = self.session();
                         super::emit_native_capture_session_changed(app_handle, &session);
                         crate::status_bar::refresh_deferred(app_handle);

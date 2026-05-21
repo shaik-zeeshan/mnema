@@ -135,6 +135,7 @@ pub fn run() {
         .manage(native_capture::RecordingSettingsState::default())
         .manage(one_time_prompts::OneTimePromptStateStore::default())
         .manage(native_capture::CaptureMetadataState::default())
+        .manage(native_capture::BrowserIntegrationState::default())
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
         .manage(native_capture::AppNotificationsState::default())
@@ -264,6 +265,11 @@ pub fn run() {
             native_capture::list_privacy_app_candidates,
             native_capture::resolve_app_icons,
             native_capture::check_browser_url_support,
+            native_capture::browser_integration::get_browser_integration_status,
+            native_capture::browser_integration::start_browser_integration_pairing,
+            native_capture::browser_integration::revoke_browser_integration_pairing,
+            native_capture::browser_integration::rotate_browser_integration_pairing,
+            native_capture::browser_integration::install_browser_integration_native_host,
             native_capture::get_capture_privacy_debug,
             native_capture::get_recording_settings,
             native_capture::update_recording_settings,
@@ -330,6 +336,7 @@ pub fn run() {
             native_capture::start_microphone_device_change_notifier(app.handle().clone());
             native_capture::start_system_wake_notifier(app.handle().clone());
             native_capture::start_metadata_notifier(app.handle().clone());
+            native_capture::browser_integration::initialize(app.handle().clone());
             let onboarding_state = app.state::<windows::OnboardingStateStore>();
             let onboarding_complete =
                 windows::open_startup_window(app.handle(), onboarding_state.inner())

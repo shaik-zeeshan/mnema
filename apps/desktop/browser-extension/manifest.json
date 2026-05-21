@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Mnema Browser Integration",
+  "version": "0.1.0",
+  "description": "Sends non-content browser integration signals to Mnema.",
+  "permissions": ["nativeMessaging", "storage", "activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "options_ui": {
+    "page": "src/options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

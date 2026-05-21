@@ -1,4 +1,5 @@
 mod activity;
+pub(crate) mod browser_integration;
 mod capture_safety;
 #[path = "native_capture_debug_log.rs"]
 pub(crate) mod debug_log;
@@ -175,6 +176,7 @@ pub struct BrowserUrlSupportResponse {
 pub struct CapturePrivacyDebugResponse {
     pub metadata_enabled: bool,
     pub browser_url_mode: capture_metadata::BrowserUrlMode,
+    pub browser_url_metadata_source: capture_types::BrowserMetadataSource,
     pub privacy_debug: metadata::CapturePrivacyDebugInfo,
 }
 
@@ -207,6 +209,7 @@ impl AppNotificationsRuntime {
 
 pub type AppNotificationsState = Mutex<AppNotificationsRuntime>;
 pub use metadata::{start_metadata_notifier, CaptureMetadataState};
+pub use browser_integration::BrowserIntegrationState;
 
 #[tauri::command]
 pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
@@ -716,6 +719,7 @@ pub async fn check_browser_url_support(
 
 #[tauri::command]
 pub fn get_capture_privacy_debug(
+    app_handle: tauri::AppHandle,
     metadata_state: tauri::State<'_, CaptureMetadataState>,
     settings_state: tauri::State<'_, RecordingSettingsState>,
 ) -> CapturePrivacyDebugResponse {
@@ -723,7 +727,22 @@ pub fn get_capture_privacy_debug(
     CapturePrivacyDebugResponse {
         metadata_enabled: settings.metadata.enabled,
         browser_url_mode: settings.metadata.browser_url_mode,
+        browser_url_metadata_source: browser_url_metadata_source(&app_handle, &settings.metadata),
         privacy_debug: metadata::capture_privacy_debug_info(metadata_state.inner()),
+    }
+}
+
+fn browser_url_metadata_source(
+    app_handle: &tauri::AppHandle,
+    metadata: &capture_metadata::MetadataSettings,
+) -> capture_types::BrowserMetadataSource {
+    if browser_integration::latest_browser_extension_metadata_url(app_handle).is_some() {
+        capture_types::BrowserMetadataSource::BrowserExtension
+    } else if metadata.enabled && metadata.browser_url_mode != capture_metadata::BrowserUrlMode::Off
+    {
+        capture_types::BrowserMetadataSource::NativeBrowserUrlProbe
+    } else {
+        capture_types::BrowserMetadataSource::Unavailable
     }
 }
 

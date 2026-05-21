@@ -121,6 +121,26 @@ _Avoid_: browser privacy mode, incognito protection, website blocking
 A browser app identity used for browser-related product disclosure and metadata support.
 _Avoid_: sensitive app recommendation, browser privacy rule, website filter
 
+**Browser Metadata Collection**:
+The browser-integration metadata flow that records configured browser context for timeline and search context without making live capture privacy decisions.
+_Avoid_: metacollection, browser privacy signal, website privacy rule
+
+**Browser Metadata Signal**:
+A first-party browser-extension signal that reports configured browser metadata under **Browser Metadata Collection** settings.
+_Avoid_: browser safety signal, browser privacy signal, credential-entry signal
+
+**Browser Integration Coverage**:
+The user-visible availability state of first-party browser extension pairing, native messaging, browser support, and website access for browser-integrated capture features.
+_Avoid_: protection status, browser privacy mode, silent fallback
+
+**Browser Integration Runtime**:
+The Rust-owned native state that validates first-party browser integration events and exposes summarized metadata and safety state to Mnema.
+_Avoid_: Svelte browser bridge, extension-owned recorder state, frontend safety state
+
+**Browser Integration Pairing**:
+The explicit per-install trust relationship between Mnema and a first-party browser extension.
+_Avoid_: native messaging trust only, extension install state, browser permission
+
 **Exclude This App**:
 A just-in-time user action that adds one app identity to **App Privacy Exclusion** for future capture.
 _Avoid_: retroactive exclusion, delete this app's history, sensitive content removal
@@ -349,6 +369,73 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Credential Entry Capture Suspension** may use OS, accessibility, or native framework signals that identify secure text entry without inspecting typed content.
 - **Credential Entry Capture Suspension** may use a first-party **Browser Secure-Entry Signal** for browser credential entry when native secure text-entry signals are unreliable.
 - A **Browser Secure-Entry Signal** may inspect focused DOM control structure but must not send or persist URL, title, domain, page text, field value, field label, placeholder, selector, form action, screenshot, OCR, or media-derived data.
+- A browser extension integration may also provide **Browser Metadata Signal** values for **Browser Metadata Collection**, but those values are a separate contract from **Browser Secure-Entry Signal** values.
+- A **Browser Metadata Signal** may report the active tab URL only when **Browser Metadata Collection** is enabled and browser URL metadata mode is not off.
+- A **Browser Metadata Signal** must not report DOM text, selected text, page title, field labels, placeholders, selectors, form actions, favicon, screenshots, page summaries, credential-control structure, or credential-field state.
+- Browser URL metadata from a **Browser Metadata Signal** follows the existing browser URL metadata modes: off, sanitized, or full.
+- Mnema sanitizes browser URL metadata before persistence; full URL metadata remains an explicit user choice because query strings and fragments may contain secrets.
+- **Browser Metadata Collection** may feed timeline/search context according to metadata settings, but must not drive **Live Privacy Filter** decisions or **Credential Entry Capture Suspension**.
+- **Browser Secure-Entry Signal** remains live-only and independent of metadata settings; disabling **Browser Metadata Collection** must not disable credential-entry suspension.
+- Disabling **Credential Entry Capture Suspension** must not disable **Browser Metadata Collection**.
+- Reliable browser-integrated **Credential Entry Capture Suspension** requires **Browser Integration Coverage** with the extension installed, paired to Mnema, native messaging available, a supported browser, and all-sites website access.
+- Per-site browser extension access may provide partial **Browser Integration Coverage**, but must be labeled partial coverage rather than reliable browser credential-entry suspension.
+- Missing extension installation, pairing, native messaging, website permission, browser support, or page support makes browser-integrated credential-entry suspension unavailable for that browser or page rather than activating a heuristic fallback.
+- Browser `activeTab`-style temporary access is not sufficient for always-on **Browser Secure-Entry Signal** coverage.
+- Browser-integrated **Credential Entry Capture Suspension** should treat focused password controls as active credential entry.
+- Browser-integrated **Credential Entry Capture Suspension** should treat focused editable text controls in the same form or nearest credential group as a password control as active credential entry, so username or email entry can suspend before the password field is focused.
+- Browser-integrated **Credential Entry Capture Suspension** should treat focused text-like controls with standards-based credential autocomplete tokens such as `username`, `current-password`, `new-password`, or `one-time-code` as active credential entry when paired with credential structure.
+- Browser-integrated **Credential Entry Capture Suspension** may inspect DOM control type, focus, form/group relationship, and standards-based autocomplete tokens, but not visible labels, placeholders, button text, URL, title, copied field values, OCR, or classifier guesses.
+- One-time code entry is treated as credential entry even though many codes are not reusable after successful submission, because capture may persist the code before it is used or before it expires.
+- **Credential Entry Capture Suspension** suspends immediately when any trusted safety source reports active credential entry.
+- **Credential Entry Capture Suspension** resumes only after every currently tracked active safety source has reported clear and a short clear debounce has elapsed.
+- The initial clear debounce for **Credential Entry Capture Suspension** is 1500ms.
+- If a safety source that was active disconnects, becomes unavailable, or misses heartbeat before reporting clear, **Credential Entry Capture Suspension** stays suspended and reports the coverage failure.
+- A browser or page that is uncovered before any active secure-entry signal is shown as uncovered rather than causing automatic suspension.
+- **Capture Safety Gap** records should be coalesced across secure-entry flicker until the final resume rather than creating tiny repeated gaps.
+- **Capture Safety Gap** may persist start/end time, coarse trigger category, coarse source family, and coarse terminal status.
+- **Capture Safety Gap** must not persist the per-event secure-entry stream, safety-tied URL/title/domain, field type history, selector, form identity, frame identity, extension tab id, app/window title, page labels, placeholders, values, screenshots, OCR, transcript, or media-derived data.
+- **Browser Integration Coverage** audit may persist non-content coverage changes such as installed, paired, native messaging available, website permission available, supported, unsupported, and unavailable.
+- Live debug may show current **Browser Integration Coverage** and the latest non-content safety reason, but should not retain a detailed per-focus browser event timeline.
+- First-party browser integration events terminate in the Rust-owned **Browser Integration Runtime**, not in Svelte state.
+- The **Browser Integration Runtime** validates event schema, pairing/authenticity, sequence, heartbeat, browser support, and permission/coverage state before updating Mnema state.
+- The **Recording Lifecycle** consumes only summarized browser safety state from the **Browser Integration Runtime**, not raw extension events.
+- **Browser Metadata Collection** consumes only sanitized metadata state from the **Browser Integration Runtime**.
+- Svelte may configure browser integration and display coverage/debug state, but must not own safety debounce, fail-closed decisions, or recording pause/resume decisions.
+- Native Accessibility or native framework secure-entry signals are primary for non-browser apps and native secure text fields.
+- **Browser Secure-Entry Signal** is primary for Safari/Chromium browser credential entry.
+- Native Accessibility may supplement browser credential-entry suspension only when it reports a trusted secure-entry signal, but browser credential-entry coverage should not require native Accessibility and native Accessibility should not override an active **Browser Secure-Entry Signal**.
+- Missing **Browser Integration Coverage** means browser credential-entry coverage is unavailable or partial even if native Accessibility permission is present.
+- Missing native Accessibility permission means native-app secure-entry coverage is unavailable, but supported-browser **Browser Secure-Entry Signal** coverage may still work.
+- The app-facing **Browser Secure-Entry Signal** contract carries only version, kind, browser family, state, fixed non-content reason, observed timestamp, and sequence.
+- The app-facing **Browser Secure-Entry Signal** contract must not carry tab id, frame id, URL, domain, title, selector, field type, autocomplete token, or browser-specific permission object.
+- The app-facing **Browser Metadata Signal** contract carries only version, kind, browser family, state, fixed non-content reason, observed timestamp, sequence, and optional URL.
+- A **Browser Metadata Signal** URL is present only when metadata is enabled and browser URL metadata mode is not off.
+- The app-facing **Browser Metadata Signal** contract must not carry page title, selected text, DOM text, favicon, selector, field state, tab id, or frame id.
+- Onboarding should include a dedicated browser extension setup step for browser-integrated Sensitive Capture V2.
+- Browser extension setup is non-blocking; skipping it must not block first recording.
+- Skipping browser extension setup makes browser-integrated **Credential Entry Capture Suspension** and **Browser Metadata Collection** partial or unavailable according to **Browser Integration Coverage**.
+- Settings and onboarding should show **Browser Integration Coverage** per source family, including native apps, Safari, and Chromium browsers, with reliable, partial, and unavailable states.
+- Product copy should describe browser-integrated Sensitive Capture V2 as pausing during supported browser credential entry when coverage is available, not as a guarantee that passwords are never recorded.
+- Product copy should disclose that Mnema does not inspect field values and does not use URL/domain/title/page guessing for credential-entry suspension.
+- Product copy should disclose that unsupported browsers/pages, denied website access, extension disconnects before detection, and capture before a trusted signal arrives may still be recorded.
+- Product copy should avoid redaction, private browsing protection, website privacy, and password manager mode language for browser-integrated Sensitive Capture V2.
+- Browser-integrated **Credential Entry Capture Suspension** pauses screen, system audio, and microphone together when those sources are requested.
+- Browser-integrated **Credential Entry Capture Suspension** creates one **Capture Safety Gap** for the suspension, not per-source gaps.
+- Browser-integrated **Credential Entry Capture Suspension** resumes only the sources that were requested before the safety suspension; unrequested, stopped, or user-paused sources must not be started by safety resume.
+- If any requested source cannot finalize safely at a browser-integrated **Credential Entry Capture Suspension** boundary, the **Recording Lifecycle** fails closed for the whole suspension rather than continuing other sources as if protected.
+- **Browser Metadata Collection** should prefer **Browser Metadata Signal** URL metadata when browser integration is paired and covered.
+- Existing native browser URL probing may remain as a metadata-only fallback under metadata settings and browser URL metadata mode.
+- Native browser URL probing fallback must not affect **Browser Integration Coverage**, enable **Credential Entry Capture Suspension**, or imply browser credential-entry coverage.
+- Debug should label browser URL metadata source as `browser_extension`, `native_browser_url_probe`, or `unavailable`.
+- Current browser extension setup, pairing, and coverage state belongs in app config as app/runtime configuration.
+- Durable **Browser Integration Coverage** audit events belong in the **Encrypted Capture Index** when they are shown alongside the capture timeline or used to explain **Capture Safety Gap** records.
+- Low-level browser integration diagnostics and per-event extension errors should remain logs or live debug only, without content-bearing identifiers.
+- **Browser Integration Pairing** requires an explicit per-install pairing secret in addition to native messaging host registration.
+- **Browser Integration Pairing** secrets belong outside `saveDirectory`, preferably in platform secret storage, and must not be persisted in the capture index or logs.
+- The browser extension stores only the token needed to authenticate to Mnema's native host.
+- Settings should support rotating and revoking **Browser Integration Pairing**.
+- Browser integration events without valid **Browser Integration Pairing** are treated as `extension_not_paired`.
+- If **Browser Integration Pairing** is lost while a secure-entry signal was active, **Credential Entry Capture Suspension** fails closed until user-visible recovery.
 - **Credential Entry Capture Suspension** should leave unsupported browsers or apps uncovered rather than falling back to URL, title, OCR, domain-list, screenshot, or classifier guessing.
 - **Credential Entry Capture Suspension** may require Accessibility permission, and missing permission must be shown as unavailable rather than silently falling back to heuristics.
 - **Credential Entry Capture Suspension** runs independently of frame context metadata and browser URL metadata settings.

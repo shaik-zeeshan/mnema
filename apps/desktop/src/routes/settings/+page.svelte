@@ -49,6 +49,10 @@
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
     KeyboardBindingsSettings,
+    BrowserFamily,
+    BrowserFamilyIntegrationStatus,
+    BrowserIntegrationStatus,
+    BrowserIntegrationPairingAction,
   } from "$lib/types";
 
   type CardIconKind =
@@ -211,6 +215,11 @@
   let brokerGrantLoading = $state(false);
   let brokerGrantSaving = $state(false);
   let brokerGrantError = $state<string | null>(null);
+  let browserIntegrationStatus = $state<BrowserIntegrationStatus | null>(null);
+  let browserIntegrationInFlight = $state<BrowserFamily | null>(null);
+  let browserIntegrationPairingAction = $state<BrowserIntegrationPairingAction | null>(null);
+  let browserIntegrationExtensionId = $state("");
+  let browserIntegrationInstallMessage = $state<string | null>(null);
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
   // runtime in `$lib/theme.svelte` and is persisted via recording settings.
@@ -768,6 +777,47 @@
     } catch {
       privacyAppCandidates = [];
     }
+  }
+
+  async function loadBrowserIntegrationStatus() {
+    try {
+      browserIntegrationStatus = await invoke<BrowserIntegrationStatus>("get_browser_integration_status");
+    } catch {
+      browserIntegrationStatus = null;
+    }
+  }
+
+  async function runBrowserIntegrationAction(command: string, browserFamily: BrowserFamily) {
+    browserIntegrationInFlight = browserFamily;
+    try {
+      browserIntegrationPairingAction = await invoke<BrowserIntegrationPairingAction>(command, { request: { browserFamily } });
+      await loadBrowserIntegrationStatus();
+    } finally {
+      browserIntegrationInFlight = null;
+    }
+  }
+
+  async function installBrowserIntegrationNativeHost() {
+    browserIntegrationInstallMessage = null;
+    try {
+      const response = await invoke<{ manifestPaths: string[]; hostPath: string }>(
+        "install_browser_integration_native_host",
+        { request: { extensionId: browserIntegrationExtensionId.trim() } }
+      );
+      browserIntegrationInstallMessage = `Installed native host for ${response.manifestPaths.length} Chromium profile locations.`;
+    } catch (err) {
+      browserIntegrationInstallMessage = typeof err === "string" ? err : "Native host install failed.";
+    }
+  }
+
+  function coverageLabel(state: string): string {
+    if (state === "reliable") return "Reliable";
+    if (state === "partial") return "Partial";
+    return "Unavailable";
+  }
+
+  function browserFamilyLabel(status: BrowserFamilyIntegrationStatus): string {
+    return status.browserFamily === "safari" ? "Safari" : "Chromium";
   }
 
   async function loadSensitiveCaptureRecommendations() {
@@ -2174,6 +2224,7 @@
     loadDebugLogStatus();
     loadGeneralLogStatus();
     loadPrivacyAppCandidates();
+    void loadBrowserIntegrationStatus();
     loadSensitiveCaptureRecommendations();
     loadBrokerGrants();
 
@@ -2582,10 +2633,67 @@
             <Switch
               bind:checked={draftCredentialEntrySuspensionEnabled}
               label="Pause during credential entry"
-              description="When available, pause screen, microphone, and system audio while trusted native secure-entry signals are active"
+              description="When coverage is available, pause screen, microphone, and system audio during supported credential entry"
             />
+            {#if browserIntegrationStatus}
+              <div class="browser-coverage-panel">
+                <div class="browser-coverage-row">
+                  <span>Native apps</span>
+                  <strong>{coverageLabel(browserIntegrationStatus.nativeApps)}</strong>
+                </div>
+                {#each [browserIntegrationStatus.safari, browserIntegrationStatus.chromium] as status (status.browserFamily)}
+                  <div class="browser-coverage-row">
+                    <span>{browserFamilyLabel(status)}</span>
+                    <strong>{coverageLabel(status.coverageState)}</strong>
+                    <div class="row-actions">
+                      <button
+                        class="btn btn--ghost btn--sm"
+                        type="button"
+                        disabled={browserIntegrationInFlight === status.browserFamily}
+                        onclick={() => void runBrowserIntegrationAction("start_browser_integration_pairing", status.browserFamily)}
+                      >Pair</button>
+                      <button
+                        class="btn btn--ghost btn--sm"
+                        type="button"
+                        disabled={browserIntegrationInFlight === status.browserFamily}
+                        onclick={() => void runBrowserIntegrationAction("rotate_browser_integration_pairing", status.browserFamily)}
+                      >Rotate</button>
+                      <button
+                        class="btn btn--ghost btn--sm"
+                        type="button"
+                        disabled={browserIntegrationInFlight === status.browserFamily}
+                        onclick={() => void runBrowserIntegrationAction("revoke_browser_integration_pairing", status.browserFamily)}
+                      >Revoke</button>
+                    </div>
+                  </div>
+                {/each}
+                {#if browserIntegrationPairingAction?.setupUrl}
+                  <div class="browser-pairing-token">
+                    <span>Pairing token</span>
+                    <code>{browserIntegrationPairingAction.setupUrl.split("token=")[1] ?? browserIntegrationPairingAction.setupUrl}</code>
+                  </div>
+                {/if}
+                <div class="browser-native-host-install">
+                  <input
+                    class="text-input"
+                    type="text"
+                    bind:value={browserIntegrationExtensionId}
+                    placeholder="Chromium extension ID"
+                    spellcheck="false"
+                  />
+                  <button
+                    class="btn btn--ghost btn--sm"
+                    type="button"
+                    onclick={() => void installBrowserIntegrationNativeHost()}
+                  >Install native host</button>
+                </div>
+                {#if browserIntegrationInstallMessage}
+                  <p class="group-hint">{browserIntegrationInstallMessage}</p>
+                {/if}
+              </div>
+            {/if}
           </div>
-          <p class="group-hint">When this is off, original media may capture credentials. Mnema still redacts high-confidence secrets from searchable text.</p>
+          <p class="group-hint">Browser integration inspects DOM structure only, not field values. Credential-entry suspension does not use URL, domain, title, or page guessing. Unsupported browsers or pages, denied website access, extension disconnects, and capture before a trusted signal arrives may still be recorded.</p>
         </div>
 
         <div class="settings-group">
@@ -6172,6 +6280,53 @@
     color: var(--app-text-muted);
     font-size: 11px;
     line-height: 1.5;
+  }
+
+  .browser-coverage-panel {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+  }
+
+  .browser-coverage-row {
+    display: grid;
+    grid-template-columns: minmax(96px, 1fr) auto auto;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+  }
+
+  .browser-coverage-row strong {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0;
+    color: var(--app-text-muted);
+  }
+
+  .browser-pairing-token {
+    display: grid;
+    gap: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--app-border);
+    font-size: 11px;
+    color: var(--app-text-muted);
+  }
+
+  .browser-pairing-token code {
+    overflow-wrap: anywhere;
+    color: var(--app-text);
+  }
+
+  .browser-native-host-install {
+    display: grid;
+    grid-template-columns: minmax(160px, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding-top: 8px;
+    border-top: 1px solid var(--app-border);
   }
 
   .recommendation-section {

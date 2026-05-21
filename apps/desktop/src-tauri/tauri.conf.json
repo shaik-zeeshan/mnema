@@ -29,6 +29,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "../browser-extension"
+    ],
     "macOS": {
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"

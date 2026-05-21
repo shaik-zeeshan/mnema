@@ -29,7 +29,10 @@ pub use capture_retention::{
     NewCaptureSegment, NewCaptureSession, RetentionCleanupContext, RetentionCleanupMode,
     RetentionCleanupSummary, RetentionPolicy, ScreenCaptureSegmentWindow,
 };
-pub use capture_safety::{CaptureSafetyGap, CaptureSafetyGapReason, CaptureSafetyStore};
+pub use capture_safety::{
+    CaptureSafetyGap, CaptureSafetyGapReason, CaptureSafetyGapSourceFamily,
+    CaptureSafetyGapTerminalStatus, CaptureSafetyStore,
+};
 pub use captured_frame_equivalence::{
     CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope,
 };

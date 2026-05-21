@@ -1,3 +1,4 @@
+mod browser_integration;
 mod inactivity;
 mod logs;
 mod microphone;
@@ -7,6 +8,7 @@ mod session;
 use serde::Serialize;
 
 pub use capture_metadata::{BrowserUrlMode, ExcludedAppEntry, MetadataSettings, PrivacySettings};
+pub use browser_integration::*;
 pub use inactivity::*;
 pub use logs::*;
 pub use microphone::*;

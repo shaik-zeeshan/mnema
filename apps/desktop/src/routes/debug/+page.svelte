@@ -61,6 +61,7 @@
   type CapturePrivacyDebugInfo = {
     metadataEnabled: boolean;
     browserUrlMode: string;
+    browserUrlMetadataSource: string;
     privacyDebug: {
       latestSnapshot: {
         appBundleId: string | null;
@@ -1342,7 +1343,7 @@
       </li>
       <li>
         <span class="kv-key kv-key--wide">metadata</span>
-        <span class="kv-val kv-val--mono">{privacyDebug.metadataEnabled ? "enabled" : "disabled"} · URL {privacyDebug.browserUrlMode}</span>
+        <span class="kv-val kv-val--mono">{privacyDebug.metadataEnabled ? "enabled" : "disabled"} · URL {privacyDebug.browserUrlMode} · {privacyDebug.browserUrlMetadataSource}</span>
       </li>
       <li>
         <span class="kv-key kv-key--wide">applied bundles</span>

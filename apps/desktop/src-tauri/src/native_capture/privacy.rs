@@ -103,6 +103,7 @@ pub(super) fn collect_initial_privacy_filter(
         .settings
         .clone();
     let decision = collect_initial_privacy_filter_decision(
+        Some(app_handle),
         app_handle
             .state::<crate::native_capture::CaptureMetadataState>()
             .inner(),
@@ -114,11 +115,13 @@ pub(super) fn collect_initial_privacy_filter(
 
 #[cfg(target_os = "macos")]
 fn collect_initial_privacy_filter_decision(
+    app_handle: Option<&tauri::AppHandle>,
     metadata_state: &crate::native_capture::CaptureMetadataState,
     settings: &capture_types::RecordingSettings,
 ) -> capture_metadata::PrivacyFilterDecision {
     if settings.metadata.enabled {
         crate::native_capture::metadata::refresh_metadata_state(
+            app_handle,
             metadata_state,
             &settings.metadata,
             &settings.privacy,
@@ -167,6 +170,7 @@ fn collect_metadata_privacy_filter_update(app_handle: &tauri::AppHandle) -> Priv
         .settings
         .clone();
     let decision = crate::native_capture::metadata::refresh_metadata_state(
+        Some(app_handle),
         app_handle
             .state::<crate::native_capture::CaptureMetadataState>()
             .inner(),
@@ -525,7 +529,7 @@ mod tests {
         settings.metadata.enabled = true;
         let metadata_state = crate::native_capture::CaptureMetadataState::default();
 
-        let _decision = collect_initial_privacy_filter_decision(&metadata_state, &settings);
+        let _decision = collect_initial_privacy_filter_decision(None, &metadata_state, &settings);
 
         let runtime = metadata_state
             .lock()
