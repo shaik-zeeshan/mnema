@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
@@ -17,6 +17,7 @@
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
     AudioTranscriptionProvider,
+    ExcludedAppEntry,
     GetPermissionsResponse,
     OcrModelDownloadProgress,
     OcrModelStatus,
@@ -47,6 +48,43 @@
   type ProcessingPanel = "ocr" | "transcription";
   type PermissionValue = PermissionStatus | "unsupported" | "unknown";
   type PermissionKey = "screen" | "microphone" | "systemAudio";
+  type RecommendedExclusionState = "missing" | "disabled" | "enabled";
+
+  type PrivacyAppCandidate = ExcludedAppEntry & {
+    running: boolean;
+    iconPath: string | null;
+  };
+
+  type AppIconResolution = {
+    bundleId: string;
+    iconPath: string | null;
+  };
+
+  type RecommendedAppExclusion = {
+    bundleId: string;
+    displayName: string;
+    category: string;
+    categoryLabel: string;
+    running: boolean;
+    iconPath: string | null;
+    exclusionState: RecommendedExclusionState;
+  };
+
+  type BrowserDisclosureApp = {
+    bundleId: string;
+    displayName: string;
+    running: boolean;
+    iconPath: string | null;
+    exclusionState: RecommendedExclusionState;
+  };
+
+  type SensitiveCaptureRecommendations = {
+    promptId: string;
+    recommendedApps: RecommendedAppExclusion[];
+    actionableRecommendationCount: number;
+    shouldShowExistingUserPrompt: boolean;
+    browserDisclosures: BrowserDisclosureApp[];
+  };
 
   const steps: { id: OnboardingStep; label: string }[] = [
     { id: "about", label: "About" },
@@ -146,20 +184,28 @@
   let transcriptionDownloadError = $state<string | null>(null);
   let draftTranscriptionMicrophoneEnabled = $state(true);
   let draftTranscriptionSystemAudioEnabled = $state(false);
+  let draftExcludedApps = $state<ExcludedAppEntry[]>([]);
+  let privacyAppCandidates = $state<PrivacyAppCandidate[]>([]);
+  let appIconPathsByBundleId = $state<Record<string, string>>({});
+  const requestedAppIconBundleIds = new Set<string>();
+  let privacyAppComboboxQuery = $state("");
+  let privacyAppComboboxOpen = $state(false);
+  let privacyCommandInFlight = $state(false);
+  let sensitiveRecommendations = $state<SensitiveCaptureRecommendations | null>(null);
 
   const activeIndex = $derived(steps.findIndex((step) => step.id === activeStep));
   const railActiveIndex = $derived(railSteps.findIndex((step) => step.id === activeStep));
   const isWelcome = $derived(activeStep === "about");
   const isFinal = $derived(activeStep === "done");
   const showChrome = $derived(!isWelcome && !isFinal);
-  const canGoBack = $derived(activeIndex > 0 && !saving && !starting && !completing);
+  const canGoBack = $derived(activeIndex > 0 && !saving && !starting && !completing && !privacyCommandInFlight);
   const selectedSourceCount = $derived(
     Number(draftCaptureScreen) + Number(draftCaptureMicrophone) + Number(draftCaptureSystemAudio)
   );
   const requiresOcrAvailability = $derived(draftOcrEnabled);
   const requiresTranscriptionAvailability = $derived(draftTranscriptionEnabled);
   const canGoNext = $derived(
-    !loading && !saving && !starting && !completing && settings !== null
+    !loading && !saving && !starting && !completing && !privacyCommandInFlight && settings !== null
     && (activeStep !== "sources" || selectedSourceCount > 0)
     && (activeStep !== "storage" || draftSaveDirectory.trim().length > 0)
     && canProceedFromActiveStep()
@@ -170,6 +216,24 @@
   );
   const customResolutionErrors = $derived(validateCustomResolution());
   const customBitrateErrors = $derived(validateCustomBitrate());
+  const availablePrivacyAppCandidates = $derived(
+    privacyAppCandidates.filter((candidate) => (
+      !draftExcludedApps.some((item) => sameBundleId(item.bundleId, candidate.bundleId))
+    ))
+  );
+  const filteredPrivacyAppCandidates = $derived((() => {
+    const query = normalizedSearchValue(privacyAppComboboxQuery);
+    if (!query) return availablePrivacyAppCandidates.slice(0, 12);
+    return availablePrivacyAppCandidates
+      .filter((candidate) => privacyAppCandidateSearchText(candidate).includes(query))
+      .slice(0, 12);
+  })());
+  const pendingRecommendedApps = $derived(
+    (sensitiveRecommendations?.recommendedApps ?? []).filter((app) => app.exclusionState !== "enabled")
+  );
+  const visibleBrowserDisclosureApps = $derived(
+    (sensitiveRecommendations?.browserDisclosures ?? []).filter((app) => app.running || app.exclusionState !== "missing")
+  );
 
   $effect(() => { void initialize(); });
   $effect(() => {
@@ -225,6 +289,13 @@
     const parsed = parsePositiveInteger(draftCustomMbpsRaw);
     draftCustomMbps = parsed !== null && parsed >= 1 && parsed <= 40 ? parsed : null;
   });
+  $effect(() => {
+    if (!privacyAppComboboxOpen) return;
+    void resolveAppIcons(filteredPrivacyAppCandidates.map((candidate) => candidate.bundleId));
+  });
+  $effect(() => {
+    void resolveAppIcons(draftExcludedApps.map((app) => app.bundleId));
+  });
 
   async function initialize(): Promise<void> {
     loading = true;
@@ -242,6 +313,8 @@
       settings = loadedSettings;
       permissions = permissionResponse.permissions as Record<PermissionKey, PermissionValue>;
       syncDrafts(loadedSettings);
+      void loadPrivacyAppCandidates();
+      void loadSensitiveCaptureRecommendations();
     } catch (err) {
       error = serializeError(err);
     } finally {
@@ -324,6 +397,7 @@
     draftTranscriptionMemoryMode = next.transcription?.memoryMode ?? "balanced";
     draftTranscriptionIdleUnloadSeconds = next.transcription?.idleUnloadSeconds ?? 300;
     draftTranscriptionChunkSeconds = next.transcription?.chunkSeconds ?? 30;
+    draftExcludedApps = [...(next.privacy?.excludedApps ?? [])];
   }
 
   function buildSettingsRequest(): RecordingSettings {
@@ -391,6 +465,205 @@
     } finally {
       saving = false;
     }
+  }
+
+  function makeDraftId(prefix: string): string {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async function loadPrivacyAppCandidates(): Promise<void> {
+    try {
+      const candidates = await invoke<Array<{ bundleId: string; displayName: string; running: boolean; iconPath: string | null }>>("list_privacy_app_candidates");
+      privacyAppCandidates = candidates.map((candidate) => ({
+        id: makeDraftId("app-candidate"),
+        enabled: true,
+        bundleId: candidate.bundleId,
+        displayName: candidate.displayName,
+        running: candidate.running,
+        iconPath: candidate.iconPath,
+      }));
+    } catch {
+      privacyAppCandidates = [];
+    }
+  }
+
+  async function loadSensitiveCaptureRecommendations(): Promise<void> {
+    try {
+      sensitiveRecommendations = await invoke<SensitiveCaptureRecommendations>("get_sensitive_capture_recommendations");
+      const bundleIds = [
+        ...(sensitiveRecommendations?.recommendedApps ?? []).map((app) => app.bundleId),
+        ...(sensitiveRecommendations?.browserDisclosures ?? []).map((app) => app.bundleId),
+      ];
+      void resolveAppIcons(bundleIds);
+    } catch {
+      sensitiveRecommendations = null;
+    }
+  }
+
+  function uniqueBundleIds(bundleIds: Array<string | null | undefined>): string[] {
+    return [...new Set(bundleIds.map((bundleId) => bundleId?.trim() ?? "").filter(Boolean))];
+  }
+
+  function canonicalBundleIdForComparison(value: string): string {
+    return value.trim().toLowerCase();
+  }
+
+  function sameBundleId(left: string, right: string): boolean {
+    return canonicalBundleIdForComparison(left) === canonicalBundleIdForComparison(right);
+  }
+
+  function normalizedSearchValue(value: string): string {
+    return value.trim().toLocaleLowerCase();
+  }
+
+  function privacyAppCandidateSearchText(candidate: PrivacyAppCandidate): string {
+    return normalizedSearchValue(`${candidate.displayName} ${candidate.bundleId}`);
+  }
+
+  async function resolveAppIcons(bundleIds: Array<string | null | undefined>): Promise<void> {
+    const unresolvedBundleIds = uniqueBundleIds(bundleIds).filter((bundleId) => (
+      !appIconPathsByBundleId[bundleId] && !requestedAppIconBundleIds.has(bundleId)
+    ));
+    if (unresolvedBundleIds.length === 0) return;
+    for (const bundleId of unresolvedBundleIds) requestedAppIconBundleIds.add(bundleId);
+
+    try {
+      const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
+        request: { bundleIds: unresolvedBundleIds },
+      });
+      const nextIconPaths = { ...appIconPathsByBundleId };
+      let changed = false;
+      for (const icon of icons) {
+        if (!icon.iconPath || nextIconPaths[icon.bundleId] === icon.iconPath) continue;
+        nextIconPaths[icon.bundleId] = icon.iconPath;
+        changed = true;
+      }
+      if (!changed) return;
+      appIconPathsByBundleId = nextIconPaths;
+      privacyAppCandidates = privacyAppCandidates.map((candidate) => ({
+        ...candidate,
+        iconPath: nextIconPaths[candidate.bundleId] ?? candidate.iconPath,
+      }));
+    } catch {
+      for (const bundleId of unresolvedBundleIds) requestedAppIconBundleIds.delete(bundleId);
+    }
+  }
+
+  function appIconPathForBundleId(bundleId: string): string | null {
+    return appIconPathsByBundleId[bundleId] ?? null;
+  }
+
+  function appIconSrcForBundleId(bundleId: string): string | null {
+    const iconPath = appIconPathForBundleId(bundleId);
+    return iconPath ? convertFileSrc(iconPath) : null;
+  }
+
+  function appIconFallback(displayName: string | null | undefined, bundleId: string | null | undefined): string {
+    return ((displayName ?? "").trim() || (bundleId ?? "").trim() || "?").slice(0, 1).toUpperCase();
+  }
+
+  function privacyAppIconSrc(candidate: PrivacyAppCandidate): string | null {
+    const iconPath = appIconPathForBundleId(candidate.bundleId) ?? candidate.iconPath;
+    return iconPath ? convertFileSrc(iconPath) : null;
+  }
+
+  function privacyAppIconFallback(candidate: PrivacyAppCandidate): string {
+    return appIconFallback(candidate.displayName, candidate.bundleId);
+  }
+
+  function recommendationActionLabel(state: RecommendedExclusionState): string {
+    return state === "disabled" ? "Re-enable" : "Exclude";
+  }
+
+  async function runPrivacySettingsCommand(command: string, args: Record<string, unknown>): Promise<void> {
+    privacyCommandInFlight = true;
+    error = null;
+    try {
+      const updated = await invoke<RecordingSettings>(command, args);
+      settings = updated;
+      syncDrafts(updated);
+      void loadSensitiveCaptureRecommendations();
+    } catch (err) {
+      error = serializeError(err);
+    } finally {
+      privacyCommandInFlight = false;
+    }
+  }
+
+  function addPrivacyAppCandidate(candidate: PrivacyAppCandidate | null): void {
+    if (!candidate || draftExcludedApps.some((item) => sameBundleId(item.bundleId, candidate.bundleId))) return;
+    void runPrivacySettingsCommand("add_privacy_excluded_app", {
+      bundleId: candidate.bundleId,
+      displayName: candidate.displayName,
+    });
+    privacyAppComboboxQuery = "";
+    privacyAppComboboxOpen = false;
+  }
+
+  function addRecommendedPrivacyApp(app: RecommendedAppExclusion | BrowserDisclosureApp): void {
+    void runPrivacySettingsCommand("add_privacy_excluded_app", {
+      bundleId: app.bundleId,
+      displayName: app.displayName,
+    });
+  }
+
+  function reenableRecommendedPrivacyApp(app: RecommendedAppExclusion | BrowserDisclosureApp): void {
+    const existing = draftExcludedApps.find((entry) => sameBundleId(entry.bundleId, app.bundleId));
+    if (!existing) {
+      addRecommendedPrivacyApp(app);
+      return;
+    }
+    void runPrivacySettingsCommand("set_privacy_excluded_app_enabled", {
+      sourceId: existing.id,
+      enabled: true,
+    });
+  }
+
+  function applyRecommendation(app: RecommendedAppExclusion | BrowserDisclosureApp): void {
+    if (app.exclusionState === "enabled") return;
+    if (app.exclusionState === "disabled") {
+      reenableRecommendedPrivacyApp(app);
+    } else {
+      addRecommendedPrivacyApp(app);
+    }
+  }
+
+  function setPrivacyExcludedAppEnabled(sourceId: string, enabled: boolean): void {
+    void runPrivacySettingsCommand("set_privacy_excluded_app_enabled", { sourceId, enabled });
+  }
+
+  function removePrivacyApp(sourceId: string): void {
+    void runPrivacySettingsCommand("remove_privacy_excluded_app", { sourceId });
+  }
+
+  function handlePrivacyAppComboboxInput(): void {
+    privacyAppComboboxOpen = true;
+  }
+
+  function handlePrivacyAppComboboxKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addSelectedPrivacyApp();
+      return;
+    }
+    if (event.key === "Escape") {
+      privacyAppComboboxOpen = false;
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      privacyAppComboboxOpen = true;
+    }
+  }
+
+  function closePrivacyAppComboboxSoon(): void {
+    window.setTimeout(() => {
+      privacyAppComboboxOpen = false;
+    }, 120);
+  }
+
+  function addSelectedPrivacyApp(): void {
+    const candidate = privacyAppComboboxQuery.trim() ? filteredPrivacyAppCandidates[0] : null;
+    addPrivacyAppCandidate(candidate);
   }
 
   async function refreshPermissions(): Promise<void> {
@@ -1117,7 +1390,7 @@
               </div>
             </article>
           {:else if activeStep === "privacy"}
-            <article class="card">
+            <article class="card" class:card--combobox-open={privacyAppComboboxOpen}>
               <header class="card__header">
                 <span class="card__index">04</span>
                 <div class="card__heading">
@@ -1133,7 +1406,163 @@
                   <p>Mnema does not detect browser password pages or password fields.</p>
                   <p>Browser extensions and websites are not excluded separately.</p>
                 </div>
-                <p class="hint">You can add password manager, authenticator, and browser app exclusions in Privacy settings before your first recording.</p>
+
+                {#if pendingRecommendedApps.length > 0}
+                  <div class="recommendation-section">
+                    <span class="group-label">Recommended App Exclusions</span>
+                    <div class="recommendation-section__list">
+                      {#each pendingRecommendedApps as app (app.bundleId)}
+                        {@const iconSrc = appIconSrcForBundleId(app.bundleId)}
+                        <div class="settings-list-item settings-list-item--app-rule">
+                          <span class="app-rule-icon" aria-hidden="true">
+                            {#if iconSrc}
+                              <img src={iconSrc} alt="" loading="lazy" />
+                            {:else}
+                              <span>{appIconFallback(app.displayName, app.bundleId)}</span>
+                            {/if}
+                          </span>
+                          <div class="settings-list-item__main">
+                            <span class="settings-list-item__title">{app.displayName}</span>
+                            <span class="settings-list-item__description">{app.categoryLabel} · {app.bundleId}</span>
+                          </div>
+                          <button
+                            class="btn btn--ghost btn--sm"
+                            type="button"
+                            disabled={privacyCommandInFlight}
+                            onclick={() => applyRecommendation(app)}
+                          >
+                            {recommendationActionLabel(app.exclusionState)}
+                          </button>
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if visibleBrowserDisclosureApps.length > 0}
+                  <div class="recommendation-section">
+                    <span class="group-label">Known Browsers</span>
+                    <div class="recommendation-section__list">
+                      {#each visibleBrowserDisclosureApps as app (app.bundleId)}
+                        {@const iconSrc = appIconSrcForBundleId(app.bundleId)}
+                        <div class="settings-list-item settings-list-item--app-rule">
+                          <span class="app-rule-icon" aria-hidden="true">
+                            {#if iconSrc}
+                              <img src={iconSrc} alt="" loading="lazy" />
+                            {:else}
+                              <span>{appIconFallback(app.displayName, app.bundleId)}</span>
+                            {/if}
+                          </span>
+                          <div class="settings-list-item__main">
+                            <span class="settings-list-item__title">{app.displayName}</span>
+                            <span class="settings-list-item__description">Browser screen content is recorded unless this app is excluded.</span>
+                          </div>
+                          {#if app.exclusionState === "enabled"}
+                            <span class="badge" data-tone="ok">Excluded</span>
+                          {:else}
+                            <button
+                              class="btn btn--ghost btn--sm"
+                              type="button"
+                              disabled={privacyCommandInFlight}
+                              onclick={() => applyRecommendation(app)}
+                            >
+                              {recommendationActionLabel(app.exclusionState)}
+                            </button>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                <div class="app-combobox">
+                  <input
+                    class="text-input app-combobox__input"
+                    role="combobox"
+                    aria-expanded={privacyAppComboboxOpen}
+                    aria-controls="onboarding-privacy-app-combobox-list"
+                    aria-autocomplete="list"
+                    bind:value={privacyAppComboboxQuery}
+                    placeholder="Search installed apps"
+                    oninput={handlePrivacyAppComboboxInput}
+                    onfocus={() => { privacyAppComboboxOpen = true; }}
+                    onblur={closePrivacyAppComboboxSoon}
+                    onkeydown={handlePrivacyAppComboboxKeydown}
+                    disabled={privacyCommandInFlight}
+                  />
+                  {#if privacyAppComboboxOpen}
+                    <div class="app-combobox__panel" id="onboarding-privacy-app-combobox-list" role="listbox">
+                      {#if filteredPrivacyAppCandidates.length > 0}
+                        {#each filteredPrivacyAppCandidates as candidate (candidate.bundleId)}
+                          {@const iconSrc = privacyAppIconSrc(candidate)}
+                          <button
+                            class="app-combobox__option"
+                            type="button"
+                            role="option"
+                            aria-selected="false"
+                            onmousedown={(event) => event.preventDefault()}
+                            onclick={() => addPrivacyAppCandidate(candidate)}
+                          >
+                            <span class="app-combobox__option-content">
+                              <span class="app-combobox__icon" aria-hidden="true">
+                                {#if iconSrc}
+                                  <img src={iconSrc} alt="" loading="lazy" />
+                                {:else}
+                                  <span>{privacyAppIconFallback(candidate)}</span>
+                                {/if}
+                              </span>
+                              <span class="app-combobox__option-main">
+                                <span class="app-combobox__name">{candidate.displayName}</span>
+                                <span class="app-combobox__bundle">{candidate.bundleId}</span>
+                              </span>
+                            </span>
+                            {#if candidate.running}
+                              <span class="badge" data-tone="ok">Running</span>
+                            {/if}
+                          </button>
+                        {/each}
+                      {:else}
+                        <span class="app-combobox__empty">No matching installed apps</span>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+                <p class="hint">Press Enter or choose a result to exclude it. Running apps are marked when they match an installed app bundle.</p>
+
+                <div class="settings-list">
+                  {#if draftExcludedApps.length > 0}
+                    {#each draftExcludedApps as app (app.id)}
+                      {@const iconSrc = appIconSrcForBundleId(app.bundleId)}
+                      <div class="settings-list-item settings-list-item--app-rule">
+                        <span class="app-rule-icon" aria-hidden="true">
+                          {#if iconSrc}
+                            <img src={iconSrc} alt="" loading="lazy" />
+                          {:else}
+                            <span>{appIconFallback(app.displayName, app.bundleId)}</span>
+                          {/if}
+                        </span>
+                        <Switch
+                          checked={app.enabled}
+                          onCheckedChange={(enabled) => setPrivacyExcludedAppEnabled(app.id, enabled)}
+                          label={app.displayName}
+                          description={app.bundleId}
+                          disabled={privacyCommandInFlight}
+                        />
+                        <button
+                          class="btn btn--ghost btn--sm"
+                          type="button"
+                          disabled={privacyCommandInFlight}
+                          onclick={() => removePrivacyApp(app.id)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    {/each}
+                  {:else}
+                    <p class="empty-state">No app exclusions.</p>
+                  {/if}
+                </div>
+                <p class="hint">Mnema records visible content from non-excluded apps, including private/incognito browser windows.</p>
               </div>
             </article>
           {:else if activeStep === "processing"}
@@ -1757,6 +2186,10 @@
     justify-content: center;
     gap: 10px;
     padding: 28px;
+  }
+  .card--combobox-open {
+    overflow: visible;
+    z-index: 10;
   }
   .loader {
     width: 14px;
@@ -2525,18 +2958,193 @@
 
   .privacy-disclosure {
     display: grid;
-    gap: 8px;
-    padding: 12px;
+    gap: 6px;
+    padding: 10px 12px;
     border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface-raised);
+    border-radius: 4px;
+    background: var(--app-surface-subtle);
   }
 
   .privacy-disclosure p {
     margin: 0;
     color: var(--app-text-muted);
-    font-size: 13px;
-    line-height: 1.45;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .recommendation-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .recommendation-section__list,
+  .settings-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .settings-list-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+  }
+
+  .settings-list-item--app-rule {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+  }
+
+  .settings-list-item__main {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .settings-list-item__title {
+    overflow: hidden;
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .settings-list-item__description {
+    color: var(--app-text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .app-rule-icon,
+  .app-combobox__icon {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .app-rule-icon img,
+  .app-combobox__icon img {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+  }
+
+  :global(.settings-list-item--app-rule .switch-wrapper),
+  :global(.settings-list-item--app-rule .switch-text) {
+    min-width: 0;
+  }
+
+  :global(.settings-list-item--app-rule .switch-label),
+  :global(.settings-list-item--app-rule .switch-description) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-combobox {
+    position: relative;
+    min-width: 0;
+  }
+
+  .app-combobox__input {
+    width: 100%;
+  }
+
+  .app-combobox__panel {
+    position: absolute;
+    z-index: 40;
+    top: calc(100% + 4px);
+    right: 0;
+    left: 0;
+    display: flex;
+    max-height: 220px;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    box-shadow: 0 12px 30px color-mix(in srgb, var(--app-bg) 34%, transparent);
+  }
+
+  .app-combobox__option {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .app-combobox__option:hover {
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+  }
+
+  .app-combobox__option-content {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .app-combobox__option-main {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .app-combobox__name {
+    overflow: hidden;
+    color: var(--app-text-strong);
+    font-size: 12px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-combobox__bundle {
+    overflow: hidden;
+    color: var(--app-text-faint);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-combobox__empty,
+  .empty-state {
+    margin: 0;
+    padding: 10px;
+    color: var(--app-text-faint);
+    font-size: 11px;
+    font-style: italic;
   }
 
   .ob__foot--minimal { border-top: 0; padding-top: 0; }
