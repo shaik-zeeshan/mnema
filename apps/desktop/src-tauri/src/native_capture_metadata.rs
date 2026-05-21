@@ -101,7 +101,6 @@ pub fn reset_recording_session_privacy_state(state: &CaptureMetadataState) {
 }
 
 pub fn refresh_metadata_state(
-    _app_handle: Option<&tauri::AppHandle>,
     state: &CaptureMetadataState,
     metadata: &MetadataSettings,
     privacy: &PrivacySettings,
@@ -111,7 +110,7 @@ pub fn refresh_metadata_state(
         .expect("capture metadata state poisoned")
         .browser_url_probe_cache
         .clone();
-    let active = collect_active_window_metadata(metadata, privacy, &browser_url_probe_cache, None);
+    let active = collect_active_window_metadata(metadata, privacy, &browser_url_probe_cache);
     let snapshot = metadata.enabled.then(|| active.snapshot.clone()).flatten();
     let context = active.context;
     let decision = evaluate_privacy(privacy, &context);
@@ -249,7 +248,6 @@ fn collect_active_window_metadata(
     metadata: &MetadataSettings,
     _privacy: &PrivacySettings,
     browser_url_probe_cache: &BrowserUrlProbeCache,
-    extension_browser_url: Option<String>,
 ) -> ActiveWindowMetadata {
     let plan = metadata_collection_plan(metadata);
     if !plan.collect_active_window && !plan.collect_visible_windows {
@@ -270,17 +268,12 @@ fn collect_active_window_metadata(
         let bundle_id = active_window.bundle_id.clone();
         let app_name = active_window.app_name.clone();
         let window_title = active_window.window_title.clone();
-        let (raw_browser_url, browser_url_probe_cache) =
-            if let Some(extension_browser_url) = extension_browser_url {
-                (Some(extension_browser_url), None)
-            } else {
-                browser_url_probe_for_active_bundle(
-                    bundle_id.as_deref(),
-                    plan,
-                    browser_url_probe_cache,
-                    Instant::now(),
-                )
-            };
+        let (raw_browser_url, browser_url_probe_cache) = browser_url_probe_for_active_bundle(
+            bundle_id.as_deref(),
+            plan,
+            browser_url_probe_cache,
+            Instant::now(),
+        );
         let snapshot_browser_url = raw_browser_url
             .as_deref()
             .and_then(|url| sanitize_url(url, metadata.browser_url_mode));
@@ -547,7 +540,7 @@ mod tests {
         };
 
         let state = CaptureMetadataState::default();
-        let decision = refresh_metadata_state(None, &state, &metadata, &privacy);
+        let decision = refresh_metadata_state(&state, &metadata, &privacy);
         let runtime = state.lock().expect("capture metadata state should lock");
 
         assert_eq!(decision.excluded_bundle_ids, vec!["com.secret"]);
@@ -572,7 +565,7 @@ mod tests {
             }],
         };
 
-        let decision = refresh_metadata_state(None, &state, &metadata, &privacy);
+        let decision = refresh_metadata_state(&state, &metadata, &privacy);
         let runtime = state.lock().expect("capture metadata state should lock");
 
         assert_eq!(decision.excluded_bundle_ids, vec!["com.example.Secret"]);

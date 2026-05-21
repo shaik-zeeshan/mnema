@@ -335,11 +335,7 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Sensitive Capture Protection V1** is UX and recovery around **App Privacy Exclusion**, not detection of sensitive screen content.
 - **App Privacy Exclusion** remains handled through the native **Live Privacy Filter**, not through app-based automatic pause.
 - Mnema sanitizes browser URL metadata before persistence; full URL metadata remains an explicit user choice because query strings and fragments may contain secrets.
-- One-time code entry is treated as credential entry even though many codes are not reusable after successful submission, because capture may persist the code before it is used or before it expires.
-- Product copy should disclose that unsupported browsers/pages, denied website access, extension disconnects before detection, and capture before a trusted signal arrives may still be recorded.
-- Existing native browser URL probing may remain as a metadata-only fallback under metadata settings and browser URL metadata mode.
-- Debug should label browser URL metadata source as `browser_extension`, `native_browser_url_probe`, or `unavailable`.
-- Low-level browser integration diagnostics and per-event extension errors should remain logs or live debug only, without content-bearing identifiers.
+- **Browser Metadata Collection** uses native browser URL probing only in this branch; another metadata adapter requires a future ADR-backed design.
 - **Secret Redaction Pipeline** affects searchable derived text, snippets, copy-text actions backed by OCR or transcripts, and agent-facing derived text access, not original frame, video, or audio media.
 - **Secret Redaction Pipeline** V1 targets high-confidence secrets such as API keys, access tokens, private keys, seed-like secrets, structurally obvious passwords, clearly labeled or formatted auth codes, and credential-bearing database connection strings.
 - **Secret Redaction Pipeline** V1 does not attempt broad PII, name, email, address, phone, sensitive-business-text, screenshot-region, or image redaction.
