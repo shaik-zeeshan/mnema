@@ -1,6 +1,7 @@
 mod audio_segments;
 pub mod brokered_access;
 pub mod brokered_access_cli;
+mod capture_index_key_store;
 mod capture_retention;
 mod captured_frame_equivalence;
 mod captured_frame_pipeline;
