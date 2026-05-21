@@ -1,10 +1,14 @@
 use std::{
-    fs,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use fs2::FileExt;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
@@ -14,10 +18,13 @@ use crate::{
 };
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
+const BROKER_GRANTS_LOCK_FILE_NAME: &str = "broker-grants.lock";
 const BROKER_AUDIT_FILE_NAME: &str = "broker-audit.json";
+const BROKER_OPAQUE_SECRET_FILE_NAME: &str = "broker-opaque-secret.bin";
 const RECORDING_SETTINGS_FILE_NAME: &str = "recording-settings.json";
 const DEFAULT_SEARCH_LIMIT: u32 = 20;
 const MAX_SEARCH_LIMIT: u32 = 100;
+const OPAQUE_SIGNATURE_HEX_LEN: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -322,14 +329,14 @@ impl BrokeredCaptureAccess {
             )),
             BrokeredCaptureRequest::Search(request) => {
                 let infra = self.initialize_infra().await?;
-                match broker_search(&infra, grants, request).await? {
+                match broker_search(&self.config_dir, &infra, grants, request).await? {
                     Ok(response) => Ok(BrokeredCaptureResponse::Search(response)),
                     Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
                 }
             }
             BrokeredCaptureRequest::ShowText { opaque_id } => {
                 let infra = self.initialize_infra().await?;
-                match broker_show_text(&infra, grants, &opaque_id).await? {
+                match broker_show_text(&self.config_dir, &infra, grants, &opaque_id).await? {
                     Ok(response) => Ok(BrokeredCaptureResponse::ShowText(response)),
                     Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
                 }
@@ -345,13 +352,26 @@ impl BrokeredCaptureAccess {
                 if opaque_capture_reference(&opaque_id).is_none() {
                     return Ok(BrokeredCaptureResponse::Error(invalid_opaque_id_error()));
                 }
-                open_mnema_deep_link(&opaque_id)?;
-                Ok(BrokeredCaptureResponse::OpenInMnema(
-                    BrokerOpenInMnemaResponse {
-                        opened: true,
-                        opaque_id,
-                    },
-                ))
+                let infra = self.initialize_infra().await?;
+                match broker_authorize_opaque_reference(
+                    &self.config_dir,
+                    &infra,
+                    grants,
+                    &opaque_id,
+                )
+                .await?
+                {
+                    Ok(_) => {
+                        open_mnema_deep_link(&opaque_id)?;
+                        Ok(BrokeredCaptureResponse::OpenInMnema(
+                            BrokerOpenInMnemaResponse {
+                                opened: true,
+                                opaque_id,
+                            },
+                        ))
+                    }
+                    Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
+                }
             }
         }
     }
@@ -436,12 +456,35 @@ fn load_grants(config_dir: &Path) -> Result<BrokerGrantFile> {
     Ok(serde_json::from_str(&raw)?)
 }
 
-fn save_grants(config_dir: &Path, grants: &BrokerGrantFile) -> Result<()> {
-    fs::create_dir_all(config_dir)?;
+fn save_grants_locked(config_dir: &Path, grants: &BrokerGrantFile) -> Result<()> {
     let path = config_dir.join(BROKER_GRANTS_FILE_NAME);
+    let temp_path = config_dir.join(format!("{BROKER_GRANTS_FILE_NAME}.tmp"));
     let raw = serde_json::to_string_pretty(grants)?;
-    fs::write(path, raw)?;
+    fs::write(&temp_path, raw)?;
+    fs::rename(temp_path, path)?;
     Ok(())
+}
+
+fn with_grants_lock<T>(
+    config_dir: &Path,
+    f: impl FnOnce(&mut BrokerGrantFile) -> Result<T>,
+) -> Result<T> {
+    fs::create_dir_all(config_dir)?;
+    let lock_path = config_dir.join(BROKER_GRANTS_LOCK_FILE_NAME);
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    lock.lock_exclusive()?;
+    let mut grants = load_grants(config_dir)?;
+    let result = f(&mut grants);
+    let unlock_result = lock.unlock();
+    match (result, unlock_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error.into()),
+    }
 }
 
 fn load_audit_events(config_dir: &Path) -> Result<BrokerAuditFile> {
@@ -595,6 +638,21 @@ fn timestamp_within_scope(grants: &[BrokerGrant], timestamp: &str) -> Result<boo
     Ok(timestamp >= start)
 }
 
+fn range_overlaps_scope(grants: &[BrokerGrant], started_at: &str, ended_at: &str) -> Result<bool> {
+    let Some(scope_start) = effective_scope_start(grants, now_unix_ms()) else {
+        return Ok(true);
+    };
+    let ended_at = parse_rfc3339(ended_at)?;
+    let scope_start =
+        OffsetDateTime::from_unix_timestamp_nanos(i128::from(scope_start) * 1_000_000)
+            .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    if ended_at < scope_start {
+        return Ok(false);
+    }
+    parse_rfc3339(started_at)?;
+    Ok(true)
+}
+
 fn auth_status_for_config(config_dir: &Path) -> Result<BrokerAuthStatus> {
     let grants = load_grants(config_dir)?;
     let active_count = active_grants(&grants, now_unix_ms()).len();
@@ -611,19 +669,21 @@ fn create_grant(
     duration_hours: u64,
     scope: BrokerGrantScope,
 ) -> Result<BrokerGrant> {
-    let mut grants = load_grants(config_dir)?;
-    let now = now_unix_ms();
-    let grant = BrokerGrant {
-        id: format!("{now:x}-{:x}", grants.grants.len()),
-        label: label.into(),
-        created_at_unix_ms: now,
-        expires_at_unix_ms: now.saturating_add(duration_hours.saturating_mul(60 * 60 * 1000)),
-        scope,
-        revoked: false,
-    };
-    grants.grants.push(grant.clone());
-    save_grants(config_dir, &grants)?;
-    Ok(grant)
+    let label = label.into();
+    with_grants_lock(config_dir, |grants| {
+        let now = now_unix_ms();
+        let grant = BrokerGrant {
+            id: format!("{now:x}-{:x}", grants.grants.len()),
+            label,
+            created_at_unix_ms: now,
+            expires_at_unix_ms: now.saturating_add(duration_hours.saturating_mul(60 * 60 * 1000)),
+            scope,
+            revoked: false,
+        };
+        grants.grants.push(grant.clone());
+        save_grants_locked(config_dir, grants)?;
+        Ok(grant)
+    })
 }
 
 fn create_grant_from_request(
@@ -644,21 +704,23 @@ fn create_grant_from_request(
 }
 
 fn revoke_grant(config_dir: &Path, grant_id: &str) -> Result<bool> {
-    let mut grants = load_grants(config_dir)?;
-    let mut changed = false;
-    for grant in &mut grants.grants {
-        if grant.id == grant_id && !grant.revoked {
-            grant.revoked = true;
-            changed = true;
+    with_grants_lock(config_dir, |grants| {
+        let mut changed = false;
+        for grant in &mut grants.grants {
+            if grant.id == grant_id && !grant.revoked {
+                grant.revoked = true;
+                changed = true;
+            }
         }
-    }
-    if changed {
-        save_grants(config_dir, &grants)?;
-    }
-    Ok(changed)
+        if changed {
+            save_grants_locked(config_dir, grants)?;
+        }
+        Ok(changed)
+    })
 }
 
 async fn broker_search(
+    config_dir: &Path,
     infra: &AppInfra,
     grants: &[BrokerGrant],
     request: BrokerSearchRequest,
@@ -686,10 +748,12 @@ async fn broker_search(
             }),
         })
         .await?;
-    Ok(Ok(map_search_response(response, limit)))
+    let opaque_secret = load_or_create_opaque_secret(config_dir)?;
+    Ok(Ok(map_search_response(response, limit, &opaque_secret)))
 }
 
 async fn broker_show_text(
+    config_dir: &Path,
     infra: &AppInfra,
     grants: &[BrokerGrant],
     opaque_id: &str,
@@ -697,43 +761,17 @@ async fn broker_show_text(
     if grants.is_empty() {
         return Ok(Err(BrokerErrorResponse::authorization_required()));
     }
-    let Some((kind, id)) = decode_opaque_id(opaque_id) else {
-        return Ok(Err(invalid_opaque_id_error()));
-    };
-    let subject = match kind.as_str() {
-        "frame" => {
-            let Some(frame) = infra.get_frame(id).await? else {
-                return Ok(Err(BrokerErrorResponse {
-                    error: BrokerAuthStatusKind::AuthorizationRequired,
-                    message: "result is unavailable or outside the grant scope".to_string(),
-                }));
-            };
-            if !timestamp_within_scope(grants, &frame.captured_at)? {
-                return Ok(Err(BrokerErrorResponse {
-                    error: BrokerAuthStatusKind::AuthorizationRequired,
-                    message: "result is unavailable or outside the grant scope".to_string(),
-                }));
-            }
-            ProcessingSubject::frame(id)
-        }
-        "audio" => {
-            let Some(audio) = infra.get_audio_segment(id).await? else {
-                return Ok(Err(BrokerErrorResponse {
-                    error: BrokerAuthStatusKind::AuthorizationRequired,
-                    message: "result is unavailable or outside the grant scope".to_string(),
-                }));
-            };
-            if !timestamp_within_scope(grants, &audio.started_at)? {
-                return Ok(Err(BrokerErrorResponse {
-                    error: BrokerAuthStatusKind::AuthorizationRequired,
-                    message: "result is unavailable or outside the grant scope".to_string(),
-                }));
-            }
-            ProcessingSubject::audio_segment(id)
-        }
-        _ => {
-            return Ok(Err(invalid_opaque_id_error()));
-        }
+    let reference =
+        match broker_authorize_opaque_reference(config_dir, infra, grants, opaque_id).await? {
+            Ok(reference) => reference,
+            Err(error) => return Ok(Err(error)),
+        };
+    let subject = match reference.kind.as_str() {
+        "frame" => ProcessingSubject::frame(reference.frame_id.expect("frame reference has id")),
+        "audio" => ProcessingSubject::audio_segment(
+            reference.audio_segment_id.expect("audio reference has id"),
+        ),
+        _ => return Ok(Err(invalid_opaque_id_error())),
     };
     let result = infra
         .list_processing_results_for_subject(&subject)
@@ -754,9 +792,49 @@ async fn broker_show_text(
     };
     Ok(Ok(BrokerShowTextResponse {
         opaque_id: opaque_id.to_string(),
-        kind,
+        kind: reference.kind,
         text: result.result_text.unwrap_or_default(),
     }))
+}
+
+async fn broker_authorize_opaque_reference(
+    config_dir: &Path,
+    infra: &AppInfra,
+    grants: &[BrokerGrant],
+    opaque_id: &str,
+) -> Result<std::result::Result<BrokerOpaqueCaptureReference, BrokerErrorResponse>> {
+    if grants.is_empty() {
+        return Ok(Err(BrokerErrorResponse::authorization_required()));
+    }
+    let secret = load_or_create_opaque_secret(config_dir)?;
+    let Some(reference) = decode_signed_opaque_id(opaque_id, &secret) else {
+        return Ok(Err(invalid_opaque_id_error()));
+    };
+    let in_scope = match reference.kind.as_str() {
+        "frame" => {
+            let Some(frame) = infra
+                .get_frame(reference.frame_id.expect("frame reference has id"))
+                .await?
+            else {
+                return Ok(Err(outside_scope_error()));
+            };
+            timestamp_within_scope(grants, &frame.captured_at)?
+        }
+        "audio" => {
+            let Some(audio) = infra
+                .get_audio_segment(reference.audio_segment_id.expect("audio reference has id"))
+                .await?
+            else {
+                return Ok(Err(outside_scope_error()));
+            };
+            range_overlaps_scope(grants, &audio.started_at, &audio.ended_at)?
+        }
+        _ => return Ok(Err(invalid_opaque_id_error())),
+    };
+    if !in_scope {
+        return Ok(Err(outside_scope_error()));
+    }
+    Ok(Ok(reference))
 }
 
 async fn broker_timeline(
@@ -803,7 +881,16 @@ fn encode_opaque_id(kind: &str, id: i64) -> String {
     format!("{tag}{:x}", id.max(0))
 }
 
+fn encode_signed_opaque_id(kind: &str, id: i64, secret: &[u8]) -> String {
+    let payload = encode_opaque_id(kind, id);
+    let signature = opaque_signature(&payload, secret);
+    format!("{payload}.{signature}")
+}
+
 fn decode_opaque_id(value: &str) -> Option<(String, i64)> {
+    let value = value
+        .split_once('.')
+        .map_or(value, |(payload, _signature)| payload);
     let mut chars = value.chars();
     let kind = chars.next()?;
     let rest = chars.as_str();
@@ -816,6 +903,25 @@ fn decode_opaque_id(value: &str) -> Option<(String, i64)> {
     Some((kind.to_string(), id))
 }
 
+fn decode_signed_opaque_id(value: &str, secret: &[u8]) -> Option<BrokerOpaqueCaptureReference> {
+    let (payload, signature) = value.split_once('.')?;
+    if signature.len() != OPAQUE_SIGNATURE_HEX_LEN
+        || !signature.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    if !opaque_signature_matches(payload, signature, secret) {
+        return None;
+    }
+    let (kind, id) = decode_opaque_id(payload)?;
+    Some(BrokerOpaqueCaptureReference {
+        opaque_id: value.to_string(),
+        frame_id: (kind == "frame").then_some(id),
+        audio_segment_id: (kind == "audio").then_some(id),
+        kind,
+    })
+}
+
 pub fn opaque_capture_reference(value: &str) -> Option<BrokerOpaqueCaptureReference> {
     let (kind, id) = decode_opaque_id(value)?;
     Some(BrokerOpaqueCaptureReference {
@@ -826,10 +932,77 @@ pub fn opaque_capture_reference(value: &str) -> Option<BrokerOpaqueCaptureRefere
     })
 }
 
+fn opaque_signature(payload: &str, secret: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(secret);
+    hasher.update(b":");
+    hasher.update(payload.as_bytes());
+    let digest = hasher.finalize();
+    digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn opaque_signature_matches(payload: &str, signature: &str, secret: &[u8]) -> bool {
+    let expected = opaque_signature(payload, secret);
+    let expected = expected.as_bytes();
+    let signature = signature.as_bytes();
+    expected.len() == signature.len()
+        && expected
+            .iter()
+            .zip(signature.iter())
+            .fold(0_u8, |acc, (left, right)| acc | (left ^ right))
+            == 0
+}
+
+fn load_or_create_opaque_secret(config_dir: &Path) -> Result<Vec<u8>> {
+    fs::create_dir_all(config_dir)?;
+    let path = config_dir.join(BROKER_OPAQUE_SECRET_FILE_NAME);
+    if path.exists() {
+        let mut secret = Vec::new();
+        File::open(&path)?.read_to_end(&mut secret)?;
+        if secret.len() >= 32 {
+            return Ok(secret);
+        }
+    }
+
+    let lock_path = config_dir.join(BROKER_GRANTS_LOCK_FILE_NAME);
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    lock.lock_exclusive()?;
+    if path.exists() {
+        let mut secret = Vec::new();
+        File::open(&path)?.read_to_end(&mut secret)?;
+        if secret.len() >= 32 {
+            lock.unlock()?;
+            return Ok(secret);
+        }
+    }
+
+    let mut secret = vec![0_u8; 32];
+    rand::thread_rng().fill_bytes(&mut secret);
+    let mut file = File::create(path)?;
+    file.write_all(&secret)?;
+    let unlock_result = lock.unlock();
+    unlock_result?;
+    Ok(secret)
+}
+
 fn invalid_opaque_id_error() -> BrokerErrorResponse {
     BrokerErrorResponse {
         error: BrokerAuthStatusKind::AuthorizationRequired,
         message: "invalid opaque result id".to_string(),
+    }
+}
+
+fn outside_scope_error() -> BrokerErrorResponse {
+    BrokerErrorResponse {
+        error: BrokerAuthStatusKind::AuthorizationRequired,
+        message: "result is unavailable or outside the grant scope".to_string(),
     }
 }
 
@@ -872,33 +1045,68 @@ fn open_mnema_deep_link(opaque_id: &str) -> Result<()> {
     }
 }
 
-fn map_search_response(response: SearchCaptureResponse, limit: u32) -> BrokerSearchResponse {
+fn map_search_response(
+    response: SearchCaptureResponse,
+    limit: u32,
+    opaque_secret: &[u8],
+) -> BrokerSearchResponse {
     let mut results = Vec::new();
-    for frame in response.frames {
-        results.push(BrokerSearchResult {
-            opaque_id: encode_opaque_id("frame", frame.representative_frame.id),
-            kind: "frame".to_string(),
-            snippet: frame.snippet,
-            started_at: frame.group_start_at,
-            ended_at: frame.group_end_at,
-        });
+    let mut frames = response.frames.into_iter();
+    let mut audio = response.audio.into_iter();
+    while results.len() < limit as usize {
+        let before = results.len();
+        if let Some(frame) = frames.next() {
+            results.push(BrokerSearchResult {
+                opaque_id: encode_signed_opaque_id(
+                    "frame",
+                    frame.representative_frame.id,
+                    opaque_secret,
+                ),
+                kind: "frame".to_string(),
+                snippet: frame.snippet,
+                started_at: frame.group_start_at,
+                ended_at: frame.group_end_at,
+            });
+            if results.len() >= limit as usize {
+                break;
+            }
+        }
+        if let Some(audio_result) = audio.next() {
+            results.push(BrokerSearchResult {
+                opaque_id: encode_signed_opaque_id(
+                    "audio",
+                    audio_result.audio_segment.id,
+                    opaque_secret,
+                ),
+                kind: "audio".to_string(),
+                snippet: audio_result.snippet,
+                started_at: audio_result.absolute_start_at,
+                ended_at: audio_result.absolute_end_at,
+            });
+        }
+        if results.len() == before {
+            break;
+        }
     }
-    for audio in response.audio {
-        results.push(BrokerSearchResult {
-            opaque_id: encode_opaque_id("audio", audio.audio_segment.id),
-            kind: "audio".to_string(),
-            snippet: audio.snippet,
-            started_at: audio.absolute_start_at,
-            ended_at: audio.absolute_end_at,
-        });
-    }
-    results.truncate(limit as usize);
     BrokerSearchResponse { results, limit }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        AppInfra, NewAudioSegment, ProcessingJobDraft, ProcessingResultDraft,
+        SearchCaptureRefinements, SearchCaptureResponse, SearchDateRangeOrigin,
+        SearchDateRangeRefinement,
+    };
+
+    fn run_async_test(test: impl std::future::Future<Output = ()>) {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(test);
+    }
 
     fn temp_config_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -908,6 +1116,16 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn temp_save_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-brokered-access-save-{name}-{}-{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
         dir
     }
 
@@ -1004,5 +1222,195 @@ mod tests {
     fn empty_opaque_id_is_invalid_instead_of_panicking() {
         assert_eq!(decode_opaque_id(""), None);
         assert_eq!(opaque_capture_reference(""), None);
+    }
+
+    #[test]
+    fn broker_search_interleaves_audio_before_applying_limit() {
+        let secret = b"test broker opaque secret with enough bytes";
+        let frame = |id: i64| crate::Frame {
+            id,
+            session_id: "screen-session".to_string(),
+            file_path: format!("/tmp/frame-{id}.jpg"),
+            captured_at: "2026-05-17T10:00:00Z".to_string(),
+            width: None,
+            height: None,
+            equivalence: crate::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            metadata_snapshot: None,
+            created_at: "2026-05-17T10:00:00Z".to_string(),
+            updated_at: "2026-05-17T10:00:00Z".to_string(),
+        };
+        let audio_segment = crate::AudioSegment {
+            id: 22,
+            source_kind: AudioSegmentSourceKind::Microphone,
+            source_session_id: "mic-session".to_string(),
+            segment_index: 1,
+            file_path: "/tmp/audio.m4a".to_string(),
+            started_at: "2026-05-17T10:00:00Z".to_string(),
+            ended_at: "2026-05-17T10:00:20Z".to_string(),
+            capture_segment_id: None,
+            created_at: "2026-05-17T10:00:00Z".to_string(),
+            updated_at: "2026-05-17T10:00:00Z".to_string(),
+        };
+        let response = SearchCaptureResponse {
+            normalized_query: "target".to_string(),
+            snapshot_document_id: 1,
+            frames: vec![
+                crate::FrameSearchResult {
+                    group_key: "frame:11".to_string(),
+                    representative_frame: frame(11),
+                    group_start_at: "2026-05-17T10:00:00Z".to_string(),
+                    group_end_at: "2026-05-17T10:00:00Z".to_string(),
+                    match_count: 1,
+                    snippet: "frame target".to_string(),
+                    app_name: None,
+                    window_title: None,
+                    thumbnail_frame_id: 11,
+                    text_source_kind: "direct".to_string(),
+                    secret_redaction_count: 0,
+                    has_secret_redactions: false,
+                },
+                crate::FrameSearchResult {
+                    group_key: "frame:12".to_string(),
+                    representative_frame: frame(12),
+                    group_start_at: "2026-05-17T10:01:00Z".to_string(),
+                    group_end_at: "2026-05-17T10:01:00Z".to_string(),
+                    match_count: 1,
+                    snippet: "second frame target".to_string(),
+                    app_name: None,
+                    window_title: None,
+                    thumbnail_frame_id: 12,
+                    text_source_kind: "direct".to_string(),
+                    secret_redaction_count: 0,
+                    has_secret_redactions: false,
+                },
+            ],
+            audio: vec![crate::AudioSearchResult {
+                group_key: "audio:22:0-1000".to_string(),
+                audio_segment,
+                source_kind: AudioSegmentSourceKind::Microphone,
+                span_start_ms: 0,
+                span_end_ms: 1_000,
+                absolute_start_at: "2026-05-17T10:00:00Z".to_string(),
+                absolute_end_at: "2026-05-17T10:00:01Z".to_string(),
+                match_count: 1,
+                snippet: "audio target".to_string(),
+                aligned_frame: None,
+                secret_redaction_count: 0,
+                has_secret_redactions: false,
+            }],
+            has_more_frames: false,
+            has_more_audio: false,
+            applied_refinements: SearchCaptureRefinements {
+                date_range: Some(SearchDateRangeRefinement {
+                    start_at: "2026-05-17T00:00:00Z".to_string(),
+                    end_at: "2026-05-18T00:00:00Z".to_string(),
+                    origin: Some(SearchDateRangeOrigin::VisibleTimeline),
+                }),
+                app: None,
+                audio_source: None,
+            },
+        };
+
+        let mapped = map_search_response(response, 2, secret);
+
+        assert_eq!(
+            mapped
+                .results
+                .iter()
+                .map(|result| result.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["frame", "audio"]
+        );
+        assert!(mapped.results[0].opaque_id.contains('.'));
+        assert_ne!(mapped.results[0].opaque_id, "fb");
+    }
+
+    #[test]
+    fn broker_show_text_authorizes_audio_by_segment_overlap() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("audio-overlap");
+            let save_dir = temp_save_dir("audio-overlap");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let now = now_unix_ms();
+            let started_at = format_unix_ms(now.saturating_sub(2 * 24 * 60 * 60 * 1000));
+            let ended_at = format_unix_ms(now);
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    save_dir.join("audio.m4a").display().to_string(),
+                    started_at,
+                    ended_at,
+                ))
+                .await
+                .expect("segment should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("job should enqueue");
+            let running = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("job should claim")
+                .expect("job should exist");
+            infra
+                .complete_processing_job(
+                    running.id,
+                    &ProcessingResultDraft::new().with_result_text("overlapping transcript"),
+                )
+                .await
+                .expect("job should complete");
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::RecentDays { days: 1 },
+            )
+            .expect("grant should create");
+            let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+            let opaque_id = encode_signed_opaque_id("audio", segment.id, &secret);
+
+            let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+                .await
+                .expect("show text should run")
+                .expect("overlapping audio should be authorized");
+
+            assert_eq!(response.text, "overlapping transcript");
+        });
+    }
+
+    #[test]
+    fn broker_rejects_unsigned_opaque_ids_for_authorized_commands() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("unsigned-opaque");
+            let save_dir = temp_save_dir("unsigned-opaque");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let response = broker_authorize_opaque_reference(&config_dir, &infra, &[grant], "f1")
+                .await
+                .expect("authorization should run");
+
+            assert_eq!(response, Err(invalid_opaque_id_error()));
+        });
     }
 }

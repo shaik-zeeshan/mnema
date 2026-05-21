@@ -1349,7 +1349,14 @@ async fn fetch_frame_hits(
                 COALESCE((\
                     SELECT COUNT(*) FROM secret_redactions \
                     WHERE secret_redactions.anchor_type = 'frame' \
-                      AND secret_redactions.frame_id = frames.id\
+                      AND (\
+                        (search_documents.text_source_kind = 'equivalent_reuse' \
+                         AND search_documents.processing_result_id IS NOT NULL \
+                         AND secret_redactions.processing_result_id = search_documents.processing_result_id) \
+                        OR ((search_documents.text_source_kind != 'equivalent_reuse' \
+                             OR search_documents.processing_result_id IS NULL) \
+                            AND secret_redactions.frame_id = frames.id)\
+                      )\
                 ), 0) AS secret_redaction_count \
          FROM search_documents_fts \
          JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
@@ -3764,6 +3771,96 @@ mod tests {
                 target_context.frames[0].representative_frame.id,
                 second.frame.id
             );
+        });
+    }
+
+    #[test]
+    fn equivalent_reuse_search_reports_source_result_redactions() {
+        run_async_test(async {
+            let dir = test_dir("reuse-source-redactions");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-redaction-source".to_string()),
+                proof: Some(vec![24; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            let source = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-redaction-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("source frame should capture");
+            let source_job = source.job.expect("source frame should enqueue OCR");
+            complete_job(
+                &infra,
+                source_job,
+                ProcessingResultDraft::new().with_result_text("redacted shared target"),
+            )
+            .await;
+            let source_result_id: i64 = sqlx::query_scalar(
+                "SELECT id FROM processing_results WHERE subject_type = ?1 AND subject_id = ?2 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(FRAME_SUBJECT_TYPE)
+            .bind(source.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("source result should exist");
+            sqlx::query(
+                "INSERT INTO secret_redactions \
+                    (anchor_type, frame_id, audio_segment_id, processing_result_id, category, redacted_start, redacted_end, detector_version) \
+                 VALUES ('frame', ?1, NULL, ?2, 'api_key', 0, 8, 'test')",
+            )
+            .bind(source.frame.id)
+            .bind(source_result_id)
+            .execute(infra.pool())
+            .await
+            .expect("source redaction should insert");
+
+            let target = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-redaction-target.jpg",
+                        "2026-05-17T10:00:01Z",
+                    )
+                    .with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("target frame should capture");
+            assert!(target.job.is_none());
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "redacted".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                })
+                .await
+                .expect("search should succeed");
+            let reuse = response
+                .frames
+                .iter()
+                .find(|result| result.text_source_kind == "equivalent_reuse")
+                .expect("equivalent reuse result should exist");
+
+            assert_eq!(reuse.representative_frame.id, target.frame.id);
+            assert_eq!(reuse.secret_redaction_count, 1);
+            assert!(reuse.has_secret_redactions);
         });
     }
 
