@@ -5,6 +5,7 @@ mod job;
 mod ocr;
 mod result;
 mod runtime;
+mod secret_redaction_pipeline;
 mod speaker_analysis;
 mod store;
 mod system_audio_speech_activity;
