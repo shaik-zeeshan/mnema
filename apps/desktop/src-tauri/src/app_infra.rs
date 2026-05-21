@@ -33,10 +33,6 @@ pub type BackgroundWorkersState = BackgroundWorkersControl;
 
 pub const TIMELINE_DATA_CHANGED_EVENT: &str = "timeline_data_changed";
 
-pub(crate) fn decode_broker_opaque_id(value: &str) -> Option<(String, i64)> {
-    ::app_infra::brokered_access::decode_opaque_id(value)
-}
-
 pub mod frame_preview;
 pub(crate) use frame_preview::{
     run_generated_frame_preview_cache_startup_pass, FramePreviewCacheState,
@@ -3789,14 +3785,6 @@ pub async fn get_retention_cleanup_status(
         .map_err(|error| format!("failed to read retention cleanup status: {error}"))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateBrokerGrantRequest {
-    pub label: Option<String>,
-    pub duration_hours: Option<u64>,
-    pub all_retained_history: Option<bool>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MnemaCliStatus {
@@ -3814,6 +3802,16 @@ fn broker_config_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_config_dir()
         .map_err(|error| format!("failed to resolve app config dir: {error}"))
+}
+
+fn brokered_capture_access(
+    app_handle: &tauri::AppHandle,
+) -> Result<::app_infra::brokered_access::BrokeredCaptureAccess, String> {
+    Ok(
+        ::app_infra::brokered_access::BrokeredCaptureAccess::from_config_dir(broker_config_dir(
+            app_handle,
+        )?),
+    )
 }
 
 fn mnema_cli_sidecar_name() -> String {
@@ -3954,29 +3952,19 @@ fn create_mnema_cli_link(source: &Path, destination: &Path) -> std::io::Result<(
 pub async fn list_broker_grants(
     app_handle: tauri::AppHandle,
 ) -> Result<::app_infra::brokered_access::BrokerGrantFile, String> {
-    let config_dir = broker_config_dir(&app_handle)?;
-    ::app_infra::brokered_access::load_grants(&config_dir)
+    brokered_capture_access(&app_handle)?
+        .list_grants()
         .map_err(|error| format!("failed to load broker grants: {error}"))
 }
 
 #[tauri::command]
 pub async fn create_broker_grant(
     app_handle: tauri::AppHandle,
-    request: CreateBrokerGrantRequest,
+    request: ::app_infra::brokered_access::BrokerGrantCreateRequest,
 ) -> Result<::app_infra::brokered_access::BrokerGrant, String> {
-    let config_dir = broker_config_dir(&app_handle)?;
-    let scope = if request.all_retained_history.unwrap_or(false) {
-        ::app_infra::brokered_access::BrokerGrantScope::AllRetainedHistory
-    } else {
-        ::app_infra::brokered_access::BrokerGrantScope::RecentDays { days: 1 }
-    };
-    ::app_infra::brokered_access::create_grant(
-        &config_dir,
-        request.label.unwrap_or_else(|| "Local agent".to_string()),
-        request.duration_hours.unwrap_or(24).clamp(1, 24 * 30),
-        scope,
-    )
-    .map_err(|error| format!("failed to create broker grant: {error}"))
+    brokered_capture_access(&app_handle)?
+        .create_grant(request)
+        .map_err(|error| format!("failed to create broker grant: {error}"))
 }
 
 #[tauri::command]
@@ -3984,8 +3972,8 @@ pub async fn revoke_broker_grant(
     app_handle: tauri::AppHandle,
     grant_id: String,
 ) -> Result<bool, String> {
-    let config_dir = broker_config_dir(&app_handle)?;
-    ::app_infra::brokered_access::revoke_grant(&config_dir, &grant_id)
+    brokered_capture_access(&app_handle)?
+        .revoke_grant(&grant_id)
         .map_err(|error| format!("failed to revoke broker grant: {error}"))
 }
 

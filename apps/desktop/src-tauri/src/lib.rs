@@ -72,12 +72,12 @@ fn broker_payload_from_url(url: &url::Url) -> Option<BrokerOpenCaptureResultPayl
         ["open", opaque_id] | ["broker", "open", opaque_id] => (*opaque_id).to_string(),
         _ => return None,
     };
-    let (kind, id) = app_infra::decode_broker_opaque_id(&opaque_id)?;
+    let capture_ref = ::app_infra::brokered_access::opaque_capture_reference(&opaque_id)?;
     Some(BrokerOpenCaptureResultPayload {
-        opaque_id,
-        frame_id: (kind == "frame").then_some(id),
-        audio_segment_id: (kind == "audio").then_some(id),
-        kind,
+        opaque_id: capture_ref.opaque_id,
+        frame_id: capture_ref.frame_id,
+        audio_segment_id: capture_ref.audio_segment_id,
+        kind: capture_ref.kind,
     })
 }
 

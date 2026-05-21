@@ -115,6 +115,14 @@ pub struct BrokerAuditEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct BrokerGrantCreateRequest {
+    pub label: Option<String>,
+    pub duration_hours: Option<u64>,
+    pub all_retained_history: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BrokerSearchRequest {
     pub query: String,
     pub from: Option<String>,
@@ -149,6 +157,22 @@ pub struct BrokerShowTextResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct BrokerOpenInMnemaResponse {
+    pub opened: bool,
+    pub opaque_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerOpaqueCaptureReference {
+    pub opaque_id: String,
+    pub kind: String,
+    pub frame_id: Option<i64>,
+    pub audio_segment_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BrokerTimelineRequest {
     pub from: String,
     pub to: String,
@@ -171,13 +195,208 @@ pub struct BrokerTimelineResponse {
     pub limit: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrokeredCaptureRequest {
+    AuthStatus,
+    Search(BrokerSearchRequest),
+    ShowText { opaque_id: String },
+    Timeline(BrokerTimelineRequest),
+    OpenInMnema { opaque_id: String },
+}
+
+impl BrokeredCaptureRequest {
+    fn command_type(&self) -> Option<&'static str> {
+        match self {
+            Self::AuthStatus => None,
+            Self::Search(_) => Some("search"),
+            Self::ShowText { .. } => Some("show_text"),
+            Self::Timeline(_) => Some("timeline"),
+            Self::OpenInMnema { .. } => Some("open_in_mnema"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum BrokeredCaptureResponse {
+    AuthStatus(BrokerAuthStatus),
+    Search(BrokerSearchResponse),
+    ShowText(BrokerShowTextResponse),
+    Timeline(BrokerTimelineResponse),
+    OpenInMnema(BrokerOpenInMnemaResponse),
+    Error(BrokerErrorResponse),
+}
+
+impl BrokeredCaptureResponse {
+    fn result_count(&self) -> u32 {
+        match self {
+            Self::Search(response) => response.results.len() as u32,
+            Self::ShowText(_) | Self::OpenInMnema(_) => 1,
+            Self::Timeline(response) => response.intervals.len() as u32,
+            Self::AuthStatus(_) | Self::Error(_) => 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BrokeredCaptureAccess {
+    config_dir: PathBuf,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct RecordingSettingsFile {
     save_directory: String,
 }
 
-pub fn default_app_config_dir() -> Option<PathBuf> {
+impl BrokeredCaptureAccess {
+    pub fn from_config_dir(config_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            config_dir: config_dir.into(),
+        }
+    }
+
+    pub fn from_default_app_config_dir() -> Result<Self> {
+        let config_dir = default_app_config_dir().ok_or_else(|| {
+            AppInfraError::BrokeredAccess("failed to resolve Mnema app config dir".to_string())
+        })?;
+        Ok(Self::from_config_dir(config_dir))
+    }
+
+    pub async fn execute(
+        &self,
+        tool_identity: impl Into<String>,
+        request: BrokeredCaptureRequest,
+    ) -> Result<BrokeredCaptureResponse> {
+        if matches!(&request, BrokeredCaptureRequest::AuthStatus) {
+            return Ok(BrokeredCaptureResponse::AuthStatus(auth_status_for_config(
+                &self.config_dir,
+            )?));
+        }
+
+        let command_type = request.command_type();
+        let grants = self.active_grants()?;
+        let response = if grants.is_empty() {
+            BrokeredCaptureResponse::Error(BrokerErrorResponse::authorization_required())
+        } else {
+            self.execute_authorized_request(&grants, request).await?
+        };
+
+        if let Some(command_type) = command_type {
+            self.audit_result(
+                &grants,
+                tool_identity.into(),
+                command_type,
+                response.result_count(),
+            )?;
+        }
+
+        Ok(response)
+    }
+
+    pub fn list_grants(&self) -> Result<BrokerGrantFile> {
+        load_grants(&self.config_dir)
+    }
+
+    pub fn create_grant(&self, request: BrokerGrantCreateRequest) -> Result<BrokerGrant> {
+        create_grant_from_request(&self.config_dir, request)
+    }
+
+    pub fn revoke_grant(&self, grant_id: &str) -> Result<bool> {
+        revoke_grant(&self.config_dir, grant_id)
+    }
+
+    fn active_grants(&self) -> Result<Vec<BrokerGrant>> {
+        let grants = load_grants(&self.config_dir)?;
+        Ok(active_grants(&grants, now_unix_ms()))
+    }
+
+    async fn execute_authorized_request(
+        &self,
+        grants: &[BrokerGrant],
+        request: BrokeredCaptureRequest,
+    ) -> Result<BrokeredCaptureResponse> {
+        match request {
+            BrokeredCaptureRequest::AuthStatus => Ok(BrokeredCaptureResponse::AuthStatus(
+                BrokerAuthStatus::authorized(grants.len()),
+            )),
+            BrokeredCaptureRequest::Search(request) => {
+                let infra = self.initialize_infra().await?;
+                match broker_search(&infra, grants, request).await? {
+                    Ok(response) => Ok(BrokeredCaptureResponse::Search(response)),
+                    Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
+                }
+            }
+            BrokeredCaptureRequest::ShowText { opaque_id } => {
+                let infra = self.initialize_infra().await?;
+                match broker_show_text(&infra, grants, &opaque_id).await? {
+                    Ok(response) => Ok(BrokeredCaptureResponse::ShowText(response)),
+                    Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
+                }
+            }
+            BrokeredCaptureRequest::Timeline(request) => {
+                let infra = self.initialize_infra().await?;
+                match broker_timeline(&infra, grants, request).await? {
+                    Ok(response) => Ok(BrokeredCaptureResponse::Timeline(response)),
+                    Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
+                }
+            }
+            BrokeredCaptureRequest::OpenInMnema { opaque_id } => {
+                if opaque_capture_reference(&opaque_id).is_none() {
+                    return Ok(BrokeredCaptureResponse::Error(invalid_opaque_id_error()));
+                }
+                open_mnema_deep_link(&opaque_id)?;
+                Ok(BrokeredCaptureResponse::OpenInMnema(
+                    BrokerOpenInMnemaResponse {
+                        opened: true,
+                        opaque_id,
+                    },
+                ))
+            }
+        }
+    }
+
+    async fn initialize_infra(&self) -> Result<AppInfra> {
+        let save_directory =
+            default_save_directory_from_config(&self.config_dir)?.ok_or_else(|| {
+                AppInfraError::BrokeredAccess(
+                    "failed to resolve Mnema saveDirectory from recording settings".to_string(),
+                )
+            })?;
+        AppInfra::initialize(save_directory).await
+    }
+
+    fn audit_result(
+        &self,
+        grants: &[BrokerGrant],
+        tool_identity: String,
+        command_type: &str,
+        result_count: u32,
+    ) -> Result<()> {
+        if grants.is_empty() {
+            return Ok(());
+        }
+        record_audit_event(
+            &self.config_dir,
+            tool_identity,
+            command_type,
+            result_count,
+            scope_class(grants),
+        )
+    }
+}
+
+pub fn execute_default_broker_request(
+    tool_identity: impl Into<String>,
+    request: BrokeredCaptureRequest,
+) -> Result<BrokeredCaptureResponse> {
+    let access = BrokeredCaptureAccess::from_default_app_config_dir()?;
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|error| AppInfraError::BrokeredAccess(error.to_string()))?;
+    runtime.block_on(access.execute(tool_identity, request))
+}
+
+fn default_app_config_dir() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("MNEMA_APP_CONFIG_DIR") {
         return Some(PathBuf::from(path));
     }
@@ -195,7 +414,7 @@ pub fn default_app_config_dir() -> Option<PathBuf> {
     }
 }
 
-pub fn default_save_directory_from_config(config_dir: &Path) -> Result<Option<PathBuf>> {
+fn default_save_directory_from_config(config_dir: &Path) -> Result<Option<PathBuf>> {
     if let Ok(path) = std::env::var("MNEMA_SAVE_DIRECTORY") {
         return Ok(Some(PathBuf::from(path)));
     }
@@ -208,7 +427,7 @@ pub fn default_save_directory_from_config(config_dir: &Path) -> Result<Option<Pa
     Ok(Some(PathBuf::from(settings.save_directory)))
 }
 
-pub fn load_grants(config_dir: &Path) -> Result<BrokerGrantFile> {
+fn load_grants(config_dir: &Path) -> Result<BrokerGrantFile> {
     let path = config_dir.join(BROKER_GRANTS_FILE_NAME);
     if !path.exists() {
         return Ok(BrokerGrantFile::default());
@@ -217,7 +436,7 @@ pub fn load_grants(config_dir: &Path) -> Result<BrokerGrantFile> {
     Ok(serde_json::from_str(&raw)?)
 }
 
-pub fn save_grants(config_dir: &Path, grants: &BrokerGrantFile) -> Result<()> {
+fn save_grants(config_dir: &Path, grants: &BrokerGrantFile) -> Result<()> {
     fs::create_dir_all(config_dir)?;
     let path = config_dir.join(BROKER_GRANTS_FILE_NAME);
     let raw = serde_json::to_string_pretty(grants)?;
@@ -225,7 +444,7 @@ pub fn save_grants(config_dir: &Path, grants: &BrokerGrantFile) -> Result<()> {
     Ok(())
 }
 
-pub fn load_audit_events(config_dir: &Path) -> Result<BrokerAuditFile> {
+fn load_audit_events(config_dir: &Path) -> Result<BrokerAuditFile> {
     let path = config_dir.join(BROKER_AUDIT_FILE_NAME);
     if !path.exists() {
         return Ok(BrokerAuditFile::default());
@@ -234,7 +453,7 @@ pub fn load_audit_events(config_dir: &Path) -> Result<BrokerAuditFile> {
     Ok(serde_json::from_str(&raw)?)
 }
 
-pub fn record_audit_event(
+fn record_audit_event(
     config_dir: &Path,
     tool_identity: impl Into<String>,
     command_type: impl Into<String>,
@@ -259,7 +478,7 @@ pub fn record_audit_event(
     Ok(())
 }
 
-pub fn now_unix_ms() -> u64 {
+fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -267,11 +486,11 @@ pub fn now_unix_ms() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
-pub fn grant_is_active(grant: &BrokerGrant, now_unix_ms: u64) -> bool {
+fn grant_is_active(grant: &BrokerGrant, now_unix_ms: u64) -> bool {
     !grant.revoked && grant.expires_at_unix_ms > now_unix_ms
 }
 
-pub fn active_grants(grants: &BrokerGrantFile, now_unix_ms: u64) -> Vec<BrokerGrant> {
+fn active_grants(grants: &BrokerGrantFile, now_unix_ms: u64) -> Vec<BrokerGrant> {
     grants
         .grants
         .iter()
@@ -310,7 +529,7 @@ fn effective_scope_start(grants: &[BrokerGrant], now_unix_ms: u64) -> Option<u64
         .min()
 }
 
-pub fn scope_class(grants: &[BrokerGrant]) -> String {
+fn scope_class(grants: &[BrokerGrant]) -> String {
     if grants
         .iter()
         .any(|grant| matches!(grant.scope, BrokerGrantScope::AllRetainedHistory))
@@ -376,7 +595,7 @@ fn timestamp_within_scope(grants: &[BrokerGrant], timestamp: &str) -> Result<boo
     Ok(timestamp >= start)
 }
 
-pub fn auth_status_for_config(config_dir: &Path) -> Result<BrokerAuthStatus> {
+fn auth_status_for_config(config_dir: &Path) -> Result<BrokerAuthStatus> {
     let grants = load_grants(config_dir)?;
     let active_count = active_grants(&grants, now_unix_ms()).len();
     if active_count == 0 {
@@ -386,7 +605,7 @@ pub fn auth_status_for_config(config_dir: &Path) -> Result<BrokerAuthStatus> {
     }
 }
 
-pub fn create_grant(
+fn create_grant(
     config_dir: &Path,
     label: impl Into<String>,
     duration_hours: u64,
@@ -407,7 +626,24 @@ pub fn create_grant(
     Ok(grant)
 }
 
-pub fn revoke_grant(config_dir: &Path, grant_id: &str) -> Result<bool> {
+fn create_grant_from_request(
+    config_dir: &Path,
+    request: BrokerGrantCreateRequest,
+) -> Result<BrokerGrant> {
+    let scope = if request.all_retained_history.unwrap_or(false) {
+        BrokerGrantScope::AllRetainedHistory
+    } else {
+        BrokerGrantScope::RecentDays { days: 1 }
+    };
+    create_grant(
+        config_dir,
+        request.label.unwrap_or_else(|| "Local agent".to_string()),
+        request.duration_hours.unwrap_or(24).clamp(1, 24 * 30),
+        scope,
+    )
+}
+
+fn revoke_grant(config_dir: &Path, grant_id: &str) -> Result<bool> {
     let mut grants = load_grants(config_dir)?;
     let mut changed = false;
     for grant in &mut grants.grants {
@@ -422,7 +658,7 @@ pub fn revoke_grant(config_dir: &Path, grant_id: &str) -> Result<bool> {
     Ok(changed)
 }
 
-pub async fn broker_search(
+async fn broker_search(
     infra: &AppInfra,
     grants: &[BrokerGrant],
     request: BrokerSearchRequest,
@@ -453,7 +689,7 @@ pub async fn broker_search(
     Ok(Ok(map_search_response(response, limit)))
 }
 
-pub async fn broker_show_text(
+async fn broker_show_text(
     infra: &AppInfra,
     grants: &[BrokerGrant],
     opaque_id: &str,
@@ -462,10 +698,7 @@ pub async fn broker_show_text(
         return Ok(Err(BrokerErrorResponse::authorization_required()));
     }
     let Some((kind, id)) = decode_opaque_id(opaque_id) else {
-        return Ok(Err(BrokerErrorResponse {
-            error: BrokerAuthStatusKind::AuthorizationRequired,
-            message: "invalid opaque result id".to_string(),
-        }));
+        return Ok(Err(invalid_opaque_id_error()));
     };
     let subject = match kind.as_str() {
         "frame" => {
@@ -499,10 +732,7 @@ pub async fn broker_show_text(
             ProcessingSubject::audio_segment(id)
         }
         _ => {
-            return Ok(Err(BrokerErrorResponse {
-                error: BrokerAuthStatusKind::AuthorizationRequired,
-                message: "invalid opaque result id".to_string(),
-            }));
+            return Ok(Err(invalid_opaque_id_error()));
         }
     };
     let result = infra
@@ -529,7 +759,7 @@ pub async fn broker_show_text(
     }))
 }
 
-pub async fn broker_timeline(
+async fn broker_timeline(
     infra: &AppInfra,
     grants: &[BrokerGrant],
     request: BrokerTimelineRequest,
@@ -564,7 +794,7 @@ pub async fn broker_timeline(
     Ok(Ok(BrokerTimelineResponse { intervals, limit }))
 }
 
-pub fn encode_opaque_id(kind: &str, id: i64) -> String {
+fn encode_opaque_id(kind: &str, id: i64) -> String {
     let tag = match kind {
         "frame" => "f",
         "audio" => "a",
@@ -573,15 +803,55 @@ pub fn encode_opaque_id(kind: &str, id: i64) -> String {
     format!("{tag}{:x}", id.max(0))
 }
 
-pub fn decode_opaque_id(value: &str) -> Option<(String, i64)> {
-    let (kind, rest) = value.split_at(1);
+fn decode_opaque_id(value: &str) -> Option<(String, i64)> {
+    let mut chars = value.chars();
+    let kind = chars.next()?;
+    let rest = chars.as_str();
     let id = i64::from_str_radix(rest, 16).ok()?;
     let kind = match kind {
-        "f" => "frame",
-        "a" => "audio",
+        'f' => "frame",
+        'a' => "audio",
         _ => return None,
     };
     Some((kind.to_string(), id))
+}
+
+pub fn opaque_capture_reference(value: &str) -> Option<BrokerOpaqueCaptureReference> {
+    let (kind, id) = decode_opaque_id(value)?;
+    Some(BrokerOpaqueCaptureReference {
+        opaque_id: value.to_string(),
+        frame_id: (kind == "frame").then_some(id),
+        audio_segment_id: (kind == "audio").then_some(id),
+        kind,
+    })
+}
+
+fn invalid_opaque_id_error() -> BrokerErrorResponse {
+    BrokerErrorResponse {
+        error: BrokerAuthStatusKind::AuthorizationRequired,
+        message: "invalid opaque result id".to_string(),
+    }
+}
+
+fn open_mnema_deep_link(opaque_id: &str) -> Result<()> {
+    let url = format!("mnema://open/{opaque_id}");
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(&url).status()?;
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .status()?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(&url).status()?;
+        Ok(())
+    }
 }
 
 fn map_search_response(response: SearchCaptureResponse, limit: u32) -> BrokerSearchResponse {
@@ -606,4 +876,115 @@ fn map_search_response(response: SearchCaptureResponse, limit: u32) -> BrokerSea
     }
     results.truncate(limit as usize);
     BrokerSearchResponse { results, limit }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_config_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-brokered-access-{name}-{}-{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn execute_request(
+        config_dir: &Path,
+        request: BrokeredCaptureRequest,
+    ) -> BrokeredCaptureResponse {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let access = BrokeredCaptureAccess::from_config_dir(config_dir.to_path_buf());
+        runtime
+            .block_on(access.execute("mnema-cli", request))
+            .unwrap()
+    }
+
+    #[test]
+    fn capture_request_without_active_grants_returns_authorization_error_without_audit() {
+        let config_dir = temp_config_dir("no-grants");
+
+        let response = execute_request(
+            &config_dir,
+            BrokeredCaptureRequest::Search(BrokerSearchRequest {
+                query: "meeting".to_string(),
+                from: None,
+                to: None,
+                limit: Some(5),
+            }),
+        );
+
+        assert_eq!(
+            response,
+            BrokeredCaptureResponse::Error(BrokerErrorResponse::authorization_required())
+        );
+        assert!(load_audit_events(&config_dir).unwrap().events.is_empty());
+    }
+
+    #[test]
+    fn invalid_open_request_is_shaped_and_audited_by_brokered_capture_access() {
+        let config_dir = temp_config_dir("invalid-open");
+        create_grant_from_request(
+            &config_dir,
+            BrokerGrantCreateRequest {
+                label: Some("Local agent".to_string()),
+                duration_hours: Some(1),
+                all_retained_history: Some(false),
+            },
+        )
+        .unwrap();
+
+        let response = execute_request(
+            &config_dir,
+            BrokeredCaptureRequest::OpenInMnema {
+                opaque_id: "not-valid".to_string(),
+            },
+        );
+
+        assert_eq!(
+            response,
+            BrokeredCaptureResponse::Error(BrokerErrorResponse {
+                error: BrokerAuthStatusKind::AuthorizationRequired,
+                message: "invalid opaque result id".to_string(),
+            })
+        );
+        let audit = load_audit_events(&config_dir).unwrap();
+        assert_eq!(audit.events.len(), 1);
+        assert_eq!(audit.events[0].tool_identity, "mnema-cli");
+        assert_eq!(audit.events[0].command_type, "open_in_mnema");
+        assert_eq!(audit.events[0].result_count, 0);
+        assert_eq!(audit.events[0].scope_class, "time_scoped");
+    }
+
+    #[test]
+    fn grant_create_request_applies_default_label_and_duration_cap() {
+        let config_dir = temp_config_dir("create-grant");
+
+        let grant = create_grant_from_request(
+            &config_dir,
+            BrokerGrantCreateRequest {
+                label: None,
+                duration_hours: Some(24 * 31),
+                all_retained_history: Some(true),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(grant.label, "Local agent");
+        assert_eq!(grant.scope, BrokerGrantScope::AllRetainedHistory);
+        assert_eq!(
+            grant.expires_at_unix_ms - grant.created_at_unix_ms,
+            24 * 30 * 60 * 60 * 1000
+        );
+    }
+
+    #[test]
+    fn empty_opaque_id_is_invalid_instead_of_panicking() {
+        assert_eq!(decode_opaque_id(""), None);
+        assert_eq!(opaque_capture_reference(""), None);
+    }
 }
