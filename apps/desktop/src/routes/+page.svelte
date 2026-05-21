@@ -4262,6 +4262,15 @@
     }
   }
 
+  async function drainPendingBrokerOpenCaptureResults(): Promise<void> {
+    const payloads = await invoke<BrokerOpenCaptureResultPayload[]>(
+      "drain_pending_broker_open_capture_results",
+    );
+    for (const payload of payloads) {
+      await openBrokerCaptureResult(payload);
+    }
+  }
+
   /**
    * Refresh the DB-sourced audio segment lane against the currently loaded
    * frame window. Uses the newest/oldest loaded `capturedAt` values as the
@@ -7053,11 +7062,14 @@
       else unlistenScrubPreviewCacheChanged = fn;
     });
 
-    listen<BrokerOpenCaptureResultPayload>("broker_open_capture_result", (event) => {
-      void openBrokerCaptureResult(event.payload);
+    listen<BrokerOpenCaptureResultPayload>("broker_open_capture_result", () => {
+      void drainPendingBrokerOpenCaptureResults();
     }).then((fn) => {
       if (destroyed) fn();
-      else unlistenBrokerOpenCaptureResult = fn;
+      else {
+        unlistenBrokerOpenCaptureResult = fn;
+        void drainPendingBrokerOpenCaptureResults();
+      }
     });
 
     document.addEventListener("visibilitychange", onVisibility);

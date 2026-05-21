@@ -837,20 +837,38 @@ fn open_mnema_deep_link(opaque_id: &str) -> Result<()> {
     let url = format!("mnema://open/{opaque_id}");
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(&url).status()?;
-        Ok(())
+        let status = std::process::Command::new("open").arg(&url).status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(AppInfraError::BrokeredAccess(format!(
+                "failed to open Mnema deep link with status {status}"
+            )))
+        }
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
+        let status = std::process::Command::new("cmd")
             .args(["/C", "start", "", &url])
             .status()?;
-        Ok(())
+        if status.success() {
+            Ok(())
+        } else {
+            Err(AppInfraError::BrokeredAccess(format!(
+                "failed to open Mnema deep link with status {status}"
+            )))
+        }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        std::process::Command::new("xdg-open").arg(&url).status()?;
-        Ok(())
+        let status = std::process::Command::new("xdg-open").arg(&url).status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(AppInfraError::BrokeredAccess(format!(
+                "failed to open Mnema deep link with status {status}"
+            )))
+        }
     }
 }
 

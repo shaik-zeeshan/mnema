@@ -70,14 +70,23 @@ where
             if identity_path.exists() && is_empty_plaintext_database_file(database_path)? {
                 remove_database_files(database_path)?;
                 database_exists = false;
+            } else if identity_path.exists() {
+                return Err(AppInfraError::CaptureIndexEncryption(
+                    "plaintext capture index database exists for an encrypted identity".to_string(),
+                ));
             } else {
                 return Ok(None);
             }
         }
 
         let identity_exists = identity_path.exists();
+        if database_exists && !identity_exists {
+            return Err(AppInfraError::CaptureIndexEncryption(
+                "capture index database exists but capture-index.json is missing".to_string(),
+            ));
+        }
         let identity = load_or_create_identity(&identity_path)?;
-        let require_existing_key = database_exists && identity_exists;
+        let require_existing_key = database_exists;
         let passphrase = self.load_or_create_key(&identity.index_id, require_existing_key)?;
         Ok(Some(CaptureIndexDatabaseKey::new(passphrase)))
     }
@@ -416,6 +425,25 @@ mod tests {
     }
 
     #[test]
+    fn file_key_store_rejects_existing_database_without_identity() {
+        let save_dir = TestDir::new("missing-identity-save");
+        let key_dir = TestDir::new("missing-identity-store");
+        let database_path = database_path(save_dir.path());
+        fs::create_dir_all(database_path.parent().expect("database should have parent"))
+            .expect("database parent should exist");
+        fs::write(&database_path, b"not-sqlite-ciphertext").expect("database should exist");
+
+        let error = file_key_store(key_dir.path())
+            .resolve_database_key(save_dir.path(), &database_path)
+            .expect_err("existing encrypted index should require its identity");
+
+        assert!(error
+            .to_string()
+            .contains("capture index database exists but capture-index.json is missing"));
+        assert!(!capture_index_identity_path(save_dir.path()).exists());
+    }
+
+    #[test]
     fn file_key_store_rejects_empty_stored_key() {
         let save_dir = TestDir::new("empty-key-save");
         let key_dir = TestDir::new("empty-key-store");
@@ -449,6 +477,25 @@ mod tests {
 
         assert!(key.is_none());
         assert!(!capture_index_identity_path(save_dir.path()).exists());
+    }
+
+    #[test]
+    fn plaintext_database_with_identity_is_rejected_when_non_empty() {
+        let save_dir = TestDir::new("plaintext-identity");
+        let key_dir = TestDir::new("plaintext-identity-keys");
+        let database_path = database_path(save_dir.path());
+        write_identity(save_dir.path(), "mnema-index-plaintext-identity");
+        let mut database_bytes = b"SQLite format 3\0".to_vec();
+        database_bytes.resize(8192, 0);
+        fs::write(&database_path, database_bytes).expect("plaintext database should exist");
+
+        let error = file_key_store(key_dir.path())
+            .resolve_database_key(save_dir.path(), &database_path)
+            .expect_err("plaintext database with encrypted identity should fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("plaintext capture index database exists for an encrypted identity"));
     }
 
     #[test]

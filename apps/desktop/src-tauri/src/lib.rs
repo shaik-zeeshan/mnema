@@ -14,6 +14,8 @@ mod speaker_analysis_runtime;
 mod status_bar;
 mod windows;
 
+use std::{collections::VecDeque, sync::Mutex};
+
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
@@ -45,6 +47,21 @@ struct BrokerOpenCaptureResultPayload {
     kind: String,
     frame_id: Option<i64>,
     audio_segment_id: Option<i64>,
+}
+
+#[derive(Default)]
+struct BrokerOpenCaptureResultState {
+    pending: Mutex<VecDeque<BrokerOpenCaptureResultPayload>>,
+}
+
+#[tauri::command]
+fn drain_pending_broker_open_capture_results(
+    state: tauri::State<'_, BrokerOpenCaptureResultState>,
+) -> Vec<BrokerOpenCaptureResultPayload> {
+    let Ok(mut pending) = state.pending.lock() else {
+        return Vec::new();
+    };
+    pending.drain(..).collect()
 }
 
 fn is_app_log_target(target: &str) -> bool {
@@ -81,10 +98,17 @@ fn broker_payload_from_url(url: &url::Url) -> Option<BrokerOpenCaptureResultPayl
     })
 }
 
-fn emit_broker_open_result(app_handle: &tauri::AppHandle, url: &url::Url) {
+fn enqueue_broker_open_result(app_handle: &tauri::AppHandle, url: &url::Url) {
     let Some(payload) = broker_payload_from_url(url) else {
         return;
     };
+    if let Ok(mut pending) = app_handle
+        .state::<BrokerOpenCaptureResultState>()
+        .pending
+        .lock()
+    {
+        pending.push_back(payload.clone());
+    }
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         let _ = windows::open_main_window(&app_handle);
@@ -143,6 +167,10 @@ pub fn run() {
         .manage(ocr_models::OcrModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
+        .manage(BrokerOpenCaptureResultState::default())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = windows::open_main_window(app);
+        }))
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)
@@ -289,17 +317,18 @@ pub fn run() {
             windows::complete_onboarding,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
+            drain_pending_broker_open_capture_results,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
-                    emit_broker_open_result(&app_handle, &url);
+                    enqueue_broker_open_result(&app_handle, &url);
                 }
             });
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
-                    emit_broker_open_result(app.handle(), &url);
+                    enqueue_broker_open_result(app.handle(), &url);
                 }
             }
             let _ = app.deep_link().register_all();
