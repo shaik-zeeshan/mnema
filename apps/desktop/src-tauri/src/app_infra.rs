@@ -3825,13 +3825,93 @@ fn mnema_cli_sidecar_name() -> String {
     }
 }
 
+fn mnema_cli_sidecar_name_for_target_triple(target_triple: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("{MNEMA_CLI_SIDECAR_NAME}-{target_triple}.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("{MNEMA_CLI_SIDECAR_NAME}-{target_triple}")
+    }
+}
+
+fn current_target_triple_candidates() -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    for key in ["CARGO_BUILD_TARGET", "TAURI_ENV_TARGET_TRIPLE", "TARGET"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.is_empty() && !candidates.contains(&value) {
+                candidates.push(value);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let arch = std::env::consts::ARCH;
+        let host_triple = format!("{arch}-apple-darwin");
+        if !candidates.contains(&host_triple) {
+            candidates.push(host_triple);
+        }
+        let universal_triple = "universal-apple-darwin".to_string();
+        if !candidates.contains(&universal_triple) {
+            candidates.push(universal_triple);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let env = if cfg!(target_env = "gnu") {
+            "pc-windows-gnu"
+        } else {
+            "pc-windows-msvc"
+        };
+        let host_triple = format!("{}-{env}", std::env::consts::ARCH);
+        if !candidates.contains(&host_triple) {
+            candidates.push(host_triple);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let env = if cfg!(target_env = "musl") {
+            "unknown-linux-musl"
+        } else {
+            "unknown-linux-gnu"
+        };
+        let host_triple = format!("{}-{env}", std::env::consts::ARCH);
+        if !candidates.contains(&host_triple) {
+            candidates.push(host_triple);
+        }
+    }
+
+    candidates
+}
+
+fn bundled_mnema_cli_path_in_dir(exe_dir: &Path) -> PathBuf {
+    let default_path = exe_dir.join(mnema_cli_sidecar_name());
+    if default_path.is_file() {
+        return default_path;
+    }
+
+    for target_triple in current_target_triple_candidates() {
+        let candidate = exe_dir.join(mnema_cli_sidecar_name_for_target_triple(&target_triple));
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+
+    default_path
+}
+
 fn bundled_mnema_cli_path() -> Result<PathBuf, String> {
     let current_exe = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current exe: {error}"))?;
     let exe_dir = current_exe
         .parent()
         .ok_or_else(|| format!("current exe has no parent: {}", current_exe.display()))?;
-    Ok(exe_dir.join(mnema_cli_sidecar_name()))
+    Ok(bundled_mnema_cli_path_in_dir(exe_dir))
 }
 
 fn mnema_cli_install_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -4783,6 +4863,34 @@ mod tests {
             mnema_cli_install_path_for_home(Path::new("/Users/tester")),
             PathBuf::from("/Users/tester/.local/bin/mnema")
         );
+    }
+
+    #[test]
+    fn bundled_mnema_cli_path_uses_plain_sidecar_name_when_present() {
+        let dir = TestDir::new("mnema-cli-plain-sidecar");
+        let plain_cli = dir.path().join(mnema_cli_sidecar_name());
+        let target_cli = dir.path().join(mnema_cli_sidecar_name_for_target_triple(
+            current_target_triple_candidates()
+                .first()
+                .expect("current target triple should be known"),
+        ));
+        fs::write(&plain_cli, b"plain").expect("plain sidecar should be written");
+        fs::write(&target_cli, b"target").expect("target sidecar should be written");
+
+        assert_eq!(bundled_mnema_cli_path_in_dir(dir.path()), plain_cli);
+    }
+
+    #[test]
+    fn bundled_mnema_cli_path_falls_back_to_target_triple_sidecar_name() {
+        let dir = TestDir::new("mnema-cli-target-sidecar");
+        let target_cli = dir.path().join(mnema_cli_sidecar_name_for_target_triple(
+            current_target_triple_candidates()
+                .first()
+                .expect("current target triple should be known"),
+        ));
+        fs::write(&target_cli, b"target").expect("target sidecar should be written");
+
+        assert_eq!(bundled_mnema_cli_path_in_dir(dir.path()), target_cli);
     }
 
     #[test]
