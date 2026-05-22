@@ -93,7 +93,7 @@ export function uniqueBundleIds(bundleIds: Array<string | null | undefined>): st
 }
 
 export function normalizedSearchValue(value: string): string {
-  return value.trim().toLocaleLowerCase();
+  return value.trim().toLowerCase();
 }
 
 export function privacyAppCandidateSearchText(candidate: PrivacyAppCandidate): string {

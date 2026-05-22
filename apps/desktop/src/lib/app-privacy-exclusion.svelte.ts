@@ -96,6 +96,19 @@ export function createAppPrivacyExclusionController(host: AppPrivacyExclusionHos
       const icons = await invoke<AppIconResolution[]>("resolve_app_icons", {
         request: { bundleIds: unresolvedBundleIds },
       });
+      const resolvedCanonicalIconBundleIds = new Set(
+        icons
+          .filter((icon) => icon.iconPath)
+          .map((icon) => canonicalBundleIdForComparison(icon.bundleId)),
+      );
+      for (const bundleId of unresolvedBundleIds) {
+        const canonical = canonicalBundleIdForComparison(bundleId);
+        if (resolvedCanonicalIconBundleIds.has(canonical)) {
+          requestedCanonicalIconBundleIds.add(canonical);
+        } else {
+          requestedCanonicalIconBundleIds.delete(canonical);
+        }
+      }
       const result = mergeIconResolutions(state.iconPathsByBundleId, icons);
       if (!result.changed) return;
       state.iconPathsByBundleId = result.iconPathsByBundleId;

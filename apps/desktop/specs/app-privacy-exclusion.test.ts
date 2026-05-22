@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   canonicalBundleIdForComparison,
   filteredPrivacyAppCandidates,
+  normalizedSearchValue,
   recommendationActionFor,
   unresolvedIconBundleIds,
   visibleBrowserDisclosureApps,
@@ -50,6 +51,10 @@ function recommendation(
 describe("App Privacy Exclusion helpers", () => {
   test("canonical bundle IDs use locale-invariant casing", () => {
     expect(canonicalBundleIdForComparison(" COM.EXAMPLE.ID ")).toBe("com.example.id");
+  });
+
+  test("search values use locale-invariant casing", () => {
+    expect(normalizedSearchValue(" COM.EXAMPLE.ID ")).toBe("com.example.id");
   });
 
   test("filters installed app candidates using normalized bundle IDs and search text", () => {

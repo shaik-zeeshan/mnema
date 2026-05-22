@@ -25,7 +25,7 @@ for arg in "$@"; do
 done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-target_triple="${CARGO_BUILD_TARGET:-${TAURI_TARGET_TRIPLE:-${TARGET:-}}}"
+target_triple="${CARGO_BUILD_TARGET:-${TAURI_ENV_TARGET_TRIPLE:-${TARGET:-}}}"
 if [[ -z "$target_triple" ]]; then
   target_triple="$(rustc -vV | awk '/^host:/ { print $2 }')"
 fi
