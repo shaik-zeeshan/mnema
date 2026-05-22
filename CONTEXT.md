@@ -121,6 +121,14 @@ _Avoid_: browser privacy mode, incognito protection, website blocking
 A browser app identity used for browser-related product disclosure and metadata support.
 _Avoid_: sensitive app recommendation, browser privacy rule, website filter
 
+**Browser Metadata Collection**:
+Native browser URL metadata, governed by metadata settings, for timeline and search context without making live capture privacy decisions.
+_Avoid_: metacollection, browser privacy signal, website privacy rule
+
+**Automatic Browser Suspension Rule**:
+Mnema does not ship automatic credential-entry or browser add-on capture suspension in this branch; privacy controls stay explicit.
+_Avoid_: silent pause, password-page detector, browser add-on recorder
+
 **Exclude This App**:
 A just-in-time user action that adds one app identity to **App Privacy Exclusion** for future capture.
 _Avoid_: retroactive exclusion, delete this app's history, sensitive content removal
@@ -144,6 +152,22 @@ _Avoid_: inactivity pause, stopped recording, private mode
 **Downstream Capture Access**:
 Access to retained capture content after capture, including search, timeline preview, export, and future local AI features.
 _Avoid_: raw SQLite access, direct frame-file access, agent bypass
+
+**Brokered Capture Access**:
+A policy-aware app or CLI boundary for downstream access to retained capture content that applies retention, deletion, redaction, and access rules before returning results.
+_Avoid_: direct database query, raw media crawl, agent file access
+
+**Encrypted Capture Index**:
+A future ADR-backed storage protection for Mnema's SQLite-backed searchable and contextual capture data, excluding original frame, video, and audio media.
+_Avoid_: encrypted capture store, media encryption, secure erase
+
+**Capture Index Key Store**:
+The platform-owned secret storage boundary that holds **Encrypted Capture Index** keys outside the recording save directory.
+_Avoid_: key file, save-directory secret, hard-coded key
+
+**Secret Redaction Pipeline**:
+A future ADR-backed downstream mitigation flow that detects likely secrets in searchable derived text and withholds or replaces that text before search, snippets, copy-text, or agent-facing access.
+_Avoid_: capture prevention, media redaction, secure erase
 
 **Secure Field Capture Suspension**:
 A future ADR-backed product concept that would suspend capture while secure text entry is focused, rather than filtering by app, window, website, or recognized text.
@@ -309,6 +333,54 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Captured Frame Pipeline** may enqueue one **OCR Job** for a **Captured Frame**.
 - **Sensitive Capture Protection V1** remains inside **App Privacy Exclusion** and does not promise website-level, private-window, password-page, or secure-field protection.
 - **Sensitive Capture Protection V1** is UX and recovery around **App Privacy Exclusion**, not detection of sensitive screen content.
+- **App Privacy Exclusion** remains handled through the native **Live Privacy Filter**, not through app-based automatic pause.
+- Mnema sanitizes browser URL metadata before persistence; full URL metadata remains an explicit user choice because query strings and fragments may contain secrets.
+- **Browser Metadata Collection** uses native browser URL probing only in this branch; another metadata adapter requires a future ADR-backed design.
+- **Secret Redaction Pipeline** affects searchable derived text, snippets, copy-text actions backed by OCR or transcripts, and agent-facing derived text access, not original frame, video, or audio media.
+- **Secret Redaction Pipeline** V1 targets high-confidence secrets such as API keys, access tokens, private keys, seed-like secrets, structurally obvious passwords, clearly labeled or formatted auth codes, and credential-bearing database connection strings.
+- **Secret Redaction Pipeline** V1 does not attempt broad PII, name, email, address, phone, sensitive-business-text, screenshot-region, or image redaction.
+- **Secret Redaction Pipeline** V1 uses deterministic high-confidence secret detection rather than broad probabilistic PII model classification.
+- **Secret Redaction Pipeline** is always on for searchable and broker-visible derived text once shipped, with no user-facing disable in V1.
+- **Secret Redaction Pipeline** runs before persistence of searchable derived text from OCR, microphone transcription, and system-audio transcription, and does not store raw secret-bearing OCR or transcript text by default.
+- **Secret Redaction Pipeline** applies to broker-visible or searchable word/token payloads as well as display strings; timing metadata may remain, but original secret token text must not be persisted by default.
+- **Secret Redaction Pipeline** may inspect bounded in-memory context around OCR or transcript text to classify high-confidence secrets, but must not persist raw context windows.
+- If **Secret Redaction Pipeline** fails before searchable derived text persistence, Mnema must fail closed by not persisting raw text as searchable or broker-visible content.
+- **Secret Redaction Pipeline** removes exact secret values from searchability; search may match surrounding non-secret context and redaction categories, but not the original secret value.
+- **Secret Redaction Pipeline** may persist redaction spans, categories, detector versions, and aggregate counts against redacted text, but never the original matched secret value.
+- User-facing **Secret Redaction Pipeline** metadata should expose coarse categories such as API key, access token, private key, password, auth code, connection string, or seed-like secret, not detector internals, confidence scores, or matched prefixes/suffixes.
+- Search ranking may use redaction categories conservatively, but should not strongly boost results merely because a secret was redacted.
+- **Secret Redaction Pipeline** reprocessing may add redactions to existing searchable derived text when detectors improve, but it cannot restore original secret values and should not inspect original media by default.
+- Future **Semantic Search** embeddings should be derived from redacted text and stored under the **Encrypted Capture Index** boundary.
+- Original capture media may still contain redacted content, so **Delete Recent Capture** remains the recovery path for removing media from Mnema's app library.
+- UI surfaces that open, preview, copy from, or export original media associated with redaction metadata should warn that original capture may still contain redacted secrets.
+- Search and derived-text UI may show non-content redaction metadata such as redaction category, count, and `has redactions` filters, but not matched secret values or detector explanations that include secret text.
+- **Brokered Capture Access** is the supported path for AI agents and other downstream tools to inspect retained capture content.
+- Agent-facing capture access should be documented only through **Brokered Capture Access**; app-internal APIs and Tauri commands are not agent contracts unless explicitly marked broker-safe.
+- Direct SQLite or media-file access by agents is outside Mnema's privacy guarantee.
+- **Encrypted Capture Index** protects SQLite-backed searchable and contextual capture data, not original frame, video, or audio media.
+- Original media files remain sensitive even when **Encrypted Capture Index** is enabled, and raw media encryption is out of scope for the first storage-security phase.
+- **Encrypted Capture Index** should use maintained page-level SQLite encryption rather than hand-rolled field encryption.
+- New **Encrypted Capture Index** databases are encrypted by default and should not expose a user-facing plaintext mode.
+- **Encrypted Capture Index** keys belong in a **Capture Index Key Store** outside `saveDirectory`; macOS should use Keychain through that abstraction.
+- Each **Encrypted Capture Index** should have its own key tied to a stable index identity rather than sharing one global app key.
+- An **Encrypted Capture Index** may expose non-secret index identity metadata through a readable header or sidecar so the app and broker can locate the corresponding **Capture Index Key Store** entry.
+- If an **Encrypted Capture Index** key is missing or inaccessible, Mnema treats the index as undecryptable unless an explicit future backup/export key flow exists; fallback keys must not live in `saveDirectory`.
+- **Brokered Capture Access** should use the app-owned **Capture Index Key Store** path rather than exposing raw encryption keys to agents.
+- **Brokered Capture Access** may run when the Mnema app is not running, but it must use the same policy, redaction, retention, tombstone, and **Capture Index Key Store** paths as the app.
+- **Brokered Capture Access** should expose a dedicated CLI contract backed by shared Rust policy/query code rather than relying on app-internal Tauri commands as the agent interface.
+- **Brokered Capture Access** requires user authorization before an agent or downstream tool can query capture data, and that authorization grants redacted/searchable derived access rather than original media export.
+- First **Brokered Capture Access** authorization requires Mnema UI; standalone CLI access may use existing valid grants but should return `authorization_required` when no valid grant exists.
+- **Brokered Capture Access** V1 grants are read-only, redacted, time-bounded, revocable, and limited to searchable-content commands such as search, show-text, timeline, and open-in-Mnema.
+- **Brokered Capture Access** grants may be time-scoped, and all-retained-history access requires an explicit user choice.
+- **Brokered Capture Access** grant state is app access-control state outside the capture index; non-secret grant metadata belongs in app config, while grant secrets or tokens belong in platform secret storage when needed.
+- **Brokered Capture Access** audit history stores non-content events such as tool identity, command type, timestamp, and result count, not raw query text, returned snippets, or media paths.
+- **Brokered Capture Access** returns redacted derived content and opaque identifiers by default, not raw SQLite rows or media file paths.
+- **Brokered Capture Access** should use bounded result limits and opaque pagination, and must not provide an unrestricted dump-all searchable text command.
+- **Brokered Capture Access** may return full redacted OCR or transcript text only for a specific opaque result identifier within grant scope, not through bulk all-content commands.
+- **Brokered Capture Access** must not expose original-media paths by default because agents could use those paths to recover secrets from frame, video, or audio media outside the redacted searchable-text path.
+- **Brokered Capture Access** may provide an open-in-Mnema action for opaque result identifiers so original media inspection stays mediated by app UI warnings and confirmations.
+- **Brokered Capture Access** V1 does not include privileged original-media export, media-path return, raw DB dump, or raw OCR/transcript dump commands.
+- **Brokered Capture Access** may support app, source, and time refinements, but should minimize returned app/window/browser metadata and avoid returning full browser URLs by default.
 - **Recommended App Exclusions** become **App Privacy Exclusion** rules only after user confirmation.
 - **Recommended App Exclusions** are shown during onboarding and through a one-time non-blocking prompt for existing users after upgrade when at least one detected recommended app is missing from **App Privacy Exclusion** or has its exclusion disabled.
 - **Recommended App Exclusions** prompt dismissal is persisted in **One-Time Prompt State** rather than recording settings or browser local storage.
@@ -333,7 +405,6 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Browser Capture Disclosure** is based on known browser app identity, not URL, domain, title, private-window state, or login-page signals.
 - **Browser Capture Disclosure** explicitly says private or incognito browser windows are recorded unless the browser app is excluded.
 - **Browser Capture Disclosure** explicitly says Mnema does not detect browser password pages or password fields.
-- Browser extensions and websites are not separate **Recommended App Exclusions** in V1; browser extension content is covered only if the whole browser app is excluded.
 - **Exclude This App** applies from the time the app exclusion is added and does not remove already persisted **Captured Frame** or **Audio Transcription** data.
 - **Exclude Current App** is a native status-bar shortcut for the frontmost app, while Privacy settings remains the full app-picker surface.
 - **Exclude Current App** is available while recording and while stopped; while recording it affects future frames in the current recording, and while stopped it affects future recordings.
@@ -397,7 +468,6 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Scrub Preview** availability returns only source-fresh cache files; missing or stale indexed intervals may be enqueued for background regeneration.
 - A generated **Scrub Preview** cache interval is keyed by source segment video offset, while dashboard availability is requested and displayed by timeline time.
 - Dashboard timeline mapping for generated **Scrub Preview** intervals uses **Capture Segment** timing plus segment video offset rather than per-frame captured timestamp jitter.
-- Generated **Scrub Preview** coverage is derived from indexed screen positions, not raw segment recording duration.
 - A timeline interval with a usable frame index but no indexed screen position is unavailable for **Scrub Preview** without treating the whole frame index as missing.
 - The generated **Scrub Preview** cache defaults to a 512 MB budget and 7-day last-access window, pruned by segment cache directory rather than individual preview file.
 - Generated **Scrub Preview** cache policy is separate from exact frame preview cache policy.
@@ -531,7 +601,6 @@ _Avoid_: duplicate result, grouped row, result cluster
 - **Hybrid Search** is the product direction once **Semantic Search** exists.
 - A **Search Index Projection** should produce one mixed result stream over typed **Search Result Anchor** values.
 - A **Search Index Projection** may carry type-specific anchor data for **Captured Frame** and **Audio Transcription Span** results.
-- A **Search Result Group** should preserve the time coverage of the grouped anchors while presenting one result.
 - **Search Result Group** creation should happen before result pagination is presented to the user.
 - **Search Refinement** should apply to **Search Result Anchor** values before choosing the representative anchor for a **Search Result Group**.
 - **Search Refinement** values should compose when their result-type constraints are compatible.

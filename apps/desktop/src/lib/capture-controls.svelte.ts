@@ -73,7 +73,10 @@ export const captureControls = {
     return captureSession.value?.isRunning === true;
   },
   get paused(): boolean {
-    return captureSession.value?.isInactivityPaused === true || captureSession.value?.isUserPaused === true;
+    return (
+      captureSession.value?.isInactivityPaused === true ||
+      captureSession.value?.isUserPaused === true
+    );
   },
   get isRunning(): boolean {
     return captureSession.value?.isRunning === true;

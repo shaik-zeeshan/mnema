@@ -94,6 +94,8 @@ pub struct FrameSearchResult {
     pub window_title: Option<String>,
     pub thumbnail_frame_id: i64,
     pub text_source_kind: String,
+    pub secret_redaction_count: u32,
+    pub has_secret_redactions: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +111,8 @@ pub struct AudioSearchResult {
     pub match_count: u32,
     pub snippet: String,
     pub aligned_frame: Option<Frame>,
+    pub secret_redaction_count: u32,
+    pub has_secret_redactions: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +143,29 @@ pub struct SearchStore {
 impl SearchStore {
     pub(crate) fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    pub(crate) async fn equivalent_reuse_text_for_frame(
+        &self,
+        frame_id: i64,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT processing_results.result_text AS result_text \
+             FROM search_documents \
+             JOIN processing_results ON processing_results.id = search_documents.processing_result_id \
+             WHERE search_documents.anchor_type = 'frame' \
+               AND search_documents.frame_id = ?1 \
+               AND search_documents.text_source_kind = 'equivalent_reuse' \
+               AND search_documents.processing_result_id IS NOT NULL \
+               AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
+             ORDER BY search_documents.id DESC, processing_results.id DESC \
+             LIMIT 1",
+        )
+        .bind(frame_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| row.get("result_text")))
     }
 
     pub(crate) async fn backfill_missing_projections(&self) -> Result<()> {
@@ -785,7 +812,12 @@ async fn equivalent_reuse_candidate_frames(
         "SELECT frames.id, session_id, file_path, captured_at, width, height, \
                 equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
                 frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
-                frames.created_at, frames.updated_at \
+                frames.created_at, frames.updated_at, \
+                COALESCE((\
+                    SELECT COUNT(*) FROM secret_redactions \
+                    WHERE secret_redactions.anchor_type = 'frame' \
+                      AND secret_redactions.frame_id = frames.id\
+                ), 0) AS secret_redaction_count \
          FROM frames \
          LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
          WHERE frames.session_id = ?1 \
@@ -1258,6 +1290,7 @@ struct FrameHit {
     app_name: Option<String>,
     window_title: Option<String>,
     text_source_kind: String,
+    secret_redaction_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1268,6 +1301,7 @@ struct AudioHit {
     span_end_ms: u64,
     snippet: String,
     rank: f64,
+    secret_redaction_count: u32,
 }
 
 async fn fetch_search_document_high_water_mark(pool: &SqlitePool) -> Result<i64> {
@@ -1334,7 +1368,19 @@ async fn fetch_frame_hits(
                 frames.equivalence_hint, frames.equivalence_proof, frames.equivalence_version, \
                 frames.equivalence_status, frames.equivalence_error, \
                 frame_metadata_snapshots.snapshot_json AS metadata_snapshot_json, \
-                frames.created_at, frames.updated_at \
+                frames.created_at, frames.updated_at, \
+                COALESCE((\
+                    SELECT COUNT(*) FROM secret_redactions \
+                    WHERE secret_redactions.anchor_type = 'frame' \
+                      AND (\
+                        (search_documents.text_source_kind = 'equivalent_reuse' \
+                         AND search_documents.processing_result_id IS NOT NULL \
+                         AND secret_redactions.processing_result_id = search_documents.processing_result_id) \
+                        OR ((search_documents.text_source_kind != 'equivalent_reuse' \
+                             OR search_documents.processing_result_id IS NULL) \
+                            AND secret_redactions.frame_id = frames.id)\
+                      )\
+                ), 0) AS secret_redaction_count \
          FROM search_documents_fts \
          JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
          JOIN frames ON frames.id = search_documents.frame_id \
@@ -1367,6 +1413,8 @@ async fn fetch_frame_hits(
                 text_source_kind: row.get("text_source_kind"),
                 snippet: row.get("snippet"),
                 rank: row.get("rank"),
+                secret_redaction_count: u32::try_from(row.get::<i64, _>("secret_redaction_count"))
+                    .unwrap_or(u32::MAX),
                 frame: map_frame_for_search(row)?,
             })
         })
@@ -1426,7 +1474,12 @@ async fn fetch_audio_hits(
                 bm25(search_documents_fts, 5.0, 1.0) AS rank, \
                 audio_segments.id, audio_segments.source_kind, audio_segments.source_session_id, \
                 audio_segments.segment_index, audio_segments.file_path, audio_segments.started_at, \
-                audio_segments.ended_at, audio_segments.capture_segment_id, audio_segments.created_at, audio_segments.updated_at \
+                audio_segments.ended_at, audio_segments.capture_segment_id, audio_segments.created_at, audio_segments.updated_at, \
+                COALESCE((\
+                    SELECT COUNT(*) FROM secret_redactions \
+                    WHERE secret_redactions.anchor_type = 'audio' \
+                      AND secret_redactions.audio_segment_id = audio_segments.id\
+                ), 0) AS secret_redaction_count \
          FROM search_documents_fts \
          JOIN search_documents ON search_documents.id = search_documents_fts.rowid \
          JOIN audio_segments ON audio_segments.id = search_documents.audio_segment_id \
@@ -1524,6 +1577,11 @@ fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
                 .map(|hit| hit.rank)
                 .min_by(|a, b| a.total_cmp(b))
                 .unwrap_or(f64::INFINITY);
+            let secret_redaction_count = hits
+                .iter()
+                .map(|hit| hit.secret_redaction_count)
+                .max()
+                .unwrap_or(0);
             Some((
                 best_rank,
                 FrameSearchResult {
@@ -1537,6 +1595,8 @@ fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
                     window_title: representative.window_title.clone(),
                     thumbnail_frame_id: representative.frame.id,
                     text_source_kind: representative.text_source_kind.clone(),
+                    secret_redaction_count,
+                    has_secret_redactions: secret_redaction_count > 0,
                 },
             ))
         })
@@ -1614,6 +1674,11 @@ fn group_audio_hits(hits: &[AudioHit]) -> Result<Vec<AudioSearchResult>> {
             .unwrap_or(span_start_ms);
         let absolute_start_at = timestamp_plus_ms(&first.audio_segment.started_at, span_start_ms)?;
         let absolute_end_at = timestamp_plus_ms(&first.audio_segment.started_at, span_end_ms)?;
+        let secret_redaction_count = group
+            .iter()
+            .map(|hit| hit.secret_redaction_count)
+            .max()
+            .unwrap_or(0);
         results.push((
             first.rank,
             AudioSearchResult {
@@ -1630,6 +1695,8 @@ fn group_audio_hits(hits: &[AudioHit]) -> Result<Vec<AudioSearchResult>> {
                 match_count: group.len() as u32,
                 snippet: first.snippet.clone(),
                 aligned_frame: None,
+                secret_redaction_count,
+                has_secret_redactions: secret_redaction_count > 0,
             },
         ));
     }
@@ -1846,6 +1913,8 @@ fn map_audio_hit(row: SqliteRow) -> Result<AudioHit> {
         span_end_ms: row.get::<Option<i64>, _>("span_end_ms").unwrap_or(0).max(0) as u64,
         snippet: row.get("snippet"),
         rank: row.get("rank"),
+        secret_redaction_count: u32::try_from(row.get::<i64, _>("secret_redaction_count"))
+            .unwrap_or(u32::MAX),
     })
 }
 
@@ -2541,6 +2610,7 @@ mod tests {
             span_end_ms,
             snippet: format!("hit {span_start_ms}"),
             rank,
+            secret_redaction_count: 0,
         };
 
         let hits = vec![
@@ -2577,6 +2647,7 @@ mod tests {
             span_end_ms: span_start_ms + 500,
             snippet: format!("hit {span_start_ms}"),
             rank,
+            secret_redaction_count: 0,
         };
 
         let hits = vec![hit(10_000, -1.0), hit(1_000, -10.0)];
@@ -2615,6 +2686,7 @@ mod tests {
             app_name: None,
             window_title: None,
             text_source_kind: "direct".to_string(),
+            secret_redaction_count: 0,
         };
 
         let hits = vec![
@@ -3722,6 +3794,96 @@ mod tests {
                 target_context.frames[0].representative_frame.id,
                 second.frame.id
             );
+        });
+    }
+
+    #[test]
+    fn equivalent_reuse_search_reports_source_result_redactions() {
+        run_async_test(async {
+            let dir = test_dir("reuse-source-redactions");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-redaction-source".to_string()),
+                proof: Some(vec![24; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            let source = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-redaction-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("source frame should capture");
+            let source_job = source.job.expect("source frame should enqueue OCR");
+            complete_job(
+                &infra,
+                source_job,
+                ProcessingResultDraft::new().with_result_text("redacted shared target"),
+            )
+            .await;
+            let source_result_id: i64 = sqlx::query_scalar(
+                "SELECT id FROM processing_results WHERE subject_type = ?1 AND subject_id = ?2 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(FRAME_SUBJECT_TYPE)
+            .bind(source.frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("source result should exist");
+            sqlx::query(
+                "INSERT INTO secret_redactions \
+                    (anchor_type, frame_id, audio_segment_id, processing_result_id, category, redacted_start, redacted_end, detector_version) \
+                 VALUES ('frame', ?1, NULL, ?2, 'api_key', 0, 8, 'test')",
+            )
+            .bind(source.frame.id)
+            .bind(source_result_id)
+            .execute(infra.pool())
+            .await
+            .expect("source redaction should insert");
+
+            let target = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/search-redaction-target.jpg",
+                        "2026-05-17T10:00:01Z",
+                    )
+                    .with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("target frame should capture");
+            assert!(target.job.is_none());
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "redacted".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                })
+                .await
+                .expect("search should succeed");
+            let reuse = response
+                .frames
+                .iter()
+                .find(|result| result.text_source_kind == "equivalent_reuse")
+                .expect("equivalent reuse result should exist");
+
+            assert_eq!(reuse.representative_frame.id, target.frame.id);
+            assert_eq!(reuse.secret_redaction_count, 1);
+            assert!(reuse.has_secret_redactions);
         });
     }
 

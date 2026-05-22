@@ -1,4 +1,7 @@
 mod audio_segments;
+pub mod brokered_access;
+pub mod brokered_access_cli;
+mod capture_index_key_store;
 mod capture_retention;
 mod captured_frame_equivalence;
 mod captured_frame_pipeline;
@@ -336,6 +339,57 @@ impl AppInfra {
 
     pub fn capture_retention(&self) -> &CaptureRetentionStore {
         &self.capture_retention
+    }
+
+    pub async fn frame_secret_redaction_count(&self, frame_id: i64) -> Result<u32> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS count \
+             FROM secret_redactions \
+             WHERE anchor_type = 'frame' \
+               AND (frame_id = ?1 \
+                    OR processing_result_id IN (\
+                        SELECT processing_result_id \
+                        FROM search_documents \
+                        WHERE frame_id = ?1 \
+                          AND text_source_kind = 'equivalent_reuse' \
+                          AND processing_result_id IS NOT NULL\
+                    ))",
+        )
+        .bind(frame_id)
+        .fetch_one(self.pool())
+        .await?;
+        let count: i64 = sqlx::Row::get(&row, "count");
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    pub async fn audio_segment_secret_redaction_count(&self, audio_segment_id: i64) -> Result<u32> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS count \
+             FROM secret_redactions \
+             WHERE anchor_type = 'audio' AND audio_segment_id = ?1",
+        )
+        .bind(audio_segment_id)
+        .fetch_one(self.pool())
+        .await?;
+        let count: i64 = sqlx::Row::get(&row, "count");
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    pub async fn capture_session_id_for_source_session(
+        &self,
+        source_session_id: &str,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT capture_session_id FROM capture_sessions \
+             WHERE screen_source_session_id = ?1 \
+                OR microphone_source_session_id = ?1 \
+                OR system_audio_source_session_id = ?1 \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(source_session_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(row.map(|row| sqlx::Row::get(&row, "capture_session_id")))
     }
 
     #[cfg(test)]
@@ -1752,6 +1806,79 @@ mod tests {
     fn test_frame_at(session_id: &str, file_name: &str, captured_at: &str) -> NewFrame {
         NewFrame::new(session_id, format!("/tmp/{file_name}"), captured_at)
             .with_dimensions(1920, 1080)
+    }
+
+    #[test]
+    fn frame_secret_redaction_count_includes_equivalent_reuse_source_result() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-secret-redaction-count-reuse");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let equivalence = FrameEquivalence {
+                hint: Some("same-secret-source".to_string()),
+                proof: Some(vec![42; 1024]),
+                version: Some(1),
+                status: Some(FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+
+            let source = infra
+                .capture_frame(
+                    &test_frame("session-redaction-reuse", "source.png")
+                        .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("source frame should persist");
+            let source_job = source.job.expect("source OCR job should enqueue");
+            infra
+                .claim_queued_processing_job(source_job.id)
+                .await
+                .expect("source job should claim")
+                .expect("source job should exist");
+            infra
+                .complete_processing_job(
+                    source_job.id,
+                    &ProcessingResultDraft::new().with_result_text("shared secret text"),
+                )
+                .await
+                .expect("source job should complete");
+            let source_result_id: i64 = sqlx::query_scalar(
+                "SELECT id FROM processing_results WHERE job_id = ?1 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(source_job.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("source result should exist");
+            sqlx::query(
+                "INSERT INTO secret_redactions \
+                    (anchor_type, frame_id, audio_segment_id, processing_result_id, category, redacted_start, redacted_end, detector_version) \
+                 VALUES ('frame', ?1, NULL, ?2, 'api_key', 0, 6, 'test')",
+            )
+            .bind(source.frame.id)
+            .bind(source_result_id)
+            .execute(infra.pool())
+            .await
+            .expect("source redaction should insert");
+
+            let target = infra
+                .capture_frame(
+                    &test_frame("session-redaction-reuse", "target.png").with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("target frame should persist");
+
+            assert!(target.job.is_none());
+            assert_eq!(
+                infra
+                    .frame_secret_redaction_count(target.frame.id)
+                    .await
+                    .expect("redaction count should load"),
+                1
+            );
+        });
     }
 
     fn write_test_png_rgba(
@@ -7422,6 +7549,83 @@ mod tests {
             assert_eq!(frame.file_path, persisted.frame.file_path);
             assert_eq!(frame.width, Some(1920));
             assert_eq!(frame.height, Some(1080));
+        });
+    }
+
+    #[test]
+    fn processing_results_redact_secrets_before_search_projection() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-redactions");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let persisted = infra
+                .debug_insert_frame_and_enqueue_ocr_job(
+                    &test_frame("session-redactions", "frame-redactions.png"),
+                    None,
+                )
+                .await
+                .expect("frame and job should persist");
+
+            infra
+                .claim_queued_processing_job(persisted.job.id)
+                .await
+                .expect("job should transition to running")
+                .expect("job should claim successfully");
+
+            let secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+            infra
+                .complete_processing_job(
+                    persisted.job.id,
+                    &ProcessingResultDraft::new()
+                        .with_result_text(format!("OPENAI_API_KEY={secret} nearby context")),
+                )
+                .await
+                .expect("job completion should persist redacted result");
+
+            let stored_result = infra
+                .get_processing_result_for_job(persisted.job.id)
+                .await
+                .expect("job result should be readable")
+                .expect("job result should exist");
+            let stored_text = stored_result
+                .result_text
+                .as_deref()
+                .expect("redacted result text should be stored");
+            assert!(stored_text.contains("[REDACTED_SECRET: API_KEY]"));
+            assert!(!stored_text.contains(secret));
+
+            let secret_results = infra
+                .search_capture(SearchCaptureRequest {
+                    query: secret.to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                })
+                .await
+                .expect("secret search should run");
+            assert!(secret_results.frames.is_empty());
+
+            let context_results = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "nearby context".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                })
+                .await
+                .expect("context search should run");
+            assert_eq!(context_results.frames.len(), 1);
+            assert!(context_results.frames[0]
+                .snippet
+                .contains("[REDACTED_SECRET: API_KEY]"));
         });
     }
 

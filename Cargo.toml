@@ -12,5 +12,6 @@ members = [
     "crates/capture-types",
     "crates/capture-vad",
     "crates/capture-writers",
+    "crates/secret-redaction",
 ]
 resolver = "2"

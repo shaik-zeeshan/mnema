@@ -14,7 +14,10 @@ mod speaker_analysis_runtime;
 mod status_bar;
 mod windows;
 
-use tauri::Manager;
+use std::{collections::VecDeque, path::Path, sync::Mutex};
+
+use tauri::{Emitter, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_log::{Target, TargetKind, WEBVIEW_TARGET};
 
@@ -35,6 +38,31 @@ const APP_LOG_TARGET_PREFIXES: &[&str] = &[
 ];
 const ALREADY_RUNNING_MESSAGE: &str =
     "Mnema is already running. Close the existing Mnema window before opening it again.";
+const BROKER_OPEN_CAPTURE_RESULT_EVENT: &str = "broker_open_capture_result";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrokerOpenCaptureResultPayload {
+    opaque_id: String,
+    kind: String,
+    frame_id: Option<i64>,
+    audio_segment_id: Option<i64>,
+}
+
+#[derive(Default)]
+struct BrokerOpenCaptureResultState {
+    pending: Mutex<VecDeque<BrokerOpenCaptureResultPayload>>,
+}
+
+#[tauri::command]
+fn drain_pending_broker_open_capture_results(
+    state: tauri::State<'_, BrokerOpenCaptureResultState>,
+) -> Vec<BrokerOpenCaptureResultPayload> {
+    let Ok(mut pending) = state.pending.lock() else {
+        return Vec::new();
+    };
+    pending.drain(..).collect()
+}
 
 fn is_app_log_target(target: &str) -> bool {
     APP_LOG_TARGET_PREFIXES.iter().any(|prefix| {
@@ -47,6 +75,54 @@ fn is_app_log_target(target: &str) -> bool {
 
 fn should_forward_window_event(event: &tauri::WindowEvent, webview_window_found: bool) -> bool {
     matches!(event, tauri::WindowEvent::Destroyed) || webview_window_found
+}
+
+fn broker_payload_from_url(
+    config_dir: &Path,
+    url: &url::Url,
+) -> Option<BrokerOpenCaptureResultPayload> {
+    if url.scheme() != "mnema" {
+        return None;
+    }
+    let mut segments = url.path_segments()?.collect::<Vec<_>>();
+    if let Some(host) = url.host_str() {
+        segments.insert(0, host);
+    }
+    let opaque_id = match segments.as_slice() {
+        ["open", opaque_id] | ["broker", "open", opaque_id] => (*opaque_id).to_string(),
+        _ => return None,
+    };
+    let capture_ref =
+        ::app_infra::brokered_access::signed_opaque_capture_reference(config_dir, &opaque_id)
+            .ok()
+            .flatten()?;
+    Some(BrokerOpenCaptureResultPayload {
+        opaque_id: capture_ref.opaque_id,
+        frame_id: capture_ref.frame_id,
+        audio_segment_id: capture_ref.audio_segment_id,
+        kind: capture_ref.kind,
+    })
+}
+
+fn enqueue_broker_open_result(app_handle: &tauri::AppHandle, url: &url::Url) {
+    let Ok(config_dir) = app_handle.path().app_config_dir() else {
+        return;
+    };
+    let Some(payload) = broker_payload_from_url(&config_dir, url) else {
+        return;
+    };
+    if let Ok(mut pending) = app_handle
+        .state::<BrokerOpenCaptureResultState>()
+        .pending
+        .lock()
+    {
+        pending.push_back(payload.clone());
+    }
+    let app_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = windows::open_main_window(&app_handle);
+        let _ = app_handle.emit(BROKER_OPEN_CAPTURE_RESULT_EVENT, payload);
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +176,10 @@ pub fn run() {
         .manage(ocr_models::OcrModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
+        .manage(BrokerOpenCaptureResultState::default())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = windows::open_main_window(app);
+        }))
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)
@@ -116,6 +196,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
@@ -141,6 +222,11 @@ pub fn run() {
             app_infra::preview_retention_cleanup,
             app_infra::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
+            app_infra::list_broker_grants,
+            app_infra::create_broker_grant,
+            app_infra::revoke_broker_grant,
+            app_infra::get_mnema_cli_status,
+            app_infra::install_mnema_cli,
             app_infra::delete_recent_capture,
             one_time_prompts::get_one_time_prompt_state,
             one_time_prompts::mark_one_time_prompt_shown,
@@ -175,6 +261,7 @@ pub fn run() {
             app_infra::list_frame_summaries_in_range,
             app_infra::get_latest_frame_in_range,
             app_infra::list_audio_segments,
+            app_infra::get_audio_segment,
             app_infra::get_audio_segment_media,
             app_infra::get_frame,
             app_infra::get_earliest_earlier_equivalent_frame,
@@ -239,8 +326,21 @@ pub fn run() {
             windows::complete_onboarding,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
+            drain_pending_broker_open_capture_results,
         ])
         .setup(|app| {
+            let app_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    enqueue_broker_open_result(&app_handle, &url);
+                }
+            });
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    enqueue_broker_open_result(app.handle(), &url);
+                }
+            }
+            let _ = app.deep_link().register_all();
             windows::install_macos_terminate_handler(app.handle());
             native_capture::initialize_recording_settings_from_disk(app.handle());
             one_time_prompts::initialize(app.handle());
@@ -317,9 +417,17 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 #[cfg(test)]
 mod tests {
     use super::{
-        exit_request_action_for_exit_request, is_app_log_target, should_forward_window_event,
-        ExitRequestAction,
+        broker_payload_from_url, exit_request_action_for_exit_request, is_app_log_target,
+        should_forward_window_event, ExitRequestAction,
     };
+
+    #[test]
+    fn broker_deep_link_rejects_unsigned_opaque_id() {
+        let dir = tempfile::tempdir().expect("config dir should be created");
+        let url = url::Url::parse("mnema://open/f1").expect("url should parse");
+
+        assert!(broker_payload_from_url(dir.path(), &url).is_none());
+    }
 
     #[test]
     fn app_log_filter_keeps_only_our_targets() {
