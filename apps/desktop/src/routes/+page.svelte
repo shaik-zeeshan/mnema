@@ -3907,20 +3907,20 @@
   }
 
   function searchViewAllowed(view: SearchView, refinements = searchRefinements): boolean {
-    if (refinements.app && view !== "frames") return false;
+    if ((refinements.app || refinements.windowTitle) && view !== "frames") return false;
     if (refinements.audioSource && view !== "audio") return false;
     return true;
   }
 
   function normalizeSearchViewForRefinements(view: SearchView, refinements: SearchCaptureRefinements): SearchView {
-    if (refinements.app) return "frames";
+    if (refinements.app || refinements.windowTitle) return "frames";
     if (refinements.audioSource) return "audio";
     return view;
   }
 
   function compatibleSearchRefinements(refinements: SearchCaptureRefinements): SearchCaptureRefinements {
     const next = { ...refinements };
-    if (next.app && next.audioSource) delete next.audioSource;
+    if ((next.app || next.windowTitle) && next.audioSource) delete next.audioSource;
     return next;
   }
 
@@ -3962,6 +3962,7 @@
     searchRefineMenuOpen = false;
     const next = { ...searchRefinements, audioSource };
     delete next.app;
+    delete next.windowTitle;
     applySearchRefinements(next, "audio");
   }
 

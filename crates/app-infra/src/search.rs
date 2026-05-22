@@ -35,6 +35,7 @@ pub struct SearchCaptureRequest {
 pub struct SearchCaptureRefinements {
     pub date_range: Option<SearchDateRangeRefinement>,
     pub app: Option<SearchAppRefinement>,
+    pub window_title: Option<String>,
     pub audio_source: Option<AudioSegmentSourceKind>,
 }
 
@@ -65,6 +66,7 @@ pub struct SearchAppRefinement {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchAppRefinementKind {
+    Any,
     BundleId,
     AppName,
 }
@@ -90,6 +92,7 @@ pub struct FrameSearchResult {
     pub group_end_at: String,
     pub match_count: u32,
     pub snippet: String,
+    pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
     pub window_title: Option<String>,
     pub thumbnail_frame_id: i64,
@@ -119,6 +122,7 @@ pub struct AudioSearchResult {
 struct NormalizedSearchRefinements {
     date_range: Option<NormalizedDateRange>,
     app: Option<NormalizedAppRefinement>,
+    window_title: Option<String>,
     audio_source: Option<AudioSegmentSourceKind>,
     applied: SearchCaptureRefinements,
 }
@@ -131,6 +135,7 @@ struct NormalizedDateRange {
 
 #[derive(Debug, Clone)]
 enum NormalizedAppRefinement {
+    Any { value: String, search_key: String },
     BundleId { value: String },
     AppName { search_key: String },
 }
@@ -281,7 +286,10 @@ impl SearchStore {
             )
             .await?
         };
-        let all_audio_groups = if audio_limit == 0 || refinements.app.is_some() {
+        let all_audio_groups = if audio_limit == 0
+            || refinements.app.is_some()
+            || refinements.window_title.is_some()
+        {
             Vec::new()
         } else {
             fetch_grouped_audio_hits(&self.pool, &fts_query, snapshot_document_id, &refinements)
@@ -367,6 +375,14 @@ fn normalize_search_refinements(
                 ));
             }
             let normalized = match app.kind {
+                SearchAppRefinementKind::Any => NormalizedAppRefinement::Any {
+                    value: value.clone(),
+                    search_key: normalize_app_name_for_search(&value).ok_or_else(|| {
+                        AppInfraError::InvalidSearchRequest(
+                            "app.value must be non-empty".to_string(),
+                        )
+                    })?,
+                },
                 SearchAppRefinementKind::BundleId => NormalizedAppRefinement::BundleId {
                     value: value.clone(),
                 },
@@ -393,15 +409,31 @@ fn normalize_search_refinements(
         })
         .transpose()?;
 
+    let window_title = refinements
+        .window_title
+        .map(|value| {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                Err(AppInfraError::InvalidSearchRequest(
+                    "windowTitle must be non-empty".to_string(),
+                ))
+            } else {
+                Ok(value)
+            }
+        })
+        .transpose()?;
+
     Ok(NormalizedSearchRefinements {
         date_range: date_range
             .as_ref()
             .map(|(normalized, _)| normalized.clone()),
         app: app.as_ref().map(|(normalized, _)| normalized.clone()),
+        window_title: window_title.clone(),
         audio_source: refinements.audio_source.clone(),
         applied: SearchCaptureRefinements {
             date_range: date_range.map(|(_, applied)| applied),
             app: app.map(|(_, applied)| applied),
+            window_title,
             audio_source: refinements.audio_source,
         },
     })
@@ -1299,6 +1331,7 @@ struct FrameHit {
     frame: Frame,
     snippet: String,
     rank: f64,
+    app_bundle_id: Option<String>,
     app_name: Option<String>,
     window_title: Option<String>,
     text_source_kind: String,
@@ -1337,6 +1370,15 @@ fn push_search_refinement_predicates(
     }
     if let Some(app) = &refinements.app {
         match app {
+            NormalizedAppRefinement::Any { value, search_key } => {
+                query.push(
+                    " AND (LOWER(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = LOWER(",
+                );
+                query.push_bind(value.clone());
+                query.push(") OR search_documents.app_name_search_key = ");
+                query.push_bind(search_key.clone());
+                query.push(")");
+            }
             NormalizedAppRefinement::BundleId { value } => {
                 query.push(
                     " AND LOWER(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = LOWER(",
@@ -1353,10 +1395,31 @@ fn push_search_refinement_predicates(
             }
         }
     }
+    if let Some(window_title) = &refinements.window_title {
+        query.push(" AND LOWER(COALESCE(search_documents.window_title, '')) LIKE LOWER(");
+        query.push_bind(sqlite_contains_like_pattern(window_title));
+        query.push(") ESCAPE '\\'");
+    }
     if let Some(source) = &refinements.audio_source {
         query.push(" AND search_documents.source_kind = ");
         query.push_bind(source.as_str().to_string());
     }
+}
+
+fn sqlite_contains_like_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('%');
+    for ch in value.chars() {
+        match ch {
+            '\\' | '%' | '_' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('%');
+    escaped
 }
 
 async fn fetch_frame_hits(
@@ -1368,7 +1431,7 @@ async fn fetch_frame_hits(
     refinements: &NormalizedSearchRefinements,
 ) -> Result<Vec<FrameHit>> {
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT search_documents.group_key, search_documents.app_name, search_documents.window_title, \
+        "SELECT search_documents.group_key, search_documents.app_bundle_id, search_documents.app_name, search_documents.window_title, \
                 search_documents.text_source_kind, \
                 CASE \
                     WHEN instr(snippet(search_documents_fts, 0, '<mark>', '</mark>', '...', 12), '<mark>') > 0 \
@@ -1420,6 +1483,7 @@ async fn fetch_frame_hits(
         .map(|row| {
             Ok(FrameHit {
                 group_key: row.get("group_key"),
+                app_bundle_id: row.get("app_bundle_id"),
                 app_name: row.get("app_name"),
                 window_title: row.get("window_title"),
                 text_source_kind: row.get("text_source_kind"),
@@ -1603,6 +1667,7 @@ fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
                     group_end_at,
                     match_count: hits.len() as u32,
                     snippet: hits[0].snippet.clone(),
+                    app_bundle_id: representative.app_bundle_id.clone(),
                     app_name: representative.app_name.clone(),
                     window_title: representative.window_title.clone(),
                     thumbnail_frame_id: representative.frame.id,
@@ -1997,6 +2062,7 @@ mod tests {
                 origin: Some(SearchDateRangeOrigin::LastHour),
             }),
             app: None,
+            window_title: None,
             audio_source: None,
         }))
         .expect("refinements should normalize");
@@ -2026,6 +2092,7 @@ mod tests {
                 value: "com.example.Linear".to_string(),
                 display_name: "Linear".to_string(),
             }),
+            window_title: None,
             audio_source: Some(AudioSegmentSourceKind::Microphone),
         }))
         .expect_err("incompatible refinements should fail");
@@ -2695,6 +2762,7 @@ mod tests {
             frame: frame(id, captured_at),
             snippet: format!("hit {id}"),
             rank,
+            app_bundle_id: None,
             app_name: None,
             window_title: None,
             text_source_kind: "direct".to_string(),
@@ -2767,6 +2835,15 @@ mod tests {
 
             assert_eq!(response.frames.len(), 1);
             assert_eq!(response.frames[0].representative_frame.id, frame.id);
+            assert_eq!(
+                response.frames[0].app_bundle_id.as_deref(),
+                Some("com.example.Linear")
+            );
+            assert_eq!(response.frames[0].app_name.as_deref(), Some("Linear"));
+            assert_eq!(
+                response.frames[0].window_title.as_deref(),
+                Some("Roadmap Grooming")
+            );
         });
     }
 
@@ -2890,6 +2967,7 @@ mod tests {
                             value: " COM.EXAMPLE.LINEAR ".to_string(),
                             display_name: "Linear".to_string(),
                         }),
+                        window_title: None,
                         audio_source: None,
                     }),
                 })
@@ -2946,7 +3024,34 @@ mod tests {
                     snapshot_document_id: None,
                     refinements: Some(SearchCaptureRefinements {
                         date_range: None,
+                        app: Some(SearchAppRefinement {
+                            kind: SearchAppRefinementKind::Any,
+                            value: "linear".to_string(),
+                            display_name: "linear".to_string(),
+                        }),
+                        window_title: Some("plan".to_string()),
+                        audio_source: None,
+                    }),
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, linear.id);
+            assert!(response.audio.is_empty());
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "refined".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: Some(SearchCaptureRefinements {
+                        date_range: None,
                         app: None,
+                        window_title: None,
                         audio_source: Some(AudioSegmentSourceKind::SystemAudio),
                     }),
                 })
@@ -3014,6 +3119,7 @@ mod tests {
                             origin: Some(SearchDateRangeOrigin::VisibleTimeline),
                         }),
                         app: None,
+                        window_title: None,
                         audio_source: None,
                     }),
                 })
@@ -3108,6 +3214,7 @@ mod tests {
                             value: "éditeur".to_string(),
                             display_name: "éditeur".to_string(),
                         }),
+                        window_title: None,
                         audio_source: None,
                     }),
                 })

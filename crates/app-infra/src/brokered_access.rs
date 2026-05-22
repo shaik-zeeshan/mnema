@@ -9,12 +9,14 @@ use fs2::FileExt;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::{QueryBuilder, Row, Sqlite};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
     AppInfra, AppInfraError, AudioSegmentSourceKind, ProcessingSubject, Result,
-    SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
-    SearchDateRangeRefinement, AUDIO_SEGMENT_SUBJECT_TYPE, FRAME_SUBJECT_TYPE,
+    SearchAppRefinement, SearchAppRefinementKind, SearchCaptureRefinements, SearchCaptureRequest,
+    SearchCaptureResponse, SearchDateRangeOrigin, SearchDateRangeRefinement,
+    AUDIO_SEGMENT_SUBJECT_TYPE, FRAME_SUBJECT_TYPE,
 };
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
@@ -193,6 +195,8 @@ pub struct BrokerSearchRequest {
     pub from: Option<String>,
     pub to: Option<String>,
     pub limit: Option<u32>,
+    pub app: Option<String>,
+    pub window_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -203,6 +207,19 @@ pub struct BrokerSearchResult {
     pub snippet: String,
     pub started_at: String,
     pub ended_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<BrokerSearchResultContext>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerSearchResultContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_bundle_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -242,6 +259,8 @@ pub struct BrokerTimelineRequest {
     pub from: String,
     pub to: String,
     pub limit: Option<u32>,
+    pub app: Option<String>,
+    pub window_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -251,6 +270,8 @@ pub struct BrokerTimelineInterval {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<BrokerSearchResultContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -830,6 +851,82 @@ fn scoped_date_range(
     }))
 }
 
+fn broker_search_refinements(
+    grants: &[BrokerGrant],
+    from: Option<String>,
+    to: Option<String>,
+    app: Option<String>,
+    window_title: Option<String>,
+) -> Result<SearchCaptureRefinements> {
+    Ok(SearchCaptureRefinements {
+        date_range: scoped_date_range(grants, from, to)?,
+        app: broker_app_refinement(app)?,
+        window_title: broker_optional_filter(window_title, "windowTitle")?,
+        audio_source: None,
+    })
+}
+
+fn broker_app_refinement(app: Option<String>) -> Result<Option<SearchAppRefinement>> {
+    let Some(value) = broker_optional_filter(app, "app")? else {
+        return Ok(None);
+    };
+    Ok(Some(SearchAppRefinement {
+        kind: SearchAppRefinementKind::Any,
+        display_name: value.clone(),
+        value,
+    }))
+}
+
+fn broker_optional_filter(value: Option<String>, field_name: &str) -> Result<Option<String>> {
+    value
+        .map(|value| {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                Err(AppInfraError::InvalidSearchRequest(format!(
+                    "{field_name} must be non-empty"
+                )))
+            } else {
+                Ok(value)
+            }
+        })
+        .transpose()
+}
+
+fn push_broker_timeline_context_filters(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    app: Option<&SearchAppRefinement>,
+    window_title: Option<&str>,
+) {
+    if let Some(app) = app {
+        query.push(" AND (LOWER(TRIM(COALESCE(app_bundle_id, ''))) = LOWER(");
+        query.push_bind(app.value.clone());
+        query.push(") OR app_name_search_key = ");
+        query.push_bind(app.value.to_lowercase());
+        query.push(")");
+    }
+    if let Some(window_title) = window_title {
+        query.push(" AND LOWER(COALESCE(window_title, '')) LIKE LOWER(");
+        query.push_bind(sqlite_contains_like_pattern(window_title));
+        query.push(") ESCAPE '\\'");
+    }
+}
+
+fn sqlite_contains_like_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('%');
+    for ch in value.chars() {
+        match ch {
+            '\\' | '%' | '_' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('%');
+    escaped
+}
+
 fn timestamp_within_scope(grants: &[BrokerGrant], timestamp: &str) -> Result<bool> {
     let Some(scope_start) = effective_scope_start(grants, now_unix_ms()) else {
         return Ok(true);
@@ -979,7 +1076,13 @@ async fn broker_search(
         .limit
         .unwrap_or(DEFAULT_SEARCH_LIMIT)
         .min(MAX_SEARCH_LIMIT);
-    let date_range = scoped_date_range(grants, request.from, request.to)?;
+    let refinements = broker_search_refinements(
+        grants,
+        request.from,
+        request.to,
+        request.app,
+        request.window_title,
+    )?;
     let response = infra
         .search_capture(SearchCaptureRequest {
             query: request.query,
@@ -988,11 +1091,7 @@ async fn broker_search(
             audio_limit: Some(limit),
             audio_offset: Some(0),
             snapshot_document_id: None,
-            refinements: Some(SearchCaptureRefinements {
-                date_range,
-                app: None,
-                audio_source: None,
-            }),
+            refinements: Some(refinements),
         })
         .await?;
     let opaque_secret = load_or_create_opaque_secret(config_dir)?;
@@ -1164,6 +1263,14 @@ async fn broker_timeline(
         .min(MAX_SEARCH_LIMIT);
     let range = scoped_date_range(grants, Some(request.from), Some(request.to))?
         .expect("timeline always supplies a scoped date range");
+    let app = broker_app_refinement(request.app)?;
+    let window_title = broker_optional_filter(request.window_title, "windowTitle")?;
+    if app.is_some() || window_title.is_some() {
+        let intervals =
+            broker_frame_timeline(infra, &range, app.as_ref(), window_title.as_deref(), limit)
+                .await?;
+        return Ok(Ok(BrokerTimelineResponse { intervals, limit }));
+    }
     let mut intervals = Vec::new();
     for audio in infra
         .list_audio_segments_overlapping_range(&range.start_at, &range.end_at, None, None)
@@ -1179,10 +1286,53 @@ async fn broker_timeline(
             started_at: audio.started_at,
             ended_at: Some(audio.ended_at),
             reason: None,
+            context: None,
         });
     }
     intervals.truncate(limit as usize);
     Ok(Ok(BrokerTimelineResponse { intervals, limit }))
+}
+
+async fn broker_frame_timeline(
+    infra: &AppInfra,
+    range: &SearchDateRangeRefinement,
+    app: Option<&SearchAppRefinement>,
+    window_title: Option<&str>,
+    limit: u32,
+) -> Result<Vec<BrokerTimelineInterval>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT group_key, app_bundle_id, app_name, window_title, \
+                MIN(absolute_start_at) AS started_at, MAX(absolute_end_at) AS ended_at, MAX(id) AS sort_id \
+         FROM search_documents \
+         WHERE anchor_type = 'frame' \
+           AND julianday(absolute_end_at) >= julianday(",
+    );
+    query.push_bind(range.start_at.clone());
+    query.push(") AND julianday(absolute_start_at) <= julianday(");
+    query.push_bind(range.end_at.clone());
+    query.push(")");
+    push_broker_timeline_context_filters(&mut query, app, window_title);
+    query.push(
+        " GROUP BY group_key, app_bundle_id, app_name, window_title \
+          ORDER BY started_at DESC, sort_id DESC LIMIT ",
+    );
+    query.push_bind(limit as i64);
+
+    let rows = query.build().fetch_all(infra.pool()).await?;
+    rows.into_iter()
+        .map(|row| {
+            let app_bundle_id: Option<String> = row.get("app_bundle_id");
+            let app_name: Option<String> = row.get("app_name");
+            let window_title: Option<String> = row.get("window_title");
+            Ok(BrokerTimelineInterval {
+                kind: "screen".to_string(),
+                started_at: row.get("started_at"),
+                ended_at: Some(row.get("ended_at")),
+                reason: None,
+                context: broker_search_result_context(app_bundle_id, app_name, window_title),
+            })
+        })
+        .collect()
 }
 
 fn encode_opaque_id(kind: &str, id: i64) -> String {
@@ -1395,6 +1545,11 @@ fn map_search_response(
                 snippet: frame.snippet,
                 started_at: frame.group_start_at,
                 ended_at: frame.group_end_at,
+                context: broker_search_result_context(
+                    frame.app_bundle_id,
+                    frame.app_name,
+                    frame.window_title,
+                ),
             });
             if results.len() >= limit as usize {
                 break;
@@ -1411,6 +1566,7 @@ fn map_search_response(
                 snippet: audio_result.snippet,
                 started_at: audio_result.absolute_start_at,
                 ended_at: audio_result.absolute_end_at,
+                context: None,
             });
         }
         if results.len() == before {
@@ -1418,6 +1574,21 @@ fn map_search_response(
         }
     }
     BrokerSearchResponse { results, limit }
+}
+
+fn broker_search_result_context(
+    app_bundle_id: Option<String>,
+    app_name: Option<String>,
+    window_title: Option<String>,
+) -> Option<BrokerSearchResultContext> {
+    if app_bundle_id.is_none() && app_name.is_none() && window_title.is_none() {
+        return None;
+    }
+    Some(BrokerSearchResultContext {
+        app_bundle_id,
+        app_name,
+        window_title,
+    })
 }
 
 #[cfg(test)]
@@ -1491,6 +1662,8 @@ mod tests {
                 from: None,
                 to: None,
                 limit: Some(5),
+                app: None,
+                window_title: None,
             }),
         );
 
@@ -1629,8 +1802,9 @@ mod tests {
                     group_end_at: "2026-05-17T10:00:00Z".to_string(),
                     match_count: 1,
                     snippet: "frame target".to_string(),
-                    app_name: None,
-                    window_title: None,
+                    app_bundle_id: Some("com.example.Linear".to_string()),
+                    app_name: Some("Linear".to_string()),
+                    window_title: Some("Roadmap".to_string()),
                     thumbnail_frame_id: 11,
                     text_source_kind: "direct".to_string(),
                     secret_redaction_count: 0,
@@ -1643,6 +1817,7 @@ mod tests {
                     group_end_at: "2026-05-17T10:01:00Z".to_string(),
                     match_count: 1,
                     snippet: "second frame target".to_string(),
+                    app_bundle_id: None,
                     app_name: None,
                     window_title: None,
                     thumbnail_frame_id: 12,
@@ -1674,6 +1849,7 @@ mod tests {
                     origin: Some(SearchDateRangeOrigin::VisibleTimeline),
                 }),
                 app: None,
+                window_title: None,
                 audio_source: None,
             },
         };
@@ -1690,6 +1866,114 @@ mod tests {
         );
         assert!(mapped.results[0].opaque_id.contains('.'));
         assert_ne!(mapped.results[0].opaque_id, "fb");
+        assert_eq!(
+            mapped.results[0].context,
+            Some(BrokerSearchResultContext {
+                app_bundle_id: Some("com.example.Linear".to_string()),
+                app_name: Some("Linear".to_string()),
+                window_title: Some("Roadmap".to_string()),
+            })
+        );
+        assert_eq!(mapped.results[1].context, None);
+    }
+
+    #[test]
+    fn broker_timeline_filters_screen_intervals_by_app_and_window_title() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("timeline-context");
+            let save_dir = temp_save_dir("timeline-context");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            for (file_name, captured_at, window_title) in [
+                (
+                    "timeline-roadmap.jpg",
+                    "2026-05-17T10:00:00Z",
+                    "Roadmap Grooming",
+                ),
+                ("timeline-planning.jpg", "2026-05-17T10:01:00Z", "Planning"),
+            ] {
+                let frame = infra
+                    .insert_frame(
+                        &NewFrame::new(
+                            "screen-session",
+                            save_dir.join(file_name).display().to_string(),
+                            captured_at,
+                        )
+                        .with_metadata_snapshot(
+                            capture_metadata::FrameMetadataSnapshot {
+                                app_bundle_id: Some("com.example.Linear".to_string()),
+                                app_name: Some("Linear".to_string()),
+                                window_title: Some(window_title.to_string()),
+                                window_id: None,
+                                browser_url: None,
+                                display_id: Some(1),
+                                metadata_redaction_reason: None,
+                                metadata_redaction_source_id: None,
+                            },
+                        ),
+                    )
+                    .await
+                    .expect("frame should insert");
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("OCR job should enqueue");
+                let running = infra
+                    .claim_queued_processing_job(job.id)
+                    .await
+                    .expect("OCR job should claim")
+                    .expect("OCR job should exist");
+                infra
+                    .complete_processing_job(
+                        running.id,
+                        &ProcessingResultDraft::new().with_result_text("timeline body"),
+                    )
+                    .await
+                    .expect("OCR job should complete");
+            }
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let response = broker_timeline(
+                &infra,
+                &[grant],
+                BrokerTimelineRequest {
+                    from: "2026-05-17T00:00:00Z".to_string(),
+                    to: "2026-05-18T00:00:00Z".to_string(),
+                    limit: Some(5),
+                    app: Some("Linear".to_string()),
+                    window_title: Some("roadmap".to_string()),
+                },
+            )
+            .await
+            .expect("timeline should run")
+            .expect("timeline should be authorized");
+
+            assert_eq!(response.intervals.len(), 1);
+            assert_eq!(response.intervals[0].kind, "screen");
+            assert_eq!(
+                response.intervals[0]
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.app_name.as_deref()),
+                Some("Linear")
+            );
+            assert_eq!(
+                response.intervals[0]
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.window_title.as_deref()),
+                Some("Roadmap Grooming")
+            );
+        });
     }
 
     #[test]

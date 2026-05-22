@@ -95,6 +95,10 @@ struct SearchArgs {
     to: Option<String>,
     #[arg(long)]
     limit: Option<u32>,
+    #[arg(long)]
+    app: Option<String>,
+    #[arg(long)]
+    window_title: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -105,6 +109,10 @@ struct TimelineArgs {
     to: String,
     #[arg(long)]
     limit: Option<u32>,
+    #[arg(long)]
+    app: Option<String>,
+    #[arg(long)]
+    window_title: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -184,6 +192,19 @@ struct SearchResultData {
     snippet: String,
     started_at: String,
     ended_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<SearchResultContextData>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchResultContextData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_bundle_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_title: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -201,6 +222,8 @@ struct TimelineIntervalData {
     started_at: String,
     ended_at: String,
     summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<SearchResultContextData>,
 }
 
 #[derive(Debug, Serialize)]
@@ -290,6 +313,8 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 from: args.from,
                 to: args.to,
                 limit: args.limit,
+                app: args.app,
+                window_title: args.window_title,
             });
             run_data_command("search", &identity, request, cli.format, cli.no_prompt).await
         }
@@ -298,6 +323,8 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 from: args.from,
                 to: args.to,
                 limit: args.limit,
+                app: args.app,
+                window_title: args.window_title,
             });
             run_data_command("timeline", &identity, request, cli.format, cli.no_prompt).await
         }
@@ -732,6 +759,11 @@ fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -
                 snippet: result.snippet,
                 started_at: result.started_at,
                 ended_at: result.ended_at,
+                context: result.context.map(|context| SearchResultContextData {
+                    app_bundle_id: context.app_bundle_id,
+                    app_name: context.app_name,
+                    window_title: context.window_title,
+                }),
             })
             .collect(),
         limit: response.limit,
@@ -753,6 +785,11 @@ fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineRespons
                 started_at: interval.started_at,
                 ended_at: interval.ended_at.unwrap_or_default(),
                 summary: None,
+                context: interval.context.map(|context| SearchResultContextData {
+                    app_bundle_id: context.app_bundle_id,
+                    app_name: context.app_name,
+                    window_title: context.window_title,
+                }),
             })
             .collect(),
         limit: response.limit,
@@ -887,7 +924,17 @@ mod tests {
 
     #[test]
     fn cli_accepts_documented_data_commands() {
-        Cli::try_parse_from(["mnema", "search", "--query", "invoice"]).unwrap();
+        Cli::try_parse_from([
+            "mnema",
+            "search",
+            "--query",
+            "invoice",
+            "--app",
+            "Linear",
+            "--window-title",
+            "Roadmap",
+        ])
+        .unwrap();
         Cli::try_parse_from([
             "mnema",
             "timeline",
@@ -895,6 +942,10 @@ mod tests {
             "2026-05-22T10:00:00Z",
             "--to",
             "2026-05-22T11:00:00Z",
+            "--app",
+            "Linear",
+            "--window-title",
+            "Roadmap",
         ])
         .unwrap();
         Cli::try_parse_from(["mnema", "show-text", "f1.deadbeef"]).unwrap();
@@ -923,6 +974,59 @@ mod tests {
         Cli::try_parse_from(["mnema", "access", "known-clients"]).unwrap();
         Cli::try_parse_from(["mnema", "access", "revoke", "grant-1"]).unwrap();
         Cli::try_parse_from(["mnema", "access", "revoke-client", "Codex", "--yes"]).unwrap();
+    }
+
+    #[test]
+    fn search_mapping_preserves_allowlisted_context() {
+        let data = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
+            results: vec![app_infra::brokered_access::BrokerSearchResult {
+                opaque_id: "f1.signature".to_string(),
+                kind: "frame".to_string(),
+                snippet: "frame target".to_string(),
+                started_at: "2026-05-17T10:00:00Z".to_string(),
+                ended_at: "2026-05-17T10:00:00Z".to_string(),
+                context: Some(app_infra::brokered_access::BrokerSearchResultContext {
+                    app_bundle_id: Some("com.example.Linear".to_string()),
+                    app_name: Some("Linear".to_string()),
+                    window_title: Some("Roadmap".to_string()),
+                }),
+            }],
+            limit: 1,
+        });
+
+        let context = data.results[0]
+            .context
+            .as_ref()
+            .expect("context should map through");
+        assert_eq!(context.app_bundle_id.as_deref(), Some("com.example.Linear"));
+        assert_eq!(context.app_name.as_deref(), Some("Linear"));
+        assert_eq!(context.window_title.as_deref(), Some("Roadmap"));
+    }
+
+    #[test]
+    fn timeline_mapping_preserves_allowlisted_context() {
+        let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
+            intervals: vec![app_infra::brokered_access::BrokerTimelineInterval {
+                kind: "screen".to_string(),
+                started_at: "2026-05-17T10:00:00Z".to_string(),
+                ended_at: Some("2026-05-17T10:00:00Z".to_string()),
+                reason: None,
+                context: Some(app_infra::brokered_access::BrokerSearchResultContext {
+                    app_bundle_id: Some("com.example.Linear".to_string()),
+                    app_name: Some("Linear".to_string()),
+                    window_title: Some("Roadmap".to_string()),
+                }),
+            }],
+            limit: 1,
+        });
+
+        let context = data.intervals[0]
+            .context
+            .as_ref()
+            .expect("context should map through");
+        assert_eq!(context.app_bundle_id.as_deref(), Some("com.example.Linear"));
+        assert_eq!(context.app_name.as_deref(), Some("Linear"));
+        assert_eq!(context.window_title.as_deref(), Some("Roadmap"));
     }
 
     #[test]

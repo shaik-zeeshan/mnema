@@ -184,6 +184,7 @@ export interface SearchCaptureRequest {
 export interface SearchCaptureRefinements {
 	dateRange?: SearchDateRangeRefinement;
 	app?: SearchAppRefinement;
+	windowTitle?: string;
 	audioSource?: AudioSegmentSourceKind;
 }
 
@@ -194,7 +195,7 @@ export interface SearchDateRangeRefinement {
 }
 
 export interface SearchAppRefinement {
-	kind: "bundle_id" | "app_name";
+	kind: "any" | "bundle_id" | "app_name";
 	value: string;
 	displayName: string;
 }
@@ -216,6 +217,7 @@ export interface FrameSearchResultDto {
 	groupEndAt: string;
 	matchCount: number;
 	snippet: string;
+	appBundleId: string | null;
 	appName: string | null;
 	windowTitle: string | null;
 	thumbnailFrameId: number;
