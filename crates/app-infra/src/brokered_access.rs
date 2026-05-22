@@ -798,7 +798,19 @@ async fn broker_show_text(
                 .is_some_and(|text| !text.trim().is_empty())
         })
         .max_by_key(|result| result.id);
-    let Some(result) = result else {
+    let text = if let Some(result) = result {
+        result.result_text.unwrap_or_default()
+    } else if reference.kind == "frame" {
+        broker_equivalent_reuse_text_for_frame(
+            infra,
+            reference.frame_id.expect("frame reference has id"),
+        )
+        .await?
+        .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if text.trim().is_empty() {
         return Ok(Err(BrokerErrorResponse {
             error: BrokerAuthStatusKind::AuthorizationRequired,
             message: "result is unavailable or outside the grant scope".to_string(),
@@ -807,8 +819,15 @@ async fn broker_show_text(
     Ok(Ok(BrokerShowTextResponse {
         opaque_id: opaque_id.to_string(),
         kind: reference.kind,
-        text: result.result_text.unwrap_or_default(),
+        text,
     }))
+}
+
+async fn broker_equivalent_reuse_text_for_frame(
+    infra: &AppInfra,
+    frame_id: i64,
+) -> Result<Option<String>> {
+    infra.search.equivalent_reuse_text_for_frame(frame_id).await
 }
 
 async fn broker_authorize_opaque_reference(
@@ -1125,7 +1144,7 @@ fn map_search_response(
 mod tests {
     use super::*;
     use crate::{
-        AppInfra, NewAudioSegment, ProcessingJobDraft, ProcessingResultDraft,
+        AppInfra, NewAudioSegment, NewFrame, ProcessingJobDraft, ProcessingResultDraft,
         SearchCaptureRefinements, SearchCaptureResponse, SearchDateRangeOrigin,
         SearchDateRangeRefinement,
     };
@@ -1438,6 +1457,85 @@ mod tests {
                 .expect("overlapping audio should be authorized");
 
             assert_eq!(response.text, "overlapping transcript");
+        });
+    }
+
+    #[test]
+    fn broker_show_text_resolves_equivalent_reuse_frame_text() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("equivalent-reuse-show-text");
+            let save_dir = temp_save_dir("equivalent-reuse-show-text");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-screen".to_string()),
+                proof: Some(vec![9; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            let first = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/broker-show-text-source.jpg",
+                        "2026-05-17T10:00:00Z",
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("first frame should capture");
+            let job = first.job.expect("first frame should enqueue OCR");
+            let running = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("job should claim")
+                .expect("job should exist");
+            infra
+                .complete_processing_job(
+                    running.id,
+                    &ProcessingResultDraft::new().with_result_text("reused frame text"),
+                )
+                .await
+                .expect("job should complete");
+
+            let second = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/broker-show-text-duplicate.jpg",
+                        "2026-05-17T10:00:02Z",
+                    )
+                    .with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("second frame should capture");
+            assert!(second.job.is_none());
+            assert!(infra
+                .list_processing_results_for_subject(&ProcessingSubject::frame(second.frame.id))
+                .await
+                .expect("results should list")
+                .is_empty());
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+            let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+            let opaque_id = encode_signed_opaque_id("frame", second.frame.id, &secret);
+
+            let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+                .await
+                .expect("show text should run")
+                .expect("equivalent-reuse frame should resolve source text");
+
+            assert_eq!(response.text, "reused frame text");
         });
     }
 

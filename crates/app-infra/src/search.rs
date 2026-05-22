@@ -145,6 +145,29 @@ impl SearchStore {
         Self { pool }
     }
 
+    pub(crate) async fn equivalent_reuse_text_for_frame(
+        &self,
+        frame_id: i64,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT processing_results.result_text AS result_text \
+             FROM search_documents \
+             JOIN processing_results ON processing_results.id = search_documents.processing_result_id \
+             WHERE search_documents.anchor_type = 'frame' \
+               AND search_documents.frame_id = ?1 \
+               AND search_documents.text_source_kind = 'equivalent_reuse' \
+               AND search_documents.processing_result_id IS NOT NULL \
+               AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
+             ORDER BY search_documents.id DESC, processing_results.id DESC \
+             LIMIT 1",
+        )
+        .bind(frame_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| row.get("result_text")))
+    }
+
     pub(crate) async fn backfill_missing_projections(&self) -> Result<()> {
         let mut transaction = self.pool.begin().await?;
         let rows = sqlx::query(

@@ -3,6 +3,7 @@
   import { goto } from "$app/navigation";
   import { tick, type Snippet } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
   import { closeCurrentWindow, isDedicatedSurfaceWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
@@ -128,6 +129,25 @@
   $effect(() => {
     if (captureControls.bootstrapped) return;
     void bootstrapCaptureControls();
+  });
+
+  $effect(() => {
+    let destroyed = false;
+    let unlistenBrokerOpenCaptureResult: (() => void) | undefined;
+
+    listen("broker_open_capture_result", () => {
+      if (isMainWindow && !isMainRoute) {
+        void goto("/");
+      }
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenBrokerOpenCaptureResult = fn;
+    });
+
+    return () => {
+      destroyed = true;
+      unlistenBrokerOpenCaptureResult?.();
+    };
   });
 
   // Gate direct visits to `/debug` behind developer-options. We wait until
