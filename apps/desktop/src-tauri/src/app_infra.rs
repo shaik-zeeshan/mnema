@@ -3909,6 +3909,23 @@ fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
     }
 }
 
+#[cfg(windows)]
+fn files_have_same_contents(left: &Path, right: &Path) -> bool {
+    let Ok(left_metadata) = fs::metadata(left) else {
+        return false;
+    };
+    let Ok(right_metadata) = fs::metadata(right) else {
+        return false;
+    };
+    left_metadata.is_file()
+        && right_metadata.is_file()
+        && left_metadata.len() == right_metadata.len()
+        && fs::read(left)
+            .ok()
+            .zip(fs::read(right).ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
 fn path_dir_in_shell_path(dir: &Path) -> bool {
     terminal_shell_path_dirs()
         .into_iter()
@@ -3919,9 +3936,13 @@ fn mnema_cli_status_for_paths(install_path: PathBuf, bundled_cli_path: PathBuf) 
     let existing_target = fs::read_link(&install_path)
         .ok()
         .map(|target| resolve_link_target(&install_path, target));
-    let installed = existing_target
+    let symlink_installed = existing_target
         .as_deref()
         .is_some_and(|target| paths_refer_to_same_file(target, &bundled_cli_path));
+    #[cfg(windows)]
+    let installed = symlink_installed || files_have_same_contents(&install_path, &bundled_cli_path);
+    #[cfg(not(windows))]
+    let installed = symlink_installed;
     let install_dir_in_path = install_path.parent().is_some_and(path_dir_in_shell_path);
 
     MnemaCliStatus {
@@ -3946,6 +3967,7 @@ fn create_mnema_cli_link(source: &Path, destination: &Path) -> std::io::Result<(
 #[cfg(windows)]
 fn create_mnema_cli_link(source: &Path, destination: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(source, destination)
+        .or_else(|_| fs::copy(source, destination).map(|_| ()))
 }
 
 #[tauri::command]
@@ -4035,6 +4057,21 @@ pub async fn install_mnema_cli(app_handle: tauri::AppHandle) -> Result<MnemaCliS
                 )
             })?;
         } else {
+            #[cfg(windows)]
+            if metadata.is_file() && files_have_same_contents(&install_path, &bundled_cli_path) {
+                fs::remove_file(&install_path).map_err(|error| {
+                    format!(
+                        "failed to replace existing CLI file {}: {error}",
+                        install_path.display()
+                    )
+                })?;
+            } else {
+                return Err(format!(
+                    "refusing to overwrite existing non-symlink at {}",
+                    install_path.display()
+                ));
+            }
+            #[cfg(not(windows))]
             return Err(format!(
                 "refusing to overwrite existing non-symlink at {}",
                 install_path.display()

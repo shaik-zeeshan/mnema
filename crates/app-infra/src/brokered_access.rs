@@ -19,6 +19,7 @@ use crate::{
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
 const BROKER_GRANTS_LOCK_FILE_NAME: &str = "broker-grants.lock";
+const BROKER_AUDIT_LOCK_FILE_NAME: &str = "broker-audit.lock";
 const BROKER_AUDIT_FILE_NAME: &str = "broker-audit.json";
 const BROKER_OPAQUE_SECRET_FILE_NAME: &str = "broker-opaque-secret.bin";
 const RECORDING_SETTINGS_FILE_NAME: &str = "recording-settings.json";
@@ -430,7 +431,7 @@ fn default_app_config_dir() -> Option<PathBuf> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        dirs::config_dir().map(|dir| dir.join("mnema"))
+        dirs::config_dir().map(|dir| dir.join("com.shaikzeeshan.mnema"))
     }
 }
 
@@ -504,6 +505,14 @@ fn record_audit_event(
     scope_class: impl Into<String>,
 ) -> Result<()> {
     fs::create_dir_all(config_dir)?;
+    let lock_path = config_dir.join(BROKER_AUDIT_LOCK_FILE_NAME);
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    lock.lock_exclusive()?;
+
     let mut audit = load_audit_events(config_dir)?;
     audit.events.push(BrokerAuditEvent {
         tool_identity: tool_identity.into(),
@@ -517,8 +526,13 @@ fn record_audit_event(
         audit.events.drain(0..drop_count);
     }
     let path = config_dir.join(BROKER_AUDIT_FILE_NAME);
-    fs::write(path, serde_json::to_string_pretty(&audit)?)?;
-    Ok(())
+    let result = fs::write(path, serde_json::to_string_pretty(&audit)?);
+    let unlock_result = lock.unlock();
+    match (result, unlock_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), _) => Err(error.into()),
+        (Ok(()), Err(error)) => Err(error.into()),
+    }
 }
 
 fn now_unix_ms() -> u64 {
@@ -932,6 +946,22 @@ pub fn opaque_capture_reference(value: &str) -> Option<BrokerOpaqueCaptureRefere
     })
 }
 
+pub fn signed_opaque_capture_reference(
+    config_dir: &Path,
+    value: &str,
+) -> Result<Option<BrokerOpaqueCaptureReference>> {
+    let path = config_dir.join(BROKER_OPAQUE_SECRET_FILE_NAME);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut secret = Vec::new();
+    File::open(&path)?.read_to_end(&mut secret)?;
+    if secret.len() < 32 {
+        return Ok(None);
+    }
+    Ok(decode_signed_opaque_id(value, &secret))
+}
+
 fn opaque_signature(payload: &str, secret: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(secret);
@@ -1222,6 +1252,27 @@ mod tests {
     fn empty_opaque_id_is_invalid_instead_of_panicking() {
         assert_eq!(decode_opaque_id(""), None);
         assert_eq!(opaque_capture_reference(""), None);
+    }
+
+    #[test]
+    fn signed_opaque_capture_reference_requires_broker_signature() {
+        let config_dir = temp_config_dir("signed-opaque-reference");
+        let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+        let opaque_id = encode_signed_opaque_id("frame", 17, &secret);
+
+        assert_eq!(
+            signed_opaque_capture_reference(&config_dir, "f11").expect("unsigned should parse"),
+            None
+        );
+        assert_eq!(
+            signed_opaque_capture_reference(&config_dir, &opaque_id).expect("signed should parse"),
+            Some(BrokerOpaqueCaptureReference {
+                opaque_id,
+                frame_id: Some(17),
+                audio_segment_id: None,
+                kind: "frame".to_string(),
+            })
+        );
     }
 
     #[test]

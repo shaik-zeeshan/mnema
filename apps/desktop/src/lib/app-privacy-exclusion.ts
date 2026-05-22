@@ -71,7 +71,7 @@ export type PrivacyRecommendationCommand =
     };
 
 export function canonicalBundleIdForComparison(value: string): string {
-  return value.trim().toLocaleLowerCase();
+  return value.trim().toLowerCase();
 }
 
 export function sameBundleId(left: string, right: string): boolean {

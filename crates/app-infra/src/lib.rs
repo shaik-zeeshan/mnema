@@ -345,7 +345,15 @@ impl AppInfra {
         let row = sqlx::query(
             "SELECT COUNT(*) AS count \
              FROM secret_redactions \
-             WHERE anchor_type = 'frame' AND frame_id = ?1",
+             WHERE anchor_type = 'frame' \
+               AND (frame_id = ?1 \
+                    OR processing_result_id IN (\
+                        SELECT processing_result_id \
+                        FROM search_documents \
+                        WHERE frame_id = ?1 \
+                          AND text_source_kind = 'equivalent_reuse' \
+                          AND processing_result_id IS NOT NULL\
+                    ))",
         )
         .bind(frame_id)
         .fetch_one(self.pool())
@@ -1798,6 +1806,79 @@ mod tests {
     fn test_frame_at(session_id: &str, file_name: &str, captured_at: &str) -> NewFrame {
         NewFrame::new(session_id, format!("/tmp/{file_name}"), captured_at)
             .with_dimensions(1920, 1080)
+    }
+
+    #[test]
+    fn frame_secret_redaction_count_includes_equivalent_reuse_source_result() {
+        run_async_test(async {
+            let dir = TestDir::new("frame-secret-redaction-count-reuse");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let equivalence = FrameEquivalence {
+                hint: Some("same-secret-source".to_string()),
+                proof: Some(vec![42; 1024]),
+                version: Some(1),
+                status: Some(FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+
+            let source = infra
+                .capture_frame(
+                    &test_frame("session-redaction-reuse", "source.png")
+                        .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("source frame should persist");
+            let source_job = source.job.expect("source OCR job should enqueue");
+            infra
+                .claim_queued_processing_job(source_job.id)
+                .await
+                .expect("source job should claim")
+                .expect("source job should exist");
+            infra
+                .complete_processing_job(
+                    source_job.id,
+                    &ProcessingResultDraft::new().with_result_text("shared secret text"),
+                )
+                .await
+                .expect("source job should complete");
+            let source_result_id: i64 = sqlx::query_scalar(
+                "SELECT id FROM processing_results WHERE job_id = ?1 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(source_job.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("source result should exist");
+            sqlx::query(
+                "INSERT INTO secret_redactions \
+                    (anchor_type, frame_id, audio_segment_id, processing_result_id, category, redacted_start, redacted_end, detector_version) \
+                 VALUES ('frame', ?1, NULL, ?2, 'api_key', 0, 6, 'test')",
+            )
+            .bind(source.frame.id)
+            .bind(source_result_id)
+            .execute(infra.pool())
+            .await
+            .expect("source redaction should insert");
+
+            let target = infra
+                .capture_frame(
+                    &test_frame("session-redaction-reuse", "target.png").with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("target frame should persist");
+
+            assert!(target.job.is_none());
+            assert_eq!(
+                infra
+                    .frame_secret_redaction_count(target.frame.id)
+                    .await
+                    .expect("redaction count should load"),
+                1
+            );
+        });
     }
 
     fn write_test_png_rgba(

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  canonicalBundleIdForComparison,
   filteredPrivacyAppCandidates,
   recommendationActionFor,
   unresolvedIconBundleIds,
@@ -47,6 +48,10 @@ function recommendation(
 }
 
 describe("App Privacy Exclusion helpers", () => {
+  test("canonical bundle IDs use locale-invariant casing", () => {
+    expect(canonicalBundleIdForComparison(" COM.EXAMPLE.ID ")).toBe("com.example.id");
+  });
+
   test("filters installed app candidates using normalized bundle IDs and search text", () => {
     const candidates = [
       candidate("com.apple.Passwords", "Apple Passwords"),

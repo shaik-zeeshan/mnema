@@ -14,7 +14,7 @@ mod speaker_analysis_runtime;
 mod status_bar;
 mod windows;
 
-use std::{collections::VecDeque, sync::Mutex};
+use std::{collections::VecDeque, path::Path, sync::Mutex};
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
@@ -77,7 +77,10 @@ fn should_forward_window_event(event: &tauri::WindowEvent, webview_window_found:
     matches!(event, tauri::WindowEvent::Destroyed) || webview_window_found
 }
 
-fn broker_payload_from_url(url: &url::Url) -> Option<BrokerOpenCaptureResultPayload> {
+fn broker_payload_from_url(
+    config_dir: &Path,
+    url: &url::Url,
+) -> Option<BrokerOpenCaptureResultPayload> {
     if url.scheme() != "mnema" {
         return None;
     }
@@ -89,7 +92,10 @@ fn broker_payload_from_url(url: &url::Url) -> Option<BrokerOpenCaptureResultPayl
         ["open", opaque_id] | ["broker", "open", opaque_id] => (*opaque_id).to_string(),
         _ => return None,
     };
-    let capture_ref = ::app_infra::brokered_access::opaque_capture_reference(&opaque_id)?;
+    let capture_ref =
+        ::app_infra::brokered_access::signed_opaque_capture_reference(config_dir, &opaque_id)
+            .ok()
+            .flatten()?;
     Some(BrokerOpenCaptureResultPayload {
         opaque_id: capture_ref.opaque_id,
         frame_id: capture_ref.frame_id,
@@ -99,7 +105,10 @@ fn broker_payload_from_url(url: &url::Url) -> Option<BrokerOpenCaptureResultPayl
 }
 
 fn enqueue_broker_open_result(app_handle: &tauri::AppHandle, url: &url::Url) {
-    let Some(payload) = broker_payload_from_url(url) else {
+    let Ok(config_dir) = app_handle.path().app_config_dir() else {
+        return;
+    };
+    let Some(payload) = broker_payload_from_url(&config_dir, url) else {
         return;
     };
     if let Ok(mut pending) = app_handle
@@ -408,9 +417,17 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 #[cfg(test)]
 mod tests {
     use super::{
-        exit_request_action_for_exit_request, is_app_log_target, should_forward_window_event,
-        ExitRequestAction,
+        broker_payload_from_url, exit_request_action_for_exit_request, is_app_log_target,
+        should_forward_window_event, ExitRequestAction,
     };
+
+    #[test]
+    fn broker_deep_link_rejects_unsigned_opaque_id() {
+        let dir = tempfile::tempdir().expect("config dir should be created");
+        let url = url::Url::parse("mnema://open/f1").expect("url should parse");
+
+        assert!(broker_payload_from_url(dir.path(), &url).is_none());
+    }
 
     #[test]
     fn app_log_filter_keeps_only_our_targets() {
