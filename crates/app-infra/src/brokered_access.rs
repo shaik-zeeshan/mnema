@@ -14,7 +14,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use crate::{
     AppInfra, AppInfraError, AudioSegmentSourceKind, ProcessingSubject, Result,
     SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
-    SearchDateRangeRefinement,
+    SearchDateRangeRefinement, AUDIO_SEGMENT_SUBJECT_TYPE, FRAME_SUBJECT_TYPE,
 };
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
@@ -803,6 +803,7 @@ async fn broker_show_text(
     } else if reference.kind == "frame" {
         broker_equivalent_reuse_text_for_frame(
             infra,
+            grants,
             reference.frame_id.expect("frame reference has id"),
         )
         .await?
@@ -825,9 +826,55 @@ async fn broker_show_text(
 
 async fn broker_equivalent_reuse_text_for_frame(
     infra: &AppInfra,
+    grants: &[BrokerGrant],
     frame_id: i64,
 ) -> Result<Option<String>> {
-    infra.search.equivalent_reuse_text_for_frame(frame_id).await
+    let Some(reuse) = infra
+        .search
+        .equivalent_reuse_text_for_frame(frame_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let source_in_scope = match reuse.source_subject_type.as_str() {
+        FRAME_SUBJECT_TYPE => {
+            let Some(frame) = infra.get_frame(reuse.source_subject_id).await? else {
+                return Ok(None);
+            };
+            timestamp_within_scope(grants, &frame.captured_at)?
+        }
+        AUDIO_SEGMENT_SUBJECT_TYPE => {
+            let Some(audio) = infra.get_audio_segment(reuse.source_subject_id).await? else {
+                return Ok(None);
+            };
+            range_overlaps_scope(grants, &audio.started_at, &audio.ended_at)?
+        }
+        _ => false,
+    };
+    if source_in_scope {
+        Ok(Some(reuse.result_text))
+    } else {
+        Ok(None)
+    }
+}
+
+pub async fn authorize_active_opaque_capture_reference(
+    config_dir: &Path,
+    opaque_id: &str,
+) -> Result<Option<BrokerOpaqueCaptureReference>> {
+    let grants = load_grants(config_dir)?;
+    let grants = active_grants(&grants, now_unix_ms());
+    if grants.is_empty() {
+        return Ok(None);
+    }
+    let Some(save_directory) = default_save_directory_from_config(config_dir)? else {
+        return Ok(None);
+    };
+    let infra = AppInfra::initialize(save_directory).await?;
+    match broker_authorize_opaque_reference(config_dir, &infra, &grants, opaque_id).await? {
+        Ok(reference) => Ok(Some(reference)),
+        Err(_) => Ok(None),
+    }
 }
 
 async fn broker_authorize_opaque_reference(
@@ -1176,6 +1223,17 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    fn write_recording_settings(config_dir: &Path, save_dir: &Path) {
+        let settings = RecordingSettingsFile {
+            save_directory: save_dir.display().to_string(),
+        };
+        fs::write(
+            config_dir.join(RECORDING_SETTINGS_FILE_NAME),
+            serde_json::to_string(&settings).expect("settings should serialize"),
+        )
+        .expect("settings should write");
     }
 
     fn execute_request(
@@ -1540,6 +1598,82 @@ mod tests {
     }
 
     #[test]
+    fn broker_show_text_rejects_equivalent_reuse_source_outside_scope() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("equivalent-reuse-show-text-outside-scope");
+            let save_dir = temp_save_dir("equivalent-reuse-show-text-outside-scope");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let equivalence = crate::FrameEquivalence {
+                hint: Some("same-screen".to_string()),
+                proof: Some(vec![10; 1024]),
+                version: Some(1),
+                status: Some(crate::FrameEquivalenceStatus::Ready),
+                error: None,
+            };
+            let now = now_unix_ms();
+            let source_captured_at = format_unix_ms(now.saturating_sub(2 * 24 * 60 * 60 * 1000));
+            let duplicate_captured_at = format_unix_ms(now.saturating_sub(60 * 1000));
+            let first = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/broker-show-text-source-outside-scope.jpg",
+                        &source_captured_at,
+                    )
+                    .with_equivalence(equivalence.clone()),
+                    None,
+                )
+                .await
+                .expect("first frame should capture");
+            let job = first.job.expect("first frame should enqueue OCR");
+            let running = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("job should claim")
+                .expect("job should exist");
+            infra
+                .complete_processing_job(
+                    running.id,
+                    &ProcessingResultDraft::new().with_result_text("out-of-scope reused text"),
+                )
+                .await
+                .expect("job should complete");
+
+            let second = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/broker-show-text-duplicate-in-scope.jpg",
+                        &duplicate_captured_at,
+                    )
+                    .with_equivalence(equivalence),
+                    None,
+                )
+                .await
+                .expect("second frame should capture");
+            assert!(second.job.is_none());
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::RecentDays { days: 1 },
+            )
+            .expect("grant should create");
+            let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+            let opaque_id = encode_signed_opaque_id("frame", second.frame.id, &secret);
+
+            let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+                .await
+                .expect("show text should run");
+
+            assert_eq!(response, Err(outside_scope_error()));
+        });
+    }
+
+    #[test]
     fn broker_rejects_unsigned_opaque_ids_for_authorized_commands() {
         run_async_test(async {
             let config_dir = temp_config_dir("unsigned-opaque");
@@ -1560,6 +1694,47 @@ mod tests {
                 .expect("authorization should run");
 
             assert_eq!(response, Err(invalid_opaque_id_error()));
+        });
+    }
+
+    #[test]
+    fn active_opaque_authorization_rejects_revoked_grant_replay() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("revoked-opaque-replay");
+            let save_dir = temp_save_dir("revoked-opaque-replay");
+            write_recording_settings(&config_dir, &save_dir);
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/broker-revoked-replay.jpg",
+                        &format_unix_ms(now_unix_ms()),
+                    ),
+                    None,
+                )
+                .await
+                .expect("frame should capture")
+                .frame;
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+            let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+            let opaque_id = encode_signed_opaque_id("frame", frame.id, &secret);
+
+            assert!(revoke_grant(&config_dir, &grant.id).expect("grant should revoke"));
+
+            let response = authorize_active_opaque_capture_reference(&config_dir, &opaque_id)
+                .await
+                .expect("authorization should run");
+
+            assert_eq!(response, None);
         });
     }
 }

@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use rand::RngCore;
+
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
@@ -250,9 +252,8 @@ fn generate_index_id() -> Result<String> {
 }
 
 fn random_hex(byte_count: usize) -> Result<String> {
-    let mut file = fs::File::open("/dev/urandom")?;
     let mut bytes = vec![0_u8; byte_count];
-    file.read_exact(&mut bytes)?;
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 

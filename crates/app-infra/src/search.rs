@@ -140,6 +140,12 @@ pub struct SearchStore {
     pool: SqlitePool,
 }
 
+pub(crate) struct EquivalentReuseText {
+    pub(crate) result_text: String,
+    pub(crate) source_subject_type: String,
+    pub(crate) source_subject_id: i64,
+}
+
 impl SearchStore {
     pub(crate) fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -148,9 +154,11 @@ impl SearchStore {
     pub(crate) async fn equivalent_reuse_text_for_frame(
         &self,
         frame_id: i64,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<EquivalentReuseText>> {
         let row = sqlx::query(
-            "SELECT processing_results.result_text AS result_text \
+            "SELECT processing_results.result_text AS result_text, \
+                    processing_results.subject_type AS source_subject_type, \
+                    processing_results.subject_id AS source_subject_id \
              FROM search_documents \
              JOIN processing_results ON processing_results.id = search_documents.processing_result_id \
              WHERE search_documents.anchor_type = 'frame' \
@@ -165,7 +173,11 @@ impl SearchStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|row| row.get("result_text")))
+        Ok(row.map(|row| EquivalentReuseText {
+            result_text: row.get("result_text"),
+            source_subject_type: row.get("source_subject_type"),
+            source_subject_id: row.get("source_subject_id"),
+        }))
     }
 
     pub(crate) async fn backfill_missing_projections(&self) -> Result<()> {

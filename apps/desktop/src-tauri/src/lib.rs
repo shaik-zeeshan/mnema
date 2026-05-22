@@ -77,10 +77,7 @@ fn should_forward_window_event(event: &tauri::WindowEvent, webview_window_found:
     matches!(event, tauri::WindowEvent::Destroyed) || webview_window_found
 }
 
-fn broker_payload_from_url(
-    config_dir: &Path,
-    url: &url::Url,
-) -> Option<BrokerOpenCaptureResultPayload> {
+fn broker_opaque_id_from_url(url: &url::Url) -> Option<String> {
     if url.scheme() != "mnema" {
         return None;
     }
@@ -88,14 +85,23 @@ fn broker_payload_from_url(
     if let Some(host) = url.host_str() {
         segments.insert(0, host);
     }
-    let opaque_id = match segments.as_slice() {
-        ["open", opaque_id] | ["broker", "open", opaque_id] => (*opaque_id).to_string(),
+    match segments.as_slice() {
+        ["open", opaque_id] | ["broker", "open", opaque_id] => Some((*opaque_id).to_string()),
         _ => return None,
-    };
-    let capture_ref =
-        ::app_infra::brokered_access::signed_opaque_capture_reference(config_dir, &opaque_id)
-            .ok()
-            .flatten()?;
+    }
+}
+
+async fn broker_payload_from_url(
+    config_dir: &Path,
+    url: &url::Url,
+) -> Option<BrokerOpenCaptureResultPayload> {
+    let opaque_id = broker_opaque_id_from_url(url)?;
+    let capture_ref = ::app_infra::brokered_access::authorize_active_opaque_capture_reference(
+        config_dir, &opaque_id,
+    )
+    .await
+    .ok()
+    .flatten()?;
     Some(BrokerOpenCaptureResultPayload {
         opaque_id: capture_ref.opaque_id,
         frame_id: capture_ref.frame_id,
@@ -108,18 +114,22 @@ fn enqueue_broker_open_result(app_handle: &tauri::AppHandle, url: &url::Url) {
     let Ok(config_dir) = app_handle.path().app_config_dir() else {
         return;
     };
-    let Some(payload) = broker_payload_from_url(&config_dir, url) else {
+    if broker_opaque_id_from_url(url).is_none() {
         return;
-    };
-    if let Ok(mut pending) = app_handle
-        .state::<BrokerOpenCaptureResultState>()
-        .pending
-        .lock()
-    {
-        pending.push_back(payload.clone());
     }
+    let url = url.clone();
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
+        let Some(payload) = broker_payload_from_url(&config_dir, &url).await else {
+            return;
+        };
+        if let Ok(mut pending) = app_handle
+            .state::<BrokerOpenCaptureResultState>()
+            .pending
+            .lock()
+        {
+            pending.push_back(payload.clone());
+        }
         let _ = windows::open_main_window(&app_handle);
         let _ = app_handle.emit(BROKER_OPEN_CAPTURE_RESULT_EVENT, payload);
     });
@@ -426,7 +436,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("config dir should be created");
         let url = url::Url::parse("mnema://open/f1").expect("url should parse");
 
-        assert!(broker_payload_from_url(dir.path(), &url).is_none());
+        let payload = tauri::async_runtime::block_on(broker_payload_from_url(dir.path(), &url));
+
+        assert!(payload.is_none());
     }
 
     #[test]
