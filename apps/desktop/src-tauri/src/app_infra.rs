@@ -3797,23 +3797,6 @@ pub struct MnemaCliStatus {
     pub existing_target: Option<String>,
 }
 
-fn broker_config_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
-    app_handle
-        .path()
-        .app_config_dir()
-        .map_err(|error| format!("failed to resolve app config dir: {error}"))
-}
-
-fn brokered_capture_access(
-    app_handle: &tauri::AppHandle,
-) -> Result<::app_infra::brokered_access::BrokeredCaptureAccess, String> {
-    Ok(
-        ::app_infra::brokered_access::BrokeredCaptureAccess::from_config_dir(broker_config_dir(
-            app_handle,
-        )?),
-    )
-}
-
 fn mnema_cli_sidecar_name() -> String {
     #[cfg(windows)]
     {
@@ -4057,44 +4040,13 @@ fn create_mnema_cli_link(source: &Path, destination: &Path) -> std::io::Result<(
         .or_else(|_| fs::copy(source, destination).map(|_| ()))
 }
 
-#[tauri::command]
-pub async fn list_broker_grants(
-    app_handle: tauri::AppHandle,
-) -> Result<::app_infra::brokered_access::BrokerGrantFile, String> {
-    brokered_capture_access(&app_handle)?
-        .list_grants()
-        .map_err(|error| format!("failed to load broker grants: {error}"))
-}
-
-#[tauri::command]
-pub async fn create_broker_grant(
-    app_handle: tauri::AppHandle,
-    request: ::app_infra::brokered_access::BrokerGrantCreateRequest,
-) -> Result<::app_infra::brokered_access::BrokerGrant, String> {
-    brokered_capture_access(&app_handle)?
-        .create_grant(request)
-        .map_err(|error| format!("failed to create broker grant: {error}"))
-}
-
-#[tauri::command]
-pub async fn revoke_broker_grant(
-    app_handle: tauri::AppHandle,
-    grant_id: String,
-) -> Result<bool, String> {
-    brokered_capture_access(&app_handle)?
-        .revoke_grant(&grant_id)
-        .map_err(|error| format!("failed to revoke broker grant: {error}"))
-}
-
-#[tauri::command]
-pub async fn get_mnema_cli_status(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
+pub async fn get_cli_status_inner(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
     let install_path = mnema_cli_install_path(&app_handle)?;
     let bundled_cli_path = bundled_mnema_cli_path()?;
     Ok(mnema_cli_status_for_paths(install_path, bundled_cli_path))
 }
 
-#[tauri::command]
-pub async fn install_mnema_cli(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
+pub async fn install_cli_inner(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
     let install_path = mnema_cli_install_path(&app_handle)?;
     let bundled_cli_path = bundled_mnema_cli_path()?;
 

@@ -49,7 +49,7 @@ build_target() {
   local cargo_args=(
     build
     --manifest-path "$repo_root/Cargo.toml"
-    -p app-infra
+    -p cli
     --bin mnema-cli
     --target "$rust_target"
   )

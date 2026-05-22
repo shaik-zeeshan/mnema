@@ -1,6 +1,5 @@
 mod audio_segments;
 pub mod brokered_access;
-pub mod brokered_access_cli;
 mod capture_index_key_store;
 mod capture_retention;
 mod captured_frame_equivalence;
@@ -1864,7 +1863,8 @@ mod tests {
 
             let target = infra
                 .capture_frame(
-                    &test_frame("session-redaction-reuse", "target.png").with_equivalence(equivalence),
+                    &test_frame("session-redaction-reuse", "target.png")
+                        .with_equivalence(equivalence),
                     None,
                 )
                 .await

@@ -23,6 +23,8 @@ static MACOS_TERMINATE_HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 #[serde(rename_all = "camelCase")]
 struct OpenSettingsTabPayload {
     tab: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    focus: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +32,7 @@ enum AppWindow {
     Onboarding,
     Main,
     Settings,
+    CliAccessRequest,
     Debug,
 }
 
@@ -62,7 +65,7 @@ impl OnboardingState {
         }
     }
 
-    fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         self.completed_at_unix_ms.is_some()
     }
 }
@@ -154,6 +157,19 @@ impl AppWindow {
                 shadow: true,
                 macos_corner_radius: Some(12.0),
             },
+            Self::CliAccessRequest => AppWindowConfig {
+                label: "cli-access-request",
+                path: "access/request",
+                title: "mnema · CLI Access",
+                inner_size: (520.0, 560.0),
+                min_inner_size: (460.0, 480.0),
+                gated_by_dev_options: false,
+                decorations: false,
+                overlay_title_bar: false,
+                transparent: true,
+                shadow: true,
+                macos_corner_radius: Some(12.0),
+            },
             Self::Debug => AppWindowConfig {
                 label: "debug",
                 path: "debug",
@@ -175,6 +191,7 @@ impl AppWindow {
             "onboarding" => Some(Self::Onboarding),
             "main" => Some(Self::Main),
             "settings" => Some(Self::Settings),
+            "cli-access-request" => Some(Self::CliAccessRequest),
             "debug" => Some(Self::Debug),
             _ => None,
         }
@@ -220,6 +237,13 @@ fn current_onboarding_state(
     let state = load_onboarding_state_from_path(onboarding_state_file_path(app));
     runtime.state = Some(state.clone());
     state
+}
+
+pub fn current_onboarding_state_for_app(
+    app: &tauri::AppHandle,
+    store: &OnboardingStateStore,
+) -> OnboardingState {
+    current_onboarding_state(app, store)
 }
 
 fn persist_onboarding_state(
@@ -325,6 +349,8 @@ fn open_or_focus_window(
 fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
     match tab {
         "capture" | "behavior" => Some("capture"),
+        "privacy" | "metadata" => Some("privacy"),
+        "access" | "cliAccess" | "cli-access" => Some("access"),
         "video" => Some("video"),
         "audio" | "microphone" => Some("audio"),
         "processing" | "ocr" | "transcription" | "speakers" => Some("processing"),
@@ -340,18 +366,43 @@ fn is_known_settings_tab(tab: &str) -> bool {
     normalize_settings_tab(tab).is_some()
 }
 
-fn settings_tab_path(tab: &str) -> Result<String, String> {
-    let normalized =
-        normalize_settings_tab(tab).ok_or_else(|| format!("unknown settings tab: {tab}"))?;
-    Ok(format!("/settings?tab={normalized}"))
+fn normalize_settings_focus(focus: &str) -> Option<&'static str> {
+    match focus {
+        "agentAccess" | "agent-access" => Some("agentAccess"),
+        _ => None,
+    }
 }
 
-fn open_or_focus_settings_window_to_tab(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
-    let path = settings_tab_path(tab)?;
+fn settings_tab_focus_path(tab: &str, focus: Option<&str>) -> Result<String, String> {
+    let normalized =
+        normalize_settings_tab(tab).ok_or_else(|| format!("unknown settings tab: {tab}"))?;
+    let Some(focus) = focus else {
+        return Ok(format!("/settings?tab={normalized}"));
+    };
+    let focus = normalize_settings_focus(focus)
+        .ok_or_else(|| format!("unknown settings focus: {focus}"))?;
+    Ok(format!("/settings?tab={normalized}&focus={focus}"))
+}
+
+fn open_or_focus_settings_window_to_tab(
+    app: &tauri::AppHandle,
+    tab: &str,
+    focus: Option<&str>,
+) -> Result<(), String> {
+    let path = settings_tab_focus_path(tab, focus)?;
     let config = AppWindow::Settings.config();
     let tab = normalize_settings_tab(tab).ok_or_else(|| format!("unknown settings tab: {tab}"))?;
+    let focus = match focus {
+        Some(value) => Some(
+            normalize_settings_focus(value)
+                .ok_or_else(|| format!("unknown settings focus: {value}"))?
+                .to_string(),
+        ),
+        None => None,
+    };
     let payload = OpenSettingsTabPayload {
         tab: tab.to_string(),
+        focus,
     };
 
     if let Some(existing) = app.get_webview_window(config.label) {
@@ -615,21 +666,35 @@ fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
         Some(AppWindow::Settings | AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
+        Some(AppWindow::CliAccessRequest) => DestroyedWindowAction::None,
         Some(AppWindow::Main) => DestroyedWindowAction::ExitApp,
         None => DestroyedWindowAction::None,
     }
 }
 
 fn close_window(window: WebviewWindow) -> Result<(), String> {
-    match AppWindow::from_label(window.label()) {
-        Some(AppWindow::Onboarding) => window.close().map_err(|err| err.to_string()),
-        Some(AppWindow::Settings | AppWindow::Debug) => {
-            focus_main_window_if_visible(window.app_handle());
-            window.close().map_err(|err| err.to_string())
-        }
+    let label = window.label().to_string();
+    if close_window_focuses_main_before_close(&label) {
+        focus_main_window_if_visible(window.app_handle());
+    }
+
+    match AppWindow::from_label(&label) {
+        Some(
+            AppWindow::Onboarding
+            | AppWindow::Settings
+            | AppWindow::CliAccessRequest
+            | AppWindow::Debug,
+        ) => window.close().map_err(|err| err.to_string()),
         Some(AppWindow::Main) => Err("main window cannot be closed from this command".into()),
         None => window.close().map_err(|err| err.to_string()),
     }
+}
+
+fn close_window_focuses_main_before_close(label: &str) -> bool {
+    matches!(
+        AppWindow::from_label(label),
+        Some(AppWindow::Settings | AppWindow::Debug)
+    )
 }
 
 pub fn handle_window_event(
@@ -696,9 +761,17 @@ pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     open_or_focus_window(&app, AppWindow::Settings, None)
 }
 
+pub(crate) fn open_cli_access_request_window(app: &tauri::AppHandle) -> Result<(), String> {
+    open_or_focus_window(app, AppWindow::CliAccessRequest, None)
+}
+
 #[tauri::command]
-pub fn open_settings_window_to_tab(app: tauri::AppHandle, tab: String) -> Result<(), String> {
-    open_or_focus_settings_window_to_tab(&app, &tab)
+pub fn open_settings_window_to_tab(
+    app: tauri::AppHandle,
+    tab: String,
+    focus: Option<String>,
+) -> Result<(), String> {
+    open_or_focus_settings_window_to_tab(&app, &tab, focus.as_deref())
 }
 
 #[tauri::command]
@@ -746,8 +819,9 @@ pub fn complete_onboarding(
 #[cfg(test)]
 mod tests {
     use super::{
-        destroyed_window_action, is_known_settings_tab, load_onboarding_state_from_path,
-        normalize_settings_tab, settings_tab_path, AppExitCoordinatorState, DestroyedWindowAction,
+        close_window_focuses_main_before_close, destroyed_window_action, is_known_settings_tab,
+        load_onboarding_state_from_path, normalize_settings_focus, normalize_settings_tab,
+        settings_tab_focus_path, AppExitCoordinatorState, DestroyedWindowAction,
     };
 
     #[test]
@@ -760,6 +834,23 @@ mod tests {
             destroyed_window_action("debug"),
             DestroyedWindowAction::FocusMainWindow
         );
+    }
+
+    #[test]
+    fn cli_access_request_destruction_does_not_refocus_main_window() {
+        assert_eq!(
+            destroyed_window_action("cli-access-request"),
+            DestroyedWindowAction::None
+        );
+    }
+
+    #[test]
+    fn cli_access_request_close_command_does_not_refocus_main_window() {
+        assert!(close_window_focuses_main_before_close("settings"));
+        assert!(close_window_focuses_main_before_close("debug"));
+        assert!(!close_window_focuses_main_before_close(
+            "cli-access-request"
+        ));
     }
 
     #[test]
@@ -806,6 +897,7 @@ mod tests {
         assert!(is_known_settings_tab("transcription"));
         assert!(is_known_settings_tab("microphone"));
         assert!(is_known_settings_tab("capture"));
+        assert!(is_known_settings_tab("privacy"));
         assert!(!is_known_settings_tab("transcripts"));
         assert!(!is_known_settings_tab("../developer"));
     }
@@ -817,19 +909,43 @@ mod tests {
         assert_eq!(normalize_settings_tab("speakers"), Some("processing"));
         assert_eq!(normalize_settings_tab("microphone"), Some("audio"));
         assert_eq!(normalize_settings_tab("behavior"), Some("capture"));
+        assert_eq!(normalize_settings_tab("metadata"), Some("privacy"));
+    }
+
+    #[test]
+    fn settings_focus_aliases_normalize_to_canonical_focus() {
+        assert_eq!(normalize_settings_focus("agentAccess"), Some("agentAccess"));
+        assert_eq!(
+            normalize_settings_focus("agent-access"),
+            Some("agentAccess")
+        );
+        assert_eq!(normalize_settings_focus("other"), None);
     }
 
     #[test]
     fn settings_tab_deeplink_path_targets_canonical_tab() {
         assert_eq!(
-            settings_tab_path("transcription").as_deref(),
+            settings_tab_focus_path("transcription", None).as_deref(),
             Ok("/settings?tab=processing")
         );
         assert_eq!(
-            settings_tab_path("audio").as_deref(),
+            settings_tab_focus_path("audio", None).as_deref(),
             Ok("/settings?tab=audio")
         );
-        assert!(settings_tab_path("../developer").is_err());
+        assert_eq!(
+            settings_tab_focus_path("privacy", None).as_deref(),
+            Ok("/settings?tab=privacy")
+        );
+        assert!(settings_tab_focus_path("../developer", None).is_err());
+    }
+
+    #[test]
+    fn settings_focus_deeplink_path_targets_canonical_focus() {
+        assert_eq!(
+            settings_tab_focus_path("privacy", Some("agent-access")).as_deref(),
+            Ok("/settings?tab=privacy&focus=agentAccess")
+        );
+        assert!(settings_tab_focus_path("privacy", Some("../agent")).is_err());
     }
 
     #[test]

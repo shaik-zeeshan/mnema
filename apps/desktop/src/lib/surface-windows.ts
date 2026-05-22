@@ -6,11 +6,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-export type SurfaceWindowLabel = "main" | "onboarding" | "settings" | "debug";
+export type SurfaceWindowLabel = "main" | "onboarding" | "settings" | "cli-access-request" | "debug";
 
 export type SettingsWindowTab =
   | "capture"
   | "video"
+  | "access"
+  | "privacy"
   | "audio"
   | "processing"
   | "storage"
@@ -22,9 +24,14 @@ export type SettingsWindowTab =
   | "transcription"
   | "speakers";
 
-export async function openSettingsWindow(tab?: SettingsWindowTab): Promise<void> {
+export type SettingsWindowFocus = "agentAccess" | "cliAccess";
+
+export async function openSettingsWindow(
+  tab?: SettingsWindowTab,
+  focus?: SettingsWindowFocus,
+): Promise<void> {
   if (tab) {
-    await invoke("open_settings_window_to_tab", { tab });
+    await invoke("open_settings_window_to_tab", { tab, focus });
     return;
   }
   await invoke("open_settings_window");
@@ -49,7 +56,7 @@ export function currentWindowLabel(): SurfaceWindowLabel | string {
 
 export function isDedicatedSurfaceWindow(): boolean {
   const label = currentWindowLabel();
-  return label === "onboarding" || label === "settings" || label === "debug";
+  return label === "onboarding" || label === "settings" || label === "cli-access-request" || label === "debug";
 }
 
 export async function closeCurrentWindow(): Promise<void> {

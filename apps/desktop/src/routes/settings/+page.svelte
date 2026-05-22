@@ -286,6 +286,7 @@
   type SettingsTab =
     | "capture"
     | "video"
+    | "access"
     | "privacy"
     | "audio"
     | "processing"
@@ -293,7 +294,11 @@
     | "appearance"
     | "developer";
 
+  type SettingsFocus = "cliAccess";
+
   let activeTab = $state<SettingsTab>("capture");
+  let brokerAuthorizationPromptVisible = $state(false);
+  let agentAccessSection = $state<HTMLElement | null>(null);
 
   // Scroll-region element. The wrapper persists across tab switches (only
   // the inner `{#if activeTab === ...}` panel re-mounts), so without an
@@ -313,6 +318,10 @@
     const normalizedTab = normalizeSettingsTab(requestedTab);
     if (normalizedTab) {
       activeTab = normalizedTab;
+    }
+    const normalizedFocus = normalizeSettingsFocus($page.url.searchParams.get("focus"));
+    if (normalizedFocus) {
+      focusSettingsSection(normalizedFocus);
     }
   });
 
@@ -378,6 +387,7 @@
 
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
     { id: "capture",    label: "Capture",     description: "Sources, segments, inactivity" },
+    { id: "access",     label: "Access",      description: "CLI and local tools" },
     { id: "privacy",    label: "Privacy",     description: "Metadata and exclusions" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
     { id: "audio",      label: "Audio",       description: "Microphone devices & disconnects" },
@@ -389,6 +399,7 @@
 
   function normalizeSettingsTab(value: string | null | undefined): SettingsTab | null {
     if (value === "capture" || value === "behavior") return "capture";
+    if (value === "access" || value === "cliAccess" || value === "cli-access") return "access";
     if (value === "privacy" || value === "metadata") return "privacy";
     if (value === "video") return "video";
     if (value === "audio" || value === "microphone") return "audio";
@@ -396,6 +407,11 @@
     if (value === "storage") return "storage";
     if (value === "appearance") return "appearance";
     if (value === "developer") return "developer";
+    return null;
+  }
+
+  function normalizeSettingsFocus(value: string | null | undefined): SettingsFocus | null {
+    if (value === "agentAccess" || value === "agent-access" || value === "cliAccess" || value === "cli-access") return "cliAccess";
     return null;
   }
 
@@ -439,9 +455,21 @@
     el?.focus();
   }
 
-  function handleSettingsTabEvent(tab: string): void {
+  function focusSettingsSection(focus: SettingsFocus): void {
+    if (focus !== "cliAccess") return;
+    activeTab = "access";
+    brokerAuthorizationPromptVisible = true;
+    void tick().then(() => {
+      agentAccessSection?.scrollIntoView({ block: "start", behavior: "smooth" });
+      agentAccessSection?.focus({ preventScroll: true });
+    });
+  }
+
+  function handleSettingsTabEvent(tab: string, focus?: string | null): void {
     const normalizedTab = normalizeSettingsTab(tab);
     if (normalizedTab) activeTab = normalizedTab;
+    const normalizedFocus = normalizeSettingsFocus(focus);
+    if (normalizedFocus) focusSettingsSection(normalizedFocus);
   }
 
   // ─── Auto-save plumbing ──────────────────────────────────────────────────
@@ -737,7 +765,7 @@
     brokerGrantLoading = true;
     brokerGrantError = null;
     try {
-      const response = await invoke<BrokerGrantFile>("list_broker_grants");
+      const response = await invoke<BrokerGrantFile>("list_cli_access_grants");
       brokerGrants = response.grants ?? [];
     } catch (err) {
       brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
@@ -750,7 +778,7 @@
     mnemaCliLoading = true;
     mnemaCliError = null;
     try {
-      mnemaCliStatus = await invoke<MnemaCliStatus>("get_mnema_cli_status");
+      mnemaCliStatus = await invoke<MnemaCliStatus>("get_cli_access_status");
     } catch (err) {
       mnemaCliError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
@@ -762,7 +790,7 @@
     mnemaCliInstalling = true;
     mnemaCliError = null;
     try {
-      mnemaCliStatus = await invoke<MnemaCliStatus>("install_mnema_cli");
+      mnemaCliStatus = await invoke<MnemaCliStatus>(mnemaCliStatus?.installed ? "reinstall_cli" : "install_cli");
     } catch (err) {
       mnemaCliError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
@@ -770,30 +798,11 @@
     }
   }
 
-  async function createAgentBrokerGrant() {
-    brokerGrantSaving = true;
-    brokerGrantError = null;
-    try {
-      await invoke<BrokerGrant>("create_broker_grant", {
-        request: {
-          label: "Local agent",
-          durationHours: 24,
-          allRetainedHistory: false,
-        },
-      });
-      await loadBrokerGrants();
-    } catch (err) {
-      brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
-    } finally {
-      brokerGrantSaving = false;
-    }
-  }
-
   async function revokeAgentBrokerGrant(grantId: string) {
     brokerGrantSaving = true;
     brokerGrantError = null;
     try {
-      await invoke<boolean>("revoke_broker_grant", { grantId });
+      await invoke<boolean>("revoke_cli_access_grant", { grantId });
       await loadBrokerGrants();
     } catch (err) {
       brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
@@ -1902,8 +1911,8 @@
     });
 
 
-    listen<{ tab: string }>("open_settings_tab", (event) => {
-      handleSettingsTabEvent(event.payload.tab);
+    listen<{ tab: string; focus?: string }>("open_settings_tab", (event) => {
+      handleSettingsTabEvent(event.payload.tab, event.payload.focus);
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenOpenSettingsTab = fn;
@@ -2116,6 +2125,82 @@
 <div class="settings-scroll" bind:this={scrollRegion}>
 
 <!-- ── Capture & sources ───────────────────────────────────────────────── -->
+{#if activeTab === "access"}
+  <div role="tabpanel" id="settings-panel-access" aria-labelledby="settings-tab-access" tabindex="0">
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          {@render settingsCardIcon("privacy")}
+          <div>
+            <h2 class="card__title">Access</h2>
+            <p class="card__subtitle">Install the Mnema CLI and manage local tool access to searchable Mnema text.</p>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class:settings-group--attention={brokerAuthorizationPromptVisible}
+        bind:this={agentAccessSection}
+        class="settings-group"
+        tabindex="-1"
+      >
+        <span class="group-label">CLI Access</span>
+        <div class="settings-stack">
+          {#if brokerAuthorizationPromptVisible}
+            <div class="agent-access-callout" role="status">
+              <strong>CLI access request</strong>
+              <p>Review the request window or native prompt, then rerun the CLI command if needed.</p>
+            </div>
+          {/if}
+          <div class="privacy-disclosure">
+            <p>CLI Access lets local tools request time-bounded access to searchable Mnema text, including screen text, audio transcripts, and timeline results.</p>
+            <p>CLI output does not include media paths, raw database rows, app/window titles, browser URLs, or deep-link URLs.</p>
+            {#if mnemaCliStatus}
+              <p>
+                CLI: {mnemaCliStatus.installed ? `mnema installed at ${mnemaCliStatus.installPath}` : `mnema not installed at ${mnemaCliStatus.installPath}`}
+              </p>
+              {#if mnemaCliStatus.installed && !mnemaCliStatus.installDirInPath}
+                <p>{mnemaCliStatus.installDir} is not in PATH for this app session.</p>
+              {/if}
+            {/if}
+          </div>
+          <div class="row-actions">
+            <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
+              {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
+            </button>
+            <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}>
+              Refresh
+            </button>
+          </div>
+          {#if mnemaCliError}
+            <p class="error-text">{mnemaCliError}</p>
+          {/if}
+          {#if brokerGrantError}
+            <p class="error-text">{brokerGrantError}</p>
+          {/if}
+          {#if brokerGrants.length > 0}
+            <div class="excluded-apps-list">
+              {#each brokerGrants as grant (grant.id)}
+                <div class="excluded-app-row">
+                  <div class="excluded-app-row__meta">
+                    <span class="excluded-app-row__name">{grant.label}</span>
+                    <span class="excluded-app-row__bundle">
+                      {grant.revoked ? "Revoked" : `Expires ${new Date(grant.expiresAtUnixMs).toLocaleString()}`}
+                    </span>
+                  </div>
+                  <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || grant.revoked} onclick={() => revokeAgentBrokerGrant(grant.id)}>Revoke</button>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="group-hint">No CLI Access grants yet.</p>
+          {/if}
+        </div>
+      </div>
+    </section>
+  </div>
+{/if}
+
 {#if activeTab === "capture"}
 <div role="tabpanel" id="settings-panel-capture" aria-labelledby="settings-tab-capture" tabindex="0">
 <section class="card">
@@ -2228,56 +2313,6 @@
             />
           </div>
           <p class="group-hint">Sanitized URLs keep scheme, host, port, and path while dropping query strings and fragments.</p>
-        </div>
-
-        <div class="settings-group">
-          <span class="group-label">Agent Access</span>
-          <div class="settings-stack">
-            <div class="privacy-disclosure">
-              <p>Broker grants allow local tools to use redacted, bounded Mnema search through the mnema CLI.</p>
-              <p>The broker does not return media paths, raw database rows, or original OCR/transcript dumps.</p>
-              {#if mnemaCliStatus}
-                <p>
-                  CLI: {mnemaCliStatus.installed ? `mnema installed at ${mnemaCliStatus.installPath}` : `mnema not installed at ${mnemaCliStatus.installPath}`}
-                </p>
-                {#if mnemaCliStatus.installed && !mnemaCliStatus.installDirInPath}
-                  <p>{mnemaCliStatus.installDir} is not in PATH for this app session.</p>
-                {/if}
-              {/if}
-            </div>
-            <div class="row-actions">
-              <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
-                {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
-              </button>
-              <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading} onclick={createAgentBrokerGrant}>
-                Grant 24h access
-              </button>
-              <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}>
-                Refresh
-              </button>
-            </div>
-            {#if mnemaCliError}
-              <p class="error-text">{mnemaCliError}</p>
-            {/if}
-            {#if brokerGrantError}
-              <p class="error-text">{brokerGrantError}</p>
-            {/if}
-            {#if brokerGrants.length > 0}
-              <div class="excluded-apps-list">
-                {#each brokerGrants as grant (grant.id)}
-                  <div class="excluded-app-row">
-                    <div class="excluded-app-row__meta">
-                      <span class="excluded-app-row__name">{grant.label}</span>
-                      <span class="excluded-app-row__bundle">
-                        {grant.revoked ? "Revoked" : `Expires ${new Date(grant.expiresAtUnixMs).toLocaleString()}`}
-                      </span>
-                    </div>
-                    <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || grant.revoked} onclick={() => revokeAgentBrokerGrant(grant.id)}>Revoke</button>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
         </div>
 
         <div class="settings-group">
@@ -4182,6 +4217,15 @@
     gap: 10px;
   }
 
+  .settings-group:focus {
+    outline: none;
+  }
+
+  .settings-group--attention .settings-stack {
+    border-color: color-mix(in srgb, var(--app-accent) 45%, var(--app-border));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-accent) 18%, transparent);
+  }
+
   .group-label {
     font-size: 10px;
     font-weight: 700;
@@ -5140,6 +5184,61 @@
     gap: 10px;
   }
 
+  .row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .error-text {
+    margin: 0;
+    color: var(--app-danger-text);
+    font-size: 11px;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .excluded-apps-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .excluded-app-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+  }
+
+  .excluded-app-row__meta {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .excluded-app-row__name {
+    overflow: hidden;
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .excluded-app-row__bundle {
+    color: var(--app-text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
   /* ── Danger button variant ───────────────────────────────────────── */
   .btn--danger {
     background: var(--app-danger-bg-soft);
@@ -5439,6 +5538,27 @@
   }
 
   .privacy-disclosure p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .agent-access-callout {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--app-accent) 35%, var(--app-border));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-accent) 12%, var(--app-surface));
+  }
+
+  .agent-access-callout strong {
+    color: var(--app-text);
+    font-size: 12px;
+  }
+
+  .agent-access-callout p {
     margin: 0;
     color: var(--app-text-muted);
     font-size: 11px;

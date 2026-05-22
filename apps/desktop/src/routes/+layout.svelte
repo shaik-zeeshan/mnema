@@ -1129,6 +1129,7 @@
        palette once via these tokens and the light theme below flips them
        in one place — no per-component palette duplication. */
     --app-surface: #0e0e16;
+    --app-surface-subtle: #101018;
     --app-surface-raised: #13131a;
     --app-surface-hover: #1a1a2a;
     --app-surface-active: #131320;
@@ -1255,6 +1256,7 @@
        accent stays in the green family (matching dashboard "OK" and the
        primary save button) but darkens for legibility on white. */
     --app-surface: #ffffff;
+    --app-surface-subtle: #f6f6f4;
     --app-surface-raised: #fbfbfa;
     --app-surface-hover: #eeeeec;
     --app-surface-active: #e8f1ea;

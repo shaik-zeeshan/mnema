@@ -81,6 +81,45 @@ impl BrokerErrorResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerClientIdentity {
+    pub label: String,
+    pub normalized_label: String,
+    pub source: BrokerClientIdentitySource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BrokerClientIdentitySource {
+    Explicit,
+    Env,
+    Inferred,
+    Defaulted,
+}
+
+impl BrokerClientIdentity {
+    pub fn new(label: impl Into<String>, source: BrokerClientIdentitySource) -> Result<Self> {
+        let label = label.into();
+        let normalized_label = normalize_client_label(&label).ok_or_else(|| {
+            AppInfraError::BrokeredAccess("CLI Access client name is invalid".to_string())
+        })?;
+        Ok(Self {
+            label: display_client_label(&label),
+            normalized_label,
+            source,
+        })
+    }
+
+    pub fn default_cli() -> Self {
+        Self {
+            label: "mnema CLI".to_string(),
+            normalized_label: "mnema cli".to_string(),
+            source: BrokerClientIdentitySource::Defaulted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BrokerGrantScope {
     RecentDays { days: u32 },
@@ -92,22 +131,32 @@ pub enum BrokerGrantScope {
 pub struct BrokerGrant {
     pub id: String,
     pub label: String,
+    #[serde(default = "default_grant_normalized_label")]
+    pub normalized_label: String,
+    #[serde(default = "default_grant_identity_source")]
+    pub identity_source: BrokerClientIdentitySource,
     pub created_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
     pub scope: BrokerGrantScope,
     #[serde(default)]
     pub revoked: bool,
+    #[serde(default)]
+    pub revoked_at_unix_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerGrantFile {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub grants: Vec<BrokerGrant>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerAuditFile {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub events: Vec<BrokerAuditEvent>,
 }
 
@@ -115,10 +164,18 @@ pub struct BrokerAuditFile {
 #[serde(rename_all = "camelCase")]
 pub struct BrokerAuditEvent {
     pub tool_identity: String,
+    #[serde(default)]
+    pub normalized_tool_identity: String,
+    #[serde(default = "default_grant_identity_source")]
+    pub identity_source: BrokerClientIdentitySource,
     pub command_type: String,
     pub timestamp_unix_ms: u64,
     pub result_count: u32,
     pub scope_class: String,
+    #[serde(default)]
+    pub grant_id: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -224,7 +281,7 @@ impl BrokeredCaptureRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum BrokeredCaptureResponse {
     AuthStatus(BrokerAuthStatus),
@@ -276,14 +333,26 @@ impl BrokeredCaptureAccess {
         tool_identity: impl Into<String>,
         request: BrokeredCaptureRequest,
     ) -> Result<BrokeredCaptureResponse> {
+        let identity =
+            BrokerClientIdentity::new(tool_identity.into(), BrokerClientIdentitySource::Explicit)
+                .unwrap_or_else(|_| BrokerClientIdentity::default_cli());
+        self.execute_for_identity(identity, request).await
+    }
+
+    pub async fn execute_for_identity(
+        &self,
+        identity: BrokerClientIdentity,
+        request: BrokeredCaptureRequest,
+    ) -> Result<BrokeredCaptureResponse> {
         if matches!(&request, BrokeredCaptureRequest::AuthStatus) {
             return Ok(BrokeredCaptureResponse::AuthStatus(auth_status_for_config(
                 &self.config_dir,
+                Some(&identity),
             )?));
         }
 
         let command_type = request.command_type();
-        let grants = self.active_grants()?;
+        let grants = self.active_grants_for_identity(&identity)?;
         let response = if grants.is_empty() {
             BrokeredCaptureResponse::Error(BrokerErrorResponse::authorization_required())
         } else {
@@ -291,12 +360,7 @@ impl BrokeredCaptureAccess {
         };
 
         if let Some(command_type) = command_type {
-            self.audit_result(
-                &grants,
-                tool_identity.into(),
-                command_type,
-                response.result_count(),
-            )?;
+            self.audit_result(&grants, identity, command_type, response.result_count())?;
         }
 
         Ok(response)
@@ -310,13 +374,33 @@ impl BrokeredCaptureAccess {
         create_grant_from_request(&self.config_dir, request)
     }
 
+    pub fn create_grant_for_identity(
+        &self,
+        identity: BrokerClientIdentity,
+        duration_hours: u64,
+        scope: BrokerGrantScope,
+    ) -> Result<BrokerGrant> {
+        create_grant_for_identity(&self.config_dir, identity, duration_hours, scope)
+    }
+
     pub fn revoke_grant(&self, grant_id: &str) -> Result<bool> {
         revoke_grant(&self.config_dir, grant_id)
     }
 
-    fn active_grants(&self) -> Result<Vec<BrokerGrant>> {
+    pub fn revoke_grants_for_client(&self, client_label: &str) -> Result<u32> {
+        revoke_grants_for_client(&self.config_dir, client_label)
+    }
+
+    pub fn list_history(&self) -> Result<BrokerAuditFile> {
+        load_audit_events(&self.config_dir)
+    }
+
+    fn active_grants_for_identity(
+        &self,
+        identity: &BrokerClientIdentity,
+    ) -> Result<Vec<BrokerGrant>> {
         let grants = load_grants(&self.config_dir)?;
-        Ok(active_grants(&grants, now_unix_ms()))
+        Ok(active_grants_for_identity(&grants, identity, now_unix_ms()))
     }
 
     async fn execute_authorized_request(
@@ -390,7 +474,7 @@ impl BrokeredCaptureAccess {
     fn audit_result(
         &self,
         grants: &[BrokerGrant],
-        tool_identity: String,
+        identity: BrokerClientIdentity,
         command_type: &str,
         result_count: u32,
     ) -> Result<()> {
@@ -399,10 +483,11 @@ impl BrokeredCaptureAccess {
         }
         record_audit_event(
             &self.config_dir,
-            tool_identity,
+            identity,
             command_type,
             result_count,
             scope_class(grants),
+            grants.first().map(|grant| grant.id.clone()),
         )
     }
 }
@@ -448,13 +533,79 @@ fn default_save_directory_from_config(config_dir: &Path) -> Result<Option<PathBu
     Ok(Some(PathBuf::from(settings.save_directory)))
 }
 
+fn default_schema_version() -> u32 {
+    1
+}
+
+fn default_grant_normalized_label() -> String {
+    BrokerClientIdentity::default_cli().normalized_label
+}
+
+fn default_grant_identity_source() -> BrokerClientIdentitySource {
+    BrokerClientIdentitySource::Defaulted
+}
+
+pub fn normalize_client_label(value: &str) -> Option<String> {
+    let cleaned = value
+        .chars()
+        .map(|ch| if ch == '-' || ch == '_' { ' ' } else { ch })
+        .filter(|ch| !ch.is_control())
+        .collect::<String>();
+    let normalized = cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn display_client_label(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_loaded_grant(grant: &mut BrokerGrant) {
+    if grant.label.trim().is_empty() || grant.label == "Local agent" {
+        grant.label = "mnema CLI".to_string();
+        grant.normalized_label = BrokerClientIdentity::default_cli().normalized_label;
+    } else {
+        grant.label = display_client_label(&grant.label);
+        if grant.normalized_label.trim().is_empty() {
+            grant.normalized_label = normalize_client_label(&grant.label)
+                .unwrap_or_else(|| BrokerClientIdentity::default_cli().normalized_label);
+        }
+    }
+}
+
+fn normalize_loaded_grant_file(mut grants: BrokerGrantFile) -> BrokerGrantFile {
+    if grants.schema_version == 0 {
+        grants.schema_version = 1;
+    }
+    for grant in &mut grants.grants {
+        normalize_loaded_grant(grant);
+    }
+    grants
+}
+
 fn load_grants(config_dir: &Path) -> Result<BrokerGrantFile> {
     let path = config_dir.join(BROKER_GRANTS_FILE_NAME);
     if !path.exists() {
-        return Ok(BrokerGrantFile::default());
+        return Ok(BrokerGrantFile {
+            schema_version: 1,
+            grants: Vec::new(),
+        });
     }
     let raw = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&raw)?)
+    Ok(normalize_loaded_grant_file(serde_json::from_str(&raw)?))
 }
 
 fn save_grants_locked(config_dir: &Path, grants: &BrokerGrantFile) -> Result<()> {
@@ -494,15 +645,26 @@ fn load_audit_events(config_dir: &Path) -> Result<BrokerAuditFile> {
         return Ok(BrokerAuditFile::default());
     }
     let raw = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&raw)?)
+    let mut audit: BrokerAuditFile = serde_json::from_str(&raw)?;
+    if audit.schema_version == 0 {
+        audit.schema_version = 1;
+    }
+    for event in &mut audit.events {
+        if event.normalized_tool_identity.is_empty() {
+            event.normalized_tool_identity = normalize_client_label(&event.tool_identity)
+                .unwrap_or_else(|| BrokerClientIdentity::default_cli().normalized_label);
+        }
+    }
+    Ok(audit)
 }
 
 fn record_audit_event(
     config_dir: &Path,
-    tool_identity: impl Into<String>,
+    identity: BrokerClientIdentity,
     command_type: impl Into<String>,
     result_count: u32,
     scope_class: impl Into<String>,
+    grant_id: Option<String>,
 ) -> Result<()> {
     fs::create_dir_all(config_dir)?;
     let lock_path = config_dir.join(BROKER_AUDIT_LOCK_FILE_NAME);
@@ -515,11 +677,15 @@ fn record_audit_event(
 
     let mut audit = load_audit_events(config_dir)?;
     audit.events.push(BrokerAuditEvent {
-        tool_identity: tool_identity.into(),
+        tool_identity: identity.label,
+        normalized_tool_identity: identity.normalized_label,
+        identity_source: identity.source,
         command_type: command_type.into(),
         timestamp_unix_ms: now_unix_ms(),
         result_count,
         scope_class: scope_class.into(),
+        grant_id,
+        outcome: Some("success".to_string()),
     });
     if audit.events.len() > 500 {
         let drop_count = audit.events.len().saturating_sub(500);
@@ -556,11 +722,33 @@ fn active_grants(grants: &BrokerGrantFile, now_unix_ms: u64) -> Vec<BrokerGrant>
         .collect()
 }
 
+fn active_grants_for_identity(
+    grants: &BrokerGrantFile,
+    identity: &BrokerClientIdentity,
+    now_unix_ms: u64,
+) -> Vec<BrokerGrant> {
+    grants
+        .grants
+        .iter()
+        .filter(|grant| {
+            grant_is_active(grant, now_unix_ms)
+                && grant
+                    .normalized_label
+                    .eq_ignore_ascii_case(&identity.normalized_label)
+        })
+        .cloned()
+        .collect()
+}
+
 fn format_unix_ms(unix_ms: u64) -> String {
     OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix_ms) * 1_000_000)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH)
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+pub fn format_broker_unix_ms(unix_ms: u64) -> String {
+    format_unix_ms(unix_ms)
 }
 
 fn parse_rfc3339(value: &str) -> Result<OffsetDateTime> {
@@ -667,9 +855,15 @@ fn range_overlaps_scope(grants: &[BrokerGrant], started_at: &str, ended_at: &str
     Ok(true)
 }
 
-fn auth_status_for_config(config_dir: &Path) -> Result<BrokerAuthStatus> {
+fn auth_status_for_config(
+    config_dir: &Path,
+    identity: Option<&BrokerClientIdentity>,
+) -> Result<BrokerAuthStatus> {
     let grants = load_grants(config_dir)?;
-    let active_count = active_grants(&grants, now_unix_ms()).len();
+    let active_count = identity.map_or_else(
+        || active_grants(&grants, now_unix_ms()).len(),
+        |identity| active_grants_for_identity(&grants, identity, now_unix_ms()).len(),
+    );
     if active_count == 0 {
         Ok(BrokerAuthStatus::authorization_required())
     } else {
@@ -683,16 +877,28 @@ fn create_grant(
     duration_hours: u64,
     scope: BrokerGrantScope,
 ) -> Result<BrokerGrant> {
-    let label = label.into();
+    let identity = BrokerClientIdentity::new(label.into(), BrokerClientIdentitySource::Explicit)?;
+    create_grant_for_identity(config_dir, identity, duration_hours, scope)
+}
+
+fn create_grant_for_identity(
+    config_dir: &Path,
+    identity: BrokerClientIdentity,
+    duration_hours: u64,
+    scope: BrokerGrantScope,
+) -> Result<BrokerGrant> {
     with_grants_lock(config_dir, |grants| {
         let now = now_unix_ms();
         let grant = BrokerGrant {
             id: format!("{now:x}-{:x}", grants.grants.len()),
-            label,
+            label: identity.label,
+            normalized_label: identity.normalized_label,
+            identity_source: identity.source,
             created_at_unix_ms: now,
             expires_at_unix_ms: now.saturating_add(duration_hours.saturating_mul(60 * 60 * 1000)),
             scope,
             revoked: false,
+            revoked_at_unix_ms: None,
         };
         grants.grants.push(grant.clone());
         save_grants_locked(config_dir, grants)?;
@@ -720,13 +926,40 @@ fn create_grant_from_request(
 fn revoke_grant(config_dir: &Path, grant_id: &str) -> Result<bool> {
     with_grants_lock(config_dir, |grants| {
         let mut changed = false;
+        let now = now_unix_ms();
         for grant in &mut grants.grants {
             if grant.id == grant_id && !grant.revoked {
                 grant.revoked = true;
+                grant.revoked_at_unix_ms = Some(now);
                 changed = true;
             }
         }
         if changed {
+            save_grants_locked(config_dir, grants)?;
+        }
+        Ok(changed)
+    })
+}
+
+fn revoke_grants_for_client(config_dir: &Path, client_label: &str) -> Result<u32> {
+    let Some(normalized_label) = normalize_client_label(client_label) else {
+        return Ok(0);
+    };
+    with_grants_lock(config_dir, |grants| {
+        let mut changed = 0u32;
+        let now = now_unix_ms();
+        for grant in &mut grants.grants {
+            if !grant.revoked
+                && grant
+                    .normalized_label
+                    .eq_ignore_ascii_case(&normalized_label)
+            {
+                grant.revoked = true;
+                grant.revoked_at_unix_ms = Some(now);
+                changed = changed.saturating_add(1);
+            }
+        }
+        if changed > 0 {
             save_grants_locked(config_dir, grants)?;
         }
         Ok(changed)
