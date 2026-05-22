@@ -39,28 +39,52 @@ case "$target_triple" in
   *) exe_suffix="" ;;
 esac
 
-cargo_args=(
-  build
-  --manifest-path "$repo_root/Cargo.toml"
-  -p app-infra
-  --bin mnema-cli
-  --target "$target_triple"
-)
-if [[ "$cargo_locked" == true ]]; then
-  cargo_args+=(--locked)
-fi
-if [[ "$profile" == "release" ]]; then
-  cargo_args+=(--release)
-fi
-
-cargo "${cargo_args[@]}"
-
-source_path="$repo_root/target/$target_triple/$profile/mnema-cli$exe_suffix"
 output_dir="$repo_root/apps/desktop/src-tauri/binaries"
 output_path="$output_dir/mnema-cli-$target_triple$exe_suffix"
 
 mkdir -p "$output_dir"
-cp "$source_path" "$output_path"
+
+build_target() {
+  local rust_target="$1"
+  local cargo_args=(
+    build
+    --manifest-path "$repo_root/Cargo.toml"
+    -p app-infra
+    --bin mnema-cli
+    --target "$rust_target"
+  )
+  if [[ "$cargo_locked" == true ]]; then
+    cargo_args+=(--locked)
+  fi
+  if [[ "$profile" == "release" ]]; then
+    cargo_args+=(--release)
+  fi
+
+  cargo "${cargo_args[@]}"
+}
+
+if [[ "$target_triple" == "universal-apple-darwin" ]]; then
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "universal-apple-darwin sidecar builds require macOS" >&2
+    exit 1
+  fi
+  if ! command -v lipo >/dev/null 2>&1; then
+    echo "universal-apple-darwin sidecar builds require lipo in PATH" >&2
+    exit 1
+  fi
+
+  build_target "aarch64-apple-darwin"
+  build_target "x86_64-apple-darwin"
+
+  arm_source_path="$repo_root/target/aarch64-apple-darwin/$profile/mnema-cli"
+  intel_source_path="$repo_root/target/x86_64-apple-darwin/$profile/mnema-cli"
+  lipo -create -output "$output_path" "$arm_source_path" "$intel_source_path"
+else
+  build_target "$target_triple"
+
+  source_path="$repo_root/target/$target_triple/$profile/mnema-cli$exe_suffix"
+  cp "$source_path" "$output_path"
+fi
 chmod 755 "$output_path"
 
 echo "prepared $output_path"

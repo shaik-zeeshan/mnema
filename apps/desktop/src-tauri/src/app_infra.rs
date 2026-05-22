@@ -3909,6 +3909,13 @@ fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
     }
 }
 
+fn existing_cli_symlink_is_safe_to_replace(
+    existing_target: &Path,
+    bundled_cli_path: &Path,
+) -> bool {
+    paths_refer_to_same_file(existing_target, bundled_cli_path)
+}
+
 #[cfg(windows)]
 fn files_have_same_contents(left: &Path, right: &Path) -> bool {
     let Ok(left_metadata) = fs::metadata(left) else {
@@ -4038,12 +4045,7 @@ pub async fn install_mnema_cli(app_handle: tauri::AppHandle) -> Result<MnemaCliS
                         install_path.display()
                     )
                 })?;
-            let expected_file_name = mnema_cli_sidecar_name();
-            let existing_file_name = existing_target
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default();
-            if existing_file_name != expected_file_name {
+            if !existing_cli_symlink_is_safe_to_replace(&existing_target, &bundled_cli_path) {
                 return Err(format!(
                     "refusing to overwrite existing CLI symlink {} -> {}",
                     install_path.display(),
@@ -4781,6 +4783,28 @@ mod tests {
             mnema_cli_install_path_for_home(Path::new("/Users/tester")),
             PathBuf::from("/Users/tester/.local/bin/mnema")
         );
+    }
+
+    #[test]
+    fn cli_symlink_replacement_requires_bundled_target_path() {
+        let dir = TestDir::new("mnema-cli-symlink");
+        let bundled_dir = dir.path().join("bundle");
+        let other_dir = dir.path().join("other");
+        fs::create_dir_all(&bundled_dir).expect("bundled dir should be created");
+        fs::create_dir_all(&other_dir).expect("other dir should be created");
+        let bundled_cli = bundled_dir.join(mnema_cli_sidecar_name());
+        let other_cli = other_dir.join(mnema_cli_sidecar_name());
+        fs::write(&bundled_cli, b"bundled").expect("bundled cli should be written");
+        fs::write(&other_cli, b"other").expect("other cli should be written");
+
+        assert!(existing_cli_symlink_is_safe_to_replace(
+            &bundled_cli,
+            &bundled_cli
+        ));
+        assert!(!existing_cli_symlink_is_safe_to_replace(
+            &other_cli,
+            &bundled_cli
+        ));
     }
 
     #[test]
