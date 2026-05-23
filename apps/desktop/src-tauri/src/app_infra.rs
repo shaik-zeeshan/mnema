@@ -511,6 +511,7 @@ pub struct FrameSearchResultDto {
     pub group_end_at: String,
     pub match_count: u32,
     pub snippet: String,
+    pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
     pub window_title: Option<String>,
     pub thumbnail_frame_id: i64,
@@ -806,6 +807,7 @@ impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
             group_end_at: result.group_end_at,
             match_count: result.match_count,
             snippet: result.snippet,
+            app_bundle_id: result.app_bundle_id,
             app_name: result.app_name,
             window_title: result.window_title,
             thumbnail_frame_id: result.thumbnail_frame_id,
@@ -5373,6 +5375,51 @@ mod tests {
         );
         assert!(!value.to_string().contains("Sensitive Project"));
         assert!(!value.to_string().contains("https://example.com/private"));
+    }
+
+    #[test]
+    fn frame_search_result_dto_exposes_app_bundle_id() {
+        let frame = ::app_infra::Frame {
+            id: 9,
+            session_id: "session-search-metadata".to_string(),
+            file_path: "/tmp/search-frame.png".to_string(),
+            captured_at: "2026-05-12T10:00:00Z".to_string(),
+            width: Some(1440),
+            height: Some(900),
+            equivalence: ::app_infra::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            created_at: "2026-05-12T10:00:00Z".to_string(),
+            updated_at: "2026-05-12T10:00:00Z".to_string(),
+            metadata_snapshot: None,
+        };
+        let result = ::app_infra::FrameSearchResult {
+            group_key: "frame:9".to_string(),
+            representative_frame: frame,
+            group_start_at: "2026-05-12T10:00:00Z".to_string(),
+            group_end_at: "2026-05-12T10:00:00Z".to_string(),
+            match_count: 1,
+            snippet: "<mark>match</mark>".to_string(),
+            app_bundle_id: Some("com.example.Search".to_string()),
+            app_name: Some("Search App".to_string()),
+            window_title: Some("Search Window".to_string()),
+            thumbnail_frame_id: 9,
+            text_source_kind: "ocr".to_string(),
+            secret_redaction_count: 0,
+            has_secret_redactions: false,
+        };
+
+        let value =
+            serde_json::to_value(FrameSearchResultDto::from(result)).expect("dto should serialize");
+
+        assert_eq!(
+            value.get("appBundleId").and_then(|value| value.as_str()),
+            Some("com.example.Search")
+        );
     }
 
     struct TestVideoPreviewExtractorGuard;

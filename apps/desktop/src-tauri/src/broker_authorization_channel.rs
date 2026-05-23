@@ -285,6 +285,14 @@ fn take_pending_request(app: &tauri::AppHandle) -> Option<PendingAuthorizationRe
         .and_then(|mut pending| pending.take())
 }
 
+pub fn has_pending_cli_access_request(app: &tauri::AppHandle) -> bool {
+    app.state::<BrokerAuthorizationChannelState>()
+        .pending
+        .lock()
+        .map(|pending| pending.is_some())
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 pub fn get_pending_cli_access_request(app: tauri::AppHandle) -> Option<PendingCliAccessRequestDto> {
     app.state::<BrokerAuthorizationChannelState>()
@@ -309,16 +317,8 @@ pub fn approve_pending_cli_access_request(
     app: tauri::AppHandle,
     approval: ApproveCliAccessRequest,
 ) -> Result<(), String> {
-    let Some(pending) = take_pending_request(&app) else {
-        return Err("no pending CLI Access request".to_string());
-    };
+    let pending = take_pending_request_for_approval(&app, &approval)?;
     let mut request = pending.request;
-    if !scope_satisfies_minimum(&approval.scope, &request.scope.minimum) {
-        return Err("selected scope does not satisfy the pending command".to_string());
-    }
-    if approval.duration_seconds < request.duration.minimum_seconds {
-        return Err("selected duration does not satisfy the pending command".to_string());
-    }
     request.scope.preferred = approval.scope;
     request.duration.preferred_seconds = approval.duration_seconds;
     let response = create_grant_response(
@@ -335,6 +335,43 @@ pub fn approve_pending_cli_access_request(
     });
     let _ = pending.respond.send(response);
     let _ = close_cli_access_request_window(&app);
+    Ok(())
+}
+
+fn take_pending_request_for_approval(
+    app: &tauri::AppHandle,
+    approval: &ApproveCliAccessRequest,
+) -> Result<PendingAuthorizationRequest, String> {
+    let state = app.state::<BrokerAuthorizationChannelState>();
+    let Ok(mut pending) = state.pending.lock() else {
+        return Err("no pending CLI Access request".to_string());
+    };
+    take_validated_pending_request(&mut pending, approval)
+}
+
+fn take_validated_pending_request(
+    pending: &mut Option<PendingAuthorizationRequest>,
+    approval: &ApproveCliAccessRequest,
+) -> Result<PendingAuthorizationRequest, String> {
+    let Some(current) = pending.as_ref() else {
+        return Err("no pending CLI Access request".to_string());
+    };
+    validate_cli_access_approval(&current.request, approval)?;
+    pending
+        .take()
+        .ok_or_else(|| "no pending CLI Access request".to_string())
+}
+
+fn validate_cli_access_approval(
+    request: &AuthorizationChannelRequest,
+    approval: &ApproveCliAccessRequest,
+) -> Result<(), String> {
+    if !scope_satisfies_minimum(&approval.scope, &request.scope.minimum) {
+        return Err("selected scope does not satisfy the pending command".to_string());
+    }
+    if approval.duration_seconds < request.duration.minimum_seconds {
+        return Err("selected duration does not satisfy the pending command".to_string());
+    }
     Ok(())
 }
 
@@ -533,6 +570,32 @@ pub fn socket_path_for_identifier(identifier: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::oneshot::error::TryRecvError;
+
+    fn test_authorization_request(
+        minimum_scope: &str,
+        minimum_duration_seconds: u64,
+    ) -> AuthorizationChannelRequest {
+        AuthorizationChannelRequest {
+            schema_version: 1,
+            request_id: "request-1".to_string(),
+            client: AuthorizationChannelClient {
+                label: "Test Client".to_string(),
+                source: "explicit".to_string(),
+            },
+            command: "search".to_string(),
+            scope: AuthorizationChannelScope {
+                minimum: minimum_scope.to_string(),
+                preferred: minimum_scope.to_string(),
+            },
+            duration: AuthorizationChannelDuration {
+                minimum_seconds: minimum_duration_seconds,
+                preferred_seconds: minimum_duration_seconds,
+            },
+            interactive: true,
+            created_at: "2026-05-23T00:00:00Z".to_string(),
+        }
+    }
 
     #[test]
     fn socket_path_uses_configured_identifier() {
@@ -570,5 +633,47 @@ mod tests {
                 hours: 24 * 7,
             }
         );
+    }
+
+    #[test]
+    fn invalid_approval_scope_preserves_pending_request_and_waiter() {
+        let (respond, mut receive) = oneshot::channel();
+        let mut pending = Some(PendingAuthorizationRequest {
+            request: test_authorization_request("allRetained", 3600),
+            respond,
+        });
+
+        let result = take_validated_pending_request(
+            &mut pending,
+            &ApproveCliAccessRequest {
+                scope: "lastDay".to_string(),
+                duration_seconds: 3600,
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(pending.is_some());
+        assert!(matches!(receive.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn invalid_approval_duration_preserves_pending_request_and_waiter() {
+        let (respond, mut receive) = oneshot::channel();
+        let mut pending = Some(PendingAuthorizationRequest {
+            request: test_authorization_request("lastDay", 3600),
+            respond,
+        });
+
+        let result = take_validated_pending_request(
+            &mut pending,
+            &ApproveCliAccessRequest {
+                scope: "lastDay".to_string(),
+                duration_seconds: 3599,
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(pending.is_some());
+        assert!(matches!(receive.try_recv(), Err(TryRecvError::Empty)));
     }
 }

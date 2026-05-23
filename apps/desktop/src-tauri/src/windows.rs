@@ -368,7 +368,7 @@ fn is_known_settings_tab(tab: &str) -> bool {
 
 fn normalize_settings_focus(focus: &str) -> Option<&'static str> {
     match focus {
-        "agentAccess" | "agent-access" => Some("agentAccess"),
+        "agentAccess" | "agent-access" | "cliAccess" | "cli-access" => Some("cliAccess"),
         _ => None,
     }
 }
@@ -914,11 +914,10 @@ mod tests {
 
     #[test]
     fn settings_focus_aliases_normalize_to_canonical_focus() {
-        assert_eq!(normalize_settings_focus("agentAccess"), Some("agentAccess"));
-        assert_eq!(
-            normalize_settings_focus("agent-access"),
-            Some("agentAccess")
-        );
+        assert_eq!(normalize_settings_focus("agentAccess"), Some("cliAccess"));
+        assert_eq!(normalize_settings_focus("agent-access"), Some("cliAccess"));
+        assert_eq!(normalize_settings_focus("cliAccess"), Some("cliAccess"));
+        assert_eq!(normalize_settings_focus("cli-access"), Some("cliAccess"));
         assert_eq!(normalize_settings_focus("other"), None);
     }
 
@@ -943,7 +942,11 @@ mod tests {
     fn settings_focus_deeplink_path_targets_canonical_focus() {
         assert_eq!(
             settings_tab_focus_path("privacy", Some("agent-access")).as_deref(),
-            Ok("/settings?tab=privacy&focus=agentAccess")
+            Ok("/settings?tab=privacy&focus=cliAccess")
+        );
+        assert_eq!(
+            settings_tab_focus_path("access", Some("cliAccess")).as_deref(),
+            Ok("/settings?tab=access&focus=cliAccess")
         );
         assert!(settings_tab_focus_path("privacy", Some("../agent")).is_err());
     }

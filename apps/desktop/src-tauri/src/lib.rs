@@ -158,11 +158,21 @@ fn drain_pending_broker_authorization_request_from_app(app_handle: &tauri::AppHa
 }
 
 fn notify_pending_broker_authorization_request(app_handle: &tauri::AppHandle) -> bool {
-    if !drain_pending_broker_authorization_request_from_app(app_handle) {
+    let marker_drained = drain_pending_broker_authorization_request_from_app(app_handle);
+    let has_pending_request =
+        broker_authorization_channel::has_pending_cli_access_request(app_handle);
+    if !should_open_pending_broker_authorization_request(marker_drained, has_pending_request) {
         return false;
     }
     let _ = windows::open_cli_access_request_window(app_handle);
     true
+}
+
+fn should_open_pending_broker_authorization_request(
+    marker_drained: bool,
+    has_pending_request: bool,
+) -> bool {
+    marker_drained && has_pending_request
 }
 
 fn should_notify_pending_broker_authorization_request(
@@ -505,7 +515,7 @@ mod tests {
     use super::{
         broker_payload_from_url, exit_request_action_for_exit_request, is_app_log_target,
         should_forward_window_event, should_notify_pending_broker_authorization_request,
-        ExitRequestAction,
+        should_open_pending_broker_authorization_request, ExitRequestAction,
     };
 
     #[test]
@@ -565,6 +575,17 @@ mod tests {
     fn pending_broker_authorization_notifies_after_onboarding_once() {
         assert!(should_notify_pending_broker_authorization_request(
             true, false
+        ));
+    }
+
+    #[test]
+    fn pending_broker_authorization_marker_opens_only_for_real_pending_request() {
+        assert!(should_open_pending_broker_authorization_request(true, true));
+        assert!(!should_open_pending_broker_authorization_request(
+            true, false
+        ));
+        assert!(!should_open_pending_broker_authorization_request(
+            false, true
         ));
     }
 
