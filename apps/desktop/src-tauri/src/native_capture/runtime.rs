@@ -175,7 +175,7 @@ pub(super) fn request_segment_loop_stop(runtime: &NativeCaptureRuntime) {
     }
 }
 
-pub(super) fn now_unix_ms() -> u64 {
+pub(crate) fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)

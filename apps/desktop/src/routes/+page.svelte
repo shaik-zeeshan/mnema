@@ -4,6 +4,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { Image } from "@tauri-apps/api/image";
   import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
+  import { ask } from "@tauri-apps/plugin-dialog";
   import { BaseDirectory, writeFile } from "@tauri-apps/plugin-fs";
   import { Calendar } from "bits-ui";
   import {
@@ -47,6 +48,7 @@
     FocusedFrameWindowDto,
     FrameScrubPreviewsDto,
     GetFramePreviewRequest,
+    GetAudioSegmentRequest,
     GetEarliestEarlierEquivalentFrameRequest,
     GetScrubPreviewAvailabilityRequest,
     GetProcessingJobRequest,
@@ -417,6 +419,12 @@
     deletedFrameIds?: number[];
     deletedAudioSegmentIds?: number[];
   };
+  type BrokerOpenCaptureResultPayload = {
+    opaqueId: string;
+    kind: "frame" | "audio";
+    frameId: number | null;
+    audioSegmentId: number | null;
+  };
   type AppIconResolution = {
     bundleId: string;
     iconPath: string | null;
@@ -530,6 +538,7 @@
   let previewCache = $state<Map<number, string>>(new Map());
   let previewMimeTypeCache = $state<Map<number, string>>(new Map());
   let previewSourceKindCache = $state<Map<number, FramePreviewDto["sourceKind"]>>(new Map());
+  let previewRedactionCountCache = $state<Map<number, number>>(new Map());
   let previewLoadMsCache = $state<Map<number, number>>(new Map());
   let previewFailedAt = $state<Map<number, number>>(new Map());
   let scrubPreviewCache = $state<Map<number, string>>(new Map());
@@ -3005,6 +3014,7 @@
       previewCache.size === 0 &&
       previewMimeTypeCache.size === 0 &&
       previewSourceKindCache.size === 0 &&
+      previewRedactionCountCache.size === 0 &&
       previewLoadMsCache.size === 0 &&
       scrubPreviewCache.size === 0 &&
       scrubPreviewMimeTypeCache.size === 0 &&
@@ -3035,6 +3045,13 @@
     }
     if (nextPreviewSourceKinds.size !== previewSourceKindCache.size) {
       previewSourceKindCache = nextPreviewSourceKinds;
+    }
+    const nextPreviewRedactionCounts = new Map<number, number>();
+    for (const [frameId, count] of previewRedactionCountCache) {
+      if (keep.has(frameId)) nextPreviewRedactionCounts.set(frameId, count);
+    }
+    if (nextPreviewRedactionCounts.size !== previewRedactionCountCache.size) {
+      previewRedactionCountCache = nextPreviewRedactionCounts;
     }
     const nextPreviewLoadMs = new Map<number, number>();
     for (const [frameId, loadMs] of previewLoadMsCache) {
@@ -3288,16 +3305,19 @@
     if (evictedFrameIds.length > 0) {
       const nextMimeTypes = new Map(previewMimeTypeCache);
       const nextSourceKinds = new Map(previewSourceKindCache);
+      const nextRedactionCounts = new Map(previewRedactionCountCache);
       const nextLoadMs = new Map(previewLoadMsCache);
       const nextFailures = new Map(previewFailedAt);
       for (const frameId of evictedFrameIds) {
         nextMimeTypes.delete(frameId);
         nextSourceKinds.delete(frameId);
+        nextRedactionCounts.delete(frameId);
         nextLoadMs.delete(frameId);
         nextFailures.delete(frameId);
       }
       previewMimeTypeCache = nextMimeTypes;
       previewSourceKindCache = nextSourceKinds;
+      previewRedactionCountCache = nextRedactionCounts;
       previewLoadMsCache = nextLoadMs;
       previewFailedAt = nextFailures;
     }
@@ -3338,6 +3358,7 @@
     metadata?: {
       mimeType: string;
       sourceKind: FramePreviewDto["sourceKind"];
+      secretRedactionCount?: number;
       loadMs: number;
     },
   ): void {
@@ -3352,6 +3373,9 @@
       const nextSourceKinds = new Map(previewSourceKindCache);
       nextSourceKinds.set(frameId, metadata.sourceKind);
       previewSourceKindCache = nextSourceKinds;
+      const nextRedactionCounts = new Map(previewRedactionCountCache);
+      nextRedactionCounts.set(frameId, metadata.secretRedactionCount ?? 0);
+      previewRedactionCountCache = nextRedactionCounts;
       const nextLoadMs = new Map(previewLoadMsCache);
       nextLoadMs.set(frameId, metadata.loadMs);
       previewLoadMsCache = nextLoadMs;
@@ -3492,6 +3516,11 @@
       const nextSourceKinds = new Map(previewSourceKindCache);
       nextSourceKinds.delete(frameId);
       previewSourceKindCache = nextSourceKinds;
+    }
+    if (previewRedactionCountCache.has(frameId)) {
+      const nextRedactionCounts = new Map(previewRedactionCountCache);
+      nextRedactionCounts.delete(frameId);
+      previewRedactionCountCache = nextRedactionCounts;
     }
     if (previewLoadMsCache.has(frameId)) {
       const nextLoadMs = new Map(previewLoadMsCache);
@@ -3697,6 +3726,20 @@
     }
   }
 
+  async function confirmOriginalMediaAccessIfRedacted(frameId: number): Promise<boolean> {
+    const redactionCount = previewRedactionCountCache.get(frameId) ?? 0;
+    if (redactionCount <= 0) return true;
+    return await ask(
+      "Original capture may still contain redacted secrets. Continue?",
+      {
+        title: "Open Original Capture",
+        kind: "warning",
+        okLabel: "Continue",
+        cancelLabel: "Cancel",
+      },
+    );
+  }
+
   async function copyActiveFrameImage(): Promise<void> {
     const frame = timelineActive;
     const previewUrl = frame ? previewCache.get(frame.id) : null;
@@ -3706,6 +3749,7 @@
     }
 
     try {
+      if (!(await confirmOriginalMediaAccessIfRedacted(frame.id))) return;
       const image = await previewFilePathToClipboardImage(previewUrl);
       try {
         await writeImage(image);
@@ -3730,6 +3774,7 @@
     }
 
     try {
+      if (!(await confirmOriginalMediaAccessIfRedacted(frame.id))) return;
       await writeFile(
         activeFrameDownloadName(frame, previewMimeTypeCache.get(frame.id) ?? null),
         await readFramePreviewBytes(previewUrl),
@@ -3862,20 +3907,20 @@
   }
 
   function searchViewAllowed(view: SearchView, refinements = searchRefinements): boolean {
-    if (refinements.app && view !== "frames") return false;
+    if ((refinements.app || refinements.windowTitle) && view !== "frames") return false;
     if (refinements.audioSource && view !== "audio") return false;
     return true;
   }
 
   function normalizeSearchViewForRefinements(view: SearchView, refinements: SearchCaptureRefinements): SearchView {
-    if (refinements.app) return "frames";
+    if (refinements.app || refinements.windowTitle) return "frames";
     if (refinements.audioSource) return "audio";
     return view;
   }
 
   function compatibleSearchRefinements(refinements: SearchCaptureRefinements): SearchCaptureRefinements {
     const next = { ...refinements };
-    if (next.app && next.audioSource) delete next.audioSource;
+    if ((next.app || next.windowTitle) && next.audioSource) delete next.audioSource;
     return next;
   }
 
@@ -3917,6 +3962,7 @@
     searchRefineMenuOpen = false;
     const next = { ...searchRefinements, audioSource };
     delete next.app;
+    delete next.windowTitle;
     applySearchRefinements(next, "audio");
   }
 
@@ -4196,6 +4242,36 @@
     }
   }
 
+  async function openBrokerCaptureResult(payload: BrokerOpenCaptureResultPayload): Promise<void> {
+    if (payload.kind === "frame" && payload.frameId != null) {
+      const frame = await invoke<FrameDto | null>("get_frame", {
+        request: { frameId: payload.frameId },
+      });
+      if (frame) await jumpToFrame(frame, false);
+      return;
+    }
+    if (payload.kind === "audio" && payload.audioSegmentId != null) {
+      const request: GetAudioSegmentRequest = { audioSegmentId: payload.audioSegmentId };
+      const audio = await invoke<AudioSegmentDto | null>("get_audio_segment", { request });
+      const mapped = audio ? mapAudioSegmentDto(audio) : null;
+      if (mapped && !audioSegments.some((segment) => segment.id === mapped.id)) {
+        audioSegments = [...audioSegments, mapped].sort((a, b) => a.startUnixMs - b.startUnixMs);
+      }
+      selectedAudioSegmentPinned = mapped;
+      selectedAudioSegmentId = audio?.id ?? payload.audioSegmentId;
+      pendingAudioSeekMs = 0;
+    }
+  }
+
+  async function drainPendingBrokerOpenCaptureResults(): Promise<void> {
+    const payloads = await invoke<BrokerOpenCaptureResultPayload[]>(
+      "drain_pending_broker_open_capture_results",
+    );
+    for (const payload of payloads) {
+      await openBrokerCaptureResult(payload);
+    }
+  }
+
   /**
    * Refresh the DB-sourced audio segment lane against the currently loaded
    * frame window. Uses the newest/oldest loaded `capturedAt` values as the
@@ -4327,6 +4403,7 @@
       touchPreviewCache(frameId, dto.filePath, {
         mimeType: dto.mimeType,
         sourceKind: dto.sourceKind,
+        secretRedactionCount: dto.secretRedactionCount,
         loadMs,
       });
       if (activePreviewLoadErrorFrameId === frameId) {
@@ -4635,6 +4712,7 @@
         previewCache = new Map();
         previewMimeTypeCache = new Map();
         previewSourceKindCache = new Map();
+        previewRedactionCountCache = new Map();
         previewLoadMsCache = new Map();
         previewFailedAt = new Map();
         scrubPreviewCache = new Map();
@@ -6453,6 +6531,7 @@
       previewCache = new Map();
       previewMimeTypeCache = new Map();
       previewSourceKindCache = new Map();
+      previewRedactionCountCache = new Map();
       previewLoadMsCache = new Map();
       previewFailedAt = new Map();
       scrubPreviewCache = new Map();
@@ -6915,6 +6994,7 @@
     let unlistenAudioSegmentsChanged: (() => void) | undefined;
     let unlistenTimelineDataChanged: (() => void) | undefined;
     let unlistenScrubPreviewCacheChanged: (() => void) | undefined;
+    let unlistenBrokerOpenCaptureResult: (() => void) | undefined;
     let destroyed = false;
 
     listen("system_did_wake", () => {
@@ -6983,6 +7063,16 @@
       else unlistenScrubPreviewCacheChanged = fn;
     });
 
+    listen<BrokerOpenCaptureResultPayload>("broker_open_capture_result", () => {
+      void drainPendingBrokerOpenCaptureResults();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else {
+        unlistenBrokerOpenCaptureResult = fn;
+        void drainPendingBrokerOpenCaptureResults();
+      }
+    });
+
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onFocus);
     window.addEventListener("pageshow", onFocus);
@@ -7007,6 +7097,7 @@
       unlistenAudioSegmentsChanged?.();
       unlistenTimelineDataChanged?.();
       unlistenScrubPreviewCacheChanged?.();
+      unlistenBrokerOpenCaptureResult?.();
       if (refreshAudioSegmentsDebounceTimer != null) {
         clearTimeout(refreshAudioSegmentsDebounceTimer);
         refreshAudioSegmentsDebounceTimer = null;
@@ -7339,6 +7430,9 @@
                           {#if result.matchCount > 1}
                             <span class="search-card__badge">{result.matchCount} matches</span>
                           {/if}
+                          {#if result.hasSecretRedactions}
+                            <span class="search-card__badge">has redactions</span>
+                          {/if}
                         </div>
                       </button>
                     {/each}
@@ -7376,6 +7470,9 @@
                           </p>
                           {#if result.matchCount > 1}
                             <span class="search-card__badge">{result.matchCount} adjacent matches</span>
+                          {/if}
+                          {#if result.hasSecretRedactions}
+                            <span class="search-card__badge">has redactions</span>
                           {/if}
                         </div>
                       </button>

@@ -9,6 +9,7 @@ use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, T
 
 use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
 
+use super::secret_redaction_pipeline::SecretRedactionPipeline;
 use super::SystemAudioSpeechActivityJobPayload;
 use super::{
     AudioTranscriptionJobPayload, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary,
@@ -1315,18 +1316,42 @@ impl ProcessingStore {
             ));
         }
 
+        let secret_redaction_audio_source_kind =
+            if SecretRedactionPipeline::needs_audio_segment_source(&job) {
+                Some(
+                    get_audio_segment_optional(&mut *transaction, job.subject_id)
+                        .await?
+                        .ok_or(AppInfraError::AudioSegmentNotFound(job.subject_id))?
+                        .source_kind,
+                )
+            } else {
+                None
+            };
+        let result_persistence_plan = SecretRedactionPipeline::plan_processing_result_persistence(
+            &job,
+            secret_redaction_audio_source_kind.as_ref(),
+            result,
+        )?;
+
         let result_insert = sqlx::query(
             "INSERT INTO processing_results (\
-                job_id, subject_type, subject_id, processor, result_text, structured_payload_json, processor_version\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                job_id, subject_type, subject_id, processor, result_text, structured_payload_json, processor_version, \
+                redaction_detector_version, redaction_checked_at\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CASE WHEN ?8 IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END)",
         )
         .bind(job_id)
         .bind(&job.subject_type)
         .bind(job.subject_id)
         .bind(&job.processor)
-        .bind(result.result_text.as_deref())
-        .bind(result.structured_payload_json.as_deref())
-        .bind(result.processor_version.as_deref())
+        .bind(result_persistence_plan.draft().result_text.as_deref())
+        .bind(
+            result_persistence_plan
+                .draft()
+                .structured_payload_json
+                .as_deref(),
+        )
+        .bind(result_persistence_plan.draft().processor_version.as_deref())
+        .bind(result_persistence_plan.redaction_detector_version())
         .execute(&mut *transaction)
         .await?;
 
@@ -1360,6 +1385,9 @@ impl ProcessingStore {
         let stored_result = get_processing_result_optional(&mut *transaction, result_id)
             .await?
             .ok_or(AppInfraError::ProcessingResultNotFound(result_id))?;
+        result_persistence_plan
+            .persist_secret_redactions_in_transaction(&mut transaction, &stored_result)
+            .await?;
 
         if job.processor == AUDIO_TRANSCRIPTION_PROCESSOR
             && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
@@ -1396,7 +1424,8 @@ impl ProcessingStore {
         if job.processor == SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR
             && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
         {
-            let speech_detected = result
+            let speech_detected = result_persistence_plan
+                .draft()
                 .structured_payload_json
                 .as_deref()
                 .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
@@ -1456,7 +1485,11 @@ impl ProcessingStore {
         if job.processor == SPEAKER_ANALYSIS_PROCESSOR
             && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
         {
-            if let Some(payload_json) = result.structured_payload_json.as_deref() {
+            if let Some(payload_json) = result_persistence_plan
+                .draft()
+                .structured_payload_json
+                .as_deref()
+            {
                 let output: SpeakerAnalysisOutput = serde_json::from_str(payload_json)?;
                 persist_speaker_analysis_output(&mut transaction, job.subject_id, &output).await?;
             }
@@ -1484,7 +1517,7 @@ impl ProcessingStore {
         let row = sqlx::query(
             "SELECT \
                 id, job_id, subject_type, subject_id, processor, result_text, structured_payload_json, \
-                processor_version, created_at \
+                processor_version, redaction_detector_version, redaction_checked_at, created_at \
              FROM processing_results \
              WHERE job_id = ?1",
         )
@@ -1502,7 +1535,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT \
                 id, job_id, subject_type, subject_id, processor, result_text, structured_payload_json, \
-                processor_version, created_at \
+                processor_version, redaction_detector_version, redaction_checked_at, created_at \
              FROM processing_results \
              WHERE subject_type = ?1 AND subject_id = ?2 \
              ORDER BY id DESC",
@@ -2872,7 +2905,7 @@ where
     let row = sqlx::query(
         "SELECT \
             id, job_id, subject_type, subject_id, processor, result_text, structured_payload_json, \
-            processor_version, created_at \
+            processor_version, redaction_detector_version, redaction_checked_at, created_at \
          FROM processing_results \
          WHERE id = ?1",
     )
@@ -3104,6 +3137,8 @@ fn map_processing_result(row: SqliteRow) -> Result<ProcessingResult> {
         result_text: row.get("result_text"),
         structured_payload_json: row.get("structured_payload_json"),
         processor_version: row.get("processor_version"),
+        redaction_detector_version: row.get("redaction_detector_version"),
+        redaction_checked_at: row.get("redaction_checked_at"),
         created_at: row.get("created_at"),
     })
 }

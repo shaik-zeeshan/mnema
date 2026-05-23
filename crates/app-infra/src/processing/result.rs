@@ -11,6 +11,8 @@ pub struct ProcessingResult {
     pub result_text: Option<String>,
     pub structured_payload_json: Option<String>,
     pub processor_version: Option<String>,
+    pub redaction_detector_version: Option<String>,
+    pub redaction_checked_at: Option<String>,
     pub created_at: String,
 }
 

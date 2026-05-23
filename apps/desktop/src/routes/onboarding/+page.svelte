@@ -2,12 +2,14 @@
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
   import ScreenResolutionControl from "$lib/components/ScreenResolutionControl.svelte";
   import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
+  import { createAppPrivacyExclusionController } from "$lib/app-privacy-exclusion.svelte";
   import { isShortcutSuppressedTarget } from "$lib/keyboard";
   import { theme } from "$lib/theme.svelte";
   import type {
@@ -17,6 +19,7 @@
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
     AudioTranscriptionProvider,
+    ExcludedAppEntry,
     GetPermissionsResponse,
     OcrModelDownloadProgress,
     OcrModelStatus,
@@ -146,20 +149,31 @@
   let transcriptionDownloadError = $state<string | null>(null);
   let draftTranscriptionMicrophoneEnabled = $state(true);
   let draftTranscriptionSystemAudioEnabled = $state(false);
+  let draftExcludedApps = $state<ExcludedAppEntry[]>([]);
+  const appPrivacyExclusion = createAppPrivacyExclusionController({
+    getExcludedApps: () => draftExcludedApps,
+    onSettingsUpdated: (updated) => {
+      settings = updated;
+      syncDrafts(updated);
+    },
+    setError: (message) => {
+      error = message;
+    },
+  });
 
   const activeIndex = $derived(steps.findIndex((step) => step.id === activeStep));
   const railActiveIndex = $derived(railSteps.findIndex((step) => step.id === activeStep));
   const isWelcome = $derived(activeStep === "about");
   const isFinal = $derived(activeStep === "done");
   const showChrome = $derived(!isWelcome && !isFinal);
-  const canGoBack = $derived(activeIndex > 0 && !saving && !starting && !completing);
+  const canGoBack = $derived(activeIndex > 0 && !saving && !starting && !completing && !appPrivacyExclusion.commandInFlight);
   const selectedSourceCount = $derived(
     Number(draftCaptureScreen) + Number(draftCaptureMicrophone) + Number(draftCaptureSystemAudio)
   );
   const requiresOcrAvailability = $derived(draftOcrEnabled);
   const requiresTranscriptionAvailability = $derived(draftTranscriptionEnabled);
   const canGoNext = $derived(
-    !loading && !saving && !starting && !completing && settings !== null
+    !loading && !saving && !starting && !completing && !appPrivacyExclusion.commandInFlight && settings !== null
     && (activeStep !== "sources" || selectedSourceCount > 0)
     && (activeStep !== "storage" || draftSaveDirectory.trim().length > 0)
     && canProceedFromActiveStep()
@@ -170,7 +184,6 @@
   );
   const customResolutionErrors = $derived(validateCustomResolution());
   const customBitrateErrors = $derived(validateCustomBitrate());
-
   $effect(() => { void initialize(); });
   $effect(() => {
     void loadOcrModelStatus();
@@ -203,7 +216,6 @@
       if (destroyed) fn();
       else unlistenRecordingSettingsChanged = fn;
     });
-
     return () => {
       destroyed = true;
       unlistenOcrDownloadProgress?.();
@@ -226,7 +238,6 @@
     const parsed = parsePositiveInteger(draftCustomMbpsRaw);
     draftCustomMbps = parsed !== null && parsed >= 1 && parsed <= 40 ? parsed : null;
   });
-
   async function initialize(): Promise<void> {
     loading = true;
     error = null;
@@ -243,6 +254,8 @@
       settings = loadedSettings;
       permissions = permissionResponse.permissions as Record<PermissionKey, PermissionValue>;
       syncDrafts(loadedSettings);
+      void appPrivacyExclusion.loadPrivacyAppCandidates();
+      void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
     } catch (err) {
       error = serializeError(err);
     } finally {
@@ -325,6 +338,7 @@
     draftTranscriptionMemoryMode = next.transcription?.memoryMode ?? "balanced";
     draftTranscriptionIdleUnloadSeconds = next.transcription?.idleUnloadSeconds ?? 300;
     draftTranscriptionChunkSeconds = next.transcription?.chunkSeconds ?? 30;
+    draftExcludedApps = [...(next.privacy?.excludedApps ?? [])];
   }
 
   function buildSettingsRequest(): RecordingSettings {
@@ -1118,7 +1132,7 @@
               </div>
             </article>
           {:else if activeStep === "privacy"}
-            <article class="card">
+            <article class="card" class:card--combobox-open={appPrivacyExclusion.comboboxOpen}>
               <header class="card__header">
                 <span class="card__index">04</span>
                 <div class="card__heading">
@@ -1128,13 +1142,10 @@
               </header>
 
               <div class="settings-stack">
-                <div class="privacy-disclosure">
-                  <p>Browsers are recorded unless the browser app is excluded.</p>
-                  <p>Private/incognito browser windows are recorded unless the browser app is excluded.</p>
-                  <p>Mnema does not detect browser password pages or password fields.</p>
-                  <p>Browser extensions and websites are not excluded separately.</p>
-                </div>
-                <p class="hint">You can add password manager, authenticator, and browser app exclusions in Privacy settings before your first recording.</p>
+                <AppPrivacyExclusion
+                  controller={appPrivacyExclusion}
+                  comboboxListId="onboarding-privacy-app-combobox-list"
+                />
               </div>
             </article>
           {:else if activeStep === "processing"}
@@ -1758,6 +1769,10 @@
     justify-content: center;
     gap: 10px;
     padding: 28px;
+  }
+  .card--combobox-open {
+    overflow: visible;
+    z-index: 10;
   }
   .loader {
     width: 14px;
@@ -2522,22 +2537,6 @@
   .btn--link:not(:disabled):hover {
     color: var(--app-accent);
     background: transparent;
-  }
-
-  .privacy-disclosure {
-    display: grid;
-    gap: 8px;
-    padding: 12px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface-raised);
-  }
-
-  .privacy-disclosure p {
-    margin: 0;
-    color: var(--app-text-muted);
-    font-size: 13px;
-    line-height: 1.45;
   }
 
   .ob__foot--minimal { border-top: 0; padding-top: 0; }

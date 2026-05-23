@@ -52,6 +52,8 @@ export interface FramePreviewDto {
 	mimeType: string;
 	filePath: string;
 	sourceKind: FramePreviewSourceKind;
+	hasSecretRedactions: boolean;
+	secretRedactionCount: number;
 }
 
 export type FramePreviewVideoScope = "active_frame";
@@ -182,6 +184,7 @@ export interface SearchCaptureRequest {
 export interface SearchCaptureRefinements {
 	dateRange?: SearchDateRangeRefinement;
 	app?: SearchAppRefinement;
+	windowTitle?: string;
 	audioSource?: AudioSegmentSourceKind;
 }
 
@@ -192,7 +195,7 @@ export interface SearchDateRangeRefinement {
 }
 
 export interface SearchAppRefinement {
-	kind: "bundle_id" | "app_name";
+	kind: "any" | "bundle_id" | "app_name";
 	value: string;
 	displayName: string;
 }
@@ -214,10 +217,13 @@ export interface FrameSearchResultDto {
 	groupEndAt: string;
 	matchCount: number;
 	snippet: string;
+	appBundleId: string | null;
 	appName: string | null;
 	windowTitle: string | null;
 	thumbnailFrameId: number;
 	textSourceKind: "direct" | "equivalent_reuse";
+	hasSecretRedactions: boolean;
+	secretRedactionCount: number;
 }
 
 export interface AudioSearchResultDto {
@@ -231,6 +237,8 @@ export interface AudioSearchResultDto {
 	matchCount: number;
 	snippet: string;
 	alignedFrame: FrameDto | null;
+	hasSecretRedactions: boolean;
+	secretRedactionCount: number;
 }
 
 export interface ListAudioSegmentsRequest {
@@ -239,6 +247,10 @@ export interface ListAudioSegmentsRequest {
 }
 
 export interface GetAudioSegmentMediaRequest {
+	audioSegmentId: number;
+}
+
+export interface GetAudioSegmentRequest {
 	audioSegmentId: number;
 }
 

@@ -1,5 +1,7 @@
 mod app_infra;
 mod audio_transcription_models;
+mod broker_authorization_channel;
+mod cli_access;
 mod general_app_log;
 mod keyboard_bindings;
 mod managed_storage_layout;
@@ -14,7 +16,10 @@ mod speaker_analysis_runtime;
 mod status_bar;
 mod windows;
 
-use tauri::Manager;
+use std::{collections::VecDeque, path::Path, sync::Mutex};
+
+use tauri::{Emitter, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_log::{Target, TargetKind, WEBVIEW_TARGET};
 
@@ -35,6 +40,32 @@ const APP_LOG_TARGET_PREFIXES: &[&str] = &[
 ];
 const ALREADY_RUNNING_MESSAGE: &str =
     "Mnema is already running. Close the existing Mnema window before opening it again.";
+const BROKER_OPEN_CAPTURE_RESULT_EVENT: &str = "broker_open_capture_result";
+const BROKER_AUTHORIZATION_REQUEST_FILE_NAME: &str = "broker-authorization-request.json";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrokerOpenCaptureResultPayload {
+    opaque_id: String,
+    kind: String,
+    frame_id: Option<i64>,
+    audio_segment_id: Option<i64>,
+}
+
+#[derive(Default)]
+struct BrokerOpenCaptureResultState {
+    pending: Mutex<VecDeque<BrokerOpenCaptureResultPayload>>,
+}
+
+#[tauri::command]
+fn drain_pending_broker_open_capture_results(
+    state: tauri::State<'_, BrokerOpenCaptureResultState>,
+) -> Vec<BrokerOpenCaptureResultPayload> {
+    let Ok(mut pending) = state.pending.lock() else {
+        return Vec::new();
+    };
+    pending.drain(..).collect()
+}
 
 fn is_app_log_target(target: &str) -> bool {
     APP_LOG_TARGET_PREFIXES.iter().any(|prefix| {
@@ -47,6 +78,115 @@ fn is_app_log_target(target: &str) -> bool {
 
 fn should_forward_window_event(event: &tauri::WindowEvent, webview_window_found: bool) -> bool {
     matches!(event, tauri::WindowEvent::Destroyed) || webview_window_found
+}
+
+fn broker_opaque_id_from_url(url: &url::Url) -> Option<String> {
+    if url.scheme() != "mnema" {
+        return None;
+    }
+    let mut segments = url.path_segments()?.collect::<Vec<_>>();
+    if let Some(host) = url.host_str() {
+        segments.insert(0, host);
+    }
+    match segments.as_slice() {
+        ["open", opaque_id] | ["broker", "open", opaque_id] => Some((*opaque_id).to_string()),
+        _ => return None,
+    }
+}
+
+async fn broker_payload_from_url(
+    config_dir: &Path,
+    url: &url::Url,
+) -> Option<BrokerOpenCaptureResultPayload> {
+    let opaque_id = broker_opaque_id_from_url(url)?;
+    let capture_ref = ::app_infra::brokered_access::authorize_active_opaque_capture_reference(
+        config_dir, &opaque_id,
+    )
+    .await
+    .ok()
+    .flatten()?;
+    Some(BrokerOpenCaptureResultPayload {
+        opaque_id: capture_ref.opaque_id,
+        frame_id: capture_ref.frame_id,
+        audio_segment_id: capture_ref.audio_segment_id,
+        kind: capture_ref.kind,
+    })
+}
+
+fn enqueue_broker_open_result(app_handle: &tauri::AppHandle, url: &url::Url) {
+    let Ok(config_dir) = app_handle.path().app_config_dir() else {
+        return;
+    };
+    if broker_opaque_id_from_url(url).is_none() {
+        return;
+    }
+    let url = url.clone();
+    let app_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(payload) = broker_payload_from_url(&config_dir, &url).await else {
+            return;
+        };
+        if let Ok(mut pending) = app_handle
+            .state::<BrokerOpenCaptureResultState>()
+            .pending
+            .lock()
+        {
+            pending.push_back(payload.clone());
+        }
+        let _ = windows::open_main_window(&app_handle);
+        let _ = app_handle.emit(BROKER_OPEN_CAPTURE_RESULT_EVENT, payload);
+    });
+}
+
+fn broker_authorization_request_path(app_handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app_handle
+        .path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join(BROKER_AUTHORIZATION_REQUEST_FILE_NAME))
+}
+
+fn drain_pending_broker_authorization_request_from_app(app_handle: &tauri::AppHandle) -> bool {
+    let Some(path) = broker_authorization_request_path(app_handle) else {
+        return false;
+    };
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let _ = std::fs::remove_file(&path);
+    serde_json::from_str::<serde_json::Value>(&raw).is_ok()
+}
+
+fn notify_pending_broker_authorization_request(app_handle: &tauri::AppHandle) -> bool {
+    let marker_drained = drain_pending_broker_authorization_request_from_app(app_handle);
+    let has_pending_request =
+        broker_authorization_channel::has_pending_cli_access_request(app_handle);
+    if !should_open_pending_broker_authorization_request(marker_drained, has_pending_request) {
+        return false;
+    }
+    let _ = windows::open_cli_access_request_window(app_handle);
+    true
+}
+
+fn should_open_pending_broker_authorization_request(
+    marker_drained: bool,
+    has_pending_request: bool,
+) -> bool {
+    marker_drained && has_pending_request
+}
+
+fn should_notify_pending_broker_authorization_request(
+    onboarding_complete: bool,
+    already_handled: bool,
+) -> bool {
+    onboarding_complete && !already_handled
+}
+
+fn notify_pending_broker_authorization_request_if_onboarded(app_handle: &tauri::AppHandle) -> bool {
+    should_notify_pending_broker_authorization_request(
+        windows::is_onboarding_complete(app_handle),
+        false,
+    ) && notify_pending_broker_authorization_request(app_handle)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +240,14 @@ pub fn run() {
         .manage(ocr_models::OcrModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
+        .manage(BrokerOpenCaptureResultState::default())
+        .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if notify_pending_broker_authorization_request_if_onboarded(app) {
+                return;
+            }
+            let _ = windows::open_main_window(app);
+        }))
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(tauri_plugin_log::log::LevelFilter::Info)
@@ -116,6 +264,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
@@ -135,12 +284,30 @@ pub fn run() {
                 event,
                 webview_window.as_ref(),
             );
+            if window.label() == "cli-access-request"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                broker_authorization_channel::cancel_pending_request(
+                    &window.app_handle(),
+                    "closed",
+                );
+            }
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
             app_infra::preview_retention_cleanup,
             app_infra::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
+            cli_access::list_cli_access_grants,
+            cli_access::revoke_cli_access_grant,
+            cli_access::revoke_cli_access_for_client,
+            cli_access::list_cli_access_history,
+            cli_access::get_cli_access_status,
+            cli_access::install_cli,
+            cli_access::reinstall_cli,
+            broker_authorization_channel::get_pending_cli_access_request,
+            broker_authorization_channel::approve_pending_cli_access_request,
+            broker_authorization_channel::cancel_pending_cli_access_request,
             app_infra::delete_recent_capture,
             one_time_prompts::get_one_time_prompt_state,
             one_time_prompts::mark_one_time_prompt_shown,
@@ -175,6 +342,7 @@ pub fn run() {
             app_infra::list_frame_summaries_in_range,
             app_infra::get_latest_frame_in_range,
             app_infra::list_audio_segments,
+            app_infra::get_audio_segment,
             app_infra::get_audio_segment_media,
             app_infra::get_frame,
             app_infra::get_earliest_earlier_equivalent_frame,
@@ -239,8 +407,21 @@ pub fn run() {
             windows::complete_onboarding,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
+            drain_pending_broker_open_capture_results,
         ])
         .setup(|app| {
+            let app_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    enqueue_broker_open_result(&app_handle, &url);
+                }
+            });
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    enqueue_broker_open_result(app.handle(), &url);
+                }
+            }
+            let _ = app.deep_link().register_all();
             windows::install_macos_terminate_handler(app.handle());
             native_capture::initialize_recording_settings_from_disk(app.handle());
             one_time_prompts::initialize(app.handle());
@@ -263,6 +444,7 @@ pub fn run() {
                     }
                 }
             }
+            broker_authorization_channel::start(app.handle()).map_err(std::io::Error::other)?;
             native_capture::maybe_push_audio_transcription_unavailable_startup_warning(
                 app.handle(),
             );
@@ -270,12 +452,23 @@ pub fn run() {
             native_capture::start_microphone_device_change_notifier(app.handle().clone());
             native_capture::start_system_wake_notifier(app.handle().clone());
             native_capture::start_metadata_notifier(app.handle().clone());
-            let onboarding_state = app.state::<windows::OnboardingStateStore>();
-            let onboarding_complete =
+            let onboarding_complete = windows::is_onboarding_complete(app.handle());
+            let handled_startup_authorization_request =
+                should_notify_pending_broker_authorization_request(onboarding_complete, false)
+                    && notify_pending_broker_authorization_request(app.handle());
+            if !handled_startup_authorization_request {
+                let onboarding_state = app.state::<windows::OnboardingStateStore>();
                 windows::open_startup_window(app.handle(), onboarding_state.inner())
                     .map_err(std::io::Error::other)?;
+            }
             if onboarding_complete {
                 native_capture::maybe_auto_start_native_capture(app.handle());
+            }
+            if should_notify_pending_broker_authorization_request(
+                onboarding_complete,
+                handled_startup_authorization_request,
+            ) {
+                notify_pending_broker_authorization_request(app.handle());
             }
             status_bar::refresh(app.handle());
             Ok(())
@@ -304,6 +497,9 @@ pub fn run() {
                 has_visible_windows: false,
                 ..
             } => {
+                if notify_pending_broker_authorization_request(app_handle) {
+                    return;
+                }
                 let _ = windows::open_main_window(app_handle);
             }
             _ => {}
@@ -317,9 +513,20 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 #[cfg(test)]
 mod tests {
     use super::{
-        exit_request_action_for_exit_request, is_app_log_target, should_forward_window_event,
-        ExitRequestAction,
+        broker_payload_from_url, exit_request_action_for_exit_request, is_app_log_target,
+        should_forward_window_event, should_notify_pending_broker_authorization_request,
+        should_open_pending_broker_authorization_request, ExitRequestAction,
     };
+
+    #[test]
+    fn broker_deep_link_rejects_unsigned_opaque_id() {
+        let dir = tempfile::tempdir().expect("config dir should be created");
+        let url = url::Url::parse("mnema://open/f1").expect("url should parse");
+
+        let payload = tauri::async_runtime::block_on(broker_payload_from_url(dir.path(), &url));
+
+        assert!(payload.is_none());
+    }
 
     #[test]
     fn app_log_filter_keeps_only_our_targets() {
@@ -347,6 +554,38 @@ mod tests {
         assert!(!should_forward_window_event(
             &tauri::WindowEvent::Focused(true),
             false,
+        ));
+    }
+
+    #[test]
+    fn pending_broker_authorization_waits_for_onboarding() {
+        assert!(!should_notify_pending_broker_authorization_request(
+            false, false
+        ));
+    }
+
+    #[test]
+    fn pending_broker_authorization_is_not_handled_twice() {
+        assert!(!should_notify_pending_broker_authorization_request(
+            true, true
+        ));
+    }
+
+    #[test]
+    fn pending_broker_authorization_notifies_after_onboarding_once() {
+        assert!(should_notify_pending_broker_authorization_request(
+            true, false
+        ));
+    }
+
+    #[test]
+    fn pending_broker_authorization_marker_opens_only_for_real_pending_request() {
+        assert!(should_open_pending_broker_authorization_request(true, true));
+        assert!(!should_open_pending_broker_authorization_request(
+            true, false
+        ));
+        assert!(!should_open_pending_broker_authorization_request(
+            false, true
         ));
     }
 

@@ -1,0 +1,49 @@
+# Provider prefixes and labeled keys
+api_key|OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456
+api_key|OPENAI_API_KEY="sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"
+api_key|openai api key: sk-abcdefghijklmnopqrstuvwxyz123456
+api_key|STRIPE_SECRET_KEY=rk_live_abcdefghijklmnopqrstuvwxyz123456
+api_key|aws_access_key_id = AKIA1234567890ABCDEF
+api_key|google api key: AIza1234567890abcdefghijklmnopqrstuvwxyz123
+api_key|sendgrid key SG.abcdefghijklmnopqrstu.vwxyzABCDEFGHIJKLMNOPQRST
+api_key|gitlab token glpat-abcdefghijklmnopqrstuvwx
+access_token|stripe webhook secret whsec_abcdefghijklmnopqrstuvwxyz1234
+
+# Access tokens and auth headers
+access_token|Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890
+access_token|authorization="Bearer abcdefghijklmnopqrstuvwxyz1234567890"
+access_token|GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz1234567890AB
+access_token|slack bot token xoxb-123456789012-123456789012-abcdefghijklmnop
+access_token|oauth access token: ya29.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789
+access_token|Slack webhook https://hooks.slack.com/services/T00000000/B00000000/abcdefghijklmnopqrstuvwxyz
+access_token|jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghiABCDEFGHI1234567890
+
+# Connection strings
+connection_string|postgres://user:pass1234@localhost/app
+connection_string|postgresql://app_user:p4ssword-value@db.internal:5432/mnema
+connection_string|mysql://root:supersafe999@127.0.0.1:3306/app
+connection_string|mongodb+srv://service:secret-value-123@cluster.example.net/app
+connection_string|redis://default:cache-password-123@cache.example.net:6379/0
+
+# Private keys
+private_key|-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----
+private_key|-----BEGIN RSA PRIVATE KEY-----\nabc123\n-----END RSA PRIVATE KEY-----
+private_key|-----BEGIN OPENSSH PRIVATE KEY-----\nabc123\n-----END OPENSSH PRIVATE KEY-----
+
+# Password and secret labels
+password|DB_PASSWORD=hunter222
+password|password: "correct-horse-999"
+password|passwd='another-secret-999'
+password|client_secret = abcdefghijklmnopqrstuvwxyz123456
+password|db password: database-secret-999
+
+# Auth codes
+auth_code|verification code 123456
+auth_code|otp: 654321
+auth_code|MFA code = 12345678
+auth_code|authentication code 765432
+
+# Seed and recovery phrases
+seed_like_secret|seed phrase: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about
+seed_like_secret|recovery phrase: legal winner thank year wave sausage worth useful legal winner thank yellow
+seed_like_secret|mnemonic: letter advice cage absurd amount doctor acoustic avoid letter advice cage above

@@ -44,6 +44,8 @@ const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETENTION_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+const MNEMA_CLI_COMMAND_NAME: &str = "mnema";
+const MNEMA_CLI_SIDECAR_NAME: &str = "mnema-cli";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppInfraInitializeError {
@@ -323,6 +325,12 @@ pub struct GetAudioSegmentMediaRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetAudioSegmentRequest {
+    pub audio_segment_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListSpeakerTurnsRequest {
     pub audio_segment_id: i64,
 }
@@ -503,10 +511,13 @@ pub struct FrameSearchResultDto {
     pub group_end_at: String,
     pub match_count: u32,
     pub snippet: String,
+    pub app_bundle_id: Option<String>,
     pub app_name: Option<String>,
     pub window_title: Option<String>,
     pub thumbnail_frame_id: i64,
     pub text_source_kind: String,
+    pub secret_redaction_count: u32,
+    pub has_secret_redactions: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -522,6 +533,8 @@ pub struct AudioSearchResultDto {
     pub match_count: u32,
     pub snippet: String,
     pub aligned_frame: Option<FrameDto>,
+    pub secret_redaction_count: u32,
+    pub has_secret_redactions: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -794,10 +807,13 @@ impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
             group_end_at: result.group_end_at,
             match_count: result.match_count,
             snippet: result.snippet,
+            app_bundle_id: result.app_bundle_id,
             app_name: result.app_name,
             window_title: result.window_title,
             thumbnail_frame_id: result.thumbnail_frame_id,
             text_source_kind: result.text_source_kind,
+            secret_redaction_count: result.secret_redaction_count,
+            has_secret_redactions: result.has_secret_redactions,
         }
     }
 }
@@ -815,6 +831,8 @@ impl From<::app_infra::AudioSearchResult> for AudioSearchResultDto {
             match_count: result.match_count,
             snippet: result.snippet,
             aligned_frame: result.aligned_frame.map(FrameDto::from),
+            secret_redaction_count: result.secret_redaction_count,
+            has_secret_redactions: result.has_secret_redactions,
         }
     }
 }
@@ -3769,6 +3787,345 @@ pub async fn get_retention_cleanup_status(
         .map_err(|error| format!("failed to read retention cleanup status: {error}"))
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MnemaCliStatus {
+    pub install_path: String,
+    pub install_dir: String,
+    pub bundled_cli_path: String,
+    pub bundled_cli_exists: bool,
+    pub installed: bool,
+    pub install_dir_in_path: bool,
+    pub existing_target: Option<String>,
+}
+
+fn mnema_cli_sidecar_name() -> String {
+    #[cfg(windows)]
+    {
+        format!("{MNEMA_CLI_SIDECAR_NAME}.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        MNEMA_CLI_SIDECAR_NAME.to_string()
+    }
+}
+
+fn mnema_cli_sidecar_name_for_target_triple(target_triple: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("{MNEMA_CLI_SIDECAR_NAME}-{target_triple}.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("{MNEMA_CLI_SIDECAR_NAME}-{target_triple}")
+    }
+}
+
+fn current_target_triple_candidates() -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    for key in ["CARGO_BUILD_TARGET", "TAURI_ENV_TARGET_TRIPLE", "TARGET"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.is_empty() && !candidates.contains(&value) {
+                candidates.push(value);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let arch = std::env::consts::ARCH;
+        let host_triple = format!("{arch}-apple-darwin");
+        if !candidates.contains(&host_triple) {
+            candidates.push(host_triple);
+        }
+        let universal_triple = "universal-apple-darwin".to_string();
+        if !candidates.contains(&universal_triple) {
+            candidates.push(universal_triple);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let env = if cfg!(target_env = "gnu") {
+            "pc-windows-gnu"
+        } else {
+            "pc-windows-msvc"
+        };
+        let host_triple = format!("{}-{env}", std::env::consts::ARCH);
+        if !candidates.contains(&host_triple) {
+            candidates.push(host_triple);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let env = if cfg!(target_env = "musl") {
+            "unknown-linux-musl"
+        } else {
+            "unknown-linux-gnu"
+        };
+        let host_triple = format!("{}-{env}", std::env::consts::ARCH);
+        if !candidates.contains(&host_triple) {
+            candidates.push(host_triple);
+        }
+    }
+
+    candidates
+}
+
+fn bundled_mnema_cli_path_in_dir(exe_dir: &Path) -> PathBuf {
+    let default_path = exe_dir.join(mnema_cli_sidecar_name());
+    if default_path.is_file() {
+        return default_path;
+    }
+
+    for target_triple in current_target_triple_candidates() {
+        let candidate = exe_dir.join(mnema_cli_sidecar_name_for_target_triple(&target_triple));
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+
+    default_path
+}
+
+fn bundled_mnema_cli_path() -> Result<PathBuf, String> {
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current exe: {error}"))?;
+    let exe_dir = current_exe
+        .parent()
+        .ok_or_else(|| format!("current exe has no parent: {}", current_exe.display()))?;
+    Ok(bundled_mnema_cli_path_in_dir(exe_dir))
+}
+
+fn mnema_cli_install_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let home_dir = app_handle
+        .path()
+        .home_dir()
+        .map_err(|error| format!("failed to resolve home dir: {error}"))?;
+    Ok(mnema_cli_install_path_for_home(&home_dir))
+}
+
+#[cfg(windows)]
+fn mnema_cli_install_path_for_home(home_dir: &Path) -> PathBuf {
+    home_dir
+        .join("AppData")
+        .join("Local")
+        .join("Microsoft")
+        .join("WindowsApps")
+        .join(format!("{MNEMA_CLI_COMMAND_NAME}.exe"))
+}
+
+#[cfg(not(windows))]
+fn mnema_cli_install_path_for_home(home_dir: &Path) -> PathBuf {
+    home_dir
+        .join(".local")
+        .join("bin")
+        .join(MNEMA_CLI_COMMAND_NAME)
+}
+
+#[cfg(not(windows))]
+fn terminal_shell_path_dirs() -> Vec<PathBuf> {
+    let shell = std::env::var_os("SHELL")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/bin/zsh".into());
+    let shell_path = std::process::Command::new(shell)
+        .args(["-lc", "printf %s \"$PATH\""])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok());
+
+    let mut path_dirs: Vec<PathBuf> = shell_path
+        .as_deref()
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .collect();
+    if let Some(process_path) = std::env::var_os("PATH") {
+        path_dirs.extend(std::env::split_paths(&process_path));
+    }
+    path_dirs
+}
+
+#[cfg(windows)]
+fn terminal_shell_path_dirs() -> Vec<PathBuf> {
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default()
+}
+
+fn resolve_link_target(link_path: &Path, target: PathBuf) -> PathBuf {
+    if target.is_absolute() {
+        target
+    } else {
+        link_path
+            .parent()
+            .map(|parent| parent.join(&target))
+            .unwrap_or(target)
+    }
+}
+
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn existing_cli_symlink_is_safe_to_replace(
+    existing_target: &Path,
+    bundled_cli_path: &Path,
+) -> bool {
+    paths_refer_to_same_file(existing_target, bundled_cli_path)
+}
+
+#[cfg(windows)]
+fn files_have_same_contents(left: &Path, right: &Path) -> bool {
+    let Ok(left_metadata) = fs::metadata(left) else {
+        return false;
+    };
+    let Ok(right_metadata) = fs::metadata(right) else {
+        return false;
+    };
+    left_metadata.is_file()
+        && right_metadata.is_file()
+        && left_metadata.len() == right_metadata.len()
+        && fs::read(left)
+            .ok()
+            .zip(fs::read(right).ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn path_dir_in_shell_path(dir: &Path) -> bool {
+    terminal_shell_path_dirs()
+        .into_iter()
+        .any(|entry| paths_refer_to_same_file(&entry, dir))
+}
+
+fn mnema_cli_status_for_paths(install_path: PathBuf, bundled_cli_path: PathBuf) -> MnemaCliStatus {
+    let existing_target = fs::read_link(&install_path)
+        .ok()
+        .map(|target| resolve_link_target(&install_path, target));
+    let symlink_installed = existing_target
+        .as_deref()
+        .is_some_and(|target| paths_refer_to_same_file(target, &bundled_cli_path));
+    #[cfg(windows)]
+    let installed = symlink_installed || files_have_same_contents(&install_path, &bundled_cli_path);
+    #[cfg(not(windows))]
+    let installed = symlink_installed;
+    let install_dir_in_path = install_path.parent().is_some_and(path_dir_in_shell_path);
+
+    MnemaCliStatus {
+        install_dir: install_path
+            .parent()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        install_path: install_path.display().to_string(),
+        bundled_cli_exists: bundled_cli_path.is_file(),
+        bundled_cli_path: bundled_cli_path.display().to_string(),
+        installed,
+        install_dir_in_path,
+        existing_target: existing_target.map(|path| path.display().to_string()),
+    }
+}
+
+#[cfg(unix)]
+fn create_mnema_cli_link(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, destination)
+}
+
+#[cfg(windows)]
+fn create_mnema_cli_link(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(source, destination)
+        .or_else(|_| fs::copy(source, destination).map(|_| ()))
+}
+
+pub async fn get_cli_status_inner(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
+    let install_path = mnema_cli_install_path(&app_handle)?;
+    let bundled_cli_path = bundled_mnema_cli_path()?;
+    Ok(mnema_cli_status_for_paths(install_path, bundled_cli_path))
+}
+
+pub async fn install_cli_inner(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
+    let install_path = mnema_cli_install_path(&app_handle)?;
+    let bundled_cli_path = bundled_mnema_cli_path()?;
+
+    if !bundled_cli_path.is_file() {
+        return Err(format!(
+            "bundled Mnema CLI is missing at {}",
+            bundled_cli_path.display()
+        ));
+    }
+
+    let install_dir = install_path
+        .parent()
+        .ok_or_else(|| format!("CLI install path has no parent: {}", install_path.display()))?;
+    fs::create_dir_all(install_dir).map_err(|error| {
+        format!(
+            "failed to create CLI install directory {}: {error}",
+            install_dir.display()
+        )
+    })?;
+
+    if let Ok(metadata) = fs::symlink_metadata(&install_path) {
+        if metadata.file_type().is_symlink() {
+            let existing_target = fs::read_link(&install_path)
+                .map(|target| resolve_link_target(&install_path, target))
+                .map_err(|error| {
+                    format!(
+                        "failed to inspect existing CLI symlink {}: {error}",
+                        install_path.display()
+                    )
+                })?;
+            if !existing_cli_symlink_is_safe_to_replace(&existing_target, &bundled_cli_path) {
+                return Err(format!(
+                    "refusing to overwrite existing CLI symlink {} -> {}",
+                    install_path.display(),
+                    existing_target.display()
+                ));
+            }
+            fs::remove_file(&install_path).map_err(|error| {
+                format!(
+                    "failed to replace existing CLI symlink {}: {error}",
+                    install_path.display()
+                )
+            })?;
+        } else {
+            #[cfg(windows)]
+            if metadata.is_file() && files_have_same_contents(&install_path, &bundled_cli_path) {
+                fs::remove_file(&install_path).map_err(|error| {
+                    format!(
+                        "failed to replace existing CLI file {}: {error}",
+                        install_path.display()
+                    )
+                })?;
+            } else {
+                return Err(format!(
+                    "refusing to overwrite existing non-symlink at {}",
+                    install_path.display()
+                ));
+            }
+            #[cfg(not(windows))]
+            return Err(format!(
+                "refusing to overwrite existing non-symlink at {}",
+                install_path.display()
+            ));
+        }
+    }
+
+    create_mnema_cli_link(&bundled_cli_path, &install_path).map_err(|error| {
+        format!(
+            "failed to link {} to {}: {error}",
+            install_path.display(),
+            bundled_cli_path.display()
+        )
+    })?;
+
+    Ok(mnema_cli_status_for_paths(install_path, bundled_cli_path))
+}
+
 #[tauri::command]
 pub async fn submit_debug_cpu_job(
     request: SubmitDebugCpuJobRequest,
@@ -4011,6 +4368,24 @@ pub async fn get_audio_segment_media(
             )
         })?
         .ok_or_else(|| format!("audio segment {} not found", request.audio_segment_id))
+}
+
+#[tauri::command]
+pub async fn get_audio_segment(
+    request: GetAudioSegmentRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Option<AudioSegmentDto>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .get_audio_segment(request.audio_segment_id)
+        .await
+        .map(|segment| segment.map(AudioSegmentDto::from))
+        .map_err(|error| {
+            format!(
+                "failed to get audio segment {}: {error}",
+                request.audio_segment_id
+            )
+        })
 }
 
 #[tauri::command]
@@ -4433,6 +4808,65 @@ mod tests {
             .build()
             .expect("test runtime should build")
             .block_on(test);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn mnema_cli_install_path_for_home_uses_user_local_bin() {
+        assert_eq!(
+            mnema_cli_install_path_for_home(Path::new("/Users/tester")),
+            PathBuf::from("/Users/tester/.local/bin/mnema")
+        );
+    }
+
+    #[test]
+    fn bundled_mnema_cli_path_uses_plain_sidecar_name_when_present() {
+        let dir = TestDir::new("mnema-cli-plain-sidecar");
+        let plain_cli = dir.path().join(mnema_cli_sidecar_name());
+        let target_cli = dir.path().join(mnema_cli_sidecar_name_for_target_triple(
+            current_target_triple_candidates()
+                .first()
+                .expect("current target triple should be known"),
+        ));
+        fs::write(&plain_cli, b"plain").expect("plain sidecar should be written");
+        fs::write(&target_cli, b"target").expect("target sidecar should be written");
+
+        assert_eq!(bundled_mnema_cli_path_in_dir(dir.path()), plain_cli);
+    }
+
+    #[test]
+    fn bundled_mnema_cli_path_falls_back_to_target_triple_sidecar_name() {
+        let dir = TestDir::new("mnema-cli-target-sidecar");
+        let target_cli = dir.path().join(mnema_cli_sidecar_name_for_target_triple(
+            current_target_triple_candidates()
+                .first()
+                .expect("current target triple should be known"),
+        ));
+        fs::write(&target_cli, b"target").expect("target sidecar should be written");
+
+        assert_eq!(bundled_mnema_cli_path_in_dir(dir.path()), target_cli);
+    }
+
+    #[test]
+    fn cli_symlink_replacement_requires_bundled_target_path() {
+        let dir = TestDir::new("mnema-cli-symlink");
+        let bundled_dir = dir.path().join("bundle");
+        let other_dir = dir.path().join("other");
+        fs::create_dir_all(&bundled_dir).expect("bundled dir should be created");
+        fs::create_dir_all(&other_dir).expect("other dir should be created");
+        let bundled_cli = bundled_dir.join(mnema_cli_sidecar_name());
+        let other_cli = other_dir.join(mnema_cli_sidecar_name());
+        fs::write(&bundled_cli, b"bundled").expect("bundled cli should be written");
+        fs::write(&other_cli, b"other").expect("other cli should be written");
+
+        assert!(existing_cli_symlink_is_safe_to_replace(
+            &bundled_cli,
+            &bundled_cli
+        ));
+        assert!(!existing_cli_symlink_is_safe_to_replace(
+            &other_cli,
+            &bundled_cli
+        ));
     }
 
     #[test]
@@ -4941,6 +5375,51 @@ mod tests {
         );
         assert!(!value.to_string().contains("Sensitive Project"));
         assert!(!value.to_string().contains("https://example.com/private"));
+    }
+
+    #[test]
+    fn frame_search_result_dto_exposes_app_bundle_id() {
+        let frame = ::app_infra::Frame {
+            id: 9,
+            session_id: "session-search-metadata".to_string(),
+            file_path: "/tmp/search-frame.png".to_string(),
+            captured_at: "2026-05-12T10:00:00Z".to_string(),
+            width: Some(1440),
+            height: Some(900),
+            equivalence: ::app_infra::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            created_at: "2026-05-12T10:00:00Z".to_string(),
+            updated_at: "2026-05-12T10:00:00Z".to_string(),
+            metadata_snapshot: None,
+        };
+        let result = ::app_infra::FrameSearchResult {
+            group_key: "frame:9".to_string(),
+            representative_frame: frame,
+            group_start_at: "2026-05-12T10:00:00Z".to_string(),
+            group_end_at: "2026-05-12T10:00:00Z".to_string(),
+            match_count: 1,
+            snippet: "<mark>match</mark>".to_string(),
+            app_bundle_id: Some("com.example.Search".to_string()),
+            app_name: Some("Search App".to_string()),
+            window_title: Some("Search Window".to_string()),
+            thumbnail_frame_id: 9,
+            text_source_kind: "ocr".to_string(),
+            secret_redaction_count: 0,
+            has_secret_redactions: false,
+        };
+
+        let value =
+            serde_json::to_value(FrameSearchResultDto::from(result)).expect("dto should serialize");
+
+        assert_eq!(
+            value.get("appBundleId").and_then(|value| value.as_str()),
+            Some("com.example.Search")
+        );
     }
 
     struct TestVideoPreviewExtractorGuard;
@@ -5771,6 +6250,8 @@ mod tests {
             mime_type: "image/png".to_string(),
             file_path: preview_path.to_string_lossy().to_string(),
             source_kind: FramePreviewSourceKindDto::OriginalFrame,
+            has_secret_redactions: false,
+            secret_redaction_count: 0,
         };
 
         cache.insert(42, preview.clone(), Duration::from_secs(60), now);
@@ -5789,6 +6270,8 @@ mod tests {
                 mime_type: "image/png".to_string(),
                 file_path: "/tmp/frame-preview.png".to_string(),
                 source_kind: FramePreviewSourceKindDto::OriginalFrame,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             },
             Duration::from_secs(1),
             now,
@@ -5810,6 +6293,8 @@ mod tests {
                 mime_type: "image/png".to_string(),
                 file_path: "/tmp/frame-preview.png".to_string(),
                 source_kind: FramePreviewSourceKindDto::OriginalFrame,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             },
             Duration::from_secs(60),
             Instant::now(),
@@ -6039,6 +6524,8 @@ mod tests {
                 mime_type: "image/jpeg".to_string(),
                 file_path: preview_200_path.to_string_lossy().to_string(),
                 source_kind: FramePreviewSourceKindDto::ScrubPreview,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             },
             ttl,
             now,
@@ -6050,6 +6537,8 @@ mod tests {
                 mime_type: "image/jpeg".to_string(),
                 file_path: preview_400_path.to_string_lossy().to_string(),
                 source_kind: FramePreviewSourceKindDto::ScrubPreview,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             },
             ttl,
             now,
@@ -6087,6 +6576,8 @@ mod tests {
                 mime_type: "image/jpeg".to_string(),
                 file_path: preview_path.to_string_lossy().to_string(),
                 source_kind: FramePreviewSourceKindDto::ScrubPreview,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             },
             ttl,
             now,
@@ -6129,6 +6620,8 @@ mod tests {
                     mime_type: "image/png".to_string(),
                     file_path: preview_path.to_string_lossy().to_string(),
                     source_kind: FramePreviewSourceKindDto::OriginalFrame,
+                    has_secret_redactions: false,
+                    secret_redaction_count: 0,
                 },
                 ttl,
                 now + Duration::from_millis(frame_id as u64),
@@ -6161,6 +6654,8 @@ mod tests {
                 mime_type: "image/png".to_string(),
                 file_path: "/tmp/frame-preview.png".to_string(),
                 source_kind: FramePreviewSourceKindDto::OriginalFrame,
+                has_secret_redactions: false,
+                secret_redaction_count: 0,
             });
             state.finish_request(42, Ok(preview.clone()));
 

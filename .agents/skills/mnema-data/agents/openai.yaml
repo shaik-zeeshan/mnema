@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mnema Data"
+  short_description: "Query Mnema activity via brokered CLI filters."
+  default_prompt: "Use $mnema-data to search my Mnema activity with the brokered CLI and summarize the relevant redacted results."

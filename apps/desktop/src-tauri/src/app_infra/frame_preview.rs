@@ -574,6 +574,8 @@ pub struct FramePreviewDto {
     pub mime_type: String,
     pub file_path: String,
     pub source_kind: FramePreviewSourceKindDto,
+    pub has_secret_redactions: bool,
+    pub secret_redaction_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -687,11 +689,14 @@ fn frame_preview_payload(
     file_path: impl Into<String>,
     mime_type: &str,
     source_kind: FramePreviewSourceKindDto,
+    secret_redaction_count: u32,
 ) -> FramePreviewDto {
     FramePreviewDto {
         mime_type: mime_type.to_string(),
         file_path: file_path.into(),
         source_kind,
+        has_secret_redactions: secret_redaction_count > 0,
+        secret_redaction_count,
     }
 }
 
@@ -1326,6 +1331,7 @@ fn read_segment_frame_preview_or_return_video_error(
     related_frames: &[::app_infra::Frame],
     video_path: &Path,
     app_handle: Option<&tauri::AppHandle>,
+    secret_redaction_count: u32,
     video_error: impl Into<String>,
 ) -> ::app_infra::Result<Option<FramePreviewDto>> {
     let video_error = video_error.into();
@@ -1358,6 +1364,7 @@ fn read_segment_frame_preview_or_return_video_error(
             persisted_path.to_string_lossy(),
             frame_image_mime_type(Path::new(&frame.file_path)),
             FramePreviewSourceKindDto::SegmentFrameFallback,
+            secret_redaction_count,
         )));
     }
 
@@ -1927,6 +1934,7 @@ pub(super) async fn get_frame_preview_inner(
     let Some(frame) = infra.get_frame(frame_id).await? else {
         return Ok(None);
     };
+    let secret_redaction_count = infra.frame_secret_redaction_count(frame_id).await?;
 
     let frame_file_path = PathBuf::from(&frame.file_path);
     if frame_file_path.is_file() {
@@ -1938,6 +1946,7 @@ pub(super) async fn get_frame_preview_inner(
             frame_file_path.to_string_lossy(),
             frame_image_mime_type(&frame_file_path),
             FramePreviewSourceKindDto::OriginalFrame,
+            secret_redaction_count,
         )));
     }
 
@@ -1979,6 +1988,7 @@ pub(super) async fn get_frame_preview_inner(
                 persisted_path.to_string_lossy(),
                 frame_image_mime_type(Path::new(&frame.file_path)),
                 FramePreviewSourceKindDto::SegmentFrameFallback,
+                secret_redaction_count,
             )));
         }
 
@@ -2000,6 +2010,7 @@ pub(super) async fn get_frame_preview_inner(
             &related_frames,
             &segment_paths.video_path,
             app_handle,
+            secret_redaction_count,
             format!(
                 "segment video is empty for frame {} at {}",
                 frame.id,
@@ -2015,6 +2026,7 @@ pub(super) async fn get_frame_preview_inner(
             &related_frames,
             &segment_paths.video_path,
             app_handle,
+            secret_redaction_count,
             format!(
                 "segment video is missing moov atom for frame {} at {}",
                 frame.id,
@@ -2035,6 +2047,7 @@ pub(super) async fn get_frame_preview_inner(
             &related_frames,
             &segment_paths.video_path,
             app_handle,
+            secret_redaction_count,
             cached_video_error,
         );
     }
@@ -2102,6 +2115,7 @@ pub(super) async fn get_frame_preview_inner(
                             &related_frames,
                             &segment_paths.video_path,
                             app_handle,
+                            secret_redaction_count,
                             video_error,
                         );
                     }
@@ -2128,6 +2142,7 @@ pub(super) async fn get_frame_preview_inner(
                         &related_frames,
                         &segment_paths.video_path,
                         app_handle,
+                        secret_redaction_count,
                         video_error,
                     );
                 }
@@ -2147,6 +2162,7 @@ pub(super) async fn get_frame_preview_inner(
         persisted_path.to_string_lossy(),
         mime_type,
         FramePreviewSourceKindDto::VideoFallback,
+        secret_redaction_count,
     )))
 }
 
@@ -2225,6 +2241,7 @@ async fn prepare_frame_scrub_preview(
                         cached_path.to_string_lossy(),
                         "image/jpeg",
                         FramePreviewSourceKindDto::ScrubPreview,
+                        0,
                     )),
                     missing_reason: None,
                 },
@@ -2256,6 +2273,7 @@ async fn prepare_frame_scrub_preview(
                     derivative_path.to_string_lossy(),
                     "image/jpeg",
                     FramePreviewSourceKindDto::ScrubPreview,
+                    0,
                 )),
                 missing_reason: None,
             },
@@ -3719,6 +3737,7 @@ pub async fn get_frame_scrub_previews(
                                         path.to_string_lossy(),
                                         "image/jpeg",
                                         FramePreviewSourceKindDto::ScrubPreview,
+                                        0,
                                     )),
                                     missing_reason: None,
                                 },

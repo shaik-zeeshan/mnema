@@ -8,14 +8,17 @@ use std::{
 use sqlx::migrate::Migrate;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
-    SqlitePool,
+    Row, SqlitePool,
 };
 
+use crate::capture_index_key_store::{
+    resolve_capture_index_database_key_for_current_process, CaptureIndexDatabaseKey,
+    CAPTURE_INDEX_DATABASE_DIR_NAME,
+};
 use crate::error::Result;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
-const DATABASE_DIR_NAME: &str = "db";
 const DATABASE_FILE_NAME: &str = "app.sqlite3";
 
 #[derive(Clone)]
@@ -29,7 +32,9 @@ pub struct Database {
 impl Database {
     pub async fn initialize(base_dir: &Path) -> Result<Self> {
         let database_path = prepare_database_path(base_dir)?;
-        let pool = connect(&database_path).await?;
+        let encryption =
+            resolve_capture_index_database_key_for_current_process(base_dir, &database_path)?;
+        let pool = connect(&database_path, encryption).await?;
         let migrations_ran = has_pending_migrations(&pool).await?;
 
         MIGRATOR.run(&pool).await?;
@@ -62,24 +67,46 @@ impl Database {
 fn prepare_database_path(base_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(base_dir)?;
 
-    let database_dir = base_dir.join(DATABASE_DIR_NAME);
+    let database_dir = base_dir.join(CAPTURE_INDEX_DATABASE_DIR_NAME);
     fs::create_dir_all(&database_dir)?;
 
     Ok(database_dir.join(DATABASE_FILE_NAME))
 }
 
-async fn connect(database_path: &Path) -> Result<SqlitePool> {
-    let options = SqliteConnectOptions::new()
+async fn connect(
+    database_path: &Path,
+    encryption: Option<CaptureIndexDatabaseKey>,
+) -> Result<SqlitePool> {
+    let mut options = SqliteConnectOptions::new()
         .filename(database_path)
         .create_if_missing(true)
         .foreign_keys(true)
         .journal_mode(SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_secs(5));
 
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect_with(options)
-        .await?;
+    let mut pool_options = SqlitePoolOptions::new().max_connections(4);
+    if let Some(encryption) = encryption {
+        options = options.pragma("key", encryption.sqlcipher_pragma_value());
+        pool_options = pool_options.after_connect(move |connection, _metadata| {
+            Box::pin(async move {
+                let row = sqlx::query("PRAGMA cipher_version")
+                    .fetch_optional(&mut *connection)
+                    .await?;
+                let cipher_version = row
+                    .and_then(|row| row.try_get::<String, _>(0).ok())
+                    .unwrap_or_default();
+                if cipher_version.trim().is_empty() {
+                    return Err(sqlx::Error::Protocol(
+                        "SQLCipher is not available; refusing to open encrypted capture index"
+                            .to_string(),
+                    ));
+                }
+                Ok(())
+            })
+        });
+    }
+
+    let pool = pool_options.connect_with(options).await?;
 
     Ok(pool)
 }

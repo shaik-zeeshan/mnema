@@ -2,6 +2,7 @@
 members = [
     "apps/desktop/src-tauri",
     "crates/app-infra",
+    "crates/cli",
     "crates/audio-transcription",
     "crates/speaker-analysis",
     "crates/ocr",
@@ -12,5 +13,6 @@ members = [
     "crates/capture-types",
     "crates/capture-vad",
     "crates/capture-writers",
+    "crates/secret-redaction",
 ]
 resolver = "2"

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.shaikzeeshan.mnema",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "../../scripts/prepare-mnema-cli-sidecar.sh debug && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "cargo clean --manifest-path src-tauri/Cargo.toml && bun run build",
+    "beforeBuildCommand": "../../scripts/prepare-mnema-cli-sidecar.sh release && bun run build",
     "frontendDist": "../build"
   },
   "app": {
@@ -19,9 +19,17 @@
       }
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["mnema"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/mnema-cli"],
     "macOS": {
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"
