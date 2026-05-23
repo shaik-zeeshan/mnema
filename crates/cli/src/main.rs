@@ -477,7 +477,7 @@ async fn run_access_command(
             Ok(())
         }
         AccessCommand::Request { scope, duration } => {
-            if no_prompt || !can_prompt_for_authorization() {
+            if !can_start_explicit_authorization_request(no_prompt) {
                 return Err(auth_required_error());
             }
             request_authorization("access request", identity, scope, duration).await?;
@@ -531,6 +531,10 @@ fn can_prompt_for_authorization_with(
     stderr_is_terminal: impl FnOnce() -> bool,
 ) -> bool {
     stdin_is_terminal() && stdout_is_terminal() && stderr_is_terminal()
+}
+
+fn can_start_explicit_authorization_request(no_prompt: bool) -> bool {
+    !no_prompt
 }
 
 async fn request_authorization(
@@ -1126,6 +1130,12 @@ mod tests {
             || true,
             || false
         ));
+    }
+
+    #[test]
+    fn explicit_access_request_is_allowed_without_interactive_stdio() {
+        assert!(can_start_explicit_authorization_request(false));
+        assert!(!can_start_explicit_authorization_request(true));
     }
 
     #[test]
