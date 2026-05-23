@@ -1,4 +1,6 @@
-use std::{env, path::PathBuf, process::ExitCode, time::Duration};
+#[cfg(unix)]
+use std::time::Duration;
+use std::{env, path::PathBuf, process::ExitCode};
 
 use app_infra::brokered_access::{
     BrokerAuthStatus, BrokerAuthStatusKind, BrokerClientIdentity, BrokerClientIdentitySource,
@@ -8,15 +10,18 @@ use app_infra::brokered_access::{
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use tokio::process::Command;
+#[cfg(unix)]
+use tokio::time::timeout;
+#[cfg(unix)]
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
-    process::Command,
-    time::timeout,
 };
 use uuid::Uuid;
 
 const APP_IDENTIFIER: &str = env!("MNEMA_APP_IDENTIFIER");
+#[cfg(unix)]
 const AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(120);
 const BROKER_AUTHORIZATION_REQUEST_FILE_NAME: &str = "broker-authorization-request.json";
 const INFERRED_AGENT_ENV_LABELS: &[(&str, &str)] = &[
@@ -547,15 +552,20 @@ async fn request_authorization(
         Err(first_error) if should_retry_authorization_with_app_launch(&first_error) => {
             let _ = launch_mnema_app().await;
             let _ = write_legacy_wake_request();
-            match send_authorization_request(&request).await {
-                Ok(()) => Ok(()),
-                Err(_) => Err(first_error),
-            }
+            authorization_retry_result(first_error, send_authorization_request(&request).await)
         }
         Err(first_error) => Err(first_error),
     }
 }
 
+fn authorization_retry_result(
+    _first_error: CliError,
+    retry_result: Result<(), CliError>,
+) -> Result<(), CliError> {
+    retry_result
+}
+
+#[cfg(unix)]
 async fn send_authorization_request(request: &AuthorizationRequest) -> Result<(), CliError> {
     let socket_path = authorization_socket_path();
     let mut stream = timeout(Duration::from_secs(2), UnixStream::connect(socket_path))
@@ -593,10 +603,16 @@ async fn send_authorization_request(request: &AuthorizationRequest) -> Result<()
     }
 }
 
+#[cfg(not(unix))]
+async fn send_authorization_request(_request: &AuthorizationRequest) -> Result<(), CliError> {
+    Err(app_unavailable_error())
+}
+
 fn should_retry_authorization_with_app_launch(error: &CliError) -> bool {
     error.code == "app_unavailable"
 }
 
+#[cfg(unix)]
 fn authorization_socket_path() -> PathBuf {
     let base = env::var_os("TMPDIR")
         .map(PathBuf::from)
@@ -1052,6 +1068,16 @@ mod tests {
         assert!(should_retry_authorization_with_app_launch(
             &app_unavailable_error()
         ));
+    }
+
+    #[test]
+    fn authorization_retry_propagates_second_attempt_error() {
+        let error =
+            authorization_retry_result(app_unavailable_error(), Err(authorization_denied_error()))
+                .unwrap_err();
+
+        assert_eq!(error.code, "authorization_denied");
+        assert_eq!(error.exit, 10);
     }
 
     #[test]

@@ -16,13 +16,17 @@ use tauri::Manager;
 use tauri_plugin_dialog::{
     DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
 };
+use tokio::sync::oneshot;
+#[cfg(unix)]
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener as TokioUnixListener, UnixStream},
-    sync::oneshot,
 };
 
 use crate::windows;
+
+const QUICK_APPROVAL_SCOPE: &str = "lastDay";
+const QUICK_APPROVAL_DURATION_SECONDS: u64 = 24 * 60 * 60;
 
 #[derive(Clone, Default)]
 pub struct BrokerAuthorizationChannelState {
@@ -225,15 +229,14 @@ async fn handle_connection(app: tauri::AppHandle, stream: UnixStream) {
 
     match prompt_for_default_access(&app, &request).await {
         AuthorizationDecision::Approved => {
-            let response = create_grant_response(&app, &request).unwrap_or_else(|_| {
-                AuthorizationChannelResponse {
+            let response = create_grant_response(&app, &request, quick_approval_grant_policy())
+                .unwrap_or_else(|_| AuthorizationChannelResponse {
                     schema_version: 1,
                     request_id: request.request_id.clone(),
                     decision: "unavailable".to_string(),
                     reason: Some("invalidRequest".to_string()),
                     grant: None,
-                }
-            });
+                });
             let _ = write_response(stream, response).await;
         }
         AuthorizationDecision::MoreOptions => {
@@ -318,14 +321,18 @@ pub fn approve_pending_cli_access_request(
     }
     request.scope.preferred = approval.scope;
     request.duration.preferred_seconds = approval.duration_seconds;
-    let response =
-        create_grant_response(&app, &request).unwrap_or_else(|_| AuthorizationChannelResponse {
-            schema_version: 1,
-            request_id: request.request_id,
-            decision: "unavailable".to_string(),
-            reason: Some("invalidRequest".to_string()),
-            grant: None,
-        });
+    let response = create_grant_response(
+        &app,
+        &request,
+        grant_policy(&request.scope.preferred, request.duration.preferred_seconds),
+    )
+    .unwrap_or_else(|_| AuthorizationChannelResponse {
+        schema_version: 1,
+        request_id: request.request_id,
+        decision: "unavailable".to_string(),
+        reason: Some("invalidRequest".to_string()),
+        grant: None,
+    });
     let _ = pending.respond.send(response);
     let _ = close_cli_access_request_window(&app);
     Ok(())
@@ -409,6 +416,7 @@ async fn prompt_for_default_access(
 fn create_grant_response(
     app: &tauri::AppHandle,
     request: &AuthorizationChannelRequest,
+    policy: GrantPolicy,
 ) -> Result<AuthorizationChannelResponse, String> {
     let config_dir = app
         .path()
@@ -424,18 +432,8 @@ fn create_grant_response(
         },
     )
     .map_err(|error| error.to_string())?;
-    let scope = if request.scope.preferred == "allRetained" {
-        BrokerGrantScope::AllRetainedHistory
-    } else {
-        BrokerGrantScope::RecentDays { days: 1 }
-    };
-    let hours = request
-        .duration
-        .preferred_seconds
-        .saturating_div(60 * 60)
-        .clamp(1, 24 * 7);
     let grant = BrokeredCaptureAccess::from_config_dir(config_dir)
-        .create_grant_for_identity(identity, hours, scope.clone())
+        .create_grant_for_identity(identity, policy.hours, policy.scope.clone())
         .map_err(|error| error.to_string())?;
     Ok(AuthorizationChannelResponse {
         schema_version: 1,
@@ -445,7 +443,7 @@ fn create_grant_response(
         grant: Some(AuthorizationChannelGrant {
             id: grant.id,
             client_label: grant.label,
-            scope: match scope {
+            scope: match policy.scope {
                 BrokerGrantScope::RecentDays { .. } => "lastDay",
                 BrokerGrantScope::AllRetainedHistory => "allRetained",
             }
@@ -455,6 +453,28 @@ fn create_grant_response(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GrantPolicy {
+    scope: BrokerGrantScope,
+    hours: u64,
+}
+
+fn grant_policy(scope: &str, duration_seconds: u64) -> GrantPolicy {
+    GrantPolicy {
+        scope: if scope == "allRetained" {
+            BrokerGrantScope::AllRetainedHistory
+        } else {
+            BrokerGrantScope::RecentDays { days: 1 }
+        },
+        hours: duration_seconds.saturating_div(60 * 60).clamp(1, 24 * 7),
+    }
+}
+
+fn quick_approval_grant_policy() -> GrantPolicy {
+    grant_policy(QUICK_APPROVAL_SCOPE, QUICK_APPROVAL_DURATION_SECONDS)
+}
+
+#[cfg(unix)]
 async fn write_denied(stream: UnixStream, request_id: String, reason: &str) -> std::io::Result<()> {
     write_response(
         stream,
@@ -469,6 +489,7 @@ async fn write_denied(stream: UnixStream, request_id: String, reason: &str) -> s
     .await
 }
 
+#[cfg(unix)]
 async fn write_unavailable(
     stream: UnixStream,
     request_id: String,
@@ -487,6 +508,7 @@ async fn write_unavailable(
     .await
 }
 
+#[cfg(unix)]
 async fn write_response(
     mut stream: UnixStream,
     response: AuthorizationChannelResponse,
@@ -526,5 +548,27 @@ mod tests {
     #[test]
     fn last_day_does_not_satisfy_all_retained_minimum() {
         assert!(!scope_satisfies_minimum("lastDay", "allRetained"));
+    }
+
+    #[test]
+    fn quick_approval_policy_uses_fixed_default_grant() {
+        assert_eq!(
+            quick_approval_grant_policy(),
+            GrantPolicy {
+                scope: BrokerGrantScope::RecentDays { days: 1 },
+                hours: 24,
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_approval_policy_uses_selected_broader_access() {
+        assert_eq!(
+            grant_policy("allRetained", 7 * 24 * 60 * 60),
+            GrantPolicy {
+                scope: BrokerGrantScope::AllRetainedHistory,
+                hours: 24 * 7,
+            }
+        );
     }
 }

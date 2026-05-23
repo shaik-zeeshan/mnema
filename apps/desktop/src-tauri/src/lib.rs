@@ -165,6 +165,20 @@ fn notify_pending_broker_authorization_request(app_handle: &tauri::AppHandle) ->
     true
 }
 
+fn should_notify_pending_broker_authorization_request(
+    onboarding_complete: bool,
+    already_handled: bool,
+) -> bool {
+    onboarding_complete && !already_handled
+}
+
+fn notify_pending_broker_authorization_request_if_onboarded(app_handle: &tauri::AppHandle) -> bool {
+    should_notify_pending_broker_authorization_request(
+        windows::is_onboarding_complete(app_handle),
+        false,
+    ) && notify_pending_broker_authorization_request(app_handle)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExitRequestAction {
     StartGracefulExit,
@@ -219,7 +233,7 @@ pub fn run() {
         .manage(BrokerOpenCaptureResultState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if notify_pending_broker_authorization_request(app) {
+            if notify_pending_broker_authorization_request_if_onboarded(app) {
                 return;
             }
             let _ = windows::open_main_window(app);
@@ -430,7 +444,8 @@ pub fn run() {
             native_capture::start_metadata_notifier(app.handle().clone());
             let onboarding_complete = windows::is_onboarding_complete(app.handle());
             let handled_startup_authorization_request =
-                onboarding_complete && notify_pending_broker_authorization_request(app.handle());
+                should_notify_pending_broker_authorization_request(onboarding_complete, false)
+                    && notify_pending_broker_authorization_request(app.handle());
             if !handled_startup_authorization_request {
                 let onboarding_state = app.state::<windows::OnboardingStateStore>();
                 windows::open_startup_window(app.handle(), onboarding_state.inner())
@@ -439,7 +454,10 @@ pub fn run() {
             if onboarding_complete {
                 native_capture::maybe_auto_start_native_capture(app.handle());
             }
-            if !handled_startup_authorization_request {
+            if should_notify_pending_broker_authorization_request(
+                onboarding_complete,
+                handled_startup_authorization_request,
+            ) {
                 notify_pending_broker_authorization_request(app.handle());
             }
             status_bar::refresh(app.handle());
@@ -486,7 +504,8 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 mod tests {
     use super::{
         broker_payload_from_url, exit_request_action_for_exit_request, is_app_log_target,
-        should_forward_window_event, ExitRequestAction,
+        should_forward_window_event, should_notify_pending_broker_authorization_request,
+        ExitRequestAction,
     };
 
     #[test]
@@ -525,6 +544,27 @@ mod tests {
         assert!(!should_forward_window_event(
             &tauri::WindowEvent::Focused(true),
             false,
+        ));
+    }
+
+    #[test]
+    fn pending_broker_authorization_waits_for_onboarding() {
+        assert!(!should_notify_pending_broker_authorization_request(
+            false, false
+        ));
+    }
+
+    #[test]
+    fn pending_broker_authorization_is_not_handled_twice() {
+        assert!(!should_notify_pending_broker_authorization_request(
+            true, true
+        ));
+    }
+
+    #[test]
+    fn pending_broker_authorization_notifies_after_onboarding_once() {
+        assert!(should_notify_pending_broker_authorization_request(
+            true, false
         ));
     }
 
