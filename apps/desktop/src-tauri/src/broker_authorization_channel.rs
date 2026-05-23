@@ -20,7 +20,7 @@ use tauri_plugin_dialog::{
 use tokio::sync::oneshot;
 #[cfg(unix)]
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener as TokioUnixListener, UnixStream},
     time::timeout,
 };
@@ -31,6 +31,8 @@ const QUICK_APPROVAL_SCOPE: &str = "lastDay";
 const QUICK_APPROVAL_DURATION_SECONDS: u64 = 24 * 60 * 60;
 #[cfg(unix)]
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(unix)]
+const REQUEST_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Default)]
 pub struct BrokerAuthorizationChannelState {
@@ -187,16 +189,15 @@ pub fn start(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-async fn handle_connection(app: tauri::AppHandle, stream: UnixStream) {
-    let mut reader = BufReader::new(stream);
-    let mut raw = String::new();
-    let Ok(Ok(bytes)) = timeout(REQUEST_READ_TIMEOUT, reader.read_line(&mut raw)).await else {
-        return;
+async fn handle_connection(app: tauri::AppHandle, mut stream: UnixStream) {
+    let raw = match timeout(REQUEST_READ_TIMEOUT, read_request_line(&mut stream)).await {
+        Ok(Ok(Some(raw))) => raw,
+        Ok(Ok(None)) | Err(_) => return,
+        Ok(Err(_)) => {
+            let _ = write_unavailable(stream, String::new(), "invalidRequest").await;
+            return;
+        }
     };
-    if bytes == 0 {
-        return;
-    }
-    let stream = reader.into_inner();
     let request = match serde_json::from_str::<AuthorizationChannelRequest>(&raw) {
         Ok(request) if request.schema_version == 1 => request,
         Ok(request) => {
@@ -223,7 +224,8 @@ async fn handle_connection(app: tauri::AppHandle, stream: UnixStream) {
 
     match prompt_for_default_access(&app, &request).await {
         AuthorizationDecision::Approved => {
-            let response = create_grant_response(&app, &request, quick_approval_grant_policy())
+            let response = quick_approval_grant_policy_for_request(&request)
+                .and_then(|policy| create_grant_response(&app, &request, policy))
                 .unwrap_or_else(|_| AuthorizationChannelResponse {
                     schema_version: 1,
                     request_id: request.request_id.clone(),
@@ -253,6 +255,37 @@ async fn handle_connection(app: tauri::AppHandle, stream: UnixStream) {
             let _ = write_denied(stream, request.request_id, "userCancelled").await;
         }
     }
+}
+
+#[cfg(unix)]
+async fn read_request_line(stream: &mut UnixStream) -> std::io::Result<Option<String>> {
+    let mut raw = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    loop {
+        if raw.len() >= REQUEST_MAX_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "CLI Access request is too large",
+            ));
+        }
+        let remaining = REQUEST_MAX_BYTES - raw.len();
+        let read_len = remaining.min(buffer.len());
+        let bytes = stream.read(&mut buffer[..read_len]).await?;
+        if bytes == 0 {
+            if raw.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        if let Some(position) = buffer[..bytes].iter().position(|byte| *byte == b'\n') {
+            raw.extend_from_slice(&buffer[..=position]);
+            break;
+        }
+        raw.extend_from_slice(&buffer[..bytes]);
+    }
+    String::from_utf8(raw)
+        .map(Some)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 fn store_pending_request(
@@ -497,12 +530,23 @@ fn grant_policy(scope: &str, duration_seconds: u64) -> GrantPolicy {
         } else {
             BrokerGrantScope::RecentDays { days: 1 }
         },
-        hours: duration_seconds.saturating_div(60 * 60).clamp(1, 24 * 7),
+        hours: duration_seconds.div_ceil(60 * 60).clamp(1, 24 * 7),
     }
 }
 
 fn quick_approval_grant_policy() -> GrantPolicy {
     grant_policy(QUICK_APPROVAL_SCOPE, QUICK_APPROVAL_DURATION_SECONDS)
+}
+
+fn quick_approval_grant_policy_for_request(
+    request: &AuthorizationChannelRequest,
+) -> Result<GrantPolicy, String> {
+    let approval = ApproveCliAccessRequest {
+        scope: QUICK_APPROVAL_SCOPE.to_string(),
+        duration_seconds: QUICK_APPROVAL_DURATION_SECONDS,
+    };
+    validate_cli_access_approval(request, &approval)?;
+    Ok(quick_approval_grant_policy())
 }
 
 #[cfg(unix)]
@@ -619,6 +663,24 @@ mod tests {
     }
 
     #[test]
+    fn quick_approval_is_rejected_when_request_requires_broader_scope() {
+        let request = test_authorization_request("allRetained", 24 * 60 * 60);
+
+        let result = quick_approval_grant_policy_for_request(&request);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn quick_approval_is_rejected_when_request_requires_longer_duration() {
+        let request = test_authorization_request("lastDay", 25 * 60 * 60);
+
+        let result = quick_approval_grant_policy_for_request(&request);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn explicit_approval_policy_uses_selected_broader_access() {
         assert_eq!(
             grant_policy("allRetained", 7 * 24 * 60 * 60),
@@ -627,6 +689,34 @@ mod tests {
                 hours: 24 * 7,
             }
         );
+    }
+
+    #[test]
+    fn grant_policy_ceil_rounds_fractional_hours() {
+        assert_eq!(
+            grant_policy("lastDay", 90 * 60),
+            GrantPolicy {
+                scope: BrokerGrantScope::RecentDays { days: 1 },
+                hours: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn request_line_reader_rejects_oversized_requests() {
+        tauri::async_runtime::block_on(async {
+            let (mut client, mut server) = UnixStream::pair().expect("socket pair should open");
+            let request = vec![b'a'; REQUEST_MAX_BYTES + 1];
+            let writer = tokio::spawn(async move { client.write_all(&request).await });
+
+            let result = read_request_line(&mut server).await;
+
+            assert!(result.is_err());
+            writer
+                .await
+                .expect("writer task should finish")
+                .expect("oversized request should write");
+        });
     }
 
     #[test]

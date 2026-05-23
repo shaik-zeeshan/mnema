@@ -28,6 +28,7 @@ const RECORDING_SETTINGS_FILE_NAME: &str = "recording-settings.json";
 const DEFAULT_SEARCH_LIMIT: u32 = 20;
 const MAX_SEARCH_LIMIT: u32 = 100;
 const OPAQUE_SIGNATURE_HEX_LEN: usize = 32;
+const DEFAULT_APP_IDENTIFIER: &str = env!("MNEMA_APP_IDENTIFIER");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -342,6 +343,13 @@ impl BrokeredCaptureAccess {
         }
     }
 
+    pub fn from_app_identifier(identifier: &str) -> Result<Self> {
+        let config_dir = default_app_config_dir_for_identifier(identifier).ok_or_else(|| {
+            AppInfraError::BrokeredAccess("failed to resolve Mnema app config dir".to_string())
+        })?;
+        Ok(Self::from_config_dir(config_dir))
+    }
+
     pub fn from_default_app_config_dir() -> Result<Self> {
         let config_dir = default_app_config_dir().ok_or_else(|| {
             AppInfraError::BrokeredAccess("failed to resolve Mnema app config dir".to_string())
@@ -524,6 +532,10 @@ pub fn execute_default_broker_request(
 }
 
 fn default_app_config_dir() -> Option<PathBuf> {
+    default_app_config_dir_for_identifier(DEFAULT_APP_IDENTIFIER)
+}
+
+fn default_app_config_dir_for_identifier(identifier: &str) -> Option<PathBuf> {
     if let Ok(path) = std::env::var("MNEMA_APP_CONFIG_DIR") {
         return Some(PathBuf::from(path));
     }
@@ -532,12 +544,12 @@ fn default_app_config_dir() -> Option<PathBuf> {
         dirs::home_dir().map(|home| {
             home.join("Library")
                 .join("Application Support")
-                .join("com.shaikzeeshan.mnema")
+                .join(identifier)
         })
     }
     #[cfg(not(target_os = "macos"))]
     {
-        dirs::config_dir().map(|dir| dir.join("com.shaikzeeshan.mnema"))
+        dirs::config_dir().map(|dir| dir.join(identifier))
     }
 }
 
@@ -1735,6 +1747,17 @@ mod tests {
             grant.expires_at_unix_ms - grant.created_at_unix_ms,
             24 * 30 * 60 * 60 * 1000
         );
+    }
+
+    #[test]
+    fn app_identifier_config_dir_uses_supplied_identifier() {
+        if std::env::var_os("MNEMA_APP_CONFIG_DIR").is_some() {
+            return;
+        }
+        let path = default_app_config_dir_for_identifier("com.example.mnema-test")
+            .expect("config dir should resolve");
+
+        assert!(path.ends_with("com.example.mnema-test"));
     }
 
     #[test]

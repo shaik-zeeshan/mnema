@@ -374,7 +374,8 @@ async fn run_data_command(
     no_prompt: bool,
 ) -> Result<(), CliError> {
     let format = format.unwrap_or(OutputFormat::Json);
-    let access = BrokeredCaptureAccess::from_default_app_config_dir().map_err(broker_error)?;
+    let access =
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER).map_err(broker_error)?;
     let mut response = access
         .execute_for_identity(identity.clone(), request.clone())
         .await
@@ -453,7 +454,8 @@ async fn run_access_command(
     identity: &BrokerClientIdentity,
     no_prompt: bool,
 ) -> Result<(), CliError> {
-    let access = BrokeredCaptureAccess::from_default_app_config_dir().map_err(broker_error)?;
+    let access =
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER).map_err(broker_error)?;
     match command {
         AccessCommand::Status { all_clients } => {
             let grants = access.list_grants().map_err(broker_error)?;
