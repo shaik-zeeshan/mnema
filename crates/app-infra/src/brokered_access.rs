@@ -1271,7 +1271,7 @@ async fn broker_timeline(
                 .await?;
         return Ok(Ok(BrokerTimelineResponse { intervals, limit }));
     }
-    let mut intervals = Vec::new();
+    let mut intervals = broker_frame_timeline(infra, &range, None, None, limit).await?;
     for audio in infra
         .list_audio_segments_overlapping_range(&range.start_at, &range.end_at, None, None)
         .await?
@@ -1289,6 +1289,12 @@ async fn broker_timeline(
             context: None,
         });
     }
+    intervals.sort_by(|left, right| {
+        right
+            .started_at
+            .cmp(&left.started_at)
+            .then_with(|| right.kind.cmp(&left.kind))
+    });
     intervals.truncate(limit as usize);
     Ok(Ok(BrokerTimelineResponse { intervals, limit }))
 }
@@ -1972,6 +1978,86 @@ mod tests {
                     .as_ref()
                     .and_then(|context| context.window_title.as_deref()),
                 Some("Roadmap Grooming")
+            );
+        });
+    }
+
+    #[test]
+    fn broker_timeline_without_context_filters_includes_screen_and_audio_intervals() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("timeline-all-sources");
+            let save_dir = temp_save_dir("timeline-all-sources");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    save_dir.join("timeline-screen.jpg").display().to_string(),
+                    "2026-05-17T10:01:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("OCR job should enqueue");
+            let running = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("OCR job should claim")
+                .expect("OCR job should exist");
+            infra
+                .complete_processing_job(
+                    running.id,
+                    &ProcessingResultDraft::new().with_result_text("timeline body"),
+                )
+                .await
+                .expect("OCR job should complete");
+
+            infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    save_dir.join("audio.m4a").display().to_string(),
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:30Z",
+                ))
+                .await
+                .expect("audio segment should insert");
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let response = broker_timeline(
+                &infra,
+                &[grant],
+                BrokerTimelineRequest {
+                    from: "2026-05-17T00:00:00Z".to_string(),
+                    to: "2026-05-18T00:00:00Z".to_string(),
+                    limit: Some(5),
+                    app: None,
+                    window_title: None,
+                },
+            )
+            .await
+            .expect("timeline should run")
+            .expect("timeline should be authorized");
+
+            assert_eq!(
+                response
+                    .intervals
+                    .iter()
+                    .map(|interval| interval.kind.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["screen", "audio_microphone"]
             );
         });
     }

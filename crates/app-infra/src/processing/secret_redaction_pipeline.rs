@@ -84,35 +84,11 @@ impl SecretRedactionPipeline {
             .transpose();
         let structured_payload = match structured_payload {
             Ok(payload) => payload,
-            Err(error) => {
-                let text_only = plan_redactions(RedactionRequest {
-                    context: policy.context,
-                    result_text: draft.result_text.clone(),
-                    ocr: None,
-                    transcript: None,
-                    additional_surfaces: Vec::new(),
-                    budget: RedactionBudget::default(),
-                });
-                let Ok(text_only) = text_only else {
-                    return Err(AppInfraError::SecretRedactionGate(
-                        "secret redaction gate failed before safe derived-text persistence"
-                            .to_string(),
-                    ));
-                };
-                if text_only.redactions.is_empty() {
-                    return Ok(ProcessingResultPersistencePlan {
-                        draft: ProcessingResultDraft {
-                            result_text: text_only.result_text,
-                            structured_payload_json: draft.structured_payload_json.clone(),
-                            processor_version: draft.processor_version.clone(),
-                        },
-                        secret_redactions: Vec::new(),
-                        redaction_detector_version: Some(DETECTOR_VERSION.to_string()),
-                        #[cfg(test)]
-                        redaction_context: Some(policy.context),
-                    });
-                }
-                return Err(error);
+            Err(_) => {
+                return Err(AppInfraError::SecretRedactionGate(
+                    "secret redaction gate rejected unparseable structured payload before safe derived-text persistence"
+                        .to_string(),
+                ));
             }
         };
 
@@ -533,20 +509,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_structured_payload_is_kept_when_result_text_has_no_redactions() {
-        let plan = SecretRedactionPipeline::plan_processing_result_persistence(
+    fn malformed_structured_payload_fails_closed_even_when_text_has_no_redactions() {
+        let result = SecretRedactionPipeline::plan_processing_result_persistence(
             &job(FRAME_SUBJECT_TYPE, 42, OCR_PROCESSOR),
             None,
             &ProcessingResultDraft::new()
                 .with_result_text("recognized text")
                 .with_structured_payload_json("{\"blocks\":[]}"),
-        )
-        .expect("non-secret result should keep unknown payload shape");
-
-        assert_eq!(
-            plan.draft().structured_payload_json.as_deref(),
-            Some("{\"blocks\":[]}")
         );
-        assert!(plan.secret_redactions.is_empty());
+
+        assert!(result.is_err());
     }
 }

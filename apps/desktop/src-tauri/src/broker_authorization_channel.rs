@@ -6,6 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
+    time::Duration,
 };
 
 use app_infra::brokered_access::{
@@ -21,12 +22,15 @@ use tokio::sync::oneshot;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener as TokioUnixListener, UnixStream},
+    time::timeout,
 };
 
 use crate::windows;
 
 const QUICK_APPROVAL_SCOPE: &str = "lastDay";
 const QUICK_APPROVAL_DURATION_SECONDS: u64 = 24 * 60 * 60;
+#[cfg(unix)]
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]
 pub struct BrokerAuthorizationChannelState {
@@ -184,25 +188,9 @@ pub fn start(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(unix)]
 async fn handle_connection(app: tauri::AppHandle, stream: UnixStream) {
-    let state = app.state::<BrokerAuthorizationChannelState>();
-    let Some(_guard) = ActiveRequestGuard::acquire(state.active.clone()) else {
-        let _ = write_response(
-            stream,
-            AuthorizationChannelResponse {
-                schema_version: 1,
-                request_id: String::new(),
-                decision: "unavailable".to_string(),
-                reason: Some("busy".to_string()),
-                grant: None,
-            },
-        )
-        .await;
-        return;
-    };
-
     let mut reader = BufReader::new(stream);
     let mut raw = String::new();
-    let Ok(bytes) = reader.read_line(&mut raw).await else {
+    let Ok(Ok(bytes)) = timeout(REQUEST_READ_TIMEOUT, reader.read_line(&mut raw)).await else {
         return;
     };
     if bytes == 0 {
@@ -219,6 +207,12 @@ async fn handle_connection(app: tauri::AppHandle, stream: UnixStream) {
             let _ = write_unavailable(stream, String::new(), "invalidRequest").await;
             return;
         }
+    };
+
+    let state = app.state::<BrokerAuthorizationChannelState>();
+    let Some(_guard) = ActiveRequestGuard::acquire(state.active.clone()) else {
+        let _ = write_unavailable(stream, request.request_id, "busy").await;
+        return;
     };
 
     let onboarding_state = app.state::<windows::OnboardingStateStore>();
@@ -675,5 +669,17 @@ mod tests {
         assert!(result.is_err());
         assert!(pending.is_some());
         assert!(matches!(receive.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn active_request_guard_allows_only_one_authorization_flow() {
+        let active = Arc::new(AtomicBool::new(false));
+        let first = ActiveRequestGuard::acquire(active.clone());
+
+        assert!(first.is_some());
+        assert!(ActiveRequestGuard::acquire(active.clone()).is_none());
+
+        drop(first);
+        assert!(ActiveRequestGuard::acquire(active).is_some());
     }
 }

@@ -1,6 +1,6 @@
 #[cfg(unix)]
 use std::time::Duration;
-use std::{env, path::PathBuf, process::ExitCode};
+use std::{env, io::IsTerminal, path::PathBuf, process::ExitCode};
 
 use app_infra::brokered_access::{
     BrokerAuthStatus, BrokerAuthStatusKind, BrokerClientIdentity, BrokerClientIdentitySource,
@@ -381,7 +381,7 @@ async fn run_data_command(
         .map_err(broker_error)?;
 
     if response_requires_authorization(&response) {
-        if no_prompt {
+        if no_prompt || !can_prompt_for_authorization() {
             return print_structured_error(command, identity, format, auth_required_error());
         }
         request_authorization(
@@ -475,7 +475,7 @@ async fn run_access_command(
             Ok(())
         }
         AccessCommand::Request { scope, duration } => {
-            if no_prompt {
+            if no_prompt || !can_prompt_for_authorization() {
                 return Err(auth_required_error());
             }
             request_authorization("access request", identity, scope, duration).await?;
@@ -513,6 +513,22 @@ async fn run_access_command(
             Ok(())
         }
     }
+}
+
+fn can_prompt_for_authorization() -> bool {
+    can_prompt_for_authorization_with(
+        || std::io::stdin().is_terminal(),
+        || std::io::stdout().is_terminal(),
+        || std::io::stderr().is_terminal(),
+    )
+}
+
+fn can_prompt_for_authorization_with(
+    stdin_is_terminal: impl FnOnce() -> bool,
+    stdout_is_terminal: impl FnOnce() -> bool,
+    stderr_is_terminal: impl FnOnce() -> bool,
+) -> bool {
+    stdin_is_terminal() && stdout_is_terminal() && stderr_is_terminal()
 }
 
 async fn request_authorization(
@@ -1078,6 +1094,26 @@ mod tests {
 
         assert_eq!(error.code, "authorization_denied");
         assert_eq!(error.exit, 10);
+    }
+
+    #[test]
+    fn authorization_prompt_requires_interactive_stdio() {
+        assert!(can_prompt_for_authorization_with(|| true, || true, || true));
+        assert!(!can_prompt_for_authorization_with(
+            || false,
+            || true,
+            || true
+        ));
+        assert!(!can_prompt_for_authorization_with(
+            || true,
+            || false,
+            || true
+        ));
+        assert!(!can_prompt_for_authorization_with(
+            || true,
+            || true,
+            || false
+        ));
     }
 
     #[test]
