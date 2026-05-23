@@ -286,12 +286,17 @@ static DETECTORS: Lazy<Vec<Detector>> = Lazy::new(|| {
             requires_evidence: false,
         },
         Detector {
+            regex: Regex::new(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b").unwrap(),
+            category: SecretCategory::AccessToken,
+            requires_evidence: false,
+        },
+        Detector {
             regex: Regex::new(r"(?i)\bBearer\s+[A-Za-z0-9_\-./+=]{20,}\b").unwrap(),
             category: SecretCategory::AccessToken,
             requires_evidence: false,
         },
         Detector {
-            regex: Regex::new(r"\b(?:xox[baprs]-[A-Za-z0-9\-]{20,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|SG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}|rk_live_[A-Za-z0-9]{24,})\b").unwrap(),
+            regex: Regex::new(r"\b(?:AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|SG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}|rk_live_[A-Za-z0-9]{24,})\b").unwrap(),
             category: SecretCategory::ApiKey,
             requires_evidence: false,
         },
@@ -306,17 +311,22 @@ static DETECTORS: Lazy<Vec<Detector>> = Lazy::new(|| {
             requires_evidence: false,
         },
         Detector {
-            regex: Regex::new(r#"(?i)\b(?:api\s*[_-]?\s*key|access\s*[_-]?\s*token|auth\s*[_-]?\s*token|bearer|secret\s*[_-]?\s*key|client\s*[_-]?\s*secret|webhook\s*[_-]?\s*secret)\b\s*[:=\-]?\s*['"]?[A-Za-z0-9_\-./+=]{20,}['"]?"#).unwrap(),
+            regex: Regex::new(r#"(?i)\b(?:api\s*[_-]?\s*key|secret\s*[_-]?\s*key)\b\s*[:=\-]?\s*['"]?[A-Za-z0-9_\-./+=]{20,}['"]?"#).unwrap(),
+            category: SecretCategory::ApiKey,
+            requires_evidence: true,
+        },
+        Detector {
+            regex: Regex::new(r#"(?i)\b(?:access\s*[_-]?\s*token|auth\s*[_-]?\s*token|bearer|webhook\s*[_-]?\s*secret)\b\s*[:=\-]?\s*['"]?[A-Za-z0-9_\-./+=]{20,}['"]?"#).unwrap(),
             category: SecretCategory::AccessToken,
             requires_evidence: true,
         },
         Detector {
-            regex: Regex::new(r#"(?i)\b(?:password|passwd|pwd|client\s*[_-]?\s*secret|db\s*[_-]?\s*password)\b\s*[:=]\s*['"]?[^'"\s]{8,}['"]?"#).unwrap(),
+            regex: Regex::new(r#"(?i)\b(?:password|passwd|pwd|client\s*[_-]?\s*secret|db\s*[_-]?\s*password)\b\s*[:=]?\s*['"]?[^'"\s]{8,}['"]?"#).unwrap(),
             category: SecretCategory::Password,
             requires_evidence: true,
         },
         Detector {
-            regex: Regex::new(r"(?i)\b(?:otp|mfa|2fa|auth(?:entication)? code|verification code)\b\s*[:=]?\s*\d{6,8}\b").unwrap(),
+            regex: Regex::new(r"(?i)\b(?:otp|mfa(?: code)?|2fa(?: code)?|auth(?:entication)? code|verification code)\b\s*[:=]?\s*\d{6,8}\b").unwrap(),
             category: SecretCategory::AuthCode,
             requires_evidence: true,
         },
@@ -355,7 +365,14 @@ static EVIDENCE_PREFILTER: Lazy<AhoCorasick> = Lazy::new(|| {
 });
 
 static NON_SECRET_DIAGNOSTIC_TEXT: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\bsecret-redaction-v\d+\b").unwrap());
+    Lazy::new(|| Regex::new(r"(?i)secret-redaction-v\d+\b").unwrap());
+
+static PLACEHOLDER_SECRET_VALUE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:<[^>]*(?:key|token|secret|password)[^>]*>|your[-_ ]?(?:api[-_ ]?)?(?:key|token|secret|password)|changeme|change[-_ ]?me|example)(?:[/?#&@\s'"]|$)"#,
+    )
+    .unwrap()
+});
 
 pub fn redact_searchable_text(input: &str, _context: RedactionContext) -> RedactionResult {
     redact_text(input)
@@ -513,7 +530,8 @@ fn redact_text(input: &str) -> RedactionResult {
             }));
         }
     }
-    matches.retain(|m| !is_non_secret_diagnostic_match(input, m));
+    matches
+        .retain(|m| !is_non_secret_diagnostic_match(input, m) && !is_placeholder_match(input, m));
     matches.sort_by_key(|m| (m.start, usize::MAX - m.end));
 
     let mut selected: Vec<Match> = Vec::new();
@@ -563,6 +581,23 @@ fn redact_text(input: &str) -> RedactionResult {
 
 fn is_non_secret_diagnostic_match(input: &str, m: &Match) -> bool {
     NON_SECRET_DIAGNOSTIC_TEXT.is_match(&input[m.start..m.end])
+}
+
+fn is_placeholder_match(input: &str, m: &Match) -> bool {
+    let matched = &input[m.start..m.end];
+    PLACEHOLDER_SECRET_VALUE.is_match(matched)
+        || matched.contains("://user:password@")
+        || matched.contains("://default:password@")
+        || matched.contains(":password@")
+        || matched.contains("password@")
+        || is_weak_bare_password_phrase(matched, m.category)
+}
+
+fn is_weak_bare_password_phrase(matched: &str, category: SecretCategory) -> bool {
+    if category != SecretCategory::Password || matched.contains(':') || matched.contains('=') {
+        return false;
+    }
+    !matched.chars().any(|c| c.is_ascii_digit())
 }
 
 fn evidence_windows(input: &str) -> Vec<(usize, usize)> {
@@ -737,6 +772,45 @@ mod tests {
         let result = redact(input);
         assert_eq!(result.redacted_text, input);
         assert!(result.spans.is_empty());
+    }
+
+    #[test]
+    fn ignores_diagnostic_redaction_version_with_numeric_prefix() {
+        let plan = plan_redactions(RedactionRequest {
+            context: RedactionContext::Ocr,
+            result_text: None,
+            ocr: Some(OcrRedactionInput {
+                observations: vec![
+                    OcrRedactionObservation {
+                        text: "access token".to_string(),
+                        confidence: 0.9,
+                        bounding_box: RedactionBoundingBox {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 0.2,
+                            height: 0.1,
+                        },
+                    },
+                    OcrRedactionObservation {
+                        text: "31secret-redaction-v2 2026-05-2315:42:30".to_string(),
+                        confidence: 0.9,
+                        bounding_box: RedactionBoundingBox {
+                            x: 0.3,
+                            y: 0.0,
+                            width: 0.6,
+                            height: 0.1,
+                        },
+                    },
+                ],
+            }),
+            transcript: None,
+            additional_surfaces: Vec::new(),
+            budget: RedactionBudget::default(),
+        })
+        .expect("diagnostic text should produce a safe redaction plan");
+
+        assert!(plan.redactions.is_empty());
+        assert!(plan.ocr_observation_text.is_empty());
     }
 
     #[test]

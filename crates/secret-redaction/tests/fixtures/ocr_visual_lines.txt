@@ -1,0 +1,9 @@
+# Split OCR observations on the same visual line.
+api_key|OPENAI||API||KEY||sk-abcdefghijklmnopqrstuvwxyz123456
+api_key|AWS||ACCESS||KEY||AKIA1234567890ABCDEF
+access_token|Authorization:||Bearer||abcdefghijklmnopqrstuvwxyz1234567890
+access_token|GitHub||token||ghp_abcdefghijklmnopqrstuvwxyz1234567890AB
+connection_string|postgres://user:pass1234@localhost/app
+password|DB||PASSWORD||hunter222
+auth_code|verification||code||123456
+seed_like_secret|seed phrase:||abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about

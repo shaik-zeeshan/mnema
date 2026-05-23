@@ -2,8 +2,24 @@ uuid 550e8400-e29b-41d4-a716-446655440000
 css color #ff00aa and #101010
 stack trace at main.rs:123
 placeholder docs string API_KEY=your-api-key-here
+placeholder docs string OPENAI_API_KEY=<your-openai-api-key>
+placeholder docs string Authorization: Bearer <token>
+placeholder docs string DB_PASSWORD=changeme
 filename report-2026-05-23.mov
 ordinary url https://example.com/docs?query=token
 sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+sha1 da39a3ee5e6b4b0d3255bfef95601890afd80709
+md5 d41d8cd98f00b204e9800998ecf8427e
+commit 0123456789abcdef0123456789abcdef01234567
+random id abcdefghijklmnopqrstuvwxyz123456 without a secret label
+http bearer docs describe the Authorization header without a value
+example postgres url postgres://user:password@localhost/app
+example redis url redis://default:password@localhost:6379/0
+css custom property --secret-color: #abcdef
+stack trace Error: password validator failed at auth.rs:42
+ticket MFA-123456 is not an authentication code
+release token budget was 2048 for the run
+mnemonic devices help memory but this sentence has no seed phrase
 31secret-redaction-v2 2026-05-2315:39:43
 31secret-redaction-v22026-05-2315:39:43
+"31secret-redaction-v2 2026-05-2315:42:30"
