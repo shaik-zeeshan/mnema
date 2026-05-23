@@ -1335,8 +1335,9 @@ impl ProcessingStore {
 
         let result_insert = sqlx::query(
             "INSERT INTO processing_results (\
-                job_id, subject_type, subject_id, processor, result_text, structured_payload_json, processor_version\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                job_id, subject_type, subject_id, processor, result_text, structured_payload_json, processor_version, \
+                redaction_detector_version, redaction_checked_at\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CASE WHEN ?8 IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END)",
         )
         .bind(job_id)
         .bind(&job.subject_type)
@@ -1350,6 +1351,7 @@ impl ProcessingStore {
                 .as_deref(),
         )
         .bind(result_persistence_plan.draft().processor_version.as_deref())
+        .bind(result_persistence_plan.redaction_detector_version())
         .execute(&mut *transaction)
         .await?;
 
@@ -1515,7 +1517,7 @@ impl ProcessingStore {
         let row = sqlx::query(
             "SELECT \
                 id, job_id, subject_type, subject_id, processor, result_text, structured_payload_json, \
-                processor_version, created_at \
+                processor_version, redaction_detector_version, redaction_checked_at, created_at \
              FROM processing_results \
              WHERE job_id = ?1",
         )
@@ -1533,7 +1535,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT \
                 id, job_id, subject_type, subject_id, processor, result_text, structured_payload_json, \
-                processor_version, created_at \
+                processor_version, redaction_detector_version, redaction_checked_at, created_at \
              FROM processing_results \
              WHERE subject_type = ?1 AND subject_id = ?2 \
              ORDER BY id DESC",
@@ -2903,7 +2905,7 @@ where
     let row = sqlx::query(
         "SELECT \
             id, job_id, subject_type, subject_id, processor, result_text, structured_payload_json, \
-            processor_version, created_at \
+            processor_version, redaction_detector_version, redaction_checked_at, created_at \
          FROM processing_results \
          WHERE id = ?1",
     )
@@ -3135,6 +3137,8 @@ fn map_processing_result(row: SqliteRow) -> Result<ProcessingResult> {
         result_text: row.get("result_text"),
         structured_payload_json: row.get("structured_payload_json"),
         processor_version: row.get("processor_version"),
+        redaction_detector_version: row.get("redaction_detector_version"),
+        redaction_checked_at: row.get("redaction_checked_at"),
         created_at: row.get("created_at"),
     })
 }

@@ -1,6 +1,11 @@
 use audio_transcription::TranscriptionMetadata;
 use ocr::OcrStructuredPayload;
-use secret_redaction::{redact_searchable_text, RedactionContext, SecretCategory};
+use secret_redaction::{
+    plan_redactions, OcrRedactionInput, OcrRedactionObservation, PlannedRedaction,
+    RedactionBoundingBox, RedactionBudget, RedactionContext, RedactionRequest, RedactionScope,
+    RedactionSurfaceKind, SecretCategory, TranscriptRedactionInput, TranscriptRedactionSegment,
+    TranscriptRedactionWord, DETECTOR_VERSION,
+};
 use sqlx::{Sqlite, Transaction};
 
 use crate::{AppInfraError, AudioSegmentSourceKind, Result};
@@ -16,6 +21,7 @@ pub(crate) struct SecretRedactionPipeline;
 pub(crate) struct ProcessingResultPersistencePlan {
     draft: ProcessingResultDraft,
     secret_redactions: Vec<SecretRedactionPersistenceDraft>,
+    redaction_detector_version: Option<String>,
     #[cfg(test)]
     redaction_context: Option<RedactionContext>,
 }
@@ -24,6 +30,8 @@ pub(crate) struct ProcessingResultPersistencePlan {
 struct SecretRedactionPersistenceDraft {
     anchor: SecretRedactionAnchor,
     category: SecretCategory,
+    surface_kind: RedactionSurfaceKind,
+    redaction_scope: RedactionScope,
     redacted_start: i64,
     redacted_end: i64,
     detector_version: String,
@@ -63,54 +71,87 @@ impl SecretRedactionPipeline {
             return Ok(ProcessingResultPersistencePlan {
                 draft: draft.clone(),
                 secret_redactions: Vec::new(),
+                redaction_detector_version: None,
                 #[cfg(test)]
                 redaction_context: None,
             });
         };
 
-        let redaction = draft
-            .result_text
+        let structured_payload = draft
+            .structured_payload_json
             .as_deref()
-            .map(|text| redact_searchable_text(text, policy.context));
-        let result_text = redaction
-            .as_ref()
-            .map(|result| result.redacted_text.clone())
-            .or_else(|| draft.result_text.clone());
-
-        let structured_payload_json = match draft.structured_payload_json.as_deref() {
-            Some(payload_json) => Some(redact_structured_payload_or_keep_if_no_redactions(
-                payload_json,
-                redaction.as_ref(),
-                policy.structured_payload,
-                policy.context,
-            )?),
-            None => None,
+            .map(|payload_json| parse_structured_payload(payload_json, policy.structured_payload))
+            .transpose();
+        let structured_payload = match structured_payload {
+            Ok(payload) => payload,
+            Err(error) => {
+                let text_only = plan_redactions(RedactionRequest {
+                    context: policy.context,
+                    result_text: draft.result_text.clone(),
+                    ocr: None,
+                    transcript: None,
+                    additional_surfaces: Vec::new(),
+                    budget: RedactionBudget::default(),
+                });
+                let Ok(text_only) = text_only else {
+                    return Err(AppInfraError::SecretRedactionGate(
+                        "secret redaction gate failed before safe derived-text persistence"
+                            .to_string(),
+                    ));
+                };
+                if text_only.redactions.is_empty() {
+                    return Ok(ProcessingResultPersistencePlan {
+                        draft: ProcessingResultDraft {
+                            result_text: text_only.result_text,
+                            structured_payload_json: draft.structured_payload_json.clone(),
+                            processor_version: draft.processor_version.clone(),
+                        },
+                        secret_redactions: Vec::new(),
+                        redaction_detector_version: Some(DETECTOR_VERSION.to_string()),
+                        #[cfg(test)]
+                        redaction_context: Some(policy.context),
+                    });
+                }
+                return Err(error);
+            }
         };
 
-        let secret_redactions = redaction
-            .as_ref()
-            .map(|redaction| {
-                redaction
-                    .spans
-                    .iter()
-                    .map(|span| SecretRedactionPersistenceDraft {
-                        anchor: policy.anchor,
-                        category: span.category,
-                        redacted_start: span_position_to_i64(span.start),
-                        redacted_end: span_position_to_i64(span.end),
-                        detector_version: redaction.detector_version.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let request = RedactionRequest {
+            context: policy.context,
+            result_text: draft.result_text.clone(),
+            ocr: structured_payload
+                .as_ref()
+                .and_then(ParsedStructuredPayload::ocr_input),
+            transcript: structured_payload
+                .as_ref()
+                .and_then(ParsedStructuredPayload::transcript_input),
+            additional_surfaces: Vec::new(),
+            budget: RedactionBudget::default(),
+        };
+        let redaction_plan = plan_redactions(request).map_err(|_| {
+            AppInfraError::SecretRedactionGate(
+                "secret redaction gate failed before safe derived-text persistence".to_string(),
+            )
+        })?;
+
+        let structured_payload_json = structured_payload
+            .map(|payload| apply_redaction_plan_to_structured_payload(payload, &redaction_plan))
+            .transpose()?;
+
+        let secret_redactions = redaction_plan
+            .redactions
+            .iter()
+            .map(|redaction| secret_redaction_persistence_draft(policy.anchor, redaction))
+            .collect();
 
         Ok(ProcessingResultPersistencePlan {
             draft: ProcessingResultDraft {
-                result_text,
+                result_text: redaction_plan.result_text,
                 structured_payload_json,
                 processor_version: draft.processor_version.clone(),
             },
             secret_redactions,
+            redaction_detector_version: Some(redaction_plan.detector_version),
             #[cfg(test)]
             redaction_context: Some(policy.context),
         })
@@ -122,6 +163,10 @@ impl ProcessingResultPersistencePlan {
         &self.draft
     }
 
+    pub(crate) fn redaction_detector_version(&self) -> Option<&str> {
+        self.redaction_detector_version.as_deref()
+    }
+
     pub(crate) async fn persist_secret_redactions_in_transaction(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,
@@ -131,14 +176,16 @@ impl ProcessingResultPersistencePlan {
             sqlx::query(
                 "INSERT INTO secret_redactions (\
                     anchor_type, frame_id, audio_segment_id, processing_result_id, category, \
-                    redacted_start, redacted_end, detector_version\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    surface_kind, redaction_scope, redacted_start, redacted_end, detector_version\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )
             .bind(redaction.anchor.anchor_type())
             .bind(redaction.anchor.frame_id())
             .bind(redaction.anchor.audio_segment_id())
             .bind(stored_result.id)
             .bind(redaction.category.as_storage_str())
+            .bind(redaction.surface_kind.as_storage_str())
+            .bind(redaction.redaction_scope.as_storage_str())
             .bind(redaction.redacted_start)
             .bind(redaction.redacted_end)
             .bind(&redaction.detector_version)
@@ -204,55 +251,119 @@ fn redaction_policy_for_job(
     }
 }
 
-fn redact_structured_payload_or_keep_if_no_redactions(
-    payload_json: &str,
-    result_text_redaction: Option<&secret_redaction::RedactionResult>,
-    payload_redaction: StructuredPayloadRedaction,
-    context: RedactionContext,
-) -> Result<String> {
-    match redact_structured_payload(payload_json, payload_redaction, context) {
-        Ok(redacted) => Ok(redacted),
-        Err(error) if result_text_redaction.is_some_and(|redaction| redaction.spans.is_empty()) => {
-            let _ = error;
-            Ok(payload_json.to_string())
+enum ParsedStructuredPayload {
+    Ocr(OcrStructuredPayload),
+    Transcription(TranscriptionMetadata),
+}
+
+impl ParsedStructuredPayload {
+    fn ocr_input(&self) -> Option<OcrRedactionInput> {
+        match self {
+            Self::Ocr(payload) => Some(OcrRedactionInput {
+                observations: payload
+                    .observations
+                    .iter()
+                    .map(|observation| OcrRedactionObservation {
+                        text: observation.text.clone(),
+                        confidence: observation.confidence,
+                        bounding_box: RedactionBoundingBox {
+                            x: observation.bounding_box.x,
+                            y: observation.bounding_box.y,
+                            width: observation.bounding_box.width,
+                            height: observation.bounding_box.height,
+                        },
+                    })
+                    .collect(),
+            }),
+            Self::Transcription(_) => None,
         }
-        Err(error) => Err(error),
+    }
+
+    fn transcript_input(&self) -> Option<TranscriptRedactionInput> {
+        match self {
+            Self::Transcription(metadata) => Some(TranscriptRedactionInput {
+                segments: metadata
+                    .segments
+                    .iter()
+                    .map(|segment| TranscriptRedactionSegment {
+                        text: segment.text.clone(),
+                        start_ms: segment.start_ms,
+                        end_ms: segment.end_ms,
+                        confidence: segment.confidence,
+                    })
+                    .collect(),
+                words: metadata
+                    .words
+                    .iter()
+                    .map(|word| TranscriptRedactionWord {
+                        text: word.text.clone(),
+                        start_ms: word.start_ms,
+                        end_ms: word.end_ms,
+                        confidence: word.confidence,
+                    })
+                    .collect(),
+            }),
+            Self::Ocr(_) => None,
+        }
     }
 }
 
-fn redact_structured_payload(
+fn parse_structured_payload(
     payload_json: &str,
     payload_redaction: StructuredPayloadRedaction,
-    context: RedactionContext,
-) -> Result<String> {
+) -> Result<ParsedStructuredPayload> {
     match payload_redaction {
-        StructuredPayloadRedaction::Ocr => redact_ocr_structured_payload(payload_json, context),
-        StructuredPayloadRedaction::Transcription => {
-            redact_transcription_structured_payload(payload_json, context)
+        StructuredPayloadRedaction::Ocr => Ok(ParsedStructuredPayload::Ocr(serde_json::from_str(
+            payload_json,
+        )?)),
+        StructuredPayloadRedaction::Transcription => Ok(ParsedStructuredPayload::Transcription(
+            serde_json::from_str(payload_json)?,
+        )),
+    }
+}
+
+fn apply_redaction_plan_to_structured_payload(
+    payload: ParsedStructuredPayload,
+    plan: &secret_redaction::UnifiedRedactionPlan,
+) -> Result<String> {
+    match payload {
+        ParsedStructuredPayload::Ocr(mut payload) => {
+            for (index, text) in &plan.ocr_observation_text {
+                if let Some(observation) = payload.observations.get_mut(*index) {
+                    observation.text = text.clone();
+                }
+            }
+            Ok(serde_json::to_string(&payload)?)
+        }
+        ParsedStructuredPayload::Transcription(mut metadata) => {
+            for (index, text) in &plan.transcript_segment_text {
+                if let Some(segment) = metadata.segments.get_mut(*index) {
+                    segment.text = text.clone();
+                }
+            }
+            for (index, text) in &plan.transcript_word_text {
+                if let Some(word) = metadata.words.get_mut(*index) {
+                    word.text = text.clone();
+                }
+            }
+            Ok(serde_json::to_string(&metadata)?)
         }
     }
 }
 
-fn redact_ocr_structured_payload(payload_json: &str, context: RedactionContext) -> Result<String> {
-    let mut payload: OcrStructuredPayload = serde_json::from_str(payload_json)?;
-    for observation in &mut payload.observations {
-        observation.text = redact_searchable_text(&observation.text, context).redacted_text;
+fn secret_redaction_persistence_draft(
+    anchor: SecretRedactionAnchor,
+    redaction: &PlannedRedaction,
+) -> SecretRedactionPersistenceDraft {
+    SecretRedactionPersistenceDraft {
+        anchor,
+        category: redaction.category,
+        surface_kind: redaction.surface_kind,
+        redaction_scope: redaction.redaction_scope,
+        redacted_start: span_position_to_i64(redaction.redacted_start),
+        redacted_end: span_position_to_i64(redaction.redacted_end),
+        detector_version: DETECTOR_VERSION.to_string(),
     }
-    Ok(serde_json::to_string(&payload)?)
-}
-
-fn redact_transcription_structured_payload(
-    payload_json: &str,
-    context: RedactionContext,
-) -> Result<String> {
-    let mut metadata: TranscriptionMetadata = serde_json::from_str(payload_json)?;
-    for segment in &mut metadata.segments {
-        segment.text = redact_searchable_text(&segment.text, context).redacted_text;
-    }
-    for word in &mut metadata.words {
-        word.text = redact_searchable_text(&word.text, context).redacted_text;
-    }
-    Ok(serde_json::to_string(&metadata)?)
 }
 
 fn span_position_to_i64(position: usize) -> i64 {
@@ -319,12 +430,15 @@ mod tests {
         assert!(!payload.observations[0].text.contains(secret));
 
         assert_eq!(plan.redaction_context, Some(RedactionContext::Ocr));
-        assert_eq!(plan.secret_redactions.len(), 1);
-        assert_eq!(
-            plan.secret_redactions[0].anchor,
-            SecretRedactionAnchor::Frame { frame_id: 42 }
-        );
-        assert_eq!(plan.secret_redactions[0].category, SecretCategory::ApiKey);
+        assert!(plan.secret_redactions.len() >= 2);
+        assert!(plan.secret_redactions.iter().all(|redaction| {
+            redaction.anchor == SecretRedactionAnchor::Frame { frame_id: 42 }
+                && redaction.category == SecretCategory::ApiKey
+        }));
+        assert!(plan.secret_redactions.iter().any(|redaction| {
+            redaction.surface_kind == RedactionSurfaceKind::OcrObservation
+                && redaction.redaction_scope == RedactionScope::RedactionUnit
+        }));
     }
 
     #[test]

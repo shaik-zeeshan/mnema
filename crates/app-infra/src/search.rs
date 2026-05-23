@@ -192,7 +192,8 @@ impl SearchStore {
                     processing_results.subject_type, processing_results.subject_id, \
                     processing_results.processor, processing_results.result_text, \
                     processing_results.structured_payload_json, \
-                    processing_results.processor_version, processing_results.created_at \
+                    processing_results.processor_version, processing_results.redaction_detector_version, \
+                    processing_results.redaction_checked_at, processing_results.created_at \
              FROM processing_results \
              JOIN (\
                 SELECT subject_type, subject_id, processor, MAX(id) AS id \
@@ -498,7 +499,8 @@ async fn backfill_missing_equivalent_reuse_projections(
                 processing_results.subject_type, processing_results.subject_id, \
                 processing_results.processor, processing_results.result_text, \
                 processing_results.structured_payload_json, \
-                processing_results.processor_version, processing_results.created_at \
+                processing_results.processor_version, processing_results.redaction_detector_version, \
+                processing_results.redaction_checked_at, processing_results.created_at \
          FROM processing_results \
          JOIN (\
             SELECT subject_type, subject_id, processor, MAX(id) AS id \
@@ -1797,6 +1799,8 @@ fn map_processing_result_for_search(row: SqliteRow) -> Result<ProcessingResult> 
         result_text: row.get("result_text"),
         structured_payload_json: row.get("structured_payload_json"),
         processor_version: row.get("processor_version"),
+        redaction_detector_version: row.get("redaction_detector_version"),
+        redaction_checked_at: row.get("redaction_checked_at"),
         created_at: row.get("created_at"),
     })
 }

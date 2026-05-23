@@ -63,6 +63,8 @@ pub enum AppInfraError {
     AudioTranscriptionEngine(String),
     #[error("speaker analysis error: {0}")]
     SpeakerAnalysisEngine(String),
+    #[error("{0}")]
+    SecretRedactionGate(String),
     #[error("invalid frame batch status: {0}")]
     InvalidFrameBatchStatus(String),
     #[error("frame batch {batch_id} cannot transition from '{from}' to '{to}'")]

@@ -1,0 +1,8 @@
+api_key|OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456
+access_token|Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890
+access_token|jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghiABCDEFGHI1234567890
+connection_string|postgres://user:pass1234@localhost/app
+private_key|-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----
+password|DB_PASSWORD=hunter222
+auth_code|verification code 123456
+seed_like_secret|seed phrase: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about
