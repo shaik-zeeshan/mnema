@@ -632,10 +632,9 @@ fn should_retry_authorization_with_app_launch(error: &CliError) -> bool {
 
 #[cfg(unix)]
 fn authorization_socket_path() -> PathBuf {
-    let base = env::var_os("TMPDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir);
-    base.join(APP_IDENTIFIER).join("cli-access.sock")
+    default_app_config_dir()
+        .unwrap_or_else(|| env::temp_dir().join(APP_IDENTIFIER))
+        .join("cli-access.sock")
 }
 
 async fn launch_mnema_app() -> Result<(), CliError> {
@@ -1008,6 +1007,17 @@ mod tests {
         Cli::try_parse_from(["mnema", "access", "known-clients"]).unwrap();
         Cli::try_parse_from(["mnema", "access", "revoke", "grant-1"]).unwrap();
         Cli::try_parse_from(["mnema", "access", "revoke-client", "Codex", "--yes"]).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorization_socket_lives_under_app_config_dir() {
+        let config_dir = default_app_config_dir().expect("config dir should resolve");
+
+        assert_eq!(
+            authorization_socket_path(),
+            config_dir.join("cli-access.sock")
+        );
     }
 
     #[test]

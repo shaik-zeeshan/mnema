@@ -403,8 +403,8 @@ pub fn plan_redactions(request: RedactionRequest) -> Result<UnifiedRedactionPlan
     if let Some(ocr) = request.ocr {
         for line in build_ocr_visual_lines(&ocr.observations) {
             let result = redact_text(&line.text);
+            plan.telemetry.scanned_surfaces += 1;
             if !result.spans.is_empty() {
-                plan.telemetry.scanned_surfaces += 1;
                 for span in &result.spans {
                     plan.redactions.push(PlannedRedaction {
                         category: span.category,
@@ -433,8 +433,8 @@ pub fn plan_redactions(request: RedactionRequest) -> Result<UnifiedRedactionPlan
                 continue;
             }
             let result = redact_text(&observation.text);
+            plan.telemetry.scanned_surfaces += 1;
             if !result.spans.is_empty() {
-                plan.telemetry.scanned_surfaces += 1;
                 plan.ocr_observation_text
                     .insert(index, result.redacted_text.clone());
                 for span in result.spans {
@@ -453,8 +453,8 @@ pub fn plan_redactions(request: RedactionRequest) -> Result<UnifiedRedactionPlan
     if let Some(transcript) = request.transcript {
         for (index, segment) in transcript.segments.iter().enumerate() {
             let result = redact_text(&segment.text);
+            plan.telemetry.scanned_surfaces += 1;
             if !result.spans.is_empty() {
-                plan.telemetry.scanned_surfaces += 1;
                 plan.transcript_segment_text
                     .insert(index, result.redacted_text.clone());
                 for span in result.spans {
@@ -470,8 +470,8 @@ pub fn plan_redactions(request: RedactionRequest) -> Result<UnifiedRedactionPlan
         }
         for (index, word) in transcript.words.iter().enumerate() {
             let result = redact_text(&word.text);
+            plan.telemetry.scanned_surfaces += 1;
             if !result.spans.is_empty() {
-                plan.telemetry.scanned_surfaces += 1;
                 plan.transcript_word_text
                     .insert(index, result.redacted_text.clone());
                 for span in result.spans {
@@ -887,6 +887,34 @@ mod tests {
                 max_surface_chars: 64,
             },
         });
+        assert_eq!(result, Err(RedactionError::SafetyFailure));
+    }
+
+    #[test]
+    fn planner_counts_non_matching_ocr_surfaces_against_budget() {
+        let result = plan_redactions(RedactionRequest {
+            context: RedactionContext::Ocr,
+            result_text: None,
+            ocr: Some(OcrRedactionInput {
+                observations: vec![OcrRedactionObservation {
+                    text: "ordinary visible text".to_string(),
+                    confidence: 0.9,
+                    bounding_box: RedactionBoundingBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 0.5,
+                        height: 0.1,
+                    },
+                }],
+            }),
+            transcript: None,
+            additional_surfaces: Vec::new(),
+            budget: RedactionBudget {
+                max_surfaces: 0,
+                max_surface_chars: 64,
+            },
+        });
+
         assert_eq!(result, Err(RedactionError::SafetyFailure));
     }
 }

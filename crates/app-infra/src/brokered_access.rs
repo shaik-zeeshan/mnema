@@ -252,6 +252,8 @@ pub struct BrokerOpaqueCaptureReference {
     pub kind: String,
     pub frame_id: Option<i64>,
     pub audio_segment_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -818,6 +820,13 @@ fn scope_class(grants: &[BrokerGrant]) -> String {
     }
 }
 
+fn opaque_issuing_grant(grants: &[BrokerGrant]) -> Option<&BrokerGrant> {
+    grants.iter().max_by_key(|grant| match grant.scope {
+        BrokerGrantScope::AllRetainedHistory => u32::MAX,
+        BrokerGrantScope::RecentDays { days } => days,
+    })
+}
+
 fn scoped_date_range(
     grants: &[BrokerGrant],
     from: Option<String>,
@@ -1107,7 +1116,12 @@ async fn broker_search(
         })
         .await?;
     let opaque_secret = load_or_create_opaque_secret(config_dir)?;
-    Ok(Ok(map_search_response(response, limit, &opaque_secret)))
+    Ok(Ok(map_search_response(
+        response,
+        limit,
+        opaque_issuing_grant(grants).map(|grant| grant.id.as_str()),
+        &opaque_secret,
+    )))
 }
 
 async fn broker_show_text(
@@ -1234,6 +1248,17 @@ async fn broker_authorize_opaque_reference(
     let Some(reference) = decode_signed_opaque_id(opaque_id, &secret) else {
         return Ok(Err(invalid_opaque_id_error()));
     };
+    let Some(grant_id) = reference.grant_id.as_deref() else {
+        return Ok(Err(invalid_opaque_id_error()));
+    };
+    let scoped_grants = grants
+        .iter()
+        .filter(|grant| grant.id == grant_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    if scoped_grants.is_empty() {
+        return Ok(Err(outside_scope_error()));
+    }
     let in_scope = match reference.kind.as_str() {
         "frame" => {
             let Some(frame) = infra
@@ -1242,7 +1267,7 @@ async fn broker_authorize_opaque_reference(
             else {
                 return Ok(Err(outside_scope_error()));
             };
-            timestamp_within_scope(grants, &frame.captured_at)?
+            timestamp_within_scope(&scoped_grants, &frame.captured_at)?
         }
         "audio" => {
             let Some(audio) = infra
@@ -1251,7 +1276,7 @@ async fn broker_authorize_opaque_reference(
             else {
                 return Ok(Err(outside_scope_error()));
             };
-            range_overlaps_scope(grants, &audio.started_at, &audio.ended_at)?
+            range_overlaps_scope(&scoped_grants, &audio.started_at, &audio.ended_at)?
         }
         _ => return Ok(Err(invalid_opaque_id_error())),
     };
@@ -1362,16 +1387,29 @@ fn encode_opaque_id(kind: &str, id: i64) -> String {
     format!("{tag}{:x}", id.max(0))
 }
 
-fn encode_signed_opaque_id(kind: &str, id: i64, secret: &[u8]) -> String {
-    let payload = encode_opaque_id(kind, id);
+fn encode_signed_opaque_id(kind: &str, id: i64, grant_id: Option<&str>, secret: &[u8]) -> String {
+    let mut payload = encode_opaque_id(kind, id);
+    if let Some(grant_id) = grant_id {
+        payload.push_str(":g");
+        payload.push_str(grant_id);
+    }
     let signature = opaque_signature(&payload, secret);
     format!("{payload}.{signature}")
 }
 
 fn decode_opaque_id(value: &str) -> Option<(String, i64)> {
+    decode_opaque_payload(value).map(|(kind, id, _grant_id)| (kind, id))
+}
+
+fn decode_opaque_payload(value: &str) -> Option<(String, i64, Option<String>)> {
     let value = value
         .split_once('.')
         .map_or(value, |(payload, _signature)| payload);
+    let (value, grant_id) = value
+        .split_once(":g")
+        .map_or((value, None), |(payload, grant_id)| {
+            (payload, Some(grant_id.to_string()))
+        });
     let mut chars = value.chars();
     let kind = chars.next()?;
     let rest = chars.as_str();
@@ -1381,7 +1419,7 @@ fn decode_opaque_id(value: &str) -> Option<(String, i64)> {
         'a' => "audio",
         _ => return None,
     };
-    Some((kind.to_string(), id))
+    Some((kind.to_string(), id, grant_id))
 }
 
 fn decode_signed_opaque_id(value: &str, secret: &[u8]) -> Option<BrokerOpaqueCaptureReference> {
@@ -1394,11 +1432,12 @@ fn decode_signed_opaque_id(value: &str, secret: &[u8]) -> Option<BrokerOpaqueCap
     if !opaque_signature_matches(payload, signature, secret) {
         return None;
     }
-    let (kind, id) = decode_opaque_id(payload)?;
+    let (kind, id, grant_id) = decode_opaque_payload(payload)?;
     Some(BrokerOpaqueCaptureReference {
         opaque_id: value.to_string(),
         frame_id: (kind == "frame").then_some(id),
         audio_segment_id: (kind == "audio").then_some(id),
+        grant_id,
         kind,
     })
 }
@@ -1409,6 +1448,7 @@ pub fn opaque_capture_reference(value: &str) -> Option<BrokerOpaqueCaptureRefere
         opaque_id: value.to_string(),
         frame_id: (kind == "frame").then_some(id),
         audio_segment_id: (kind == "audio").then_some(id),
+        grant_id: None,
         kind,
     })
 }
@@ -1545,6 +1585,7 @@ fn open_mnema_deep_link(opaque_id: &str) -> Result<()> {
 fn map_search_response(
     response: SearchCaptureResponse,
     limit: u32,
+    grant_id: Option<&str>,
     opaque_secret: &[u8],
 ) -> BrokerSearchResponse {
     let mut results = Vec::new();
@@ -1557,6 +1598,7 @@ fn map_search_response(
                 opaque_id: encode_signed_opaque_id(
                     "frame",
                     frame.representative_frame.id,
+                    grant_id,
                     opaque_secret,
                 ),
                 kind: "frame".to_string(),
@@ -1578,6 +1620,7 @@ fn map_search_response(
                 opaque_id: encode_signed_opaque_id(
                     "audio",
                     audio_result.audio_segment.id,
+                    grant_id,
                     opaque_secret,
                 ),
                 kind: "audio".to_string(),
@@ -1770,7 +1813,7 @@ mod tests {
     fn signed_opaque_capture_reference_requires_broker_signature() {
         let config_dir = temp_config_dir("signed-opaque-reference");
         let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
-        let opaque_id = encode_signed_opaque_id("frame", 17, &secret);
+        let opaque_id = encode_signed_opaque_id("frame", 17, Some("grant-1"), &secret);
 
         assert_eq!(
             signed_opaque_capture_reference(&config_dir, "f11").expect("unsigned should parse"),
@@ -1782,6 +1825,7 @@ mod tests {
                 opaque_id,
                 frame_id: Some(17),
                 audio_segment_id: None,
+                grant_id: Some("grant-1".to_string()),
                 kind: "frame".to_string(),
             })
         );
@@ -1883,7 +1927,7 @@ mod tests {
             },
         };
 
-        let mapped = map_search_response(response, 2, secret);
+        let mapped = map_search_response(response, 2, Some("grant-1"), secret);
 
         assert_eq!(
             mapped
@@ -2133,7 +2177,7 @@ mod tests {
             )
             .expect("grant should create");
             let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
-            let opaque_id = encode_signed_opaque_id("audio", segment.id, &secret);
+            let opaque_id = encode_signed_opaque_id("audio", segment.id, Some(&grant.id), &secret);
 
             let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
                 .await
@@ -2212,7 +2256,8 @@ mod tests {
             )
             .expect("grant should create");
             let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
-            let opaque_id = encode_signed_opaque_id("frame", second.frame.id, &secret);
+            let opaque_id =
+                encode_signed_opaque_id("frame", second.frame.id, Some(&grant.id), &secret);
 
             let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
                 .await
@@ -2289,7 +2334,8 @@ mod tests {
             )
             .expect("grant should create");
             let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
-            let opaque_id = encode_signed_opaque_id("frame", second.frame.id, &secret);
+            let opaque_id =
+                encode_signed_opaque_id("frame", second.frame.id, Some(&grant.id), &secret);
 
             let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
                 .await
@@ -2352,9 +2398,58 @@ mod tests {
             )
             .expect("grant should create");
             let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
-            let opaque_id = encode_signed_opaque_id("frame", frame.id, &secret);
+            let opaque_id = encode_signed_opaque_id("frame", frame.id, Some(&grant.id), &secret);
 
             assert!(revoke_grant(&config_dir, &grant.id).expect("grant should revoke"));
+
+            let response = authorize_active_opaque_capture_reference(&config_dir, &opaque_id)
+                .await
+                .expect("authorization should run");
+
+            assert_eq!(response, None);
+        });
+    }
+
+    #[test]
+    fn active_opaque_authorization_rejects_ids_for_different_active_grant() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("cross-grant-opaque-replay");
+            let save_dir = temp_save_dir("cross-grant-opaque-replay");
+            write_recording_settings(&config_dir, &save_dir);
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .capture_frame(
+                    &NewFrame::new(
+                        "screen-session",
+                        "/tmp/broker-cross-grant-replay.jpg",
+                        &format_unix_ms(now_unix_ms()),
+                    ),
+                    None,
+                )
+                .await
+                .expect("frame should capture")
+                .frame;
+            let original_grant = create_grant(
+                &config_dir,
+                "Original agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+            let _other_grant = create_grant(
+                &config_dir,
+                "Other agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("other grant should create");
+            let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+            let opaque_id =
+                encode_signed_opaque_id("frame", frame.id, Some(&original_grant.id), &secret);
+
+            assert!(revoke_grant(&config_dir, &original_grant.id).expect("grant should revoke"));
 
             let response = authorize_active_opaque_capture_reference(&config_dir, &opaque_id)
                 .await

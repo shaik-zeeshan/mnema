@@ -145,7 +145,11 @@ pub fn start(app: &tauri::AppHandle) -> Result<(), String> {
 
     #[cfg(unix)]
     {
-        let socket_path = socket_path_for_identifier(app.config().identifier.as_str());
+        let socket_path = app
+            .path()
+            .app_config_dir()
+            .map(|dir| socket_path_for_config_dir(&dir))
+            .unwrap_or_else(|_| socket_path_for_identifier(app.config().identifier.as_str()));
         if let Some(parent) = socket_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("failed to create CLI access socket dir: {error}"))?;
@@ -599,10 +603,34 @@ fn stale_socket(path: &PathBuf) -> bool {
 }
 
 pub fn socket_path_for_identifier(identifier: &str) -> PathBuf {
-    let base = std::env::var_os("TMPDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    base.join(identifier).join("cli-access.sock")
+    default_app_config_dir_for_identifier(identifier)
+        .unwrap_or_else(|| std::env::temp_dir().join(identifier))
+        .join("cli-access.sock")
+}
+
+fn socket_path_for_config_dir(config_dir: &std::path::Path) -> PathBuf {
+    config_dir.join("cli-access.sock")
+}
+
+fn default_app_config_dir_for_identifier(identifier: &str) -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("MNEMA_APP_CONFIG_DIR") {
+        return Some(PathBuf::from(path));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(PathBuf::from).map(|home| {
+            home.join("Library")
+                .join("Application Support")
+                .join(identifier)
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+            .map(|dir| dir.join(identifier))
+    }
 }
 
 #[cfg(test)]
