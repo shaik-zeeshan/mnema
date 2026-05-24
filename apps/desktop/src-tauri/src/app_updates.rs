@@ -283,23 +283,52 @@ fn current_recording_active(app_handle: &tauri::AppHandle) -> bool {
     ))
 }
 
+/// Derive the user-facing state and error from raw runtime fields.
+///
+/// When recording stops after an install was blocked, the runtime still carries
+/// the `RecordingBlocked` state and its `RecordingActive` error. We remap the
+/// state back to what the pending update warrants and drop the now-stale
+/// "stop recording" error so the surfaced status stays self-consistent (no
+/// `Available`/`recordingActive: false` paired with a "stop recording" error).
+fn derive_state_and_error(
+    runtime_state: AppUpdateState,
+    restart_required: bool,
+    has_update: bool,
+    recording_active: bool,
+    error: Option<AppUpdateError>,
+) -> (AppUpdateState, Option<AppUpdateError>) {
+    let recording_unblocked =
+        runtime_state == AppUpdateState::RecordingBlocked && !recording_active;
+    let state = if recording_unblocked {
+        if restart_required {
+            AppUpdateState::RestartRequired
+        } else if has_update {
+            AppUpdateState::Available
+        } else {
+            AppUpdateState::Idle
+        }
+    } else {
+        runtime_state
+    };
+    let error = error.filter(|error| {
+        !(recording_unblocked && error.kind == AppUpdateErrorKind::RecordingActive)
+    });
+    (state, error)
+}
+
 fn status_from_runtime(
     app_handle: &tauri::AppHandle,
     settings: AppUpdateSettings,
     runtime: &AppUpdateRuntime,
 ) -> AppUpdateStatus {
     let recording_active = current_recording_active(app_handle);
-    let state = if runtime.state == AppUpdateState::RecordingBlocked && !recording_active {
-        if runtime.restart_required {
-            AppUpdateState::RestartRequired
-        } else if runtime.update.is_some() {
-            AppUpdateState::Available
-        } else {
-            AppUpdateState::Idle
-        }
-    } else {
-        runtime.state
-    };
+    let (state, error) = derive_state_and_error(
+        runtime.state,
+        runtime.restart_required,
+        runtime.update.is_some(),
+        recording_active,
+        runtime.error.clone(),
+    );
 
     AppUpdateStatus {
         app: app_info(app_handle),
@@ -307,7 +336,7 @@ fn status_from_runtime(
         state,
         update: runtime.update.clone(),
         progress: runtime.progress.clone(),
-        error: runtime.error.clone(),
+        error,
         last_checked_at_unix_ms: runtime.last_checked_at_unix_ms,
         recording_active,
     }
@@ -987,5 +1016,72 @@ mod tests {
             .expect("running capture should reject restart");
 
         assert_eq!(error.kind, AppUpdateErrorKind::RecordingActive);
+    }
+
+    fn recording_active_error() -> AppUpdateError {
+        AppUpdateError::new(
+            AppUpdateErrorKind::RecordingActive,
+            user_facing_error_message(AppUpdateErrorKind::RecordingActive),
+        )
+    }
+
+    #[test]
+    fn stopping_recording_clears_stale_recording_blocked_error() {
+        let (state, error) = derive_state_and_error(
+            AppUpdateState::RecordingBlocked,
+            false,
+            true,
+            false,
+            Some(recording_active_error()),
+        );
+
+        assert_eq!(state, AppUpdateState::Available);
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn stopping_recording_restores_restart_required_without_stale_error() {
+        let (state, error) = derive_state_and_error(
+            AppUpdateState::RecordingBlocked,
+            true,
+            true,
+            false,
+            Some(recording_active_error()),
+        );
+
+        assert_eq!(state, AppUpdateState::RestartRequired);
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn recording_block_keeps_its_error_while_recording_is_active() {
+        let (state, error) = derive_state_and_error(
+            AppUpdateState::RecordingBlocked,
+            false,
+            true,
+            true,
+            Some(recording_active_error()),
+        );
+
+        assert_eq!(state, AppUpdateState::RecordingBlocked);
+        assert_eq!(
+            error.map(|error| error.kind),
+            Some(AppUpdateErrorKind::RecordingActive)
+        );
+    }
+
+    #[test]
+    fn non_recording_failures_keep_their_error() {
+        let failure = AppUpdateError::new(AppUpdateErrorKind::Network, "boom");
+        let (state, error) = derive_state_and_error(
+            AppUpdateState::Failed,
+            false,
+            false,
+            false,
+            Some(failure.clone()),
+        );
+
+        assert_eq!(state, AppUpdateState::Failed);
+        assert_eq!(error, Some(failure));
     }
 }
