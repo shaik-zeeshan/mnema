@@ -1,6 +1,9 @@
 name: macOS Release
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
@@ -12,7 +15,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: macos-release-${{ github.event.inputs.version }}
+  group: macos-release-${{ github.event.inputs.version || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -69,7 +72,7 @@ jobs:
 
       - name: Verify release version
         id: release_version
-        run: ./scripts/verify-desktop-release-version.sh "${{ inputs.version }}"
+        run: ./scripts/verify-desktop-release-version.sh "${{ github.event.inputs.version || github.ref_name }}"
 
       - name: Check frontend
         run: bun run check

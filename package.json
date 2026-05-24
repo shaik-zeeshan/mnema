@@ -15,7 +15,8 @@
     "dev:web": "turbo run dev --filter=web",
     "build:web": "turbo run build --filter=web",
     "check:web": "turbo run check --filter=web",
-    "build:macos-local-sign": "./scripts/build-macos-local-sign.sh"
+    "build:macos-local-sign": "./scripts/build-macos-local-sign.sh",
+    "release": "./scripts/release.sh"
   },
   "devDependencies": {
     "turbo": "^2.0.0"
