@@ -1,0 +1,119 @@
+---
+const steps = [
+  {
+    index: "01",
+    label: "capture",
+    description:
+      "Mnema continuously records your screen and audio in the background. Every pixel, every word spoken — indexed the moment it happens.",
+  },
+  {
+    index: "02",
+    label: "index",
+    description:
+      "On-device OCR reads text from your screen. Local transcription converts speech to searchable text with speaker tags. Everything is structured and timestamped.",
+  },
+  {
+    index: "03",
+    label: "recall",
+    description:
+      "Search your full history by keyword, app, or time. Scrub the timeline to the exact moment. Find what you saw last Tuesday in seconds.",
+  },
+];
+---
+
+<section class="how-it-works" id="how-it-works">
+  <div class="section-inner">
+    <p class="kicker">// how it works</p>
+    <h2 class="section-heading">Capture. Index. Recall.</h2>
+
+    <ol class="steps">
+      {
+        steps.map((step) => (
+          <li class="step">
+            <span class="step-index">{step.index}</span>
+            <div class="step-content">
+              <h3 class="step-label">{step.label}</h3>
+              <p class="step-desc">{step.description}</p>
+            </div>
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+</section>
+
+<style>
+  .how-it-works {
+    padding: var(--space-2xl) var(--space-lg);
+  }
+
+  .section-inner {
+    max-width: 56rem;
+    margin: 0 auto;
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: var(--space-xs);
+  }
+
+  .section-heading {
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-lg);
+  }
+
+  .steps {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-md);
+  }
+
+  .step {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+  }
+
+  .step-index {
+    font-family: var(--font-mono);
+    font-size: var(--text-xl);
+    color: var(--border-strong);
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  .step-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .step-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--fg);
+  }
+
+  .step-desc {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    max-width: 55ch;
+    line-height: 1.6;
+  }
+
+  @media (max-width: 768px) {
+    .steps {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

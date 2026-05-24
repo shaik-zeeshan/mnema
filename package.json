@@ -9,9 +9,12 @@
   ],
   "scripts": {
     "dev": "turbo run dev --filter=desktop",
-    "build": "turbo run build --filter=desktop --cache=local:r",
-    "check": "turbo run check --filter=desktop --cache=local:r",
+    "build": "turbo run build --cache=local:r",
+    "check": "turbo run check --cache=local:r",
     "tauri": "turbo run tauri --filter=desktop --",
+    "dev:web": "turbo run dev --filter=web",
+    "build:web": "turbo run build --filter=web",
+    "check:web": "turbo run check --filter=web",
     "build:macos-local-sign": "./scripts/build-macos-local-sign.sh"
   },
   "devDependencies": {

@@ -1,0 +1,542 @@
+---
+---
+
+<section class="rewind">
+  <div class="rewind-sticky">
+    <div class="rewind-inner">
+      <p class="kicker">// rewind</p>
+      <h2 class="rewind-heading">Scrub back to the exact moment.</h2>
+      <p class="rewind-sub">
+        A full day of screen, audio, and activity — narrowed to the one thing
+        you need.
+      </p>
+
+      <div class="rewind-vis">
+        <div class="rewind-stage" aria-hidden="true">
+          <div class="rw-timeline">
+            <div class="rw-tl-track">
+              <div class="rw-tl-fill"></div>
+              <div class="rw-tl-needle">
+                <span class="rw-tl-time">5:00 PM</span>
+              </div>
+            </div>
+            <div class="rw-tl-labels">
+              <span>9 AM</span><span>10</span><span>11</span><span>12 PM</span
+              ><span>1</span><span>2</span><span>3</span><span>4</span><span
+                >5 PM</span
+              >
+            </div>
+          </div>
+
+          <div class="rw-search">
+            <span class="rw-search-icon">
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+            </span>
+            <span class="rw-search-text">slides ready</span>
+          </div>
+
+          <div class="rw-results">
+            <div class="rw-row" data-row>
+              <span class="frag" data-dx="-220" data-dy="-120" data-rot="14">
+                <span class="rw-cell rw-time">9:15 AM</span>
+              </span>
+              <span class="frag" data-dx="300" data-dy="-80" data-rot="-11">
+                <span class="rw-cell rw-app">Slack</span>
+              </span>
+              <span
+                class="frag frag-fill"
+                data-dx="280"
+                data-dy="160"
+                data-rot="5"
+              >
+                <span class="rw-cell rw-text"
+                  >...budget review meeting moved to Thursday...</span
+                >
+              </span>
+            </div>
+
+            <div class="rw-row rw-row--match" data-row data-match>
+              <span class="frag" data-dx="360" data-dy="50" data-rot="-13">
+                <span class="rw-cell rw-time">10:32 AM</span>
+              </span>
+              <span class="frag" data-dx="-260" data-dy="140" data-rot="16">
+                <span class="rw-cell rw-app">Zoom</span>
+              </span>
+              <span
+                class="frag frag-fill"
+                data-dx="120"
+                data-dy="-160"
+                data-rot="-4"
+              >
+                <span class="rw-cell rw-text"
+                  >"...<mark>slides ready</mark> by Thursday, I'll send..."</span
+                >
+              </span>
+              <span class="frag" data-dx="320" data-dy="120" data-rot="9">
+                <span class="rw-cell rw-badge">transcript</span>
+              </span>
+            </div>
+
+            <div class="rw-row" data-row>
+              <span class="frag" data-dx="-180" data-dy="150" data-rot="-8">
+                <span class="rw-cell rw-time">2:41 PM</span>
+              </span>
+              <span class="frag" data-dx="-320" data-dy="60" data-rot="13">
+                <span class="rw-cell rw-app">Figma</span>
+              </span>
+              <span
+                class="frag frag-fill"
+                data-dx="200"
+                data-dy="-90"
+                data-rot="-14"
+              >
+                <span class="rw-cell rw-text"
+                  >Prototype review — Q3 dashboard</span
+                >
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <span class="frag-noise" style="left: 2%; top: 12%"
+          >Chrome — 14 tabs</span
+        >
+        <span class="frag-noise" style="right: 3%; bottom: 18%">3:30 PM</span>
+        <span class="frag-noise" style="right: 2%; top: 22%">VS Code</span>
+        <span class="frag-noise" style="left: 4%; bottom: 28%"
+          >API response format</span
+        >
+        <span class="frag-noise" style="left: 32%; top: 4%"
+          >design system tokens</span
+        >
+        <span class="frag-noise" style="right: 18%; top: 6%">11:47 AM</span>
+        <span class="frag-noise" style="left: 10%; top: 52%"
+          >keynote.app</span
+        >
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  const section = document.querySelector<HTMLElement>(".rewind");
+  if (section) {
+    const frags = section.querySelectorAll<HTMLElement>(".frag");
+    const noises = section.querySelectorAll<HTMLElement>(".frag-noise");
+    const search = section.querySelector<HTMLElement>(".rw-search");
+    const needle = section.querySelector<HTMLElement>(".rw-tl-needle");
+    const fill = section.querySelector<HTMLElement>(".rw-tl-fill");
+    const needleTime = section.querySelector<HTMLElement>(".rw-tl-time");
+    const rows = section.querySelectorAll<HTMLElement>("[data-row]");
+    const matchRow = section.querySelector<HTMLElement>("[data-match]");
+
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      section.classList.add("rw-static");
+      if (needleTime) needleTime.textContent = "10:32 AM";
+    } else {
+      let scale = Math.min(1, innerWidth / 1200);
+      let ticking = false;
+
+      addEventListener(
+        "resize",
+        () => {
+          scale = Math.min(1, innerWidth / 1200);
+        },
+        { passive: true },
+      );
+
+      function ease(t: number) {
+        return 1 - (1 - t) ** 4;
+      }
+
+      function formatTime(totalMinutes: number) {
+        const h = Math.floor(totalMinutes / 60);
+        const m = totalMinutes % 60;
+        const suffix = h >= 12 ? "PM" : "AM";
+        const display = h > 12 ? h - 12 : h === 0 ? 12 : h;
+        return `${display}:${String(m).padStart(2, "0")} ${suffix}`;
+      }
+
+      function tick() {
+        ticking = false;
+        const rect = section!.getBoundingClientRect();
+        const scrollable = section!.offsetHeight - innerHeight;
+        if (scrollable <= 0) return;
+
+        const raw = Math.max(0, Math.min(1, -rect.top / scrollable));
+        const t = ease(raw);
+
+        frags.forEach((el) => {
+          const dx = +(el.dataset.dx || 0) * scale * (1 - t);
+          const dy = +(el.dataset.dy || 0) * scale * (1 - t);
+          const r = +(el.dataset.rot || 0) * (1 - t);
+          el.style.transform = `translate3d(${dx}px,${dy}px,0) rotate(${r}deg)`;
+          el.style.opacity = `${0.15 + 0.85 * t}`;
+        });
+
+        noises.forEach((el) => {
+          el.style.opacity = `${0.32 * Math.max(0, 1 - raw * 2)}`;
+        });
+
+        if (search) {
+          const sp = Math.max(0, Math.min(1, (raw - 0.2) / 0.3));
+          search.style.opacity = `${sp}`;
+          search.style.transform = `translateY(${6 * (1 - sp)}px)`;
+        }
+
+        if (needle) {
+          needle.style.left = `${95 - (95 - 19.2) * t}%`;
+        }
+
+        if (needleTime) {
+          needleTime.textContent = formatTime(Math.round(1020 - 388 * t));
+        }
+
+        if (fill) {
+          const fp = Math.max(0, (raw - 0.65) / 0.35);
+          fill.style.width = `${19.2 * fp}%`;
+          fill.style.opacity = `${fp}`;
+        }
+
+        const showRows = raw > 0.55;
+        rows.forEach((el) => el.classList.toggle("rw-row--visible", showRows));
+        matchRow?.classList.toggle("rw-row--found", raw > 0.82);
+      }
+
+      function onScroll() {
+        if (!ticking) {
+          ticking = true;
+          requestAnimationFrame(tick);
+        }
+      }
+
+      new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) {
+          addEventListener("scroll", onScroll, { passive: true });
+          onScroll();
+        } else {
+          removeEventListener("scroll", onScroll);
+        }
+      }).observe(section);
+
+      tick();
+    }
+  }
+</script>
+
+<style>
+  .rewind {
+    height: 250vh;
+    position: relative;
+  }
+
+  .rewind-sticky {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .rewind-inner {
+    width: 100%;
+    max-width: 56rem;
+    padding: 0 var(--space-lg);
+    text-align: center;
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: var(--space-xs);
+  }
+
+  .rewind-heading {
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-xs);
+  }
+
+  .rewind-sub {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    max-width: 50ch;
+    margin: 0 auto var(--space-xl);
+    line-height: 1.6;
+  }
+
+  .rewind-vis {
+    position: relative;
+    min-height: 300px;
+  }
+
+  .rewind-stage {
+    max-width: 480px;
+    margin: 0 auto;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ── Timeline ── */
+
+  .rw-timeline {
+    margin-bottom: var(--space-md);
+  }
+
+  .rw-tl-track {
+    position: relative;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+  }
+
+  .rw-tl-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    border-radius: 2px;
+    opacity: 0;
+  }
+
+  .rw-tl-needle {
+    position: absolute;
+    top: 50%;
+    left: 95%;
+    width: 10px;
+    height: 10px;
+    background: var(--fg);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  .rw-tl-time {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+
+  .rw-tl-labels {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--fg-muted);
+    padding-top: 0.4rem;
+    opacity: 0.5;
+  }
+
+  /* ── Search bar ── */
+
+  .rw-search {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--accent-border);
+    background: var(--accent-bg);
+    border-radius: var(--radius-sm);
+    margin-bottom: var(--space-sm);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    opacity: 0;
+    will-change: opacity, transform;
+  }
+
+  .rw-search-icon {
+    color: var(--accent);
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .rw-search-text {
+    color: var(--fg);
+  }
+
+  /* ── Result rows ── */
+
+  .rw-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .rw-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    transition:
+      border-color 0.6s var(--ease-out-quart),
+      background-color 0.6s var(--ease-out-quart);
+    flex-wrap: wrap;
+  }
+
+  .rw-row--visible {
+    border-color: var(--border);
+    background: var(--bg);
+  }
+
+  .rw-row--match.rw-row--found {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+  }
+
+  /* ── Fragments ── */
+
+  .frag {
+    display: inline-flex;
+    will-change: transform, opacity;
+  }
+
+  .frag-fill {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .rw-cell {
+    font-family: var(--font-mono);
+    white-space: nowrap;
+  }
+
+  .rw-time {
+    font-size: 0.65rem;
+    color: var(--fg-muted);
+    min-width: 5.2em;
+    text-align: left;
+  }
+
+  .rw-app {
+    font-size: 0.6rem;
+    color: var(--fg-muted);
+    padding: 0.1rem 0.35rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  .rw-text {
+    font-size: 0.7rem;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: left;
+  }
+
+  .rw-text mark {
+    background: transparent;
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .rw-badge {
+    font-size: 0.55rem;
+    color: var(--accent);
+    border: 1px solid var(--accent-border);
+    background: var(--accent-bg);
+    padding: 0.05rem 0.35rem;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  /* ── Noise ── */
+
+  .frag-noise {
+    position: absolute;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--fg-muted);
+    opacity: 0.32;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  /* ── Reduced motion ── */
+
+  .rw-static .frag {
+    transform: none !important;
+    opacity: 1 !important;
+  }
+
+  .rw-static .frag-noise {
+    display: none;
+  }
+
+  .rw-static .rw-search {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .rw-static .rw-row {
+    border-color: var(--border);
+    background: var(--bg);
+  }
+
+  .rw-static .rw-row--match {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+  }
+
+  .rw-static .rw-tl-needle {
+    left: 19.2% !important;
+  }
+
+  .rw-static .rw-tl-fill {
+    width: 19.2% !important;
+    opacity: 1 !important;
+  }
+
+  /* ── Mobile ── */
+
+  @media (max-width: 640px) {
+    .rewind {
+      height: 200vh;
+    }
+
+    .rewind-heading {
+      font-size: var(--text-xl);
+    }
+
+    .rewind-stage {
+      max-width: 100%;
+    }
+
+    .rw-text {
+      width: 100%;
+      flex: unset;
+    }
+
+    .rw-tl-labels span:nth-child(even) {
+      display: none;
+    }
+
+    .frag-noise {
+      font-size: 0.5rem;
+    }
+  }
+</style>

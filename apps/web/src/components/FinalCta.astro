@@ -1,0 +1,81 @@
+---
+import { DOWNLOAD_URL, PLATFORM_LABEL } from "../config";
+---
+
+<section class="final-cta">
+  <div class="section-inner">
+    <p class="kicker">// get started</p>
+    <h2 class="cta-heading">Remember everything.</h2>
+    <p class="cta-sub">
+      Download Mnema and start building your searchable personal record. Free,
+      open source, runs entirely on your Mac.
+    </p>
+    <a href={DOWNLOAD_URL} class="btn-primary">
+      Download for {PLATFORM_LABEL.split(" · ")[0]}
+      <span class="btn-platform">{PLATFORM_LABEL.split(" · ")[1]}</span>
+    </a>
+  </div>
+</section>
+
+<style>
+  .final-cta {
+    padding: var(--space-2xl) var(--space-lg);
+    text-align: center;
+  }
+
+  .section-inner {
+    max-width: 56rem;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+  }
+
+  .cta-heading {
+    font-size: var(--text-2xl);
+  }
+
+  .cta-sub {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    max-width: 45ch;
+    line-height: 1.6;
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--bg);
+    background: var(--accent);
+    padding: 0.6rem 1.25rem;
+    border-radius: var(--radius-md);
+    text-decoration: none;
+    letter-spacing: 0.02em;
+    margin-top: var(--space-sm);
+    transition: box-shadow 0.3s var(--ease-out-quart),
+      opacity 0.2s var(--ease-out-quart);
+  }
+
+  .btn-primary:hover {
+    text-decoration: none;
+    box-shadow: 0 0 24px var(--accent-glow);
+    opacity: 0.92;
+  }
+
+  .btn-platform {
+    font-size: var(--text-xs);
+    opacity: 0.7;
+  }
+</style>

@@ -1,0 +1,21 @@
+{
+  "name": "web",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "check": "astro check",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@fontsource-variable/hanken-grotesk": "^5.1.1",
+    "@fontsource/spline-sans-mono": "^5.1.1",
+    "astro": "6.3.7"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.9",
+    "sharp": "^0.34.5",
+    "typescript": "^5.8.0"
+  }
+}

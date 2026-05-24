@@ -1,0 +1,44 @@
+---
+import "../styles/global.css";
+import "@fontsource-variable/hanken-grotesk";
+import "@fontsource/spline-sans-mono/400.css";
+import "@fontsource/spline-sans-mono/500.css";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = "mnema — Search everything you've ever seen",
+  description = "A local-first macOS app that captures screen, audio, and activity into a private, searchable personal record. Everything stays on your machine.",
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <script is:inline>
+      (function () {
+        var t =
+          localStorage.getItem("theme") ||
+          (window.matchMedia("(prefers-color-scheme: light)").matches
+            ? "light"
+            : "dark");
+        document.documentElement.setAttribute("data-theme", t);
+      })();
+    </script>
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>

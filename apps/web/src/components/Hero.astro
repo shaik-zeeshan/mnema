@@ -1,0 +1,235 @@
+---
+import { getImage } from "astro:assets";
+import { DOWNLOAD_URL, GITHUB_URL, PLATFORM_LABEL } from "../config";
+import screenshotDark from "../assets/screenshot-dark.png";
+import screenshotLight from "../assets/screenshot-light.png";
+
+const darkScreenshot = await getImage({
+  src: screenshotDark,
+  width: 1800,
+  format: "webp",
+});
+const lightScreenshot = await getImage({
+  src: screenshotLight,
+  width: 1800,
+  format: "webp",
+});
+---
+
+<section class="hero">
+  <div class="hero-inner">
+    <p class="kicker">// total recall, fully private</p>
+    <h1 class="headline">Search everything you've ever seen.</h1>
+    <p class="subhead">
+      Mnema captures your screen, audio, and activity into a searchable record
+      that never leaves your Mac.
+    </p>
+    <div class="hero-actions">
+      <a href={DOWNLOAD_URL} class="btn-primary">
+        Download for {PLATFORM_LABEL.split(" · ")[0]}
+        <span class="btn-platform">{PLATFORM_LABEL.split(" · ")[1]}</span>
+      </a>
+      <a href={GITHUB_URL} class="btn-secondary" target="_blank" rel="noopener noreferrer">
+        View source
+      </a>
+    </div>
+  </div>
+
+  <div class="hero-showcase">
+    <div class="showcase-glow" aria-hidden="true"></div>
+    <div class="showcase-frame">
+      <picture
+        class="showcase-picture"
+        data-dark-src={darkScreenshot.src}
+        data-light-src={lightScreenshot.src}
+      >
+        <img
+          src={darkScreenshot.src}
+          width={darkScreenshot.attributes.width}
+          height={darkScreenshot.attributes.height}
+          alt="Mnema recording and timeline interface on macOS"
+          loading="eager"
+          decoding="async"
+          class="showcase-img"
+        />
+      </picture>
+    </div>
+  </div>
+</section>
+
+<script>
+  const showcase = document.querySelector<HTMLPictureElement>(".showcase-picture");
+  const showcaseImg = showcase?.querySelector<HTMLImageElement>(".showcase-img");
+
+  function syncShowcaseImage() {
+    const theme = document.documentElement.getAttribute("data-theme");
+    const nextSrc =
+      theme === "light" ? showcase?.dataset.lightSrc : showcase?.dataset.darkSrc;
+
+    if (showcaseImg && nextSrc && showcaseImg.currentSrc !== nextSrc) {
+      showcaseImg.src = nextSrc;
+    }
+  }
+
+  syncShowcaseImage();
+
+  new MutationObserver(syncShowcaseImage).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
+</script>
+
+<style>
+  .hero {
+    padding: calc(64px + var(--space-xl)) var(--space-lg) var(--space-lg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-xl);
+  }
+
+  .hero-inner {
+    max-width: 36rem;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+  }
+
+  .headline {
+    font-size: var(--text-3xl);
+    color: var(--fg);
+    max-width: 18ch;
+  }
+
+  .subhead {
+    font-size: var(--text-base);
+    color: var(--fg-muted);
+    max-width: 42ch;
+    line-height: 1.6;
+    margin-top: var(--space-xs);
+  }
+
+  .hero-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding-top: var(--space-sm);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--bg);
+    background: var(--accent);
+    padding: 0.6rem 1.25rem;
+    border-radius: var(--radius-md);
+    text-decoration: none;
+    letter-spacing: 0.02em;
+    transition: box-shadow 0.3s var(--ease-out-quart),
+      opacity 0.2s var(--ease-out-quart);
+  }
+
+  .btn-primary:hover {
+    text-decoration: none;
+    box-shadow: 0 0 24px var(--accent-glow);
+    opacity: 0.92;
+  }
+
+  .btn-platform {
+    font-size: var(--text-xs);
+    opacity: 0.7;
+  }
+
+  .btn-secondary {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    padding: 0.6rem 1rem;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    text-decoration: none;
+    letter-spacing: 0.02em;
+    transition: color 0.2s var(--ease-out-quart),
+      border-color 0.2s var(--ease-out-quart);
+  }
+
+  .btn-secondary:hover {
+    color: var(--fg);
+    border-color: var(--fg-muted);
+    text-decoration: none;
+  }
+
+  .hero-showcase {
+    position: relative;
+    width: 100%;
+    max-width: 56rem;
+    margin: 0 auto;
+  }
+
+  .showcase-glow {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 70%;
+    height: 70%;
+    background: radial-gradient(
+      ellipse,
+      var(--accent-glow) 0%,
+      transparent 70%
+    );
+    filter: blur(60px);
+    pointer-events: none;
+  }
+
+  .showcase-frame {
+    display: grid;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    border: 1px solid var(--border-strong);
+    box-shadow: 0 8px 48px rgba(0, 0, 0, 0.25),
+      0 2px 12px rgba(0, 0, 0, 0.08);
+    margin: 0 var(--space-lg);
+  }
+
+  .showcase-picture {
+    display: block;
+    grid-area: 1 / 1;
+  }
+
+  .showcase-img {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+
+  @media (max-width: 768px) {
+    .hero {
+      padding-top: calc(56px + var(--space-lg));
+    }
+
+    .headline {
+      font-size: var(--text-2xl);
+      max-width: 100%;
+    }
+
+    .showcase-frame {
+      margin: 0;
+    }
+  }
+</style>
