@@ -8510,7 +8510,7 @@
   .search-modal {
     position: fixed;
     inset: 0;
-    z-index: 80;
+    z-index: 2000;
     display: grid;
     place-items: start center;
     padding: 6vh 24px 24px;
