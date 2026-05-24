@@ -20,6 +20,7 @@
   let selectedDuration = $state<"1h" | "24h" | "7d">("24h");
   let pendingRequest = $state<PendingCliAccessRequest | null>(null);
   let error = $state<string | null>(null);
+  let loading = $state(true);
   let approving = $state(false);
   let cancelling = $state(false);
 
@@ -33,27 +34,36 @@
     {
       value: "lastDay",
       label: "Last day",
+      hint: "Reads only text captured in the last 24 hours.",
     },
     {
       value: "allRetained",
       label: "All retained",
+      hint: "Reads your entire retained capture history.",
     },
   ] as const;
 
   const durationOptions = [
-    {
-      value: "1h",
-      label: "1h",
-    },
-    {
-      value: "24h",
-      label: "24h",
-    },
-    {
-      value: "7d",
-      label: "7d",
-    },
+    { value: "1h", label: "1h" },
+    { value: "24h", label: "24h" },
+    { value: "7d", label: "7d" },
   ] as const;
+
+  const scopeMeta = $derived(
+    scopeOptions.find((option) => option.value === selectedScope) ?? scopeOptions[0],
+  );
+  const isBroadScope = $derived(selectedScope === "allRetained");
+
+  const expiryLabel = $derived.by(() => {
+    const endsAt = new Date(Date.now() + durationSeconds[selectedDuration] * 1000);
+    return endsAt.toLocaleString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  });
 
   onMount(() => {
     void loadPendingRequest();
@@ -61,6 +71,7 @@
 
   async function loadPendingRequest() {
     error = null;
+    loading = true;
     try {
       pendingRequest = await invoke<PendingCliAccessRequest | null>("get_pending_cli_access_request");
       if (pendingRequest) {
@@ -68,7 +79,9 @@
         selectedDuration = durationLabelForSeconds(pendingRequest.preferredDurationSeconds);
       }
     } catch (err) {
-      error = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      error = friendlyError(err);
+    } finally {
+      loading = false;
     }
   }
 
@@ -78,12 +91,13 @@
     try {
       await invoke("cancel_pending_cli_access_request");
     } catch (err) {
-      error = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      error = friendlyError(err);
       cancelling = false;
     }
   }
 
   async function approveAccess() {
+    if (!pendingRequest) return;
     error = null;
     approving = true;
     try {
@@ -94,7 +108,7 @@
         },
       });
     } catch (err) {
-      error = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      error = friendlyError(err);
       approving = false;
     }
   }
@@ -113,19 +127,49 @@
     return durationSeconds[duration] < (pendingRequest?.minimumDurationSeconds ?? 0);
   }
 
-  function commandLabel(command: string) {
-    if (command === "show-text") return "Show text";
-    if (command === "access request") return "Access request";
-    return command.slice(0, 1).toUpperCase() + command.slice(1);
+  function identitySourceLabel(source: string) {
+    switch (source) {
+      case "explicit":
+        return "Identity declared by the tool";
+      case "env":
+        return "Identity from an environment variable";
+      case "inferred":
+        return "Identity inferred from the process";
+      default:
+        return "No identity provided";
+    }
+  }
+
+  function friendlyError(err: unknown) {
+    if (typeof err === "string") return err;
+    if (err instanceof Error && err.message) return err.message;
+    return "Something went wrong. Please try again.";
+  }
+
+  // Esc denies the request; Enter is intentionally not bound to approve, so
+  // a reflexive keypress can never grant access on a consent screen.
+  function onKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && !approving && !cancelling) {
+      event.preventDefault();
+      void closeWindow();
+    }
   }
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <svelte:head>
   <title>mnema · CLI Access</title>
 </svelte:head>
 
 <main class="access-request">
-  <div class="access-dialog" role="dialog" aria-modal="false" aria-labelledby="access-dialog-title">
+  <div
+    class="access-dialog"
+    role="dialog"
+    aria-modal="false"
+    aria-labelledby="access-dialog-title"
+    aria-describedby="access-dialog-lede"
+  >
     <header class="access-dialog__header">
       <span class="access-dialog__icon" aria-hidden="true">
         <svg viewBox="0 0 24 24">
@@ -136,63 +180,111 @@
       <div class="access-dialog__title">
         <p class="eyebrow">CLI Access</p>
         <h1 id="access-dialog-title">Review local tool access</h1>
-        <p class="lede">Approve a time-bounded grant for searchable Mnema text.</p>
+        <p id="access-dialog-lede" class="lede">
+          A local tool is requesting time-bounded access to your searchable Mnema text.
+        </p>
       </div>
     </header>
 
     <div class="access-dialog__body">
-      <div class="request-summary">
-        {#if pendingRequest}
-          <p><strong>{pendingRequest.client.label}</strong> wants access for {commandLabel(pendingRequest.command)}.</p>
-          <p>Identity source: {pendingRequest.client.source}. Local client identity is provided by the requesting process and cannot be independently verified.</p>
-        {:else}
-          <p>No pending CLI Access request is waiting.</p>
-        {/if}
-      </div>
-
-      <fieldset class="request-section">
-        <legend class="group-label">Scope</legend>
-        <div class="choice-row choice-row--scope" role="radiogroup" aria-label="Access scope">
-          {#each scopeOptions as option}
-            {@const disabled = scopeDisabled(option.value) || !pendingRequest || approving || cancelling}
-            <button
-              class="choice"
-              class:choice--active={selectedScope === option.value}
-              type="button"
-              role="radio"
-              aria-checked={selectedScope === option.value}
-              disabled={disabled}
-              onclick={() => { if (!disabled) selectedScope = option.value; }}
-            >
-              <span class="choice__label">{option.label}</span>
-            </button>
-          {/each}
+      {#if loading}
+        <div class="skeleton" aria-hidden="true">
+          <div class="skeleton__line skeleton__line--lg"></div>
+          <div class="skeleton__line"></div>
+          <div class="skeleton__line skeleton__line--sm"></div>
         </div>
-      </fieldset>
-
-      <fieldset class="request-section">
-        <legend class="group-label">Duration</legend>
-        <div class="choice-row choice-row--duration" role="radiogroup" aria-label="Access duration">
-          {#each durationOptions as option}
-            {@const disabled = durationDisabled(option.value) || !pendingRequest || approving || cancelling}
-            <button
-              class="choice"
-              class:choice--active={selectedDuration === option.value}
-              type="button"
-              role="radio"
-              aria-checked={selectedDuration === option.value}
-              disabled={disabled}
-              onclick={() => { if (!disabled) selectedDuration = option.value; }}
-            >
-              <span class="choice__label">{option.label}</span>
-            </button>
-          {/each}
+      {:else if !pendingRequest}
+        <div class="empty">
+          <span class="empty__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 7v5l3 2" />
+            </svg>
+          </span>
+          <p class="empty__title">No request waiting</p>
+          <p class="empty__body">
+            There is no pending CLI Access request right now. You can close this window.
+          </p>
         </div>
-      </fieldset>
+      {:else}
+        <section class="requester" aria-label="Requesting tool">
+          <div class="requester__head">
+            <span class="requester__label">{pendingRequest.client.label}</span>
+            <span class="requester__source">{identitySourceLabel(pendingRequest.client.source)}</span>
+          </div>
+          <p class="requester__trigger">
+            Requested via <code>mnema {pendingRequest.command}</code>
+          </p>
+        </section>
+
+        <p class="trust-note">
+          <span class="trust-note__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+            </svg>
+          </span>
+          <span>This identity is reported by the requesting process and cannot be independently verified.</span>
+        </p>
+
+        <fieldset class="request-section">
+          <legend class="group-label">What it can read</legend>
+          <div class="choice-row choice-row--scope" role="radiogroup" aria-label="Access scope">
+            {#each scopeOptions as option}
+              {@const disabled = scopeDisabled(option.value) || approving || cancelling}
+              <button
+                class="choice"
+                class:choice--active={selectedScope === option.value}
+                type="button"
+                role="radio"
+                aria-checked={selectedScope === option.value}
+                {disabled}
+                onclick={() => {
+                  if (!disabled) selectedScope = option.value;
+                }}
+              >
+                <span class="choice__label">{option.label}</span>
+              </button>
+            {/each}
+          </div>
+          <p class="choice-hint" class:choice-hint--warn={isBroadScope}>
+            {#if isBroadScope}
+              <span class="choice-hint__icon" aria-hidden="true">!</span>
+            {/if}
+            <span>{scopeMeta.hint}</span>
+          </p>
+        </fieldset>
+
+        <fieldset class="request-section">
+          <legend class="group-label">For how long</legend>
+          <div class="choice-row choice-row--duration" role="radiogroup" aria-label="Access duration">
+            {#each durationOptions as option}
+              {@const disabled = durationDisabled(option.value) || approving || cancelling}
+              <button
+                class="choice"
+                class:choice--active={selectedDuration === option.value}
+                type="button"
+                role="radio"
+                aria-checked={selectedDuration === option.value}
+                {disabled}
+                onclick={() => {
+                  if (!disabled) selectedDuration = option.value;
+                }}
+              >
+                <span class="choice__label">{option.label}</span>
+              </button>
+            {/each}
+          </div>
+          <p class="choice-hint">
+            <span>Access ends {expiryLabel}.</span>
+          </p>
+        </fieldset>
+      {/if}
 
       {#if error}
         <div class="inline-error" role="alert">
-          <span class="inline-error__icon">!</span>
+          <span class="inline-error__icon" aria-hidden="true">!</span>
           <span class="inline-error__msg">{error}</span>
         </div>
       {/if}
@@ -200,11 +292,24 @@
 
     <footer class="access-dialog__actions">
       <button class="btn btn--ghost" type="button" disabled={approving || cancelling} onclick={closeWindow}>
-        {cancelling ? "Cancelling" : "Cancel"}
+        {#if cancelling}
+          {pendingRequest ? "Denying" : "Closing"}
+        {:else}
+          {pendingRequest ? "Deny" : "Close"}
+        {/if}
       </button>
-      <button class="btn btn--primary" type="button" disabled={!pendingRequest || approving || cancelling} onclick={approveAccess}>
-        {approving ? "Allowing" : `Allow ${selectedScope === "lastDay" ? "last day" : "all retained"} for ${selectedDuration}`}
-      </button>
+      {#if pendingRequest}
+        <button
+          class="btn btn--primary"
+          type="button"
+          disabled={loading || approving || cancelling}
+          onclick={approveAccess}
+        >
+          {approving
+            ? "Allowing"
+            : `Allow ${selectedScope === "lastDay" ? "last day" : "all retained"} for ${selectedDuration}`}
+        </button>
+      {/if}
     </footer>
   </div>
 </main>
@@ -273,7 +378,7 @@
     flex-direction: column;
     gap: 12px;
     padding: 14px 20px;
-    overflow: hidden;
+    overflow-y: auto;
   }
 
   .access-dialog__actions {
@@ -312,24 +417,93 @@
     line-height: 1.45;
   }
 
-  .request-summary {
+  /* Requester is the focal point: who is asking, and what they get. */
+  .requester {
     display: grid;
-    gap: 4px;
-    padding: 8px 0 0;
-    border: 1px solid var(--app-warn-border);
-    border-width: 1px 0 0;
-    background: transparent;
+    gap: 6px;
+    padding: 12px 14px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 8px;
+    background: var(--app-surface-subtle);
   }
 
-  .request-summary p {
+  .requester__head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    justify-content: space-between;
+  }
+
+  .requester__label {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--app-text-strong);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .requester__source {
+    flex-shrink: 0;
+    padding: 2px 8px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 999px;
+    color: var(--app-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .requester__trigger {
     margin: 0;
     color: var(--app-text-muted);
-    font-size: 11px;
-    line-height: 1.42;
+    font-size: 10px;
+    line-height: 1.55;
   }
 
-  .request-summary strong {
+  .requester code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--app-surface-hover);
     color: var(--app-text);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 10.5px;
+  }
+
+  .trust-note {
+    display: flex;
+    gap: 7px;
+    align-items: flex-start;
+    margin: 0;
+  }
+
+  .trust-note > span:last-child {
+    color: var(--app-text-muted);
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+
+  .trust-note__icon {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    margin-top: 1px;
+    color: var(--app-warn);
+  }
+
+  .trust-note__icon svg {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .request-section {
@@ -415,6 +589,101 @@
     text-overflow: ellipsis;
     text-transform: uppercase;
     white-space: nowrap;
+  }
+
+  .choice-hint {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 10.5px;
+    line-height: 1.4;
+  }
+
+  .choice-hint--warn {
+    color: var(--app-warn);
+  }
+
+  .choice-hint__icon {
+    flex-shrink: 0;
+    font-weight: 700;
+  }
+
+  .skeleton {
+    display: grid;
+    gap: 12px;
+    padding: 4px 0;
+  }
+
+  .skeleton__line {
+    height: 12px;
+    border-radius: 5px;
+    background: var(--app-surface-hover);
+    animation: skeleton-pulse 1.4s ease-in-out infinite;
+  }
+
+  .skeleton__line--lg {
+    height: 18px;
+    width: 62%;
+  }
+
+  .skeleton__line--sm {
+    width: 42%;
+  }
+
+  @keyframes skeleton-pulse {
+    0%,
+    100% {
+      opacity: 0.45;
+    }
+    50% {
+      opacity: 0.8;
+    }
+  }
+
+  .empty {
+    display: grid;
+    gap: 8px;
+    justify-items: center;
+    margin: auto 0;
+    padding: 24px 16px;
+    text-align: center;
+  }
+
+  .empty__icon {
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    border: 1px solid var(--app-border);
+    border-radius: 10px;
+    color: var(--app-text-subtle);
+  }
+
+  .empty__icon svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .empty__title {
+    margin: 0;
+    color: var(--app-text);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .empty__body {
+    margin: 0;
+    max-width: 34ch;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.45;
   }
 
   .inline-error {

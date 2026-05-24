@@ -832,7 +832,7 @@
       const response = await invoke<BrokerGrantFile>("list_cli_access_grants");
       brokerGrants = response.grants ?? [];
     } catch (err) {
-      brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      brokerGrantError = describeError(err);
     } finally {
       brokerGrantLoading = false;
     }
@@ -869,10 +869,49 @@
       await invoke<boolean>("revoke_cli_access_grant", { grantId });
       await loadBrokerGrants();
     } catch (err) {
-      brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      brokerGrantError = describeError(err);
     } finally {
       brokerGrantSaving = false;
     }
+  }
+
+  function describeError(err: unknown): string {
+    if (typeof err === "string") return err;
+    if (err instanceof Error && err.message) return err.message;
+    return "Something went wrong. Please try again.";
+  }
+
+  type GrantStatus = "active" | "expired" | "revoked";
+
+  function grantStatus(grant: BrokerGrant): GrantStatus {
+    if (grant.revoked) return "revoked";
+    if (grant.expiresAtUnixMs <= Date.now()) return "expired";
+    return "active";
+  }
+
+  function formatGrantScope(scope: BrokerGrant["scope"]): string {
+    if (scope === "all_retained_history") return "All retained history";
+    if (scope && typeof scope === "object" && "recent_days" in scope) {
+      const days = (scope as { recent_days?: { days?: number } }).recent_days?.days ?? 0;
+      return days <= 1 ? "Last day" : `Last ${days} days`;
+    }
+    return "Limited scope";
+  }
+
+  function formatGrantTime(unixMs: number): string {
+    const diffMs = unixMs - Date.now();
+    const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+    const abs = Math.abs(diffMs);
+    if (abs < 60 * 60 * 1000) return rtf.format(Math.round(diffMs / 60000), "minute");
+    if (abs < 24 * 60 * 60 * 1000) return rtf.format(Math.round(diffMs / 3600000), "hour");
+    return rtf.format(Math.round(diffMs / 86400000), "day");
+  }
+
+  function grantStatusLabel(grant: BrokerGrant): string {
+    const status = grantStatus(grant);
+    if (status === "revoked") return "Revoked";
+    if (status === "expired") return `Expired ${formatGrantTime(grant.expiresAtUnixMs)}`;
+    return `Expires ${formatGrantTime(grant.expiresAtUnixMs)}`;
   }
 
   async function setBrowserUrlMode(mode: string) {
@@ -2309,22 +2348,35 @@
           {#if brokerGrantError}
             <p class="error-text">{brokerGrantError}</p>
           {/if}
-          {#if brokerGrants.length > 0}
-            <div class="excluded-apps-list">
+          {#if brokerGrantLoading && brokerGrants.length === 0}
+            <p class="group-hint">Loading grants…</p>
+          {:else if brokerGrants.length > 0}
+            <ul class="grant-list">
               {#each brokerGrants as grant (grant.id)}
-                <div class="excluded-app-row">
-                  <div class="excluded-app-row__meta">
-                    <span class="excluded-app-row__name">{grant.label}</span>
-                    <span class="excluded-app-row__bundle">
-                      {grant.revoked ? "Revoked" : `Expires ${new Date(grant.expiresAtUnixMs).toLocaleString()}`}
+                {@const status = grantStatus(grant)}
+                <li class="grant-row" class:grant-row--inactive={status !== "active"}>
+                  <span class="grant-row__status grant-row__status--{status}" aria-hidden="true"></span>
+                  <div class="grant-row__meta">
+                    <span class="grant-row__name" title={grant.label}>{grant.label}</span>
+                    <span class="grant-row__detail">
+                      <span class="grant-row__scope">{formatGrantScope(grant.scope)}</span>
+                      <span class="grant-row__sep" aria-hidden="true">·</span>
+                      <span title={new Date(grant.expiresAtUnixMs).toLocaleString()}>{grantStatusLabel(grant)}</span>
                     </span>
                   </div>
-                  <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || grant.revoked} onclick={() => revokeAgentBrokerGrant(grant.id)}>Revoke</button>
-                </div>
+                  <button
+                    class="btn btn--ghost btn--sm"
+                    type="button"
+                    disabled={brokerGrantSaving || status !== "active"}
+                    onclick={() => revokeAgentBrokerGrant(grant.id)}
+                  >
+                    Revoke
+                  </button>
+                </li>
               {/each}
-            </div>
+            </ul>
           {:else}
-            <p class="group-hint">No CLI Access grants yet.</p>
+            <p class="group-hint">No CLI Access grants yet. Tools you approve will appear here.</p>
           {/if}
         </div>
       </div>
@@ -5684,6 +5736,96 @@
     font-size: 10px;
     line-height: 1.35;
     overflow-wrap: anywhere;
+  }
+
+  /* ── CLI Access grant rows ───────────────────────────────────────── */
+  .grant-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .grant-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+  }
+
+  .grant-row--inactive {
+    background: transparent;
+  }
+
+  .grant-row__status {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--app-text-subtle);
+  }
+
+  .grant-row__status--active {
+    background: var(--app-accent);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
+  }
+
+  .grant-row__status--expired {
+    background: var(--app-warn);
+  }
+
+  .grant-row__status--revoked {
+    background: var(--app-danger);
+  }
+
+  .grant-row__meta {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .grant-row__name {
+    overflow: hidden;
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .grant-row--inactive .grant-row__name {
+    color: var(--app-text-muted);
+    font-weight: 600;
+  }
+
+  .grant-row__detail {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    color: var(--app-text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .grant-row__scope {
+    color: var(--app-text);
+    font-weight: 600;
+  }
+
+  .grant-row--inactive .grant-row__scope {
+    color: var(--app-text-muted);
+    font-weight: 500;
+  }
+
+  .grant-row__sep {
+    color: var(--app-text-faint);
   }
 
   /* ── Danger button variant ───────────────────────────────────────── */
