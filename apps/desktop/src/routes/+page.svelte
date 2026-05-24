@@ -24,10 +24,12 @@
     timelineMovementShouldScheduleScrubPreview,
   } from "$lib/timeline-preview-state";
   import {
+    detectKeyboardPlatform,
     getFocusableElements,
     isShortcutSuppressedTarget,
     matchShortcut,
     trapTabKey,
+    type KeyboardPlatform,
     type ShortcutDefinition,
   } from "$lib/keyboard";
   import {
@@ -289,6 +291,13 @@
       kind: "command",
       scope: "dashboard",
     },
+    search: {
+      id: "dashboard.search",
+      label: "Search captured content",
+      bindings: [{ key: "K", primary: true }],
+      kind: "command",
+      scope: "dashboard",
+    },
     jumpLatest: {
       id: "dashboard.jumpLatest",
       label: "Jump to latest",
@@ -532,6 +541,7 @@
   let searchFrameGeneration = 0;
   let searchAudioGeneration = 0;
   let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let windowPlatform = $state<KeyboardPlatform>(detectKeyboardPlatform());
 
   // Preview file paths keyed by frame id. Reactive so the rail re-renders as
   // previews stream in without any extra plumbing.
@@ -5371,7 +5381,7 @@
     event: KeyboardEvent,
     definition: ShortcutDefinition,
   ): boolean {
-    return matchShortcut(event, definition, "other");
+    return matchShortcut(event, definition, windowPlatform);
   }
 
   function isShortcutHelpKey(event: KeyboardEvent): boolean {
@@ -5404,7 +5414,10 @@
       return;
     }
 
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    if (
+      dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.search) &&
+      !isShortcutSuppressedTarget(event.target)
+    ) {
       event.preventDefault();
       if (!searchOpen) openSearch();
       return;

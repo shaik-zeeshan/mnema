@@ -35,6 +35,7 @@
     type GlobalShortcutId,
   } from "$lib/global-shortcuts";
   import {
+    detectKeyboardPlatform,
     formatShortcut,
     getFocusableElements,
     isShortcutSuppressedTarget,
@@ -58,7 +59,7 @@
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const isMainWindow = $derived(!showDedicatedTitlebar);
   const canShowShortcutsHelp = $derived(isMainWindow && isMainRoute);
-  let windowPlatform = $state<KeyboardPlatform>("other");
+  let windowPlatform = $state<KeyboardPlatform>(detectKeyboardPlatform());
   let notificationsOpen = $state(false);
   let notificationsOpenedByKeyboard = false;
   let notificationsButtonEl = $state<HTMLButtonElement | null>(null);
@@ -69,21 +70,6 @@
   let shortcutsHelpReturnFocusEl: HTMLElement | null = null;
   let chromeAppearance = $state<AppearanceSetting>("system");
   let savingChromeAppearance = $state(false);
-
-  $effect(() => {
-    if (typeof navigator === "undefined") return;
-
-    const ua = navigator.userAgent.toLowerCase();
-    if (ua.includes("mac os x") || ua.includes("macintosh")) {
-      windowPlatform = "macos";
-      return;
-    }
-    if (ua.includes("windows")) {
-      windowPlatform = "windows";
-      return;
-    }
-    windowPlatform = "other";
-  });
 
   $effect(() => {
     if (typeof document === "undefined") return;
