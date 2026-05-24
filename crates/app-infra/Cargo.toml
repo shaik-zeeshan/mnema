@@ -3,6 +3,10 @@ name = "app-infra"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["audio-speech-silero"]
+audio-speech-silero = ["capture-vad/silero"]
+
 [dependencies]
 async-trait = "0.1"
 audio-transcription = { path = "../audio-transcription" }
@@ -12,7 +16,7 @@ capture-screen = { path = "../capture-screen" }
 capture-metadata = { path = "../capture-metadata" }
 capture-runtime = { path = "../capture-runtime" }
 capture-types = { path = "../capture-types" }
-capture-vad = { path = "../capture-vad" }
+capture-vad = { path = "../capture-vad", default-features = false }
 capture-writers = { path = "../capture-writers" }
 secret-redaction = { path = "../secret-redaction" }
 chrono = "0.4"

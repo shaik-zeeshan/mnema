@@ -3,7 +3,11 @@ name = "capture-vad"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["silero"]
+silero = ["dep:silero"]
+
 [dependencies]
 capture-types = { path = "../capture-types" }
-silero = "0.3"
+silero = { version = "0.3", optional = true }
 webrtc-vad = "0.4"

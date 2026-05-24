@@ -623,6 +623,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    #[cfg(feature = "silero")]
     #[test]
     fn silero_adapter_does_not_emit_fallback_notice_when_available() {
         let mut runtime = MicrophoneVadRuntime::new(MicrophoneVadAdapter::Silero);

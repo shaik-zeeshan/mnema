@@ -9,7 +9,7 @@ name = "mnema-cli"
 path = "src/main.rs"
 
 [dependencies]
-app-infra = { path = "../app-infra" }
+app-infra = { path = "../app-infra", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "6"
 serde = { version = "1", features = ["derive"] }

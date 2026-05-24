@@ -1,14 +1,20 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "silero")]
 pub(super) const SILERO_VAD_MODEL_ENV: &str = "MNEMA_SILERO_VAD_MODEL";
+#[cfg(feature = "silero")]
 pub(super) const DEFAULT_SILERO_VAD_MODEL_RELATIVE_PATH: &str = "resources/vad/silero_vad.onnx";
+#[cfg(feature = "silero")]
 const SPEECH_PROBABILITY_THRESHOLD: f32 = 0.5;
 
 pub(super) struct SileroVadAdapter {
+    #[cfg(feature = "silero")]
     session: silero::Session,
+    #[cfg(feature = "silero")]
     stream: silero::StreamState,
     model_path: Option<PathBuf>,
+    #[cfg(feature = "silero")]
     sample_scratch: Vec<f32>,
 }
 
@@ -17,6 +23,7 @@ pub(super) struct SileroVadAdapter {
 // still requires the mutex and mutable methods.
 unsafe impl Send for SileroVadAdapter {}
 
+#[cfg(feature = "silero")]
 impl fmt::Debug for SileroVadAdapter {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -27,7 +34,19 @@ impl fmt::Debug for SileroVadAdapter {
     }
 }
 
+#[cfg(not(feature = "silero"))]
+impl fmt::Debug for SileroVadAdapter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SileroVadAdapter")
+            .field("model_path", &self.model_path)
+            .field("enabled", &false)
+            .finish()
+    }
+}
+
 impl SileroVadAdapter {
+    #[cfg(feature = "silero")]
     pub(super) fn load_default() -> Result<Self, SileroVadLoadError> {
         match resolve_model_path(default_model_candidates()) {
             Ok(model_path) => Self::load_from_model_path(model_path),
@@ -36,6 +55,15 @@ impl SileroVadAdapter {
         }
     }
 
+    #[cfg(not(feature = "silero"))]
+    pub(super) fn load_default() -> Result<Self, SileroVadLoadError> {
+        Err(SileroVadLoadError::RuntimeUnavailable {
+            model_path: None,
+            reason: "Silero VAD support is not enabled in this build".to_string(),
+        })
+    }
+
+    #[cfg(feature = "silero")]
     fn load_bundled() -> Result<Self, SileroVadLoadError> {
         let session =
             silero::Session::bundled().map_err(|error| SileroVadLoadError::RuntimeUnavailable {
@@ -45,6 +73,7 @@ impl SileroVadAdapter {
         Ok(Self::from_session(session, None))
     }
 
+    #[cfg(feature = "silero")]
     fn load_from_model_path(model_path: PathBuf) -> Result<Self, SileroVadLoadError> {
         let session = silero::Session::from_file(&model_path).map_err(|error| {
             SileroVadLoadError::RuntimeUnavailable {
@@ -55,6 +84,7 @@ impl SileroVadAdapter {
         Ok(Self::from_session(session, Some(model_path)))
     }
 
+    #[cfg(feature = "silero")]
     fn from_session(session: silero::Session, model_path: Option<PathBuf>) -> Self {
         Self {
             session,
@@ -69,6 +99,7 @@ impl SileroVadAdapter {
         self.model_path.as_deref()
     }
 
+    #[cfg(feature = "silero")]
     pub(super) fn process_pcm_frame(
         &mut self,
         samples: &[i16],
@@ -100,13 +131,23 @@ impl SileroVadAdapter {
 
         Ok(emitted_probability.then_some(speech_detected))
     }
+
+    #[cfg(not(feature = "silero"))]
+    pub(super) fn process_pcm_frame(
+        &mut self,
+        _samples: &[i16],
+        _sample_rate_hz: u32,
+    ) -> Result<Option<bool>, SileroVadProcessError> {
+        Err(SileroVadProcessError::InferenceFailed(
+            "Silero VAD support is not enabled in this build".to_string(),
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SileroVadLoadError {
-    MissingModel {
-        candidates: Vec<PathBuf>,
-    },
+    #[cfg(any(feature = "silero", test))]
+    MissingModel { candidates: Vec<PathBuf> },
     RuntimeUnavailable {
         model_path: Option<PathBuf>,
         reason: String,
@@ -116,6 +157,7 @@ pub(super) enum SileroVadLoadError {
 impl SileroVadLoadError {
     pub(super) fn fallback_reason(&self) -> String {
         match self {
+            #[cfg(any(feature = "silero", test))]
             Self::MissingModel { candidates } => {
                 let candidates = candidates
                     .iter()
@@ -148,6 +190,7 @@ impl std::error::Error for SileroVadLoadError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SileroVadProcessError {
+    #[cfg(feature = "silero")]
     InvalidSampleRate(u32),
     InferenceFailed(String),
 }
@@ -155,6 +198,7 @@ pub(super) enum SileroVadProcessError {
 impl fmt::Display for SileroVadProcessError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "silero")]
             Self::InvalidSampleRate(sample_rate_hz) => {
                 write!(
                     formatter,
@@ -170,6 +214,7 @@ impl fmt::Display for SileroVadProcessError {
 
 impl std::error::Error for SileroVadProcessError {}
 
+#[cfg(feature = "silero")]
 fn default_model_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
@@ -184,6 +229,7 @@ fn default_model_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+#[cfg(any(feature = "silero", test))]
 fn resolve_model_path(candidates: Vec<PathBuf>) -> Result<PathBuf, SileroVadLoadError> {
     candidates
         .iter()
@@ -213,6 +259,7 @@ mod tests {
             .contains(&missing.display().to_string()));
     }
 
+    #[cfg(feature = "silero")]
     #[test]
     fn bundled_model_loads_without_app_resource_file() {
         let adapter = SileroVadAdapter::load_default().expect("bundled Silero model should load");
@@ -220,6 +267,7 @@ mod tests {
         assert!(adapter.model_path().is_none());
     }
 
+    #[cfg(feature = "silero")]
     #[test]
     fn bundled_model_reports_non_speech_for_silence() {
         let mut adapter =
@@ -233,6 +281,7 @@ mod tests {
         assert_eq!(speech, Some(false));
     }
 
+    #[cfg(feature = "silero")]
     #[test]
     fn process_rejects_unsupported_sample_rate() {
         let mut adapter =
