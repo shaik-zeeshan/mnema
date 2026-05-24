@@ -70,6 +70,10 @@ _Avoid_: exact frame, OCR source, screenshot, thumbnail
 The top-level settings surface for local tool access controls such as **CLI Access**.
 _Avoid_: Privacy settings, Developer settings, Agent Access tab
 
+**About Settings**:
+The settings surface for app identity, version details, release channel information, and manual **App Update** checks.
+_Avoid_: status-bar updater, automatic update prompt, release dashboard
+
 **CLI Access Request**:
 A request-bound app surface that lets the user approve or deny a pending **CLI Access Grant** request.
 _Avoid_: settings page, generic prompt, login screen
@@ -77,6 +81,26 @@ _Avoid_: settings page, generic prompt, login screen
 **Secure Field Capture Suspension**:
 A future ADR-backed product concept that would suspend capture while secure text entry is focused, rather than filtering by app, window, website, or recognized text.
 _Avoid_: password-page filter, secure-field redaction, browser login exclusion
+
+**App Update**:
+A user-visible Mnema version replacement delivered through a selected release channel.
+_Avoid_: draft release update, silent update, internal-only artifact
+
+**Prerelease Build**:
+An internal/test Mnema build reviewed and installed manually before it is eligible for the stable update channel.
+_Avoid_: stable update, production update
+
+**Stable Update**:
+An **App Update** delivered from published non-prerelease GitHub Releases.
+_Avoid_: preview update, draft release update, notarized update
+
+**Preview Update**:
+An opt-in **App Update** delivered from preview release artifacts that may be less stable and may be ad hoc signed or not notarized.
+_Avoid_: stable update, forced beta, hidden prerelease
+
+**Startup Update Check**:
+A background **App Update** availability check that runs when Mnema starts without downloading, installing, or restarting by itself.
+_Avoid_: automatic install, forced update, startup restart
 
 ## Relationships
 
@@ -174,6 +198,28 @@ _Avoid_: password-page filter, secure-field redaction, browser login exclusion
 - **Browser Capture Disclosure** may mention browser URL metadata in Privacy settings, but not in fast status-bar recovery flows.
 - Raw SQLite or frame-file access by external agents is outside the **Sensitive Capture Protection V1** privacy guarantee until Mnema introduces an explicit brokered access boundary.
 - **Secure Field Capture Suspension** is separate from the **Live Privacy Filter** and requires its own ADR before becoming a product guarantee.
+- **Stable Update** checks do not target draft releases or **Prerelease Build** values.
+- A **Prerelease Build** can become eligible for **Stable Update** only after it is published as a stable release.
+- V1 **Stable Update** uses the stable GitHub Release `latest.json` asset as its update feed.
+- V1 **Preview Update** is opt-in and must disclose that preview builds may be less stable and may show macOS security warnings until Developer ID signing and notarization are available.
+- V1 **Preview Update** uses a separate static preview update feed rather than GitHub Releases `latest`.
+- V1 **Preview Update** feed is published through GitHub Pages.
+- V1 **App Update** channels follow [ADR 0018](../../docs/adr/0018-support-opt-in-preview-update-channel.md).
+- V1 **App Update** release artifacts and feed generation follow [ADR 0017](../../docs/adr/0017-use-tauri-action-for-app-update-release-artifacts.md).
+- V1 **App Update** supports macOS Apple Silicon builds only.
+- V1 **App Update** does not support automated downgrades when switching from preview back to stable.
+- **Preview Update** builds use SemVer prerelease versions, such as `0.3.0-preview.1`; **Stable Update** builds use plain SemVer versions.
+- Mnema may check for an **App Update** while a **Capture Session** is active, but it must not install an **App Update** until the **Capture Session** has ended.
+- **App Update** installation does not automatically stop recording or convert an active **Capture Session** into **User Capture Pause**.
+- V1 **App Update** controls live in **About Settings**, not in the status bar.
+- V1 **About Settings** exposes manual **App Update** checks and app version details.
+- V1 **App Update** installation does not restart Mnema automatically; the user chooses when to restart after installation.
+- V1 **About Settings** shows compact **App Update** status for checking, availability, download/install progress, restart-required, recording-blocked, and failed states.
+- V1 **About Settings** exposes stable/default and preview/opt-in update channel selection.
+- Switching into **Preview Update** requires explicit confirmation, but installing later preview updates does not require a separate preview-specific confirmation beyond the normal install action.
+- V1 includes a **Startup Update Check** for the selected update channel.
+- A **Startup Update Check** runs only after onboarding is complete.
+- When a **Startup Update Check** finds an update, Mnema surfaces it non-blockingly in the visible app and does not force-open a window while hidden.
 - V1 generated **Scrub Preview** interval, rendition, and cache budget are fixed product policy rather than user-facing recording settings.
 - V1 may expose a developer/debug action to clear only generated **Scrub Preview** cache without clearing exact preview cache or adding regular user-facing cache controls.
 - Shared recording/privacy settings should not expose inactive metadata privacy fields for website, title, private-browser, or per-window exclusion.

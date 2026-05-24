@@ -30,6 +30,14 @@ _Avoid_: audio activity event, microphone activity, system audio activity
 The threshold-qualified inactivity-policy view of audio activity, including enabled state, threshold, and derived idle used for pause/resume decisions.
 _Avoid_: raw audio sample, activity reading, latest level
 
+**App Update Service**:
+The Rust-owned Tauri boundary that checks, downloads, installs, and restarts for **App Update** while enforcing Mnema runtime policy.
+_Avoid_: Svelte updater flow, generic updater plugin surface, frontend install policy
+
+**App Update Settings**:
+Rust-owned app configuration that stores the user's selected **App Update** channel.
+_Avoid_: recording settings, browser local storage, one-time prompt state
+
 ## Relationships
 
 - **App Privacy Exclusion** remains handled through the native **Live Privacy Filter**, not through app-based automatic pause.
@@ -76,6 +84,11 @@ _Avoid_: raw audio sample, activity reading, latest level
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.
 - A **Recording Lifecycle** creates one **Capture Session** for a user recording and **Capture Segment** rows only for produced artifacts.
+- **App Update** installation is gated outside the **Recording Lifecycle** and waits for the active **Capture Session** to end rather than stopping or pausing capture itself.
+- The **App Update Service** owns update policy and exposes app-specific commands/events to Svelte rather than exposing generic updater plugin behavior as product logic.
+- The **App Update Service** selects the update feed endpoint at runtime from the user's selected update channel.
+- **App Update Settings** persist under Tauri `app_config_dir()` and default to the stable channel.
+- The **App Update Service** may run a startup availability check only after onboarding is complete.
 - **Retention Cleanup** best-effort removes generated **Scrub Preview** cache directories for deleted screen **Capture Segment** values, while cache validation and pruning remain responsible for stale orphan safety.
 - **Retention Cleanup** reaches generated **Scrub Preview** cache through the desktop Tauri cache service rather than app-infra owning Tauri app-cache paths.
 - A microphone **Audio Segment** becomes eligible for an **Audio Transcription Job** when the **Recording Lifecycle** commits it, even if the eventual transcript is empty.
