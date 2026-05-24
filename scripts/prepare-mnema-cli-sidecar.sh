@@ -44,6 +44,11 @@ output_path="$output_dir/mnema-cli-$target_triple$exe_suffix"
 
 mkdir -p "$output_dir"
 
+sidecar_output_path() {
+  local rust_target="$1"
+  echo "$output_dir/mnema-cli-$rust_target$exe_suffix"
+}
+
 build_target() {
   local rust_target="$1"
   local cargo_args=(
@@ -78,7 +83,13 @@ if [[ "$target_triple" == "universal-apple-darwin" ]]; then
 
   arm_source_path="$repo_root/target/aarch64-apple-darwin/$profile/mnema-cli"
   intel_source_path="$repo_root/target/x86_64-apple-darwin/$profile/mnema-cli"
+  arm_output_path="$(sidecar_output_path "aarch64-apple-darwin")"
+  intel_output_path="$(sidecar_output_path "x86_64-apple-darwin")"
+
+  cp "$arm_source_path" "$arm_output_path"
+  cp "$intel_source_path" "$intel_output_path"
   lipo -create -output "$output_path" "$arm_source_path" "$intel_source_path"
+  chmod 755 "$arm_output_path" "$intel_output_path"
 else
   build_target "$target_triple"
 
