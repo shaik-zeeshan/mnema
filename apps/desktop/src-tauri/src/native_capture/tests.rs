@@ -1726,6 +1726,20 @@ fn wake_recovery_retry_policy_treats_screen_capture_kit_display_loss_as_transien
 
 #[cfg(target_os = "macos")]
 #[test]
+fn wake_recovery_retry_policy_covers_slow_display_reappearance() {
+    let total_retry_window_ms: u64 = super::SYSTEM_WAKE_RECOVERY_RETRY_DELAYS_MS
+        .iter()
+        .copied()
+        .sum();
+
+    assert!(
+        total_retry_window_ms >= 60_000,
+        "ScreenCaptureKit displays can reappear slowly after wake; retry window was only {total_retry_window_ms}ms"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn wake_recovery_retry_policy_does_not_retry_invalid_runtime_state() {
     let error = CaptureErrorResponse {
         code: "invalid_runtime_state".to_string(),

@@ -98,7 +98,12 @@ impl MetadataNotifierState {
 
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 #[cfg(target_os = "macos")]
-const SYSTEM_WAKE_RECOVERY_RETRY_DELAYS_MS: &[u64] = &[500, 1_500, 3_000];
+// ScreenCaptureKit can report no displays for several seconds after macOS
+// wake; keep recovery alive long enough that the backend does not depend on a
+// later frontend permissions poll to restart capture.
+const SYSTEM_WAKE_RECOVERY_RETRY_DELAYS_MS: &[u64] = &[
+    500, 1_500, 3_000, 5_000, 10_000, 10_000, 10_000, 10_000, 10_000,
+];
 pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
 pub const RECORDING_SETTINGS_CHANGED_EVENT: &str = "recording_settings_changed";
 pub const NATIVE_CAPTURE_SESSION_CHANGED_EVENT: &str = "native_capture_session_changed";
