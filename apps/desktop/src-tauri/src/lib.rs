@@ -1,4 +1,5 @@
 mod app_infra;
+mod app_updates;
 mod audio_transcription_models;
 mod broker_authorization_channel;
 mod cli_access;
@@ -235,6 +236,8 @@ pub fn run() {
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
         .manage(native_capture::AppNotificationsState::default())
+        .manage(app_updates::AppUpdateSettingsState::default())
+        .manage(app_updates::AppUpdateRuntimeState::default())
         .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
         .manage(speaker_analysis_models::SpeakerAnalysisModelDownloadState::default())
         .manage(ocr_models::OcrModelDownloadState::default())
@@ -267,6 +270,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(keyboard_bindings::handle_global_shortcut)
@@ -295,6 +299,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
+            app_updates::get_app_update_status,
+            app_updates::check_for_app_update,
+            app_updates::set_app_update_channel,
+            app_updates::install_app_update,
+            app_updates::restart_after_app_update,
             app_infra::preview_retention_cleanup,
             app_infra::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
@@ -424,6 +433,7 @@ pub fn run() {
             let _ = app.deep_link().register_all();
             windows::install_macos_terminate_handler(app.handle());
             native_capture::initialize_recording_settings_from_disk(app.handle());
+            app_updates::initialize(app.handle());
             one_time_prompts::initialize(app.handle());
             status_bar::initialize(app.handle())?;
             keyboard_bindings::initialize(app.handle());
@@ -463,6 +473,7 @@ pub fn run() {
             }
             if onboarding_complete {
                 native_capture::maybe_auto_start_native_capture(app.handle());
+                app_updates::start_startup_update_check(app.handle());
             }
             if should_notify_pending_broker_authorization_request(
                 onboarding_complete,

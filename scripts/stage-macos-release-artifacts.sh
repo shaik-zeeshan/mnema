@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-bundle_dir="${1:-target/universal-apple-darwin/release/bundle}"
+bundle_dir="${1:-target/aarch64-apple-darwin/release/bundle}"
 output_dir="${2:-dist/macos-release}"
 
 if [[ ! -d "$bundle_dir" ]]; then
@@ -21,6 +21,7 @@ done < <(
     -o -name '*.zip' \
     -o -name '*.tar.gz' \
     -o -name '*.sig' \
+    -o -name 'latest.json' \
   \) | sort
 )
 

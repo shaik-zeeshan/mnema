@@ -81,11 +81,17 @@ pub type OnboardingStateStore = Mutex<OnboardingStateRuntime>;
 pub struct AppExitCoordinatorState {
     exit_requested: AtomicBool,
     final_graceful_exit_ready: AtomicBool,
+    restart_after_graceful_exit: AtomicBool,
 }
 
 impl AppExitCoordinatorState {
-    fn begin_exit(&self) -> bool {
-        !self.exit_requested.swap(true, Ordering::SeqCst)
+    fn begin_exit(&self, restart_after_graceful_exit: bool) -> bool {
+        if !self.exit_requested.swap(true, Ordering::SeqCst) {
+            self.restart_after_graceful_exit
+                .store(restart_after_graceful_exit, Ordering::SeqCst);
+            return true;
+        }
+        false
     }
 
     fn is_exit_requested(&self) -> bool {
@@ -98,6 +104,10 @@ impl AppExitCoordinatorState {
 
     fn is_final_graceful_exit_ready(&self) -> bool {
         self.final_graceful_exit_ready.load(Ordering::SeqCst)
+    }
+
+    fn should_restart_after_graceful_exit(&self) -> bool {
+        self.restart_after_graceful_exit.load(Ordering::SeqCst)
     }
 }
 
@@ -349,6 +359,7 @@ fn open_or_focus_window(
 fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
     match tab {
         "capture" | "behavior" => Some("capture"),
+        "about" => Some("about"),
         "privacy" | "metadata" => Some("privacy"),
         "access" | "cliAccess" | "cli-access" => Some("access"),
         "video" => Some("video"),
@@ -567,16 +578,26 @@ pub(crate) fn install_macos_terminate_handler(app: &tauri::AppHandle) {
 pub(crate) fn install_macos_terminate_handler(_app: &tauri::AppHandle) {}
 
 pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
+    request_graceful_exit_with_completion(app, false);
+}
+
+pub(crate) fn request_graceful_restart_after_update(app: &tauri::AppHandle) {
+    request_graceful_exit_with_completion(app, true);
+}
+
+fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_update: bool) {
     let exit_state = app.state::<AppExitCoordinatorState>();
-    if !exit_state.begin_exit() {
+    if !exit_state.begin_exit(restart_after_update) {
         return;
     }
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        crate::native_capture::debug_log::log_info(
-            "starting graceful app exit; stopping capture and background workers before unloading cached Local Whisper contexts",
-        );
+        crate::native_capture::debug_log::log_info(if restart_after_update {
+            "starting graceful app restart after update; stopping capture and background workers before unloading cached Local Whisper contexts"
+        } else {
+            "starting graceful app exit; stopping capture and background workers before unloading cached Local Whisper contexts"
+        });
 
         let stop_app_handle = app_handle.clone();
         match tauri::async_runtime::spawn_blocking(move || {
@@ -627,8 +648,16 @@ pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
 }
 
 fn complete_graceful_exit(app: &tauri::AppHandle) {
-    app.state::<AppExitCoordinatorState>()
-        .mark_final_graceful_exit_ready();
+    let exit_state = app.state::<AppExitCoordinatorState>();
+    let restart_after_update = exit_state.should_restart_after_graceful_exit();
+    exit_state.mark_final_graceful_exit_ready();
+
+    if restart_after_update {
+        crate::native_capture::debug_log::log_info(
+            "completed graceful app exit; restarting to finish update",
+        );
+        app.restart();
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -881,8 +910,8 @@ mod tests {
     fn app_exit_coordinator_marks_final_exit_only_after_graceful_work_is_done() {
         let coordinator = AppExitCoordinatorState::default();
 
-        assert!(coordinator.begin_exit());
-        assert!(!coordinator.begin_exit());
+        assert!(coordinator.begin_exit(false));
+        assert!(!coordinator.begin_exit(false));
         assert!(coordinator.is_exit_requested());
         assert!(!coordinator.is_final_graceful_exit_ready());
 
@@ -894,6 +923,7 @@ mod tests {
     #[test]
     fn settings_tab_deeplink_accepts_known_tabs_only() {
         assert!(is_known_settings_tab("processing"));
+        assert!(is_known_settings_tab("about"));
         assert!(is_known_settings_tab("transcription"));
         assert!(is_known_settings_tab("microphone"));
         assert!(is_known_settings_tab("capture"));
@@ -910,6 +940,7 @@ mod tests {
         assert_eq!(normalize_settings_tab("microphone"), Some("audio"));
         assert_eq!(normalize_settings_tab("behavior"), Some("capture"));
         assert_eq!(normalize_settings_tab("metadata"), Some("privacy"));
+        assert_eq!(normalize_settings_tab("about"), Some("about"));
     }
 
     #[test]
@@ -934,6 +965,10 @@ mod tests {
         assert_eq!(
             settings_tab_focus_path("privacy", None).as_deref(),
             Ok("/settings?tab=privacy")
+        );
+        assert_eq!(
+            settings_tab_focus_path("about", None).as_deref(),
+            Ok("/settings?tab=about")
         );
         assert!(settings_tab_focus_path("../developer", None).is_err());
     }

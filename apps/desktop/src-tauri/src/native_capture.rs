@@ -838,6 +838,31 @@ pub(crate) fn push_warning_app_notification(
     );
 }
 
+pub(crate) fn push_info_app_notification(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    title: &str,
+    message: &str,
+    settings_tab: Option<&str>,
+    created_at_unix_ms: u64,
+) {
+    let action = settings_tab.map(|tab| AppNotificationAction::OpenSettingsTab {
+        tab: tab.to_string(),
+    });
+    push_app_notification(
+        app_handle,
+        app_handle.state::<AppNotificationsState>().inner(),
+        AppNotification {
+            id: id.to_string(),
+            severity: "info".to_string(),
+            title: title.to_string(),
+            message: message.to_string(),
+            created_at_unix_ms,
+            action,
+        },
+    );
+}
+
 fn should_warn_audio_transcription_unavailable_at_start(settings: &RecordingSettings) -> bool {
     settings.transcription.enabled
         && ((settings.capture_microphone && settings.transcription.microphone_enabled)

@@ -9,6 +9,7 @@
     "dialog:allow-ask",
     "opener:default",
     "clipboard-manager:allow-write-image",
+    "clipboard-manager:allow-write-text",
     {
       "identifier": "fs:allow-write-file",
       "allow": [{ "path": "$DOWNLOAD/*" }]
