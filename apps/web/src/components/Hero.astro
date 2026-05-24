@@ -1,8 +1,19 @@
 ---
-import { Image } from "astro:assets";
+import { getImage } from "astro:assets";
 import { DOWNLOAD_URL, GITHUB_URL, PLATFORM_LABEL } from "../config";
 import screenshotDark from "../assets/screenshot-dark.png";
 import screenshotLight from "../assets/screenshot-light.png";
+
+const darkScreenshot = await getImage({
+  src: screenshotDark,
+  width: 1800,
+  format: "webp",
+});
+const lightScreenshot = await getImage({
+  src: screenshotLight,
+  width: 1800,
+  format: "webp",
+});
 ---
 
 <section class="hero">
@@ -27,21 +38,50 @@ import screenshotLight from "../assets/screenshot-light.png";
   <div class="hero-showcase">
     <div class="showcase-glow" aria-hidden="true"></div>
     <div class="showcase-frame">
-      <Image
-        src={screenshotDark}
-        alt="Mnema recording and timeline interface on macOS"
-        loading="eager"
-        class="showcase-img showcase-dark"
-      />
-      <Image
-        src={screenshotLight}
-        alt="Mnema in light mode on macOS"
-        loading="eager"
-        class="showcase-img showcase-light"
-      />
+      <picture
+        class="showcase-picture"
+        data-dark-src={darkScreenshot.src}
+        data-light-src={lightScreenshot.src}
+      >
+        <source
+          media="(prefers-color-scheme: light)"
+          srcset={lightScreenshot.src}
+        />
+        <img
+          src={darkScreenshot.src}
+          width={darkScreenshot.attributes.width}
+          height={darkScreenshot.attributes.height}
+          alt="Mnema recording and timeline interface on macOS"
+          loading="eager"
+          decoding="async"
+          class="showcase-img"
+        />
+      </picture>
     </div>
   </div>
 </section>
+
+<script>
+  const showcase = document.querySelector<HTMLPictureElement>(".showcase-picture");
+  const showcaseImg = showcase?.querySelector<HTMLImageElement>(".showcase-img");
+
+  function syncShowcaseImage() {
+    const theme = document.documentElement.getAttribute("data-theme");
+    const nextSrc =
+      theme === "light" ? showcase?.dataset.lightSrc : showcase?.dataset.darkSrc;
+
+    if (showcaseImg && nextSrc && showcaseImg.currentSrc !== nextSrc) {
+      showcaseImg.src = nextSrc;
+    }
+  }
+
+  syncShowcaseImage();
+
+  new MutationObserver(syncShowcaseImage).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
+</script>
 
 <style>
   .hero {
@@ -171,24 +211,15 @@ import screenshotLight from "../assets/screenshot-light.png";
     margin: 0 var(--space-lg);
   }
 
-  .showcase-img {
+  .showcase-picture {
+    display: block;
     grid-area: 1 / 1;
+  }
+
+  .showcase-img {
     width: 100%;
     height: auto;
     display: block;
-    transition: opacity 0.5s var(--ease-out-quart);
-  }
-
-  .showcase-light {
-    opacity: 0;
-  }
-
-  :global([data-theme="light"]) .showcase-dark {
-    opacity: 0;
-  }
-
-  :global([data-theme="light"]) .showcase-light {
-    opacity: 1;
   }
 
   @media (max-width: 768px) {
