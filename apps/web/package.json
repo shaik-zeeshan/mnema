@@ -6,7 +6,8 @@
     "dev": "astro dev",
     "build": "astro build",
     "check": "astro check",
-    "preview": "astro preview"
+    "preview": "astro preview",
+    "test": "node --test"
   },
   "dependencies": {
     "@fontsource-variable/hanken-grotesk": "^5.1.1",

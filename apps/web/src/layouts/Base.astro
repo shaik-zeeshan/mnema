@@ -40,7 +40,9 @@ const {
       })();
     </script>
     <script is:inline>
-      const RELEASE_CACHE_KEY = "mnema-latest-release";
+      // v2: invalidates caches poisoned with a prerelease (e.g. v0.1.0) that
+      // an earlier build wrote as "latest". Bump on any cache-shape change.
+      const RELEASE_CACHE_KEY = "mnema-latest-release-v2";
       const RELEASE_CACHE_TTL_MS = 60 * 60 * 1000;
 
       function selectMacDownloadAsset(assets) {
@@ -137,8 +139,12 @@ const {
           if (!response.ok) return;
 
           const releases = await response.json();
+          // Mirror GitHub's "Latest" badge: newest release that is neither a
+          // draft nor a prerelease. The list is created_at-desc, so the first
+          // match is the latest stable. (Without the prerelease guard a
+          // prerelease like v0.1.0 gets shown/cached as "latest".)
           const latestRelease = Array.isArray(releases)
-            ? releases.find((release) => release && !release.draft)
+            ? releases.find((release) => release && !release.draft && !release.prerelease)
             : null;
           if (!latestRelease) return;
 
