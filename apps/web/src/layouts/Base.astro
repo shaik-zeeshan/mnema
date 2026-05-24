@@ -3,6 +3,7 @@ import "../styles/global.css";
 import "@fontsource-variable/hanken-grotesk";
 import "@fontsource/spline-sans-mono/400.css";
 import "@fontsource/spline-sans-mono/500.css";
+import { GITHUB_RELEASES_API_URL } from "../config";
 
 interface Props {
   title?: string;
@@ -26,6 +27,7 @@ const {
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="mnema-latest-release-api" content={GITHUB_RELEASES_API_URL} />
     <link rel="icon" type="image/png" href="/icon.png" />
     <script is:inline>
       (function () {
@@ -36,6 +38,122 @@ const {
             : "dark");
         document.documentElement.setAttribute("data-theme", t);
       })();
+    </script>
+    <script is:inline>
+      const RELEASE_CACHE_KEY = "mnema-latest-release";
+      const RELEASE_CACHE_TTL_MS = 60 * 60 * 1000;
+
+      function selectMacDownloadAsset(assets) {
+        if (!Array.isArray(assets)) return null;
+
+        const downloadableAssets = assets.filter(
+          (asset) => asset && typeof asset.browser_download_url === "string",
+        );
+
+        return (
+          downloadableAssets.find(
+            (asset) =>
+              /\.dmg$/i.test(asset.name) &&
+              /(aarch64|arm64|apple[-_ ]?silicon)/i.test(asset.name),
+          ) ||
+          downloadableAssets.find((asset) => /\.dmg$/i.test(asset.name)) ||
+          downloadableAssets.find(
+            (asset) => /mac|darwin/i.test(asset.name) && /\.(zip|tar\.gz)$/i.test(asset.name),
+          ) ||
+          null
+        );
+      }
+
+      function normalizeReleaseVersion(tagName) {
+        if (typeof tagName !== "string") return "";
+        return tagName.replace(/^v/i, "");
+      }
+
+      function applyLatestRelease(release) {
+        if (!release || typeof release.html_url !== "string") return;
+
+        const version = normalizeReleaseVersion(release.tag_name);
+        const asset = selectMacDownloadAsset(release.assets);
+        const downloadUrl = asset?.browser_download_url || release.html_url;
+
+        document.querySelectorAll("[data-latest-download-link]").forEach((link) => {
+          if (link instanceof HTMLAnchorElement) link.href = downloadUrl;
+        });
+
+        document.querySelectorAll("[data-latest-release-link]").forEach((link) => {
+          if (link instanceof HTMLAnchorElement) link.href = release.html_url;
+        });
+
+        if (!version) return;
+        document.querySelectorAll("[data-latest-release-version]").forEach((el) => {
+          el.textContent = `v${version}`;
+        });
+      }
+
+      function readCachedRelease() {
+        try {
+          const cached = JSON.parse(sessionStorage.getItem(RELEASE_CACHE_KEY) || "null");
+          if (
+            cached &&
+            typeof cached.fetchedAt === "number" &&
+            Date.now() - cached.fetchedAt < RELEASE_CACHE_TTL_MS
+          ) {
+            return cached.release;
+          }
+        } catch {
+          sessionStorage.removeItem(RELEASE_CACHE_KEY);
+        }
+
+        return null;
+      }
+
+      function writeCachedRelease(release) {
+        try {
+          sessionStorage.setItem(
+            RELEASE_CACHE_KEY,
+            JSON.stringify({ fetchedAt: Date.now(), release }),
+          );
+        } catch {
+          // Ignore storage failures; the fallback links still work.
+        }
+      }
+
+      async function loadLatestRelease() {
+        const latestReleaseApiUrl = document.querySelector(
+          'meta[name="mnema-latest-release-api"]',
+        )?.content;
+        if (!latestReleaseApiUrl) return;
+
+        const cachedRelease = readCachedRelease();
+        if (cachedRelease) {
+          applyLatestRelease(cachedRelease);
+          return;
+        }
+
+        try {
+          const response = await fetch(latestReleaseApiUrl, {
+            headers: { Accept: "application/vnd.github+json" },
+          });
+          if (!response.ok) return;
+
+          const releases = await response.json();
+          const latestRelease = Array.isArray(releases)
+            ? releases.find((release) => release && !release.draft)
+            : null;
+          if (!latestRelease) return;
+
+          writeCachedRelease(latestRelease);
+          applyLatestRelease(latestRelease);
+        } catch {
+          // Keep the static releases-page fallback when GitHub is unavailable.
+        }
+      }
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", loadLatestRelease, { once: true });
+      } else {
+        loadLatestRelease();
+      }
     </script>
   </head>
   <body>
