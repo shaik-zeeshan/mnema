@@ -43,10 +43,6 @@ const lightScreenshot = await getImage({
         data-dark-src={darkScreenshot.src}
         data-light-src={lightScreenshot.src}
       >
-        <source
-          media="(prefers-color-scheme: light)"
-          srcset={lightScreenshot.src}
-        />
         <img
           src={darkScreenshot.src}
           width={darkScreenshot.attributes.width}
