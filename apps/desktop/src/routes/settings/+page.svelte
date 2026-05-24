@@ -2079,6 +2079,34 @@
   </span>
 {/snippet}
 
+<!-- Capture-summary glyphs — same 24 viewBox / 1.8 stroke family as the nav
+     icons. Hidden while the rail is expanded (the dot + label carry the state
+     there); they become the whole indicator once the rail collapses. -->
+{#snippet captureStatIcon(kind: "screen" | "mic" | "sysaudio")}
+  <span class="status-pill__icon" aria-hidden="true">
+    {#if kind === "screen"}
+      <svg viewBox="0 0 24 24">
+        <rect x="3" y="5" width="18" height="12" rx="2" />
+        <path d="M8 21h8" />
+        <path d="M12 17v4" />
+      </svg>
+    {:else if kind === "mic"}
+      <svg viewBox="0 0 24 24">
+        <rect x="9" y="3" width="6" height="11" rx="3" />
+        <path d="M5 11a7 7 0 0 0 14 0" />
+        <path d="M12 18v3" />
+        <path d="M9 21h6" />
+      </svg>
+    {:else}
+      <svg viewBox="0 0 24 24">
+        <path d="M11 5 6 9H3v6h3l5 4Z" />
+        <path d="M16 9a5 5 0 0 1 0 6" />
+        <path d="M19 7a8 8 0 0 1 0 10" />
+      </svg>
+    {/if}
+  </span>
+{/snippet}
+
 <!-- ── Settings shell ──────────────────────────────────────────────────────
      A fixed left rail lists the categories; only the right-hand content pane
      scrolls. One panel is mounted at a time (see the `{#if activeTab === ...}`
@@ -2094,7 +2122,12 @@
   >
     <div class="settings-sidebar__head">
       <div class="settings-sidebar__titlebar">
-        <span class="settings-sidebar__glyph" aria-hidden="true">&gt;_</span>
+        <span class="settings-sidebar__glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="m5 8 4 4-4 4" />
+            <path d="M13 16h6" />
+          </svg>
+        </span>
         <h1 class="settings-sidebar__title">Settings</h1>
         <button
           class="settings-sidebar__toggle"
@@ -2167,6 +2200,7 @@
             class:status-pill--on={draftCaptureScreen}
             title={sidebarCollapsed ? `Screen ${draftCaptureScreen ? "on" : "off"}` : null}
           >
+            {@render captureStatIcon("screen")}
             <span class="status-pill__dot"></span>
             <span class="status-pill__label">Screen</span>
           </li>
@@ -2175,6 +2209,7 @@
             class:status-pill--on={draftCaptureMicrophone}
             title={sidebarCollapsed ? `Mic ${draftCaptureMicrophone ? "on" : "off"}` : null}
           >
+            {@render captureStatIcon("mic")}
             <span class="status-pill__dot"></span>
             <span class="status-pill__label">Mic</span>
           </li>
@@ -2183,6 +2218,7 @@
             class:status-pill--on={draftCaptureSystemAudio}
             title={sidebarCollapsed ? `System audio ${draftCaptureSystemAudio ? "on" : "off"}` : null}
           >
+            {@render captureStatIcon("sysaudio")}
             <span class="status-pill__dot"></span>
             <span class="status-pill__label">Sys Audio</span>
           </li>
@@ -3902,13 +3938,13 @@
 
   /* ── Sidebar rail ─────────────────────────────────────────────────── */
   .settings-sidebar {
+    position: relative;
     flex: 0 0 230px;
     display: flex;
     flex-direction: column;
     min-height: 0;
     gap: 14px;
     padding-right: 18px;
-    border-right: 1px solid var(--app-border);
     /* Only flex-basis + padding animate on collapse. Labels are toggled, not
        reflowed, so this stays a single cheap interpolation. */
     transition:
@@ -3916,9 +3952,39 @@
       padding 0.24s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
+  /* Rail divider: a dashed hairline that fades toward the top and bottom
+     edges. Uses a repeating gradient for the dashes and a mask for the fade. */
+  .settings-sidebar::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: 1px;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 3px,
+      var(--app-border-strong) 3px,
+      var(--app-border-strong) 8px
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black 14%,
+      black 86%,
+      transparent
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black 14%,
+      black 86%,
+      transparent
+    );
+  }
+
   .settings-sidebar--collapsed {
     flex-basis: 60px;
-    padding-right: 0;
+    padding-right: 8px;
   }
 
   /* The nav list scrolls on its own if the categories ever outgrow the
@@ -4038,12 +4104,44 @@
 
   /* ── Sidebar footer: at-a-glance capture summary ──────────────────── */
   .settings-sidebar__foot {
+    position: relative;
     flex: 0 0 auto;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding-top: 12px;
-    border-top: 1px dashed var(--app-border);
+    /* Left gutter matches the nav-icon column (1px list + 11px item) so the
+       summary lines up under the categories above it. */
+    padding: 12px 2px 0 12px;
+  }
+
+  /* Footer divider: a dashed hairline that fades at both ends, matching the
+     rail divider treatment. */
+  .settings-sidebar__foot::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: repeating-linear-gradient(
+      to right,
+      transparent 0px,
+      transparent 3px,
+      var(--app-border-strong) 3px,
+      var(--app-border-strong) 8px
+    );
+    -webkit-mask-image: linear-gradient(
+      to right,
+      transparent,
+      black 22%,
+      black 78%,
+      transparent
+    );
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black 22%,
+      black 78%,
+      transparent
+    );
   }
 
   .settings-sidebar__foot-label {
@@ -4118,32 +4216,46 @@
     display: flex;
     flex-direction: column;
     gap: 9px;
-    padding: 2px 2px 0;
+    /* Left gutter matches the nav-icon column so the brand mark and save
+       status line up under the categories below. */
+    padding: 2px 2px 0 12px;
   }
 
   .settings-sidebar__titlebar {
     display: flex;
     align-items: center;
-    gap: 8px;
+    /* Match the nav item's icon-to-label gap so "Settings" aligns with the
+       category labels. */
+    gap: 11px;
   }
 
-  /* Terminal-prompt brand chip: a small nod to the green-on-black language. */
+  /* Terminal-prompt brand chip: an SVG prompt (chevron + cursor underline)
+     rather than literal ">_" text, which sat low and cramped against the
+     chip's baseline. Sized to the nav-icon chip and accent-tinted so the brand
+     mark heads the same icon column as the categories below. */
   .settings-sidebar__glyph {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex: 0 0 auto;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 5px;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
     border: 1px solid var(--app-accent-border);
     background: var(--app-accent-bg);
     color: var(--app-accent);
-    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1;
-    letter-spacing: -0.04em;
+    box-shadow: 0 0 10px -3px var(--app-accent-glow);
+  }
+
+  .settings-sidebar__glyph svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .settings-sidebar__title {
@@ -4329,9 +4441,13 @@
     50% { opacity: 1; }
   }
 
-  /* Capture summary becomes a vertical run of on/off dots. */
+  /* Capture summary becomes a vertical column of source icon chips: a lit
+     accent chip while capturing, a muted outline when not. The fps/resolution
+     pills are text-only, so they drop out of the icon rail. */
   .settings-sidebar--collapsed .settings-sidebar__foot {
     align-items: center;
+    padding-left: 0;
+    padding-right: 0;
   }
   .settings-sidebar--collapsed .settings-sidebar__foot-label {
     display: none;
@@ -4340,22 +4456,33 @@
     flex-direction: column;
     align-items: center;
     flex-wrap: nowrap;
-    gap: 7px;
+    gap: 6px;
   }
   .settings-sidebar--collapsed .status-pill {
+    width: 28px;
+    height: 28px;
     padding: 0;
-    border-color: transparent;
-    background: transparent;
+    justify-content: center;
+    border-radius: 6px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+  }
+  .settings-sidebar--collapsed .status-pill--on {
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    box-shadow: 0 0 10px -3px var(--app-accent-glow);
   }
   .settings-sidebar--collapsed .status-pill--info {
     display: none;
   }
+  .settings-sidebar--collapsed .status-pill__dot,
   .settings-sidebar--collapsed .status-pill__label {
     display: none;
   }
-  .settings-sidebar--collapsed .status-pill__dot {
-    width: 8px;
-    height: 8px;
+  .settings-sidebar--collapsed .status-pill__icon {
+    display: inline-flex;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -4389,6 +4516,24 @@
     border-radius: 999px;
     border: 1px solid var(--app-border);
     background: var(--app-surface);
+  }
+
+  /* Source glyph: hidden while the rail is expanded (the dot + label carry the
+     state there); becomes the whole indicator once the rail collapses. */
+  .status-pill__icon {
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  .status-pill__icon svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .status-pill__dot {
