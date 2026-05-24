@@ -293,6 +293,17 @@
   // strand the user mid-page on the next tab. Reset to the top whenever
   // `activeTab` changes — matches the typical tabbed-settings expectation.
   let scrollRegion = $state<HTMLDivElement | null>(null);
+  let scrollRegionScrolling = $state(false);
+  let scrollRegionScrollTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function handleScrollRegionScroll() {
+    scrollRegionScrolling = true;
+    if (scrollRegionScrollTimer !== null) clearTimeout(scrollRegionScrollTimer);
+    scrollRegionScrollTimer = setTimeout(() => {
+      scrollRegionScrolling = false;
+      scrollRegionScrollTimer = null;
+    }, 800);
+  }
 
   $effect(() => {
     // Track `activeTab` so this fires on every switch.
@@ -2246,7 +2257,7 @@
       onReview={() => { activeTab = "privacy"; }}
     />
 
-    <div class="settings-scroll" bind:this={scrollRegion}>
+    <div class="settings-scroll" class:is-scrolling={scrollRegionScrolling} bind:this={scrollRegion} onscroll={handleScrollRegionScroll}>
 
 <!-- ── Capture & sources ───────────────────────────────────────────────── -->
 {#if activeTab === "access"}
@@ -4170,7 +4181,7 @@
     flex-direction: column;
     gap: 14px;
     /* Keep panel content clear of the scrollbar gutter on the right. */
-    padding-right: 8px;
+    padding-right: 6px;
   }
 
   /* One tab panel renders at a time. When a panel stacks several cards
@@ -4182,12 +4193,11 @@
     gap: 14px;
   }
 
-  /* Slim, theme-matched scrollbars for the scroll pane and nav rail. The
-     transparent border + background-clip trims the visible thumb to a
-     hairline that thickens on hover. */
+  /* Auto-hiding scrollbars: invisible at rest, fade in on hover or scroll,
+     accent-tinted on direct thumb interaction. */
   .settings-scroll::-webkit-scrollbar,
   .settings-nav::-webkit-scrollbar {
-    width: 11px;
+    width: 8px;
   }
   .settings-scroll::-webkit-scrollbar-track,
   .settings-nav::-webkit-scrollbar-track {
@@ -4195,20 +4205,33 @@
   }
   .settings-scroll::-webkit-scrollbar-thumb,
   .settings-nav::-webkit-scrollbar-thumb {
-    background: var(--app-border-strong);
-    border: 3px solid transparent;
+    background: transparent;
+    border: 2px solid transparent;
     background-clip: padding-box;
     border-radius: 999px;
   }
+  /* Show thumb while the container is hovered or actively scrolling. */
+  .settings-scroll:hover::-webkit-scrollbar-thumb,
+  .settings-scroll.is-scrolling::-webkit-scrollbar-thumb,
+  .settings-nav:hover::-webkit-scrollbar-thumb {
+    background: var(--app-border-hover);
+    background-clip: padding-box;
+  }
+  /* Accent highlight when hovering directly over the thumb. */
   .settings-scroll::-webkit-scrollbar-thumb:hover,
   .settings-nav::-webkit-scrollbar-thumb:hover {
-    background: var(--app-border-hover);
+    background: var(--app-accent);
     background-clip: padding-box;
   }
   .settings-scroll,
   .settings-nav {
     scrollbar-width: thin;
-    scrollbar-color: var(--app-border-strong) transparent;
+    scrollbar-color: transparent transparent;
+  }
+  .settings-scroll:hover,
+  .settings-scroll.is-scrolling,
+  .settings-nav:hover {
+    scrollbar-color: var(--app-border-hover) transparent;
   }
 
   /* ── Sidebar head: brand mark, title, collapse toggle, save status ─── */
