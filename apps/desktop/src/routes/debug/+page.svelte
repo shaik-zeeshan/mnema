@@ -1073,7 +1073,10 @@
       if (denied(permissions.systemAudio)) out.push({ id: "perm-sys", severity: "warn", text: `System audio permission ${formatPermission(permissions.systemAudio)}` });
     }
 
-    const rs = idleDebug?.runtimeSources;
+    // Only trust runtime-source health while capturing: idleDebug is not cleared
+    // on stop, so a prior privacy_filter_apply_failed state would otherwise keep
+    // surfacing a stale "sources suspended" warning while idle (mirrors overviewSources).
+    const rs = isCapturing ? idleDebug?.runtimeSources : null;
     if (rs) {
       const suspended = (["screen", "microphone", "systemAudio"] as const).some((key) => {
         const reason = rs[key].reason;
@@ -1123,6 +1126,11 @@
   });
 
   const overviewRefreshing = $derived(loadingSupport || loadingPermissions || loadingInfraStatus);
+
+  // The all-clear banner must not appear before the health probes that feed
+  // overviewWarnings have resolved — otherwise first open (and any failed probe
+  // that leaves its state null) would falsely report "No issues detected".
+  const overviewProbesLoaded = $derived(support != null && permissions != null && infraStatus != null);
 
   async function refreshOverview(): Promise<void> {
     await Promise.all([loadSupport(), loadPermissions(), fetchInfraStatus()]);
@@ -1224,10 +1232,15 @@
         </li>
       {/each}
     </ul>
-  {:else}
+  {:else if overviewProbesLoaded}
     <div class="ov-allclear">
       <span class="ov-allclear__dot"></span>
       <span>No issues detected</span>
+    </div>
+  {:else}
+    <div class="ov-allclear ov-allclear--pending">
+      <span class="ov-allclear__dot"></span>
+      <span>{overviewRefreshing ? "Checking capture health…" : "Capture health unavailable"}</span>
     </div>
   {/if}
 
@@ -1295,7 +1308,8 @@
 
 <!-- ── Capture: session, runtime sources & privacy filter ─────────────────── -->
 {#if activeTab === "capture"}
-<div class="card" id="debug-panel-capture" role="tabpanel" aria-labelledby="debug-tab-capture" tabindex="0">
+<div class="tabpanel-group" id="debug-panel-capture" role="tabpanel" aria-labelledby="debug-tab-capture" tabindex="0">
+<div class="card">
   <h2 class="card__title">Session</h2>
 
   <div class="session-status" class:session-status--recording={isCapturing}>
@@ -1406,11 +1420,9 @@
     </button>
   </div>
 </div>
-{/if}
 
 <!-- ── Runtime sources (Capture) ──────────────────────────────────────────── -->
-{#if activeTab === "capture"}
-<div class="card card--debug" aria-labelledby="debug-tab-capture">
+<div class="card card--debug">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Runtime Sources
@@ -1531,7 +1543,7 @@
   {/if}
 </div>
 
-<div class="card card--debug" aria-labelledby="debug-tab-capture">
+<div class="card card--debug">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Privacy Filter
@@ -1583,11 +1595,13 @@
     <p class="empty">privacy filter status has not loaded yet</p>
   {/if}
 </div>
+</div>
 {/if}
 
 <!-- ── System: probe (support + permissions) & app infra ──────────────────── -->
 {#if activeTab === "system"}
-<div class="card" id="debug-panel-system" role="tabpanel" aria-labelledby="debug-tab-system" tabindex="0">
+<div class="tabpanel-group" id="debug-panel-system" role="tabpanel" aria-labelledby="debug-tab-system" tabindex="0">
+<div class="card">
   <h2 class="card__title">System Probe</h2>
   <div class="probe-grid">
     <div class="probe-block">
@@ -1666,6 +1680,57 @@
       {/if}
     </div>
   </div>
+</div>
+
+<!-- App Infra (System) -->
+<div class="card card--debug">
+  <h2 class="card__title">
+    <span class="debug-tag">dbg</span>
+    App Infra
+    <button class="btn btn--ghost btn--sm card__title-action" onclick={refreshAll} disabled={loadingInfraStatus || loadingJobs}>
+      {loadingInfraStatus || loadingJobs ? "…" : "↻"}
+    </button>
+  </h2>
+
+  {#if infraStatusError}
+    <p class="debug-err">{infraStatusError}</p>
+  {:else if infraStatus}
+    <ul class="kv-list">
+      <li>
+        <span class="kv-key kv-key--wide">migrations</span>
+        <span class={infraStatus.migrationsRan ? "badge badge--ok badge--sm" : "badge badge--neutral badge--sm"}>
+          {infraStatus.migrationsRan ? "applied" : "up to date"}
+        </span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">workers</span>
+        <span class="kv-val kv-val--mono">{infraStatus.workerThreadCount}</span>
+      </li>
+      <li>
+        <span class="kv-key kv-key--wide">jobs total</span>
+        <span class="kv-val kv-val--mono">{infraStatus.jobCounts.total}</span>
+      </li>
+    </ul>
+    <div class="job-count-row">
+      {#if infraStatus.jobCounts.queued > 0}
+        <span class="badge badge--neutral badge--sm">queued {infraStatus.jobCounts.queued}</span>
+      {/if}
+      {#if infraStatus.jobCounts.running > 0}
+        <span class="badge badge--running badge--sm">running {infraStatus.jobCounts.running}</span>
+      {/if}
+      {#if infraStatus.jobCounts.completed > 0}
+        <span class="badge badge--ok badge--sm">done {infraStatus.jobCounts.completed}</span>
+      {/if}
+      {#if infraStatus.jobCounts.failed > 0}
+        <span class="badge badge--err badge--sm">failed {infraStatus.jobCounts.failed}</span>
+      {/if}
+    </div>
+    <div class="idle-section-label">DB path</div>
+    <p class="infra-db-path">{infraStatus.databasePath}</p>
+  {:else}
+    <p class="empty">—</p>
+  {/if}
+</div>
 </div>
 {/if}
 
@@ -1950,61 +2015,10 @@
 </div>
 {/if}
 
-<!-- ── App Infra (System) ─────────────────────────────────────────────────── -->
-{#if activeTab === "system"}
-<div class="card card--debug" aria-labelledby="debug-tab-system">
-  <h2 class="card__title">
-    <span class="debug-tag">dbg</span>
-    App Infra
-    <button class="btn btn--ghost btn--sm card__title-action" onclick={refreshAll} disabled={loadingInfraStatus || loadingJobs}>
-      {loadingInfraStatus || loadingJobs ? "…" : "↻"}
-    </button>
-  </h2>
-
-  {#if infraStatusError}
-    <p class="debug-err">{infraStatusError}</p>
-  {:else if infraStatus}
-    <ul class="kv-list">
-      <li>
-        <span class="kv-key kv-key--wide">migrations</span>
-        <span class={infraStatus.migrationsRan ? "badge badge--ok badge--sm" : "badge badge--neutral badge--sm"}>
-          {infraStatus.migrationsRan ? "applied" : "up to date"}
-        </span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">workers</span>
-        <span class="kv-val kv-val--mono">{infraStatus.workerThreadCount}</span>
-      </li>
-      <li>
-        <span class="kv-key kv-key--wide">jobs total</span>
-        <span class="kv-val kv-val--mono">{infraStatus.jobCounts.total}</span>
-      </li>
-    </ul>
-    <div class="job-count-row">
-      {#if infraStatus.jobCounts.queued > 0}
-        <span class="badge badge--neutral badge--sm">queued {infraStatus.jobCounts.queued}</span>
-      {/if}
-      {#if infraStatus.jobCounts.running > 0}
-        <span class="badge badge--running badge--sm">running {infraStatus.jobCounts.running}</span>
-      {/if}
-      {#if infraStatus.jobCounts.completed > 0}
-        <span class="badge badge--ok badge--sm">done {infraStatus.jobCounts.completed}</span>
-      {/if}
-      {#if infraStatus.jobCounts.failed > 0}
-        <span class="badge badge--err badge--sm">failed {infraStatus.jobCounts.failed}</span>
-      {/if}
-    </div>
-    <div class="idle-section-label">DB path</div>
-    <p class="infra-db-path">{infraStatus.databasePath}</p>
-  {:else}
-    <p class="empty">—</p>
-  {/if}
-</div>
-{/if}
-
 <!-- ── Pipeline: OCR budget, segment workspaces & background jobs ─────────── -->
 {#if activeTab === "pipeline"}
-<div class="card card--debug" id="debug-panel-pipeline" role="tabpanel" aria-labelledby="debug-tab-pipeline" tabindex="0">
+<div class="tabpanel-group" id="debug-panel-pipeline" role="tabpanel" aria-labelledby="debug-tab-pipeline" tabindex="0">
+<div class="card card--debug">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     OCR Budget
@@ -2114,11 +2128,9 @@
     <p class="empty">OCR budget state has not loaded yet</p>
   {/if}
 </div>
-{/if}
 
 <!-- ── Segment workspace classifier (Pipeline) ────────────────────────────── -->
-{#if activeTab === "pipeline"}
-<div class="card card--debug" aria-labelledby="debug-tab-pipeline">
+<div class="card card--debug">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Segment Workspace Cleanup
@@ -2238,11 +2250,9 @@
   {/if}
   </details>
 </div>
-{/if}
 
 <!-- ── Background Jobs (Pipeline) ─────────────────────────────────────────── -->
-{#if activeTab === "pipeline"}
-<div class="card card--debug" aria-labelledby="debug-tab-pipeline">
+<div class="card card--debug">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Background Jobs
@@ -2406,6 +2416,7 @@
     {/if}
   {/if}
 </div>
+</div>
 {/if}
 
 <!-- ── Error display ─────────────────────────────────────────────────────── -->
@@ -2534,6 +2545,14 @@
     flex-direction: column;
     gap: 14px;
     position: relative;
+  }
+
+  /* Groups the Capture tab's multiple cards into one ARIA tabpanel without
+     altering their visual spacing (matches .debug-scroll's inter-card gap). */
+  .tabpanel-group {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
   }
 
   .card::before {
@@ -3742,6 +3761,19 @@
     background: var(--app-accent);
     box-shadow: 0 0 0 3px var(--app-accent-glow);
     flex-shrink: 0;
+  }
+
+  /* Neutral variant shown while health probes are still loading or after one
+     failed to resolve — must not read as the green "all clear" success state. */
+  .ov-allclear--pending {
+    border-color: var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+  }
+
+  .ov-allclear--pending .ov-allclear__dot {
+    background: var(--app-text-faint);
+    box-shadow: none;
   }
 
   /* Glance grid — sources · permissions · jobs. */
