@@ -163,7 +163,7 @@
   }
 
   async function fetchOcrBudgetDebug() {
-    if (activeTab !== "ocr") return;
+    if (activeTab !== "pipeline") return;
     if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
     try {
       ocrBudgetDebug = await invoke<OcrBudgetDebug>("get_ocr_budget_debug");
@@ -469,6 +469,10 @@
   $effect(() => {
     loadSettings();
     loadPermissions();
+    // The Overview board reads capture support on open (platform + per-source
+    // capability), so load it eagerly instead of waiting for the manual
+    // System-tab "Query" button.
+    loadSupport();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -528,7 +532,7 @@
   });
 
   $effect(() => {
-    if (activeTab !== "ocr") return;
+    if (activeTab !== "pipeline") return;
     fetchOcrBudgetDebug();
 
     const interval = setInterval(() => {
@@ -921,28 +925,26 @@
   // long-lived backgrounds (probe polling, idle polling, etc.) ride next to
   // the section that owns them, and dramatically reduces what the renderer
   // paints when several heavy lists are present at once.
+  // Five sections, fronted by an Overview health board so opening the window
+  // answers "is capture healthy?" before any drill-down. The detail tabs group
+  // the former eight panels by concern: Capture (session + runtime + privacy),
+  // Inactivity, Pipeline (jobs + OCR + workspaces), and System (probe + infra).
   type DebugTab =
-    | "session"
-    | "runtime"
-    | "probe"
+    | "overview"
+    | "capture"
     | "inactivity"
-    | "infra"
-    | "ocr"
-    | "workspaces"
-    | "jobs";
+    | "pipeline"
+    | "system";
 
   const debugTabs: { id: DebugTab; label: string }[] = [
-    { id: "session", label: "Session" },
-    { id: "runtime", label: "Runtime" },
-    { id: "probe", label: "Probe" },
+    { id: "overview", label: "Overview" },
+    { id: "capture", label: "Capture" },
     { id: "inactivity", label: "Inactivity" },
-    { id: "infra", label: "Infra" },
-    { id: "ocr", label: "OCR" },
-    { id: "workspaces", label: "Workspaces" },
-    { id: "jobs", label: "Jobs" },
+    { id: "pipeline", label: "Pipeline" },
+    { id: "system", label: "System" },
   ];
 
-  let activeTab = $state<DebugTab>("session");
+  let activeTab = $state<DebugTab>("overview");
 
   // Scroll-region element. The wrapper persists across tab switches (only
   // the inner `{#if activeTab === ...}` panel re-mounts), so without an
@@ -1040,6 +1042,92 @@
     if (selectedJobPage != null) jobsPage = selectedJobPage;
   }
 
+  // ─── Overview ──────────────────────────────────────────────────────────────
+  // The landing tab aggregates the highest-signal facts already fetched for the
+  // detail tabs (session state, runtime source health, permissions, infra job
+  // counts) into one health board, and derives a warnings list from them so the
+  // window answers "is capture healthy, and if not what's wrong?" on open.
+
+  type OverviewWarning = { id: string; severity: "err" | "warn"; text: string };
+
+  const PRIVACY_SUSPENSION_REASONS = new Set([
+    "privacy_filter_apply_failed",
+    "privacy_recovery_restart_required",
+  ]);
+
+  const overviewWarnings = $derived.by<OverviewWarning[]>(() => {
+    const out: OverviewWarning[] = [];
+
+    if (support && !support.nativeCaptureSupported) {
+      out.push({ id: "unsupported", severity: "err", text: "Native capture is not supported on this platform" });
+    }
+    // Note: `migrationsRan` is not a health signal — it only reports whether
+    // pending migrations were applied at this startup, so it is `false` on any
+    // already-current database. A genuine migration failure errors out before
+    // the app reaches a running state, so there is nothing to warn about here.
+
+    if (permissions) {
+      const denied = (s: PermissionStatus | undefined) => s === "denied" || s === "restricted";
+      if (denied(permissions.screen)) out.push({ id: "perm-screen", severity: "err", text: `Screen recording permission ${formatPermission(permissions.screen)}` });
+      if (denied(permissions.microphone)) out.push({ id: "perm-mic", severity: "warn", text: `Microphone permission ${formatPermission(permissions.microphone)}` });
+      if (denied(permissions.systemAudio)) out.push({ id: "perm-sys", severity: "warn", text: `System audio permission ${formatPermission(permissions.systemAudio)}` });
+    }
+
+    const rs = idleDebug?.runtimeSources;
+    if (rs) {
+      const suspended = (["screen", "microphone", "systemAudio"] as const).some((key) => {
+        const reason = rs[key].reason;
+        return rs[key].requested && reason != null && PRIVACY_SUSPENSION_REASONS.has(reason);
+      });
+      if (suspended) out.push({ id: "privacy", severity: "err", text: "Privacy filter could not be applied; some sources are suspended" });
+    }
+
+    if (isInactivityPaused) {
+      out.push({ id: "idle", severity: "warn", text: "Recording paused by inactivity; waiting for activity" });
+    }
+    if (infraStatus && infraStatus.jobCounts.failed > 0) {
+      const n = infraStatus.jobCounts.failed;
+      out.push({ id: "jobs", severity: "warn", text: `${n} background job${n === 1 ? "" : "s"} failed` });
+    }
+
+    // Errors above warnings; Array.sort is stable so insertion order (roughly
+    // most-blocking first) is preserved within each severity.
+    return out.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "err" ? -1 : 1));
+  });
+
+  type OverviewSource = { key: CaptureSource; label: string; glyph: string; word: string; cls: string };
+
+  // While recording, each source reflects its live runtime state (running /
+  // paused / idle / off); while stopped, it reflects whether it is selected for
+  // the next session. Mirrors the title bar's per-source pills.
+  const overviewSources = $derived.by<OverviewSource[]>(() => {
+    const defs = [
+      { key: "screen", label: "Screen", glyph: "◉", selected: recordingSettings?.captureScreen ?? false },
+      { key: "microphone", label: "Microphone", glyph: "🎙", selected: recordingSettings?.captureMicrophone ?? false },
+      { key: "systemAudio", label: "System audio", glyph: "🔊", selected: recordingSettings?.captureSystemAudio ?? false },
+    ] as const;
+    const rs = idleDebug?.runtimeSources;
+    return defs.map((d) => {
+      if (isCapturing && rs) {
+        const state = runtimeStateWord(rs[d.key]);
+        return { key: d.key, label: d.label, glyph: d.glyph, word: state.word, cls: state.cls };
+      }
+      return {
+        key: d.key,
+        label: d.label,
+        glyph: d.glyph,
+        word: d.selected ? "selected" : "off",
+        cls: d.selected ? "rs-state rs-state--partial" : "rs-state rs-state--off",
+      };
+    });
+  });
+
+  const overviewRefreshing = $derived(loadingSupport || loadingPermissions || loadingInfraStatus);
+
+  async function refreshOverview(): Promise<void> {
+    await Promise.all([loadSupport(), loadPermissions(), fetchInfraStatus()]);
+  }
+
 </script>
 
 <!-- ── Page header ──────────────────────────────────────────────────────── -->
@@ -1049,7 +1137,7 @@
       <h1 class="page-header__title">Debug</h1>
     </div>
   </div>
-  <p class="page-subtitle">Recording status &amp; controls.</p>
+  <p class="page-subtitle">Capture, pipeline &amp; system status.</p>
 </header>
 
 <!-- Wrapper carries the dashed separator below the tab chips so the
@@ -1085,9 +1173,129 @@
      in +layout.svelte. -->
 <div class="debug-scroll" bind:this={scrollRegion}>
 
-<!-- ── Recording status ─────────────────────────────────────────────────── -->
-{#if activeTab === "session"}
-<div class="card" id="debug-panel-session" role="tabpanel" aria-labelledby="debug-tab-session" tabindex="0">
+<!-- ── Overview ───────────────────────────────────────────────────────────
+     Landing tab. A compact health board: recording state + controls, a
+     warnings strip that only appears when something needs attention, and an
+     at-a-glance grid (sources · permissions · jobs). Everything here is a
+     summary; the detail tabs own the deep data. -->
+{#if activeTab === "overview"}
+<div class="card" id="debug-panel-overview" role="tabpanel" aria-labelledby="debug-tab-overview" tabindex="0">
+  <h2 class="card__title">
+    Overview
+    <span class="idle-note">live snapshot</span>
+    <button
+      class="btn btn--ghost btn--sm card__title-action"
+      onclick={refreshOverview}
+      disabled={overviewRefreshing}
+      aria-label="Refresh overview"
+    >
+      {overviewRefreshing ? "…" : "↻"}
+    </button>
+  </h2>
+
+  <div class="ov-status">
+    <div class="session-status" class:session-status--recording={isCapturing}>
+      <span class="rec-dot" class:rec-dot--active={isCapturing}></span>
+      <span class="session-label">{isCapturing ? "Recording" : session?.isRunning === false ? "Stopped" : "Idle"}</span>
+    </div>
+    <div class="action-row">
+      <button class="btn btn--primary" onclick={startCapture} disabled={isCapturing || loadingStart || loadingSettings}>
+        {loadingStart ? "Starting…" : "Start"}
+      </button>
+      <button class="btn btn--danger" onclick={stopCapture} disabled={!isCapturing || loadingStop}>
+        {loadingStop ? "Stopping…" : "Stop"}
+      </button>
+    </div>
+  </div>
+
+  {#if isInactivityPaused}
+    <div class="inactivity-hint">
+      <span class="inactivity-hint__dot"></span>
+      <span class="inactivity-hint__text">Paused on inactivity timeout; waiting for activity</span>
+    </div>
+  {/if}
+
+  {#if overviewWarnings.length > 0}
+    <ul class="ov-warnings">
+      {#each overviewWarnings as warning (warning.id)}
+        <li class="ov-warning ov-warning--{warning.severity}">
+          <span class="ov-warning__tag" aria-hidden="true">{warning.severity === "err" ? "✕" : "!"}</span>
+          <span class="ov-warning__text">{warning.text}</span>
+        </li>
+      {/each}
+    </ul>
+  {:else}
+    <div class="ov-allclear">
+      <span class="ov-allclear__dot"></span>
+      <span>No issues detected</span>
+    </div>
+  {/if}
+
+  <div class="ov-grid">
+    <section class="ov-tile">
+      <div class="ov-tile__label">Sources <span class="idle-note">{isCapturing ? "live" : "selected"}</span></div>
+      <ul class="ov-rows">
+        {#each overviewSources as src (src.key)}
+          <li class="ov-row">
+            <span class="ov-row__glyph" aria-hidden="true">{src.glyph}</span>
+            <span class="ov-row__name">{src.label}</span>
+            <span class={src.cls}>{src.word}</span>
+          </li>
+        {/each}
+      </ul>
+    </section>
+
+    <section class="ov-tile">
+      <div class="ov-tile__label">Permissions</div>
+      {#if permissions}
+        <ul class="ov-rows">
+          <li class="ov-row">
+            <span class="ov-row__name">Screen</span>
+            <span class={permissionBadgeClass(permissions.screen)}>{formatPermission(permissions.screen)}</span>
+          </li>
+          <li class="ov-row">
+            <span class="ov-row__name">Microphone</span>
+            <span class={permissionBadgeClass(permissions.microphone)}>{formatPermission(permissions.microphone)}</span>
+          </li>
+          <li class="ov-row">
+            <span class="ov-row__name">System audio</span>
+            <span class={permissionBadgeClass(permissions.systemAudio)}>{formatPermission(permissions.systemAudio)}</span>
+          </li>
+        </ul>
+      {:else}
+        <p class="empty">not loaded</p>
+      {/if}
+    </section>
+
+    <section class="ov-tile">
+      <div class="ov-tile__label">Background jobs</div>
+      {#if infraStatusError}
+        <p class="debug-err">{infraStatusError}</p>
+      {:else if infraStatus}
+        <ul class="ov-rows">
+          <li class="ov-row">
+            <span class="ov-row__name">Total</span>
+            <span class="ov-row__val">{infraStatus.jobCounts.total}</span>
+          </li>
+        </ul>
+        <div class="job-count-row">
+          {#if infraStatus.jobCounts.running > 0}<span class="badge badge--running badge--sm">running {infraStatus.jobCounts.running}</span>{/if}
+          {#if infraStatus.jobCounts.queued > 0}<span class="badge badge--neutral badge--sm">queued {infraStatus.jobCounts.queued}</span>{/if}
+          {#if infraStatus.jobCounts.failed > 0}<span class="badge badge--err badge--sm">failed {infraStatus.jobCounts.failed}</span>{/if}
+          {#if infraStatus.jobCounts.completed > 0}<span class="badge badge--ok badge--sm">done {infraStatus.jobCounts.completed}</span>{/if}
+          {#if infraStatus.jobCounts.total === 0}<span class="idle-note">no jobs yet</span>{/if}
+        </div>
+      {:else}
+        <p class="empty">not loaded</p>
+      {/if}
+    </section>
+  </div>
+</div>
+{/if}
+
+<!-- ── Capture: session, runtime sources & privacy filter ─────────────────── -->
+{#if activeTab === "capture"}
+<div class="card" id="debug-panel-capture" role="tabpanel" aria-labelledby="debug-tab-capture" tabindex="0">
   <h2 class="card__title">Session</h2>
 
   <div class="session-status" class:session-status--recording={isCapturing}>
@@ -1099,7 +1307,7 @@
     <div class="inactivity-hint">
       <span class="inactivity-hint__dot"></span>
       <span class="inactivity-hint__text">
-        Paused — effective idle exceeded timeout; waiting for activity
+        Paused on inactivity timeout; waiting for activity
       </span>
     </div>
   {/if}
@@ -1200,9 +1408,9 @@
 </div>
 {/if}
 
-<!-- ── Runtime sources ──────────────────────────────────────────────────── -->
-{#if activeTab === "runtime"}
-<div class="card card--debug" id="debug-panel-runtime" role="tabpanel" aria-labelledby="debug-tab-runtime" tabindex="0">
+<!-- ── Runtime sources (Capture) ──────────────────────────────────────────── -->
+{#if activeTab === "capture"}
+<div class="card card--debug" aria-labelledby="debug-tab-capture">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Runtime Sources
@@ -1323,7 +1531,7 @@
   {/if}
 </div>
 
-<div class="card card--debug" id="debug-panel-privacy" aria-labelledby="debug-tab-runtime">
+<div class="card card--debug" aria-labelledby="debug-tab-capture">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Privacy Filter
@@ -1351,32 +1559,35 @@
       </li>
     </ul>
 
-    <div class="privacy-debug-grid">
-      <div>
-        <div class="idle-section-label">evaluated decision</div>
-        <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestDecision, null, 2)}</p>
+    <details class="advanced">
+      <summary class="advanced__summary">Raw decisions &amp; snapshot</summary>
+      <div class="privacy-debug-grid">
+        <div>
+          <div class="idle-section-label">evaluated decision</div>
+          <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestDecision, null, 2)}</p>
+        </div>
+        <div>
+          <div class="idle-section-label">applied decision</div>
+          <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestAppliedDecision, null, 2)}</p>
+        </div>
       </div>
-      <div>
-        <div class="idle-section-label">applied decision</div>
-        <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestAppliedDecision, null, 2)}</p>
-      </div>
-    </div>
 
-    <div class="idle-section-label">latest metadata snapshot</div>
-    {#if privacyDebug.privacyDebug.latestSnapshot}
-      <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestSnapshot, null, 2)}</p>
-    {:else}
-      <p class="empty">no metadata snapshot captured yet</p>
-    {/if}
+      <div class="idle-section-label">latest metadata snapshot</div>
+      {#if privacyDebug.privacyDebug.latestSnapshot}
+        <p class="privacy-debug-json">{JSON.stringify(privacyDebug.privacyDebug.latestSnapshot, null, 2)}</p>
+      {:else}
+        <p class="empty">no metadata snapshot captured yet</p>
+      {/if}
+    </details>
   {:else}
     <p class="empty">privacy filter status has not loaded yet</p>
   {/if}
 </div>
 {/if}
 
-<!-- ── System probe ──────────────────────────────────────────────────────── -->
-{#if activeTab === "probe"}
-<div class="card" id="debug-panel-probe" role="tabpanel" aria-labelledby="debug-tab-probe" tabindex="0">
+<!-- ── System: probe (support + permissions) & app infra ──────────────────── -->
+{#if activeTab === "system"}
+<div class="card" id="debug-panel-system" role="tabpanel" aria-labelledby="debug-tab-system" tabindex="0">
   <h2 class="card__title">System Probe</h2>
   <div class="probe-grid">
     <div class="probe-block">
@@ -1658,6 +1869,8 @@
       </p>
     {/if}
 
+    <details class="advanced">
+      <summary class="advanced__summary">Raw samples &amp; probe</summary>
     <div class="idle-section-label">Activity sources <span class="idle-note">combined-policy samples</span></div>
     <ul class="kv-list">
       {#each idleDebug.activitySources as source (source.kind)}
@@ -1730,17 +1943,17 @@
         </li>
       {/if}
     </ul>
+    </details>
   {:else}
     <p class="empty">—</p>
   {/if}
 </div>
 {/if}
 
-<!-- ── App Infra / Background Jobs ───────────────────────────────────────── -->
-{#if activeTab === "infra"}
-<div class="card card--debug" id="debug-panel-infra" role="tabpanel" aria-labelledby="debug-tab-infra" tabindex="0">
+<!-- ── App Infra (System) ─────────────────────────────────────────────────── -->
+{#if activeTab === "system"}
+<div class="card card--debug" aria-labelledby="debug-tab-system">
   <h2 class="card__title">
-    <span class="card__num">05</span>
     <span class="debug-tag">dbg</span>
     App Infra
     <button class="btn btn--ghost btn--sm card__title-action" onclick={refreshAll} disabled={loadingInfraStatus || loadingJobs}>
@@ -1754,8 +1967,8 @@
     <ul class="kv-list">
       <li>
         <span class="kv-key kv-key--wide">migrations</span>
-        <span class={infraStatus.migrationsRan ? "badge badge--ok badge--sm" : "badge badge--warn badge--sm"}>
-          {infraStatus.migrationsRan ? "ran" : "pending"}
+        <span class={infraStatus.migrationsRan ? "badge badge--ok badge--sm" : "badge badge--neutral badge--sm"}>
+          {infraStatus.migrationsRan ? "applied" : "up to date"}
         </span>
       </li>
       <li>
@@ -1789,9 +2002,9 @@
 </div>
 {/if}
 
-<!-- ── OCR budget debug ──────────────────────────────────────────────────── -->
-{#if activeTab === "ocr"}
-<div class="card card--debug" id="debug-panel-ocr" role="tabpanel" aria-labelledby="debug-tab-ocr" tabindex="0">
+<!-- ── Pipeline: OCR budget, segment workspaces & background jobs ─────────── -->
+{#if activeTab === "pipeline"}
+<div class="card card--debug" id="debug-panel-pipeline" role="tabpanel" aria-labelledby="debug-tab-pipeline" tabindex="0">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     OCR Budget
@@ -1812,10 +2025,8 @@
       <div><span>pacing</span><strong>{ocrBudgetDebug.summary.lastPacingMode ?? "—"}</strong></div>
     </div>
 
-    <div class="idle-section-label">
-      Admission events
-      <span class="idle-note">{ocrBudgetDebug.admissionEvents.length}</span>
-    </div>
+    <details class="advanced">
+      <summary class="advanced__summary">Admission events <span class="idle-note">{ocrBudgetDebug.admissionEvents.length}</span></summary>
     {#if ocrBudgetDebug.admissionEvents.length === 0}
       <p class="empty">no admission events in this run</p>
     {:else}
@@ -1856,11 +2067,10 @@
         </div>
       {/if}
     {/if}
+    </details>
 
-    <div class="idle-section-label">
-      Execution events
-      <span class="idle-note">{ocrBudgetDebug.executionEvents.length}</span>
-    </div>
+    <details class="advanced">
+      <summary class="advanced__summary">Execution events <span class="idle-note">{ocrBudgetDebug.executionEvents.length}</span></summary>
     {#if ocrBudgetDebug.executionEvents.length === 0}
       <p class="empty">no execution events in this run</p>
     {:else}
@@ -1899,21 +2109,23 @@
         </div>
       {/if}
     {/if}
+    </details>
   {:else}
     <p class="empty">OCR budget state has not loaded yet</p>
   {/if}
 </div>
 {/if}
 
-<!-- ── Hidden segment workspace classifier ───────────────────────────────── -->
-{#if activeTab === "workspaces"}
-<div class="card card--debug" id="debug-panel-workspaces" role="tabpanel" aria-labelledby="debug-tab-workspaces" tabindex="0">
+<!-- ── Segment workspace classifier (Pipeline) ────────────────────────────── -->
+{#if activeTab === "pipeline"}
+<div class="card card--debug" aria-labelledby="debug-tab-pipeline">
   <h2 class="card__title">
     <span class="debug-tag">dbg</span>
     Segment Workspace Cleanup
-    <span class="idle-note">classify a hidden segment workspace dir</span>
   </h2>
 
+  <details class="advanced">
+    <summary class="advanced__summary">Classify a hidden segment workspace dir</summary>
   <form
     class="job-submit-form"
     onsubmit={(e) => {
@@ -2024,14 +2236,14 @@
   {:else}
     <p class="empty">enter a hidden segment workspace path to classify</p>
   {/if}
+  </details>
 </div>
 {/if}
 
-<!-- ── Background Jobs ───────────────────────────────────────────────────── -->
-{#if activeTab === "jobs"}
-<div class="card card--debug" id="debug-panel-jobs" role="tabpanel" aria-labelledby="debug-tab-jobs" tabindex="0">
+<!-- ── Background Jobs (Pipeline) ─────────────────────────────────────────── -->
+{#if activeTab === "pipeline"}
+<div class="card card--debug" aria-labelledby="debug-tab-pipeline">
   <h2 class="card__title">
-    <span class="card__num">06</span>
     <span class="debug-tag">dbg</span>
     Background Jobs
     <button class="btn btn--ghost btn--sm card__title-action" onclick={refreshAll} disabled={loadingJobs || loadingInfraStatus}>
@@ -3428,6 +3640,173 @@
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--app-text-muted);
+  }
+
+  /* ── Overview ──────────────────────────────────────────────────
+     Landing-tab health board. Reuses .session-status, .rec-dot,
+     .badge, .rs-state and .job-count-row; the .ov-* classes add only
+     the board layout, the warnings strip, and the glance grid. */
+  .ov-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .ov-status .session-status {
+    flex: 1 1 auto;
+  }
+
+  /* Warnings strip — full border + tinted fill per severity (no side
+     stripes); only rendered when something needs attention. */
+  .ov-warnings {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .ov-warning {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 11px;
+    border-radius: 5px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+  }
+
+  .ov-warning--err {
+    border-color: var(--app-danger-border);
+    background: var(--app-danger-bg-soft);
+  }
+
+  .ov-warning--warn {
+    border-color: var(--app-warn-border);
+    background: var(--app-warn-bg);
+  }
+
+  .ov-warning__tag {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .ov-warning--err .ov-warning__tag {
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+  }
+
+  .ov-warning--warn .ov-warning__tag {
+    background: var(--app-warn-bg);
+    color: var(--app-warn);
+    border: 1px solid var(--app-warn-border);
+  }
+
+  .ov-warning__text {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--app-text);
+  }
+
+  .ov-warning--err .ov-warning__text {
+    color: var(--app-danger-text);
+  }
+
+  .ov-allclear {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 11px;
+    border-radius: 5px;
+    border: 1px solid var(--app-accent-border);
+    background: var(--app-accent-bg);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--app-accent);
+  }
+
+  .ov-allclear__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--app-accent);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    flex-shrink: 0;
+  }
+
+  /* Glance grid — sources · permissions · jobs. */
+  .ov-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 10px;
+  }
+
+  .ov-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 11px 13px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 5px;
+  }
+
+  .ov-tile__label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--app-text-faint);
+  }
+
+  .ov-rows {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .ov-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ov-row__glyph {
+    width: 14px;
+    flex-shrink: 0;
+    font-size: 11px;
+    line-height: 1;
+    text-align: center;
+  }
+
+  .ov-row__name {
+    flex: 1;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--app-text-muted);
+  }
+
+  .ov-row__val {
+    margin-left: auto;
+    font-family: "SF Mono", "Fira Mono", "Courier New", monospace;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--app-text);
+  }
+
+  .ov-row .rs-state {
+    margin-left: auto;
   }
 
 </style>
