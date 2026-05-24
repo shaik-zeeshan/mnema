@@ -1,5 +1,8 @@
 ---
+import { Image } from "astro:assets";
 import { DOWNLOAD_URL, GITHUB_URL, PLATFORM_LABEL } from "../config";
+import screenshotDark from "../assets/screenshot-dark.png";
+import screenshotLight from "../assets/screenshot-light.png";
 ---
 
 <section class="hero">
@@ -24,19 +27,15 @@ import { DOWNLOAD_URL, GITHUB_URL, PLATFORM_LABEL } from "../config";
   <div class="hero-showcase">
     <div class="showcase-glow" aria-hidden="true"></div>
     <div class="showcase-frame">
-      <img
-        src="/screenshot-dark.png"
+      <Image
+        src={screenshotDark}
         alt="Mnema recording and timeline interface on macOS"
-        width="1690"
-        height="1052"
         loading="eager"
         class="showcase-img showcase-dark"
       />
-      <img
-        src="/screenshot-light.png"
+      <Image
+        src={screenshotLight}
         alt="Mnema in light mode on macOS"
-        width="1690"
-        height="1052"
         loading="eager"
         class="showcase-img showcase-light"
       />
