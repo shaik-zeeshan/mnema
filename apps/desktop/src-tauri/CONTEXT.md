@@ -89,6 +89,7 @@ _Avoid_: recording settings, browser local storage, one-time prompt state
 - The **App Update Service** selects the update feed endpoint at runtime from the user's selected update channel.
 - **App Update Settings** persist under Tauri `app_config_dir()` and default to the stable channel.
 - The **App Update Service** may run a startup availability check only after onboarding is complete.
+- **App Update** restart uses Tauri relaunch only after Mnema graceful shutdown work has completed.
 - **Retention Cleanup** best-effort removes generated **Scrub Preview** cache directories for deleted screen **Capture Segment** values, while cache validation and pruning remain responsible for stale orphan safety.
 - **Retention Cleanup** reaches generated **Scrub Preview** cache through the desktop Tauri cache service rather than app-infra owning Tauri app-cache paths.
 - A microphone **Audio Segment** becomes eligible for an **Audio Transcription Job** when the **Recording Lifecycle** commits it, even if the eventual transcript is empty.

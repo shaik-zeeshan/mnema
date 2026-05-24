@@ -122,7 +122,7 @@ impl AppWindow {
                 label: "onboarding",
                 path: "onboarding",
                 title: "mnema · Onboarding",
-                inner_size: (960.0, 760.0),
+                inner_size: (960.0, 800.0),
                 min_inner_size: (820.0, 620.0),
                 gated_by_dev_options: false,
                 decorations: false,

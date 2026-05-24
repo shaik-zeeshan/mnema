@@ -758,19 +758,9 @@
   const armedStorage = $derived(draftSaveDirectory.trim().length > 0);
   const armedPrivacy = $derived(draftExcludedApps.length > 0);
 
-  // Advanced reveals pre-open on revisit when the relevant draft diverges from
-  // its default. Read once at bay mount (the `{#key activeStep}` remount).
-  const captureRevealOpen = $derived(draftPauseCaptureOnInactivity);
-  const vaultRevealOpen = $derived(draftPreviewCacheTtlSeconds !== 3600 || draftAutoStart);
-  const ocrRevealOpen = $derived(
-    draftOcrProvider === "apple_vision" && (draftOcrRecognitionMode !== "fast" || draftOcrLanguageCorrection)
-  );
-  const transcriptionRevealOpen = $derived(
-    !draftTranscriptionMicrophoneEnabled
-    || draftTranscriptionSystemAudioEnabled
-    || draftTranscriptionLanguage !== "auto"
-    || draftTranscriptionProvider !== "local_whisper"
-  );
+  // Advanced reveals always start collapsed — every bay opens to its essential
+  // controls, and the secondary tuning stays tucked behind its disclosure until
+  // the user asks for it.
 
   function goToStep(id: string): void {
     const target = id as OnboardingStep;
@@ -1178,7 +1168,7 @@
                     </div>
                   </div>
 
-                  <AdvancedReveal label="Idle handling" open={captureRevealOpen}>
+                  <AdvancedReveal label="Idle handling">
                     <div class="settings-stack">
                       <Switch
                         bind:checked={draftPauseCaptureOnInactivity}
@@ -1216,29 +1206,29 @@
                     <ArmStatus armed={armedVideo} pendingLabel="Check inputs" armedLabel="Calibrated" />
                   {/snippet}
 
-                  <div class="settings-group">
-                    <span class="group-label">Screen resolution</span>
-                    <ScreenResolutionControl
-                      bind:mode={draftResolutionMode}
-                      bind:preset={draftResolutionPreset}
-                      bind:widthRaw={customWidthRaw}
-                      bind:heightRaw={customHeightRaw}
-                      customErrors={customResolutionErrors}
-                    />
-                  </div>
+                  <div class="video-grid">
+                    <div class="settings-group">
+                      <span class="group-label">Screen resolution</span>
+                      <ScreenResolutionControl
+                        bind:mode={draftResolutionMode}
+                        bind:preset={draftResolutionPreset}
+                        bind:widthRaw={customWidthRaw}
+                        bind:heightRaw={customHeightRaw}
+                        customErrors={customResolutionErrors}
+                      />
+                    </div>
 
-                  <div class="settings-divider"></div>
-
-                  <div class="settings-group">
-                    <span class="group-label">Video bitrate</span>
-                    <VideoBitrateControl
-                      bind:mode={draftBitrateMode}
-                      bind:preset={draftBitratePreset}
-                      bind:customMbpsRaw={draftCustomMbpsRaw}
-                      customMbps={draftCustomMbps}
-                      customErrors={customBitrateErrors}
-                    />
-                    <p class="hint">Bitrate applies on the ScreenCaptureKit path. Older systems keep the macOS default.</p>
+                    <div class="settings-group">
+                      <span class="group-label">Video bitrate</span>
+                      <VideoBitrateControl
+                        bind:mode={draftBitrateMode}
+                        bind:preset={draftBitratePreset}
+                        bind:customMbpsRaw={draftCustomMbpsRaw}
+                        customMbps={draftCustomMbps}
+                        customErrors={customBitrateErrors}
+                      />
+                      <p class="hint">Bitrate applies on the ScreenCaptureKit path. Older systems keep the macOS default.</p>
+                    </div>
                   </div>
                 </SceneShell>
               {:else if activeStep === "storage"}
@@ -1280,7 +1270,7 @@
                     />
                   </div>
 
-                  <AdvancedReveal label="Cache & startup" open={vaultRevealOpen}>
+                  <AdvancedReveal label="Cache & startup">
                     <div class="settings-group">
                       <SelectMenu
                         value={String(draftPreviewCacheTtlSeconds)}
@@ -1401,7 +1391,7 @@
                         ]}
                       />
                       {#if draftOcrEnabled && draftOcrProvider === "apple_vision"}
-                        <AdvancedReveal label="OCR tuning" open={ocrRevealOpen}>
+                        <AdvancedReveal label="OCR tuning">
                           <RadioGroup
                             bind:value={draftOcrRecognitionMode}
                             disabled={!draftOcrEnabled}
@@ -1520,7 +1510,7 @@
                       />
 
                       {#if draftTranscriptionEnabled}
-                        <AdvancedReveal label="Sources & tuning" open={transcriptionRevealOpen}>
+                        <AdvancedReveal label="Sources & tuning">
                           <div class="settings-stack">
                             <Switch
                               bind:checked={draftTranscriptionMicrophoneEnabled}
@@ -1801,10 +1791,34 @@
     animation: step-in 0.22s ease-out;
   }
 
+  /* ── Compact bay density ───────────────────────────────────────
+     Each step must fit the fixed frame without scrolling, so inside the
+     stage we drop the secondary control *descriptions* (the labels carry the
+     meaning on first run) and tighten the shared radio / disclosure / list
+     paddings. Scoped to `.stage`, so the welcome and finale bookends keep
+     their roomier treatment. */
+  .stage :global(.switch-description) {
+    display: none;
+  }
+  .stage :global(.rg-item) {
+    padding: 5px 10px;
+  }
+  .stage :global(.settings-list-item) {
+    padding: 6px;
+  }
+  .stage :global(.privacy-disclosure) {
+    gap: 3px;
+    padding: 8px 11px;
+  }
+  .stage :global(.privacy-disclosure p) {
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
   /* ── Body / scroll ─────────────────────────────────────────── */
   .ob__body {
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
   }
@@ -1940,8 +1954,8 @@
   .settings-stack {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 10px 12px;
+    gap: 8px;
+    padding: 8px 11px;
     background: var(--app-surface);
     border: 1px solid var(--app-border);
     border-radius: 4px;
@@ -1996,6 +2010,20 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
+  }
+  /* Lens bay: resolution + bitrate side by side so the step fits the frame
+     without scrolling. The onboarding window is never narrower than 820px;
+     the single-column fallback only matters if that minimum ever changes. */
+  .video-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 18px;
+    align-items: start;
+  }
+  @media (max-width: 640px) {
+    .video-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
   .processing-grid {
     display: grid;

@@ -53,15 +53,15 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    padding: 20px 22px 4px;
+    gap: 12px;
+    padding: 12px 22px 6px;
   }
 
   .scene__head {
     flex: 0 0 auto;
     display: flex;
     flex-direction: column;
-    gap: 7px;
+    gap: 5px;
   }
   .scene__meta {
     display: flex;
@@ -97,17 +97,17 @@
   .scene__title {
     margin: 0;
     color: var(--app-text-strong);
-    font-size: 27px;
+    font-size: 22px;
     font-weight: 700;
-    line-height: 1.04;
+    line-height: 1.05;
     letter-spacing: -0.012em;
   }
   .scene__subtitle {
     margin: 0;
     max-width: 54ch;
     color: var(--app-text-muted);
-    font-size: 11.5px;
-    line-height: 1.5;
+    font-size: 11px;
+    line-height: 1.4;
     letter-spacing: 0.01em;
   }
 
@@ -119,8 +119,8 @@
     overflow: auto;
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    padding-bottom: 16px;
+    gap: 12px;
+    padding-bottom: 12px;
   }
   /* Shield bay only: the app-picker dropdown is absolutely positioned and does
      not portal, so when it opens we drop the scroll clip and lift the content
