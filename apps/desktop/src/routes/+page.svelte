@@ -4229,6 +4229,10 @@
     }
   }
 
+  function onSearchModalPointerDown(event: PointerEvent): void {
+    if (event.target === event.currentTarget) closeSearch();
+  }
+
   async function selectFrameSearchResult(result: FrameSearchResultDto): Promise<void> {
     closeSearch();
     await jumpToFrame(result.representativeFrame, false);
@@ -5400,7 +5404,7 @@
       return;
     }
 
-    if ((event.metaKey || event.ctrlKey) && event.key === "k") {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       if (!searchOpen) openSearch();
       return;
@@ -7316,6 +7320,7 @@
       aria-label="Search captured content"
       tabindex="-1"
       onkeydown={onSearchModalKeydown}
+      onpointerdown={onSearchModalPointerDown}
     >
       <div class="search-modal__panel">
         <header class="search-modal__header">
@@ -7332,6 +7337,13 @@
             aria-label="Search captured text or audio"
           />
           <kbd class="search-modal__kbd">esc</kbd>
+          <button
+            type="button"
+            class="search-modal__close"
+            aria-label="Close search"
+            title="Close search"
+            onclick={closeSearch}
+          >×</button>
         </header>
 
         <div class="search-modal__toolbar">
@@ -8573,6 +8585,30 @@
     font-size: 10px;
     line-height: 1.4;
     text-transform: lowercase;
+  }
+
+  .search-modal__close {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .search-modal__close:hover,
+  .search-modal__close:focus-visible {
+    border-color: var(--app-border-hover);
+    color: var(--app-text-strong);
+    outline: none;
   }
 
   .search-modal__toolbar {

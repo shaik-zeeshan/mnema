@@ -336,6 +336,10 @@
     return formatShortcut(GLOBAL_SHORTCUTS[id].bindings[0], windowPlatform).join("");
   }
 
+  const searchShortcutLabel = $derived(
+    formatShortcut({ key: "K", primary: true }, windowPlatform).join(""),
+  );
+
   function shortcutWithLabel(
     definition: ShortcutDefinition,
     label: string,
@@ -831,14 +835,14 @@
           type="button"
           class="titlebar__search-trigger"
           onclick={() => window.dispatchEvent(new CustomEvent("mnema:open-search"))}
-          title="Search captured frames and audio (⌘K)"
+          title={`Search captured frames and audio (${searchShortcutLabel})`}
         >
           <svg class="titlebar__search-trigger-icon" width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
             <circle cx="6" cy="6" r="4.5" />
             <path d="M9.5 9.5 13 13" />
           </svg>
           <span class="titlebar__search-trigger-text">Search</span>
-          <kbd class="titlebar__search-trigger-kbd">⌘K</kbd>
+          <kbd class="titlebar__search-trigger-kbd">{searchShortcutLabel}</kbd>
         </button>
       {/if}
     </div>
