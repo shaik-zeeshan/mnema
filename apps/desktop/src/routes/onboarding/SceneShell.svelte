@@ -120,7 +120,14 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    padding-bottom: 12px;
+    /* overflow:auto clips BOTH axes. Full-width controls paint past the content
+       edge there — a slider thumb pinned to a track extreme (its outer half +
+       ring) and focused radio/chip outlines — so they get sliced on the left
+       and right. Reserve a horizontal gutter and pull it back with a matching
+       negative margin: the content keeps the same width and alignment, but the
+       clip box widens enough to hold those rings. */
+    padding: 0 10px 12px;
+    margin-inline: -10px;
   }
   /* Shield bay only: the app-picker dropdown is absolutely positioned and does
      not portal, so when it opens we drop the scroll clip and lift the content
