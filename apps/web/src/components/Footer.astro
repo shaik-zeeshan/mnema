@@ -1,5 +1,5 @@
 ---
-import { DOWNLOAD_URL, GITHUB_URL, APP_VERSION } from "../config";
+import { DOWNLOAD_URL, GITHUB_URL, APP_VERSION, RELEASE_URL } from "../config";
 ---
 
 <footer class="footer">
@@ -9,7 +9,11 @@ import { DOWNLOAD_URL, GITHUB_URL, APP_VERSION } from "../config";
         <img src="/icon.png" alt="" width="20" height="20" class="footer-icon" />
         <span class="footer-name">mnema</span>
       </a>
-      <span class="footer-version">v{APP_VERSION}</span>
+      <a
+        href={RELEASE_URL}
+        class="footer-version"
+        target="_blank"
+        rel="noopener noreferrer">v{APP_VERSION}</a>
     </div>
 
     <nav class="footer-links" aria-label="Footer">
@@ -74,6 +78,12 @@ import { DOWNLOAD_URL, GITHUB_URL, APP_VERSION } from "../config";
     font-family: var(--font-mono);
     font-size: 0.65rem;
     color: var(--fg-muted);
+    text-decoration: none;
+    transition: color 0.2s var(--ease-out-quart);
+  }
+
+  .footer-version:hover {
+    color: var(--fg);
   }
 
   .footer-links {
