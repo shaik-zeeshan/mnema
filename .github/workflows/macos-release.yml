@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build ad hoc signed universal macOS app
+    name: Build ad hoc signed arm64 macOS app
     runs-on: macos-15
     environment: macos-release
 
@@ -53,7 +53,7 @@ jobs:
       - name: Set up Rust
         run: |
           rustup toolchain install stable --profile minimal
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -80,17 +80,17 @@ jobs:
       - name: Check Tauri Rust app
         run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
 
-      - name: Build universal macOS app
-        run: bun run tauri -- build --target universal-apple-darwin
+      - name: Build arm64 macOS app
+        run: bun run tauri -- build --target aarch64-apple-darwin
 
       - name: Stage release artifacts
         id: stage_artifacts
-        run: ./scripts/stage-macos-release-artifacts.sh target/universal-apple-darwin/release/bundle dist/macos-release
+        run: ./scripts/stage-macos-release-artifacts.sh target/aarch64-apple-darwin/release/bundle dist/macos-release
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mnema-macos-${{ steps.release_version.outputs.version }}
+          name: mnema-macos-arm64-${{ steps.release_version.outputs.version }}
           path: dist/macos-release/*
           if-no-files-found: error
 
