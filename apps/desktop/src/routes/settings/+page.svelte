@@ -54,19 +54,6 @@
     KeyboardBindingsSettings,
   } from "$lib/types";
 
-  type CardIconKind =
-    | "capture"
-    | "video"
-    | "storage"
-    | "appearance"
-    | "inactivity"
-    | "processing"
-    | "transcription"
-    | "speaker"
-    | "developer"
-    | "privacy"
-    | "audio";
-
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
   const SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT = "speaker_analysis_model_download_progress";
@@ -306,11 +293,88 @@
   // strand the user mid-page on the next tab. Reset to the top whenever
   // `activeTab` changes — matches the typical tabbed-settings expectation.
   let scrollRegion = $state<HTMLDivElement | null>(null);
+  let scrollRegionScrolling = $state(false);
+  let scrollRegionScrollTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function handleScrollRegionScroll() {
+    scrollRegionScrolling = true;
+    if (scrollRegionScrollTimer !== null) clearTimeout(scrollRegionScrollTimer);
+    scrollRegionScrollTimer = setTimeout(() => {
+      scrollRegionScrolling = false;
+      scrollRegionScrollTimer = null;
+    }, 800);
+  }
 
   $effect(() => {
     // Track `activeTab` so this fires on every switch.
     activeTab;
     scrollRegion?.scrollTo({ top: 0, behavior: "auto" });
+  });
+
+  // ─── Sidebar collapse ──────────────────────────────────────────────────────
+  // The category rail can collapse to an icon-only strip. Two inputs decide the
+  // rendered state: an explicit, persisted user preference (toggled from the
+  // header button or ⌘/Ctrl-B) and an automatic collapse when the shell is too
+  // narrow to show the labelled rail beside the content. Auto wins while it
+  // applies, so a cramped window always yields the compact rail; widen it again
+  // and the user's preference is restored.
+  const SIDEBAR_COLLAPSE_STORAGE_KEY = "mnema.settings.sidebarCollapsed";
+  const SIDEBAR_AUTO_COLLAPSE_WIDTH = 640;
+
+  let userSidebarCollapsed = $state(false);
+  let settingsShell = $state<HTMLDivElement | null>(null);
+  let shellWidth = $state(Number.POSITIVE_INFINITY);
+
+  const autoSidebarCollapsed = $derived(shellWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH);
+  const sidebarCollapsed = $derived(autoSidebarCollapsed || userSidebarCollapsed);
+
+  // Load the persisted preference once (client-only; reads nothing reactive so
+  // this runs a single time after mount).
+  $effect(() => {
+    if (typeof localStorage === "undefined") return;
+    const stored = localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY);
+    if (stored !== null) userSidebarCollapsed = stored === "1";
+  });
+
+  // Measure the shell itself (not the viewport) so the breakpoint reflects the
+  // width actually available to the rail + content, independent of window
+  // chrome, page padding, or the centered reading column.
+  $effect(() => {
+    const el = settingsShell;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    shellWidth = el.clientWidth; // seed before the first callback to avoid a flash
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) shellWidth = entry.contentRect.width;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
+
+  function toggleSidebar() {
+    // While auto-collapsed there is no room to expand, so the toggle is inert
+    // (and disabled in the UI); guard here so the keyboard shortcut matches.
+    if (autoSidebarCollapsed) return;
+    userSidebarCollapsed = !userSidebarCollapsed;
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(SIDEBAR_COLLAPSE_STORAGE_KEY, userSidebarCollapsed ? "1" : "0");
+    }
+  }
+
+  // ⌘B / Ctrl-B toggles the rail, matching the editor-sidebar convention. Skipped
+  // while a field has focus so it never swallows text input.
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const onKeydown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      if (event.key !== "b" && event.key !== "B") return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) return;
+      event.preventDefault();
+      toggleSidebar();
+    };
+    window.addEventListener("keydown", onKeydown);
+    return () => window.removeEventListener("keydown", onKeydown);
   });
 
   $effect(() => {
@@ -768,7 +832,7 @@
       const response = await invoke<BrokerGrantFile>("list_cli_access_grants");
       brokerGrants = response.grants ?? [];
     } catch (err) {
-      brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      brokerGrantError = describeError(err);
     } finally {
       brokerGrantLoading = false;
     }
@@ -805,10 +869,49 @@
       await invoke<boolean>("revoke_cli_access_grant", { grantId });
       await loadBrokerGrants();
     } catch (err) {
-      brokerGrantError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      brokerGrantError = describeError(err);
     } finally {
       brokerGrantSaving = false;
     }
+  }
+
+  function describeError(err: unknown): string {
+    if (typeof err === "string") return err;
+    if (err instanceof Error && err.message) return err.message;
+    return "Something went wrong. Please try again.";
+  }
+
+  type GrantStatus = "active" | "expired" | "revoked";
+
+  function grantStatus(grant: BrokerGrant): GrantStatus {
+    if (grant.revoked) return "revoked";
+    if (grant.expiresAtUnixMs <= Date.now()) return "expired";
+    return "active";
+  }
+
+  function formatGrantScope(scope: BrokerGrant["scope"]): string {
+    if (scope === "all_retained_history") return "All retained history";
+    if (scope && typeof scope === "object" && "recent_days" in scope) {
+      const days = (scope as { recent_days?: { days?: number } }).recent_days?.days ?? 0;
+      return days <= 1 ? "Last day" : `Last ${days} days`;
+    }
+    return "Limited scope";
+  }
+
+  function formatGrantTime(unixMs: number): string {
+    const diffMs = unixMs - Date.now();
+    const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+    const abs = Math.abs(diffMs);
+    if (abs < 60 * 60 * 1000) return rtf.format(Math.round(diffMs / 60000), "minute");
+    if (abs < 24 * 60 * 60 * 1000) return rtf.format(Math.round(diffMs / 3600000), "hour");
+    return rtf.format(Math.round(diffMs / 86400000), "day");
+  }
+
+  function grantStatusLabel(grant: BrokerGrant): string {
+    const status = grantStatus(grant);
+    if (status === "revoked") return "Revoked";
+    if (status === "expired") return `Expired ${formatGrantTime(grant.expiresAtUnixMs)}`;
+    return `Expires ${formatGrantTime(grant.expiresAtUnixMs)}`;
   }
 
   async function setBrowserUrlMode(mode: string) {
@@ -1962,18 +2065,48 @@
   });
 </script>
 
-{#snippet settingsCardIcon(kind: CardIconKind)}
-  <span class="card-icon" aria-hidden="true">
+<!-- Sidebar nav glyphs — one per category, drawn on a 24 viewBox with a
+     1.8 stroke so the rail reads as one icon family. -->
+{#snippet navIcon(kind: SettingsTab)}
+  <span class="settings-nav__icon" aria-hidden="true">
     {#if kind === "capture"}
       <svg viewBox="0 0 24 24">
         <rect x="3" y="5" width="18" height="12" rx="2" />
         <path d="M8 21h8" />
         <path d="M12 17v4" />
       </svg>
+    {:else if kind === "access"}
+      <svg viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <path d="m7 9 3 3-3 3" />
+        <path d="M13 15h4" />
+      </svg>
+    {:else if kind === "privacy"}
+      <svg viewBox="0 0 24 24">
+        <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6Z" />
+        <path d="M9 12h6" />
+        <path d="M12 9v6" />
+      </svg>
     {:else if kind === "video"}
       <svg viewBox="0 0 24 24">
         <rect x="3" y="5" width="18" height="14" rx="2" />
         <path d="m10 9 5 3-5 3Z" />
+      </svg>
+    {:else if kind === "audio"}
+      <svg viewBox="0 0 24 24">
+        <rect x="9" y="3" width="6" height="11" rx="3" />
+        <path d="M5 11a7 7 0 0 0 14 0" />
+        <path d="M12 18v3" />
+        <path d="M9 21h6" />
+      </svg>
+    {:else if kind === "processing"}
+      <svg viewBox="0 0 24 24">
+        <path d="M7 4H5a1 1 0 0 0-1 1v2" />
+        <path d="M17 4h2a1 1 0 0 1 1 1v2" />
+        <path d="M7 20H5a1 1 0 0 1-1-1v-2" />
+        <path d="M17 20h2a1 1 0 0 0 1-1v-2" />
+        <path d="M8 10h8" />
+        <path d="M8 14h5" />
       </svg>
     {:else if kind === "storage"}
       <svg viewBox="0 0 24 24">
@@ -1986,143 +2119,184 @@
         <circle cx="12" cy="12" r="8" />
         <path d="M12 4a8 8 0 0 0 0 16Z" />
       </svg>
-    {:else if kind === "inactivity"}
-      <svg viewBox="0 0 24 24">
-        <circle cx="12" cy="12" r="8" />
-        <path d="M12 7v5l3 2" />
-      </svg>
-    {:else if kind === "processing"}
-      <svg viewBox="0 0 24 24">
-        <path d="M7 4H5a1 1 0 0 0-1 1v2" />
-        <path d="M17 4h2a1 1 0 0 1 1 1v2" />
-        <path d="M7 20H5a1 1 0 0 1-1-1v-2" />
-        <path d="M17 20h2a1 1 0 0 0 1-1v-2" />
-        <path d="M8 10h8" />
-        <path d="M8 14h5" />
-      </svg>
-    {:else if kind === "transcription"}
-      <svg viewBox="0 0 24 24">
-        <path d="M4 12h2l2-5 3 10 2-6 2 3h5" />
-        <path d="M5 20h14" />
-      </svg>
-    {:else if kind === "speaker"}
-      <svg viewBox="0 0 24 24">
-        <path d="M11 5 7 9H4v6h3l4 4Z" />
-        <path d="M15 9a4 4 0 0 1 0 6" />
-        <path d="M18 6a8 8 0 0 1 0 12" />
-      </svg>
     {:else if kind === "developer"}
       <svg viewBox="0 0 24 24">
         <path d="m8 9-4 3 4 3" />
         <path d="m16 9 4 3-4 3" />
         <path d="m14 5-4 14" />
       </svg>
-    {:else if kind === "privacy"}
+    {/if}
+  </span>
+{/snippet}
+
+<!-- Capture-summary glyphs — same 24 viewBox / 1.8 stroke family as the nav
+     icons. Hidden while the rail is expanded (the dot + label carry the state
+     there); they become the whole indicator once the rail collapses. -->
+{#snippet captureStatIcon(kind: "screen" | "mic" | "sysaudio")}
+  <span class="status-pill__icon" aria-hidden="true">
+    {#if kind === "screen"}
       <svg viewBox="0 0 24 24">
-        <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6Z" />
-        <path d="M9 12h6" />
-        <path d="M12 9v6" />
+        <rect x="3" y="5" width="18" height="12" rx="2" />
+        <path d="M8 21h8" />
+        <path d="M12 17v4" />
       </svg>
-    {:else if kind === "audio"}
+    {:else if kind === "mic"}
       <svg viewBox="0 0 24 24">
         <rect x="9" y="3" width="6" height="11" rx="3" />
         <path d="M5 11a7 7 0 0 0 14 0" />
         <path d="M12 18v3" />
         <path d="M9 21h6" />
       </svg>
+    {:else}
+      <svg viewBox="0 0 24 24">
+        <path d="M11 5 6 9H3v6h3l5 4Z" />
+        <path d="M16 9a5 5 0 0 1 0 6" />
+        <path d="M19 7a8 8 0 0 1 0 10" />
+      </svg>
     {/if}
   </span>
 {/snippet}
 
-<!-- ── Page intro ──────────────────────────────────────────────────────── -->
-<header class="page-header">
-  <div class="page-header__head">
-    <div>
-      <h1 class="page-header__title">Settings</h1>
-    </div>
-    <div class="page-header__status" aria-live="polite">
-      {#if recError || keyboardBindingsError || micError}
-        <span class="page-header__status-text page-header__status-text--error">save failed</span>
-      {:else if recSaveBlocked || micApplyBlocked}
-        <span class="page-header__status-text page-header__status-text--blocked">resolve issues</span>
-      {:else if savingRecSettings || savingKeyboardBindings || savingMicSettings}
-        <span class="page-header__status-text page-header__status-text--saving">saving</span>
-      {:else if recSaved || keyboardBindingsSaved || micSaved}
-        <span class="page-header__status-text page-header__status-text--ok">saved</span>
-      {:else}
-        <span class="page-header__status-text">auto-save on</span>
-      {/if}
-    </div>
-  </div>
-  <p class="page-subtitle">Tune capture, microphone &amp; diagnostics for this workstation.</p>
-
-  {#if recordingSettings}
-    <ul class="status-strip" aria-label="Current capture summary">
-      <li class="status-pill" class:status-pill--on={draftCaptureScreen}>
-        <span class="status-pill__dot"></span>
-        <span class="status-pill__label">Screen</span>
-      </li>
-      <li class="status-pill" class:status-pill--on={draftCaptureMicrophone}>
-        <span class="status-pill__dot"></span>
-        <span class="status-pill__label">Mic</span>
-      </li>
-      <li class="status-pill" class:status-pill--on={draftCaptureSystemAudio}>
-        <span class="status-pill__dot"></span>
-        <span class="status-pill__label">Sys Audio</span>
-      </li>
-      <li class="status-pill status-pill--info">
-        <span class="status-pill__label">{draftFrameRate}fps</span>
-      </li>
-      <li class="status-pill status-pill--info">
-        <span class="status-pill__label">
-          {#if draftResolutionMode === "original"}original{:else if draftResolutionMode === "preset"}{draftResolutionPreset}{:else}custom{/if}
+<!-- ── Settings shell ──────────────────────────────────────────────────────
+     A fixed left rail lists the categories; only the right-hand content pane
+     scrolls. One panel is mounted at a time (see the `{#if activeTab === ...}`
+     guards below), so the rail and window chrome stay pinned and changes
+     inside an unselected category don't trigger reactivity elsewhere. The rail
+     replaces the previous top tab strip, which overflowed into a horizontal
+     scrollbar once nine tabs no longer fit the minimum window width. -->
+<div class="settings-shell" bind:this={settingsShell}>
+  <aside
+    id="settings-sidebar"
+    class="settings-sidebar"
+    class:settings-sidebar--collapsed={sidebarCollapsed}
+  >
+    <div class="settings-sidebar__head">
+      <div class="settings-sidebar__titlebar">
+        <span class="settings-sidebar__glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="m5 8 4 4-4 4" />
+            <path d="M13 16h6" />
+          </svg>
         </span>
-      </li>
-    </ul>
-  {/if}
+        <h1 class="settings-sidebar__title">Settings</h1>
+        <button
+          class="settings-sidebar__toggle"
+          type="button"
+          onclick={toggleSidebar}
+          disabled={autoSidebarCollapsed}
+          aria-expanded={!sidebarCollapsed}
+          aria-controls="settings-sidebar"
+          aria-keyshortcuts="Meta+B Control+B"
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={autoSidebarCollapsed
+            ? "Widen the window to expand"
+            : sidebarCollapsed
+              ? "Expand sidebar (⌘B)"
+              : "Collapse sidebar (⌘B)"}
+        >
+          <svg class="settings-sidebar__toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M15 6l-6 6 6 6" />
+          </svg>
+        </button>
+      </div>
+      <div class="settings-sidebar__status" aria-live="polite">
+        {#if recError || keyboardBindingsError || micError}
+          <span class="status-text status-text--error"><span class="status-text__label">save failed</span></span>
+        {:else if recSaveBlocked || micApplyBlocked}
+          <span class="status-text status-text--blocked"><span class="status-text__label">resolve issues</span></span>
+        {:else if savingRecSettings || savingKeyboardBindings || savingMicSettings}
+          <span class="status-text status-text--saving"><span class="status-text__label">saving</span></span>
+        {:else if recSaved || keyboardBindingsSaved || micSaved}
+          <span class="status-text status-text--ok"><span class="status-text__label">saved</span></span>
+        {:else}
+          <span class="status-text"><span class="status-text__label">auto-save on</span></span>
+        {/if}
+      </div>
+    </div>
 
-  <AppPrivacyExclusionPrompt
-    controller={appPrivacyExclusion}
-    onReview={() => { activeTab = "privacy"; }}
-  />
-</header>
+    <nav class="settings-nav" aria-label="Settings categories">
+      <div class="settings-nav__list" role="tablist" tabindex="-1" onkeydown={handleTabKeydown}>
+        {#each tabs as tab}
+          <button
+            class="settings-nav__item"
+            class:settings-nav__item--active={activeTab === tab.id}
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            aria-controls="settings-panel-{tab.id}"
+            aria-label={sidebarCollapsed ? tab.label : null}
+            id="settings-tab-{tab.id}"
+            tabindex={activeTab === tab.id ? 0 : -1}
+            title={sidebarCollapsed ? tab.label : null}
+            onkeydown={handleTabKeydown}
+            onclick={() => { activeTab = tab.id; }}
+            type="button"
+          >
+            {@render navIcon(tab.id)}
+            <span class="settings-nav__text">
+              <span class="settings-nav__label">{tab.label}</span>
+              <span class="settings-nav__hint">{tab.description}</span>
+            </span>
+          </button>
+        {/each}
+      </div>
+    </nav>
 
-<!-- ── Tab navigation ─────────────────────────────────────────────────────
-     Categorized tabs replace the previous long scrolling list. Only one
-     section is mounted at a time (see the `{#if activeTab === ...}` guards
-     below) so the page stays focused and changes within an unselected tab
-     don't trigger reactivity in unrelated UI. -->
-<nav class="tab-nav" aria-label="Settings categories">
-  <div class="tab-nav__list" role="tablist" tabindex="-1" onkeydown={handleTabKeydown}>
-    {#each tabs as tab}
-      <button
-        class="tab-nav__tab"
-        class:tab-nav__tab--active={activeTab === tab.id}
-        role="tab"
-        aria-selected={activeTab === tab.id}
-        aria-controls="settings-panel-{tab.id}"
-        id="settings-tab-{tab.id}"
-        tabindex={activeTab === tab.id ? 0 : -1}
-        onkeydown={handleTabKeydown}
-        onclick={() => { activeTab = tab.id; }}
-        title={tab.description}
-        type="button"
-      >
-        <span class="tab-nav__label">{tab.label}</span>
-      </button>
-    {/each}
-  </div>
-</nav>
+    {#if recordingSettings}
+      <div class="settings-sidebar__foot">
+        <span class="settings-sidebar__foot-label">Capture summary</span>
+        <ul class="status-strip" aria-label="Current capture summary">
+          <li
+            class="status-pill"
+            class:status-pill--on={draftCaptureScreen}
+            title={sidebarCollapsed ? `Screen ${draftCaptureScreen ? "on" : "off"}` : null}
+          >
+            {@render captureStatIcon("screen")}
+            <span class="status-pill__dot"></span>
+            <span class="status-pill__label">Screen</span>
+          </li>
+          <li
+            class="status-pill"
+            class:status-pill--on={draftCaptureMicrophone}
+            title={sidebarCollapsed ? `Mic ${draftCaptureMicrophone ? "on" : "off"}` : null}
+          >
+            {@render captureStatIcon("mic")}
+            <span class="status-pill__dot"></span>
+            <span class="status-pill__label">Mic</span>
+          </li>
+          <li
+            class="status-pill"
+            class:status-pill--on={draftCaptureSystemAudio}
+            title={sidebarCollapsed ? `System audio ${draftCaptureSystemAudio ? "on" : "off"}` : null}
+          >
+            {@render captureStatIcon("sysaudio")}
+            <span class="status-pill__dot"></span>
+            <span class="status-pill__label">Sys Audio</span>
+          </li>
+          <li class="status-pill status-pill--info">
+            <span class="status-pill__label">{draftFrameRate}fps</span>
+          </li>
+          <li class="status-pill status-pill--info">
+            <span class="status-pill__label">
+              {#if draftResolutionMode === "original"}original{:else if draftResolutionMode === "preset"}{draftResolutionPreset}{:else}custom{/if}
+            </span>
+          </li>
+        </ul>
+      </div>
+    {/if}
+  </aside>
 
-<!-- ── Scroll region ──────────────────────────────────────────────────────
-     Only the panel area below the tabs scrolls. The page header and the
-     tab strip stay pinned at the top of the dedicated Settings window so
-     switching tabs never loses the user's place behind the viewport edge.
-     The wrapper participates in the flex column established by
-     `.app-content`, taking the leftover height (`flex: 1`) and isolating
-     overflow with `overflow-y: auto` + `min-height: 0` (the latter lets it
-     shrink below its content's intrinsic height inside the flex parent). -->
-<div class="settings-scroll" bind:this={scrollRegion}>
+  <!-- ── Content pane ────────────────────────────────────────────────────
+       Only this right-hand column scrolls; the sidebar and window chrome
+       stay pinned. `flex: 1` claims the leftover height inside the shell and
+       `min-height: 0` lets `.settings-scroll` shrink below its content's
+       intrinsic height so the inner overflow (not the window) scrolls. -->
+  <div class="settings-content">
+    <AppPrivacyExclusionPrompt
+      controller={appPrivacyExclusion}
+      onReview={() => { activeTab = "privacy"; }}
+    />
+
+    <div class="settings-scroll" class:is-scrolling={scrollRegionScrolling} bind:this={scrollRegion} onscroll={handleScrollRegionScroll}>
 
 <!-- ── Capture & sources ───────────────────────────────────────────────── -->
 {#if activeTab === "access"}
@@ -2130,11 +2304,7 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          {@render settingsCardIcon("privacy")}
-          <div>
-            <h2 class="card__title">Access</h2>
-            <p class="card__subtitle">Install the Mnema CLI and manage local tool access to searchable Mnema text.</p>
-          </div>
+          <h2 class="card__title">Access</h2>
         </div>
       </div>
 
@@ -2178,22 +2348,35 @@
           {#if brokerGrantError}
             <p class="error-text">{brokerGrantError}</p>
           {/if}
-          {#if brokerGrants.length > 0}
-            <div class="excluded-apps-list">
+          {#if brokerGrantLoading && brokerGrants.length === 0}
+            <p class="group-hint">Loading grants…</p>
+          {:else if brokerGrants.length > 0}
+            <ul class="grant-list">
               {#each brokerGrants as grant (grant.id)}
-                <div class="excluded-app-row">
-                  <div class="excluded-app-row__meta">
-                    <span class="excluded-app-row__name">{grant.label}</span>
-                    <span class="excluded-app-row__bundle">
-                      {grant.revoked ? "Revoked" : `Expires ${new Date(grant.expiresAtUnixMs).toLocaleString()}`}
+                {@const status = grantStatus(grant)}
+                <li class="grant-row" class:grant-row--inactive={status !== "active"}>
+                  <span class="grant-row__status grant-row__status--{status}" aria-hidden="true"></span>
+                  <div class="grant-row__meta">
+                    <span class="grant-row__name" title={grant.label}>{grant.label}</span>
+                    <span class="grant-row__detail">
+                      <span class="grant-row__scope">{formatGrantScope(grant.scope)}</span>
+                      <span class="grant-row__sep" aria-hidden="true">·</span>
+                      <span title={new Date(grant.expiresAtUnixMs).toLocaleString()}>{grantStatusLabel(grant)}</span>
                     </span>
                   </div>
-                  <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || grant.revoked} onclick={() => revokeAgentBrokerGrant(grant.id)}>Revoke</button>
-                </div>
+                  <button
+                    class="btn btn--ghost btn--sm"
+                    type="button"
+                    disabled={brokerGrantSaving || status !== "active"}
+                    onclick={() => revokeAgentBrokerGrant(grant.id)}
+                  >
+                    Revoke
+                  </button>
+                </li>
               {/each}
-            </div>
+            </ul>
           {:else}
-            <p class="group-hint">No CLI Access grants yet.</p>
+            <p class="group-hint">No CLI Access grants yet. Tools you approve will appear here.</p>
           {/if}
         </div>
       </div>
@@ -2206,11 +2389,8 @@
 <section class="card">
   <div class="card__header">
     <div class="card__heading">
-      {@render settingsCardIcon("capture")}
-      <div>
-        <h2 id="card-capture" class="card__title">Capture</h2>
-        <p class="card__subtitle">What gets recorded and how often segments roll over.</p>
-      </div>
+      <h2 id="card-capture" class="card__title">Capture</h2>
+      <p class="card__subtitle">What gets recorded and how often segments roll over.</p>
     </div>
     <button class="btn btn--ghost btn--sm" onclick={loadRecordingSettings} disabled={loadingRecSettings}>
       {loadingRecSettings ? "…" : "Reload"}
@@ -2284,11 +2464,7 @@
       <section class="card" class:card--combobox-open={appPrivacyExclusion.comboboxOpen}>
         <div class="card__header">
           <div class="card__heading">
-            {@render settingsCardIcon("privacy")}
-            <div>
-              <h2 class="card__title">Privacy</h2>
-              <p class="card__subtitle">Frame metadata and recording exclusions.</p>
-            </div>
+            <h2 class="card__title">Privacy</h2>
           </div>
         </div>
 
@@ -2329,11 +2505,7 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          {@render settingsCardIcon("video")}
-          <div>
-            <h2 id="card-video" class="card__title">Video Output</h2>
-            <p class="card__subtitle">Frame rate, resolution &amp; bitrate.</p>
-          </div>
+          <h2 id="card-video" class="card__title">Video Output</h2>
         </div>
       </div>
 
@@ -2595,11 +2767,7 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          {@render settingsCardIcon("storage")}
-          <div>
-            <h2 id="card-storage" class="card__title">Storage &amp; Startup</h2>
-            <p class="card__subtitle">Where files are saved and when capture begins.</p>
-          </div>
+          <h2 id="card-storage" class="card__title">Storage &amp; Startup</h2>
         </div>
       </div>
 
@@ -2663,11 +2831,7 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          {@render settingsCardIcon("appearance")}
-          <div>
-            <h2 class="card__title">Appearance</h2>
-            <p class="card__subtitle">Theme selection and timeline display behavior.</p>
-          </div>
+          <h2 class="card__title">Appearance</h2>
         </div>
       </div>
 
@@ -2697,11 +2861,8 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          {@render settingsCardIcon("inactivity")}
-          <div>
-            <h2 id="card-inactivity" class="card__title">Inactivity</h2>
-            <p class="card__subtitle">Pause &amp; resume rules when you step away.</p>
-          </div>
+          <h2 id="card-inactivity" class="card__title">Inactivity</h2>
+          <p class="card__subtitle">Pause &amp; resume rules when you step away.</p>
         </div>
       </div>
 
@@ -2887,11 +3048,8 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          {@render settingsCardIcon("processing")}
-          <div>
-            <h2 class="card__title">OCR &amp; Previews</h2>
-            <p class="card__subtitle">Choose the OCR engine, inspect model availability, and tune preview caching.</p>
-          </div>
+          <h2 class="card__title">OCR &amp; Previews</h2>
+          <p class="card__subtitle">Choose the OCR engine, inspect model availability, and tune preview caching.</p>
         </div>
         <button class="btn btn--ghost btn--sm" onclick={loadOcrModelStatus} disabled={loadingOcrModelStatus}>
           {loadingOcrModelStatus ? "Checking" : "Refresh"}
@@ -3174,11 +3332,8 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          {@render settingsCardIcon("transcription")}
-          <div>
-            <h2 class="card__title">Transcription</h2>
-            <p class="card__subtitle">Local speech-to-text provider and model setup for microphone audio.</p>
-          </div>
+          <h2 class="card__title">Transcription</h2>
+          <p class="card__subtitle">Local speech-to-text provider and model setup for microphone audio.</p>
         </div>
         <button class="btn btn--ghost btn--sm" onclick={loadTranscriptionModelStatus} disabled={loadingTranscriptionModelStatus}>
           {loadingTranscriptionModelStatus ? "Checking" : "Refresh"}
@@ -3426,11 +3581,8 @@
     <section class="card card--speaker">
       <div class="card__header">
         <div class="card__heading">
-          {@render settingsCardIcon("speaker")}
-          <div>
-            <h2 class="card__title">Speaker analysis</h2>
-            <p class="card__subtitle">Anonymous diarization first; saved-person recognition only when you explicitly opt in.</p>
-          </div>
+          <h2 class="card__title">Speaker analysis</h2>
+          <p class="card__subtitle">Anonymous diarization first; saved-person recognition only when you explicitly opt in.</p>
         </div>
         <button class="btn btn--ghost btn--sm" onclick={loadSpeakerModelStatus} disabled={loadingSpeakerModelStatus}>
           {loadingSpeakerModelStatus ? "Checking" : "Refresh"}
@@ -3547,11 +3699,7 @@
     <section class="card">
       <div class="card__header">
         <div class="card__heading">
-          {@render settingsCardIcon("developer")}
-          <div>
-            <h2 class="card__title">Developer &amp; Logs</h2>
-            <p class="card__subtitle">Debug surfaces, native capture diagnostics, and log files.</p>
-          </div>
+          <h2 class="card__title">Developer &amp; Logs</h2>
         </div>
       </div>
 
@@ -3727,11 +3875,7 @@
 <section class="card">
   <div class="card__header">
     <div class="card__heading">
-      {@render settingsCardIcon("audio")}
-      <div>
-        <h2 id="card-mic" class="card__title">Microphone Controller</h2>
-        <p class="card__subtitle">Choose the active device and how disconnects are handled.</p>
-      </div>
+      <h2 id="card-mic" class="card__title">Microphone Controller</h2>
     </div>
     <button class="btn btn--ghost btn--sm" onclick={loadMicState} disabled={loadingMicState}>
       {loadingMicState ? "…" : "Reload"}
@@ -3837,166 +3981,421 @@
 </div>
 {/if}
 
-</div><!-- /.settings-scroll -->
+    </div><!-- /.settings-scroll -->
+  </div><!-- /.settings-content -->
+</div><!-- /.settings-shell -->
 
 <style>
-  /* ── Scroll region ────────────────────────────────────────────────────
-     Wrapping all tab panels in a single flex child lets the page header
-     and tab strip stay pinned while only this region scrolls. `flex: 1`
-     claims the leftover viewport height inside `.app-content`, and
-     `min-height: 0` is required for the child to shrink below its
-     intrinsic content height in a flex column (otherwise the whole
-     dedicated window would scroll instead). The negative-margin /
-     positive-padding pair widens the scroll viewport to the page's
-     full reading-column width so the scrollbar sits flush with the
-     window edge while panel content keeps its 24px gutter. */
-  .settings-scroll {
+  /* ── Settings shell ───────────────────────────────────────────────────
+     Two columns: a fixed nav rail on the left, one scrolling content pane
+     on the right. The shell is the sole child of `.app-content` (a flex
+     column with `min-height: 0`), so `flex: 1` + `min-height: 0` hand the
+     leftover height down to `.settings-scroll`, which owns the overflow —
+     the window and rail never scroll. */
+  .settings-shell {
     flex: 1 1 0;
     min-height: 0;
-    overflow-y: auto;
-    /* Re-establish the vertical rhythm previously provided by
-       `.app-content`'s flex `gap: 14px` so adjacent tab panels and the
-       wrapper itself keep matching spacing on tab switches. */
+    display: flex;
+    gap: 18px;
+  }
+
+  /* ── Sidebar rail ─────────────────────────────────────────────────── */
+  .settings-sidebar {
+    position: relative;
+    flex: 0 0 230px;
     display: flex;
     flex-direction: column;
+    min-height: 0;
     gap: 14px;
+    padding-right: 18px;
+    /* Only flex-basis + padding animate on collapse. Labels are toggled, not
+       reflowed, so this stays a single cheap interpolation. */
+    transition:
+      flex-basis 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+      padding 0.24s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
-  /* ── Tab nav ──────────────────────────────────────────────────────────
-     Compact horizontal strip; each tab shows index + label + tiny hint.
-     The active tab gets the accent treatment so the user always knows
-     which category is being edited. The wrapper carries a dashed
-     separator on its bottom edge that matches `.page-header`'s divider
-     so the pinned head of the dedicated window reads as a single
-     stationary block above the scrolling panel area. */
-  .tab-nav {
-    margin: 0;
-    padding-bottom: 12px;
-    border-bottom: 1px dashed var(--app-border);
+  /* Rail divider: a dashed hairline that fades toward the top and bottom
+     edges. Uses a repeating gradient for the dashes and a mask for the fade. */
+  .settings-sidebar::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: 1px;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 3px,
+      var(--app-border-strong) 3px,
+      var(--app-border-strong) 8px
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black 14%,
+      black 86%,
+      transparent
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black 14%,
+      black 86%,
+      transparent
+    );
   }
 
-  .tab-nav__list {
+  .settings-sidebar--collapsed {
+    flex-basis: 60px;
+    padding-right: 8px;
+  }
+
+  /* The nav list scrolls on its own if the categories ever outgrow the
+     rail; the brand and capture footer stay pinned. */
+  .settings-nav {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .settings-nav__list {
     display: flex;
-    flex-wrap: nowrap;
-    gap: 4px;
-    padding: 6px;
-    overflow-x: auto;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
+    flex-direction: column;
+    gap: 2px;
+    padding: 1px;
   }
 
-  .tab-nav__tab {
-    flex: 1 1 0;
-    display: inline-flex;
+  .settings-nav__item {
+    display: flex;
     align-items: center;
-    justify-content: center;
-    padding: 8px 14px;
+    gap: 11px;
+    width: 100%;
+    padding: 9px 11px;
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 4px;
+    border-radius: 7px;
     cursor: pointer;
     font-family: inherit;
-    text-align: center;
-    white-space: nowrap;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    text-align: left;
     color: var(--app-text-muted);
-    min-width: 0;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
 
-  .tab-nav__tab:hover {
+  .settings-nav__item:hover {
     background: var(--app-surface-hover);
-    border-color: var(--app-border);
-    color: var(--app-text);
+    color: var(--app-text-strong);
   }
 
-  .tab-nav__tab:focus-visible {
+  .settings-nav__item:focus-visible {
     outline: none;
     border-color: var(--app-accent);
     box-shadow: 0 0 0 2px var(--app-accent-glow);
   }
 
-  .tab-nav__tab--active {
+  .settings-nav__item--active,
+  .settings-nav__item--active:hover {
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
     color: var(--app-accent);
   }
 
-  .tab-nav__tab--active:hover {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent);
-  }
-
-  .tab-nav__label {
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: var(--app-text-strong);
-    line-height: 1.2;
-  }
-
-  .tab-nav__tab--active .tab-nav__label {
-    color: var(--app-accent);
-  }
-
-  :global([data-theme="light"]) .tab-nav {
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .tab-nav__list {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .tab-nav__tab {
+  .settings-nav__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
     color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .tab-nav__tab:hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .tab-nav__tab--active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
-  }
-  :global([data-theme="light"]) .tab-nav__label {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .tab-nav__tab--active .tab-nav__label {
-    color: var(--app-accent-strong);
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
 
-  /* ── Page header ───────────────────────────────────────────── */
-  .page-header {
+  .settings-nav__item:hover .settings-nav__icon {
+    color: var(--app-text-strong);
+    border-color: var(--app-border-strong);
+  }
+
+  .settings-nav__item--active .settings-nav__icon {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent);
+    box-shadow: 0 0 10px -3px var(--app-accent-glow);
+  }
+
+  .settings-nav__icon svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .settings-nav__text {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    margin-bottom: 6px;
-    padding-bottom: 12px;
-    border-bottom: 1px dashed var(--app-border);
+    gap: 1px;
+    min-width: 0;
   }
 
-  .page-header__head {
+  .settings-nav__label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1.25;
+    color: inherit;
+  }
+
+  .settings-nav__hint {
+    font-size: 10px;
+    line-height: 1.3;
+    letter-spacing: 0.01em;
+    color: var(--app-text-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .settings-nav__item--active .settings-nav__hint {
+    color: color-mix(in srgb, var(--app-accent) 55%, var(--app-text-muted));
+  }
+
+  /* ── Sidebar footer: at-a-glance capture summary ──────────────────── */
+  .settings-sidebar__foot {
+    position: relative;
+    flex: 0 0 auto;
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
+    flex-direction: column;
+    gap: 8px;
+    /* Left gutter matches the nav-icon column (1px list + 11px item) so the
+       summary lines up under the categories above it. */
+    padding: 12px 2px 0 12px;
   }
 
-  .page-header__title {
-    font-size: 14px;
+  /* Footer divider: a dashed hairline that fades at both ends, matching the
+     rail divider treatment. */
+  .settings-sidebar__foot::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: repeating-linear-gradient(
+      to right,
+      transparent 0px,
+      transparent 3px,
+      var(--app-border-strong) 3px,
+      var(--app-border-strong) 8px
+    );
+    -webkit-mask-image: linear-gradient(
+      to right,
+      transparent,
+      black 22%,
+      black 78%,
+      transparent
+    );
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black 22%,
+      black 78%,
+      transparent
+    );
+  }
+
+  .settings-sidebar__foot-label {
+    font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
+  }
+
+  /* ── Content pane + scroll region ─────────────────────────────────── */
+  .settings-content {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .settings-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    /* Keep panel content clear of the scrollbar gutter on the right. */
+    padding-right: 6px;
+  }
+
+  /* One tab panel renders at a time. When a panel stacks several cards
+     (Processing, Capture) lay them out in a column with the same 14px gap the
+     scroll region uses between sibling panels, for one consistent rhythm. */
+  [role="tabpanel"] {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  /* Auto-hiding scrollbars: invisible at rest, fade in on hover or scroll,
+     accent-tinted on direct thumb interaction. */
+  .settings-scroll::-webkit-scrollbar,
+  .settings-nav::-webkit-scrollbar {
+    width: 8px;
+  }
+  .settings-scroll::-webkit-scrollbar-track,
+  .settings-nav::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .settings-scroll::-webkit-scrollbar-thumb,
+  .settings-nav::-webkit-scrollbar-thumb {
+    background: transparent;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 999px;
+  }
+  /* Show thumb while the container is hovered or actively scrolling. */
+  .settings-scroll:hover::-webkit-scrollbar-thumb,
+  .settings-scroll.is-scrolling::-webkit-scrollbar-thumb,
+  .settings-nav:hover::-webkit-scrollbar-thumb {
+    background: var(--app-border-hover);
+    background-clip: padding-box;
+  }
+  /* Accent highlight when hovering directly over the thumb. */
+  .settings-scroll::-webkit-scrollbar-thumb:hover,
+  .settings-nav::-webkit-scrollbar-thumb:hover {
+    background: var(--app-accent);
+    background-clip: padding-box;
+  }
+  .settings-scroll,
+  .settings-nav {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  .settings-scroll:hover,
+  .settings-scroll.is-scrolling,
+  .settings-nav:hover {
+    scrollbar-color: var(--app-border-hover) transparent;
+  }
+
+  /* ── Sidebar head: brand mark, title, collapse toggle, save status ─── */
+  .settings-sidebar__head {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    /* Left gutter matches the nav-icon column so the brand mark and save
+       status line up under the categories below. */
+    padding: 2px 2px 0 12px;
+  }
+
+  .settings-sidebar__titlebar {
+    display: flex;
+    align-items: center;
+    /* Match the nav item's icon-to-label gap so "Settings" aligns with the
+       category labels. */
+    gap: 11px;
+  }
+
+  /* Terminal-prompt brand chip: an SVG prompt (chevron + cursor underline)
+     rather than literal ">_" text, which sat low and cramped against the
+     chip's baseline. Sized to the nav-icon chip and accent-tinted so the brand
+     mark heads the same icon column as the categories below. */
+  .settings-sidebar__glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    box-shadow: 0 0 10px -3px var(--app-accent-glow);
+  }
+
+  .settings-sidebar__glyph svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .settings-sidebar__title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
     color: var(--app-text-strong);
     line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .page-header__status {
+  /* Collapse / expand control. The chevron points "into" the rail to collapse
+     and flips 180° to point out when collapsed (see the collapsed block). */
+  .settings-sidebar__toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 6px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .settings-sidebar__toggle:hover:not(:disabled) {
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-strong);
+    color: var(--app-text-strong);
+  }
+  .settings-sidebar__toggle:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+  .settings-sidebar__toggle:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .settings-sidebar__toggle-icon {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .settings-sidebar__status {
     display: inline-flex;
     align-items: center;
     flex-shrink: 0;
   }
 
-  .page-header__status-text {
+  .status-text {
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.14em;
@@ -4007,7 +4406,7 @@
     white-space: nowrap;
   }
 
-  .page-header__status-text::before {
+  .status-text::before {
     content: "";
     position: absolute;
     left: 0;
@@ -4019,33 +4418,33 @@
     background: var(--app-accent-strong);
   }
 
-  .page-header__status-text--blocked {
+  .status-text--blocked {
     color: var(--app-warn);
   }
-  .page-header__status-text--blocked::before {
+  .status-text--blocked::before {
     background: var(--app-warn-strong);
   }
 
-  .page-header__status-text--ok {
+  .status-text--ok {
     color: var(--app-accent);
   }
-  .page-header__status-text--ok::before {
+  .status-text--ok::before {
     background: var(--app-accent);
     box-shadow: 0 0 6px var(--app-accent-glow);
   }
 
-  .page-header__status-text--saving {
+  .status-text--saving {
     color: var(--app-accent-strong);
   }
-  .page-header__status-text--saving::before {
+  .status-text--saving::before {
     background: var(--app-accent);
     animation: status-pulse 1.1s ease-in-out infinite;
   }
 
-  .page-header__status-text--error {
+  .status-text--error {
     color: var(--app-danger);
   }
-  .page-header__status-text--error::before {
+  .status-text--error::before {
     background: var(--app-danger);
     box-shadow: 0 0 6px var(--app-danger);
   }
@@ -4054,6 +4453,126 @@
     0%, 100% { opacity: 0.35; transform: translateY(-50%) scale(0.85); }
     50% { opacity: 1; transform: translateY(-50%) scale(1.1); }
   }
+
+  /* ── Collapsed rail ────────────────────────────────────────────────────
+     The rail narrows to an icon-only strip. Width + padding animate; labels
+     are dropped outright (not faded) so the nav can never spill into a
+     horizontal scrollbar mid-transition and item focus rings are never
+     clipped. The chevron flips to point outward as the cue to expand. */
+  .settings-sidebar--collapsed .settings-sidebar__toggle-icon {
+    transform: rotate(180deg);
+  }
+
+  .settings-sidebar--collapsed .settings-sidebar__head {
+    align-items: center;
+    padding: 2px 0 0;
+  }
+  .settings-sidebar--collapsed .settings-sidebar__titlebar {
+    justify-content: center;
+    width: 100%;
+  }
+  .settings-sidebar--collapsed .settings-sidebar__glyph,
+  .settings-sidebar--collapsed .settings-sidebar__title {
+    display: none;
+  }
+
+  .settings-sidebar--collapsed .settings-nav__item {
+    justify-content: center;
+    padding: 9px 0;
+    gap: 0;
+  }
+  .settings-sidebar--collapsed .settings-nav__text {
+    display: none;
+  }
+
+  /* Save status shrinks to a single state-coloured dot (the element itself
+     becomes the dot; its ::before and label are dropped). */
+  .settings-sidebar--collapsed .settings-sidebar__status {
+    justify-content: center;
+  }
+  .settings-sidebar--collapsed .status-text {
+    width: 7px;
+    height: 7px;
+    padding-left: 0;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .settings-sidebar--collapsed .status-text::before,
+  .settings-sidebar--collapsed .status-text__label {
+    display: none;
+  }
+  .settings-sidebar--collapsed .status-text--ok,
+  .settings-sidebar--collapsed .status-text--saving {
+    box-shadow: 0 0 6px var(--app-accent-glow);
+  }
+  .settings-sidebar--collapsed .status-text--error {
+    box-shadow: 0 0 6px var(--app-danger);
+  }
+  .settings-sidebar--collapsed .status-text--saving {
+    animation: status-dot-pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes status-dot-pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
+  /* Capture summary becomes a vertical column of source icon chips: a lit
+     accent chip while capturing, a muted outline when not. The fps/resolution
+     pills are text-only, so they drop out of the icon rail. */
+  .settings-sidebar--collapsed .settings-sidebar__foot {
+    align-items: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .settings-sidebar--collapsed .settings-sidebar__foot-label {
+    display: none;
+  }
+  .settings-sidebar--collapsed .status-strip {
+    flex-direction: column;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  .settings-sidebar--collapsed .status-pill {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 6px;
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+  }
+  .settings-sidebar--collapsed .status-pill--on {
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    box-shadow: 0 0 10px -3px var(--app-accent-glow);
+  }
+  .settings-sidebar--collapsed .status-pill--info {
+    display: none;
+  }
+  .settings-sidebar--collapsed .status-pill__dot,
+  .settings-sidebar--collapsed .status-pill__label {
+    display: none;
+  }
+  .settings-sidebar--collapsed .status-pill__icon {
+    display: inline-flex;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .settings-sidebar,
+    .settings-sidebar__toggle-icon {
+      transition: none;
+    }
+    .settings-sidebar--collapsed .status-text--saving {
+      animation: none;
+    }
+  }
+
+  /* (The former top page-header + horizontal tab strip are gone; their
+     title, save-status, and capture-summary styles now live in the sidebar
+     rail above.) */
 
   /* ── Status strip ─────────────────────────────────────────── */
   .status-strip {
@@ -4072,6 +4591,24 @@
     border-radius: 999px;
     border: 1px solid var(--app-border);
     background: var(--app-surface);
+  }
+
+  /* Source glyph: hidden while the rail is expanded (the dot + label carry the
+     state there); becomes the whole indicator once the rail collapses. */
+  .status-pill__icon {
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  .status-pill__icon svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .status-pill__dot {
@@ -4115,10 +4652,10 @@
     background: var(--app-surface-raised);
     border: 1px solid var(--app-border);
     border-radius: 8px;
-    padding: 22px 22px 18px;
+    padding: 14px 16px;
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: 12px;
     overflow: hidden;
   }
 
@@ -4128,7 +4665,7 @@
     inset: 0 0 auto 0;
     height: 1px;
     background: linear-gradient(90deg, transparent, var(--app-accent-strong) 20%, var(--app-accent) 50%, var(--app-accent-strong) 80%, transparent);
-    opacity: 0.4;
+    opacity: 0.2;
   }
 
   .card--speaker::before {
@@ -4139,47 +4676,16 @@
 
   .card__header {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
   }
 
   .card__heading {
     display: flex;
-    align-items: flex-start;
-    gap: 12px;
+    flex-direction: column;
+    gap: 3px;
     min-width: 0;
-  }
-
-  .card-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 28px;
-    height: 22px;
-    padding: 0 6px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 3px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    flex: 0 0 auto;
-    margin-top: 1px;
-  }
-
-  .card-icon svg {
-    width: 13px;
-    height: 13px;
-    display: block;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.8;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .card:hover .card-icon {
-    border-color: var(--app-accent-border);
-    color: var(--app-accent);
   }
 
   .card--combobox-open {
@@ -4187,27 +4693,20 @@
     z-index: 10;
   }
 
-  .card--speaker .card-icon {
-    border-color: var(--app-accent-border);
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-  }
-
   .card__title {
     font-size: 13px;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.01em;
     color: var(--app-text-strong);
-    line-height: 1.2;
+    line-height: 1.3;
     text-transform: none;
   }
 
   .card__subtitle {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--app-text-muted);
-    letter-spacing: 0.02em;
-    line-height: 1.5;
-    margin-top: 3px;
+    letter-spacing: 0.01em;
+    line-height: 1.45;
   }
 
   /* ── Settings groups ──────────────────────────────────────── */
@@ -4237,11 +4736,11 @@
   .settings-stack {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 12px 14px;
+    gap: 10px;
+    padding: 10px 12px;
     background: var(--app-surface);
     border: 1px solid var(--app-border);
-    border-radius: 4px;
+    border-radius: 6px;
   }
 
   .settings-divider {
@@ -5239,6 +5738,96 @@
     overflow-wrap: anywhere;
   }
 
+  /* ── CLI Access grant rows ───────────────────────────────────────── */
+  .grant-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .grant-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+  }
+
+  .grant-row--inactive {
+    background: transparent;
+  }
+
+  .grant-row__status {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--app-text-subtle);
+  }
+
+  .grant-row__status--active {
+    background: var(--app-accent);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
+  }
+
+  .grant-row__status--expired {
+    background: var(--app-warn);
+  }
+
+  .grant-row__status--revoked {
+    background: var(--app-danger);
+  }
+
+  .grant-row__meta {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .grant-row__name {
+    overflow: hidden;
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .grant-row--inactive .grant-row__name {
+    color: var(--app-text-muted);
+    font-weight: 600;
+  }
+
+  .grant-row__detail {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    color: var(--app-text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .grant-row__scope {
+    color: var(--app-text);
+    font-weight: 600;
+  }
+
+  .grant-row--inactive .grant-row__scope {
+    color: var(--app-text-muted);
+    font-weight: 500;
+  }
+
+  .grant-row__sep {
+    color: var(--app-text-faint);
+  }
+
   /* ── Danger button variant ───────────────────────────────────────── */
   .btn--danger {
     background: var(--app-danger-bg-soft);
@@ -5257,17 +5846,14 @@
      consume layout-level semantic tokens. Keeping the override flat
      (one selector per affected rule) makes it easy to audit which
      tokens still hard-code dark values. */
-  :global([data-theme="light"]) .page-header {
-    border-bottom-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .page-header__title {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .page-header__status-text {
+  /* Sidebar rail, nav, and save status read from semantic tokens that
+     already flip per theme; only the status text needs a touch more
+     contrast against the light surface. */
+  :global([data-theme="light"]) .status-text {
     color: var(--app-text-muted);
   }
-  :global([data-theme="light"]) .page-header__status-text::before {
-    background: var(--app-accent-strong);
+  :global([data-theme="light"]) .settings-nav__item:hover .settings-nav__icon {
+    border-color: var(--app-border-strong);
   }
 
   :global([data-theme="light"]) .status-pill {
