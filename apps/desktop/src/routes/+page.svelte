@@ -3991,6 +3991,12 @@
     });
   }
 
+  $effect(() => {
+    const handler = () => { if (!searchOpen) openSearch(); };
+    window.addEventListener("mnema:open-search", handler);
+    return () => window.removeEventListener("mnema:open-search", handler);
+  });
+
   function openSearchWithRefinements(refinements: SearchCaptureRefinements, initialView: SearchView): void {
     searchRefinements = compatibleSearchRefinements(refinements);
     searchRefinementKey = searchRefinementsKey(searchRefinements);
@@ -5391,6 +5397,12 @@
         event.preventDefault();
         event.stopPropagation();
       }
+      return;
+    }
+
+    if ((event.metaKey || event.ctrlKey) && event.key === "k") {
+      event.preventDefault();
+      if (!searchOpen) openSearch();
       return;
     }
 
@@ -7269,11 +7281,6 @@
         >{ocrRerunButtonLabel}</button>
       {/if}
       <button
-        class="btn btn--ghost btn--sm timeline__search-btn"
-        onclick={openSearch}
-        title="Search captured frames and audio"
-      >search</button>
-      <button
         class="btn btn--ghost btn--sm timeline__ocr-btn"
         class:timeline__ocr-btn--running={ocrStatus === "running"}
         class:timeline__ocr-btn--error={ocrStatus === "error"}
@@ -7312,95 +7319,71 @@
     >
       <div class="search-modal__panel">
         <header class="search-modal__header">
+          <svg class="search-modal__icon" width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+            <circle cx="6" cy="6" r="4.5" />
+            <path d="M9.5 9.5 13 13" />
+          </svg>
           <input
             class="search-modal__input"
             bind:value={searchQuery}
             oninput={onSearchInput}
             onkeydown={onSearchKeydown}
-            placeholder="Search captured text or audio"
+            placeholder="Search frames and audio…"
             aria-label="Search captured text or audio"
           />
-          <div class="search-modal__refine">
-            <button
-              type="button"
-              class="search-modal__refine-trigger"
-              class:search-modal__refine-trigger--open={searchRefineMenuOpen}
-              onclick={() => (searchRefineMenuOpen = !searchRefineMenuOpen)}
-              aria-haspopup="menu"
-              aria-expanded={searchRefineMenuOpen}
-            >
-              <span>Refine</span>
-              <span class="search-modal__refine-caret" aria-hidden="true"></span>
-            </button>
-            {#if searchRefineMenuOpen}
-              <div class="search-modal__refine-menu" role="menu">
-                <button type="button" role="menuitem" onclick={() => applyDateSearchRefinement("today")}>Today</button>
-                <button type="button" role="menuitem" onclick={() => applyDateSearchRefinement("last_hour")}>Last hour</button>
-                <button type="button" role="menuitem" onclick={() => applyAudioSearchRefinement("microphone")}>Microphone</button>
-                <button type="button" role="menuitem" onclick={() => applyAudioSearchRefinement("system_audio")}>System audio</button>
-              </div>
-            {/if}
-          </div>
-          <button
-            type="button"
-            class="search-modal__close"
-            onclick={closeSearch}
-            aria-label="Close search"
-            title="Close search"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 14 14"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.7"
-              stroke-linecap="round"
-              aria-hidden="true"
-            >
-              <path d="M3.5 3.5 10.5 10.5" />
-              <path d="M10.5 3.5 3.5 10.5" />
-            </svg>
-          </button>
+          <kbd class="search-modal__kbd">esc</kbd>
         </header>
-        {#if searchRefinements.dateRange || searchRefinements.app || searchRefinements.audioSource}
-          <div class="search-modal__chips" aria-label="Active search refinements">
+
+        <div class="search-modal__toolbar">
+          <div class="search-modal__tabs" role="tablist" aria-label="Search result sections">
+            <button disabled={!searchViewAllowed("all")} class:search-modal__tab--active={searchView === "all"} onclick={() => (searchView = "all")}>All</button>
+            <button disabled={!searchViewAllowed("frames")} class:search-modal__tab--active={searchView === "frames"} onclick={() => (searchView = "frames")}>Frames</button>
+            <button disabled={!searchViewAllowed("audio")} class:search-modal__tab--active={searchView === "audio"} onclick={() => (searchView = "audio")}>Audio</button>
+          </div>
+          <div class="search-modal__filters">
             {#if searchRefinements.dateRange}
-              <button type="button" class="search-modal__chip" onclick={() => removeSearchRefinement("dateRange")}>
+              <button type="button" class="search-modal__filter-chip search-modal__filter-chip--active" onclick={() => removeSearchRefinement("dateRange")}>
                 {searchDateChipLabel()} <span aria-hidden="true">×</span>
               </button>
+            {:else}
+              <button type="button" class="search-modal__filter-chip" onclick={() => applyDateSearchRefinement("today")}>Today</button>
+              <button type="button" class="search-modal__filter-chip" onclick={() => applyDateSearchRefinement("last_hour")}>Last hour</button>
             {/if}
             {#if searchRefinements.app}
-              <button type="button" class="search-modal__chip" onclick={() => removeSearchRefinement("app")}>
+              <button type="button" class="search-modal__filter-chip search-modal__filter-chip--active" onclick={() => removeSearchRefinement("app")}>
                 {searchRefinements.app.displayName} <span aria-hidden="true">×</span>
               </button>
             {/if}
             {#if searchRefinements.audioSource}
-              <button type="button" class="search-modal__chip" onclick={() => removeSearchRefinement("audioSource")}>
+              <button type="button" class="search-modal__filter-chip search-modal__filter-chip--active" onclick={() => removeSearchRefinement("audioSource")}>
                 {audioSourceLabel(searchRefinements.audioSource === "microphone" ? "microphone" : "systemAudio")} <span aria-hidden="true">×</span>
               </button>
+            {:else}
+              <button type="button" class="search-modal__filter-chip" onclick={() => applyAudioSearchRefinement("microphone")}>Mic</button>
+              <button type="button" class="search-modal__filter-chip" onclick={() => applyAudioSearchRefinement("system_audio")}>System</button>
             {/if}
           </div>
-        {/if}
-        <div class="search-modal__tabs" role="tablist" aria-label="Search result sections">
-          <button disabled={!searchViewAllowed("all")} class:search-modal__tab--active={searchView === "all"} onclick={() => (searchView = "all")}>All</button>
-          <button disabled={!searchViewAllowed("frames")} class:search-modal__tab--active={searchView === "frames"} onclick={() => (searchView = "frames")}>Frames</button>
-          <button disabled={!searchViewAllowed("audio")} class:search-modal__tab--active={searchView === "audio"} onclick={() => (searchView = "audio")}>Audio</button>
         </div>
+
         {#if searchError}
-          <p class="search-modal__error">{searchError}</p>
+          <p class="search-modal__status search-modal__error">{searchError}</p>
         {:else if searchLoading}
-          <p class="search-modal__empty">searching…</p>
+          <p class="search-modal__status">searching…</p>
         {:else if searchQuery.trim().length < 2}
-          <p class="search-modal__empty">Type at least 2 characters.</p>
+          <p class="search-modal__status">Type at least 2 characters</p>
         {:else}
           <div class="search-modal__body">
             {#if searchView === "all" || searchView === "frames"}
               <section class="search-modal__section">
-                <div class="search-modal__section-head">
+                <header class="search-modal__section-head">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true">
+                    <rect x="1.5" y="2" width="11" height="8" rx="1.5" />
+                    <path d="M4 12h6" />
+                    <path d="M7 10v2" />
+                  </svg>
                   <h2>Frames</h2>
-                  <span>{searchFrames.length}</span>
-                </div>
+                  <span class="search-modal__section-count">{searchFrames.length}</span>
+                </header>
                 {#if searchFrames.length === 0}
                   <p class="search-modal__empty">No frame matches.</p>
                 {:else}
@@ -7417,6 +7400,7 @@
                         <div class="search-card__content">
                           <div class="search-card__meta">
                             <span>{result.appName ?? "Unknown app"}</span>
+                            <span class="search-card__meta-sep">·</span>
                             <span>{formatCapturedAtCompact(result.groupEndAt)}</span>
                           </div>
                           {#if result.windowTitle}
@@ -7427,12 +7411,14 @@
                               {#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}
                             {/each}
                           </p>
-                          {#if result.matchCount > 1}
-                            <span class="search-card__badge">{result.matchCount} matches</span>
-                          {/if}
-                          {#if result.hasSecretRedactions}
-                            <span class="search-card__badge">has redactions</span>
-                          {/if}
+                          <div class="search-card__badges">
+                            {#if result.matchCount > 1}
+                              <span class="search-card__badge">{result.matchCount} matches</span>
+                            {/if}
+                            {#if result.hasSecretRedactions}
+                              <span class="search-card__badge search-card__badge--warn">redacted</span>
+                            {/if}
+                          </div>
                         </div>
                       </button>
                     {/each}
@@ -7447,10 +7433,16 @@
             {/if}
             {#if searchView === "all" || searchView === "audio"}
               <section class="search-modal__section">
-                <div class="search-modal__section-head">
+                <header class="search-modal__section-head">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true">
+                    <path d="M7 1v8" />
+                    <path d="M4 4v4a3 3 0 0 0 6 0V4" />
+                    <path d="M2 7a5 5 0 0 0 10 0" />
+                    <path d="M7 12v1" />
+                  </svg>
                   <h2>Audio</h2>
-                  <span>{searchAudio.length}</span>
-                </div>
+                  <span class="search-modal__section-count">{searchAudio.length}</span>
+                </header>
                 {#if searchAudio.length === 0}
                   <p class="search-modal__empty">No audio matches.</p>
                 {:else}
@@ -7459,8 +7451,10 @@
                       <button class="search-card" onclick={() => void selectAudioSearchResult(result)}>
                         <div class="search-card__content">
                           <div class="search-card__meta">
-                            <span class="search-card__badge">{audioSourceLabel(result.sourceKind === "microphone" ? "microphone" : "systemAudio")}</span>
+                            <span class="search-card__source-tag">{audioSourceLabel(result.sourceKind === "microphone" ? "microphone" : "systemAudio")}</span>
+                            <span class="search-card__meta-sep">·</span>
                             <span>{formatCapturedAtCompact(result.absoluteStartAt)}</span>
+                            <span class="search-card__meta-sep">·</span>
                             <span>{formatDurationSeconds(Math.max(0, (result.spanEndMs - result.spanStartMs) / 1000))}</span>
                           </div>
                           <p>
@@ -7468,12 +7462,14 @@
                               {#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}
                             {/each}
                           </p>
-                          {#if result.matchCount > 1}
-                            <span class="search-card__badge">{result.matchCount} adjacent matches</span>
-                          {/if}
-                          {#if result.hasSecretRedactions}
-                            <span class="search-card__badge">has redactions</span>
-                          {/if}
+                          <div class="search-card__badges">
+                            {#if result.matchCount > 1}
+                              <span class="search-card__badge">{result.matchCount} adjacent matches</span>
+                            {/if}
+                            {#if result.hasSecretRedactions}
+                              <span class="search-card__badge search-card__badge--warn">redacted</span>
+                            {/if}
+                          </div>
                         </div>
                       </button>
                     {/each}
@@ -8508,223 +8504,217 @@
     margin-left: auto;
   }
 
+
+  /* ── Search modal ────────────────────────────────────── */
+
   .search-modal {
     position: fixed;
     inset: 0;
     z-index: 80;
     display: grid;
     place-items: start center;
-    padding: 8vh 24px 24px;
-    background: rgba(0, 0, 0, 0.42);
+    padding: 6vh 24px 24px;
+    background: rgba(0, 0, 0, 0.52);
   }
 
   .search-modal__panel {
-    width: min(980px, 100%);
-    max-height: 82vh;
+    width: min(680px, 100%);
+    max-height: 80vh;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 14px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 10px;
     background: var(--app-surface);
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.34);
-    overflow: visible;
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.12),
+      0 16px 48px rgba(0, 0, 0, 0.42),
+      0 2px 8px rgba(0, 0, 0, 0.24);
+    overflow: hidden;
   }
 
   .search-modal__header {
     display: flex;
     gap: 10px;
     align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--app-border);
+  }
+
+  .search-modal__icon {
+    flex: 0 0 auto;
+    color: var(--app-text-subtle);
   }
 
   .search-modal__input {
     flex: 1 1 auto;
     min-width: 0;
-    height: 36px;
-    padding: 0 12px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    background: var(--app-surface-raised);
+    height: 28px;
+    padding: 0;
+    border: none;
+    background: transparent;
     color: var(--app-text-strong);
     font: inherit;
+    font-size: 15px;
+    outline: none;
   }
 
-  .search-modal__refine {
-    position: relative;
+  .search-modal__input::placeholder {
+    color: var(--app-text-subtle);
+  }
+
+  .search-modal__kbd {
     flex: 0 0 auto;
+    padding: 2px 6px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-bg);
+    color: var(--app-text-faint);
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 1.4;
+    text-transform: lowercase;
   }
 
-  .search-modal__refine-trigger {
-    height: 36px;
-    display: inline-flex;
+  .search-modal__toolbar {
+    display: flex;
     align-items: center;
-    gap: 7px;
-    padding: 0 10px 0 12px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    background: var(--app-surface-raised);
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--app-border);
+  }
+
+  .search-modal__tabs {
+    display: flex;
+    gap: 2px;
+  }
+
+  .search-modal__tabs button {
+    border: none;
+    border-radius: 5px;
+    background: transparent;
     color: var(--app-text-muted);
+    padding: 4px 10px;
     font: inherit;
     font-size: 12px;
     cursor: pointer;
     transition:
       background 0.12s,
-      border-color 0.12s,
       color 0.12s;
   }
 
-  .search-modal__refine-trigger:hover,
-  .search-modal__refine-trigger:focus-visible,
-  .search-modal__refine-trigger--open {
-    border-color: var(--app-border-hover);
+  .search-modal__tabs button:hover:not(:disabled) {
     background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    outline: none;
-  }
-
-  .search-modal__refine-caret {
-    width: 7px;
-    height: 7px;
-    border-right: 1.5px solid currentColor;
-    border-bottom: 1.5px solid currentColor;
-    transform: translateY(-2px) rotate(45deg);
-  }
-
-  .search-modal__refine-trigger--open .search-modal__refine-caret {
-    transform: translateY(2px) rotate(225deg);
-  }
-
-  .search-modal__refine-menu {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    z-index: 5;
-    min-width: 150px;
-    padding: 6px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface-raised);
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
-    display: grid;
-    gap: 2px;
-  }
-
-  .search-modal__refine-menu button {
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
     color: var(--app-text);
-    padding: 6px 8px;
-    text-align: left;
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .search-modal__refine-menu button:hover,
-  .search-modal__refine-menu button:focus-visible {
-    background: var(--app-surface-hover);
-    outline: none;
-  }
-
-  .search-modal__chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .search-modal__chip {
-    border: 1px solid var(--app-border-strong);
-    border-radius: 999px;
-    background: var(--app-surface-raised);
-    color: var(--app-text);
-    padding: 4px 8px;
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
-  }
-
-  .search-modal__close {
-    width: 36px;
-    height: 36px;
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    background: var(--app-surface-raised);
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s,
-      border-color 0.12s,
-      color 0.12s;
-  }
-
-  .search-modal__close:hover,
-  .search-modal__close:focus-visible {
-    border-color: var(--app-border-hover);
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    outline: none;
-  }
-
-  .search-modal__tabs {
-    display: flex;
-    gap: 6px;
-  }
-
-  .search-modal__tabs button {
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text-muted);
-    padding: 5px 10px;
-    font: inherit;
   }
 
   .search-modal__tabs button:disabled {
     cursor: not-allowed;
-    opacity: 0.45;
+    opacity: 0.35;
   }
 
   .search-modal__tab--active {
     background: var(--app-surface-raised) !important;
     color: var(--app-text-strong) !important;
-    border-color: var(--app-border-strong) !important;
+  }
+
+  .search-modal__filters {
+    display: flex;
+    gap: 4px;
+  }
+
+  .search-modal__filter-chip {
+    padding: 3px 8px;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--app-text-subtle);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    transition:
+      background 0.12s,
+      color 0.12s,
+      border-color 0.12s;
+  }
+
+  .search-modal__filter-chip:hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text-muted);
+    border-color: var(--app-border-strong);
+  }
+
+  .search-modal__filter-chip--active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent);
+  }
+
+  .search-modal__filter-chip--active:hover {
+    background: color-mix(in srgb, var(--app-accent-bg) 80%, var(--app-surface-hover));
+    color: var(--app-accent);
+  }
+
+  .search-modal__status {
+    margin: 0;
+    padding: 24px 16px;
+    text-align: center;
+    color: var(--app-text-subtle);
+    font-size: 13px;
+  }
+
+  .search-modal__error {
+    color: var(--app-danger);
   }
 
   .search-modal__body {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
+    display: flex;
+    flex-direction: column;
     min-height: 0;
-    overflow: auto;
+    overflow-y: auto;
+    padding: 4px 0;
   }
 
   .search-modal__section {
     min-width: 0;
-    overflow: hidden;
+  }
+
+  .search-modal__section + .search-modal__section {
+    border-top: 1px solid var(--app-border);
   }
 
   .search-modal__section-head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-    color: var(--app-text-muted);
+    gap: 7px;
+    padding: 10px 16px 6px;
+    color: var(--app-text-subtle);
+    position: sticky;
+    top: 0;
+    background: var(--app-surface);
+    z-index: 1;
   }
 
   .search-modal__section-head h2 {
     margin: 0;
-    font-size: 13px;
-    color: var(--app-text-strong);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--app-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .search-modal__section-count {
+    font-size: 11px;
+    color: var(--app-text-subtle);
+    margin-left: auto;
   }
 
   .search-modal__results {
-    display: grid;
-    gap: 8px;
+    display: flex;
+    flex-direction: column;
+    padding: 2px 8px 8px;
+    gap: 2px;
   }
 
   .search-card {
@@ -8732,32 +8722,36 @@
     min-width: 0;
     display: flex;
     gap: 10px;
-    padding: 10px;
+    padding: 8px;
     overflow: hidden;
     text-align: left;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface-raised);
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
     color: var(--app-text);
     font: inherit;
+    cursor: pointer;
+    transition:
+      background 0.1s,
+      border-color 0.1s;
   }
 
   .search-card:hover {
-    border-color: var(--app-border-hover);
-    background: var(--app-surface-hover);
+    border-color: var(--app-border);
+    background: var(--app-surface-raised);
   }
 
   .search-card__thumb {
-    width: 88px;
+    width: 72px;
     aspect-ratio: 16 / 10;
     flex: 0 0 auto;
     display: grid;
     place-items: center;
-    border-radius: 6px;
+    border-radius: 4px;
     overflow: hidden;
     background: var(--app-bg);
     color: var(--app-text-subtle);
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .search-card__thumb img {
@@ -8769,17 +8763,26 @@
   .search-card__content {
     min-width: 0;
     width: 100%;
-    display: grid;
-    gap: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
     overflow: hidden;
   }
 
   .search-card__meta {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    color: var(--app-text-muted);
+    align-items: center;
+    gap: 4px;
+    color: var(--app-text-subtle);
     font-size: 11px;
+  }
+
+  .search-card__meta-sep {
+    opacity: 0.4;
+  }
+
+  .search-card__source-tag {
+    color: var(--app-text-muted);
   }
 
   .search-card__title {
@@ -8790,57 +8793,73 @@
     font-size: 12px;
   }
 
-  .search-card p,
-  .search-modal__empty,
-  .search-modal__error {
+  .search-card p {
     margin: 0;
     color: var(--app-text);
     font-size: 12px;
     line-height: 1.45;
-  }
-
-  .search-card p {
     min-width: 0;
     overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
   .search-card mark {
-    border-radius: 3px;
-    background: color-mix(in srgb, var(--app-accent) 32%, transparent);
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--app-accent) 28%, transparent);
     color: var(--app-text-strong);
     padding: 0 1px;
   }
 
   .search-modal__empty {
-    color: var(--app-text-muted);
+    margin: 0;
+    padding: 12px 16px;
+    color: var(--app-text-subtle);
+    font-size: 12px;
   }
 
-  .search-modal__error {
-    color: var(--app-danger);
+  .search-card__badges {
+    display: flex;
+    gap: 4px;
   }
 
   .search-card__badge {
     width: fit-content;
-    border: 1px solid var(--app-border);
-    border-radius: 999px;
-    padding: 1px 6px;
-    color: var(--app-text-muted);
-    font-size: 11px;
+    padding: 0 5px;
+    border-radius: 3px;
+    background: var(--app-surface-hover);
+    color: var(--app-text-subtle);
+    font-size: 10px;
+    line-height: 1.6;
+  }
+
+  .search-card__badge--warn {
+    background: var(--app-warn-bg);
+    color: var(--app-warn);
   }
 
   .search-modal__more {
-    margin-top: 8px;
+    margin: 4px 8px 8px;
   }
 
   @media (max-width: 760px) {
     .search-modal {
       padding: 12px;
-      place-items: stretch;
+      place-items: start stretch;
     }
 
-    .search-modal__body {
-      grid-template-columns: 1fr;
+    .search-modal__panel {
+      width: 100%;
     }
+
+    .search-modal__toolbar {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
   }
 
   /* ── Recording control cluster ─────────────────────────────

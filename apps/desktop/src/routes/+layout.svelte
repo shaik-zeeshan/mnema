@@ -824,8 +824,23 @@
       {/if}
     </div>
 
-    <!-- Inert centre area carries the drag region. -->
+    <!-- Inert centre area carries the drag region + centered search trigger. -->
     <div class="titlebar__drag" data-tauri-drag-region>
+      {#if isMainRoute}
+        <button
+          type="button"
+          class="titlebar__search-trigger"
+          onclick={() => window.dispatchEvent(new CustomEvent("mnema:open-search"))}
+          title="Search captured frames and audio (⌘K)"
+        >
+          <svg class="titlebar__search-trigger-icon" width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+            <circle cx="6" cy="6" r="4.5" />
+            <path d="M9.5 9.5 13 13" />
+          </svg>
+          <span class="titlebar__search-trigger-text">Search</span>
+          <kbd class="titlebar__search-trigger-kbd">⌘K</kbd>
+        </button>
+      {/if}
     </div>
 
     <div class="titlebar__group titlebar__group--right">
@@ -1476,10 +1491,55 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    /* Ensure the drag area stays an explicit drop target for the cursor —
-       even when empty, the height of the row catches mousedown for window
-       drag. */
     cursor: default;
+  }
+
+  .titlebar__search-trigger {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+    color: var(--app-text-subtle);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    transition:
+      border-color 0.15s,
+      color 0.15s,
+      background 0.15s;
+    min-width: 200px;
+  }
+
+  .titlebar__search-trigger:hover {
+    border-color: var(--app-border-strong);
+    color: var(--app-text-muted);
+    background: var(--app-surface-raised);
+  }
+
+  .titlebar__search-trigger-icon {
+    flex: 0 0 auto;
+    opacity: 0.45;
+  }
+
+  .titlebar__search-trigger-text {
+    flex: 1 1 auto;
+    text-align: left;
+  }
+
+  .titlebar__search-trigger-kbd {
+    flex: 0 0 auto;
+    padding: 1px 5px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: var(--app-bg);
+    color: var(--app-text-faint);
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 1.4;
   }
 
   /* ── Recording status indicator ───────────────────────────── */
