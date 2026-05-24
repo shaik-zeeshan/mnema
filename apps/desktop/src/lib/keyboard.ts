@@ -65,6 +65,18 @@ function normalizedKey(key: string): string {
   return key.length === 1 ? key.toLowerCase() : key.toLowerCase();
 }
 
+export function keyboardPlatformFromUserAgent(userAgent: string): KeyboardPlatform {
+  const ua = userAgent.toLowerCase();
+  if (ua.includes("mac os x") || ua.includes("macintosh")) return "macos";
+  if (ua.includes("windows")) return "windows";
+  return "other";
+}
+
+export function detectKeyboardPlatform(): KeyboardPlatform {
+  if (typeof navigator === "undefined") return "other";
+  return keyboardPlatformFromUserAgent(navigator.userAgent);
+}
+
 function eventMatchesPrimary(
   event: ShortcutKeyboardEvent,
   platform: KeyboardPlatform,
