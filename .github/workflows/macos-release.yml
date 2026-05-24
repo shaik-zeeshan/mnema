@@ -1,0 +1,118 @@
+name: macOS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to build, for example 0.1.0 or v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-release-${{ github.event.inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ad hoc signed universal macOS app
+    runs-on: macos-15
+    environment: macos-release
+
+    env:
+      APPLE_SIGNING_IDENTITY: "-"
+      CI: true
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+            apps/desktop/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json', 'apps/desktop/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock', 'apps/desktop/src-tauri/Cargo.lock', '**/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Verify release version
+        id: release_version
+        run: ./scripts/verify-desktop-release-version.sh "${{ inputs.version }}"
+
+      - name: Check frontend
+        run: bun run check
+
+      - name: Check Tauri Rust app
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
+
+      - name: Build universal macOS app
+        run: bun run tauri -- build --target universal-apple-darwin
+
+      - name: Stage release artifacts
+        id: stage_artifacts
+        run: ./scripts/stage-macos-release-artifacts.sh target/universal-apple-darwin/release/bundle dist/macos-release
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnema-macos-${{ steps.release_version.outputs.version }}
+          path: dist/macos-release/*
+          if-no-files-found: error
+
+      - name: Create or update draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          release_notes_prefix=$'## Install Notes\n\nThis macOS build is ad hoc signed and not notarized. macOS may show a Gatekeeper warning. Use it as an internal/test build.\n'
+          release_files=(dist/macos-release/*)
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --draft \
+              --prerelease \
+              --title "Mnema $RELEASE_TAG"
+            gh release upload "$RELEASE_TAG" "${release_files[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${release_files[@]}" \
+              --draft \
+              --prerelease \
+              --generate-notes \
+              --notes "$release_notes_prefix" \
+              --target "$GITHUB_SHA" \
+              --title "Mnema $RELEASE_TAG"
+          fi
