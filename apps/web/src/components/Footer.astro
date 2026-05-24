@@ -1,0 +1,117 @@
+---
+import { DOWNLOAD_URL, GITHUB_URL, APP_VERSION } from "../config";
+---
+
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <a href="/" class="footer-wordmark" aria-label="mnema home">
+        <img src="/icon.png" alt="" width="20" height="20" class="footer-icon" />
+        <span class="footer-name">mnema</span>
+      </a>
+      <span class="footer-version">v{APP_VERSION}</span>
+    </div>
+
+    <nav class="footer-links" aria-label="Footer">
+      <a href={DOWNLOAD_URL}>Download</a>
+      <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href={`${GITHUB_URL}/blob/main/LICENSE`} target="_blank" rel="noopener noreferrer">MIT License</a>
+    </nav>
+
+    <p class="footer-copy">
+      Everything stays on your machine.
+    </p>
+  </div>
+</footer>
+
+<style>
+  .footer {
+    border-top: 1px solid var(--border);
+    padding: var(--space-lg) var(--space-lg);
+    margin-top: var(--space-xl);
+  }
+
+  .footer-inner {
+    max-width: 56rem;
+    margin: 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+  }
+
+  .footer-brand {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .footer-wordmark {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    text-decoration: none;
+    color: var(--fg);
+  }
+
+  .footer-wordmark:hover {
+    text-decoration: none;
+  }
+
+  .footer-icon {
+    border-radius: 4px;
+  }
+
+  .footer-name {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+  }
+
+  .footer-version {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--fg-muted);
+  }
+
+  .footer-links {
+    display: flex;
+    gap: var(--space-md);
+  }
+
+  .footer-links a {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    text-decoration: none;
+    letter-spacing: 0.02em;
+    transition: color 0.2s var(--ease-out-quart);
+  }
+
+  .footer-links a:hover {
+    color: var(--fg);
+  }
+
+  .footer-copy {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--fg-muted);
+    width: 100%;
+    text-align: center;
+    margin-top: var(--space-sm);
+  }
+
+  @media (max-width: 640px) {
+    .footer-inner {
+      flex-direction: column;
+      text-align: center;
+    }
+
+    .footer-links {
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+  }
+</style>

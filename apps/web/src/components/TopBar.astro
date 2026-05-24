@@ -1,0 +1,130 @@
+---
+import ThemeToggle from "./ThemeToggle.astro";
+import { DOWNLOAD_URL } from "../config";
+---
+
+<header class="topbar-wrap">
+  <div class="topbar">
+    <a href="/" class="wordmark" aria-label="mnema home">
+      <img src="/icon.png" alt="" width="24" height="24" class="wordmark-icon" />
+      <span class="wordmark-text">mnema</span>
+    </a>
+
+    <nav class="topbar-nav" aria-label="Main">
+      <a href="#how-it-works">How it works</a>
+      <a href="#privacy">Privacy</a>
+    </nav>
+
+    <div class="topbar-actions">
+      <ThemeToggle />
+      <a href={DOWNLOAD_URL} class="topbar-download">Download</a>
+    </div>
+  </div>
+</header>
+
+<style>
+  .topbar-wrap {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    display: flex;
+    justify-content: center;
+    padding: 12px 16px;
+    pointer-events: none;
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: 6px 6px 6px 16px;
+    max-width: 680px;
+    width: 100%;
+    background: color-mix(in srgb, var(--bg) 75%, transparent);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    pointer-events: auto;
+    box-shadow: 0 2px 24px rgba(0, 0, 0, 0.12);
+  }
+
+  .wordmark {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    text-decoration: none;
+    color: var(--fg);
+    flex-shrink: 0;
+  }
+
+  .wordmark:hover {
+    text-decoration: none;
+  }
+
+  .wordmark-icon {
+    border-radius: 5px;
+  }
+
+  .wordmark-text {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+  }
+
+  .topbar-nav {
+    display: flex;
+    gap: var(--space-md);
+  }
+
+  .topbar-nav a {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    text-decoration: none;
+    letter-spacing: 0.02em;
+    transition: color 0.2s var(--ease-out-quart);
+  }
+
+  .topbar-nav a:hover {
+    color: var(--fg);
+    text-decoration: none;
+  }
+
+  .topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-shrink: 0;
+  }
+
+  .topbar-download {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--bg);
+    background: var(--accent);
+    padding: 6px 14px;
+    border-radius: 999px;
+    text-decoration: none;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    transition: box-shadow 0.3s var(--ease-out-quart),
+      opacity 0.2s var(--ease-out-quart);
+  }
+
+  .topbar-download:hover {
+    text-decoration: none;
+    box-shadow: 0 0 16px var(--accent-glow);
+    opacity: 0.92;
+  }
+
+  @media (max-width: 560px) {
+    .topbar-nav {
+      display: none;
+    }
+  }
+</style>

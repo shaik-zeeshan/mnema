@@ -1,0 +1,128 @@
+---
+const points = [
+  {
+    label: "On-device OCR",
+    detail: "Screen text is extracted by macOS Vision framework. No cloud API, no upload.",
+  },
+  {
+    label: "Local transcription",
+    detail: "Audio is transcribed using on-device Whisper. Your conversations stay on your machine.",
+  },
+  {
+    label: "Local SQLite",
+    detail: "All data lives in a local database. No sync, no telemetry, no account required.",
+  },
+  {
+    label: "Secret redaction",
+    detail: "Sensitive patterns (passwords, tokens, keys) are detected and redacted before indexing.",
+  },
+  {
+    label: "No network required",
+    detail: "Mnema works fully offline. The only outbound request it ever makes is an optional update check.",
+  },
+];
+---
+
+<section class="privacy" id="privacy">
+  <div class="section-inner">
+    <p class="kicker">// private by construction</p>
+    <h2 class="section-heading">Your data never leaves your machine.</h2>
+    <p class="section-sub">
+      Privacy is not a setting you toggle on. It is how Mnema is built. Every
+      operation — capture, OCR, transcription, search — runs locally.
+    </p>
+
+    <ul class="privacy-list">
+      {
+        points.map((point) => (
+          <li class="privacy-item">
+            <span class="privacy-marker" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </span>
+            <div class="privacy-content">
+              <strong class="privacy-label">{point.label}</strong>
+              <span class="privacy-detail">{point.detail}</span>
+            </div>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</section>
+
+<style>
+  .privacy {
+    padding: var(--space-2xl) var(--space-lg);
+    background: var(--surface);
+  }
+
+  .section-inner {
+    max-width: 56rem;
+    margin: 0 auto;
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: var(--space-xs);
+  }
+
+  .section-heading {
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-xs);
+    max-width: 20ch;
+  }
+
+  .section-sub {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    max-width: 55ch;
+    margin-bottom: var(--space-lg);
+    line-height: 1.6;
+  }
+
+  .privacy-list {
+    list-style: none;
+    display: grid;
+    gap: var(--space-xs);
+    max-width: 36rem;
+  }
+
+  .privacy-item {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--space-sm);
+    align-items: start;
+    padding: var(--space-xs) 0;
+  }
+
+  .privacy-marker {
+    color: var(--accent);
+    display: flex;
+    margin-top: 0.1rem;
+  }
+
+  .privacy-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+
+  .privacy-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--fg);
+  }
+
+  .privacy-detail {
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    line-height: 1.55;
+  }
+</style>

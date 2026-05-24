@@ -1,0 +1,219 @@
+---
+const capabilities = [
+  {
+    label: "screen",
+    type: "ocr",
+    description:
+      "Every window, tab, and document — continuously captured and OCR'd into searchable text.",
+    example: {
+      query: "api response format",
+      match: '...the <em>API response format</em> uses JSON with pagination...',
+      source: "VS Code — 2:41 PM",
+    },
+  },
+  {
+    label: "audio",
+    type: "transcript",
+    description:
+      "Meetings, calls, voice notes — transcribed locally with speaker tags. Search spoken words like text.",
+    example: {
+      query: "deadline moved",
+      match: '"...the <em>deadline moved</em> to next Friday, so we have..."',
+      source: "Zoom call — 11:20 AM",
+    },
+  },
+  {
+    label: "activity",
+    type: "metadata",
+    description:
+      "Which app, which window, how long. A structured log of your workday you can filter and search.",
+    example: {
+      query: "figma prototype",
+      match: "Figma — <em>Prototype</em> review (43 min)",
+      source: "Activity log — 3:15 PM",
+    },
+  },
+];
+---
+
+<section class="remembers">
+  <div class="section-inner">
+    <p class="kicker">// what it remembers</p>
+    <h2 class="section-heading">Screen. Audio. Activity.</h2>
+    <p class="section-sub">
+      Three input streams, one searchable record. Every result traces back to a
+      moment in time.
+    </p>
+
+    <div class="capabilities">
+      {
+        capabilities.map((cap) => (
+          <div class="capability">
+            <div class="cap-header">
+              <h3 class="cap-label">{cap.label}</h3>
+              <span class="cap-type">{cap.type}</span>
+            </div>
+            <p class="cap-desc">{cap.description}</p>
+            <div class="cap-example" aria-hidden="true">
+              <div class="cap-search-row">
+                <span class="cap-search-icon">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                </span>
+                <span class="cap-query">{cap.example.query}</span>
+              </div>
+              <div class="cap-match">
+                <span class="cap-match-text" set:html={cap.example.match} />
+                <span class="cap-match-source">{cap.example.source}</span>
+              </div>
+            </div>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .remembers {
+    padding: var(--space-2xl) var(--space-lg);
+  }
+
+  .section-inner {
+    max-width: 56rem;
+    margin: 0 auto;
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: var(--space-xs);
+  }
+
+  .section-heading {
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-xs);
+  }
+
+  .section-sub {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    max-width: 50ch;
+    margin-bottom: var(--space-lg);
+    line-height: 1.6;
+  }
+
+  .capabilities {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-md);
+  }
+
+  .capability {
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    transition: border-color 0.3s var(--ease-out-quart);
+  }
+
+  .capability:hover {
+    border-color: var(--border-strong);
+  }
+
+  .cap-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+  }
+
+  .cap-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+
+  .cap-type {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--fg-muted);
+    padding: 0.1rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+
+  .cap-desc {
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    line-height: 1.6;
+  }
+
+  .cap-example {
+    margin-top: auto;
+    padding-top: var(--space-xs);
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+  }
+
+  .cap-search-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--fg-muted);
+  }
+
+  .cap-search-icon {
+    color: var(--accent);
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .cap-query {
+    color: var(--fg);
+  }
+
+  .cap-match {
+    padding: 0.35rem 0.5rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .cap-match-text {
+    color: var(--fg-muted);
+    line-height: 1.5;
+  }
+
+  .cap-match-text :global(em) {
+    font-style: normal;
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .cap-match-source {
+    color: var(--fg-muted);
+    font-size: 0.55rem;
+    opacity: 0.7;
+  }
+
+  @media (max-width: 768px) {
+    .capabilities {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

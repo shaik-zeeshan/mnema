@@ -1,0 +1,356 @@
+---
+---
+
+<div class="mock" aria-hidden="true">
+  <div class="mock-chrome">
+    <div class="mock-dots">
+      <span></span><span></span><span></span>
+    </div>
+    <span class="mock-title">mnema</span>
+  </div>
+
+  <div class="mock-body">
+    <div class="mock-search">
+      <span class="mock-search-icon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+      </span>
+      <span class="mock-query">
+        <span class="typing-text">quarterly revenue chart</span>
+        <span class="typing-cursor"></span>
+      </span>
+    </div>
+
+    <div class="mock-timeline">
+      <div class="mock-scrubber">
+        <div class="mock-track">
+          <div class="mock-progress"></div>
+        </div>
+        <div class="mock-ticks">
+          <span>9:00</span><span>10:00</span><span>11:00</span><span>12:00</span><span>1:00</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="mock-results">
+      <div class="mock-result mock-result-1">
+        <span class="mock-result-time">10:32 AM</span>
+        <span class="mock-result-app">Sheets</span>
+        <span class="mock-result-text">
+          Q3 <mark>quarterly revenue chart</mark> — updated
+        </span>
+      </div>
+      <div class="mock-result mock-result-2">
+        <span class="mock-result-time">11:14 AM</span>
+        <span class="mock-result-app">Zoom</span>
+        <span class="mock-result-text">
+          "...let me pull up the <mark>quarterly revenue chart</mark>..."
+        </span>
+        <span class="mock-result-badge">transcript</span>
+      </div>
+      <div class="mock-result mock-result-3">
+        <span class="mock-result-time">11:47 AM</span>
+        <span class="mock-result-app">Keynote</span>
+        <span class="mock-result-text">
+          Slide 4 — <mark>Revenue</mark> by <mark>Quarter</mark>
+        </span>
+      </div>
+    </div>
+
+    <div class="mock-status">
+      <span class="mock-live-dot"></span>
+      <span class="mock-status-text">Capturing</span>
+    </div>
+  </div>
+</div>
+
+<style>
+  .mock {
+    width: 100%;
+    max-width: 480px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    background: var(--surface);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--fg);
+    box-shadow: 0 4px 40px rgba(0, 0, 0, 0.3);
+  }
+
+  .mock-chrome {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.65rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .mock-dots {
+    display: flex;
+    gap: 5px;
+  }
+
+  .mock-dots span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border-strong);
+  }
+
+  .mock-title {
+    color: var(--fg-muted);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+  }
+
+  .mock-body {
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .mock-search {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--accent-border);
+    background: var(--accent-bg);
+    border-radius: var(--radius-sm);
+  }
+
+  .mock-search-icon {
+    color: var(--accent);
+    flex-shrink: 0;
+    display: flex;
+  }
+
+  .mock-query {
+    display: flex;
+    align-items: center;
+    color: var(--fg);
+  }
+
+  .typing-text {
+    display: inline-block;
+    overflow: hidden;
+    white-space: nowrap;
+    width: 0;
+    animation: type-in 2s var(--ease-out-expo) 0.6s forwards;
+  }
+
+  .typing-cursor {
+    display: inline-block;
+    width: 1.5px;
+    height: 1em;
+    background: var(--accent);
+    margin-left: 1px;
+    animation: blink 1s step-end infinite;
+  }
+
+  @keyframes type-in {
+    to {
+      width: 100%;
+    }
+  }
+
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+
+  .mock-timeline {
+    padding: 0.25rem 0;
+  }
+
+  .mock-scrubber {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .mock-track {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .mock-progress {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: 2px;
+    animation: scrub 3.5s var(--ease-out-expo) 1s forwards;
+  }
+
+  @keyframes scrub {
+    to {
+      width: 72%;
+    }
+  }
+
+  .mock-ticks {
+    display: flex;
+    justify-content: space-between;
+    color: var(--fg-muted);
+    font-size: 0.6rem;
+    padding: 0 0.1rem;
+  }
+
+  .mock-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .mock-result {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    opacity: 0;
+    transform: translateY(6px);
+    flex-wrap: wrap;
+  }
+
+  .mock-result-1 {
+    animation: result-in 0.5s var(--ease-out-expo) 2.2s forwards;
+  }
+
+  .mock-result-2 {
+    animation: result-in 0.5s var(--ease-out-expo) 2.5s forwards;
+  }
+
+  .mock-result-3 {
+    animation: result-in 0.5s var(--ease-out-expo) 2.8s forwards;
+  }
+
+  @keyframes result-in {
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .mock-result-time {
+    color: var(--fg-muted);
+    font-size: 0.65rem;
+    flex-shrink: 0;
+    min-width: 5.2em;
+  }
+
+  .mock-result-app {
+    color: var(--fg-muted);
+    font-size: 0.6rem;
+    padding: 0.1rem 0.35rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  .mock-result-text {
+    color: var(--fg);
+    font-size: 0.7rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .mock-result-text mark {
+    background: transparent;
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .mock-result-badge {
+    font-size: 0.55rem;
+    color: var(--accent);
+    border: 1px solid var(--accent-border);
+    background: var(--accent-bg);
+    padding: 0.05rem 0.35rem;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  .mock-status {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding-top: 0.25rem;
+  }
+
+  .mock-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+      box-shadow: 0 0 0 0 var(--accent-glow);
+    }
+    50% {
+      opacity: 0.6;
+      box-shadow: 0 0 8px 3px var(--accent-glow);
+    }
+  }
+
+  .mock-status-text {
+    color: var(--fg-muted);
+    font-size: 0.6rem;
+    letter-spacing: 0.04em;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .typing-text {
+      width: 100%;
+      animation: none;
+    }
+
+    .typing-cursor {
+      animation: none;
+      opacity: 1;
+    }
+
+    .mock-progress {
+      width: 72%;
+      animation: none;
+    }
+
+    .mock-result {
+      opacity: 1;
+      transform: none;
+      animation: none;
+    }
+
+    .mock-live-dot {
+      animation: none;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .mock {
+      font-size: 0.68rem;
+    }
+
+    .mock-result-text {
+      width: 100%;
+      flex: unset;
+    }
+  }
+</style>

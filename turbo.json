@@ -11,7 +11,8 @@
       ],
       "outputs": [
         "build/**",
-        ".svelte-kit/**"
+        ".svelte-kit/**",
+        "dist/**"
       ]
     },
     "check": {
