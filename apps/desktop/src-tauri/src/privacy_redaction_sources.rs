@@ -1,6 +1,8 @@
-use capture_types::{CaptureErrorResponse, RecordingSettings};
+use capture_types::{
+    CaptureErrorResponse, RecordingSettings, RecordingSettingsDomainUpdateResponse,
+    SettingsOwnershipDomain,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tauri::Manager;
 
 fn err(code: &str, message: &str) -> CaptureErrorResponse {
     CaptureErrorResponse {
@@ -88,29 +90,12 @@ mod tests {
 fn with_app_exclusion_mutation(
     app_handle: tauri::AppHandle,
     mutate: impl FnOnce(&mut RecordingSettings) -> Result<(), CaptureErrorResponse>,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let settings = {
-        let settings_state = app_handle.state::<crate::native_capture::RecordingSettingsState>();
-        let mut settings_runtime = settings_state
-            .lock()
-            .expect("recording settings state poisoned");
-        let mut settings = settings_runtime.settings.clone();
-
-        mutate(&mut settings)?;
-        settings.privacy =
-            crate::native_capture::settings::validate_privacy_settings(settings.privacy)?;
-        crate::native_capture::settings::persist_recording_settings(&app_handle, &settings)?;
-
-        settings_runtime.settings = settings.clone();
-        settings
-    };
-
-    crate::native_capture::emit_recording_settings_changed(&app_handle, &settings);
-    crate::native_capture::privacy::request_privacy_filter_refresh(
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    crate::native_capture::apply_recording_settings_domain_mutation_from_app_handle(
         &app_handle,
-        crate::native_capture::privacy::PrivacyRefreshReason::StaticAppRuleMutation,
-    );
-    Ok(settings)
+        SettingsOwnershipDomain::AppPrivacyExclusion,
+        mutate,
+    )
 }
 
 #[tauri::command]
@@ -118,7 +103,7 @@ pub fn add_privacy_excluded_app(
     bundle_id: String,
     display_name: String,
     app_handle: tauri::AppHandle,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
     with_app_exclusion_mutation(app_handle, |settings| {
         let bundle_id = crate::native_capture::settings::canonicalize_app_bundle_id(&bundle_id);
         let display_name = display_name.trim().to_string();
@@ -150,7 +135,7 @@ pub(crate) fn add_or_enable_privacy_excluded_app_from_app_handle(
     app_handle: tauri::AppHandle,
     bundle_id: String,
     display_name: String,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
     with_app_exclusion_mutation(app_handle, |settings| {
         let bundle_id = crate::native_capture::settings::canonicalize_app_bundle_id(&bundle_id);
         let display_name = display_name.trim().to_string();
@@ -184,7 +169,7 @@ pub fn set_privacy_excluded_app_enabled(
     source_id: String,
     enabled: bool,
     app_handle: tauri::AppHandle,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
     with_app_exclusion_mutation(app_handle, |settings| {
         let Some(app) = settings
             .privacy
@@ -206,7 +191,7 @@ pub fn set_privacy_excluded_app_enabled(
 pub fn remove_privacy_excluded_app(
     source_id: String,
     app_handle: tauri::AppHandle,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
     with_app_exclusion_mutation(app_handle, |settings| {
         let before = settings.privacy.excluded_apps.len();
         settings

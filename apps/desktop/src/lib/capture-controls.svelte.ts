@@ -5,6 +5,7 @@ import type {
   CaptureSession,
   GetPermissionsResponse,
   RecordingSettings,
+  RecordingSettingsDomainUpdateResponse,
 } from "$lib/types";
 import type {
   IdleDebugInfo,
@@ -309,9 +310,8 @@ export async function refreshRuntimeSourcesNow(): Promise<void> {
 // ── Per-source selection (used by the title-bar source pills) ─────────
 // While not recording, each source pill acts as a toggle that flips the
 // corresponding `captureScreen / captureMicrophone / captureSystemAudio`
-// field in `RecordingSettings`, exactly mirroring the settings page. The
-// flag is persisted via `update_recording_settings` so the next session
-// (and the settings UI itself) picks up the same choice.
+// field in the capture-sources settings domain so the next session (and the
+// settings UI itself) picks up the same choice.
 export type SourceKey = "screen" | "microphone" | "systemAudio";
 
 const _selectionState = $state<{
@@ -341,51 +341,10 @@ export const sourceSelection = {
 };
 
 /**
- * Build an `UpdateRecordingSettingsRequest` payload from the cached
- * `RecordingSettings` snapshot. Both shapes share the same camelCase field
- * names by construction, so this is a faithful pass-through that only the
- * caller-supplied overrides differ from.
- */
-function buildUpdatePayload(
-  base: RecordingSettings,
-  overrides: Partial<Pick<RecordingSettings, "captureScreen" | "captureMicrophone" | "captureSystemAudio">>,
-): RecordingSettings {
-  return {
-    captureScreen: overrides.captureScreen ?? base.captureScreen,
-    captureMicrophone: overrides.captureMicrophone ?? base.captureMicrophone,
-    captureSystemAudio: overrides.captureSystemAudio ?? base.captureSystemAudio,
-    segmentDurationSeconds: base.segmentDurationSeconds,
-    screenFrameRate: base.screenFrameRate,
-    saveDirectory: base.saveDirectory,
-    autoStart: base.autoStart,
-    pauseCaptureOnInactivity: base.pauseCaptureOnInactivity,
-    idleTimeoutSeconds: base.idleTimeoutSeconds,
-    activityMode: base.activityMode,
-    microphoneActivitySensitivity: base.microphoneActivitySensitivity,
-    systemAudioActivitySensitivity: base.systemAudioActivitySensitivity,
-    microphoneVadAdapter: base.microphoneVadAdapter,
-    audioSpeechDetection: base.audioSpeechDetection ?? { detector: base.microphoneVadAdapter ?? "silero" },
-    nativeCaptureDebugLoggingEnabled: base.nativeCaptureDebugLoggingEnabled,
-    previewCacheTtlSeconds: base.previewCacheTtlSeconds,
-    followTimelineLive: base.followTimelineLive,
-    retentionPolicy: base.retentionPolicy,
-    appearance: base.appearance,
-    developerOptionsEnabled: base.developerOptionsEnabled,
-    ocr: base.ocr,
-    transcription: base.transcription,
-    speakerAnalysis: base.speakerAnalysis,
-    metadata: base.metadata,
-    privacy: base.privacy,
-    screenResolution: base.screenResolution,
-    videoBitrate: base.videoBitrate,
-  };
-}
-
-/**
  * Toggle (or set) whether a given source will be captured the next time
- * `startCapture()` runs. Persists the choice through the same
- * `update_recording_settings` Tauri command the settings page uses, so the
- * title-bar pill and the settings page stay perfectly in sync.
+ * `startCapture()` runs. Persists the choice through the capture-sources
+ * domain command, so unrelated settings drafts cannot be overwritten by a
+ * title-bar source change.
  *
  * No-op while a session is currently running — the live `runtimeSources`
  * snapshot determines the indicator state in that case, and source
@@ -410,10 +369,10 @@ export async function setSourceSelected(
 
   _selectionState.saving[key] = true;
   try {
-    const updated = await invoke<RecordingSettings>("update_recording_settings", {
-      request: buildUpdatePayload(base, overrides),
+    const updated = await invoke<RecordingSettingsDomainUpdateResponse>("update_capture_source_settings", {
+      request: overrides,
     });
-    _state.recordingSettings = updated;
+    _state.recordingSettings = updated.settings;
     _state.error = null;
   } catch (err) {
     _state.error = serializeError(err);

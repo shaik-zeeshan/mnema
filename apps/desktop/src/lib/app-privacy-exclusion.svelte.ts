@@ -1,5 +1,8 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ExcludedAppEntry, RecordingSettings } from "$lib/types";
+import type {
+  ExcludedAppEntry,
+  RecordingSettingsDomainUpdateResponse,
+} from "$lib/types";
 import {
   appIconFallback,
   canonicalBundleIdForComparison,
@@ -23,7 +26,7 @@ import {
 
 type AppPrivacyExclusionHost = {
   getExcludedApps: () => ExcludedAppEntry[];
-  onSettingsUpdated: (settings: RecordingSettings) => void;
+  onSettingsUpdated: (response: RecordingSettingsDomainUpdateResponse) => void;
   setError: (message: string | null) => void;
   beforePrivacyCommand?: () => void;
   enableExistingUserPrompt?: boolean;
@@ -115,12 +118,12 @@ export function createAppPrivacyExclusionController(host: AppPrivacyExclusionHos
   async function runPrivacySettingsCommand(
     command: "add_privacy_excluded_app" | "set_privacy_excluded_app_enabled" | "remove_privacy_excluded_app",
     args: Record<string, unknown>,
-  ): Promise<RecordingSettings | null> {
+  ): Promise<RecordingSettingsDomainUpdateResponse | null> {
     host.beforePrivacyCommand?.();
     state.commandInFlight = true;
     host.setError(null);
     try {
-      const updated = await invoke<RecordingSettings>(command, args);
+      const updated = await invoke<RecordingSettingsDomainUpdateResponse>(command, args);
       host.onSettingsUpdated(updated);
       void loadSensitiveCaptureRecommendations();
       return updated;
@@ -239,7 +242,7 @@ export function createAppPrivacyExclusionController(host: AppPrivacyExclusionHos
       for (const app of recommendations) {
         const action = recommendationActionFor(app, host.getExcludedApps());
         if (action.kind === "none") continue;
-        const updated = await invoke<RecordingSettings>(action.command, action.args);
+        const updated = await invoke<RecordingSettingsDomainUpdateResponse>(action.command, action.args);
         host.onSettingsUpdated(updated);
       }
       await invoke("complete_one_time_prompt", { promptId });

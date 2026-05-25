@@ -30,6 +30,17 @@
     OcrTesseractPageSegmentationMode,
     OcrTesseractPreprocessMode,
     RecordingSettings,
+    RecordingSettingsDomainUpdateResponse,
+    SettingsOwnershipDomain,
+    UpdateCaptureSourceSettingsRequest,
+    UpdateCaptureTimingSettingsRequest,
+    UpdateDeveloperSettingsRequest,
+    UpdateDisplaySettingsRequest,
+    UpdateInactivitySettingsRequest,
+    UpdateMetadataSettingsRequest,
+    UpdateProcessingSettingsRequest,
+    UpdateStorageSettingsRequest,
+    UpdateVideoSettingsRequest,
     AudioTranscriptionModelDownloadProgress,
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
@@ -59,6 +70,7 @@
   } from "$lib/types";
 
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
+  const RECORDING_SETTINGS_DOMAIN_CHANGED_EVENT = "recording_settings_domain_changed";
   const APP_UPDATE_STATUS_CHANGED_EVENT = "app_update_status_changed";
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
   const SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT = "speaker_analysis_model_download_progress";
@@ -106,6 +118,67 @@
     skippedActiveSegments: number;
     pendingFileTombstones: number;
   };
+
+  type AutosaveRecordingDomain = Extract<
+    SettingsOwnershipDomain,
+    | "capture_sources"
+    | "capture_timing"
+    | "video"
+    | "storage"
+    | "display"
+    | "metadata"
+    | "inactivity"
+    | "processing"
+    | "developer"
+  >;
+
+  type RecordingSettingsDraftDomain = AutosaveRecordingDomain | "app_privacy_exclusion";
+
+  type RecordingDomainRequest =
+    | UpdateCaptureSourceSettingsRequest
+    | UpdateCaptureTimingSettingsRequest
+    | UpdateVideoSettingsRequest
+    | UpdateStorageSettingsRequest
+    | UpdateDisplaySettingsRequest
+    | UpdateMetadataSettingsRequest
+    | UpdateInactivitySettingsRequest
+    | UpdateProcessingSettingsRequest
+    | UpdateDeveloperSettingsRequest;
+
+  const RECORDING_AUTOSAVE_DOMAINS: readonly AutosaveRecordingDomain[] = [
+    "capture_sources",
+    "capture_timing",
+    "video",
+    "storage",
+    "display",
+    "metadata",
+    "inactivity",
+    "processing",
+    "developer",
+  ];
+
+  const RECORDING_DRAFT_DOMAINS: readonly RecordingSettingsDraftDomain[] = [
+    ...RECORDING_AUTOSAVE_DOMAINS,
+    "app_privacy_exclusion",
+  ];
+
+  const RECORDING_DOMAIN_COMMANDS: Record<AutosaveRecordingDomain, string> = {
+    capture_sources: "update_capture_source_settings",
+    capture_timing: "update_capture_timing_settings",
+    video: "update_video_settings",
+    storage: "update_storage_settings",
+    display: "update_display_settings",
+    metadata: "update_metadata_settings",
+    inactivity: "update_inactivity_settings",
+    processing: "update_processing_settings",
+    developer: "update_developer_settings",
+  };
+
+  function makeRecordingDomainState<T>(value: T): Record<RecordingSettingsDraftDomain, T> {
+    return Object.fromEntries(
+      RECORDING_DRAFT_DOMAINS.map((domain) => [domain, value])
+    ) as Record<RecordingSettingsDraftDomain, T>;
+  }
 
   // ─── State ────────────────────────────────────────────────────────────────
 
@@ -281,7 +354,12 @@
 
   // Loading / error state
   let loadingRecSettings = $state(false);
-  let savingRecSettings = $state(false);
+  let savingRecDomains = $state<Record<RecordingSettingsDraftDomain, boolean>>(
+    makeRecordingDomainState(false)
+  );
+  const savingRecSettings = $derived(
+    RECORDING_DRAFT_DOMAINS.some((domain) => savingRecDomains[domain])
+  );
   let savingKeyboardBindings = $state(false);
   let loadingMicState = $state(false);
   let savingMicSettings = $state(false);
@@ -573,27 +651,29 @@
   const RECORDING_AUTOSAVE_DEBOUNCE_MS = 450;
   const MIC_AUTOSAVE_DEBOUNCE_MS = 250;
 
-  let lastSavedRecSnapshot = $state<string | null>(null);
+  let lastSavedRecSnapshots = $state<Record<RecordingSettingsDraftDomain, string | null>>(
+    makeRecordingDomainState<string | null>(null)
+  );
   let lastSavedKeyboardBindingsSnapshot = $state<string | null>(null);
   let lastSavedMicSnapshot = $state<string | null>(null);
-  let recAutoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const recAutoSaveTimers = new Map<AutosaveRecordingDomain, ReturnType<typeof setTimeout>>();
   let keyboardBindingsAutoSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let micAutoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
   const appPrivacyExclusion = createAppPrivacyExclusionController({
     getExcludedApps: () => draftExcludedApps,
-    onSettingsUpdated: (updated) => {
-      recordingSettings = updated;
-      syncRecDrafts(updated);
+    onSettingsUpdated: (response) => {
+      recordingSettings = response.settings;
+      syncRecordingDomainFromCanonical(response.domain, response.settings, true);
     },
     setError: (message) => {
       recError = message;
     },
     beforePrivacyCommand: () => {
-      if (recAutoSaveTimer !== null) {
-        clearTimeout(recAutoSaveTimer);
-        recAutoSaveTimer = null;
+      for (const timer of recAutoSaveTimers.values()) {
+        clearTimeout(timer);
       }
+      recAutoSaveTimers.clear();
     },
     enableExistingUserPrompt: true,
   });
@@ -647,29 +727,88 @@
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
-  function syncRecDrafts(s: RecordingSettings) {
+  function syncCaptureSourceDrafts(s: RecordingSettings) {
     draftCaptureScreen = s.captureScreen;
     draftCaptureMicrophone = s.captureMicrophone;
     draftCaptureSystemAudio = s.captureSystemAudio;
+  }
+
+  function syncCaptureTimingDrafts(s: RecordingSettings) {
     draftSegmentDuration = s.segmentDurationSeconds;
-    draftFrameRate = s.screenFrameRate;
-    draftSaveDirectory = s.saveDirectory;
     draftAutoStart = s.autoStart;
+  }
+
+  function syncVideoDrafts(s: RecordingSettings) {
+    draftFrameRate = s.screenFrameRate;
+    if (s.screenResolution.mode === "custom") {
+      draftResolutionMode = "custom";
+      draftCustomWidth = s.screenResolution.width;
+      draftCustomHeight = s.screenResolution.height;
+      customWidthRaw = String(s.screenResolution.width);
+      customHeightRaw = String(s.screenResolution.height);
+    } else if (s.screenResolution.preset === "original") {
+      draftResolutionMode = "original";
+      draftResolutionPreset = "1080p";
+      draftCustomWidth = null;
+      draftCustomHeight = null;
+      customWidthRaw = "";
+      customHeightRaw = "";
+    } else {
+      draftResolutionMode = "preset";
+      draftResolutionPreset = s.screenResolution.preset;
+      draftCustomWidth = null;
+      draftCustomHeight = null;
+      customWidthRaw = "";
+      customHeightRaw = "";
+    }
+    if (s.videoBitrate.mode === "custom") {
+      draftBitrateMode = "custom";
+      draftBitratePreset = "medium";
+      draftCustomMbps = s.videoBitrate.customMbps;
+      draftCustomMbpsRaw = String(s.videoBitrate.customMbps);
+    } else {
+      draftBitrateMode = "preset";
+      draftBitratePreset = s.videoBitrate.preset;
+      draftCustomMbps = null;
+      draftCustomMbpsRaw = "";
+    }
+  }
+
+  function syncStorageDrafts(s: RecordingSettings) {
+    draftSaveDirectory = s.saveDirectory;
+    draftRetentionPolicy = s.retentionPolicy ?? "never";
+  }
+
+  function syncDisplayDrafts(s: RecordingSettings) {
+    draftFollowTimelineLive = s.followTimelineLive ?? false;
+    draftAppearance = s.appearance ?? "system";
+  }
+
+  function syncMetadataDrafts(s: RecordingSettings) {
+    draftMetadataEnabled = s.metadata?.enabled ?? true;
+    draftBrowserUrlMode = s.metadata?.browserUrlMode ?? "sanitized";
+  }
+
+  function syncPrivacyDrafts(s: RecordingSettings) {
+    draftExcludedApps = [...(s.privacy?.excludedApps ?? [])];
+  }
+
+  function syncInactivityDrafts(s: RecordingSettings) {
     draftPauseCaptureOnInactivity = s.pauseCaptureOnInactivity;
     draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
     draftActivityMode = "system_input_or_screen_or_audio";
     draftMicrophoneActivitySensitivity = s.microphoneActivitySensitivity ?? 50;
     draftSystemAudioActivitySensitivity = s.systemAudioActivitySensitivity ?? 50;
     draftMicrophoneVadAdapter = s.audioSpeechDetection?.detector ?? s.microphoneVadAdapter ?? "silero";
+  }
+
+  function syncDeveloperDrafts(s: RecordingSettings) {
     draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
-    draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
-    draftFollowTimelineLive = s.followTimelineLive ?? false;
-    draftRetentionPolicy = s.retentionPolicy ?? "never";
-    draftMetadataEnabled = s.metadata?.enabled ?? true;
-    draftBrowserUrlMode = s.metadata?.browserUrlMode ?? "sanitized";
-    draftExcludedApps = [...(s.privacy?.excludedApps ?? [])];
     draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
-    draftAppearance = s.appearance ?? "system";
+  }
+
+  function syncProcessingDrafts(s: RecordingSettings) {
+    draftPreviewCacheTtlSeconds = s.previewCacheTtlSeconds ?? 3600;
     draftOcrEnabled = s.ocr?.enabled ?? true;
     const loadedOcrProvider = s.ocr?.provider;
     const loadedOcrProviderSelectable = isSelectableOcrProvider(loadedOcrProvider);
@@ -696,42 +835,48 @@
     draftSpeakerProvider = s.speakerAnalysis?.provider ?? "sherpa_onnx";
     draftSpeakerModelId = s.speakerAnalysis?.modelId ?? "pyannote-3.0-nemo-titanet-small";
     draftSpeakerTimeoutMinutes = Math.round((s.speakerAnalysis?.timeoutSeconds ?? 600) / 60);
-    if (s.screenResolution.mode === "custom") {
-      draftResolutionMode = "custom";
-      draftCustomWidth = s.screenResolution.width;
-      draftCustomHeight = s.screenResolution.height;
-      customWidthRaw = String(s.screenResolution.width);
-      customHeightRaw = String(s.screenResolution.height);
-    } else if (s.screenResolution.preset === "original") {
-      draftResolutionMode = "original";
-      draftResolutionPreset = "1080p";
-      draftCustomWidth = null;
-      draftCustomHeight = null;
-      customWidthRaw = "";
-      customHeightRaw = "";
-    } else {
-      draftResolutionMode = "preset";
-      draftResolutionPreset = s.screenResolution.preset;
-      draftCustomWidth = null;
-      draftCustomHeight = null;
-      customWidthRaw = "";
-      customHeightRaw = "";
+  }
+
+  function syncRecDrafts(s: RecordingSettings) {
+    for (const domain of RECORDING_DRAFT_DOMAINS) {
+      syncRecDomainDrafts(domain, s);
+      setRecDomainBaseline(domain, s);
     }
-    // Video bitrate
-    if (s.videoBitrate.mode === "custom") {
-      draftBitrateMode = "custom";
-      draftBitratePreset = "medium";
-      draftCustomMbps = s.videoBitrate.customMbps;
-      draftCustomMbpsRaw = String(s.videoBitrate.customMbps);
-    } else {
-      draftBitrateMode = "preset";
-      draftBitratePreset = s.videoBitrate.preset;
-      draftCustomMbps = null;
-      draftCustomMbpsRaw = "";
+  }
+
+  function syncRecDomainDrafts(domain: RecordingSettingsDraftDomain, s: RecordingSettings) {
+    switch (domain) {
+      case "capture_sources":
+        syncCaptureSourceDrafts(s);
+        break;
+      case "capture_timing":
+        syncCaptureTimingDrafts(s);
+        break;
+      case "video":
+        syncVideoDrafts(s);
+        break;
+      case "storage":
+        syncStorageDrafts(s);
+        break;
+      case "display":
+        syncDisplayDrafts(s);
+        break;
+      case "metadata":
+        syncMetadataDrafts(s);
+        break;
+      case "app_privacy_exclusion":
+        syncPrivacyDrafts(s);
+        break;
+      case "inactivity":
+        syncInactivityDrafts(s);
+        break;
+      case "processing":
+        syncProcessingDrafts(s);
+        break;
+      case "developer":
+        syncDeveloperDrafts(s);
+        break;
     }
-    // Mark this draft set as the "saved baseline" so the auto-save effect
-    // does not immediately re-fire after we accept backend-echoed values.
-    lastSavedRecSnapshot = buildRecSnapshot();
   }
 
   function syncKeyboardBindingsDrafts(s: KeyboardBindingsSettings) {
@@ -746,37 +891,28 @@
     lastSavedMicSnapshot = buildMicSnapshot();
   }
 
-  function buildRecRequest() {
+  function buildScreenResolutionRequest(): UpdateVideoSettingsRequest["screenResolution"] {
+    return draftResolutionMode === "custom"
+      ? {
+          mode: "custom" as const,
+          width: draftCustomWidth!,
+          height: draftCustomHeight!,
+        }
+      : {
+          mode: "preset" as const,
+          preset: draftResolutionMode === "original" ? "original" as const : draftResolutionPreset,
+        };
+  }
+
+  function buildVideoBitrateRequest(): UpdateVideoSettingsRequest["videoBitrate"] {
+    return draftBitrateMode === "custom"
+      ? { mode: "custom" as const, preset: null, customMbps: draftCustomMbps! }
+      : { mode: "preset" as const, preset: draftBitratePreset, customMbps: null };
+  }
+
+  function buildProcessingRequest(): UpdateProcessingSettingsRequest {
     return {
-      captureScreen: draftCaptureScreen,
-      captureMicrophone: draftCaptureMicrophone,
-      captureSystemAudio: draftCaptureSystemAudio,
-      segmentDurationSeconds: draftSegmentDuration,
-      screenFrameRate: draftFrameRate,
-      saveDirectory: draftSaveDirectory,
-      autoStart: draftAutoStart,
-      pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
-      idleTimeoutSeconds: draftIdleTimeoutSeconds,
-      activityMode: "system_input_or_screen_or_audio",
-      microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
-      systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
-      microphoneVadAdapter: draftMicrophoneVadAdapter,
-      audioSpeechDetection: {
-        detector: draftMicrophoneVadAdapter,
-      },
-      metadata: {
-        enabled: draftMetadataEnabled,
-        browserUrlMode: draftBrowserUrlMode,
-      },
-      privacy: recordingSettings?.privacy ?? {
-        excludedApps: draftExcludedApps,
-      },
-      nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
       previewCacheTtlSeconds: draftPreviewCacheTtlSeconds,
-      followTimelineLive: draftFollowTimelineLive,
-      retentionPolicy: draftRetentionPolicy,
-      appearance: draftAppearance,
-      developerOptionsEnabled: draftDeveloperOptionsEnabled,
       ocr: {
         enabled: draftOcrEnabled,
         provider: draftOcrProvider,
@@ -807,20 +943,61 @@
         modelId: draftSpeakerModelId,
         timeoutSeconds: Math.max(60, Math.min(3600, Math.trunc(Number(draftSpeakerTimeoutMinutes) || 10) * 60)),
       },
-      screenResolution: draftResolutionMode === "custom"
-        ? {
-            mode: "custom" as const,
-            width: draftCustomWidth!,
-            height: draftCustomHeight!,
-          }
-        : {
-            mode: "preset" as const,
-            preset: draftResolutionMode === "original" ? "original" as const : draftResolutionPreset,
-          },
-      videoBitrate: draftBitrateMode === "custom"
-        ? { mode: "custom" as const, preset: null, customMbps: draftCustomMbps! }
-        : { mode: "preset" as const, preset: draftBitratePreset, customMbps: null },
     };
+  }
+
+  function buildRecDomainRequest(domain: AutosaveRecordingDomain): RecordingDomainRequest {
+    switch (domain) {
+      case "capture_sources":
+        return {
+          captureScreen: draftCaptureScreen,
+          captureMicrophone: draftCaptureMicrophone,
+          captureSystemAudio: draftCaptureSystemAudio,
+        };
+      case "capture_timing":
+        return {
+          segmentDurationSeconds: draftSegmentDuration,
+          autoStart: draftAutoStart,
+        };
+      case "video":
+        return {
+          screenFrameRate: draftFrameRate,
+          screenResolution: buildScreenResolutionRequest(),
+          videoBitrate: buildVideoBitrateRequest(),
+        };
+      case "storage":
+        return {
+          saveDirectory: draftSaveDirectory,
+          retentionPolicy: draftRetentionPolicy,
+        };
+      case "display":
+        return {
+          appearance: draftAppearance,
+          followTimelineLive: draftFollowTimelineLive,
+        };
+      case "metadata":
+        return {
+          enabled: draftMetadataEnabled,
+          browserUrlMode: draftBrowserUrlMode,
+        };
+      case "inactivity":
+        return {
+          pauseCaptureOnInactivity: draftPauseCaptureOnInactivity,
+          idleTimeoutSeconds: draftIdleTimeoutSeconds,
+          microphoneActivitySensitivity: draftMicrophoneActivitySensitivity,
+          systemAudioActivitySensitivity: draftSystemAudioActivitySensitivity,
+          audioSpeechDetection: {
+            detector: draftMicrophoneVadAdapter,
+          },
+        };
+      case "processing":
+        return buildProcessingRequest();
+      case "developer":
+        return {
+          developerOptionsEnabled: draftDeveloperOptionsEnabled,
+          nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
+        };
+    }
   }
 
   function buildKeyboardBindingsRequest(): KeyboardBindingsSettings {
@@ -1161,13 +1338,115 @@
     draftBrowserUrlMode = mode as BrowserUrlMode;
   }
 
-  // Snapshots are stable JSON strings derived from the very same payload
-  // shape the backend sees. Using the request shape (rather than every raw
-  // draft variable) ensures invalid intermediate states — e.g. a custom
-  // resolution with `null` width while the user is typing — don't generate
-  // spurious snapshot churn that the auto-save guard would have to filter.
-  function buildRecSnapshot(): string {
-    return JSON.stringify(buildRecRequest());
+  function buildRecDomainRequestFromSettings(
+    domain: RecordingSettingsDraftDomain,
+    s: RecordingSettings,
+  ): unknown {
+    switch (domain) {
+      case "capture_sources":
+        return {
+          captureScreen: s.captureScreen,
+          captureMicrophone: s.captureMicrophone,
+          captureSystemAudio: s.captureSystemAudio,
+        };
+      case "capture_timing":
+        return {
+          segmentDurationSeconds: s.segmentDurationSeconds,
+          autoStart: s.autoStart,
+        };
+      case "video":
+        return {
+          screenFrameRate: s.screenFrameRate,
+          screenResolution: s.screenResolution,
+          videoBitrate: s.videoBitrate,
+        };
+      case "storage":
+        return {
+          saveDirectory: s.saveDirectory,
+          retentionPolicy: s.retentionPolicy ?? "never",
+        };
+      case "display":
+        return {
+          appearance: s.appearance ?? "system",
+          followTimelineLive: s.followTimelineLive ?? false,
+        };
+      case "metadata":
+        return {
+          enabled: s.metadata?.enabled ?? true,
+          browserUrlMode: s.metadata?.browserUrlMode ?? "sanitized",
+        };
+      case "app_privacy_exclusion":
+        return {
+          excludedApps: s.privacy?.excludedApps ?? [],
+        };
+      case "inactivity":
+        return {
+          pauseCaptureOnInactivity: s.pauseCaptureOnInactivity,
+          idleTimeoutSeconds: s.idleTimeoutSeconds,
+          microphoneActivitySensitivity: s.microphoneActivitySensitivity ?? 50,
+          systemAudioActivitySensitivity: s.systemAudioActivitySensitivity ?? 50,
+          audioSpeechDetection: {
+            detector: s.audioSpeechDetection?.detector ?? s.microphoneVadAdapter ?? "silero",
+          },
+        };
+      case "processing":
+        return {
+          previewCacheTtlSeconds: s.previewCacheTtlSeconds ?? 3600,
+          ocr: s.ocr,
+          transcription: s.transcription,
+          speakerAnalysis: s.speakerAnalysis,
+        };
+      case "developer":
+        return {
+          developerOptionsEnabled: s.developerOptionsEnabled ?? false,
+          nativeCaptureDebugLoggingEnabled: s.nativeCaptureDebugLoggingEnabled ?? false,
+        };
+    }
+  }
+
+  function buildRecDomainSnapshot(domain: RecordingSettingsDraftDomain): string {
+    if (domain === "app_privacy_exclusion") {
+      return JSON.stringify({ excludedApps: draftExcludedApps });
+    }
+    return JSON.stringify(buildRecDomainRequest(domain));
+  }
+
+  function buildRecDomainSnapshotFromSettings(
+    domain: RecordingSettingsDraftDomain,
+    s: RecordingSettings,
+  ): string {
+    return JSON.stringify(buildRecDomainRequestFromSettings(domain, s));
+  }
+
+  function setRecDomainBaseline(domain: RecordingSettingsDraftDomain, s: RecordingSettings): void {
+    lastSavedRecSnapshots = {
+      ...lastSavedRecSnapshots,
+      [domain]: buildRecDomainSnapshotFromSettings(domain, s),
+    };
+  }
+
+  function syncRecordingDomainFromCanonical(
+    domain: SettingsOwnershipDomain,
+    s: RecordingSettings,
+    force = false,
+  ): void {
+    if (!RECORDING_DRAFT_DOMAINS.includes(domain as RecordingSettingsDraftDomain)) return;
+    const draftDomain = domain as RecordingSettingsDraftDomain;
+    const baseline = lastSavedRecSnapshots[draftDomain];
+    const dirty = baseline !== null && buildRecDomainSnapshot(draftDomain) !== baseline;
+
+    if (force || !dirty) {
+      syncRecDomainDrafts(draftDomain, s);
+    }
+    setRecDomainBaseline(draftDomain, s);
+
+    if (draftDomain === "display" && (force || !dirty)) {
+      setAppearance(s.appearance ?? "system");
+    }
+    if (draftDomain === "developer" && (force || !dirty)) {
+      setDeveloperOptionsEnabled(s.developerOptionsEnabled ?? false);
+      void loadDebugLogStatus();
+    }
   }
 
   function buildKeyboardBindingsSnapshot(): string {
@@ -1602,16 +1881,34 @@
     }
   }
 
-  async function saveRecordingSettings() {
+  function recDomainSaveBlocked(domain: AutosaveRecordingDomain): boolean {
+    if (domain === "capture_sources") {
+      return (
+        (!draftCaptureScreen && !draftCaptureMicrophone && !draftCaptureSystemAudio)
+        || (draftCaptureSystemAudio && !draftCaptureScreen)
+      );
+    }
+    if (domain === "video") {
+      return resolutionSupportPendingForNonOriginal || customResolutionBlocked || customBitrateBlocked;
+    }
+    if (domain === "storage") {
+      return !draftSaveDirectory;
+    }
+    return false;
+  }
+
+  async function saveRecordingDomain(domain: AutosaveRecordingDomain) {
     if (appPrivacyExclusion.commandInFlight) return;
-    if (resolutionSupportPendingForNonOriginal) {
-      recError = "Wait for capture support to load before saving preset/custom resolution.";
+    if (recDomainSaveBlocked(domain)) {
+      if (domain === "video" && resolutionSupportPendingForNonOriginal) {
+        recError = "Wait for capture support to load before saving preset/custom resolution.";
+      }
       return;
     }
 
     const previousRetentionPolicy = recordingSettings?.retentionPolicy ?? "never";
 
-    if (previousRetentionPolicy === "never" && draftRetentionPolicy !== "never") {
+    if (domain === "storage" && previousRetentionPolicy === "never" && draftRetentionPolicy !== "never") {
       try {
         const preview = await invoke<RetentionCleanupSummary>("preview_retention_cleanup", {
           request: { policy: draftRetentionPolicy },
@@ -1636,26 +1933,20 @@
       }
     }
 
-    savingRecSettings = true;
+    savingRecDomains = { ...savingRecDomains, [domain]: true };
     recError = null;
     recSaved = false;
     try {
-      const updated = await invoke<RecordingSettings>("update_recording_settings", {
-        request: buildRecRequest(),
+      const response = await invoke<RecordingSettingsDomainUpdateResponse>(RECORDING_DOMAIN_COMMANDS[domain], {
+        request: buildRecDomainRequest(domain),
       });
+      const updated = response.settings;
       recordingSettings = updated;
-      syncRecDrafts(updated);
-      setDeveloperOptionsEnabled(updated.developerOptionsEnabled ?? false);
-      // Push the freshly-persisted appearance into the in-memory theme
-      // runtime so the entire UI (chrome + dashboard + settings) flips
-      // immediately, without waiting for a reload or settings round-trip.
-      setAppearance(updated.appearance ?? "system");
+      syncRecordingDomainFromCanonical(response.domain, updated, true);
       recSaved = true;
       setTimeout(() => { recSaved = false; }, 2200);
-      // Refresh debug log status since the enabled flag may have changed.
-      loadDebugLogStatus();
 
-      if (previousRetentionPolicy !== updated.retentionPolicy && updated.retentionPolicy !== "never") {
+      if (domain === "storage" && previousRetentionPolicy !== updated.retentionPolicy && updated.retentionPolicy !== "never") {
         retentionCleanupRunning = true;
         retentionCleanupError = null;
         try {
@@ -1669,7 +1960,7 @@
     } catch (err) {
       recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
     } finally {
-      savingRecSettings = false;
+      savingRecDomains = { ...savingRecDomains, [domain]: false };
     }
   }
 
@@ -1751,23 +2042,33 @@
   // preserving validation semantics — invalid drafts simply don't trigger the
   // backend call, so persisted state stays consistent.
   $effect(() => {
-    // Track the current snapshot reactively. Until the initial load completes,
-    // the baseline is null and we must not persist.
-    if (recordingSettings === null || lastSavedRecSnapshot === null) return;
-    const current = buildRecSnapshot();
-    if (current === lastSavedRecSnapshot) return;
-    if (recSaveBlocked) return;
-    if (appPrivacyExclusion.commandInFlight) return;
-    if (savingRecSettings) return;
+    if (recordingSettings === null) return;
 
-    if (recAutoSaveTimer !== null) clearTimeout(recAutoSaveTimer);
-    recAutoSaveTimer = setTimeout(() => {
-      recAutoSaveTimer = null;
-      // Re-check guards at fire time — drafts may have changed during debounce.
-      if (recSaveBlocked || appPrivacyExclusion.commandInFlight || savingRecSettings) return;
-      if (buildRecSnapshot() === lastSavedRecSnapshot) return;
-      void saveRecordingSettings();
-    }, RECORDING_AUTOSAVE_DEBOUNCE_MS);
+    for (const domain of RECORDING_AUTOSAVE_DOMAINS) {
+      const baseline = lastSavedRecSnapshots[domain];
+      if (baseline === null) continue;
+      const current = buildRecDomainSnapshot(domain);
+      const existingTimer = recAutoSaveTimers.get(domain);
+
+      if (current === baseline || recDomainSaveBlocked(domain) || appPrivacyExclusion.commandInFlight || savingRecDomains[domain]) {
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+          recAutoSaveTimers.delete(domain);
+        }
+        continue;
+      }
+
+      if (existingTimer) clearTimeout(existingTimer);
+      const timer = setTimeout(() => {
+        recAutoSaveTimers.delete(domain);
+        const latestBaseline = lastSavedRecSnapshots[domain];
+        if (latestBaseline === null) return;
+        if (recDomainSaveBlocked(domain) || appPrivacyExclusion.commandInFlight || savingRecDomains[domain]) return;
+        if (buildRecDomainSnapshot(domain) === latestBaseline) return;
+        void saveRecordingDomain(domain);
+      }, RECORDING_AUTOSAVE_DEBOUNCE_MS);
+      recAutoSaveTimers.set(domain, timer);
+    }
   });
 
   $effect(() => {
@@ -2211,6 +2512,7 @@
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
     let unlistenRecordingSettingsChanged: (() => void) | undefined;
+    let unlistenRecordingSettingsDomainChanged: (() => void) | undefined;
     let unlistenOpenSettingsTab: (() => void) | undefined;
     let unlistenAppUpdateStatusChanged: (() => void) | undefined;
     let unlistenOcrDownloadProgress: (() => void) | undefined;
@@ -2240,12 +2542,26 @@
 
     listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
       recordingSettings = event.payload;
-      syncRecDrafts(event.payload);
       recError = null;
       void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenRecordingSettingsChanged = fn;
+    });
+
+    listen<RecordingSettingsDomainUpdateResponse>(
+      RECORDING_SETTINGS_DOMAIN_CHANGED_EVENT,
+      (event) => {
+        recordingSettings = event.payload.settings;
+        syncRecordingDomainFromCanonical(event.payload.domain, event.payload.settings);
+        recError = null;
+        if (event.payload.domain === "app_privacy_exclusion" || event.payload.domain === "metadata") {
+          void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
+        }
+      }
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenRecordingSettingsDomainChanged = fn;
     });
 
 
@@ -2296,10 +2612,13 @@
 
     return () => {
       destroyed = true;
+      for (const timer of recAutoSaveTimers.values()) clearTimeout(timer);
+      recAutoSaveTimers.clear();
       if (keyboardBindingsAutoSaveTimer !== null) clearTimeout(keyboardBindingsAutoSaveTimer);
       unlistenControllerChanged?.();
       unlistenAutoDisconnectFailure?.();
       unlistenRecordingSettingsChanged?.();
+      unlistenRecordingSettingsDomainChanged?.();
       unlistenOpenSettingsTab?.();
       unlistenAppUpdateStatusChanged?.();
       unlistenOcrDownloadProgress?.();

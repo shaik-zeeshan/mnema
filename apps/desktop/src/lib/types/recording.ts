@@ -55,6 +55,69 @@ export interface RecordingSettings {
 	developerOptionsEnabled: boolean;
 }
 
+export type SettingsOwnershipDomain =
+	| "capture_sources"
+	| "capture_timing"
+	| "video"
+	| "storage"
+	| "display"
+	| "metadata"
+	| "app_privacy_exclusion"
+	| "inactivity"
+	| "processing"
+	| "developer"
+	| "keyboard_bindings"
+	| "microphone_controller"
+	| "app_update"
+	| "access"
+	| "one_time_prompt_state";
+
+export interface RecordingSettingsDomainUpdateResponse {
+	domain: SettingsOwnershipDomain;
+	settings: RecordingSettings;
+}
+
+export type UpdateCaptureSourceSettingsRequest = Partial<
+	Pick<RecordingSettings, "captureScreen" | "captureMicrophone" | "captureSystemAudio">
+>;
+
+export type UpdateCaptureTimingSettingsRequest = Partial<
+	Pick<RecordingSettings, "segmentDurationSeconds" | "autoStart">
+>;
+
+export type UpdateVideoSettingsRequest = Partial<
+	Pick<RecordingSettings, "screenFrameRate" | "screenResolution" | "videoBitrate">
+>;
+
+export type UpdateStorageSettingsRequest = Partial<
+	Pick<RecordingSettings, "saveDirectory" | "retentionPolicy">
+>;
+
+export type UpdateDisplaySettingsRequest = Partial<
+	Pick<RecordingSettings, "appearance" | "followTimelineLive">
+>;
+
+export type UpdateMetadataSettingsRequest = Partial<MetadataSettings>;
+
+export type UpdateInactivitySettingsRequest = Partial<
+	Pick<
+		RecordingSettings,
+		| "pauseCaptureOnInactivity"
+		| "idleTimeoutSeconds"
+		| "microphoneActivitySensitivity"
+		| "systemAudioActivitySensitivity"
+		| "audioSpeechDetection"
+	>
+>;
+
+export type UpdateProcessingSettingsRequest = Partial<
+	Pick<RecordingSettings, "ocr" | "transcription" | "speakerAnalysis" | "previewCacheTtlSeconds">
+>;
+
+export type UpdateDeveloperSettingsRequest = Partial<
+	Pick<RecordingSettings, "developerOptionsEnabled" | "nativeCaptureDebugLoggingEnabled">
+>;
+
 export interface KeyboardBindingsSettings {
 	schemaVersion: number;
 	globalShortcuts: GlobalShortcutsSettings;

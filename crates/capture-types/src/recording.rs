@@ -498,6 +498,33 @@ pub struct RecordingSettings {
     pub inactivity_activity_mode: InactivityActivityMode,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsOwnershipDomain {
+    CaptureSources,
+    CaptureTiming,
+    Video,
+    Storage,
+    Display,
+    Metadata,
+    AppPrivacyExclusion,
+    Inactivity,
+    Processing,
+    Developer,
+    KeyboardBindings,
+    MicrophoneController,
+    AppUpdate,
+    Access,
+    OneTimePromptState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSettingsDomainUpdateResponse {
+    pub domain: SettingsOwnershipDomain,
+    pub settings: RecordingSettings,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateRecordingSettingsRequest {
@@ -556,4 +583,74 @@ pub struct UpdateRecordingSettingsRequest {
         alias = "inactivityActivityMode"
     )]
     pub inactivity_activity_mode: InactivityActivityMode,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCaptureSourceSettingsRequest {
+    pub capture_screen: Option<bool>,
+    pub capture_microphone: Option<bool>,
+    pub capture_system_audio: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCaptureTimingSettingsRequest {
+    pub segment_duration_seconds: Option<u64>,
+    pub auto_start: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateVideoSettingsRequest {
+    pub screen_frame_rate: Option<u32>,
+    pub screen_resolution: Option<ScreenResolution>,
+    pub video_bitrate: Option<VideoBitrateSettings>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStorageSettingsRequest {
+    pub save_directory: Option<String>,
+    pub retention_policy: Option<RetentionPolicy>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateDisplaySettingsRequest {
+    pub appearance: Option<AppearanceSetting>,
+    pub follow_timeline_live: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMetadataSettingsRequest {
+    pub enabled: Option<bool>,
+    pub browser_url_mode: Option<capture_metadata::BrowserUrlMode>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInactivitySettingsRequest {
+    pub pause_capture_on_inactivity: Option<bool>,
+    pub idle_timeout_seconds: Option<u64>,
+    pub microphone_activity_sensitivity: Option<u8>,
+    pub system_audio_activity_sensitivity: Option<u8>,
+    pub audio_speech_detection: Option<AudioSpeechDetectionSettings>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProcessingSettingsRequest {
+    pub ocr: Option<OcrSettings>,
+    pub transcription: Option<AudioTranscriptionSettings>,
+    pub speaker_analysis: Option<SpeakerAnalysisSettings>,
+    pub preview_cache_ttl_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateDeveloperSettingsRequest {
+    pub developer_options_enabled: Option<bool>,
+    pub native_capture_debug_logging_enabled: Option<bool>,
 }

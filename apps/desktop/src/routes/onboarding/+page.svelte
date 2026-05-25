@@ -34,6 +34,7 @@
     OcrTesseractPreprocessMode,
     PermissionStatus,
     RecordingSettings,
+    RecordingSettingsDomainUpdateResponse,
     ResolutionMode,
     ResolutionPreset,
     RetentionPolicy,
@@ -178,8 +179,8 @@
   const appPrivacyExclusion = createAppPrivacyExclusionController({
     getExcludedApps: () => draftExcludedApps,
     onSettingsUpdated: (updated) => {
-      settings = updated;
-      syncDrafts(updated);
+      settings = updated.settings;
+      syncDrafts(updated.settings);
     },
     setError: (message) => {
       error = message;
@@ -445,9 +446,73 @@
     saving = true;
     error = null;
     try {
-      const updated = await invoke<RecordingSettings>("update_recording_settings", { request: buildSettingsRequest() });
-      settings = updated;
-      syncDrafts(updated);
+      const request = buildSettingsRequest();
+      let updated = settings;
+      const domainUpdates: Array<[string, Record<string, unknown>]> = [
+        [
+          "update_capture_source_settings",
+          {
+            captureScreen: request.captureScreen,
+            captureMicrophone: request.captureMicrophone,
+            captureSystemAudio: request.captureSystemAudio,
+          },
+        ],
+        [
+          "update_capture_timing_settings",
+          {
+            segmentDurationSeconds: request.segmentDurationSeconds,
+            autoStart: request.autoStart,
+          },
+        ],
+        [
+          "update_video_settings",
+          {
+            screenFrameRate: request.screenFrameRate,
+            screenResolution: request.screenResolution,
+            videoBitrate: request.videoBitrate,
+          },
+        ],
+        [
+          "update_storage_settings",
+          {
+            saveDirectory: request.saveDirectory,
+            retentionPolicy: request.retentionPolicy,
+          },
+        ],
+        [
+          "update_display_settings",
+          {
+            appearance: request.appearance,
+          },
+        ],
+        [
+          "update_inactivity_settings",
+          {
+            pauseCaptureOnInactivity: request.pauseCaptureOnInactivity,
+            idleTimeoutSeconds: request.idleTimeoutSeconds,
+            microphoneActivitySensitivity: request.microphoneActivitySensitivity,
+            systemAudioActivitySensitivity: request.systemAudioActivitySensitivity,
+          },
+        ],
+        [
+          "update_processing_settings",
+          {
+            previewCacheTtlSeconds: request.previewCacheTtlSeconds,
+            ocr: request.ocr,
+            transcription: request.transcription,
+          },
+        ],
+      ];
+
+      for (const [command, domainRequest] of domainUpdates) {
+        const response = await invoke<RecordingSettingsDomainUpdateResponse>(command, { request: domainRequest });
+        updated = response.settings;
+      }
+
+      if (updated !== null) {
+        settings = updated;
+        syncDrafts(updated);
+      }
     } catch (err) {
       error = serializeError(err);
       throw err;
