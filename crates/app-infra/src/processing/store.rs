@@ -30,6 +30,29 @@ pub const SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY: &str = "speakerAnalysisPayload";
 /// hit the job stays failed. Audio jobs are unaffected: this bound is OCR-only.
 pub(crate) const OCR_FAILED_JOB_MAX_ATTEMPTS: i64 = 3;
 
+/// Backoff applied before a failed **OCR Job** may be re-claimed by the automatic
+/// queue drain, indexed by the number of attempts already made (so index 0 is the
+/// wait after the first failure, index 1 after the second, and so on). Because the
+/// claim selects queued jobs oldest-id-first, an immediate requeue would let a
+/// deterministically-failing job re-claim ahead of fresh capture work every cycle
+/// until the attempt cap; spacing retries lets newer OCR jobs drain in the gap and
+/// gives a transient provider outage time to recover before the cap is reached.
+const OCR_RETRY_BACKOFF_SECONDS: [i64; 2] = [30, 120];
+
+/// The backoff (seconds) before the next attempt of a failed OCR job, given how
+/// many attempts have already been made. Saturates at the last configured step.
+fn ocr_retry_backoff_seconds(attempts_made: i64) -> i64 {
+    let index = attempts_made.max(1).saturating_sub(1) as usize;
+    OCR_RETRY_BACKOFF_SECONDS
+        .get(index)
+        .copied()
+        .unwrap_or_else(|| {
+            *OCR_RETRY_BACKOFF_SECONDS
+                .last()
+                .expect("OCR_RETRY_BACKOFF_SECONDS is non-empty")
+        })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameProcessingJob {
@@ -253,6 +276,7 @@ impl ProcessingStore {
                  payload_json = COALESCE(?2, payload_json), \
                  last_error = NULL, \
                  queued_at = CURRENT_TIMESTAMP, \
+                 next_attempt_at = NULL, \
                  started_at = NULL, \
                  finished_at = NULL, \
                  updated_at = CURRENT_TIMESTAMP \
@@ -1000,6 +1024,7 @@ impl ProcessingStore {
                         pj.finished_at \
                      FROM processing_jobs AS pj \
                      WHERE pj.status = 'queued' \
+                       AND (pj.next_attempt_at IS NULL OR pj.next_attempt_at <= CURRENT_TIMESTAMP) \
                        AND pj.processor = ?1 \
                        AND NOT EXISTS ( \
                          SELECT 1 FROM processing_model_cleanup_locks AS lock \
@@ -1033,6 +1058,7 @@ impl ProcessingStore {
                             pj.finished_at \
                          FROM processing_jobs AS pj \
                          WHERE pj.status = 'queued' \
+                           AND (pj.next_attempt_at IS NULL OR pj.next_attempt_at <= CURRENT_TIMESTAMP) \
                            AND pj.processor NOT IN (",
                     );
                     let mut separated = query.separated(", ");
@@ -1071,6 +1097,7 @@ impl ProcessingStore {
                         pj.finished_at \
                      FROM processing_jobs AS pj \
                      WHERE pj.status = 'queued' \
+                       AND (pj.next_attempt_at IS NULL OR pj.next_attempt_at <= CURRENT_TIMESTAMP) \
                        AND NOT EXISTS ( \
                          SELECT 1 FROM processing_model_cleanup_locks AS lock \
                          WHERE lock.processor = pj.processor \
@@ -1391,8 +1418,40 @@ impl ProcessingStore {
         let requeued = self
             .requeue_processing_job_in_transaction(&mut transaction, job_id, None)
             .await?;
+
+        // Defer the retry by a backoff window so this failing job does not re-claim
+        // the queue ahead of fresh OCR work every cycle. `job.attempt_count` is the
+        // number of attempts already made (the requeue does not change it), so it
+        // selects the backoff step for the upcoming attempt.
+        let backoff_seconds = ocr_retry_backoff_seconds(job.attempt_count);
+        sqlx::query(
+            "UPDATE processing_jobs \
+             SET next_attempt_at = datetime(CURRENT_TIMESTAMP, ?2), \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status = 'queued'",
+        )
+        .bind(job_id)
+        .bind(format!("+{backoff_seconds} seconds"))
+        .execute(&mut *transaction)
+        .await?;
+
         transaction.commit().await?;
         Ok(Some(requeued))
+    }
+
+    /// Test-only: clear a job's retry backoff so the automatic queue drain treats
+    /// it as immediately eligible again, simulating the backoff window elapsing
+    /// without waiting in wall-clock time.
+    #[cfg(test)]
+    pub(crate) async fn expire_processing_job_retry_backoff_for_test(
+        &self,
+        job_id: i64,
+    ) -> Result<()> {
+        sqlx::query("UPDATE processing_jobs SET next_attempt_at = NULL WHERE id = ?1")
+            .bind(job_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn complete_job(

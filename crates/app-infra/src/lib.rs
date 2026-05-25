@@ -4502,10 +4502,9 @@ mod tests {
             };
             assert_eq!(first_job_id, malformed_job.id);
 
-            // The malformed job is bounded-retried (its payload failure is the same each attempt),
-            // so later queued OCR work must still keep draining rather than being starved. Drain
-            // OCR jobs until the valid job runs; the malformed job goes terminally failed once its
-            // attempt cap is reached and stops being requeued.
+            // The malformed job's payload failure repeats each attempt, but its retry is deferred
+            // by a backoff window, so later queued OCR work drains in the gap instead of being
+            // starved. Drain OCR jobs until the valid job runs.
             let mut valid_job_ran = false;
             for _ in 0..16 {
                 let Some(outcome) = infra
@@ -4529,12 +4528,16 @@ mod tests {
                 "the valid OCR job must still drain even while the malformed job is bounded-retried"
             );
 
-            let malformed_terminal = infra
+            // The malformed job is deferred (still queued, awaiting its backoff) rather than
+            // re-claimed every cycle — exactly what lets the valid job drain promptly instead
+            // of waiting out the malformed job's attempt cap.
+            let malformed_after = infra
                 .get_processing_job(malformed_job.id)
                 .await
                 .expect("malformed job should be readable")
                 .expect("malformed job should exist");
-            assert_eq!(malformed_terminal.status, ProcessingJobStatus::Failed);
+            assert_eq!(malformed_after.status, ProcessingJobStatus::Queued);
+            assert_eq!(malformed_after.attempt_count, 1);
         });
     }
 

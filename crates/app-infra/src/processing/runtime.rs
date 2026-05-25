@@ -615,13 +615,32 @@ mod tests {
                 "a failed OCR job under the attempt cap should be requeued for retry"
             );
 
-            // Drive remaining attempts; each one re-claims the requeued job until the cap is hit.
+            // The requeued job is deferred by a retry backoff window, so it is not
+            // immediately re-claimable even though it is queued.
+            assert!(
+                runtime
+                    .process_next_queued_job()
+                    .await
+                    .expect("runtime poll should succeed")
+                    .is_none(),
+                "a requeued OCR job should be deferred by its retry backoff"
+            );
+
+            // Drive remaining attempts; expire the backoff before each retry to simulate
+            // the wait elapsing, then re-claim the requeued job until the cap is hit.
             let mut last_attempt_count = after_first.attempt_count;
-            while let Some(outcome) = runtime
-                .process_next_queued_job()
-                .await
-                .expect("runtime should keep retrying the requeued ocr job")
-            {
+            loop {
+                store
+                    .expire_processing_job_retry_backoff_for_test(queued_job.id)
+                    .await
+                    .expect("retry backoff should expire for test");
+                let Some(outcome) = runtime
+                    .process_next_queued_job()
+                    .await
+                    .expect("runtime should keep retrying the requeued ocr job")
+                else {
+                    break;
+                };
                 let ProcessingJobRunOutcome::Failed(failed) = outcome else {
                     panic!("expected failed outcome on retry");
                 };
@@ -647,6 +666,83 @@ mod tests {
                 .await
                 .expect("runtime poll should succeed")
                 .is_none());
+        });
+    }
+
+    #[test]
+    fn requeued_failed_ocr_job_yields_to_fresh_work_during_backoff() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-runtime-ocr-retry-backoff-yields");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(database.pool().clone());
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
+                    response: MockOcrResponse::Failure("vision bridge failed".to_string()),
+                })),
+            );
+
+            let first_frame = store
+                .insert_frame(&NewFrame::new(
+                    "session-runtime",
+                    "/tmp/frame-retry-backoff-first.png",
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("first frame should persist");
+            let failing_job = store
+                .enqueue_job(&ProcessingJobDraft::for_frame_ocr(first_frame.id))
+                .await
+                .expect("failing job should persist");
+
+            let second_frame = store
+                .insert_frame(&NewFrame::new(
+                    "session-runtime",
+                    "/tmp/frame-retry-backoff-second.png",
+                    "2026-04-12T10:00:01Z",
+                ))
+                .await
+                .expect("second frame should persist");
+            let fresh_job = store
+                .enqueue_job(&ProcessingJobDraft::for_frame_ocr(second_frame.id))
+                .await
+                .expect("fresh job should persist");
+
+            // First poll claims the oldest job, which fails and is requeued with a backoff.
+            let ProcessingJobRunOutcome::Failed(first_failed) = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should attempt the oldest job")
+                .expect("a queued job should exist")
+            else {
+                panic!("expected the oldest job to fail");
+            };
+            assert_eq!(first_failed.id, failing_job.id);
+
+            // The next poll must claim the FRESH job rather than re-claiming the backed-off
+            // failing job (which has the lower id), so fresh capture indexing is not starved.
+            let ProcessingJobRunOutcome::Failed(second_failed) = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should claim the fresh job during backoff")
+                .expect("the fresh job should be claimable")
+            else {
+                panic!("expected the fresh job to be claimed");
+            };
+            assert_eq!(
+                second_failed.id, fresh_job.id,
+                "the requeued failing job must not monopolize the queue during its backoff"
+            );
+
+            // The failing job is preserved (queued, awaiting its backoff), not dropped.
+            let backed_off = store
+                .get_job(failing_job.id)
+                .await
+                .expect("failing job should be readable")
+                .expect("failing job should exist");
+            assert_eq!(backed_off.status, ProcessingJobStatus::Queued);
         });
     }
 
