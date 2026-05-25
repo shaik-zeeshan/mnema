@@ -4175,6 +4175,21 @@
     searchLoadingMoreAudio = false;
   }
 
+  // The offending token for a parse error, derived from its span data: prefer
+  // the raw token the backend captured, falling back to slicing the original
+  // query by the error's character offsets. Whole-query errors (e.g. the
+  // app/source conflict) carry no narrower token — start === end and an empty
+  // token — so we show only the message for those. Spans index the raw query;
+  // the box is never rewritten while parse errors are present, so offsets align.
+  function searchParseErrorToken(parseError: SearchParseError): string {
+    const token = parseError.token.trim();
+    if (token.length > 0) return token;
+    if (parseError.end > parseError.start) {
+      return Array.from(searchQuery).slice(parseError.start, parseError.end).join("").trim();
+    }
+    return "";
+  }
+
   async function runSearch(
     options: { appendFrames?: boolean; appendAudio?: boolean; commitResidual?: boolean } = {},
   ): Promise<void> {
@@ -4246,21 +4261,25 @@
       if (!requestIsCurrent()) return;
       searchNormalizedQuery = response.normalizedQuery;
       searchSnapshotDocumentId = response.snapshotDocumentId;
+      // Validation feedback is delivered in-band via parseErrors. When the
+      // backend reports parse errors it returns empty results; surface them
+      // instead of (and in place of) the thrown-error path.
+      searchParseErrors = response.parseErrors ?? [];
       // Operators typed into the box are only PROMOTED to committed refinement
       // chips (and a normalized view) on an explicit commit — Enter, or picking
       // a dropdown value. On the live debounced path we leave the existing
       // chips untouched so a half-typed `app:c` never materializes a chip the
       // user never accepted; results are still filtered by the parsed operator,
-      // it just stays as editable text in the box until committed.
-      if (options.commitResidual === true) {
+      // it just stays as editable text in the box until committed. Skip the
+      // promotion when there are parse errors: a refinement conflict (e.g.
+      // `source:mic` added while an `app` chip is active) makes the backend
+      // return empty appliedRefinements, so promoting it would silently drop
+      // the user's existing chips for a query they have not yet fixed.
+      if (options.commitResidual === true && searchParseErrors.length === 0) {
         searchRefinements = response.appliedRefinements ?? searchRefinements;
         searchRefinementKey = searchRefinementsKey(searchRefinements);
         searchView = normalizeSearchViewForRefinements(searchView, searchRefinements);
       }
-      // Validation feedback is delivered in-band via parseErrors. When the
-      // backend reports parse errors it returns empty results; surface them
-      // instead of (and in place of) the thrown-error path.
-      searchParseErrors = response.parseErrors ?? [];
       if (!appendAudio) {
         searchFrames = appendFrames ? [...searchFrames, ...response.frames] : response.frames;
         searchHasMoreFrames = response.hasMoreFrames;
@@ -7882,7 +7901,12 @@
         {#if searchParseErrors.length > 0}
           <div class="search-modal__status search-modal__error">
             {#each searchParseErrors as parseError, parseErrorIndex (parseErrorIndex)}
-              <p class="search-modal__error-line">{parseError.message}</p>
+              <p class="search-modal__error-line">
+                {#if searchParseErrorToken(parseError)}
+                  <code class="search-modal__error-token">{searchParseErrorToken(parseError)}</code>
+                {/if}
+                {parseError.message}
+              </p>
             {/each}
           </div>
         {:else if searchError}
@@ -9285,6 +9309,28 @@
   }
 
   .search-modal__error {
+    color: var(--app-danger);
+  }
+
+  .search-modal__error-line {
+    margin: 0;
+  }
+
+  .search-modal__error-line + .search-modal__error-line {
+    margin-top: 4px;
+  }
+
+  .search-modal__error-token {
+    font-family:
+      ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    font-size: 0.92em;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--app-danger-strong) 14%, transparent);
+    border: 1px solid var(--app-danger-border);
     color: var(--app-danger);
   }
 
