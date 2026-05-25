@@ -3,6 +3,7 @@
 ## Workspace
 - This repo has two roots of truth: the Bun/Turbo workspace in `package.json` and the Rust Cargo workspace in `Cargo.toml`.
 - `apps/desktop` is the only JS app. Shared native/backend code lives in `crates/*`, not `packages/*`.
+- Platform-specific support status and implementation checklists live in `SUPPORTS.md`; update it when adding or changing macOS, Windows, or Linux support behavior.
 
 ## Commands
 - Run repo commands from the repo root.
