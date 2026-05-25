@@ -95,6 +95,8 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 
 ## Windows checklist
 
+Research note: `docs/windows/runtime-capture-research.md` tracks the currently recommended Windows capture APIs and crate options.
+
 ### Bring-up / compilation
 
 - [ ] Add Windows CI job for `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`, `cargo check --workspace --all-targets`, and `bun run check`.
