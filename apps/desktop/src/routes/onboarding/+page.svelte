@@ -34,7 +34,6 @@
     OcrTesseractPreprocessMode,
     PermissionStatus,
     RecordingSettings,
-    RecordingSettingsDomainUpdateResponse,
     ResolutionMode,
     ResolutionPreset,
     RetentionPolicy,
@@ -446,73 +445,16 @@
     saving = true;
     error = null;
     try {
-      const request = buildSettingsRequest();
-      let updated = settings;
-      const domainUpdates: Array<[string, Record<string, unknown>]> = [
-        [
-          "update_capture_source_settings",
-          {
-            captureScreen: request.captureScreen,
-            captureMicrophone: request.captureMicrophone,
-            captureSystemAudio: request.captureSystemAudio,
-          },
-        ],
-        [
-          "update_capture_timing_settings",
-          {
-            segmentDurationSeconds: request.segmentDurationSeconds,
-            autoStart: request.autoStart,
-          },
-        ],
-        [
-          "update_video_settings",
-          {
-            screenFrameRate: request.screenFrameRate,
-            screenResolution: request.screenResolution,
-            videoBitrate: request.videoBitrate,
-          },
-        ],
-        [
-          "update_storage_settings",
-          {
-            saveDirectory: request.saveDirectory,
-            retentionPolicy: request.retentionPolicy,
-          },
-        ],
-        [
-          "update_display_settings",
-          {
-            appearance: request.appearance,
-          },
-        ],
-        [
-          "update_inactivity_settings",
-          {
-            pauseCaptureOnInactivity: request.pauseCaptureOnInactivity,
-            idleTimeoutSeconds: request.idleTimeoutSeconds,
-            microphoneActivitySensitivity: request.microphoneActivitySensitivity,
-            systemAudioActivitySensitivity: request.systemAudioActivitySensitivity,
-          },
-        ],
-        [
-          "update_processing_settings",
-          {
-            previewCacheTtlSeconds: request.previewCacheTtlSeconds,
-            ocr: request.ocr,
-            transcription: request.transcription,
-          },
-        ],
-      ];
-
-      for (const [command, domainRequest] of domainUpdates) {
-        const response = await invoke<RecordingSettingsDomainUpdateResponse>(command, { request: domainRequest });
-        updated = response.settings;
-      }
-
-      if (updated !== null) {
-        settings = updated;
-        syncDrafts(updated);
-      }
+      // Onboarding commits the whole recording config in one shot. The
+      // domain-scoped commands exist for the Settings page's per-domain
+      // debounced autosave; here we deliberately use the atomic full-settings
+      // command so a late validation failure can't leave a partially-persisted
+      // configuration behind.
+      const updated = await invoke<RecordingSettings>("update_recording_settings", {
+        request: buildSettingsRequest(),
+      });
+      settings = updated;
+      syncDrafts(updated);
     } catch (err) {
       error = serializeError(err);
       throw err;

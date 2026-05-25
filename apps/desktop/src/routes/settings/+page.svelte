@@ -1449,6 +1449,26 @@
     }
   }
 
+  // A domain-less `recording_settings_changed` (the legacy full-settings
+  // command) carries no per-domain payload, so resync every domain's drafts and
+  // baselines from the canonical settings. Dirty domains keep their in-flight
+  // edits — only their baseline is refreshed so the next autosave diff stays
+  // correct — which prevents a later same-domain save from shipping stale
+  // companion fields back over the external change. App-wide appearance and
+  // developer-mode side effects are handled by the dedicated theme /
+  // developer-options stores listening on the same event, so we skip them (and
+  // their per-domain IPC) here.
+  function resyncRecordingDraftsFromCanonical(s: RecordingSettings): void {
+    for (const domain of RECORDING_DRAFT_DOMAINS) {
+      const baseline = lastSavedRecSnapshots[domain];
+      const dirty = baseline !== null && buildRecDomainSnapshot(domain) !== baseline;
+      if (!dirty) {
+        syncRecDomainDrafts(domain, s);
+      }
+      setRecDomainBaseline(domain, s);
+    }
+  }
+
   function buildKeyboardBindingsSnapshot(): string {
     return JSON.stringify(buildKeyboardBindingsRequest());
   }
@@ -2542,6 +2562,7 @@
 
     listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
       recordingSettings = event.payload;
+      resyncRecordingDraftsFromCanonical(event.payload);
       recError = null;
       void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
     }).then((fn) => {
