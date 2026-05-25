@@ -289,13 +289,21 @@ fn in_continuous_novelty_burst(consecutive_novel_run: u32) -> bool {
 /// later one arrives within `NOVELTY_CONTINUOUS_GAP_SECONDS` of the previous
 /// novel frame. A missing previous timestamp or an unparseable current capture
 /// time is treated as a gap, so the run restarts rather than extending blindly.
+///
+/// The gap is compared with sub-second precision (not truncated whole seconds),
+/// so a 2.9s gap does not slip under a 2s threshold. A negative gap (a current
+/// capture time earlier than the previous novel frame, e.g. a clock adjustment
+/// or out-of-order ingestion) is treated as a gap rather than continuity, so an
+/// out-of-order frame restarts the run instead of extending the burst blindly.
 fn novel_frame_is_temporally_continuous(
     previous_novel_at: Option<OffsetDateTime>,
     captured_at: Option<OffsetDateTime>,
 ) -> bool {
     match (previous_novel_at, captured_at) {
         (Some(previous), Some(current)) => {
-            (current - previous).whole_seconds() <= NOVELTY_CONTINUOUS_GAP_SECONDS
+            let gap = current - previous;
+            gap >= time::Duration::ZERO
+                && gap <= time::Duration::seconds(NOVELTY_CONTINUOUS_GAP_SECONDS)
         }
         _ => false,
     }
@@ -1263,6 +1271,38 @@ mod tests {
         );
         assert_eq!(scope.consecutive_novel_run, 1);
         assert!(!in_continuous_novelty_burst(scope.consecutive_novel_run));
+    }
+
+    #[test]
+    fn sub_second_gap_beyond_threshold_is_not_continuous() {
+        // A gap of 2.9s exceeds the 2s continuous-gap threshold, so the frames
+        // are NOT part of the same continuous-novelty burst. The earlier
+        // `.whole_seconds()` comparison truncated 2.9 -> 2 and wrongly counted
+        // it as continuous; the gap must be compared with sub-second precision.
+        let previous = captured_at_seconds(0);
+        let current = previous.map(|t| t + time::Duration::milliseconds(2_900));
+        assert!(!novel_frame_is_temporally_continuous(previous, current));
+    }
+
+    #[test]
+    fn gap_at_exact_threshold_is_continuous() {
+        // Exactly NOVELTY_CONTINUOUS_GAP_SECONDS apart is still continuous
+        // (frames arriving "at least this often" build the burst).
+        let previous = captured_at_seconds(0);
+        let current =
+            previous.map(|t| t + time::Duration::seconds(NOVELTY_CONTINUOUS_GAP_SECONDS));
+        assert!(novel_frame_is_temporally_continuous(previous, current));
+    }
+
+    #[test]
+    fn regressing_timestamp_is_not_continuous() {
+        // A current capture time earlier than the previous novel frame (clock
+        // adjustment / out-of-order ingestion) yields a negative gap. That is
+        // not a high-frequency novel burst, so it must NOT count as continuous
+        // and should restart the run rather than extend it.
+        let previous = captured_at_seconds(10);
+        let current = captured_at_seconds(9);
+        assert!(!novel_frame_is_temporally_continuous(previous, current));
     }
 
     #[test]
