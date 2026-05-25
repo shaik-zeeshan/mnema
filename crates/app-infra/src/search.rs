@@ -1528,6 +1528,14 @@ fn tokenize_query(raw: &str) -> Tokenized {
                 while index < len {
                     let inner = chars[index];
                     if inner == '"' {
+                        // A doubled `""` inside the run is an escaped literal
+                        // quote: consume both and keep one `"` in the phrase
+                        // rather than closing and reopening the quoted run.
+                        if index + 1 < len && chars[index + 1] == '"' {
+                            text.push('"');
+                            index += 2;
+                            continue;
+                        }
                         in_quote = false;
                         index += 1;
                         break;
@@ -6084,6 +6092,20 @@ mod tests {
         let parsed = parse_search_query("\"hello world\"");
         assert!(parsed.errors.is_empty());
         assert_eq!(parsed.fts_body, "(\"hello world\")");
+    }
+
+    #[test]
+    fn quoted_phrase_preserves_doubled_quotes_as_literal_quote() {
+        // `""` inside a quoted run is an escaped literal `"`, not a close+reopen.
+        // `"he said ""hi"""` must parse the phrase `he said "hi"` rather than
+        // collapsing the doubled quotes away into `he said hi`.
+        let parsed = parse_search_query("\"he said \"\"hi\"\"\"");
+        assert!(
+            parsed.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parsed.errors
+        );
+        assert_eq!(parsed.fts_body, "(\"he said \"\"hi\"\"\")");
     }
 
     #[test]

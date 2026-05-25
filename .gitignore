@@ -18,3 +18,4 @@ apps/desktop/src-tauri/binaries/
 
 # AI coding agents
 .pi
+pi-session-*.html
