@@ -27,7 +27,11 @@ async function resolve({ list, seedCache = null }) {
   const downloadEl = Object.assign(Object.create(HTMLAnchorElement.prototype), { href: "FALLBACK" });
 
   const store = new Map();
-  if (seedCache) store.set("mnema-latest-release", JSON.stringify(seedCache));
+  if (seedCache)
+    store.set(
+      "mnema-latest-release-v3",
+      JSON.stringify({ fetchedAt: Date.now(), release: seedCache }),
+    );
   let fetchCalls = 0;
 
   const bySelector = {
@@ -89,4 +93,16 @@ test("a non-prerelease stable release is still resolved normally", async () => {
   const r = await resolve({ list: [rel("v1.0.0", false)] });
   assert.equal(r.version, "v1.0.0");
   assert.equal(r.fetchCalls, 1);
+});
+
+test("revalidates even with a fresh cache, upgrading to a newer release (the stale-cache bug)", async () => {
+  // A tab cached v0.1.2 while it was latest; v0.1.3 ships later. The loader
+  // must still fetch and update rather than serving the cached version.
+  const r = await resolve({
+    seedCache: rel("v0.1.2", false),
+    list: [rel("v0.1.3", false), rel("v0.1.2", false)],
+  });
+  assert.equal(r.fetchCalls, 1, "must revalidate against GitHub despite a cache hit");
+  assert.equal(r.version, "v0.1.3");
+  assert.equal(r.downloadHref, "https://dl/v0.1.3.dmg");
 });

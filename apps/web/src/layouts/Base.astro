@@ -40,9 +40,10 @@ const {
       })();
     </script>
     <script is:inline>
-      // v2: invalidates caches poisoned with a prerelease (e.g. v0.1.0) that
-      // an earlier build wrote as "latest". Bump on any cache-shape change.
-      const RELEASE_CACHE_KEY = "mnema-latest-release-v2";
+      // v3: cache is now paint-only (stale-while-revalidate). We always
+      // revalidate against GitHub on load, so a stale entry can no longer pin
+      // an old version for the life of a tab. Bump on any cache-shape change.
+      const RELEASE_CACHE_KEY = "mnema-latest-release-v3";
       const RELEASE_CACHE_TTL_MS = 60 * 60 * 1000;
 
       function selectMacDownloadAsset(assets) {
@@ -126,15 +127,16 @@ const {
         )?.content;
         if (!latestReleaseApiUrl) return;
 
+        // Paint the cached release immediately for a fast, flash-free render,
+        // then always revalidate below so a newly published release shows up
+        // without waiting for the cache to expire or the tab to close.
         const cachedRelease = readCachedRelease();
-        if (cachedRelease) {
-          applyLatestRelease(cachedRelease);
-          return;
-        }
+        if (cachedRelease) applyLatestRelease(cachedRelease);
 
         try {
           const response = await fetch(latestReleaseApiUrl, {
             headers: { Accept: "application/vnd.github+json" },
+            cache: "no-store",
           });
           if (!response.ok) return;
 
