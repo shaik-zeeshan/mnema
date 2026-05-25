@@ -11,3 +11,7 @@ Refinements are search semantics rather than frontend result decoration: they ap
 - Separate scoped search surfaces: duplicates result behavior and makes scoped search harder to reason about.
 - Hidden entry-point scope: makes missing results look like search failure.
 - Applying app refinement to audio by guessing nearby screen context: conflates native audio source data with derived alignment and can misrepresent what app an audio span came from.
+
+## Amended By
+
+- [ADR 0019](0019-search-query-syntax-desugars-into-refinements.md) revisits "without query syntax modes": opt-in query syntax is now supported, but field operators desugar into the visible, removable refinements defined here, preserving the explicit-and-reversible scope principle.

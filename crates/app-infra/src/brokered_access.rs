@@ -881,9 +881,10 @@ fn broker_search_refinements(
 ) -> Result<SearchCaptureRefinements> {
     Ok(SearchCaptureRefinements {
         date_range: scoped_date_range(grants, from, to)?,
-        app: broker_app_refinement(app)?,
+        apps: broker_app_refinement(app)?.into_iter().collect(),
         window_title: broker_optional_filter(window_title, "windowTitle")?,
-        audio_source: None,
+        audio_sources: Vec::new(),
+        screen_source: false,
     })
 }
 
@@ -1921,10 +1922,13 @@ mod tests {
                     end_at: "2026-05-18T00:00:00Z".to_string(),
                     origin: Some(SearchDateRangeOrigin::VisibleTimeline),
                 }),
-                app: None,
+                apps: Vec::new(),
                 window_title: None,
-                audio_source: None,
+                audio_sources: Vec::new(),
+                screen_source: false,
             },
+            residual_query: "target".to_string(),
+            parse_errors: Vec::new(),
         };
 
         let mapped = map_search_response(response, 2, Some("grant-1"), secret);

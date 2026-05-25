@@ -155,6 +155,22 @@ _Avoid_: metadata blob, result decoration, search tags
 An explicit user control that narrows an active search by retained capture context such as date range, app, source, or result type.
 _Avoid_: advanced search, search mode, query syntax
 
+**Search Query Syntax**:
+An opt-in typed mini-language in the search input that the parser interprets beyond plain-text term matching; plain text stays the default and syntax is never required.
+_Avoid_: required query language, search mode toggle, expert-only search
+
+**Field Operator**:
+A typed `key:value` token (`app:`, `after:`, `before:`, `source:`) that desugars into a visible, removable **Search Refinement** instead of matching body text.
+_Avoid_: hidden filter syntax, inline scope flag, raw column filter
+
+**Body Match Operator**:
+A typed token (quoted phrase, `-term` exclusion, `OR`, `term*` prefix) that shapes how recognized text is matched, while space between terms stays an implicit AND.
+_Avoid_: column filter, scope operator, refinement syntax
+
+**Search Operator Suggestion**:
+An opt-in two-tier autocomplete in the search input that offers **Search Query Syntax** operator names for discovery and then the values for the chosen operator.
+_Avoid_: query builder, advanced search panel, filter wizard
+
 **Search Entry Point**:
 A contextual user action that starts search with an initial scope derived from where the user is in Mnema.
 _Avoid_: search shortcut, preset search, smart search
@@ -174,6 +190,10 @@ _Avoid_: app-name filter, window filter, bundle filter
 **Audio Source Search Refinement**:
 A **Search Refinement** that narrows audio results by retained audio recording source, such as microphone or system audio.
 _Avoid_: result type filter, media filter, audio mode
+
+**Screen Source Search Refinement**:
+A **Search Refinement** that narrows results to captured frames (the screen capture source), the frame-side counterpart of an **Audio Source Search Refinement**. Produced by `source:screen`.
+_Avoid_: frames tab, screenshot filter, video filter
 
 **Date Range Search Refinement**:
 A **Search Refinement** that narrows results to **Search Result Anchor** values whose captured time overlaps a selected time range.
@@ -239,6 +259,25 @@ _Avoid_: duplicate result, grouped row, result cluster
 - Search results should rank by relevance with a recency bias by default.
 - **Search Refinement** values should be applied by search query semantics before pagination rather than by frontend-only result filtering.
 - Search responses should expose the normalized **Search Refinement** values that were applied.
+- **Search Query Syntax** is opt-in: a query containing no operators matches today's plain-text behavior exactly.
+- A **Field Operator** desugars into a visible, removable **Search Refinement** and never remains hidden body-text scope, so typed scope stays as explicit and reversible as a UI-added refinement.
+- A **Field Operator** targets only an existing refinement: `app:` to **App Search Refinement**, `after:`/`before:` to **Date Range Search Refinement**, and `source:` to either an **Audio Source Search Refinement** (`source:mic`, `source:system`) or a **Screen Source Search Refinement** (`source:screen`).
+- A typed `app:` value matches either a captured app name or bundle identifier (the existing `Any` match kind), case-insensitive, and a multi-word value is quoted as `app:"Google Chrome"`.
+- `after:` and `before:` each take a point value (a calendar date such as `2026-01-01`, or a relative point such as `today`, `yesterday`, `7d`, or `1h`), write one bound of the single **Date Range Search Refinement**, and compose into a range.
+- `date:` takes a whole day or named period (`today`, `yesterday`, `last-week`, `this-week`, `last-month`, `this-month`, or a single calendar date) and writes both bounds of the **Date Range Search Refinement**.
+- All date operators resolve to frozen concrete timestamps at parse time; named-period week boundaries follow the macOS locale first weekday, defaulting to Monday.
+- Date operators write one start/end slot: repeated bounds and `date:` overwrite per slot with the last write winning, which is distinct from strict validation and applies only to well-formed operators.
+- **App Search Refinement** and **Audio Source Search Refinement** are multi-valued: repeated `app:` or `source:` operators accumulate as a set with OR semantics, so `app:Safari app:Chrome` matches either app and `source:mic source:system` matches both sources; each value is an independently removable chip and duplicates collapse.
+- A typed **Field Operator** merges into the existing **Search Refinement** chips by each field's multiplicity rule: `app:` and `source:` add to their set while a date operator overwrites the single **Date Range Search Refinement** slot.
+- Conflicts among `app:`/`source:` are about frame-side versus audio-side scope: an **Audio Source Search Refinement** cannot be combined with an **App Search Refinement** (`app_source_conflict`) or a **Screen Source Search Refinement** (`screen_audio_source_conflict`), surfaced as strict conflict errors. A **Screen Source Search Refinement** and an **App Search Refinement** combine freely since both narrow the frame side.
+- `app:` value suggestions for a **Search Operator Suggestion** come from distinct retained captured apps (bundle identifier and name), ordered by recency then frequency and globally scoped in V1 rather than narrowed by other active refinements, so every suggestion can produce results.
+- Result type can be selected by the existing UI tabs or implicitly by a `source:` value: an **Audio Source Search Refinement** narrows to audio and a **Screen Source Search Refinement** narrows to frames. There is no dedicated result-type **Field Operator**; result-type selection rides on `source:` rather than a separate `type:`/`in:` operator.
+- A **Body Match Operator** is translated into a safe FTS5 match expression rather than passing raw user input to FTS5 MATCH.
+- Only the known keys `app:`, `after:`, `before:`, and `source:` form a **Field Operator**; any other `key:value` such as a URL or `error:404` stays literal body text so URL, code, and error searches keep working.
+- A quoted phrase forces literal matching, so captured text containing operator-like characters can still be searched verbatim.
+- **Search Query Syntax** validation is strict for clear operator mistakes: a malformed known **Field Operator** value such as an unparseable date, or a malformed **Body Match Operator** such as an unbalanced quote, surfaces a parse error rather than silently running a misleading or empty search.
+- **Search Query Syntax** parsing is backend-canonical: app-infra owns operator recognition, validation, **Field Operator** to **Search Refinement** extraction, and **Body Match Operator** to FTS5 translation, and the search response returns the residual body query, the extracted refinements, and any parse errors with spans.
+- Strict validation problems, including the `app:`/`source:` conflict and an unparseable date, are returned in-band with the search response as parse errors rather than failing the search call; a failed search call is reserved for system errors such as database failures.
 - **App Search Refinement** should use retained bundle identifier as canonical identity when available and app name only as a fallback.
 - **App Search Refinement** should apply to **Captured Frame** results only until audio results have an explicit **Search Context Alignment** policy.
 - Combining **App Search Refinement** with **Date Range Search Refinement** should produce frame results inside the selected time range.
@@ -395,3 +434,4 @@ _Avoid_: duplicate result, grouped row, result cluster
 - "fast OCR" and provider fallback were considered as optimizations; resolved: the **OCR Throughput Budget** must not change the **OCR Settings Selection**.
 - "30% CPU" suggested live CPU feedback; resolved: the first **OCR Execution Budget** should use deterministic pacing rather than live process-wide CPU measurement.
 - "search support" was used to mean both literal matching and embedding-based retrieval; resolved: **Text Search** is the first tier, while **Hybrid Search** is the direction once **Semantic Search** exists.
+- "query syntax" was listed only as something a **Search Refinement** avoids; resolved: typed **Search Query Syntax** is supported as an opt-in input path whose **Field Operator** tokens desugar into **Search Refinement** values, while a **Search Refinement** itself remains a UI control rather than a syntax mode.
