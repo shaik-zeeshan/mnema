@@ -396,6 +396,66 @@ impl ProcessingStore {
         rows.into_iter().map(map_frame).collect()
     }
 
+    /// Like [`Self::list_earlier_frames_with_equivalence_hint_in_scope_in_transaction`], but
+    /// restricted to frames that already have a non-failed OCR job. These are the only frames
+    /// that satisfy OCR Fallback Eligibility, so an admission-skipped textless frame is excluded.
+    pub(crate) async fn list_earlier_ocr_eligible_frames_with_equivalence_hint_in_scope_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Sqlite>,
+        session_id: &str,
+        before_frame_id: i64,
+        equivalence_hint: &str,
+        workspace_prefix: Option<&str>,
+    ) -> Result<Vec<Frame>> {
+        let rows = if let Some(workspace_prefix) = workspace_prefix {
+            let like_pattern = Self::workspace_like_pattern(workspace_prefix);
+            sqlx::query(
+                "SELECT id, session_id, file_path, captured_at, width, height, \
+                        equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                        created_at, updated_at \
+                 FROM frames \
+                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 AND file_path LIKE ?4 ESCAPE '\\' \
+                   AND EXISTS (\
+                       SELECT 1 FROM processing_jobs \
+                       WHERE processing_jobs.subject_type = 'frame' \
+                         AND processing_jobs.subject_id = frames.id \
+                         AND processing_jobs.processor = 'ocr' \
+                         AND processing_jobs.status != 'failed'\
+                   ) \
+                 ORDER BY id DESC",
+            )
+            .bind(session_id)
+            .bind(before_frame_id)
+            .bind(equivalence_hint)
+            .bind(like_pattern)
+            .fetch_all(&mut **transaction)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, session_id, file_path, captured_at, width, height, \
+                        equivalence_hint, equivalence_proof, equivalence_version, equivalence_status, equivalence_error, \
+                        created_at, updated_at \
+                 FROM frames \
+                 WHERE session_id = ?1 AND id < ?2 AND equivalence_hint = ?3 \
+                   AND EXISTS (\
+                       SELECT 1 FROM processing_jobs \
+                       WHERE processing_jobs.subject_type = 'frame' \
+                         AND processing_jobs.subject_id = frames.id \
+                         AND processing_jobs.processor = 'ocr' \
+                         AND processing_jobs.status != 'failed'\
+                   ) \
+                 ORDER BY id DESC",
+            )
+            .bind(session_id)
+            .bind(before_frame_id)
+            .bind(equivalence_hint)
+            .fetch_all(&mut **transaction)
+            .await?
+        };
+
+        rows.into_iter().map(map_frame).collect()
+    }
+
     pub async fn list_frames_for_segment_workspace(
         &self,
         session_id: &str,

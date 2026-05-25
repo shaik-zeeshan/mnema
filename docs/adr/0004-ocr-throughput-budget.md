@@ -28,6 +28,7 @@ The budget records admission and execution telemetry as bounded current-run stat
 - Provider or mode switching: Mnema must not silently change the user's selected OCR quality.
 - OCR off during recording: this would remove searchable changes when users most need them.
 - Pre-OCR text detection: an OCR-relevance probe adds extra image work and another model/policy surface.
+- Visual-fingerprint novelty admission: admitting frames whose captured-frame equivalence fingerprint looks new was considered to recover dwelled-on screens that lost text, but the fingerprint is too coarse to detect new text within an unchanging window and would re-admit video/animation frame-by-frame. The dwell gap is instead closed by OCR Fallback Eligibility — equivalence reuse must defer only to an earlier frame that has an OCR Job, so an admission-skipped textless frame no longer cancels a later representative admission.
 - Durable SQLite budget telemetry: budget decisions and timing summaries are operational/debug data, and keeping them in the main app database stores low-value data longer than needed.
 
 ## Consequences

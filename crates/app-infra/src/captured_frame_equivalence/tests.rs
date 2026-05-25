@@ -1,5 +1,8 @@
 use super::{CapturedFrameEquivalenceResolver, CapturedFrameEquivalenceScope};
-use crate::{AppInfra, Frame, FrameEquivalence, NewFrame};
+use crate::{
+    AppInfra, Frame, FrameEquivalence, NewFrame, OcrAdmissionDecision, OcrAdmissionReason,
+    ProcessingJobDraft,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -534,5 +537,343 @@ fn session_scope_can_match_outside_hidden_segment_workspace() {
             .expect("match should exist");
 
         assert_eq!(resolved, plain);
+    });
+}
+
+async fn enqueue_queued_ocr_job(infra: &AppInfra, frame_id: i64) {
+    infra
+        .processing()
+        .enqueue_job(&ProcessingJobDraft::for_frame_ocr(frame_id))
+        .await
+        .expect("ocr job should enqueue");
+}
+
+#[test]
+fn ocr_eligible_lookup_ignores_equivalent_frame_without_ocr_job() {
+    run_async_test(async {
+        let dir = TestDir::new("eligible-no-job");
+        let infra = AppInfra::initialize(dir.path())
+            .await
+            .expect("app infra should initialize");
+        let resolver = CapturedFrameEquivalenceResolver::new(infra.processing().clone());
+        let width = 32;
+        let height = 32;
+        let pixels = solid_rgba(width, height, [120, 120, 120, 255]);
+
+        let earlier = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-eligible",
+                "frame-1.png",
+                "2026-04-12T10:00:00Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+        let later = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-eligible",
+                "frame-2.png",
+                "2026-04-12T10:00:01Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+
+        // Sanity: the plain equivalence lookup still matches the textless earlier frame.
+        let plain = resolver
+            .find_nearest_earlier_equivalent_frame(&later, &CapturedFrameEquivalenceScope::Session)
+            .await
+            .expect("plain lookup should succeed");
+        assert_eq!(plain, Some(earlier.clone()));
+
+        // The OCR-eligible lookup must ignore an equivalent frame that has no OCR job.
+        let eligible = resolver
+            .find_nearest_earlier_ocr_eligible_equivalent_frame(
+                &later,
+                &CapturedFrameEquivalenceScope::Session,
+            )
+            .await
+            .expect("eligible lookup should succeed");
+        assert_eq!(eligible, None);
+
+        // Once the earlier frame has an OCR job, it becomes an eligible fallback.
+        enqueue_queued_ocr_job(&infra, earlier.id).await;
+        let eligible = resolver
+            .find_nearest_earlier_ocr_eligible_equivalent_frame(
+                &later,
+                &CapturedFrameEquivalenceScope::Session,
+            )
+            .await
+            .expect("eligible lookup should succeed");
+        assert_eq!(eligible, Some(earlier));
+    });
+}
+
+#[test]
+fn ocr_eligible_lookup_prefers_job_having_over_nearer_jobless() {
+    run_async_test(async {
+        let dir = TestDir::new("eligible-prefers-farther");
+        let infra = AppInfra::initialize(dir.path())
+            .await
+            .expect("app infra should initialize");
+        let resolver = CapturedFrameEquivalenceResolver::new(infra.processing().clone());
+        let width = 32;
+        let height = 32;
+        let pixels = solid_rgba(width, height, [130, 130, 130, 255]);
+
+        let with_job = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-prefers",
+                "frame-1.png",
+                "2026-04-12T10:00:00Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+        let jobless = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-prefers",
+                "frame-2.png",
+                "2026-04-12T10:00:01Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+        let candidate = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-prefers",
+                "frame-3.png",
+                "2026-04-12T10:00:02Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+
+        enqueue_queued_ocr_job(&infra, with_job.id).await;
+
+        // The nearest earlier equivalent (jobless) is skipped in favor of the farther
+        // frame that actually has an OCR job.
+        let eligible = resolver
+            .find_nearest_earlier_ocr_eligible_equivalent_frame(
+                &candidate,
+                &CapturedFrameEquivalenceScope::Session,
+            )
+            .await
+            .expect("eligible lookup should succeed");
+        assert_eq!(eligible, Some(with_job));
+        // The jobless frame is not what was returned.
+        assert_ne!(eligible.map(|frame| frame.id), Some(jobless.id));
+    });
+}
+
+#[test]
+fn ocr_eligible_lookup_ignores_failed_only_ocr_job() {
+    run_async_test(async {
+        let dir = TestDir::new("eligible-failed");
+        let infra = AppInfra::initialize(dir.path())
+            .await
+            .expect("app infra should initialize");
+        let resolver = CapturedFrameEquivalenceResolver::new(infra.processing().clone());
+        let width = 32;
+        let height = 32;
+        let pixels = solid_rgba(width, height, [140, 140, 140, 255]);
+
+        let earlier = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-failed",
+                "frame-1.png",
+                "2026-04-12T10:00:00Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+        let later = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-failed",
+                "frame-2.png",
+                "2026-04-12T10:00:01Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+
+        let job = infra
+            .processing()
+            .enqueue_job(&ProcessingJobDraft::for_frame_ocr(earlier.id))
+            .await
+            .expect("ocr job should enqueue");
+        infra
+            .processing()
+            .claim_queued_job(job.id)
+            .await
+            .expect("job should claim")
+            .expect("queued job should transition to running");
+        infra
+            .processing()
+            .mark_job_failed(job.id, Some("boom"))
+            .await
+            .expect("job should fail");
+
+        // A failed-only OCR job contributes no recognized text, so it is not an eligible
+        // fallback.
+        let eligible = resolver
+            .find_nearest_earlier_ocr_eligible_equivalent_frame(
+                &later,
+                &CapturedFrameEquivalenceScope::Session,
+            )
+            .await
+            .expect("eligible lookup should succeed");
+        assert_eq!(eligible, None);
+    });
+}
+
+#[test]
+fn textless_equivalent_origin_does_not_suppress_admission() {
+    run_async_test(async {
+        let dir = TestDir::new("pipeline-no-suppress");
+        let infra = AppInfra::initialize(dir.path())
+            .await
+            .expect("app infra should initialize");
+        let width = 32;
+        let height = 32;
+        let pixels = solid_rgba(width, height, [150, 150, 150, 255]);
+
+        // An earlier equivalent frame that was admission-skipped: persisted, no OCR job.
+        infra
+            .capture_frame_skipping_ocr_with_reason(
+                &test_frame_with_equivalent_image(
+                    &dir,
+                    "session-no-suppress",
+                    "frame-1.png",
+                    "2026-04-12T10:00:00Z",
+                    &pixels,
+                    width,
+                    height,
+                ),
+                OcrAdmissionDecision::skip(OcrAdmissionReason::SkippedLowOcrValue, 0, true),
+            )
+            .await
+            .expect("skip capture should succeed");
+
+        // A later equivalent frame with an admit decision must NOT be suppressed by the
+        // textless origin; it should be admitted and get its own OCR job.
+        let result = infra
+            .capture_frame_with_ocr_admission(
+                &test_frame_with_equivalent_image(
+                    &dir,
+                    "session-no-suppress",
+                    "frame-2.png",
+                    "2026-04-12T10:00:01Z",
+                    &pixels,
+                    width,
+                    height,
+                ),
+                None,
+                OcrAdmissionDecision::admit(OcrAdmissionReason::AdmittedRepresentative, 0, true),
+            )
+            .await
+            .expect("admission capture should succeed");
+
+        assert!(
+            result.job.is_some(),
+            "frame should be admitted for OCR, not deferred to a textless origin"
+        );
+        assert_eq!(
+            result
+                .ocr_admission_decision
+                .expect("decision should be present")
+                .reason,
+            OcrAdmissionReason::AdmittedRepresentative
+        );
+    });
+}
+
+#[test]
+fn equivalent_origin_with_ocr_job_still_dedupes_admission() {
+    run_async_test(async {
+        let dir = TestDir::new("pipeline-dedupe");
+        let infra = AppInfra::initialize(dir.path())
+            .await
+            .expect("app infra should initialize");
+        let width = 32;
+        let height = 32;
+        let pixels = solid_rgba(width, height, [160, 160, 160, 255]);
+
+        let first = infra
+            .capture_frame_with_ocr_admission(
+                &test_frame_with_equivalent_image(
+                    &dir,
+                    "session-dedupe",
+                    "frame-1.png",
+                    "2026-04-12T10:00:00Z",
+                    &pixels,
+                    width,
+                    height,
+                ),
+                None,
+                OcrAdmissionDecision::admit(OcrAdmissionReason::AdmittedInitial, 0, true),
+            )
+            .await
+            .expect("first admission should succeed");
+        let origin_job = first.job.expect("first frame should be admitted").id;
+        let origin_frame_id = first.frame.id;
+
+        // A later equivalent frame must still dedupe against the origin that has an OCR job.
+        let second = infra
+            .capture_frame_with_ocr_admission(
+                &test_frame_with_equivalent_image(
+                    &dir,
+                    "session-dedupe",
+                    "frame-2.png",
+                    "2026-04-12T10:00:01Z",
+                    &pixels,
+                    width,
+                    height,
+                ),
+                None,
+                OcrAdmissionDecision::admit(OcrAdmissionReason::AdmittedRepresentative, 0, true),
+            )
+            .await
+            .expect("second admission should succeed");
+
+        assert!(
+            second.job.is_none(),
+            "equivalent frame with a job-having origin should not create a new OCR job"
+        );
+        let decision = second
+            .ocr_admission_decision
+            .expect("decision should be present");
+        assert_eq!(decision.reason, OcrAdmissionReason::SkippedEquivalentFrame);
+        assert_eq!(decision.related_frame_id, Some(origin_frame_id));
+        // The origin job is untouched.
+        let _ = origin_job;
     });
 }

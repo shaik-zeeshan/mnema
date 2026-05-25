@@ -91,6 +91,10 @@ _Avoid_: dedupe hash, screenshot sameness, OCR skip heuristic
 The rule for where an earlier equivalent **Captured Frame** may be searched when applying **Captured Frame Equivalence**. **Captured Frame Equivalence Scope** is session-wide by default, but narrows to the same hidden segment workspace when the candidate **Captured Frame** originated from a hidden segment workspace artifact path.
 _Avoid_: workspace filter, lookup scope, same-segment rule
 
+**OCR Fallback Eligibility**:
+The rule that an earlier equivalent **Captured Frame** can stand in for a later frame's OCR only when that earlier frame already has an **OCR Job** (queued, running, or completed). A **Captured Frame** that was itself skipped by the **OCR Admission Budget** and has no **OCR Job** is not an eligible fallback, because there is no recognized text it will ever contribute.
+_Avoid_: dedupe reuse, equivalent skip, text borrow
+
 **Hidden Segment Workspace**:
 A hidden per-segment directory (`.<session>-segment-####/`) that stores temporary capture artifacts and exported JPEG frames for one screen segment. A **Hidden Segment Workspace** lives beside its visible sibling segment recording file.
 _Avoid_: temp folder, segment scratch dir, hidden segment temp
@@ -287,7 +291,8 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Managed Storage Layout** contains the recordings tree under `<saveDirectory>/recordings`.
 - **Captured Frame Equivalence** determines whether a new **Captured Frame** needs a new **OCR Job**.
 - **Captured Frame Equivalence Scope** determines which earlier **Captured Frame** values are eligible comparison candidates.
-- A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier equivalent **Captured Frame** in the same session is already eligible as the OCR fallback.
+- A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier equivalent **Captured Frame** in the same session satisfies **OCR Fallback Eligibility**; an equivalent frame that has no **OCR Job** does not suppress admission, so the **OCR Admission Budget** decision stands and the frame may be admitted.
+- When an **OCR Job** completes with recognized text, that text is projected to every equivalent **Captured Frame** in scope that lacks its own text, earlier and later, so one admitted representative makes the whole equivalent group searchable.
 - An **OCR Throughput Budget** limits **OCR Job** admission and scheduling rather than guaranteeing a hard process-wide CPU ceiling.
 - An **OCR Throughput Budget** must preserve the **OCR Settings Selection** instead of silently switching provider, model, recognition mode, or provider-specific options.
 - An **OCR Throughput Budget** has an **OCR Admission Budget** and an **OCR Execution Budget**.
@@ -361,6 +366,9 @@ _Avoid_: duplicate result, grouped row, result cluster
 > **Dev:** "Does an **OCR Admission Budget** replace **Captured Frame Equivalence**?"
 > **Domain expert:** "No — **Captured Frame Equivalence** remains the duplicate filter, while the budget may conservatively filter non-equivalent low OCR-value frames."
 
+> **Dev:** "If the nearest earlier equivalent **Captured Frame** was itself skipped and has no **OCR Job**, should the pipeline still reuse it and skip the new frame?"
+> **Domain expert:** "No — a skipped frame with no **OCR Job** fails **OCR Fallback Eligibility**, so it must not suppress admission. Honor the admission decision so the dwelled-on screen finally gets read; the completed text then projects back across the whole equivalent group."
+
 > **Dev:** "Should a low OCR-value automatic **OCR Candidate** still create a deferred **OCR Job**?"
 > **Domain expert:** "No — avoid creating OCR debt for that candidate, keep the **Captured Frame**, and allow manual **Captured Frame Reprocessing** later."
 
@@ -432,6 +440,7 @@ _Avoid_: duplicate result, grouped row, result cluster
 - "pipeline" previously meant both frame intake and OCR execution; resolved: **Captured Frame Pipeline** means frame intake through batch-finalization readiness, while **OCR Job** means the recognition work for one frame.
 - "CPU cap" suggested a hard process-wide ceiling; resolved: use **OCR Throughput Budget** for limiting OCR work over time.
 - "fast OCR" and provider fallback were considered as optimizations; resolved: the **OCR Throughput Budget** must not change the **OCR Settings Selection**.
+- "eligible as the OCR fallback" was ambiguous between any equivalent **Captured Frame** and one that actually has an **OCR Job**; resolved as **OCR Fallback Eligibility**: only a frame with an **OCR Job** is eligible, so an admission-skipped textless frame no longer cancels a later frame's admission.
 - "30% CPU" suggested live CPU feedback; resolved: the first **OCR Execution Budget** should use deterministic pacing rather than live process-wide CPU measurement.
 - "search support" was used to mean both literal matching and embedding-based retrieval; resolved: **Text Search** is the first tier, while **Hybrid Search** is the direction once **Semantic Search** exists.
 - "query syntax" was listed only as something a **Search Refinement** avoids; resolved: typed **Search Query Syntax** is supported as an opt-in input path whose **Field Operator** tokens desugar into **Search Refinement** values, while a **Search Refinement** itself remains a UI control rather than a syntax mode.
