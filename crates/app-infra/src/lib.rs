@@ -7736,12 +7736,26 @@ mod tests {
             assert_eq!(running.status, ProcessingJobStatus::Running);
             assert_eq!(running.attempt_count, 1);
 
+            // A real OCR result carries a parseable OcrStructuredPayload; the secret
+            // redaction gate rejects an unparseable one before persistence, so use a
+            // valid (benign, secret-free) payload here.
+            let structured_payload_json = serde_json::to_string(&OcrStructuredPayload::new(
+                ocr::APPLE_VISION_PROVIDER_ID,
+                None,
+                vec![OcrObservation::new(
+                    "recognized text",
+                    0.95,
+                    OcrBoundingBox::new(0.1, 0.2, 0.3, 0.4),
+                )],
+            ))
+            .expect("structured payload should serialize");
+
             let completion = infra
                 .complete_processing_job(
                     persisted.job.id,
                     &ProcessingResultDraft::new()
                         .with_result_text("recognized text")
-                        .with_structured_payload_json("{\"blocks\":[]}")
+                        .with_structured_payload_json(&structured_payload_json)
                         .with_processor_version("ocr-v1"),
                 )
                 .await
