@@ -325,7 +325,7 @@ impl CapturedFramePipeline {
                 let equivalence_scope = CapturedFrameEquivalenceScope::from_frame(frame);
                 if let Some(related) = self
                     .equivalence
-                    .find_nearest_earlier_equivalent_frame_in_transaction(
+                    .find_nearest_earlier_ocr_eligible_equivalent_frame_in_transaction(
                         transaction,
                         frame,
                         &equivalence_scope,

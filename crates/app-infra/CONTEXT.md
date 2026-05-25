@@ -91,6 +91,14 @@ _Avoid_: dedupe hash, screenshot sameness, OCR skip heuristic
 The rule for where an earlier equivalent **Captured Frame** may be searched when applying **Captured Frame Equivalence**. **Captured Frame Equivalence Scope** is session-wide by default, but narrows to the same hidden segment workspace when the candidate **Captured Frame** originated from a hidden segment workspace artifact path.
 _Avoid_: workspace filter, lookup scope, same-segment rule
 
+**OCR Fallback Eligibility**:
+The rule that an earlier equivalent **Captured Frame** can stand in for a later frame's OCR only when that earlier frame already has a non-failed **OCR Job** — that is, a job whose status is queued, running, or completed (including completed with no recognized text). Eligibility does not require that the job already produced text: because equivalent frames share the same OCR-relevant content by definition, a later frame cannot contribute text that the representative's identical content didn't, so an equivalent group with a completed-but-textless job is still correctly suppressed. A **Captured Frame** that was itself skipped by the **OCR Admission Budget** and has no **OCR Job** is not an eligible fallback (there is no job whose result could ever project back); a frame whose only **OCR Job** has failed is likewise not eligible, since a failed job produced and persisted no result to project.
+_Avoid_: dedupe reuse, equivalent skip, text borrow
+
+**Visual Novelty Admission**:
+The bounded **OCR Admission Budget** rule that admits a non-equivalent **Captured Frame** whose **Captured Frame Equivalence** fingerprint is new within its admission scope this run, so a one-off readable screen inside an unchanging window is still read rather than lost. It reuses the existing fingerprint as an **OCR-Relevant Change** signal and adds no **OCR-Relevance Probe**. It is bounded by the high-pressure gate, a per-scope rate cap, and a continuous-novelty suppressor that falls back to fixed time cadence for video/animation; it complements **OCR Fallback Eligibility**, which covers repeated frames while **Visual Novelty Admission** covers one-off frames.
+_Avoid_: new-frame OCR, fingerprint trigger, scroll detector, video OCR
+
 **Hidden Segment Workspace**:
 A hidden per-segment directory (`.<session>-segment-####/`) that stores temporary capture artifacts and exported JPEG frames for one screen segment. A **Hidden Segment Workspace** lives beside its visible sibling segment recording file.
 _Avoid_: temp folder, segment scratch dir, hidden segment temp
@@ -287,7 +295,8 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Managed Storage Layout** contains the recordings tree under `<saveDirectory>/recordings`.
 - **Captured Frame Equivalence** determines whether a new **Captured Frame** needs a new **OCR Job**.
 - **Captured Frame Equivalence Scope** determines which earlier **Captured Frame** values are eligible comparison candidates.
-- A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier equivalent **Captured Frame** in the same session is already eligible as the OCR fallback.
+- A **Captured Frame Pipeline** skips a new **OCR Job** when an earlier equivalent **Captured Frame** in the same session satisfies **OCR Fallback Eligibility**; an equivalent frame that has no **OCR Job** does not suppress admission, so the **OCR Admission Budget** decision stands and the frame may be admitted.
+- When an **OCR Job** completes with recognized text, that text is projected to every equivalent **Captured Frame** in scope that lacks its own text, earlier and later, so one admitted representative makes the whole equivalent group searchable.
 - An **OCR Throughput Budget** limits **OCR Job** admission and scheduling rather than guaranteeing a hard process-wide CPU ceiling.
 - An **OCR Throughput Budget** must preserve the **OCR Settings Selection** instead of silently switching provider, model, recognition mode, or provider-specific options.
 - An **OCR Throughput Budget** has an **OCR Admission Budget** and an **OCR Execution Budget**.
@@ -299,6 +308,9 @@ _Avoid_: duplicate result, grouped row, result cluster
 - An **OCR Admission Budget** should avoid creating **OCR Job** debt for automatic low OCR-value **OCR Candidate** values.
 - An **OCR Admission Budget** should prefer materially changed **OCR Candidate** values over fixed time cadence.
 - A fixed time cadence may dampen stable or low-change capture periods but must not hide materially new searchable text.
+- **Visual Novelty Admission** may admit a non-equivalent **OCR Candidate** whose **Captured Frame Equivalence** fingerprint is new in scope, reusing that fingerprint rather than adding an **OCR-Relevance Probe**.
+- **Visual Novelty Admission** must stay bounded: it does not fire under high **OCR Job** queue pressure, it is rate-capped to at most one novelty **OCR Job** per scope per short interval, and it suppresses back to fixed time cadence after a sustained run of continuously-novel frames so video/animation is not read frame-by-frame.
+- **Visual Novelty Admission** never overrides **Captured Frame Equivalence** or **OCR Fallback Eligibility**: equivalence reuse is evaluated first, so a novelty-admitted frame that has an eligible earlier equivalent still reuses that text instead of creating a new **OCR Job**.
 - **OCR Admission Budget** may use queued plus running **OCR Job** count as a pressure signal during active recording, admitting only stronger automatic **OCR Candidate** values when backlog is high.
 - **OCR-Relevant Change** is narrower than any visible pixel change and excludes cursor movement, small animations, spinners, video playback, and tiny layout shifts.
 - Foreground context changes such as app bundle, window title, browser URL, or display changes are strong positive **OCR-Relevant Change** signals when the frame is not equivalent to an earlier frame.
@@ -360,6 +372,9 @@ _Avoid_: duplicate result, grouped row, result cluster
 
 > **Dev:** "Does an **OCR Admission Budget** replace **Captured Frame Equivalence**?"
 > **Domain expert:** "No — **Captured Frame Equivalence** remains the duplicate filter, while the budget may conservatively filter non-equivalent low OCR-value frames."
+
+> **Dev:** "If the nearest earlier equivalent **Captured Frame** was itself skipped and has no **OCR Job**, should the pipeline still reuse it and skip the new frame?"
+> **Domain expert:** "No — a skipped frame with no **OCR Job** fails **OCR Fallback Eligibility**, so it must not suppress admission. Honor the admission decision so the dwelled-on screen finally gets read; the completed text then projects back across the whole equivalent group."
 
 > **Dev:** "Should a low OCR-value automatic **OCR Candidate** still create a deferred **OCR Job**?"
 > **Domain expert:** "No — avoid creating OCR debt for that candidate, keep the **Captured Frame**, and allow manual **Captured Frame Reprocessing** later."
@@ -432,6 +447,7 @@ _Avoid_: duplicate result, grouped row, result cluster
 - "pipeline" previously meant both frame intake and OCR execution; resolved: **Captured Frame Pipeline** means frame intake through batch-finalization readiness, while **OCR Job** means the recognition work for one frame.
 - "CPU cap" suggested a hard process-wide ceiling; resolved: use **OCR Throughput Budget** for limiting OCR work over time.
 - "fast OCR" and provider fallback were considered as optimizations; resolved: the **OCR Throughput Budget** must not change the **OCR Settings Selection**.
+- "eligible as the OCR fallback" was ambiguous between any equivalent **Captured Frame** and one that actually has an **OCR Job**; resolved as **OCR Fallback Eligibility**: only a frame with an **OCR Job** is eligible, so an admission-skipped textless frame no longer cancels a later frame's admission.
 - "30% CPU" suggested live CPU feedback; resolved: the first **OCR Execution Budget** should use deterministic pacing rather than live process-wide CPU measurement.
 - "search support" was used to mean both literal matching and embedding-based retrieval; resolved: **Text Search** is the first tier, while **Hybrid Search** is the direction once **Semantic Search** exists.
 - "query syntax" was listed only as something a **Search Refinement** avoids; resolved: typed **Search Query Syntax** is supported as an opt-in input path whose **Field Operator** tokens desugar into **Search Refinement** values, while a **Search Refinement** itself remains a UI control rather than a syntax mode.

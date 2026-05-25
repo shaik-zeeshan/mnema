@@ -33,6 +33,7 @@ pub enum OcrAdmissionReason {
     AdmittedContextChange,
     AdmittedLowPressure,
     AdmittedRepresentative,
+    AdmittedVisualNovelty,
     SkippedEquivalentFrame,
     SkippedOcrDisabled,
     SkippedProviderUnavailable,
@@ -46,6 +47,7 @@ impl OcrAdmissionReason {
             Self::AdmittedContextChange => "admitted_context_change",
             Self::AdmittedLowPressure => "admitted_low_pressure",
             Self::AdmittedRepresentative => "admitted_representative",
+            Self::AdmittedVisualNovelty => "admitted_visual_novelty",
             Self::SkippedEquivalentFrame => "skipped_equivalent_frame",
             Self::SkippedOcrDisabled => "skipped_ocr_disabled",
             Self::SkippedProviderUnavailable => "skipped_provider_unavailable",
@@ -59,6 +61,7 @@ impl OcrAdmissionReason {
             "admitted_context_change" => Ok(Self::AdmittedContextChange),
             "admitted_low_pressure" => Ok(Self::AdmittedLowPressure),
             "admitted_representative" => Ok(Self::AdmittedRepresentative),
+            "admitted_visual_novelty" => Ok(Self::AdmittedVisualNovelty),
             "skipped_equivalent_frame" => Ok(Self::SkippedEquivalentFrame),
             "skipped_ocr_disabled" => Ok(Self::SkippedOcrDisabled),
             "skipped_provider_unavailable" => Ok(Self::SkippedProviderUnavailable),
@@ -78,6 +81,14 @@ pub struct OcrAdmissionSignals {
     pub low_queue_pressure: bool,
     pub representative_due: bool,
     pub high_queue_pressure: bool,
+    /// True when this frame's visual fingerprint (`equivalence_hint`) has not
+    /// been seen in the current admission scope this run. Treated as `false`
+    /// when equivalence is not ready (e.g. quarantined).
+    pub fingerprint_novel_in_scope: bool,
+    /// True when a novelty admission is permitted right now: the per-scope rate
+    /// floor has elapsed AND the scope is not in a continuous-novelty
+    /// (video/animation) burst.
+    pub novelty_admission_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -120,5 +131,48 @@ impl OcrAdmissionDecision {
             recording_active,
             signals: OcrAdmissionSignals::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admission_reason_round_trips_through_str() {
+        let reasons = [
+            OcrAdmissionReason::AdmittedInitial,
+            OcrAdmissionReason::AdmittedContextChange,
+            OcrAdmissionReason::AdmittedLowPressure,
+            OcrAdmissionReason::AdmittedRepresentative,
+            OcrAdmissionReason::AdmittedVisualNovelty,
+            OcrAdmissionReason::SkippedEquivalentFrame,
+            OcrAdmissionReason::SkippedOcrDisabled,
+            OcrAdmissionReason::SkippedProviderUnavailable,
+            OcrAdmissionReason::SkippedLowOcrValue,
+        ];
+        for reason in reasons {
+            assert_eq!(OcrAdmissionReason::from_str(reason.as_str()).unwrap(), reason);
+        }
+    }
+
+    #[test]
+    fn visual_novelty_reason_uses_snake_case_wire_value() {
+        assert_eq!(
+            OcrAdmissionReason::AdmittedVisualNovelty.as_str(),
+            "admitted_visual_novelty"
+        );
+    }
+
+    #[test]
+    fn novelty_signals_serialize_as_camel_case() {
+        let signals = OcrAdmissionSignals {
+            fingerprint_novel_in_scope: true,
+            novelty_admission_available: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&signals).unwrap();
+        assert_eq!(json["fingerprintNovelInScope"], serde_json::json!(true));
+        assert_eq!(json["noveltyAdmissionAvailable"], serde_json::json!(true));
     }
 }

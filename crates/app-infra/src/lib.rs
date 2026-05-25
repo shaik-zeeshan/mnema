@@ -1811,6 +1811,57 @@ mod tests {
             .with_dimensions(1920, 1080)
     }
 
+    fn ready_equivalence(hint: &str, proof_fill: u8) -> FrameEquivalence {
+        FrameEquivalence {
+            hint: Some(hint.to_string()),
+            proof: Some(vec![proof_fill; 1024]),
+            version: Some(1),
+            status: Some(FrameEquivalenceStatus::Ready),
+            error: None,
+        }
+    }
+
+    fn novelty_admit_decision() -> OcrAdmissionDecision {
+        let mut decision =
+            OcrAdmissionDecision::admit(OcrAdmissionReason::AdmittedVisualNovelty, 0, true);
+        decision.signals = OcrAdmissionSignals {
+            low_queue_pressure: true,
+            fingerprint_novel_in_scope: true,
+            novelty_admission_available: true,
+            ..Default::default()
+        };
+        decision
+    }
+
+    async fn search_representative_frame_ids(infra: &AppInfra, query: &str) -> Vec<i64> {
+        infra
+            .search_capture(SearchCaptureRequest {
+                query: query.to_string(),
+                frame_limit: Some(10),
+                frame_offset: None,
+                audio_limit: Some(0),
+                audio_offset: None,
+                snapshot_document_id: None,
+                refinements: None,
+            })
+            .await
+            .expect("search should run")
+            .frames
+            .into_iter()
+            .map(|frame| frame.representative_frame.id)
+            .collect()
+    }
+
+    async fn search_document_kind(infra: &AppInfra, frame_id: i64) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT text_source_kind FROM search_documents WHERE frame_id = ?1 LIMIT 1",
+        )
+        .bind(frame_id)
+        .fetch_optional(infra.pool())
+        .await
+        .expect("search document lookup should run")
+    }
+
     #[test]
     fn frame_secret_redaction_count_includes_equivalent_reuse_source_result() {
         run_async_test(async {
@@ -1882,6 +1933,153 @@ mod tests {
                     .expect("redaction count should load"),
                 1
             );
+        });
+    }
+
+    #[test]
+    fn visual_novelty_admitted_singleton_gets_ocr_job_and_becomes_searchable() {
+        run_async_test(async {
+            let dir = TestDir::new("visual-novelty-singleton-searchable");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            // A one-off readable screen with a unique fingerprint and no earlier
+            // equivalent to borrow text from: the visual-novelty path admits it.
+            let captured = infra
+                .capture_frame_with_ocr_admission(
+                    &test_frame("session-novelty", "scrolled-pr.png")
+                        .with_equivalence(ready_equivalence("hint-scrolled-pr", 11)),
+                    None,
+                    novelty_admit_decision(),
+                )
+                .await
+                .expect("novel frame should persist");
+
+            // No equivalent existed, so the equivalence gate did not override the
+            // novelty admission: an OCR job is enqueued for the singleton.
+            let job = captured.job.expect("novel singleton should enqueue an OCR job");
+            let decision = captured
+                .ocr_admission_decision
+                .expect("admission decision should be recorded");
+            assert_eq!(decision.outcome, OcrAdmissionOutcome::Admitted);
+            assert_eq!(decision.reason, OcrAdmissionReason::AdmittedVisualNovelty);
+
+            infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("novel job should claim")
+                .expect("novel job should exist");
+            infra
+                .complete_processing_job(
+                    job.id,
+                    &ProcessingResultDraft::new()
+                        .with_result_text("scrolled pull request diff line 4242"),
+                )
+                .await
+                .expect("novel job should complete");
+
+            // The previously-skippable singleton now carries a direct search row,
+            // which is the exact criterion for CLI find-by-content.
+            assert_eq!(
+                search_document_kind(&infra, captured.frame.id).await.as_deref(),
+                Some("direct")
+            );
+            assert!(search_representative_frame_ids(&infra, "scrolled pull request")
+                .await
+                .contains(&captured.frame.id));
+        });
+    }
+
+    #[test]
+    fn visual_novelty_admission_yields_to_equivalence_reuse_for_repeats() {
+        run_async_test(async {
+            let dir = TestDir::new("visual-novelty-repeat-reuse");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let equivalence = ready_equivalence("hint-repeated-dashboard", 22);
+
+            // First occurrence of a repeated state is read directly.
+            let first = infra
+                .capture_frame_with_ocr_admission(
+                    &test_frame_at("session-repeat", "dashboard-1.png", "2026-04-12T10:00:00Z")
+                        .with_equivalence(equivalence.clone()),
+                    None,
+                    novelty_admit_decision(),
+                )
+                .await
+                .expect("first frame should persist");
+            let first_job = first.job.expect("first frame should enqueue an OCR job");
+            infra
+                .claim_queued_processing_job(first_job.id)
+                .await
+                .expect("first job should claim")
+                .expect("first job should exist");
+            infra
+                .complete_processing_job(
+                    first_job.id,
+                    &ProcessingResultDraft::new().with_result_text("repeated dashboard overview"),
+                )
+                .await
+                .expect("first job should complete");
+
+            // An identical later frame, even if the budget admitted it for novelty,
+            // is overridden by the equivalence gate and reuses the earlier text
+            // rather than spending a second OCR read.
+            let repeat = infra
+                .capture_frame_with_ocr_admission(
+                    &test_frame_at("session-repeat", "dashboard-2.png", "2026-04-12T10:00:01Z")
+                        .with_equivalence(equivalence),
+                    None,
+                    novelty_admit_decision(),
+                )
+                .await
+                .expect("repeat frame should persist");
+
+            assert!(repeat.job.is_none(), "repeat must not spend a novelty OCR read");
+            let decision = repeat
+                .ocr_admission_decision
+                .expect("admission decision should be recorded");
+            assert_eq!(decision.outcome, OcrAdmissionOutcome::Skipped);
+            assert_eq!(decision.reason, OcrAdmissionReason::SkippedEquivalentFrame);
+            assert_eq!(decision.related_frame_id, Some(first.frame.id));
+
+            // The repeat is still searchable, via reused text rather than a direct read.
+            assert_eq!(
+                search_document_kind(&infra, first.frame.id).await.as_deref(),
+                Some("direct")
+            );
+            assert_eq!(
+                search_document_kind(&infra, repeat.frame.id).await.as_deref(),
+                Some("equivalent_reuse")
+            );
+        });
+    }
+
+    #[test]
+    fn novelty_denied_frame_is_dropped_without_an_ocr_job() {
+        run_async_test(async {
+            let dir = TestDir::new("visual-novelty-denied");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            // When the budget denies novelty (rate cap / continuous-novelty burst),
+            // the decision arrives as a skip. A unique frame with no equivalent then
+            // gets neither an OCR job nor a search row, keeping the cost bounded.
+            let denied = infra
+                .capture_frame_with_ocr_admission(
+                    &test_frame("session-denied", "video-frame.png")
+                        .with_equivalence(ready_equivalence("hint-video-frame", 33)),
+                    None,
+                    OcrAdmissionDecision::skip(OcrAdmissionReason::SkippedLowOcrValue, 0, true),
+                )
+                .await
+                .expect("denied frame should persist");
+
+            assert!(denied.job.is_none());
+            assert_eq!(search_document_kind(&infra, denied.frame.id).await, None);
         });
     }
 
@@ -4304,16 +4502,42 @@ mod tests {
             };
             assert_eq!(first_job_id, malformed_job.id);
 
-            let second = infra
-                .process_next_processing_job_for_processor(OCR_PROCESSOR)
+            // The malformed job's payload failure repeats each attempt, but its retry is deferred
+            // by a backoff window, so later queued OCR work drains in the gap instead of being
+            // starved. Drain OCR jobs until the valid job runs.
+            let mut valid_job_ran = false;
+            for _ in 0..16 {
+                let Some(outcome) = infra
+                    .process_next_processing_job_for_processor(OCR_PROCESSOR)
+                    .await
+                    .expect("later queued jobs should keep draining")
+                else {
+                    break;
+                };
+                let job_id = match outcome {
+                    ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+                    ProcessingJobRunOutcome::Failed(job) => job.id,
+                };
+                if job_id == valid_job.id {
+                    valid_job_ran = true;
+                    break;
+                }
+            }
+            assert!(
+                valid_job_ran,
+                "the valid OCR job must still drain even while the malformed job is bounded-retried"
+            );
+
+            // The malformed job is deferred (still queued, awaiting its backoff) rather than
+            // re-claimed every cycle — exactly what lets the valid job drain promptly instead
+            // of waiting out the malformed job's attempt cap.
+            let malformed_after = infra
+                .get_processing_job(malformed_job.id)
                 .await
-                .expect("later queued jobs should keep draining")
-                .expect("valid job should run next");
-            let second_job_id = match second {
-                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
-                ProcessingJobRunOutcome::Failed(job) => job.id,
-            };
-            assert_eq!(second_job_id, valid_job.id);
+                .expect("malformed job should be readable")
+                .expect("malformed job should exist");
+            assert_eq!(malformed_after.status, ProcessingJobStatus::Queued);
+            assert_eq!(malformed_after.attempt_count, 1);
         });
     }
 
@@ -7512,12 +7736,26 @@ mod tests {
             assert_eq!(running.status, ProcessingJobStatus::Running);
             assert_eq!(running.attempt_count, 1);
 
+            // A real OCR result carries a parseable OcrStructuredPayload; the secret
+            // redaction gate rejects an unparseable one before persistence, so use a
+            // valid (benign, secret-free) payload here.
+            let structured_payload_json = serde_json::to_string(&OcrStructuredPayload::new(
+                ocr::APPLE_VISION_PROVIDER_ID,
+                None,
+                vec![OcrObservation::new(
+                    "recognized text",
+                    0.95,
+                    OcrBoundingBox::new(0.1, 0.2, 0.3, 0.4),
+                )],
+            ))
+            .expect("structured payload should serialize");
+
             let completion = infra
                 .complete_processing_job(
                     persisted.job.id,
                     &ProcessingResultDraft::new()
                         .with_result_text("recognized text")
-                        .with_structured_payload_json("{\"blocks\":[]}")
+                        .with_structured_payload_json(&structured_payload_json)
                         .with_processor_version("ocr-v1"),
                 )
                 .await
