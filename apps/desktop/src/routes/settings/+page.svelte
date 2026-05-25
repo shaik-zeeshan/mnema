@@ -5767,6 +5767,21 @@
     font-size: 9px;
   }
 
+  /* The About tab's update actions are the only primary buttons in this
+     page. Without this rule they fall back to the UA default button face
+     (a light fill) which looks foreign in the dark shell — match the soft
+     green primary used by the debug and access-request pages. */
+  .btn--primary {
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+  }
+
+  .btn--primary:not(:disabled):hover {
+    border-color: var(--app-accent);
+    color: var(--app-text-strong);
+  }
+
   .saved-badge {
     font-size: 11px;
     font-weight: 700;
