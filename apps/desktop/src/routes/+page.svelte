@@ -4302,6 +4302,15 @@
       // the user can fix the flagged token).
       if (options.commitResidual === true && searchParseErrors.length === 0) {
         searchQuery = response.residualQuery;
+        // The box now holds the residual body (operators were committed to
+        // refinement chips), so realign the append-guard key to the residual's
+        // normalization. response.normalizedQuery is normalize_query(residual),
+        // which is exactly what the next runSearch recomputes from the
+        // rewritten box. Without this, the next "load more" compares the
+        // residual input against the stale operator-bearing key (e.g. `target`
+        // vs `app:Safari target`) and downgrades the append to a full refresh,
+        // resetting pagination to offset 0.
+        searchNormalizedQuery = response.normalizedQuery;
       }
     } catch (err) {
       if (!requestIsCurrent()) return;
