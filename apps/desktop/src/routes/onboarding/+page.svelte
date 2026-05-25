@@ -178,8 +178,8 @@
   const appPrivacyExclusion = createAppPrivacyExclusionController({
     getExcludedApps: () => draftExcludedApps,
     onSettingsUpdated: (updated) => {
-      settings = updated;
-      syncDrafts(updated);
+      settings = updated.settings;
+      syncDrafts(updated.settings);
     },
     setError: (message) => {
       error = message;
@@ -445,7 +445,14 @@
     saving = true;
     error = null;
     try {
-      const updated = await invoke<RecordingSettings>("update_recording_settings", { request: buildSettingsRequest() });
+      // Onboarding commits the whole recording config in one shot. The
+      // domain-scoped commands exist for the Settings page's per-domain
+      // debounced autosave; here we deliberately use the atomic full-settings
+      // command so a late validation failure can't leave a partially-persisted
+      // configuration behind.
+      const updated = await invoke<RecordingSettings>("update_recording_settings", {
+        request: buildSettingsRequest(),
+      });
       settings = updated;
       syncDrafts(updated);
     } catch (err) {

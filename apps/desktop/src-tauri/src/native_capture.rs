@@ -25,15 +25,20 @@ use capture_types::{
     CaptureOutputFiles, CapturePermissionState, CapturePermissions, CapturePermissionsResponse,
     CaptureSources, CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
     NativeCaptureDebugLogStatus, NativeCaptureSessionResponse, OcrProvider, OcrSettings,
-    RecordingSettings, ScreenResolution, ScreenResolutionPreset, StartNativeCaptureRequest,
-    UpdateMicrophoneControllerRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
-    VideoBitratePreset, VideoBitrateSettings,
+    RecordingSettings, RecordingSettingsDomainUpdateResponse, ScreenResolution,
+    ScreenResolutionPreset, SettingsOwnershipDomain, StartNativeCaptureRequest,
+    UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
+    UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
+    UpdateMetadataSettingsRequest, UpdateMicrophoneControllerRequest,
+    UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest,
+    UpdateVideoSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use capture_vad::configured_adapter_as_str;
 use settings::{
+    apply_recording_settings_domain_mutation, apply_recording_settings_domain_patch,
     apply_recording_settings_update, current_auto_start,
     current_native_capture_debug_logging_enabled, current_recording_settings,
-    initialize_recording_settings_state_from_disk,
+    initialize_recording_settings_state_from_disk, RecordingSettingsDomainPatch,
 };
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_os = "macos")]
@@ -106,6 +111,7 @@ const SYSTEM_WAKE_RECOVERY_RETRY_DELAYS_MS: &[u64] = &[
 ];
 pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
 pub const RECORDING_SETTINGS_CHANGED_EVENT: &str = "recording_settings_changed";
+pub const RECORDING_SETTINGS_DOMAIN_CHANGED_EVENT: &str = "recording_settings_domain_changed";
 pub const NATIVE_CAPTURE_SESSION_CHANGED_EVENT: &str = "native_capture_session_changed";
 pub const APP_NOTIFICATIONS_CHANGED_EVENT: &str = "app_notifications_changed";
 const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcription-unavailable";
@@ -764,6 +770,13 @@ pub(crate) fn emit_recording_settings_changed(
     settings: &RecordingSettings,
 ) {
     let _ = app_handle.emit(RECORDING_SETTINGS_CHANGED_EVENT, settings);
+}
+
+pub(crate) fn emit_recording_settings_domain_changed(
+    app_handle: &tauri::AppHandle,
+    response: &RecordingSettingsDomainUpdateResponse,
+) {
+    let _ = app_handle.emit(RECORDING_SETTINGS_DOMAIN_CHANGED_EVENT, response);
 }
 
 pub(crate) fn emit_native_capture_session_changed(
@@ -1427,40 +1440,6 @@ fn capture_sources_from_settings(settings: &RecordingSettings) -> CaptureSources
         screen: settings.capture_screen,
         microphone: settings.capture_microphone,
         system_audio: settings.capture_system_audio,
-    }
-}
-
-fn update_recording_settings_request_from_settings(
-    settings: RecordingSettings,
-) -> UpdateRecordingSettingsRequest {
-    UpdateRecordingSettingsRequest {
-        capture_screen: settings.capture_screen,
-        capture_microphone: settings.capture_microphone,
-        capture_system_audio: settings.capture_system_audio,
-        segment_duration_seconds: settings.segment_duration_seconds,
-        screen_frame_rate: settings.screen_frame_rate,
-        screen_resolution: settings.screen_resolution,
-        video_bitrate: settings.video_bitrate,
-        save_directory: settings.save_directory,
-        auto_start: settings.auto_start,
-        native_capture_debug_logging_enabled: settings.native_capture_debug_logging_enabled,
-        developer_options_enabled: settings.developer_options_enabled,
-        preview_cache_ttl_seconds: settings.preview_cache_ttl_seconds,
-        follow_timeline_live: settings.follow_timeline_live,
-        retention_policy: settings.retention_policy,
-        appearance: settings.appearance,
-        ocr: settings.ocr,
-        transcription: settings.transcription,
-        speaker_analysis: settings.speaker_analysis,
-        audio_speech_detection: settings.audio_speech_detection,
-        metadata: settings.metadata,
-        privacy: settings.privacy,
-        pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
-        idle_timeout_seconds: settings.idle_timeout_seconds,
-        microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
-        system_audio_activity_sensitivity: settings.system_audio_activity_sensitivity,
-        microphone_vad_adapter: settings.microphone_vad_adapter,
-        inactivity_activity_mode: settings.inactivity_activity_mode,
     }
 }
 
@@ -2327,18 +2306,10 @@ pub(crate) fn current_recording_settings_from_app_handle(
     current_recording_settings(state.inner())
 }
 
-pub(crate) fn apply_recording_settings_update_from_app_handle(
-    app_handle: &tauri::AppHandle,
-    request: UpdateRecordingSettingsRequest,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let state = app_handle.state::<RecordingSettingsState>();
-    let update = apply_recording_settings_update(app_handle, state.inner(), request)?;
-    finish_recording_settings_update(app_handle, update)
-}
-
 fn finish_recording_settings_update(
     app_handle: &tauri::AppHandle,
     update: settings::AppliedRecordingSettingsUpdate,
+    domain: Option<SettingsOwnershipDomain>,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
     let settings = update.settings;
     let previous_settings = update.previous_settings;
@@ -2419,6 +2390,15 @@ fn finish_recording_settings_update(
     }
 
     emit_recording_settings_changed(app_handle, &settings);
+    if let Some(domain) = domain {
+        emit_recording_settings_domain_changed(
+            app_handle,
+            &RecordingSettingsDomainUpdateResponse {
+                domain,
+                settings: settings.clone(),
+            },
+        );
+    }
     let privacy_changed = previous_settings.privacy != settings.privacy;
     let metadata_changed = previous_settings.metadata != settings.metadata;
     if metadata_changed {
@@ -2437,17 +2417,41 @@ fn finish_recording_settings_update(
     Ok(settings)
 }
 
+fn finish_recording_settings_domain_update(
+    app_handle: &tauri::AppHandle,
+    domain: SettingsOwnershipDomain,
+    update: settings::AppliedRecordingSettingsUpdate,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    let settings = finish_recording_settings_update(app_handle, update, Some(domain))?;
+    Ok(RecordingSettingsDomainUpdateResponse { domain, settings })
+}
+
+pub(crate) fn apply_recording_settings_domain_mutation_from_app_handle(
+    app_handle: &tauri::AppHandle,
+    domain: SettingsOwnershipDomain,
+    mutate: impl FnOnce(&mut RecordingSettings) -> Result<(), CaptureErrorResponse>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    let state = app_handle.state::<RecordingSettingsState>();
+    let update =
+        apply_recording_settings_domain_mutation(app_handle, state.inner(), domain, mutate)?;
+    finish_recording_settings_domain_update(app_handle, domain, update)
+}
+
 pub(crate) fn update_recording_sources_from_app_handle(
     app_handle: &tauri::AppHandle,
     sources: CaptureSources,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let mut request = update_recording_settings_request_from_settings(
-        current_recording_settings_from_app_handle(app_handle),
-    );
-    request.capture_screen = sources.screen;
-    request.capture_microphone = sources.microphone;
-    request.capture_system_audio = sources.system_audio;
-    apply_recording_settings_update_from_app_handle(app_handle, request)
+    let response = apply_recording_settings_domain_mutation_from_app_handle(
+        app_handle,
+        SettingsOwnershipDomain::CaptureSources,
+        |settings| {
+            settings.capture_screen = sources.screen;
+            settings.capture_microphone = sources.microphone;
+            settings.capture_system_audio = sources.system_audio;
+            Ok(())
+        },
+    )?;
+    Ok(response.settings)
 }
 
 pub(crate) fn start_native_capture_from_app_handle(
@@ -2540,7 +2544,133 @@ pub fn update_recording_settings(
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
     let update = apply_recording_settings_update(&app_handle, state.inner(), request)?;
-    finish_recording_settings_update(&app_handle, update)
+    finish_recording_settings_update(&app_handle, update, None)
+}
+
+fn update_recording_settings_domain(
+    app_handle: &tauri::AppHandle,
+    state: &RecordingSettingsState,
+    patch: RecordingSettingsDomainPatch,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    let (domain, update) = apply_recording_settings_domain_patch(app_handle, state, patch)?;
+    finish_recording_settings_domain_update(app_handle, domain, update)
+}
+
+#[tauri::command]
+pub fn update_capture_source_settings(
+    request: UpdateCaptureSourceSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::CaptureSources(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_capture_timing_settings(
+    request: UpdateCaptureTimingSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::CaptureTiming(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_video_settings(
+    request: UpdateVideoSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::Video(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_storage_settings(
+    request: UpdateStorageSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::Storage(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_display_settings(
+    request: UpdateDisplaySettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::Display(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_metadata_settings(
+    request: UpdateMetadataSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::Metadata(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_inactivity_settings(
+    request: UpdateInactivitySettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::Inactivity(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_processing_settings(
+    request: UpdateProcessingSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::Processing(request),
+    )
+}
+
+#[tauri::command]
+pub fn update_developer_settings(
+    request: UpdateDeveloperSettingsRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, RecordingSettingsState>,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    update_recording_settings_domain(
+        &app_handle,
+        state.inner(),
+        RecordingSettingsDomainPatch::Developer(request),
+    )
 }
 
 #[tauri::command]

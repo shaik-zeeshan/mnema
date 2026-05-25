@@ -11,8 +11,12 @@ use capture_types::{
     default_system_audio_activity_sensitivity, default_video_bitrate, AudioSpeechDetectionSettings,
     AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
     CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SpeakerAnalysisSettings,
-    UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SettingsOwnershipDomain,
+    SpeakerAnalysisSettings, UpdateCaptureSourceSettingsRequest,
+    UpdateCaptureTimingSettingsRequest, UpdateDeveloperSettingsRequest,
+    UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest, UpdateMetadataSettingsRequest,
+    UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest,
+    UpdateVideoSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -789,6 +793,210 @@ pub(crate) fn current_native_capture_debug_logging_enabled(state: &RecordingSett
         .native_capture_debug_logging_enabled
 }
 
+pub(crate) enum RecordingSettingsDomainPatch {
+    CaptureSources(UpdateCaptureSourceSettingsRequest),
+    CaptureTiming(UpdateCaptureTimingSettingsRequest),
+    Video(UpdateVideoSettingsRequest),
+    Storage(UpdateStorageSettingsRequest),
+    Display(UpdateDisplaySettingsRequest),
+    Metadata(UpdateMetadataSettingsRequest),
+    Inactivity(UpdateInactivitySettingsRequest),
+    Processing(UpdateProcessingSettingsRequest),
+    Developer(UpdateDeveloperSettingsRequest),
+}
+
+impl RecordingSettingsDomainPatch {
+    pub(crate) fn domain(&self) -> SettingsOwnershipDomain {
+        match self {
+            Self::CaptureSources(_) => SettingsOwnershipDomain::CaptureSources,
+            Self::CaptureTiming(_) => SettingsOwnershipDomain::CaptureTiming,
+            Self::Video(_) => SettingsOwnershipDomain::Video,
+            Self::Storage(_) => SettingsOwnershipDomain::Storage,
+            Self::Display(_) => SettingsOwnershipDomain::Display,
+            Self::Metadata(_) => SettingsOwnershipDomain::Metadata,
+            Self::Inactivity(_) => SettingsOwnershipDomain::Inactivity,
+            Self::Processing(_) => SettingsOwnershipDomain::Processing,
+            Self::Developer(_) => SettingsOwnershipDomain::Developer,
+        }
+    }
+}
+
+fn empty_domain_patch_error(domain: SettingsOwnershipDomain) -> CaptureErrorResponse {
+    CaptureErrorResponse {
+        code: "empty_settings_patch".to_string(),
+        message: format!("{domain:?} settings patch must include at least one field"),
+    }
+}
+
+fn recording_settings_request_from_settings(
+    settings: RecordingSettings,
+) -> UpdateRecordingSettingsRequest {
+    UpdateRecordingSettingsRequest {
+        capture_screen: settings.capture_screen,
+        capture_microphone: settings.capture_microphone,
+        capture_system_audio: settings.capture_system_audio,
+        segment_duration_seconds: settings.segment_duration_seconds,
+        screen_frame_rate: settings.screen_frame_rate,
+        screen_resolution: settings.screen_resolution,
+        video_bitrate: settings.video_bitrate,
+        save_directory: settings.save_directory,
+        auto_start: settings.auto_start,
+        native_capture_debug_logging_enabled: settings.native_capture_debug_logging_enabled,
+        developer_options_enabled: settings.developer_options_enabled,
+        preview_cache_ttl_seconds: settings.preview_cache_ttl_seconds,
+        follow_timeline_live: settings.follow_timeline_live,
+        retention_policy: settings.retention_policy,
+        appearance: settings.appearance,
+        ocr: settings.ocr,
+        transcription: settings.transcription,
+        speaker_analysis: settings.speaker_analysis,
+        audio_speech_detection: settings.audio_speech_detection,
+        metadata: settings.metadata,
+        privacy: settings.privacy,
+        pause_capture_on_inactivity: settings.pause_capture_on_inactivity,
+        idle_timeout_seconds: settings.idle_timeout_seconds,
+        microphone_activity_sensitivity: settings.microphone_activity_sensitivity,
+        system_audio_activity_sensitivity: settings.system_audio_activity_sensitivity,
+        microphone_vad_adapter: settings.microphone_vad_adapter,
+        inactivity_activity_mode: settings.inactivity_activity_mode,
+    }
+}
+
+fn apply_domain_patch_to_settings(
+    settings: &mut RecordingSettings,
+    patch: RecordingSettingsDomainPatch,
+) -> Result<(), CaptureErrorResponse> {
+    let domain = patch.domain();
+    let mut touched = false;
+
+    match patch {
+        RecordingSettingsDomainPatch::CaptureSources(request) => {
+            if let Some(value) = request.capture_screen {
+                settings.capture_screen = value;
+                touched = true;
+            }
+            if let Some(value) = request.capture_microphone {
+                settings.capture_microphone = value;
+                touched = true;
+            }
+            if let Some(value) = request.capture_system_audio {
+                settings.capture_system_audio = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::CaptureTiming(request) => {
+            if let Some(value) = request.segment_duration_seconds {
+                settings.segment_duration_seconds = value;
+                touched = true;
+            }
+            if let Some(value) = request.auto_start {
+                settings.auto_start = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::Video(request) => {
+            if let Some(value) = request.screen_frame_rate {
+                settings.screen_frame_rate = value;
+                touched = true;
+            }
+            if let Some(value) = request.screen_resolution {
+                settings.screen_resolution = value;
+                touched = true;
+            }
+            if let Some(value) = request.video_bitrate {
+                settings.video_bitrate = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::Storage(request) => {
+            if let Some(value) = request.save_directory {
+                settings.save_directory = value;
+                touched = true;
+            }
+            if let Some(value) = request.retention_policy {
+                settings.retention_policy = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::Display(request) => {
+            if let Some(value) = request.appearance {
+                settings.appearance = value;
+                touched = true;
+            }
+            if let Some(value) = request.follow_timeline_live {
+                settings.follow_timeline_live = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::Metadata(request) => {
+            if let Some(value) = request.enabled {
+                settings.metadata.enabled = value;
+                touched = true;
+            }
+            if let Some(value) = request.browser_url_mode {
+                settings.metadata.browser_url_mode = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::Inactivity(request) => {
+            if let Some(value) = request.pause_capture_on_inactivity {
+                settings.pause_capture_on_inactivity = value;
+                touched = true;
+            }
+            if let Some(value) = request.idle_timeout_seconds {
+                settings.idle_timeout_seconds = value;
+                touched = true;
+            }
+            if let Some(value) = request.microphone_activity_sensitivity {
+                settings.microphone_activity_sensitivity = value;
+                touched = true;
+            }
+            if let Some(value) = request.system_audio_activity_sensitivity {
+                settings.system_audio_activity_sensitivity = value;
+                touched = true;
+            }
+            if let Some(value) = request.audio_speech_detection {
+                settings.audio_speech_detection = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::Processing(request) => {
+            if let Some(value) = request.ocr {
+                settings.ocr = value;
+                touched = true;
+            }
+            if let Some(value) = request.transcription {
+                settings.transcription = value;
+                touched = true;
+            }
+            if let Some(value) = request.speaker_analysis {
+                settings.speaker_analysis = value;
+                touched = true;
+            }
+            if let Some(value) = request.preview_cache_ttl_seconds {
+                settings.preview_cache_ttl_seconds = value;
+                touched = true;
+            }
+        }
+        RecordingSettingsDomainPatch::Developer(request) => {
+            if let Some(value) = request.developer_options_enabled {
+                settings.developer_options_enabled = value;
+                touched = true;
+            }
+            if let Some(value) = request.native_capture_debug_logging_enabled {
+                settings.native_capture_debug_logging_enabled = value;
+                touched = true;
+            }
+        }
+    }
+
+    if !touched {
+        return Err(empty_domain_patch_error(domain));
+    }
+
+    Ok(())
+}
+
 pub(crate) fn apply_recording_settings_update(
     app_handle: &tauri::AppHandle,
     state: &RecordingSettingsState,
@@ -810,6 +1018,59 @@ pub(crate) fn apply_recording_settings_update(
     let save_directory_changed = previous_save_directory != settings.save_directory;
     let debug_logging_enabled_changed = previous_settings.native_capture_debug_logging_enabled
         != settings.native_capture_debug_logging_enabled;
+
+    persist_recording_settings(app_handle, &settings)?;
+    runtime.settings = settings.clone();
+
+    Ok(AppliedRecordingSettingsUpdate {
+        settings,
+        previous_settings,
+        previous_save_directory,
+        save_directory_changed,
+        debug_logging_enabled_changed,
+    })
+}
+
+pub(crate) fn apply_recording_settings_domain_patch(
+    app_handle: &tauri::AppHandle,
+    state: &RecordingSettingsState,
+    patch: RecordingSettingsDomainPatch,
+) -> Result<(SettingsOwnershipDomain, AppliedRecordingSettingsUpdate), CaptureErrorResponse> {
+    let domain = patch.domain();
+    apply_recording_settings_domain_mutation(app_handle, state, domain, |settings| {
+        apply_domain_patch_to_settings(settings, patch)?;
+        Ok(())
+    })
+    .map(|update| (domain, update))
+}
+
+pub(crate) fn apply_recording_settings_domain_mutation(
+    app_handle: &tauri::AppHandle,
+    state: &RecordingSettingsState,
+    domain: SettingsOwnershipDomain,
+    mutate: impl FnOnce(&mut RecordingSettings) -> Result<(), CaptureErrorResponse>,
+) -> Result<AppliedRecordingSettingsUpdate, CaptureErrorResponse> {
+    let mut runtime = state.lock().expect("recording settings state poisoned");
+    let mut next_settings = runtime.settings.clone();
+
+    mutate(&mut next_settings)?;
+
+    let settings =
+        validate_recording_settings(recording_settings_request_from_settings(next_settings))?;
+    let previous_settings = runtime.settings.clone();
+    let previous_save_directory = previous_settings.save_directory.clone();
+    let save_directory_changed = previous_save_directory != settings.save_directory;
+    let debug_logging_enabled_changed = previous_settings.native_capture_debug_logging_enabled
+        != settings.native_capture_debug_logging_enabled;
+
+    if domain != SettingsOwnershipDomain::AppPrivacyExclusion
+        && previous_settings.privacy != settings.privacy
+    {
+        return Err(CaptureErrorResponse {
+            code: "invalid_privacy_rule".to_string(),
+            message: "Privacy rules must be changed with dedicated privacy commands".to_string(),
+        });
+    }
 
     persist_recording_settings(app_handle, &settings)?;
     runtime.settings = settings.clone();
@@ -988,15 +1249,30 @@ mod tests {
     }
 
     #[test]
-    fn load_recording_settings_from_path_preserves_microphone_vad_adapter() {
+    fn load_recording_settings_from_path_migrates_legacy_microphone_vad_adapter_to_shared_detector()
+    {
         let dir = TestDir::new("microphone-vad-adapter");
         let path = dir.path().join("recording-settings.json");
-        let mut settings = default_recording_settings();
-        settings.microphone_vad_adapter = capture_types::MicrophoneVadAdapter::Webrtc;
 
         fs::write(
             &path,
-            serde_json::to_string_pretty(&settings).expect("settings should serialize"),
+            r#"{
+                "captureScreen": true,
+                "captureMicrophone": true,
+                "captureSystemAudio": false,
+                "segmentDurationSeconds": 60,
+                "screenFrameRate": 1,
+                "screenResolution": { "mode": "preset", "preset": "original" },
+                "videoBitrate": { "mode": "preset", "preset": "medium" },
+                "saveDirectory": "/tmp",
+                "autoStart": false,
+                "pauseCaptureOnInactivity": true,
+                "idleTimeoutSeconds": 10,
+                "microphoneActivitySensitivity": 50,
+                "systemAudioActivitySensitivity": 50,
+                "microphoneVadAdapter": "webrtc",
+                "activityMode": "system_input_or_screen"
+            }"#,
         )
         .expect("settings file should write");
 
@@ -1004,8 +1280,12 @@ mod tests {
             load_recording_settings_from_path(&path).expect("settings should load from disk");
 
         assert_eq!(
+            loaded.audio_speech_detection.detector,
+            capture_types::AudioSpeechDetector::Webrtc
+        );
+        assert_eq!(
             loaded.microphone_vad_adapter,
-            capture_types::MicrophoneVadAdapter::Webrtc
+            capture_types::AudioSpeechDetector::Webrtc
         );
     }
 
@@ -1036,6 +1316,176 @@ mod tests {
             ScreenResolution::Preset {
                 preset: ScreenResolutionPreset::P720
             }
+        );
+    }
+
+    fn apply_domain_patch_for_test(
+        mut settings: RecordingSettings,
+        patch: RecordingSettingsDomainPatch,
+    ) -> Result<RecordingSettings, CaptureErrorResponse> {
+        apply_domain_patch_to_settings(&mut settings, patch)?;
+        validate_recording_settings_with_resolution_support(
+            recording_settings_request_from_settings(settings),
+            true,
+        )
+    }
+
+    #[test]
+    fn domain_update_preserves_unrelated_settings_fields() {
+        let mut base = default_recording_settings();
+        base.capture_microphone = true;
+        base.ocr.enabled = false;
+        base.appearance = capture_types::AppearanceSetting::Dark;
+        base.save_directory = "/tmp/mnema-before".to_string();
+
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
+                capture_screen: None,
+                capture_microphone: Some(false),
+                capture_system_audio: None,
+            }),
+        )
+        .expect("capture source patch should validate");
+
+        assert!(!updated.capture_microphone);
+        assert_eq!(updated.capture_screen, base.capture_screen);
+        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.appearance, base.appearance);
+        assert_eq!(updated.save_directory, base.save_directory);
+    }
+
+    #[test]
+    fn empty_domain_patch_is_rejected() {
+        let error = apply_domain_patch_for_test(
+            default_recording_settings(),
+            RecordingSettingsDomainPatch::CaptureSources(
+                UpdateCaptureSourceSettingsRequest::default(),
+            ),
+        )
+        .expect_err("empty patch should be rejected");
+
+        assert_eq!(error.code, "empty_settings_patch");
+    }
+
+    #[test]
+    fn capture_sources_domain_rejects_system_audio_without_screen() {
+        let error = apply_domain_patch_for_test(
+            default_recording_settings(),
+            RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
+                capture_screen: Some(false),
+                capture_microphone: Some(true),
+                capture_system_audio: Some(true),
+            }),
+        )
+        .expect_err("system audio without screen should be rejected");
+
+        assert_eq!(error.code, "invalid_recording_settings");
+        assert_eq!(
+            error.message,
+            "System audio capture requires screen capture"
+        );
+    }
+
+    #[test]
+    fn inactivity_domain_rejects_detector_off_when_system_audio_transcription_enabled() {
+        let mut base = default_recording_settings();
+        base.transcription.enabled = true;
+        base.transcription.system_audio_enabled = true;
+
+        let error = apply_domain_patch_for_test(
+            base,
+            RecordingSettingsDomainPatch::Inactivity(UpdateInactivitySettingsRequest {
+                audio_speech_detection: Some(capture_types::AudioSpeechDetectionSettings {
+                    detector: capture_types::AudioSpeechDetector::Off,
+                }),
+                ..UpdateInactivitySettingsRequest::default()
+            }),
+        )
+        .expect_err("detector off should be rejected for system audio transcription");
+
+        assert_eq!(error.code, "invalid_recording_settings");
+        assert_eq!(
+            error.message,
+            "audioSpeechDetection.detector cannot be off while transcription.systemAudioEnabled is true"
+        );
+    }
+
+    #[test]
+    fn processing_domain_rejects_system_audio_transcription_when_detector_is_off() {
+        let mut base = default_recording_settings();
+        base.audio_speech_detection.detector = capture_types::AudioSpeechDetector::Off;
+        base.microphone_vad_adapter = capture_types::AudioSpeechDetector::Off;
+        base.transcription.system_audio_enabled = false;
+
+        let mut transcription = base.transcription.clone();
+        transcription.system_audio_enabled = true;
+
+        let error = apply_domain_patch_for_test(
+            base,
+            RecordingSettingsDomainPatch::Processing(UpdateProcessingSettingsRequest {
+                transcription: Some(transcription),
+                ..UpdateProcessingSettingsRequest::default()
+            }),
+        )
+        .expect_err("system audio transcription should require a speech detector");
+
+        assert_eq!(error.code, "invalid_recording_settings");
+        assert_eq!(
+            error.message,
+            "audioSpeechDetection.detector cannot be off while transcription.systemAudioEnabled is true"
+        );
+    }
+
+    #[test]
+    fn storage_domain_preserves_non_storage_settings() {
+        let mut base = default_recording_settings();
+        base.capture_microphone = true;
+        base.developer_options_enabled = true;
+        base.ocr.enabled = false;
+
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::Storage(UpdateStorageSettingsRequest {
+                save_directory: Some("/tmp/mnema-after".to_string()),
+                retention_policy: Some(RetentionPolicy::Days7),
+            }),
+        )
+        .expect("storage patch should validate");
+
+        assert_eq!(updated.save_directory, "/tmp/mnema-after");
+        assert_eq!(updated.retention_policy, RetentionPolicy::Days7);
+        assert_eq!(updated.capture_microphone, base.capture_microphone);
+        assert_eq!(
+            updated.developer_options_enabled,
+            base.developer_options_enabled
+        );
+        assert_eq!(updated.ocr, base.ocr);
+    }
+
+    #[test]
+    fn developer_domain_preserves_processing_and_capture_fields() {
+        let mut base = default_recording_settings();
+        base.capture_microphone = true;
+        base.ocr.enabled = false;
+        base.preview_cache_ttl_seconds = 120;
+
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::Developer(UpdateDeveloperSettingsRequest {
+                developer_options_enabled: Some(true),
+                native_capture_debug_logging_enabled: Some(true),
+            }),
+        )
+        .expect("developer patch should validate");
+
+        assert!(updated.developer_options_enabled);
+        assert!(updated.native_capture_debug_logging_enabled);
+        assert_eq!(updated.capture_microphone, base.capture_microphone);
+        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(
+            updated.preview_cache_ttl_seconds,
+            base.preview_cache_ttl_seconds
         );
     }
 
@@ -1073,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_recording_settings_preserves_microphone_vad_adapter_update() {
+    fn validate_recording_settings_normalizes_microphone_vad_adapter_from_shared_detector() {
         let settings = validate_recording_settings_with_resolution_support(
             UpdateRecordingSettingsRequest {
                 capture_screen: true,
@@ -1096,14 +1546,16 @@ mod tests {
                 ocr: default_ocr_settings(),
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
-                audio_speech_detection: default_audio_speech_detection_settings(),
+                audio_speech_detection: capture_types::AudioSpeechDetectionSettings {
+                    detector: capture_types::AudioSpeechDetector::Off,
+                },
                 metadata: default_metadata_settings(),
                 privacy: default_privacy_settings(),
                 pause_capture_on_inactivity: true,
                 idle_timeout_seconds: 10,
                 microphone_activity_sensitivity: 50,
                 system_audio_activity_sensitivity: 50,
-                microphone_vad_adapter: capture_types::MicrophoneVadAdapter::Off,
+                microphone_vad_adapter: capture_types::MicrophoneVadAdapter::Webrtc,
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             true,
@@ -1112,7 +1564,7 @@ mod tests {
 
         assert_eq!(
             settings.microphone_vad_adapter,
-            capture_types::MicrophoneVadAdapter::Off
+            capture_types::AudioSpeechDetector::Off
         );
     }
 

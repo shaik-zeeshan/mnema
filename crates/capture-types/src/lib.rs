@@ -317,4 +317,47 @@ mod tests {
             default_microphone_vad_adapter()
         );
     }
+
+    #[test]
+    fn recording_settings_domain_response_serializes_domain_as_snake_case() {
+        let response = RecordingSettingsDomainUpdateResponse {
+            domain: SettingsOwnershipDomain::AppPrivacyExclusion,
+            settings: RecordingSettings {
+                capture_screen: true,
+                capture_microphone: false,
+                capture_system_audio: false,
+                segment_duration_seconds: 60,
+                screen_frame_rate: 30,
+                screen_resolution: ScreenResolution::Preset {
+                    preset: ScreenResolutionPreset::Original,
+                },
+                video_bitrate: default_video_bitrate(),
+                save_directory: "/tmp".to_string(),
+                auto_start: false,
+                native_capture_debug_logging_enabled: false,
+                developer_options_enabled: false,
+                preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
+                follow_timeline_live: false,
+                retention_policy: default_retention_policy(),
+                appearance: default_appearance(),
+                ocr: default_ocr_settings(),
+                transcription: default_audio_transcription_settings(),
+                speaker_analysis: default_speaker_analysis_settings(),
+                audio_speech_detection: default_audio_speech_detection_settings(),
+                metadata: default_metadata_settings(),
+                privacy: default_privacy_settings(),
+                pause_capture_on_inactivity: true,
+                idle_timeout_seconds: 10,
+                microphone_activity_sensitivity: 50,
+                system_audio_activity_sensitivity: 50,
+                microphone_vad_adapter: default_microphone_vad_adapter(),
+                inactivity_activity_mode: InactivityActivityMode::SystemInputOrScreenOrAudio,
+            },
+        };
+
+        let json = serde_json::to_value(&response).expect("response should serialize");
+
+        assert_eq!(json["domain"], "app_privacy_exclusion");
+        assert!(json["settings"].is_object());
+    }
 }

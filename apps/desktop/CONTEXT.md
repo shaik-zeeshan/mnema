@@ -74,6 +74,10 @@ _Avoid_: Privacy settings, Developer settings, Agent Access tab
 The settings surface for app identity, version details, release channel information, and manual **App Update** checks.
 _Avoid_: status-bar updater, automatic update prompt, release dashboard
 
+**Settings Ownership Domain**:
+A coherent settings area whose values can be loaded, validated, saved, and broadcast without overwriting unrelated user preferences.
+_Avoid_: UI tab, settings category, full settings payload
+
 **CLI Access Request**:
 A request-bound app surface that lets the user approve or deny a pending **CLI Access Grant** request.
 _Avoid_: settings page, generic prompt, login screen
@@ -126,6 +130,21 @@ _Avoid_: automatic install, forced update, startup restart
 - **Access Settings** treats expired and revoked **CLI Access Grant** values as history rather than active access.
 - **Access Settings** is a top-level settings surface distinct from Privacy and Developer settings.
 - **About Settings** is a top-level settings surface with settings tab id `about`.
+- A **Settings Ownership Domain** is defined by persistence and validation ownership rather than by the visual settings tab where its controls appear.
+- Autosave should save one **Settings Ownership Domain** at a time so an older settings draft cannot overwrite unrelated preferences from another domain.
+- Autosave may save different **Settings Ownership Domain** values concurrently, but saves within one domain should be serialized.
+- Settings change notifications should preserve full canonical settings for compatibility while also identifying the changed **Settings Ownership Domain** for draft-safe frontend synchronization.
+- Settings surfaces should resync draft state for the changed **Settings Ownership Domain** without resetting unrelated in-progress drafts from the full canonical settings payload.
+- New domain-specific settings mutation APIs and events should return the changed **Settings Ownership Domain** together with the full canonical settings.
+- Initial **Settings Ownership Domain** values are Capture Source Settings, Capture Timing Settings, Video Settings, Storage Settings, Display Settings, Metadata Settings, App Privacy Exclusion, Inactivity Settings, Processing Settings, and Developer Settings.
+- Stable **Settings Ownership Domain** ids are `capture_sources`, `capture_timing`, `video`, `storage`, `display`, `metadata`, `app_privacy_exclusion`, `inactivity`, `processing`, `developer`, `keyboard_bindings`, `microphone_controller`, `app_update`, `access`, and `one_time_prompt_state`.
+- Keyboard Bindings, Microphone Controller Preferences, App Update Settings, Access Settings, and **One-Time Prompt State** remain separate existing **Settings Ownership Domain** values rather than being folded into recording settings.
+- **App Privacy Exclusion** stays a dedicated **Settings Ownership Domain** with purpose-built mutation commands instead of full-payload autosave.
+- Normal settings autosave and visible controls should use **Settings Ownership Domain** mutation APIs rather than a full recording-settings payload.
+- A full recording-settings update path may remain only as a compatibility, migration, import, or debug backstop.
+- Domain-specific recording settings mutations should initially merge into the canonical `recording-settings.json` store rather than splitting that file by domain.
+- Domain-specific recording settings mutations should validate the proposed domain change against the current canonical settings so cross-domain invariants are preserved.
+- A domain mutation that violates another **Settings Ownership Domain** should fail clearly unless there is one obvious normalization that preserves user intent.
 - **Access Settings** layout should include CLI install/status, active CLI access grouped by client, recent non-content access history, and inactive or revoked history.
 - **Access Settings** should not expose a manual create-grant button in V1 because grant creation is request-bound through **Broker Authorization Channel** approval.
 - New frontend/Tauri APIs for **Access Settings** should use access-language names even when app-infra keeps broker-language internals.
@@ -349,3 +368,4 @@ _Avoid_: automatic install, forced update, startup restart
 ## Flagged Ambiguities
 
 - "**Scrub Preview**" was previously described as a visual representation of a **Captured Frame**; resolved: it is a disposable segment-time preview used during timeline navigation, while exact **Captured Frame** inspection goes through the exact preview path.
+- "settings category" was used ambiguously for both visual tabs and save boundaries; resolved: save boundaries are **Settings Ownership Domain** values, while tabs are only presentation.
