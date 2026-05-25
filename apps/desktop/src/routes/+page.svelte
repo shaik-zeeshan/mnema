@@ -4035,13 +4035,31 @@
     });
   }
 
+  function formatSearchChipDate(iso: string): string {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
   function searchDateChipLabel(): string | null {
     const range = searchRefinements.dateRange;
     if (!range) return null;
     if (range.origin === "visible_timeline") return "Visible timeline";
     if (range.origin === "today") return "Today";
     if (range.origin === "last_hour") return "Last hour";
-    return "Date range";
+    // Custom range parsed from after:/before:/date: operators (origin unset).
+    // One-sided bounds carry the backend's wide-open sentinels (year 1 / 9999);
+    // detect them so we show "After"/"Before" instead of a sentinel date.
+    const start = new Date(range.startAt);
+    const end = new Date(range.endAt);
+    const openStart = isNaN(start.getTime()) || start.getFullYear() <= 1;
+    const openEnd = isNaN(end.getTime()) || end.getFullYear() >= 9999;
+    if (openStart && openEnd) return "Date range";
+    if (openStart) return `Before ${formatSearchChipDate(range.endAt)}`;
+    if (openEnd) return `After ${formatSearchChipDate(range.startAt)}`;
+    const startLabel = formatSearchChipDate(range.startAt);
+    const endLabel = formatSearchChipDate(range.endAt);
+    return startLabel === endLabel ? startLabel : `${startLabel} – ${endLabel}`;
   }
 
   function openSearch(): void {
@@ -7779,6 +7797,10 @@
               }}
               placeholder="Search frames and audio…"
               aria-label="Search captured text or audio"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
             />
             {#if searchSuggestOpen}
               <div class="search-modal__suggest" id={searchSuggestListId} role="listbox" aria-label="Search operator suggestions">
