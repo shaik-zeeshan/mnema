@@ -1,5 +1,4 @@
 <script lang="ts">
-  import Switch from "$lib/components/Switch.svelte";
   import type { AppPrivacyExclusionController } from "$lib/app-privacy-exclusion.svelte";
 
   let {
@@ -143,38 +142,46 @@
 
   <div class="settings-list">
     {#if controller.excludedApps.length > 0}
-      {#each controller.excludedApps as app (app.id)}
-        {@const iconSrc = controller.appIconSrcForBundleId(app.bundleId)}
-        <div class="settings-list-item settings-list-item--app-rule">
-          <span class="app-rule-icon" aria-hidden="true">
-            {#if iconSrc}
-              <img src={iconSrc} alt="" loading="lazy" />
-            {:else}
-              <span>{controller.appIconFallback(app.displayName, app.bundleId)}</span>
-            {/if}
-          </span>
-          <Switch
-            checked={app.enabled}
-            onCheckedChange={(enabled) => controller.setPrivacyExcludedAppEnabled(app.id, enabled)}
-            label={app.displayName}
-            description={app.bundleId}
-            disabled={controller.commandInFlight}
-          />
-          <button
-            class="btn btn--ghost btn--sm"
-            type="button"
-            disabled={controller.commandInFlight}
-            onclick={() => controller.removePrivacyApp(app.id)}
-          >
-            Remove
-          </button>
-        </div>
-      {/each}
+      <div class="exclusion-chips">
+        {#each controller.excludedApps as app (app.id)}
+          {@const iconSrc = controller.appIconSrcForBundleId(app.bundleId)}
+          <div class="exclusion-chip" class:exclusion-chip--off={!app.enabled}>
+            <button
+              type="button"
+              class="exclusion-chip__toggle"
+              aria-pressed={app.enabled}
+              aria-label={`${app.displayName} — ${app.enabled ? "exclusion active, activate to disable" : "exclusion disabled, activate to enable"}`}
+              title={`${app.displayName}\n${app.bundleId}\n${app.enabled ? "Excluded · click to disable" : "Disabled · click to enable"}`}
+              disabled={controller.commandInFlight}
+              onclick={() => controller.setPrivacyExcludedAppEnabled(app.id, !app.enabled)}
+            >
+              <span class="exclusion-chip__icon" aria-hidden="true">
+                {#if iconSrc}
+                  <img src={iconSrc} alt="" loading="lazy" />
+                {:else}
+                  <span>{controller.appIconFallback(app.displayName, app.bundleId)}</span>
+                {/if}
+              </span>
+              <span class="exclusion-chip__dot" aria-hidden="true"></span>
+            </button>
+            <button
+              type="button"
+              class="exclusion-chip__remove"
+              aria-label={`Remove ${app.displayName} from exclusions`}
+              title="Remove exclusion"
+              disabled={controller.commandInFlight}
+              onclick={() => controller.removePrivacyApp(app.id)}
+            >
+              ×
+            </button>
+          </div>
+        {/each}
+      </div>
     {:else}
       <p class="empty-state">No app exclusions.</p>
     {/if}
   </div>
-  <p class="hint">Mnema records visible content from non-excluded apps, including private/incognito browser windows. Exclude the whole browser app to keep browser content out of recordings.</p>
+  <p class="hint">Click an icon to pause or resume its exclusion; hover an icon to remove it. Mnema records visible content from non-excluded apps, including private/incognito browser windows.</p>
 </div>
 
 <style>
@@ -286,16 +293,136 @@
     object-fit: contain;
   }
 
-  .app-privacy-exclusion :global(.settings-list-item--app-rule .switch-wrapper),
-  .app-privacy-exclusion :global(.settings-list-item--app-rule .switch-text) {
-    min-width: 0;
+  /* Excluded apps render as compact icon chips. The toggle button flips the
+     exclusion between active and disabled in place; a hover/focus × removes it. */
+  .exclusion-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
   }
 
-  .app-privacy-exclusion :global(.settings-list-item--app-rule .switch-label),
-  .app-privacy-exclusion :global(.settings-list-item--app-rule .switch-description) {
+  .exclusion-chip {
+    position: relative;
+  }
+
+  .exclusion-chip__toggle {
+    position: relative;
+    display: grid;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 9px;
+    background: var(--app-accent-bg);
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s, opacity 0.12s, transform 0.12s;
+  }
+
+  .exclusion-chip__toggle:not(:disabled):hover {
+    border-color: var(--app-accent);
+    transform: translateY(-1px);
+  }
+
+  .exclusion-chip__toggle:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+
+  .exclusion-chip__toggle:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .exclusion-chip__icon {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    color: var(--app-text);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .exclusion-chip__icon img {
+    width: 26px;
+    height: 26px;
+    object-fit: contain;
+  }
+
+  /* Status dot: accent when the exclusion is active, hollow + muted when off. */
+  .exclusion-chip__dot {
+    position: absolute;
+    right: -3px;
+    bottom: -3px;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 2px solid var(--app-surface);
+    background: var(--app-accent);
+  }
+
+  .exclusion-chip--off .exclusion-chip__toggle {
+    border-style: dashed;
+    border-color: var(--app-border-strong);
+    background: var(--app-surface-subtle);
+  }
+
+  .exclusion-chip--off .exclusion-chip__icon {
+    color: var(--app-text-faint);
+  }
+
+  .exclusion-chip--off .exclusion-chip__icon img {
+    filter: grayscale(1);
+    opacity: 0.45;
+  }
+
+  .exclusion-chip--off .exclusion-chip__dot {
+    background: var(--app-surface);
+    border-color: var(--app-border-strong);
+  }
+
+  .exclusion-chip__remove {
+    position: absolute;
+    top: -7px;
+    right: -7px;
+    display: grid;
+    width: 17px;
+    height: 17px;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 50%;
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+  }
+
+  .exclusion-chip:hover .exclusion-chip__remove,
+  .exclusion-chip:focus-within .exclusion-chip__remove {
+    opacity: 1;
+  }
+
+  .exclusion-chip__remove:not(:disabled):hover {
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
+  }
+
+  .exclusion-chip__remove:focus-visible {
+    opacity: 1;
+    outline: none;
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+
+  .exclusion-chip__remove:disabled {
+    cursor: not-allowed;
   }
 
   .app-combobox {

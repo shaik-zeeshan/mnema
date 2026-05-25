@@ -24,10 +24,17 @@
       "desktop": {
         "schemes": ["mnema"]
       }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2QkJCNTNCMkZBQTYxNUQKUldSZFlhb3ZPN1c3OXJSUkNxTG9ZWW1rcnM5Yk1Mclk0Nmh3U08wRDhWeTZxV2JkMTNnbUtjS2QK",
+      "endpoints": [
+        "https://github.com/shaik-zeeshan/mnema/releases/latest/download/latest.json"
+      ]
     }
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "externalBin": ["binaries/mnema-cli"],
     "macOS": {

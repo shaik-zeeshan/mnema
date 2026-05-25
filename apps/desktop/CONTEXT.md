@@ -70,6 +70,10 @@ _Avoid_: exact frame, OCR source, screenshot, thumbnail
 The top-level settings surface for local tool access controls such as **CLI Access**.
 _Avoid_: Privacy settings, Developer settings, Agent Access tab
 
+**About Settings**:
+The settings surface for app identity, version details, release channel information, and manual **App Update** checks.
+_Avoid_: status-bar updater, automatic update prompt, release dashboard
+
 **CLI Access Request**:
 A request-bound app surface that lets the user approve or deny a pending **CLI Access Grant** request.
 _Avoid_: settings page, generic prompt, login screen
@@ -77,6 +81,26 @@ _Avoid_: settings page, generic prompt, login screen
 **Secure Field Capture Suspension**:
 A future ADR-backed product concept that would suspend capture while secure text entry is focused, rather than filtering by app, window, website, or recognized text.
 _Avoid_: password-page filter, secure-field redaction, browser login exclusion
+
+**App Update**:
+A user-visible Mnema version replacement delivered through a selected release channel.
+_Avoid_: draft release update, silent update, internal-only artifact
+
+**Prerelease Build**:
+An internal/test Mnema build reviewed and installed manually before it is eligible for the stable update channel.
+_Avoid_: stable update, production update
+
+**Stable Update**:
+An **App Update** delivered from published non-prerelease GitHub Releases.
+_Avoid_: preview update, draft release update, notarized update
+
+**Preview Update**:
+An opt-in **App Update** delivered from preview release artifacts that may be less stable and may be ad hoc signed or not notarized.
+_Avoid_: stable update, forced beta, hidden prerelease
+
+**Startup Update Check**:
+A background **App Update** availability check that runs when Mnema starts without downloading, installing, or restarting by itself.
+_Avoid_: automatic install, forced update, startup restart
 
 ## Relationships
 
@@ -101,6 +125,7 @@ _Avoid_: password-page filter, secure-field redaction, browser login exclusion
 - **Access Settings** groups **CLI Access Grant** values and recent non-content access history by **Broker Client Identity**.
 - **Access Settings** treats expired and revoked **CLI Access Grant** values as history rather than active access.
 - **Access Settings** is a top-level settings surface distinct from Privacy and Developer settings.
+- **About Settings** is a top-level settings surface with settings tab id `about`.
 - **Access Settings** layout should include CLI install/status, active CLI access grouped by client, recent non-content access history, and inactive or revoked history.
 - **Access Settings** should not expose a manual create-grant button in V1 because grant creation is request-bound through **Broker Authorization Channel** approval.
 - New frontend/Tauri APIs for **Access Settings** should use access-language names even when app-infra keeps broker-language internals.
@@ -174,6 +199,55 @@ _Avoid_: password-page filter, secure-field redaction, browser login exclusion
 - **Browser Capture Disclosure** may mention browser URL metadata in Privacy settings, but not in fast status-bar recovery flows.
 - Raw SQLite or frame-file access by external agents is outside the **Sensitive Capture Protection V1** privacy guarantee until Mnema introduces an explicit brokered access boundary.
 - **Secure Field Capture Suspension** is separate from the **Live Privacy Filter** and requires its own ADR before becoming a product guarantee.
+- **Stable Update** checks do not target draft releases or **Prerelease Build** values.
+- A **Prerelease Build** can become eligible for **Stable Update** only after it is published as a stable release.
+- V1 **Stable Update** uses the stable GitHub Release `latest.json` asset as its update feed.
+- V1 **Preview Update** is opt-in and must disclose that preview builds may be less stable and may show macOS security warnings until Developer ID signing and notarization are available.
+- Normal **Preview Update** UI explains practical risk and possible macOS security warnings rather than exposing signing implementation details.
+- V1 **Preview Update** uses a separate static preview update feed rather than GitHub Releases `latest`.
+- V1 **Preview Update** feed is published through GitHub Pages.
+- V1 **Preview Update** feed URL is `https://shaik-zeeshan.github.io/mnema/updates/preview/latest.json`.
+- **Stable Update** continues to use GitHub Releases `latest`; only **Preview Update** uses a custom static feed.
+- **App Update** feeds and artifacts are public HTTPS resources; Mnema does not store GitHub credentials for update checks.
+- V1 **App Update** adds no app-owned analytics or telemetry beyond the necessary HTTPS feed/artifact requests.
+- V1 **App Update** channels follow [ADR 0018](../../docs/adr/0018-support-opt-in-preview-update-channel.md).
+- V1 **App Update** release artifacts and feed generation follow [ADR 0017](../../docs/adr/0017-use-tauri-action-for-app-update-release-artifacts.md).
+- V1 **App Update** supports macOS Apple Silicon builds only.
+- V1 **Stable Update** and **Preview Update** artifacts are signed with the same Tauri updater keypair.
+- **Preview Update** publishing uses the same protected release environment and updater signing secrets as **Stable Update** publishing.
+- V1 **App Update** does not support automated downgrades when switching from preview back to stable.
+- **Preview Update** builds use SemVer prerelease versions, such as `0.3.0-preview.1`; **Stable Update** builds use plain SemVer versions.
+- Release tags derive **App Update** channel: `vX.Y.Z` targets **Stable Update**, while `vX.Y.Z-preview.N` targets **Preview Update**.
+- Published GitHub prereleases may be referenced by **Preview Update**, while draft releases are not feed-visible for any **App Update** channel.
+- **App Update** release builds are smoke-tested as draft releases before a separate publish step makes them feed-visible.
+- **Preview Update** rollback repoints the preview feed only for users below the bad version; users already on a bad preview receive a newer preview hotfix rather than an automated downgrade.
+- Mnema may check for an **App Update** while a **Capture Session** is active, but it must not install an **App Update** until the **Capture Session** has ended.
+- **User Capture Pause** still counts as an active **Capture Session** for **App Update** installation gating.
+- **App Update** installation does not automatically stop recording or convert an active **Capture Session** into **User Capture Pause**.
+- **About Settings** disables **App Update** installation while a **Capture Session** is active, and Rust still rejects installation if capture starts before the install command runs.
+- V1 **App Update** controls live in **About Settings**, not in the status bar.
+- V1 **About Settings** exposes manual **App Update** checks and app version details.
+- V1 **About Settings** shows product name, current version, selected update channel, platform/architecture, and optionally the bundle identifier.
+- V1 **App Update** installation does not restart Mnema automatically; the user chooses when to restart after installation.
+- V1 **About Settings** shows compact **App Update** status for checking, availability, download/install progress, restart-required, recording-blocked, and failed states.
+- V1 **About Settings** exposes stable/default and preview/opt-in update channel selection.
+- Switching into **Preview Update** requires explicit confirmation, but installing later preview updates does not require a separate preview-specific confirmation beyond the normal install action.
+- **About Settings** confirms **Preview Update** opt-in inline rather than with a blocking OS dialog.
+- Switching from **Preview Update** back to **Stable Update** does not require confirmation and may explain that Mnema will wait for a newer stable version rather than downgrade.
+- Changing **App Update** channel triggers an immediate check against the newly selected channel after the setting is saved.
+- V1 includes a **Startup Update Check** for the selected update channel.
+- A **Startup Update Check** runs only after onboarding is complete.
+- When a **Startup Update Check** finds an update, Mnema surfaces it non-blockingly in the visible app and does not force-open a window while hidden.
+- **Startup Update Check** availability uses the existing app notification rail with an action to open **About Settings**.
+- **Startup Update Check** failures do not create user notifications in V1; manual checks surface failures in **About Settings**.
+- **About Settings** owns **App Update** download, install, progress, and restart-required UI in V1.
+- V1 **App Update** download/install operations are not user-cancellable; failures return to a retryable **About Settings** state.
+- V1 **App Update** availability is runtime-derived from update checks and is not persisted across app restarts.
+- V1 **App Update** restart-required state is kept for the current app process and is not persisted separately across full app restarts.
+- **About Settings** shows **App Update** target version, selected channel, and short release notes when available, but not signature internals or artifact filenames.
+- **About Settings** presents **App Update** failures as user-friendly categories while detailed updater errors stay in logs or debug surfaces.
+- If an update feed has a newer version but no compatible artifact for the current Mac, **About Settings** reports that no compatible update is available rather than claiming Mnema is up to date.
+- **About Settings** displays **App Update** notes from the final publish-time release notes when the update feed provides them.
 - V1 generated **Scrub Preview** interval, rendition, and cache budget are fixed product policy rather than user-facing recording settings.
 - V1 may expose a developer/debug action to clear only generated **Scrub Preview** cache without clearing exact preview cache or adding regular user-facing cache controls.
 - Shared recording/privacy settings should not expose inactive metadata privacy fields for website, title, private-browser, or per-window exclusion.

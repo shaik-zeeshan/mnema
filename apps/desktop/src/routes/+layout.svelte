@@ -168,6 +168,13 @@
     }
   }
 
+  function notificationActionLabel(notification: AppNotification): string {
+    if (notification.action?.type !== "open_settings_tab") return "Open";
+    if (notification.action.tab === "about") return "Open update settings";
+    if (notification.action.tab === "processing") return "Open processing settings";
+    return "Open settings";
+  }
+
   // ── Recording status mirrored from the shared capture-controls seam ────
   const isCapturing = $derived(captureControls.running);
   const captureLoadingStart = $derived(captureControls.loadingStart);
@@ -892,7 +899,7 @@
                             class="notification-item__action"
                             onclick={() => void runNotificationAction(notification)}
                           >
-                            Open transcription settings
+                            {notificationActionLabel(notification)}
                           </button>
                         {/if}
                       </div>

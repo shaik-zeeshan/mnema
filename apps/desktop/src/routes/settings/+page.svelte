@@ -4,6 +4,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { ask } from "@tauri-apps/plugin-dialog";
+  import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
   import AppPrivacyExclusionPrompt from "$lib/components/AppPrivacyExclusionPrompt.svelte";
   import Switch from "$lib/components/Switch.svelte";
@@ -52,13 +54,21 @@
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
     KeyboardBindingsSettings,
+    AppUpdateChannel,
+    AppUpdateStatus,
   } from "$lib/types";
 
   const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
+  const APP_UPDATE_STATUS_CHANGED_EVENT = "app_update_status_changed";
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
   const SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT = "speaker_analysis_model_download_progress";
   const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
   const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
+
+  // Canonical project links surfaced in the About tab. The GitHub repo is the
+  // app's source of truth for releases — the updater pulls latest.json from it.
+  const ABOUT_REPO_URL = "https://github.com/shaik-zeeshan/mnema";
+  const ABOUT_RELEASES_URL = "https://github.com/shaik-zeeshan/mnema/releases";
 
   type BrokerGrant = {
     id: string;
@@ -254,6 +264,21 @@
   let generalLogError = $state<string | null>(null);
   let generalLogDeleted = $state(false);
 
+  // App update status
+  let appUpdateStatus = $state<AppUpdateStatus | null>(null);
+  let checkingAppUpdate = $state(false);
+  let switchingAppUpdateChannel = $state(false);
+  let installingAppUpdate = $state(false);
+  let restartingAfterUpdate = $state(false);
+  let appUpdateActionError = $state<string | null>(null);
+  let previewConfirmationVisible = $state(false);
+
+  // About tab: transient "Copied" confirmation plus a local error slot for the
+  // copy/open-link actions (kept separate from update-action errors).
+  let aboutDetailsCopied = $state(false);
+  let aboutActionError = $state<string | null>(null);
+  let aboutDetailsCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
   // Loading / error state
   let loadingRecSettings = $state(false);
   let savingRecSettings = $state(false);
@@ -271,6 +296,7 @@
   // The page is split into one-tab-at-a-time categories so the long settings
   // list doesn't overwhelm. Tabs are local UI state only — no persistence.
   type SettingsTab =
+    | "about"
     | "capture"
     | "video"
     | "access"
@@ -459,9 +485,11 @@
     { id: "storage",    label: "Storage",     description: "Save path, retention, cache" },
     { id: "appearance", label: "Appearance",  description: "Theme and timeline display" },
     { id: "developer",  label: "Developer",   description: "Debug toggles & logs" },
+    { id: "about",      label: "About",       description: "Version and updates" },
   ];
 
   function normalizeSettingsTab(value: string | null | undefined): SettingsTab | null {
+    if (value === "about") return "about";
     if (value === "capture" || value === "behavior") return "capture";
     if (value === "access" || value === "cliAccess" || value === "cli-access") return "access";
     if (value === "privacy" || value === "metadata") return "privacy";
@@ -877,8 +905,213 @@
 
   function describeError(err: unknown): string {
     if (typeof err === "string") return err;
+    if (err && typeof err === "object" && "message" in err && typeof err.message === "string") return err.message;
     if (err instanceof Error && err.message) return err.message;
     return "Something went wrong. Please try again.";
+  }
+
+  async function loadAppUpdateStatus() {
+    appUpdateActionError = null;
+    try {
+      appUpdateStatus = await invoke<AppUpdateStatus>("get_app_update_status");
+    } catch (err) {
+      appUpdateActionError = describeError(err);
+    }
+  }
+
+  async function checkForAppUpdate() {
+    checkingAppUpdate = true;
+    appUpdateActionError = null;
+    try {
+      appUpdateStatus = await invoke<AppUpdateStatus>("check_for_app_update");
+    } catch (err) {
+      appUpdateActionError = describeError(err);
+    } finally {
+      checkingAppUpdate = false;
+    }
+  }
+
+  async function useAppUpdateChannel(channel: AppUpdateChannel) {
+    if (appUpdateStatus?.channel === channel && !previewConfirmationVisible) return;
+    switchingAppUpdateChannel = true;
+    appUpdateActionError = null;
+    try {
+      appUpdateStatus = await invoke<AppUpdateStatus>("set_app_update_channel", { channel });
+      previewConfirmationVisible = false;
+    } catch (err) {
+      appUpdateActionError = describeError(err);
+    } finally {
+      switchingAppUpdateChannel = false;
+    }
+  }
+
+  function chooseAppUpdateChannel(channel: AppUpdateChannel) {
+    if (channel === "preview" && appUpdateStatus?.channel !== "preview") {
+      previewConfirmationVisible = true;
+      return;
+    }
+    void useAppUpdateChannel(channel);
+  }
+
+  async function installAppUpdate() {
+    installingAppUpdate = true;
+    appUpdateActionError = null;
+    try {
+      appUpdateStatus = await invoke<AppUpdateStatus>("install_app_update");
+    } catch (err) {
+      appUpdateActionError = describeError(err);
+    } finally {
+      installingAppUpdate = false;
+    }
+  }
+
+  async function restartAfterAppUpdate() {
+    restartingAfterUpdate = true;
+    appUpdateActionError = null;
+    try {
+      await invoke("restart_after_app_update");
+    } catch (err) {
+      appUpdateActionError = describeError(err);
+      await loadAppUpdateStatus();
+    } finally {
+      restartingAfterUpdate = false;
+    }
+  }
+
+  function appUpdateStateLabel(status: AppUpdateStatus | null): string {
+    if (!status) return "Loading";
+    if (status.recordingActive && (status.state === "available" || status.state === "recordingBlocked")) {
+      return "Recording active";
+    }
+    switch (status.state) {
+      case "idle": return "Not checked";
+      case "checking": return "Checking";
+      case "upToDate": return "Up to date";
+      case "available": return "Update available";
+      case "downloading": return "Downloading";
+      case "installing": return "Installing";
+      case "restartRequired": return "Restart required";
+      case "recordingBlocked": return "Recording active";
+      case "incompatible": return "Incompatible";
+      case "failed": return "Failed";
+      default: return "Unknown";
+    }
+  }
+
+  function appUpdateStatusMessage(status: AppUpdateStatus | null): string {
+    if (!status) return "Loading update status.";
+    if (status.recordingActive && (status.state === "available" || status.state === "recordingBlocked")) {
+      return "Stop recording to install this update.";
+    }
+    if (status.error?.message) return status.error.message;
+    switch (status.state) {
+      case "idle": return "Mnema has not checked for updates in this app session.";
+      case "checking": return "Checking the selected update channel.";
+      case "upToDate": return "Mnema is current on the selected channel.";
+      case "available": return `Version ${status.update?.version ?? "newer"} is ready to download and install.`;
+      case "downloading": return "Downloading the update package.";
+      case "installing": return "Installing the update. Keep Mnema open until this finishes.";
+      case "restartRequired": return "Restart Mnema when you are ready to finish updating.";
+      case "incompatible": return "No compatible update is available for this Mac.";
+      case "failed": return "The last update operation failed. You can retry.";
+      default: return "Update status is unavailable.";
+    }
+  }
+
+  function updateChannelLabel(channel: AppUpdateChannel | null | undefined): string {
+    return channel === "preview" ? "Preview" : "Stable";
+  }
+
+  function platformLabel(status: AppUpdateStatus | null): string {
+    if (!status) return "Unknown";
+    const os = status.app.platform === "macos" ? "macOS" : status.app.platform;
+    const arch = status.app.arch === "aarch64" ? "Apple Silicon" : status.app.arch;
+    return `${os} · ${arch}`;
+  }
+
+  // A single-line, paste-ready summary for bug reports: product, version,
+  // build target, and bundle identifier.
+  function aboutDetailsText(status: AppUpdateStatus | null): string {
+    const app = status?.app;
+    const product = app?.productName ?? "mnema";
+    const version = app?.version ?? "unknown";
+    const target = app ? `${app.platform}/${app.arch}` : "unknown";
+    const identifier = app?.identifier ?? "unknown";
+    return `${product} ${version} (${target}) ${identifier}`;
+  }
+
+  async function copyAboutDetails() {
+    aboutActionError = null;
+    try {
+      await writeText(aboutDetailsText(appUpdateStatus));
+      aboutDetailsCopied = true;
+      if (aboutDetailsCopiedTimer !== null) clearTimeout(aboutDetailsCopiedTimer);
+      aboutDetailsCopiedTimer = setTimeout(() => {
+        aboutDetailsCopied = false;
+        aboutDetailsCopiedTimer = null;
+      }, 2000);
+    } catch (err) {
+      aboutActionError = describeError(err);
+    }
+  }
+
+  async function openExternalUrl(url: string) {
+    aboutActionError = null;
+    try {
+      await openUrl(url);
+    } catch (err) {
+      aboutActionError = describeError(err);
+    }
+  }
+
+  function formatUpdateDate(value: string | null | undefined): string | null {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  }
+
+  function formatCheckedAt(value: number | null | undefined): string {
+    if (!value) return "Not checked yet";
+    return new Date(value).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  function appUpdateProgressText(status: AppUpdateStatus | null): string {
+    const progress = status?.progress;
+    if (!progress) return "";
+    if (progress.contentLengthBytes) {
+      return `${formatBytes(progress.downloadedBytes)} of ${formatBytes(progress.contentLengthBytes)}`;
+    }
+    return `${formatBytes(progress.downloadedBytes)} downloaded`;
+  }
+
+  function appUpdateProgressPercent(status: AppUpdateStatus | null): number {
+    const progress = status?.progress;
+    if (!progress?.contentLengthBytes) return 8;
+    const percent = (progress.downloadedBytes / progress.contentLengthBytes) * 100;
+    return Math.max(4, Math.min(100, percent));
+  }
+
+  function canInstallAppUpdate(status: AppUpdateStatus | null): boolean {
+    return !!status?.update
+      && (status.state === "available" || status.state === "recordingBlocked" || status.state === "failed")
+      && !status.recordingActive
+      && !installingAppUpdate
+      && !checkingAppUpdate
+      && !switchingAppUpdateChannel;
+  }
+
+  function canRestartAfterUpdate(status: AppUpdateStatus | null): boolean {
+    return status?.state === "restartRequired" && !status.recordingActive && !restartingAfterUpdate;
   }
 
   type GrantStatus = "active" | "expired" | "revoked";
@@ -1969,6 +2202,7 @@
     loadSpeakerModelStatus();
     loadDebugLogStatus();
     loadGeneralLogStatus();
+    loadAppUpdateStatus();
     void appPrivacyExclusion.loadPrivacyAppCandidates();
     void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
     loadBrokerGrants();
@@ -1978,6 +2212,7 @@
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
     let unlistenRecordingSettingsChanged: (() => void) | undefined;
     let unlistenOpenSettingsTab: (() => void) | undefined;
+    let unlistenAppUpdateStatusChanged: (() => void) | undefined;
     let unlistenOcrDownloadProgress: (() => void) | undefined;
     let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
     let unlistenSpeakerDownloadProgress: (() => void) | undefined;
@@ -2021,6 +2256,14 @@
       else unlistenOpenSettingsTab = fn;
     });
 
+    listen<AppUpdateStatus>(APP_UPDATE_STATUS_CHANGED_EVENT, (event) => {
+      appUpdateStatus = event.payload;
+      appUpdateActionError = null;
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenAppUpdateStatusChanged = fn;
+    });
+
     listen<OcrModelDownloadProgress>(
       OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
       (event) => {
@@ -2058,6 +2301,7 @@
       unlistenAutoDisconnectFailure?.();
       unlistenRecordingSettingsChanged?.();
       unlistenOpenSettingsTab?.();
+      unlistenAppUpdateStatusChanged?.();
       unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
       unlistenSpeakerDownloadProgress?.();
@@ -2069,7 +2313,13 @@
      1.8 stroke so the rail reads as one icon family. -->
 {#snippet navIcon(kind: SettingsTab)}
   <span class="settings-nav__icon" aria-hidden="true">
-    {#if kind === "capture"}
+    {#if kind === "about"}
+      <svg viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 11v6" />
+        <path d="M12 7h.01" />
+      </svg>
+    {:else if kind === "capture"}
       <svg viewBox="0 0 24 24">
         <rect x="3" y="5" width="18" height="12" rx="2" />
         <path d="M8 21h8" />
@@ -2298,7 +2548,198 @@
 
     <div class="settings-scroll" class:is-scrolling={scrollRegionScrolling} bind:this={scrollRegion} onscroll={handleScrollRegionScroll}>
 
-<!-- ── Capture & sources ───────────────────────────────────────────────── -->
+<!-- ── About & updates ─────────────────────────────────────────────────── -->
+{#if activeTab === "about"}
+  <div role="tabpanel" id="settings-panel-about" aria-labelledby="settings-tab-about" tabindex="0">
+    <section class="card about-card">
+      <div class="about-id">
+        <div class="about-id__mark">
+          <h2 class="about-id__name">mnema</h2>
+          {#if appUpdateStatus?.app.version}
+            <span class="about-id__version">v{appUpdateStatus.app.version}</span>
+          {:else}
+            <span class="about-id__version about-id__version--pending">checking…</span>
+          {/if}
+          <span class="badge badge--neutral badge--sm about-id__channel">
+            {updateChannelLabel(appUpdateStatus?.channel)} channel
+          </span>
+        </div>
+        <p class="about-id__tag">
+          Your memory, on rewind. Mnema records your screen so you can scrub back to
+          anything you've seen: searchable, local, and yours.
+        </p>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <dl class="about-meta">
+        <div class="about-meta__row">
+          <dt>Platform</dt>
+          <dd>{platformLabel(appUpdateStatus)}</dd>
+        </div>
+        <div class="about-meta__row">
+          <dt>Identifier</dt>
+          <dd>{appUpdateStatus?.app.identifier ?? "Unknown"}</dd>
+        </div>
+        <div class="about-meta__row">
+          <dt>License</dt>
+          <dd>MIT</dd>
+        </div>
+      </dl>
+
+      <div class="about-footer">
+        <div class="about-links">
+          <button type="button" class="about-link" onclick={() => openExternalUrl(ABOUT_REPO_URL)}>
+            Source<span class="about-link__arrow" aria-hidden="true">↗</span>
+          </button>
+          <button type="button" class="about-link" onclick={() => openExternalUrl(ABOUT_RELEASES_URL)}>
+            Release notes<span class="about-link__arrow" aria-hidden="true">↗</span>
+          </button>
+        </div>
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm about-copy"
+          onclick={copyAboutDetails}
+          aria-label="Copy version and build details to the clipboard"
+        >
+          {aboutDetailsCopied ? "Copied" : "Copy details"}
+        </button>
+      </div>
+
+      {#if aboutActionError}
+        <p class="error-text about-error" role="alert">{aboutActionError}</p>
+      {/if}
+    </section>
+
+    <section class="card">
+      <div class="card__header">
+        <div class="card__heading">
+          <h2 class="card__title">Updates</h2>
+          <p class="card__subtitle">Mnema checks the selected channel at startup after onboarding.</p>
+        </div>
+        <button
+          class="btn btn--primary btn--sm"
+          onclick={checkForAppUpdate}
+          disabled={checkingAppUpdate || switchingAppUpdateChannel || installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing" || appUpdateStatus?.state === "restartRequired"}
+        >
+          {checkingAppUpdate || appUpdateStatus?.state === "checking" ? "Checking" : "Check for Updates"}
+        </button>
+      </div>
+
+      <div class="settings-group">
+        <span class="group-label">Update channel</span>
+        <div class="update-channel-control" role="radiogroup" aria-label="Update channel">
+          <button
+            type="button"
+            class:update-channel-control__option--active={appUpdateStatus?.channel !== "preview"}
+            class="update-channel-control__option"
+            aria-pressed={appUpdateStatus?.channel !== "preview"}
+            onclick={() => chooseAppUpdateChannel("stable")}
+            disabled={switchingAppUpdateChannel || installingAppUpdate}
+          >
+            <span>Stable</span>
+            <small>Published releases</small>
+          </button>
+          <button
+            type="button"
+            class:update-channel-control__option--active={appUpdateStatus?.channel === "preview"}
+            class="update-channel-control__option"
+            aria-pressed={appUpdateStatus?.channel === "preview"}
+            onclick={() => chooseAppUpdateChannel("preview")}
+            disabled={switchingAppUpdateChannel || installingAppUpdate}
+          >
+            <span>Preview</span>
+            <small>Opt-in prereleases</small>
+          </button>
+        </div>
+        {#if switchingAppUpdateChannel}
+          <p class="group-hint">Saving channel and checking for updates.</p>
+        {:else}
+          <p class="group-hint">Current channel: {updateChannelLabel(appUpdateStatus?.channel)}. Switching channels checks immediately.</p>
+        {/if}
+
+        {#if previewConfirmationVisible}
+          <div class="preview-warning" role="alert">
+            <div>
+              <strong>Use preview updates?</strong>
+              <p>Preview builds may be less stable and may show macOS security warnings until Developer ID signing and notarization are available.</p>
+            </div>
+            <div class="row-actions">
+              <button class="btn btn--primary btn--sm" type="button" onclick={() => void useAppUpdateChannel("preview")} disabled={switchingAppUpdateChannel}>
+                Use Preview Updates
+              </button>
+              <button class="btn btn--ghost btn--sm" type="button" onclick={() => { previewConfirmationVisible = false; }}>
+                Keep Stable
+              </button>
+            </div>
+          </div>
+        {/if}
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="update-status-panel" class:update-status-panel--error={appUpdateStatus?.state === "failed" || appUpdateStatus?.state === "incompatible"}>
+        <div class="update-status-panel__main">
+          <div class="update-status-panel__headline">
+            <span class="badge badge--neutral badge--sm">{appUpdateStateLabel(appUpdateStatus)}</span>
+            {#if appUpdateStatus?.update}
+              <strong>Version {appUpdateStatus.update.version}</strong>
+            {:else}
+              <strong>{appUpdateStatus?.app.version ?? "Mnema"}</strong>
+            {/if}
+          </div>
+          <p>{appUpdateStatusMessage(appUpdateStatus)}</p>
+          <span class="update-status-panel__meta">Last checked: {formatCheckedAt(appUpdateStatus?.lastCheckedAtUnixMs)}</span>
+        </div>
+
+        {#if appUpdateStatus?.update?.date}
+          <span class="update-status-panel__date">{formatUpdateDate(appUpdateStatus.update.date)}</span>
+        {/if}
+      </div>
+
+      {#if appUpdateStatus?.progress}
+        <div class="download-progress" aria-live="polite">
+          <div class="download-progress__bar">
+            <span style={`width: ${appUpdateProgressPercent(appUpdateStatus)}%`}></span>
+          </div>
+          <p class="group-hint">{appUpdateProgressText(appUpdateStatus)}</p>
+        </div>
+      {/if}
+
+      {#if appUpdateStatus?.update?.notes}
+        <div class="release-notes">
+          <span class="group-label">Release notes</span>
+          <p>{appUpdateStatus.update.notes}</p>
+        </div>
+      {/if}
+
+      <div class="row-actions">
+        {#if appUpdateStatus?.state === "restartRequired"}
+          <button class="btn btn--primary" type="button" onclick={restartAfterAppUpdate} disabled={!canRestartAfterUpdate(appUpdateStatus)}>
+            {restartingAfterUpdate ? "Restarting" : "Restart to Update"}
+          </button>
+        {:else}
+          <button class="btn btn--primary" type="button" onclick={installAppUpdate} disabled={!canInstallAppUpdate(appUpdateStatus)}>
+            {installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing" ? "Installing" : "Install Update"}
+          </button>
+        {/if}
+        {#if appUpdateStatus?.recordingActive && appUpdateStatus?.update}
+          <span class="action-hint action-hint--warn">Stop recording to install this update.</span>
+        {/if}
+      </div>
+
+      {#if appUpdateActionError}
+        <div class="inline-error">
+          <span class="inline-error__icon">⚠</span>
+          <span class="inline-error__msg">{appUpdateActionError}</span>
+          <button class="btn btn--ghost btn--sm" onclick={() => appUpdateActionError = null}>×</button>
+        </div>
+      {/if}
+    </section>
+  </div>
+{/if}
+
+<!-- ── Access ───────────────────────────────────────────────────────────── -->
 {#if activeTab === "access"}
   <div role="tabpanel" id="settings-panel-access" aria-labelledby="settings-tab-access" tabindex="0">
     <section class="card">
@@ -4748,6 +5189,303 @@
     background: var(--app-border);
   }
 
+  .about-card {
+    gap: 14px;
+  }
+
+  .about-id {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .about-id__mark {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 10px;
+  }
+
+  .about-id__name {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.01em;
+    color: var(--app-text-strong);
+  }
+
+  .about-id__version {
+    padding: 2px 8px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 999px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+
+  .about-id__version--pending {
+    border-color: var(--app-border);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font-weight: 600;
+  }
+
+  .about-id__channel {
+    align-self: center;
+  }
+
+  .about-id__tag {
+    max-width: 56ch;
+    color: var(--app-text-muted);
+    font-size: 11.5px;
+    line-height: 1.55;
+  }
+
+  .about-meta {
+    display: grid;
+    gap: 7px;
+    margin: 0;
+  }
+
+  .about-meta__row {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr);
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .about-meta dt {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
+  }
+
+  .about-meta dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--app-text);
+    font-size: 11.5px;
+    line-height: 1.4;
+  }
+
+  .about-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px 14px;
+  }
+
+  .about-links {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 16px;
+  }
+
+  .about-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    transition: color 0.12s;
+  }
+
+  .about-link:hover:not(:disabled),
+  .about-link:focus-visible {
+    outline: none;
+    color: var(--app-accent);
+  }
+
+  .about-link__arrow {
+    font-size: 10px;
+    opacity: 0.7;
+  }
+
+  .about-error {
+    margin: 0;
+  }
+
+  .update-channel-control {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .update-channel-control__option {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+    padding: 10px 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 7px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+    transition: border-color 0.12s, background 0.12s, color 0.12s;
+  }
+
+  .update-channel-control__option:hover:not(:disabled) {
+    border-color: var(--app-border-strong);
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+  }
+
+  .update-channel-control__option:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+
+  .update-channel-control__option:disabled {
+    cursor: not-allowed;
+    opacity: 0.7;
+  }
+
+  .update-channel-control__option--active {
+    border-color: var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+  }
+
+  .update-channel-control__option span {
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .update-channel-control__option small {
+    color: var(--app-text-faint);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  .preview-warning {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--app-warn-border);
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--app-warn) 8%, transparent);
+  }
+
+  .preview-warning strong {
+    color: var(--app-text-strong);
+    font-size: 12px;
+  }
+
+  .preview-warning p {
+    margin: 3px 0 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .update-status-panel {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--app-accent) 28%, var(--app-border));
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--app-accent) 6%, transparent);
+  }
+
+  .update-status-panel--error {
+    border-color: var(--app-warn-border);
+    background: color-mix(in srgb, var(--app-warn) 7%, transparent);
+  }
+
+  .update-status-panel__main {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .update-status-panel__headline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .update-status-panel__headline strong {
+    color: var(--app-text-strong);
+    font-size: 13px;
+  }
+
+  .update-status-panel p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .update-status-panel__meta,
+  .update-status-panel__date {
+    color: var(--app-text-faint);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  .update-status-panel__date {
+    flex: 0 0 auto;
+  }
+
+  .release-notes {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+  }
+
+  .release-notes p {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 6;
+    line-clamp: 6;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.55;
+    white-space: pre-line;
+  }
+
+  .action-hint {
+    color: var(--app-text-faint);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  .action-hint--warn {
+    color: var(--app-warn);
+    font-weight: 600;
+  }
+
   .speaker-settings-hero {
     display: grid;
     grid-template-columns: minmax(0, 0.9fr) minmax(18rem, 1.1fr);
@@ -5027,6 +5765,21 @@
   .btn--sm {
     padding: 3px 8px;
     font-size: 9px;
+  }
+
+  /* The About tab's update actions are the only primary buttons in this
+     page. Without this rule they fall back to the UA default button face
+     (a light fill) which looks foreign in the dark shell — match the soft
+     green primary used by the debug and access-request pages. */
+  .btn--primary {
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+  }
+
+  .btn--primary:not(:disabled):hover {
+    border-color: var(--app-accent);
+    color: var(--app-text-strong);
   }
 
   .saved-badge {
@@ -5939,6 +6692,10 @@
     background: var(--app-surface-hover);
     color: var(--app-text-muted);
     border-color: var(--app-border);
+  }
+
+  :global([data-theme="light"]) .about-id__version {
+    color: var(--app-accent-strong);
   }
 
   :global([data-theme="light"]) .effective-device {

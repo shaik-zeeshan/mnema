@@ -8,8 +8,8 @@ if [[ -z "$requested_version" ]]; then
 fi
 
 version="${requested_version#v}"
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-  echo "release version must look like 0.1.0 or v0.1.0; got: $requested_version" >&2
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$ ]]; then
+  echo "release version must look like 0.1.0, v0.1.0, or 0.3.0-preview.1; got: $requested_version" >&2
   exit 2
 fi
 

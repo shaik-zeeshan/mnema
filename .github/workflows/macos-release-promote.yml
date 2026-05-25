@@ -1,0 +1,127 @@
+name: Promote macOS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to promote, for example 0.3.0 or v0.3.0-preview.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: macos-release-promote-${{ github.event.inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Publish reviewed release
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.release_version.outputs.channel }}
+      tag: ${{ steps.release_version.outputs.tag }}
+      version: ${{ steps.release_version.outputs.version }}
+
+    steps:
+      - name: Validate version
+        id: release_version
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.version }}"
+          version="${version#v}"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            channel="stable"
+            prerelease="false"
+          elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]; then
+            channel="preview"
+            prerelease="true"
+          else
+            echo "version must be stable X.Y.Z or preview X.Y.Z-preview.N; got $version" >&2
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "channel=$channel"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate draft release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          release_json="$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,assets)"
+          if [[ "$(jq -r '.isDraft' <<<"$release_json")" != "true" ]]; then
+            echo "$RELEASE_TAG is not a draft release" >&2
+            exit 1
+          fi
+
+          asset_names="$(jq -r '.assets[].name' <<<"$release_json")"
+          require_asset() {
+            local description="$1"
+            local pattern="$2"
+            if ! grep -E "$pattern" <<<"$asset_names" >/dev/null; then
+              echo "missing required release asset: $description" >&2
+              echo "$asset_names" >&2
+              exit 1
+            fi
+          }
+
+          require_asset "DMG" '\.dmg$'
+          require_asset ".app.tar.gz updater archive" '\.app\.tar\.gz$'
+          require_asset ".app.tar.gz.sig updater signature" '\.app\.tar\.gz\.sig$'
+          require_asset "latest.json" '^latest\.json$'
+
+      - name: Publish stable release
+        if: steps.release_version.outputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --prerelease=false
+
+      - name: Publish preview release
+        if: steps.release_version.outputs.channel == 'preview'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --prerelease=true
+
+  publish-preview-feed:
+    name: Publish preview update feed
+    needs: promote
+    if: needs.promote.outputs.channel == 'preview'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Download preview latest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.promote.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p preview-feed/updates/preview
+          gh release download "$RELEASE_TAG" \
+            --pattern latest.json \
+            --dir preview-feed/updates/preview \
+            --clobber
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload preview feed artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: preview-feed
+
+      - name: Deploy preview feed
+        id: deployment
+        uses: actions/deploy-pages@v4

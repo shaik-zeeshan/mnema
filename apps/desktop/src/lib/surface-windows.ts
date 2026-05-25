@@ -9,6 +9,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 export type SurfaceWindowLabel = "main" | "onboarding" | "settings" | "cli-access-request" | "debug";
 
 export type SettingsWindowTab =
+  | "about"
   | "capture"
   | "video"
   | "access"

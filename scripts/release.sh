@@ -6,7 +6,8 @@ set -euo pipefail
 #
 # Usage:
 #   scripts/release.sh patch|minor|major      # bump from current version
-#   scripts/release.sh 0.2.0                   # set an explicit version
+#   scripts/release.sh 0.2.0                   # set an explicit stable version
+#   scripts/release.sh 0.3.0-preview.1         # set an explicit preview version
 #   scripts/release.sh v0.2.0 --yes            # skip the confirmation prompt
 #
 # Run from a clean tree on the release branch (main).
@@ -40,7 +41,7 @@ for arg in "$@"; do
 done
 
 if [[ -z "$bump_spec" ]]; then
-  echo "usage: $0 <patch|minor|major|X.Y.Z> [--yes]" >&2
+  echo "usage: $0 <patch|minor|major|X.Y.Z|X.Y.Z-preview.N> [--yes]" >&2
   exit 2
 fi
 
@@ -73,8 +74,13 @@ replace_literal() {
 }
 
 current_version="$(json_version "$tauri_conf")"
-if [[ ! "$current_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-  echo "current version is not a plain X.Y.Z semver: $current_version" >&2
+current_is_prerelease=0
+if [[ "$current_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  current_is_prerelease=0
+elif [[ "$current_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)-preview\.[0-9]+$ ]]; then
+  current_is_prerelease=1
+else
+  echo "current version is not a supported release semver: $current_version" >&2
   exit 1
 fi
 cur_major="${BASH_REMATCH[1]}"
@@ -82,13 +88,21 @@ cur_minor="${BASH_REMATCH[2]}"
 cur_patch="${BASH_REMATCH[3]}"
 
 case "$bump_spec" in
-  major) new_version="$((cur_major + 1)).0.0" ;;
-  minor) new_version="${cur_major}.$((cur_minor + 1)).0" ;;
-  patch) new_version="${cur_major}.${cur_minor}.$((cur_patch + 1))" ;;
+  major|minor|patch)
+    if [[ "$current_is_prerelease" -eq 1 ]]; then
+      echo "current version is a prerelease ($current_version); provide the next version explicitly." >&2
+      exit 2
+    fi
+    case "$bump_spec" in
+      major) new_version="$((cur_major + 1)).0.0" ;;
+      minor) new_version="${cur_major}.$((cur_minor + 1)).0" ;;
+      patch) new_version="${cur_major}.${cur_minor}.$((cur_patch + 1))" ;;
+    esac
+    ;;
   *)
     new_version="${bump_spec#v}"
-    if [[ ! "$new_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo "explicit version must look like 0.2.0 or v0.2.0; got: $bump_spec" >&2
+    if [[ ! "$new_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$ ]]; then
+      echo "explicit version must look like 0.2.0, v0.2.0, or 0.3.0-preview.1; got: $bump_spec" >&2
       exit 2
     fi
     ;;
@@ -137,7 +151,7 @@ fi
 echo
 echo "  Release:  $current_version -> $new_version  (tag $tag)"
 echo "  Branch:   $release_branch"
-echo "  Effect:   commit + tag + push to origin, which triggers the macOS release build."
+echo "  Effect:   commit + tag + push to origin, which triggers the draft macOS release build."
 echo
 if [[ "$assume_yes" -ne 1 ]]; then
   if [[ -t 0 ]]; then

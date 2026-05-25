@@ -771,6 +771,7 @@ pub(crate) fn emit_native_capture_session_changed(
     session: &capture_types::NativeCaptureSession,
 ) {
     let _ = app_handle.emit(NATIVE_CAPTURE_SESSION_CHANGED_EVENT, session);
+    crate::app_updates::on_capture_session_changed(app_handle);
 }
 
 fn emit_app_notifications_changed(
@@ -830,6 +831,31 @@ pub(crate) fn push_warning_app_notification(
         AppNotification {
             id: id.to_string(),
             severity: "warning".to_string(),
+            title: title.to_string(),
+            message: message.to_string(),
+            created_at_unix_ms,
+            action,
+        },
+    );
+}
+
+pub(crate) fn push_info_app_notification(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    title: &str,
+    message: &str,
+    settings_tab: Option<&str>,
+    created_at_unix_ms: u64,
+) {
+    let action = settings_tab.map(|tab| AppNotificationAction::OpenSettingsTab {
+        tab: tab.to_string(),
+    });
+    push_app_notification(
+        app_handle,
+        app_handle.state::<AppNotificationsState>().inner(),
+        AppNotification {
+            id: id.to_string(),
+            severity: "info".to_string(),
             title: title.to_string(),
             message: message.to_string(),
             created_at_unix_ms,

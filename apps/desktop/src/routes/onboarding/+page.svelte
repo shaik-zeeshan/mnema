@@ -9,6 +9,10 @@
   import SelectMenu from "$lib/components/Select.svelte";
   import ScreenResolutionControl from "$lib/components/ScreenResolutionControl.svelte";
   import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
+  import SceneShell from "./SceneShell.svelte";
+  import ProgressArc from "./ProgressArc.svelte";
+  import ArmStatus from "./ArmStatus.svelte";
+  import AdvancedReveal from "./AdvancedReveal.svelte";
   import { createAppPrivacyExclusionController } from "$lib/app-privacy-exclusion.svelte";
   import { isShortcutSuppressedTarget } from "$lib/keyboard";
   import { theme } from "$lib/theme.svelte";
@@ -51,17 +55,36 @@
   type PermissionValue = PermissionStatus | "unsupported" | "unknown";
   type PermissionKey = "screen" | "microphone" | "systemAudio";
 
+  // Evocative subsystem names (the literal noun lives in `bayMeta.eyebrow`).
   const steps: { id: OnboardingStep; label: string }[] = [
     { id: "about", label: "About" },
     { id: "permissions", label: "Access" },
     { id: "sources", label: "Capture" },
-    { id: "video", label: "Video" },
-    { id: "storage", label: "Storage" },
-    { id: "privacy", label: "Privacy" },
-    { id: "processing", label: "Processing" },
+    { id: "video", label: "Lens" },
+    { id: "storage", label: "Vault" },
+    { id: "privacy", label: "Shield" },
+    { id: "processing", label: "Mind" },
     { id: "done", label: "Ready" },
   ];
   const railSteps = steps.filter((step) => step.id !== "about" && step.id !== "done");
+
+  // The `capture -> index -> recall` progress arc groups the six bays under the
+  // product's promise loop, in step order so the arc lights left-to-right.
+  const arcPhases: { id: string; label: string; stepIds: OnboardingStep[] }[] = [
+    { id: "capture", label: "capture", stepIds: ["permissions", "sources"] },
+    { id: "index", label: "index", stepIds: ["video", "storage"] },
+    { id: "recall", label: "recall", stepIds: ["privacy", "processing"] },
+  ];
+  // Per-bay literal noun + descriptive subtitle for the SceneShell header. The
+  // big evocative title comes from `steps[].label`.
+  const bayMeta: Record<string, { eyebrow: string; subtitle: string }> = {
+    permissions: { eyebrow: "Permissions", subtitle: "Bring the macOS capture permissions online before the recorder arms." },
+    sources: { eyebrow: "Sources & cadence", subtitle: "Choose what the recorder takes in, and how often it samples." },
+    video: { eyebrow: "Video", subtitle: "Set the screen output size and how hard frames are compressed." },
+    storage: { eyebrow: "Storage", subtitle: "Choose where recordings and the searchable database live." },
+    privacy: { eyebrow: "Privacy", subtitle: "Decide what the recorder must never see." },
+    processing: { eyebrow: "OCR & transcription", subtitle: "Turn captured frames and audio into searchable memory." },
+  };
   const processingTabs: { id: ProcessingPanel; label: string }[] = [
     { id: "ocr", label: "OCR" },
     { id: "transcription", label: "Transcription" },
@@ -91,6 +114,7 @@
   let starting = $state(false);
   let completing = $state(false);
   let refreshingPerms = $state(false);
+  let applyingRecommended = $state(false);
   let error = $state<string | null>(null);
 
   let draftCaptureScreen = $state(true);
@@ -163,17 +187,40 @@
 
   const activeIndex = $derived(steps.findIndex((step) => step.id === activeStep));
   const railActiveIndex = $derived(railSteps.findIndex((step) => step.id === activeStep));
+  // Unique, correct bay index drawn from the rail order — fixes the old
+  // duplicate "03" that `video` and `storage` both hard-coded.
+  const bayIndex = $derived(String(railActiveIndex + 1).padStart(2, "0"));
+  const arcModel = $derived(
+    arcPhases.map((phase) => ({
+      id: phase.id,
+      label: phase.label,
+      steps: phase.stepIds.map((id) => {
+        const globalIndex = steps.findIndex((step) => step.id === id);
+        const railIndex = railSteps.findIndex((step) => step.id === id);
+        return {
+          id,
+          label: steps[globalIndex]?.label ?? id,
+          num: String(railIndex + 1).padStart(2, "0"),
+          state: (globalIndex < activeIndex
+            ? "done"
+            : globalIndex === activeIndex
+              ? "active"
+              : "future") as "done" | "active" | "future",
+        };
+      }),
+    }))
+  );
   const isWelcome = $derived(activeStep === "about");
   const isFinal = $derived(activeStep === "done");
   const showChrome = $derived(!isWelcome && !isFinal);
-  const canGoBack = $derived(activeIndex > 0 && !saving && !starting && !completing && !appPrivacyExclusion.commandInFlight);
+  const canGoBack = $derived(activeIndex > 0 && !saving && !starting && !completing && !applyingRecommended && !appPrivacyExclusion.commandInFlight);
   const selectedSourceCount = $derived(
     Number(draftCaptureScreen) + Number(draftCaptureMicrophone) + Number(draftCaptureSystemAudio)
   );
   const requiresOcrAvailability = $derived(draftOcrEnabled);
   const requiresTranscriptionAvailability = $derived(draftTranscriptionEnabled);
   const canGoNext = $derived(
-    !loading && !saving && !starting && !completing && !appPrivacyExclusion.commandInFlight && settings !== null
+    !loading && !saving && !starting && !completing && !applyingRecommended && !appPrivacyExclusion.commandInFlight && settings !== null
     && (activeStep !== "sources" || selectedSourceCount > 0)
     && (activeStep !== "storage" || draftSaveDirectory.trim().length > 0)
     && canProceedFromActiveStep()
@@ -704,6 +751,62 @@
     && (!requiresTranscriptionAvailability || (!!selectedTranscriptionModel && selectedTranscriptionModel.available && !selectedTranscriptionDownloadRunning))
   );
 
+  // "Armed" signals per bay — each reflects real draft/derived state, never a
+  // synthetic flag. Privacy is informational (no hard prerequisite gates it).
+  const armedSources = $derived(selectedSourceCount > 0);
+  const armedVideo = $derived(customResolutionErrors.length === 0 && customBitrateErrors.length === 0);
+  const armedStorage = $derived(draftSaveDirectory.trim().length > 0);
+  const armedPrivacy = $derived(draftExcludedApps.length > 0);
+
+  // Advanced reveals always start collapsed — every bay opens to its essential
+  // controls, and the secondary tuning stays tucked behind its disclosure until
+  // the user asks for it.
+
+  function goToStep(id: string): void {
+    const target = id as OnboardingStep;
+    const index = steps.findIndex((step) => step.id === target);
+    if (index >= 0 && index <= activeIndex) activeStep = target;
+  }
+
+  // One-tap "use recommended setup": set smart defaults, apply recommended
+  // privacy exclusions, persist via the existing pipeline, then land on the
+  // first unsatisfied true prerequisite — mirroring `canGoNext`. It never
+  // bypasses the finale's `complete_onboarding`/`start_native_capture`.
+  async function applyRecommendedSetup(): Promise<void> {
+    if (settings === null || saving || starting || completing || applyingRecommended || appPrivacyExclusion.commandInFlight) {
+      return;
+    }
+    applyingRecommended = true;
+    error = null;
+    try {
+      // Apply recommended privacy exclusions first. Each command syncs drafts
+      // from its server response, so we must set the smart defaults *after* it
+      // resolves — otherwise syncDrafts would clobber them before the save.
+      // Safe no-op when nothing is pending.
+      await appPrivacyExclusion.applyAllRecommendedPrivacyApps();
+      draftCaptureScreen = true;
+      draftOcrEnabled = true;
+      chooseOcrProvider("apple_vision");
+      draftTranscriptionEnabled = true;
+      chooseTranscriptionProvider("local_whisper");
+      draftTranscriptionModelId = "base";
+      await saveSettings();
+    } catch {
+      return;
+    } finally {
+      applyingRecommended = false;
+    }
+    if (draftSaveDirectory.trim().length === 0) {
+      activeStep = "storage";
+      return;
+    }
+    if (!processingReady) {
+      activeStep = "processing";
+      return;
+    }
+    activeStep = "done";
+  }
+
   function canProceedFromActiveStep(): boolean {
     if (activeStep === "video") {
       return customResolutionErrors.length === 0 && customBitrateErrors.length === 0;
@@ -859,708 +962,673 @@
         <h1>Set up mnema</h1>
       </div>
       <span class="ob__status" data-tone={canGoNext ? "ok" : "pending"}>
-        {loading ? "Loading" : saving ? "Saving" : starting ? "Starting" : "First run"}
+        {loading ? "Loading" : applyingRecommended ? "Arming" : saving ? "Saving" : starting ? "Starting" : "First run"}
       </span>
     </header>
 
-    <nav class="rail" aria-label="Onboarding steps">
-      {#each railSteps as step, railIndex}
-        {@const index = steps.findIndex((candidate) => candidate.id === step.id)}
-        {@const state = index < activeIndex ? "done" : index === activeIndex ? "active" : "future"}
-        <button
-          type="button"
-          class="rail__seg rail__seg--{state}"
-          disabled={loading || saving || starting || completing || index > activeIndex}
-          onclick={() => { if (index <= activeIndex) activeStep = step.id; }}
-          aria-current={index === activeIndex ? "step" : undefined}
-          title={step.label}
-        >
-          <span class="rail__num">{String(railIndex + 1).padStart(2, "0")}</span>
-          <span class="rail__lbl">{step.label}</span>
-        </button>
-      {/each}
-    </nav>
+    <ProgressArc
+      phases={arcModel}
+      navDisabled={loading || saving || starting || completing || applyingRecommended}
+      onNavigate={goToStep}
+    />
   {/if}
 
-  <div class="ob__body">
+  <div class="ob__body" class:ob__body--combobox-open={appPrivacyExclusion.comboboxOpen && activeStep === "privacy"}>
     {#if loading}
       <div class="card card--loading">
         <span class="loader" aria-hidden="true"></span>
         <span class="loading-text">Loading settings…</span>
       </div>
     {:else if settings}
-      {#key activeStep}
-        <div class="step-anim">
-          {#if activeStep === "about"}
-            <section class="welcome" aria-labelledby="welcome-title">
-              <div class="welcome__bg" aria-hidden="true">
-                <div class="welcome__grid"></div>
-                <div class="welcome__halo"></div>
-              </div>
-              <div class="welcome__inner">
-                <span class="welcome__eyebrow">
-                  <span class="welcome__pulse"></span>
-                  Welcome
-                </span>
-                <h2 id="welcome-title" class="welcome__title">
-                  Your <em>memory</em>,
-                  <br />on rewind.
-                </h2>
-                <p class="welcome__tag">
-                  mnema quietly records your screen so you can scrub back to anything you've seen — searchable, local, and yours.
-                </p>
-                <ul class="welcome__loop" aria-hidden="true">
-                  <li><span></span>capture</li>
-                  <li><span></span>index</li>
-                  <li><span></span>recall</li>
-                </ul>
-                <div class="welcome__cta">
-                  <button type="button" class="btn btn--primary btn--lg" onclick={nextStep} disabled={!canGoNext}>
-                    Begin setup
-                    <span class="btn__arrow" aria-hidden="true">→</span>
-                  </button>
-                  <span class="welcome__meta">≈ 60 seconds · 5 quick steps</span>
+      {#if isWelcome || isFinal}
+        {#key activeStep}
+          <div class="step-anim">
+            {#if isWelcome}
+              <section class="welcome" aria-labelledby="welcome-title">
+                <div class="welcome__bg" aria-hidden="true">
+                  <div class="welcome__grid"></div>
+                  <div class="welcome__halo"></div>
                 </div>
-              </div>
-            </section>
-          {:else if activeStep === "permissions"}
-            <article class="card">
-              <header class="card__header">
-                <span class="card__index">01</span>
-                <div class="card__heading">
-                  <h2 class="card__title">Permissions</h2>
-                  <p class="card__subtitle">macOS access required for the sources you'll capture.</p>
-                </div>
-                <span class="badge" data-tone={grantedCount === 3 ? "ok" : grantedCount > 0 ? "pending" : "blocked"}>
-                  {grantedCount}/3
-                </span>
-              </header>
-
-              <ul class="perm-list">
-                {#each [
-                  { key: "screen", name: "Screen recording" },
-                  { key: "microphone", name: "Microphone" },
-                  { key: "systemAudio", name: "System audio" },
-                ] as p}
-                  {@const value = permissions?.[p.key as PermissionKey]}
-                  {@const tone = permissionTone(value)}
-                  <li class="perm perm--{tone}">
-                    <span class="perm__name">{p.name}</span>
-                    <span class="perm__pill">
-                      <span class="perm__dot"></span>{permissionLabel(value)}
-                    </span>
-                  </li>
-                {/each}
-              </ul>
-
-              <p class="hint">Anything missing is requested by macOS when recording starts. If denied, enable manually under <em>System Settings › Privacy & Security</em>.</p>
-
-              <div class="row">
-                <button type="button" class="btn btn--ghost btn--sm" onclick={refreshPermissions} disabled={refreshingPerms}>
-                  {refreshingPerms ? "Checking…" : "Refresh"}
-                </button>
-              </div>
-            </article>
-          {:else if activeStep === "sources"}
-            <article class="card">
-              <header class="card__header">
-                <span class="card__index">02</span>
-                <div class="card__heading">
-                  <h2 class="card__title">Sources & cadence</h2>
-                  <p class="card__subtitle">What to capture, how often, how long per file.</p>
-                </div>
-                <span class="badge" data-tone={selectedSourceCount > 0 ? "ok" : "blocked"}>{selectedSourceCount} on</span>
-              </header>
-
-              <div class="settings-stack">
-                <Switch bind:checked={draftCaptureScreen} label="Screen" description="Capture the display" />
-                <div class="settings-divider"></div>
-                <Switch bind:checked={draftCaptureMicrophone} label="Microphone" description="Capture microphone audio" />
-                <div class="settings-divider"></div>
-                <Switch
-                  bind:checked={draftCaptureSystemAudio}
-                  disabled={!draftCaptureScreen}
-                  label="System audio"
-                  description="Capture Mac system audio when supported"
-                />
-              </div>
-              {#if !draftCaptureScreen}
-                <p class="hint hint--warn">System audio requires screen capture.</p>
-              {/if}
-
-              <div class="grid-2">
-                <div class="settings-group">
-                  <span class="group-label">Frame rate</span>
-                  <Slider bind:value={draftFrameRate} min={1} max={120} step={1} label="FPS" unit=" fps" />
-                </div>
-                <div class="settings-group">
-                  <span class="group-label">Segment</span>
-                  <Slider
-                    bind:value={draftSegmentDuration}
-                    min={10}
-                    max={300}
-                    step={10}
-                    label="Duration"
-                    formatValue={formatDuration}
-                  />
-                </div>
-              </div>
-
-              <div class="settings-divider"></div>
-
-              <div class="settings-stack">
-                <Switch
-                  bind:checked={draftPauseCaptureOnInactivity}
-                  label="Pause when idle"
-                  description="Resume automatically when activity returns"
-                />
-              </div>
-
-              {#if draftPauseCaptureOnInactivity}
-                <div class="settings-group">
-                  <span class="group-label">Idle timeout</span>
-                  <Slider
-                    bind:value={draftIdleTimeoutSeconds}
-                    min={5}
-                    max={300}
-                    step={5}
-                    label="Timeout"
-                    formatValue={formatDuration}
-                  />
-                </div>
-              {/if}
-
-              {#if selectedSourceCount === 0}
-                <p class="hint hint--err">Enable at least one source to continue.</p>
-              {/if}
-            </article>
-          {:else if activeStep === "video"}
-            <article class="card">
-              <header class="card__header">
-                <span class="card__index">03</span>
-                <div class="card__heading">
-                  <h2 class="card__title">Video</h2>
-                  <p class="card__subtitle">Pick screen output size and compression before the first session.</p>
-                </div>
-              </header>
-
-              <div class="settings-group">
-                <span class="group-label">Screen resolution</span>
-                <ScreenResolutionControl
-                  bind:mode={draftResolutionMode}
-                  bind:preset={draftResolutionPreset}
-                  bind:widthRaw={customWidthRaw}
-                  bind:heightRaw={customHeightRaw}
-                  customErrors={customResolutionErrors}
-                />
-              </div>
-
-              <div class="settings-divider"></div>
-
-              <div class="settings-group">
-                <span class="group-label">Video bitrate</span>
-                <VideoBitrateControl
-                  bind:mode={draftBitrateMode}
-                  bind:preset={draftBitratePreset}
-                  bind:customMbpsRaw={draftCustomMbpsRaw}
-                  customMbps={draftCustomMbps}
-                  customErrors={customBitrateErrors}
-                />
-                <p class="hint">Bitrate applies on the ScreenCaptureKit path. Older systems keep the macOS default.</p>
-              </div>
-            </article>
-          {:else if activeStep === "storage"}
-            <article class="card">
-              <header class="card__header">
-                <span class="card__index">03</span>
-                <div class="card__heading">
-                  <h2 class="card__title">Storage</h2>
-                  <p class="card__subtitle">Where recordings and the SQLite app database live.</p>
-                </div>
-              </header>
-
-              <div class="settings-group">
-                <span class="group-label">Save directory</span>
-                <input
-                  type="text"
-                  class="text-input"
-                  class:text-input--empty={!draftSaveDirectory.trim()}
-                  bind:value={draftSaveDirectory}
-                  placeholder="/Users/you/mnema"
-                  spellcheck="false"
-                  autocomplete="off"
-                />
-                <p class="hint">Layout: <code>&lt;dir&gt;/db/app.sqlite3</code> · <code>&lt;dir&gt;/recordings/YYYY/MM/DD/</code></p>
-              </div>
-
-              <div class="grid-2">
-                <div class="settings-group">
-                  <SelectMenu
-                    value={String(draftPreviewCacheTtlSeconds)}
-                    onValueChange={(v) => { draftPreviewCacheTtlSeconds = parseInt(v, 10); }}
-                    label="Preview cache"
-                    options={[
-                      { value: "0", label: "Disabled" },
-                      { value: "300", label: "5 minutes" },
-                      { value: "900", label: "15 minutes" },
-                      { value: "3600", label: "1 hour" },
-                      { value: "21600", label: "6 hours" },
-                      { value: "86400", label: "24 hours" },
-                    ]}
-                  />
-                </div>
-                <div class="settings-group">
-                  <SelectMenu
-                    value={draftRetentionPolicy}
-                    onValueChange={(v) => { draftRetentionPolicy = v as RetentionPolicy; }}
-                    label="Retention"
-                    options={[
-                      { value: "never", label: "Never" },
-                      { value: "days_7", label: "7 days" },
-                      { value: "days_14", label: "14 days" },
-                      { value: "days_30", label: "30 days" },
-                    ]}
-                  />
-                </div>
-                <div class="settings-stack settings-stack--center">
-                  <Switch
-                    bind:checked={draftAutoStart}
-                    label="Auto-start on launch"
-                    description="Begin recording when app opens"
-                  />
-                </div>
-              </div>
-            </article>
-          {:else if activeStep === "privacy"}
-            <article class="card" class:card--combobox-open={appPrivacyExclusion.comboboxOpen}>
-              <header class="card__header">
-                <span class="card__index">04</span>
-                <div class="card__heading">
-                  <h2 class="card__title">Privacy expectations</h2>
-                  <p class="card__subtitle">Screen content is controlled by app exclusions.</p>
-                </div>
-              </header>
-
-              <div class="settings-stack">
-                <AppPrivacyExclusion
-                  controller={appPrivacyExclusion}
-                  comboboxListId="onboarding-privacy-app-combobox-list"
-                />
-              </div>
-            </article>
-          {:else if activeStep === "processing"}
-            <article class="card">
-              <header class="card__header">
-                <span class="card__index">05</span>
-                <div class="card__heading">
-                  <h2 class="card__title">OCR &amp; transcription</h2>
-                  <p class="card__subtitle">How mnema indexes captured frames and microphone audio.</p>
-                </div>
-              </header>
-
-              <div
-                class="process-tabs"
-                role="tablist"
-                aria-label="Processing settings"
-                tabindex="-1"
-                onkeydown={handleProcessingTabKeydown}
-              >
-                {#each processingTabs as tab (tab.id)}
+                <div class="welcome__inner">
+                  <span class="welcome__eyebrow">
+                    <span class="welcome__pulse"></span>
+                    Welcome
+                  </span>
+                  <h2 id="welcome-title" class="welcome__title">
+                    Your <em>memory</em>,
+                    <br />on rewind.
+                  </h2>
+                  <p class="welcome__tag">
+                    mnema quietly records your screen so you can scrub back to anything you've seen — searchable, local, and yours.
+                  </p>
+                  <ul class="welcome__loop" aria-hidden="true">
+                    <li><span></span>capture</li>
+                    <li><span></span>index</li>
+                    <li><span></span>recall</li>
+                  </ul>
+                  <div class="welcome__cta">
+                    <button type="button" class="btn btn--primary btn--lg" onclick={nextStep} disabled={!canGoNext}>
+                      Begin setup
+                      <span class="btn__arrow" aria-hidden="true">→</span>
+                    </button>
+                    <span class="welcome__meta">≈ 60 seconds · 6 quick steps</span>
+                  </div>
                   <button
                     type="button"
-                    id={`processing-tab-${tab.id}`}
-                    class="process-tab"
-                    class:process-tab--active={activeProcessingPanel === tab.id}
-                    role="tab"
-                    aria-selected={activeProcessingPanel === tab.id}
-                    aria-controls={`processing-panel-${tab.id}`}
-                    tabindex={activeProcessingPanel === tab.id ? 0 : -1}
-                    onkeydown={handleProcessingTabKeydown}
-                    onclick={() => { activeProcessingPanel = tab.id; }}
+                    class="btn btn--link welcome__accel"
+                    onclick={applyRecommendedSetup}
+                    disabled={!canGoNext}
                   >
-                    {tab.label}
+                    {applyingRecommended ? "Arming the recorder…" : "Use recommended setup →"}
                   </button>
-                {/each}
-              </div>
+                </div>
+              </section>
+            {:else}
+              <section class="finale" aria-labelledby="finale-title">
+                <div class="finale__bg" aria-hidden="true">
+                  <div class="finale__rings"></div>
+                  <div class="finale__rings finale__rings--alt"></div>
+                </div>
+                <div class="finale__inner">
+                  <span class="finale__crest">
+                    <span class="finale__crest-dot"></span>
+                    All set
+                  </span>
+                  <h2 id="finale-title" class="finale__title">Press record.</h2>
+                  <p class="finale__tag">
+                    Setup is complete. {selectedSourceCount > 0 ? `${selectedSourceCount} source${selectedSourceCount === 1 ? "" : "s"} armed` : "No sources armed"} · {draftFrameRate} fps · {formatDuration(draftSegmentDuration)} segments{draftPauseCaptureOnInactivity ? ` · idle pause @ ${formatDuration(draftIdleTimeoutSeconds)}` : ""}.
+                  </p>
+                  {#if !processingReady}
+                    <p class="hint hint--warn">A selected OCR or transcription model still needs to finish installing before setup can complete.</p>
+                  {/if}
 
-              {#if requiresOcrAvailability && selectedOcrDownloadRunning}
-                <p class="hint hint--warn">Finish is blocked until the selected OCR model download completes.</p>
-              {:else if requiresTranscriptionAvailability && selectedTranscriptionDownloadRunning}
-                <p class="hint hint--warn">Finish is blocked until the selected transcription model download completes.</p>
-              {:else if requiresOcrAvailability && !selectedOcrModel?.available}
-                <p class="hint hint--warn">Finish is blocked until the selected OCR model is available.</p>
-              {:else if requiresTranscriptionAvailability && !selectedTranscriptionModel?.available}
-                <p class="hint hint--warn">Finish is blocked until the selected transcription model is available.</p>
-              {/if}
+                  <div class="finale__chips">
+                    <span class="chip chip--lg" data-on={draftCaptureScreen}>Screen</span>
+                    <span class="chip chip--lg" data-on={draftCaptureMicrophone}>Mic</span>
+                    <span class="chip chip--lg" data-on={draftCaptureSystemAudio && draftCaptureScreen}>Sys audio</span>
+                    <span class="chip chip--lg" data-on={draftOcrEnabled}>OCR</span>
+                    <span class="chip chip--lg" data-on={draftTranscriptionEnabled}>Transcript</span>
+                  </div>
 
-              <div class="processing-grid">
-                {#if activeProcessingPanel === "ocr"}
-                <div
-                  class="settings-group"
-                  id="processing-panel-ocr"
-                  role="tabpanel"
-                  aria-labelledby="processing-tab-ocr"
-                  tabindex="0"
+                  <div class="finale__cta">
+                    <button
+                      type="button"
+                      class="btn btn--primary btn--cta"
+                      onclick={() => finish(true)}
+                      disabled={!canGoNext}
+                    >
+                      <span class="btn__rec btn__rec--lg" aria-hidden="true"></span>
+                      {starting ? "Starting…" : "Start recording"}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn--link"
+                      onclick={() => finish(false)}
+                      disabled={!canGoNext}
+                    >
+                      {completing && !starting ? "Opening…" : "Just open the dashboard →"}
+                    </button>
+                  </div>
+
+                  <p class="finale__foot">You can change anything later in <em>Settings</em>.</p>
+                </div>
+              </section>
+            {/if}
+          </div>
+        {/key}
+      {:else}
+        <div class="stage">
+          <div class="stage__bg" aria-hidden="true">
+            <div class="scene-grid"></div>
+            <div class="scene-halo"></div>
+          </div>
+          {#key activeStep}
+            <div class="stage__view">
+              {#if activeStep === "permissions"}
+                <SceneShell
+                  index={bayIndex}
+                  eyebrow={bayMeta.permissions.eyebrow}
+                  title="Access"
+                  subtitle={bayMeta.permissions.subtitle}
                 >
-                  <span class="group-label">OCR</span>
+                  {#snippet status()}
+                    <ArmStatus armed={grantedCount > 0} pendingLabel="Awaiting access" armedLabel={`${grantedCount}/3 ready`} />
+                  {/snippet}
+
+                  <ul class="perm-list">
+                    {#each [
+                      { key: "screen", name: "Screen recording" },
+                      { key: "microphone", name: "Microphone" },
+                      { key: "systemAudio", name: "System audio" },
+                    ] as p}
+                      {@const value = permissions?.[p.key as PermissionKey]}
+                      {@const tone = permissionTone(value)}
+                      <li class="perm perm--{tone}">
+                        <span class="perm__name">{p.name}</span>
+                        <span class="perm__pill">
+                          <span class="perm__dot"></span>{permissionLabel(value)}
+                        </span>
+                      </li>
+                    {/each}
+                  </ul>
+
+                  <p class="hint">Anything missing is requested by macOS when recording starts. If denied, enable manually under <em>System Settings › Privacy & Security</em>.</p>
+
+                  <div class="row">
+                    <button type="button" class="btn btn--ghost btn--sm" onclick={refreshPermissions} disabled={refreshingPerms}>
+                      {refreshingPerms ? "Checking…" : "Refresh"}
+                    </button>
+                    <button type="button" class="btn btn--ghost btn--sm" onclick={applyRecommendedSetup} disabled={!canGoNext}>
+                      {applyingRecommended ? "Arming…" : "Use recommended setup"}
+                    </button>
+                  </div>
+                </SceneShell>
+              {:else if activeStep === "sources"}
+                <SceneShell
+                  index={bayIndex}
+                  eyebrow={bayMeta.sources.eyebrow}
+                  title="Capture"
+                  subtitle={bayMeta.sources.subtitle}
+                >
+                  {#snippet status()}
+                    <ArmStatus armed={armedSources} pendingLabel="No sources" armedLabel={`${selectedSourceCount} armed`} />
+                  {/snippet}
+
                   <div class="settings-stack">
+                    <Switch bind:checked={draftCaptureScreen} label="Screen" description="Capture the display" />
+                    <div class="settings-divider"></div>
+                    <Switch bind:checked={draftCaptureMicrophone} label="Microphone" description="Capture microphone audio" />
+                    <div class="settings-divider"></div>
                     <Switch
-                      bind:checked={draftOcrEnabled}
-                      label="Enable OCR"
-                      description="Queue OCR for captured screen frames."
+                      bind:checked={draftCaptureSystemAudio}
+                      disabled={!draftCaptureScreen}
+                      label="System audio"
+                      description="Capture Mac system audio when supported"
                     />
                   </div>
-                  <RadioGroup
-                    value={draftOcrProvider}
-                    onValueChange={chooseOcrProvider}
-                    disabled={!draftOcrEnabled}
-                    label="Provider"
-                    options={ocrProviderOptions.length > 0 ? ocrProviderOptions : fallbackOcrProviderOptions}
-                  />
-                  <SelectMenu
-                    value={draftOcrModelId ?? "__os_managed__"}
-                    onValueChange={chooseOcrModel}
-                    disabled={!draftOcrEnabled}
-                    label="Model"
-                    options={ocrModelOptions.length > 0 ? ocrModelOptions : [
-                      { value: draftOcrModelId ?? "__os_managed__", label: "Loading model options" },
-                    ]}
-                  />
-                  {#if draftOcrProvider === "tesseract"}
-                    <label class="field-label" for="onboarding-ocr-language">Language</label>
+                  {#if !draftCaptureScreen}
+                    <p class="hint hint--warn">System audio requires screen capture.</p>
+                  {/if}
+
+                  <div class="grid-2">
+                    <div class="settings-group">
+                      <span class="group-label">Frame rate</span>
+                      <Slider bind:value={draftFrameRate} min={1} max={120} step={1} label="FPS" unit=" fps" />
+                    </div>
+                    <div class="settings-group">
+                      <span class="group-label">Segment</span>
+                      <Slider
+                        bind:value={draftSegmentDuration}
+                        min={10}
+                        max={300}
+                        step={10}
+                        label="Duration"
+                        formatValue={formatDuration}
+                      />
+                    </div>
+                  </div>
+
+                  <AdvancedReveal label="Idle handling">
+                    <div class="settings-stack">
+                      <Switch
+                        bind:checked={draftPauseCaptureOnInactivity}
+                        label="Pause when idle"
+                        description="Resume automatically when activity returns"
+                      />
+                    </div>
+                    {#if draftPauseCaptureOnInactivity}
+                      <div class="settings-group">
+                        <span class="group-label">Idle timeout</span>
+                        <Slider
+                          bind:value={draftIdleTimeoutSeconds}
+                          min={5}
+                          max={300}
+                          step={5}
+                          label="Timeout"
+                          formatValue={formatDuration}
+                        />
+                      </div>
+                    {/if}
+                  </AdvancedReveal>
+
+                  {#if selectedSourceCount === 0}
+                    <p class="hint hint--err">Enable at least one source to continue.</p>
+                  {/if}
+                </SceneShell>
+              {:else if activeStep === "video"}
+                <SceneShell
+                  index={bayIndex}
+                  eyebrow={bayMeta.video.eyebrow}
+                  title="Lens"
+                  subtitle={bayMeta.video.subtitle}
+                >
+                  {#snippet status()}
+                    <ArmStatus armed={armedVideo} pendingLabel="Check inputs" armedLabel="Calibrated" />
+                  {/snippet}
+
+                  <div class="video-grid">
+                    <div class="settings-group">
+                      <span class="group-label">Screen resolution</span>
+                      <ScreenResolutionControl
+                        bind:mode={draftResolutionMode}
+                        bind:preset={draftResolutionPreset}
+                        bind:widthRaw={customWidthRaw}
+                        bind:heightRaw={customHeightRaw}
+                        customErrors={customResolutionErrors}
+                      />
+                    </div>
+
+                    <div class="settings-group">
+                      <span class="group-label">Video bitrate</span>
+                      <VideoBitrateControl
+                        bind:mode={draftBitrateMode}
+                        bind:preset={draftBitratePreset}
+                        bind:customMbpsRaw={draftCustomMbpsRaw}
+                        customMbps={draftCustomMbps}
+                        customErrors={customBitrateErrors}
+                      />
+                      <p class="hint">Bitrate applies on the ScreenCaptureKit path. Older systems keep the macOS default.</p>
+                    </div>
+                  </div>
+                </SceneShell>
+              {:else if activeStep === "storage"}
+                <SceneShell
+                  index={bayIndex}
+                  eyebrow={bayMeta.storage.eyebrow}
+                  title="Vault"
+                  subtitle={bayMeta.storage.subtitle}
+                >
+                  {#snippet status()}
+                    <ArmStatus armed={armedStorage} pendingLabel="Path needed" armedLabel="Vault set" />
+                  {/snippet}
+
+                  <div class="settings-group">
+                    <span class="group-label">Save directory</span>
                     <input
-                      id="onboarding-ocr-language"
+                      type="text"
                       class="text-input"
-                      bind:value={draftOcrLanguage}
-                      disabled={!draftOcrEnabled}
-                      placeholder="eng"
+                      class:text-input--empty={!draftSaveDirectory.trim()}
+                      bind:value={draftSaveDirectory}
+                      placeholder="/Users/you/mnema"
                       spellcheck="false"
                       autocomplete="off"
                     />
-                  {/if}
-                  {#if draftOcrProvider === "apple_vision"}
-                    <div class="settings-divider"></div>
-                    <RadioGroup
-                      bind:value={draftOcrRecognitionMode}
-                      disabled={!draftOcrEnabled}
-                      label="Recognition mode"
-                      options={[
-                        {
-                          value: "fast",
-                          label: "Fast",
-                          description: "Lower CPU usage for continuous capture.",
-                        },
-                        {
-                          value: "accurate",
-                          label: "Accurate",
-                          description: "Higher recognition quality with more processing cost.",
-                        },
-                      ]}
-                    />
-                    <div class="settings-stack">
-                      <Switch
-                        bind:checked={draftOcrLanguageCorrection}
-                        disabled={!draftOcrEnabled}
-                        label="Language correction"
-                        description="Spend extra OCR work correcting recognized text."
-                      />
-                    </div>
-                  {:else if draftOcrProvider === "tesseract"}
-                    <div class="settings-divider"></div>
-                    <SelectMenu
-                      value={draftOcrTesseractPageSegmentationMode}
-                      onValueChange={(value) => { draftOcrTesseractPageSegmentationMode = value as OcrTesseractPageSegmentationMode; }}
-                      disabled={!draftOcrEnabled}
-                      label="Page segmentation"
-                      options={[
-                        { value: "auto", label: "Auto" },
-                        { value: "single_block", label: "Single block" },
-                        { value: "single_line", label: "Single line" },
-                        { value: "single_word", label: "Single word" },
-                        { value: "sparse_text", label: "Sparse text" },
-                      ]}
-                    />
-                    <SelectMenu
-                      value={draftOcrTesseractPreprocessMode}
-                      onValueChange={(value) => { draftOcrTesseractPreprocessMode = value as OcrTesseractPreprocessMode; }}
-                      disabled={!draftOcrEnabled}
-                      label="Image preprocessing"
-                      options={[
-                        { value: "grayscale", label: "Grayscale" },
-                        { value: "thresholded", label: "Thresholded" },
-                      ]}
-                    />
-                    <SelectMenu
-                      value={String(draftOcrTesseractUpscaleFactor)}
-                      onValueChange={(value) => { draftOcrTesseractUpscaleFactor = parseInt(value, 10) || 1; }}
-                      disabled={!draftOcrEnabled}
-                      label="Upscale before OCR"
-                      options={[
-                        { value: "1", label: "1x" },
-                        { value: "2", label: "2x" },
-                        { value: "3", label: "3x" },
-                        { value: "4", label: "4x" },
-                      ]}
-                    />
-                  {/if}
-                  {#if draftOcrEnabled}
-                    <div class="mini-status">
-                      {#if ocrModelError}
-                        <p class="hint hint--warn">Failed to load OCR model status: {ocrModelError}</p>
-                      {:else if selectedOcrModel}
-                        <div class="model-status" class:model-status--available={selectedOcrModel.available}>
-                          <div>
-                            <div class="model-status__title">{selectedOcrModel.displayName}</div>
-                            <div class="model-status__meta">{ocrStatusLabel(selectedOcrModel)}</div>
-                          </div>
-                          <span class="model-status__pill">{selectedOcrModel.available ? "available" : "unavailable"}</span>
-                        </div>
-                        {#if selectedOcrModel.management === "app_managed"}
-                          {#if selectedOcrModel.download}
-                            {#if selectedOcrDownloadRunning}
-                              <div class="download-progress" aria-live="polite">
-                                <div class="download-progress__bar">
-                                  <span style={`width: ${selectedOcrDownloadPercent ?? 8}%`}></span>
-                                </div>
-                                <p class="hint">
-                                  {selectedOcrDownloadProgress?.status ?? "downloading"}
-                                  {#if selectedOcrDownloadPercent !== null} · {selectedOcrDownloadPercent}%{/if}
-                                  {#if selectedOcrDownloadProgress?.message} · {selectedOcrDownloadProgress.message}{/if}
-                                </p>
-                                <button type="button" class="btn btn--ghost btn--sm" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload}>
-                                  {cancellingOcrDownload ? "Cancelling" : "Cancel download"}
-                                </button>
-                              </div>
-                            {:else}
-                              <button type="button" class="btn btn--ghost btn--sm" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available}>
-                                {startingOcrDownload ? "Starting" : `Download OCR model (${formatBytes(selectedOcrModel.download.byteSize)})`}
-                              </button>
-                            {/if}
-                          {:else if !selectedOcrModel.available}
-                            <p class="hint hint--warn">
-                              {selectedOcrModel.provider === "tesseract"
-                                ? "Tesseract still needs a published self-contained runtime bundle before in-app download can work."
-                                : "No downloadable OCR artifact is available for this model."}
-                            </p>
-                          {/if}
-                          {#if ocrDownloadError}
-                            <p class="hint hint--warn">Download failed: {ocrDownloadError}</p>
-                          {/if}
-                        {:else}
-                          <p class="hint">This OCR provider is managed by macOS.</p>
-                        {/if}
-                      {:else if loadingOcrModelStatus}
-                        <p class="hint">Checking OCR models…</p>
-                      {:else}
-                        <p class="hint hint--warn">No OCR model status is available.</p>
-                      {/if}
-                    </div>
-                  {:else}
-                    <p class="hint">Screen recording can start without OCR while this is disabled. Existing OCR results remain visible.</p>
-                  {/if}
-                </div>
-                {/if}
+                    <p class="hint">Layout: <code>&lt;dir&gt;/db/app.sqlite3</code> · <code>&lt;dir&gt;/recordings/YYYY/MM/DD/</code></p>
+                  </div>
 
-                {#if activeProcessingPanel === "transcription"}
-                <div
-                  class="settings-group"
-                  id="processing-panel-transcription"
-                  role="tabpanel"
-                  aria-labelledby="processing-tab-transcription"
-                  tabindex="0"
-                >
-                  <span class="group-label">Audio transcription</span>
-                  <div class="settings-stack">
-                    <Switch
-                      bind:checked={draftTranscriptionEnabled}
-                      label="Enable transcription"
-                      description="Master switch for source-specific speech-to-text."
-                    />
-                    <Switch
-                      bind:checked={draftTranscriptionMicrophoneEnabled}
-                      label="Transcribe microphone"
-                      description="Queue speech-to-text for committed microphone audio."
-                      disabled={!draftTranscriptionEnabled}
-                    />
-                    <Switch
-                      bind:checked={draftTranscriptionSystemAudioEnabled}
-                      label="Transcribe system audio"
-                      description="Transcribe system audio only when speech is detected."
-                      disabled={!draftTranscriptionEnabled}
+                  <div class="settings-group">
+                    <SelectMenu
+                      value={draftRetentionPolicy}
+                      onValueChange={(v) => { draftRetentionPolicy = v as RetentionPolicy; }}
+                      label="Retention"
+                      options={[
+                        { value: "never", label: "Never" },
+                        { value: "days_7", label: "7 days" },
+                        { value: "days_14", label: "14 days" },
+                        { value: "days_30", label: "30 days" },
+                      ]}
                     />
                   </div>
-                  <RadioGroup
-                    value={draftTranscriptionProvider}
-                    onValueChange={chooseTranscriptionProvider}
-                    disabled={!draftTranscriptionEnabled}
-                    label="Provider"
-                    options={transcriptionProviderOptions.length > 0 ? transcriptionProviderOptions : fallbackTranscriptionProviderOptions}
-                  />
-                  <SelectMenu
-                    value={draftTranscriptionModelId ?? "__os_managed__"}
-                    onValueChange={chooseTranscriptionModel}
-                    disabled={!draftTranscriptionEnabled}
-                    label="Model"
-                    options={transcriptionModelOptions.length > 0 ? transcriptionModelOptions : [
-                      { value: draftTranscriptionModelId ?? "__os_managed__", label: "Loading model options" },
-                    ]}
-                  />
-                  <label class="field-label" for="onboarding-transcription-language">Language</label>
-                  <input
-                    id="onboarding-transcription-language"
-                    class="text-input"
-                    bind:value={draftTranscriptionLanguage}
-                    disabled={!draftTranscriptionEnabled}
-                    placeholder="auto"
-                    spellcheck="false"
-                    autocomplete="off"
-                  />
 
-                  {#if draftTranscriptionProvider === "parakeet" && draftTranscriptionEnabled}
-                    <div class="reveal">
-                      <RadioGroup
-                        value={draftTranscriptionMemoryMode}
-                        onValueChange={(value) => draftTranscriptionMemoryMode = value as AudioTranscriptionMemoryMode}
-                        label="Memory mode"
+                  <AdvancedReveal label="Cache & startup">
+                    <div class="settings-group">
+                      <SelectMenu
+                        value={String(draftPreviewCacheTtlSeconds)}
+                        onValueChange={(v) => { draftPreviewCacheTtlSeconds = parseInt(v, 10); }}
+                        label="Preview cache"
                         options={[
-                          { value: "balanced", label: "Balanced", description: "Unload ONNX sessions after idle timeout." },
-                          { value: "low_memory", label: "Low memory", description: "Unload sessions after every transcription." },
-                          { value: "performance", label: "Performance", description: "Keep sessions loaded for repeat jobs." },
+                          { value: "0", label: "Disabled" },
+                          { value: "300", label: "5 minutes" },
+                          { value: "900", label: "15 minutes" },
+                          { value: "3600", label: "1 hour" },
+                          { value: "21600", label: "6 hours" },
+                          { value: "86400", label: "24 hours" },
                         ]}
                       />
-                      {#if draftTranscriptionMemoryMode === "balanced"}
-                        <label class="field-label" for="onboarding-transcription-idle-unload">Idle unload seconds</label>
-                        <input
-                          id="onboarding-transcription-idle-unload"
-                          class="text-input"
-                          type="number"
-                          min="0"
-                          max="86400"
-                          step="1"
-                          bind:value={draftTranscriptionIdleUnloadSeconds}
-                        />
-                      {/if}
-                      <label class="field-label" for="onboarding-transcription-chunk-seconds">Chunk seconds</label>
-                      <input
-                        id="onboarding-transcription-chunk-seconds"
-                        class="text-input"
-                        type="number"
-                        min="0"
-                        max="3600"
-                        step="1"
-                        bind:value={draftTranscriptionChunkSeconds}
+                    </div>
+                    <div class="settings-stack">
+                      <Switch
+                        bind:checked={draftAutoStart}
+                        label="Auto-start on launch"
+                        description="Begin recording when app opens"
                       />
                     </div>
+                  </AdvancedReveal>
+                </SceneShell>
+              {:else if activeStep === "privacy"}
+                <SceneShell
+                  index={bayIndex}
+                  eyebrow={bayMeta.privacy.eyebrow}
+                  title="Shield"
+                  subtitle={bayMeta.privacy.subtitle}
+                  comboboxOpen={appPrivacyExclusion.comboboxOpen}
+                >
+                  {#snippet status()}
+                    <ArmStatus armed={armedPrivacy} pendingLabel="Open" armedLabel={`${draftExcludedApps.length} excluded`} />
+                  {/snippet}
+
+                  <AppPrivacyExclusion
+                    controller={appPrivacyExclusion}
+                    comboboxListId="onboarding-privacy-app-combobox-list"
+                  />
+                </SceneShell>
+              {:else if activeStep === "processing"}
+                <SceneShell
+                  index={bayIndex}
+                  eyebrow={bayMeta.processing.eyebrow}
+                  title="Mind"
+                  subtitle={bayMeta.processing.subtitle}
+                >
+                  {#snippet status()}
+                    <ArmStatus armed={processingReady} pendingLabel="Preparing" armedLabel="Ready" />
+                  {/snippet}
+
+                  <div
+                    class="process-tabs"
+                    role="tablist"
+                    aria-label="Processing settings"
+                    tabindex="-1"
+                    onkeydown={handleProcessingTabKeydown}
+                  >
+                    {#each processingTabs as tab (tab.id)}
+                      <button
+                        type="button"
+                        id={`processing-tab-${tab.id}`}
+                        class="process-tab"
+                        class:process-tab--active={activeProcessingPanel === tab.id}
+                        role="tab"
+                        aria-selected={activeProcessingPanel === tab.id}
+                        aria-controls={`processing-panel-${tab.id}`}
+                        tabindex={activeProcessingPanel === tab.id ? 0 : -1}
+                        onkeydown={handleProcessingTabKeydown}
+                        onclick={() => { activeProcessingPanel = tab.id; }}
+                      >
+                        {tab.label}
+                      </button>
+                    {/each}
+                  </div>
+
+                  {#if requiresOcrAvailability && selectedOcrDownloadRunning}
+                    <p class="hint hint--warn">Finish is blocked until the selected OCR model download completes.</p>
+                  {:else if requiresTranscriptionAvailability && selectedTranscriptionDownloadRunning}
+                    <p class="hint hint--warn">Finish is blocked until the selected transcription model download completes.</p>
+                  {:else if requiresOcrAvailability && !selectedOcrModel?.available}
+                    <p class="hint hint--warn">Finish is blocked until the selected OCR model is available.</p>
+                  {:else if requiresTranscriptionAvailability && !selectedTranscriptionModel?.available}
+                    <p class="hint hint--warn">Finish is blocked until the selected transcription model is available.</p>
                   {/if}
 
-                  {#if draftTranscriptionEnabled}
-                    <div class="mini-status">
-                      {#if transcriptionModelError}
-                        <p class="hint hint--warn">Failed to load transcription model status: {transcriptionModelError}</p>
-                      {:else if selectedTranscriptionModel}
-                        <div class="model-status" class:model-status--available={selectedTranscriptionModel.available}>
-                          <div>
-                            <div class="model-status__title">{selectedTranscriptionModel.displayName}</div>
-                            <div class="model-status__meta">{transcriptionStatusLabel(selectedTranscriptionModel)}</div>
+                  <div class="processing-grid">
+                    {#if activeProcessingPanel === "ocr"}
+                    <div
+                      class="settings-group"
+                      id="processing-panel-ocr"
+                      role="tabpanel"
+                      aria-labelledby="processing-tab-ocr"
+                      tabindex="0"
+                    >
+                      <div class="settings-stack">
+                        <Switch
+                          bind:checked={draftOcrEnabled}
+                          label="Enable OCR"
+                          description="Queue OCR for captured screen frames."
+                        />
+                      </div>
+                      <RadioGroup
+                        value={draftOcrProvider}
+                        onValueChange={chooseOcrProvider}
+                        disabled={!draftOcrEnabled}
+                        label="Provider"
+                        options={ocrProviderOptions.length > 0 ? ocrProviderOptions : fallbackOcrProviderOptions}
+                      />
+                      <SelectMenu
+                        value={draftOcrModelId ?? "__os_managed__"}
+                        onValueChange={chooseOcrModel}
+                        disabled={!draftOcrEnabled}
+                        label="Model"
+                        options={ocrModelOptions.length > 0 ? ocrModelOptions : [
+                          { value: draftOcrModelId ?? "__os_managed__", label: "Loading model options" },
+                        ]}
+                      />
+                      {#if draftOcrEnabled && draftOcrProvider === "apple_vision"}
+                        <AdvancedReveal label="OCR tuning">
+                          <RadioGroup
+                            bind:value={draftOcrRecognitionMode}
+                            disabled={!draftOcrEnabled}
+                            label="Recognition mode"
+                            options={[
+                              {
+                                value: "fast",
+                                label: "Fast",
+                                description: "Lower CPU usage for continuous capture.",
+                              },
+                              {
+                                value: "accurate",
+                                label: "Accurate",
+                                description: "Higher recognition quality with more processing cost.",
+                              },
+                            ]}
+                          />
+                          <div class="settings-stack">
+                            <Switch
+                              bind:checked={draftOcrLanguageCorrection}
+                              disabled={!draftOcrEnabled}
+                              label="Language correction"
+                              description="Spend extra OCR work correcting recognized text."
+                            />
                           </div>
-                          <span class="model-status__pill">{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
-                        </div>
-                        {#if selectedTranscriptionModel.management === "app_managed"}
-                          {#if selectedTranscriptionModel.download}
-                            {#if selectedTranscriptionDownloadRunning}
-                              <div class="download-progress" aria-live="polite">
-                                <div class="download-progress__bar">
-                                  <span style={`width: ${selectedTranscriptionDownloadPercent ?? 8}%`}></span>
-                                </div>
-                                <p class="hint">
-                                  {selectedTranscriptionDownloadProgress?.status ?? "downloading"}
-                                  {#if selectedTranscriptionDownloadPercent !== null} · {selectedTranscriptionDownloadPercent}%{/if}
-                                  {#if selectedTranscriptionDownloadProgress?.message} · {selectedTranscriptionDownloadProgress.message}{/if}
-                                </p>
-                                <button type="button" class="btn btn--ghost btn--sm" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload}>
-                                  {cancellingTranscriptionDownload ? "Cancelling" : "Cancel download"}
-                                </button>
+                        </AdvancedReveal>
+                      {/if}
+                      {#if draftOcrEnabled}
+                        <div class="mini-status">
+                          {#if ocrModelError}
+                            <p class="hint hint--warn">Failed to load OCR model status: {ocrModelError}</p>
+                          {:else if selectedOcrModel}
+                            <div class="model-status" class:model-status--available={selectedOcrModel.available}>
+                              <div>
+                                <div class="model-status__title">{selectedOcrModel.displayName}</div>
+                                <div class="model-status__meta">{ocrStatusLabel(selectedOcrModel)}</div>
                               </div>
+                              <span class="model-status__pill">{selectedOcrModel.available ? "available" : "unavailable"}</span>
+                            </div>
+                            {#if selectedOcrModel.management === "app_managed"}
+                              {#if selectedOcrModel.download}
+                                {#if selectedOcrDownloadRunning}
+                                  <div class="download-progress" aria-live="polite">
+                                    <div class="download-progress__bar">
+                                      <span style={`width: ${selectedOcrDownloadPercent ?? 8}%`}></span>
+                                    </div>
+                                    <p class="hint">
+                                      {selectedOcrDownloadProgress?.status ?? "downloading"}
+                                      {#if selectedOcrDownloadPercent !== null} · {selectedOcrDownloadPercent}%{/if}
+                                      {#if selectedOcrDownloadProgress?.message} · {selectedOcrDownloadProgress.message}{/if}
+                                    </p>
+                                    <button type="button" class="btn btn--ghost btn--sm" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload}>
+                                      {cancellingOcrDownload ? "Cancelling" : "Cancel download"}
+                                    </button>
+                                  </div>
+                                {:else}
+                                  <button type="button" class="btn btn--ghost btn--sm" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available}>
+                                    {startingOcrDownload ? "Starting" : `Download OCR model (${formatBytes(selectedOcrModel.download.byteSize)})`}
+                                  </button>
+                                {/if}
+                              {:else if !selectedOcrModel.available}
+                                <p class="hint hint--warn">
+                                  {selectedOcrModel.provider === "tesseract"
+                                    ? "Tesseract still needs a published self-contained runtime bundle before in-app download can work."
+                                    : "No downloadable OCR artifact is available for this model."}
+                                </p>
+                              {/if}
+                              {#if ocrDownloadError}
+                                <p class="hint hint--warn">Download failed: {ocrDownloadError}</p>
+                              {/if}
                             {:else}
-                              <button type="button" class="btn btn--ghost btn--sm" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available}>
-                                {startingTranscriptionDownload ? "Starting" : `Download transcription model (${formatBytes(selectedTranscriptionModel.download.byteSize)})`}
-                              </button>
+                              <p class="hint">This OCR provider is managed by macOS.</p>
                             {/if}
-                          {:else if !selectedTranscriptionModel.available}
-                            <p class="hint hint--warn">No downloadable artifact is available for this model.</p>
+                          {:else if loadingOcrModelStatus}
+                            <p class="hint">Checking OCR models…</p>
+                          {:else}
+                            <p class="hint hint--warn">No OCR model status is available.</p>
                           {/if}
-                          {#if transcriptionDownloadError}
-                            <p class="hint hint--warn">Download failed: {transcriptionDownloadError}</p>
-                          {/if}
-                        {:else}
-                          <p class="hint">This provider is managed by macOS.</p>
-                        {/if}
-                      {:else if loadingTranscriptionModelStatus}
-                        <p class="hint">Checking transcription models…</p>
+                        </div>
                       {:else}
-                        <p class="hint hint--warn">No transcription model status is available.</p>
+                        <p class="hint">Screen recording can start without OCR while this is disabled. Existing OCR results remain visible.</p>
                       {/if}
                     </div>
-                  {:else}
-                    <p class="hint">Microphone audio can be captured without transcription while this is disabled.</p>
-                  {/if}
-                </div>
-                {/if}
-              </div>
-            </article>
-          {:else}
-            <section class="finale" aria-labelledby="finale-title">
-              <div class="finale__bg" aria-hidden="true">
-                <div class="finale__rings"></div>
-                <div class="finale__rings finale__rings--alt"></div>
-              </div>
-              <div class="finale__inner">
-                <span class="finale__crest">
-                  <span class="finale__crest-dot"></span>
-                  All set
-                </span>
-                <h2 id="finale-title" class="finale__title">Press record.</h2>
-                <p class="finale__tag">
-                  Setup is complete. {selectedSourceCount > 0 ? `${selectedSourceCount} source${selectedSourceCount === 1 ? "" : "s"} armed` : "No sources armed"} · {draftFrameRate} fps · {formatDuration(draftSegmentDuration)} segments{draftPauseCaptureOnInactivity ? ` · idle pause @ ${formatDuration(draftIdleTimeoutSeconds)}` : ""}.
-                </p>
-                {#if !processingReady}
-                  <p class="hint hint--warn">A selected OCR or transcription model still needs to finish installing before setup can complete.</p>
-                {/if}
+                    {/if}
 
-                <div class="finale__chips">
-                  <span class="chip chip--lg" data-on={draftCaptureScreen}>Screen</span>
-                  <span class="chip chip--lg" data-on={draftCaptureMicrophone}>Mic</span>
-                  <span class="chip chip--lg" data-on={draftCaptureSystemAudio && draftCaptureScreen}>Sys audio</span>
-                  <span class="chip chip--lg" data-on={draftOcrEnabled}>OCR</span>
-                  <span class="chip chip--lg" data-on={draftTranscriptionEnabled}>Transcript</span>
-                </div>
+                    {#if activeProcessingPanel === "transcription"}
+                    <div
+                      class="settings-group"
+                      id="processing-panel-transcription"
+                      role="tabpanel"
+                      aria-labelledby="processing-tab-transcription"
+                      tabindex="0"
+                    >
+                      <div class="settings-stack">
+                        <Switch
+                          bind:checked={draftTranscriptionEnabled}
+                          label="Enable transcription"
+                          description="Master switch for source-specific speech-to-text."
+                        />
+                      </div>
+                      <RadioGroup
+                        value={draftTranscriptionProvider}
+                        onValueChange={chooseTranscriptionProvider}
+                        disabled={!draftTranscriptionEnabled}
+                        label="Provider"
+                        options={transcriptionProviderOptions.length > 0 ? transcriptionProviderOptions : fallbackTranscriptionProviderOptions}
+                      />
+                      <SelectMenu
+                        value={draftTranscriptionModelId ?? "__os_managed__"}
+                        onValueChange={chooseTranscriptionModel}
+                        disabled={!draftTranscriptionEnabled}
+                        label="Model"
+                        options={transcriptionModelOptions.length > 0 ? transcriptionModelOptions : [
+                          { value: draftTranscriptionModelId ?? "__os_managed__", label: "Loading model options" },
+                        ]}
+                      />
 
-                <div class="finale__cta">
-                  <button
-                    type="button"
-                    class="btn btn--primary btn--cta"
-                    onclick={() => finish(true)}
-                    disabled={!canGoNext}
-                  >
-                    <span class="btn__rec btn__rec--lg" aria-hidden="true"></span>
-                    {starting ? "Starting…" : "Start recording"}
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn--link"
-                    onclick={() => finish(false)}
-                    disabled={!canGoNext}
-                  >
-                    {completing && !starting ? "Opening…" : "Just open the dashboard →"}
-                  </button>
-                </div>
+                      {#if draftTranscriptionEnabled}
+                        <AdvancedReveal label="Sources & tuning">
+                          <div class="settings-stack">
+                            <Switch
+                              bind:checked={draftTranscriptionMicrophoneEnabled}
+                              label="Transcribe microphone"
+                              description="Queue speech-to-text for committed microphone audio."
+                            />
+                            <Switch
+                              bind:checked={draftTranscriptionSystemAudioEnabled}
+                              label="Transcribe system audio"
+                              description="Transcribe system audio only when speech is detected."
+                            />
+                          </div>
+                          <label class="field-label" for="onboarding-transcription-language">Language</label>
+                          <input
+                            id="onboarding-transcription-language"
+                            class="text-input"
+                            bind:value={draftTranscriptionLanguage}
+                            placeholder="auto"
+                            spellcheck="false"
+                            autocomplete="off"
+                          />
+                          {#if draftTranscriptionProvider === "parakeet"}
+                            <RadioGroup
+                              value={draftTranscriptionMemoryMode}
+                              onValueChange={(value) => draftTranscriptionMemoryMode = value as AudioTranscriptionMemoryMode}
+                              label="Memory mode"
+                              options={[
+                                { value: "balanced", label: "Balanced", description: "Unload ONNX sessions after idle timeout." },
+                                { value: "low_memory", label: "Low memory", description: "Unload sessions after every transcription." },
+                                { value: "performance", label: "Performance", description: "Keep sessions loaded for repeat jobs." },
+                              ]}
+                            />
+                            {#if draftTranscriptionMemoryMode === "balanced"}
+                              <label class="field-label" for="onboarding-transcription-idle-unload">Idle unload seconds</label>
+                              <input
+                                id="onboarding-transcription-idle-unload"
+                                class="text-input"
+                                type="number"
+                                min="0"
+                                max="86400"
+                                step="1"
+                                bind:value={draftTranscriptionIdleUnloadSeconds}
+                              />
+                            {/if}
+                            <label class="field-label" for="onboarding-transcription-chunk-seconds">Chunk seconds</label>
+                            <input
+                              id="onboarding-transcription-chunk-seconds"
+                              class="text-input"
+                              type="number"
+                              min="0"
+                              max="3600"
+                              step="1"
+                              bind:value={draftTranscriptionChunkSeconds}
+                            />
+                          {/if}
+                        </AdvancedReveal>
+                      {/if}
 
-                <p class="finale__foot">You can change anything later in <em>Settings</em>.</p>
-              </div>
-            </section>
-          {/if}
+                      {#if draftTranscriptionEnabled}
+                        <div class="mini-status">
+                          {#if transcriptionModelError}
+                            <p class="hint hint--warn">Failed to load transcription model status: {transcriptionModelError}</p>
+                          {:else if selectedTranscriptionModel}
+                            <div class="model-status" class:model-status--available={selectedTranscriptionModel.available}>
+                              <div>
+                                <div class="model-status__title">{selectedTranscriptionModel.displayName}</div>
+                                <div class="model-status__meta">{transcriptionStatusLabel(selectedTranscriptionModel)}</div>
+                              </div>
+                              <span class="model-status__pill">{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
+                            </div>
+                            {#if selectedTranscriptionModel.management === "app_managed"}
+                              {#if selectedTranscriptionModel.download}
+                                {#if selectedTranscriptionDownloadRunning}
+                                  <div class="download-progress" aria-live="polite">
+                                    <div class="download-progress__bar">
+                                      <span style={`width: ${selectedTranscriptionDownloadPercent ?? 8}%`}></span>
+                                    </div>
+                                    <p class="hint">
+                                      {selectedTranscriptionDownloadProgress?.status ?? "downloading"}
+                                      {#if selectedTranscriptionDownloadPercent !== null} · {selectedTranscriptionDownloadPercent}%{/if}
+                                      {#if selectedTranscriptionDownloadProgress?.message} · {selectedTranscriptionDownloadProgress.message}{/if}
+                                    </p>
+                                    <button type="button" class="btn btn--ghost btn--sm" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload}>
+                                      {cancellingTranscriptionDownload ? "Cancelling" : "Cancel download"}
+                                    </button>
+                                  </div>
+                                {:else}
+                                  <button type="button" class="btn btn--ghost btn--sm" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available}>
+                                    {startingTranscriptionDownload ? "Starting" : `Download transcription model (${formatBytes(selectedTranscriptionModel.download.byteSize)})`}
+                                  </button>
+                                {/if}
+                              {:else if !selectedTranscriptionModel.available}
+                                <p class="hint hint--warn">No downloadable artifact is available for this model.</p>
+                              {/if}
+                              {#if transcriptionDownloadError}
+                                <p class="hint hint--warn">Download failed: {transcriptionDownloadError}</p>
+                              {/if}
+                            {:else}
+                              <p class="hint">This provider is managed by macOS.</p>
+                            {/if}
+                          {:else if loadingTranscriptionModelStatus}
+                            <p class="hint">Checking transcription models…</p>
+                          {:else}
+                            <p class="hint hint--warn">No transcription model status is available.</p>
+                          {/if}
+                        </div>
+                      {:else}
+                        <p class="hint">Microphone audio can be captured without transcription while this is disabled.</p>
+                      {/if}
+                    </div>
+                    {/if}
+                  </div>
+                </SceneShell>
+              {/if}
+            </div>
+          {/key}
         </div>
-      {/key}
+      {/if}
     {/if}
   </div>
 
@@ -1656,77 +1724,111 @@
   .ob__status[data-tone="ok"]::before { background: var(--app-accent); box-shadow: 0 0 6px var(--app-accent-glow); }
   .ob__status[data-tone="pending"]::before { background: var(--app-warn); }
 
-  /* ── Stepper rail (single thin row, like .tab-nav__list) ───── */
-  .rail {
+  /* ── Stage — full-bleed bay frame + persistent ambient backdrop ─
+     One framed scene for the six middle bays. The backdrop (grid + halo)
+     is a *sibling* of the keyed bay content, rendered once outside the
+     `{#key}` so it stays continuous across steps. Critically, `.stage`
+     carries no `overflow`/`transform`/`filter`: those would clip the
+     non-portaled privacy combobox. The grid clips itself via `.stage__bg`. */
+  .stage {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
     display: flex;
-    gap: 3px;
-    padding: 4px;
-    background: var(--app-surface);
+    flex-direction: column;
     border: 1px solid var(--app-border);
-    border-radius: 6px;
+    border-radius: 10px;
+    background: var(--app-surface-raised);
   }
-  .rail__seg {
-    flex: 1 1 0;
-    min-width: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 4px 6px;
-    height: 22px;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 3px;
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  .stage::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 12px;
+    right: 12px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--app-accent-strong) 20%, var(--app-accent) 50%, var(--app-accent-strong) 80%, transparent);
+    opacity: 0.4;
+    z-index: 2;
   }
-  .rail__seg:disabled { cursor: default; }
-  .rail__seg:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-  }
-  .rail__seg--done {
-    color: var(--app-text);
-  }
-  .rail__seg--future {
-    color: var(--app-text-muted);
-  }
-  .rail__seg--active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent);
-  }
-  .rail__num {
-    font-size: 9px;
-    font-variant-numeric: tabular-nums;
-    opacity: 0.85;
-  }
-  .rail__seg--active .rail__num { opacity: 1; }
-  .rail__lbl {
+  .stage__bg {
+    position: absolute;
+    inset: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    border-radius: inherit;
+    pointer-events: none;
   }
-  .rail__seg:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  /* Dimmer than the welcome/finale backdrop — the middle stays "committed",
+     never fully drenched, so the bookends keep their punch. */
+  .scene-grid {
+    position: absolute;
+    inset: -2px;
+    background-image:
+      linear-gradient(var(--app-border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--app-border) 1px, transparent 1px);
+    background-size: 22px 22px;
+    opacity: 0.18;
+    mask-image: radial-gradient(ellipse at 26% 0%, black 0%, transparent 72%);
   }
-  :global([data-theme="light"]) .rail__seg--active {
-    color: var(--app-accent-strong);
+  .scene-halo {
+    position: absolute;
+    width: 340px;
+    height: 340px;
+    right: -90px;
+    top: -120px;
+    background: radial-gradient(circle, var(--app-accent-glow) 0%, transparent 65%);
+    filter: blur(10px);
+    opacity: 0.4;
+    animation: drift 16s ease-in-out infinite;
+  }
+  .stage__view {
+    position: relative;
+    z-index: 1;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    animation: step-in 0.22s ease-out;
+  }
+
+  /* ── Compact bay density ───────────────────────────────────────
+     Each step must fit the fixed frame without scrolling, so inside the
+     stage we drop the secondary control *descriptions* (the labels carry the
+     meaning on first run) and tighten the shared radio / disclosure / list
+     paddings. Scoped to `.stage`, so the welcome and finale bookends keep
+     their roomier treatment. */
+  .stage :global(.switch-description) {
+    display: none;
+  }
+  .stage :global(.rg-item) {
+    padding: 5px 10px;
+  }
+  .stage :global(.settings-list-item) {
+    padding: 6px;
+  }
+  .stage :global(.privacy-disclosure) {
+    gap: 3px;
+    padding: 8px 11px;
+  }
+  .stage :global(.privacy-disclosure p) {
+    font-size: 10px;
+    line-height: 1.4;
   }
 
   /* ── Body / scroll ─────────────────────────────────────────── */
   .ob__body {
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
+  }
+  /* While the Shield app-picker is open, lift the body above the footer and
+     stop clipping so the non-portaled dropdown paints over both. The Shield
+     bay's content is short, so dropping the scroll clip is safe. */
+  .ob__body--combobox-open {
+    overflow: visible;
+    position: relative;
+    z-index: 30;
   }
   .step-anim {
     flex: 1 1 auto;
@@ -1770,10 +1872,6 @@
     gap: 10px;
     padding: 28px;
   }
-  .card--combobox-open {
-    overflow: visible;
-    z-index: 10;
-  }
   .loader {
     width: 14px;
     height: 14px;
@@ -1787,81 +1885,6 @@
     color: var(--app-text-muted);
     font-size: 11px;
   }
-
-  .card__header {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-  }
-  .card__index {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 28px;
-    height: 22px;
-    padding: 0 6px;
-    background: var(--app-accent-bg);
-    border: 1px solid var(--app-accent-border);
-    border-radius: 3px;
-    color: var(--app-accent);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    flex-shrink: 0;
-    margin-top: 1px;
-  }
-  .card__heading {
-    flex: 1;
-    min-width: 0;
-  }
-  .card__title {
-    margin: 0;
-    color: var(--app-text-strong);
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    line-height: 1.2;
-  }
-  .card__subtitle {
-    margin: 3px 0 0;
-    color: var(--app-text-muted);
-    font-size: 10px;
-    line-height: 1.5;
-    letter-spacing: 0.02em;
-  }
-
-  /* ── Badges ────────────────────────────────────────────────── */
-  .badge {
-    align-self: flex-start;
-    margin-top: 2px;
-    padding: 1px 6px;
-    border-radius: 3px;
-    border: 1px solid var(--app-border);
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-  .badge[data-tone="ok"] {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-  .badge[data-tone="pending"] {
-    color: var(--app-warn);
-    border-color: var(--app-warn-border);
-    background: var(--app-warn-bg);
-  }
-  .badge[data-tone="blocked"] {
-    color: var(--app-danger);
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg);
-  }
-
-
 
   /* ── Permissions list (compact rows) ───────────────────────── */
   .perm-list {
@@ -1931,13 +1954,12 @@
   .settings-stack {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 10px 12px;
+    gap: 8px;
+    padding: 8px 11px;
     background: var(--app-surface);
     border: 1px solid var(--app-border);
     border-radius: 4px;
   }
-  .settings-stack--center { justify-content: center; }
   .settings-divider {
     height: 1px;
     background: var(--app-border);
@@ -1988,6 +2010,20 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
+  }
+  /* Lens bay: resolution + bitrate side by side so the step fits the frame
+     without scrolling. The onboarding window is never narrower than 820px;
+     the single-column fallback only matters if that minimum ever changes. */
+  .video-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 18px;
+    align-items: start;
+  }
+  @media (max-width: 640px) {
+    .video-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
   .processing-grid {
     display: grid;
@@ -2098,18 +2134,6 @@
     border-radius: inherit;
     background: var(--app-accent);
     transition: width 0.15s ease;
-  }
-
-  /* ── Inactivity reveal ─────────────────────────────────────── */
-  .reveal {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    animation: reveal 0.22s ease-out;
-  }
-  @keyframes reveal {
-    from { opacity: 0; transform: translateY(-3px); }
-    to { opacity: 1; transform: translateY(0); }
   }
 
   /* ── Chip (used in finale) ─────────────────────────────────── */
@@ -2406,6 +2430,15 @@
     letter-spacing: 0.14em;
     text-transform: uppercase;
   }
+  .welcome__accel {
+    align-self: flex-start;
+    margin-top: -4px;
+    padding-left: 0;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-size: 9.5px;
+    font-weight: 700;
+  }
 
   /* ── Finale (last step) ────────────────────────────────────── */
   .finale__rings {
@@ -2545,7 +2578,6 @@
   /* ── Narrow widths (min window 640px) ──────────────────────── */
   @media (max-width: 600px) {
     .grid-2 { grid-template-columns: 1fr; }
-    .rail__lbl { display: none; }
     .welcome__inner,
     .finale__inner { padding: 22px 20px; }
     .welcome__title { font-size: 30px; }
@@ -2554,8 +2586,8 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .step-anim, .reveal, .loader,
-    .welcome__halo, .welcome__pulse,
+    .step-anim, .stage__view, .loader,
+    .scene-halo, .welcome__halo, .welcome__pulse,
     .finale__rings, .btn--cta { animation: none; }
   }
 </style>
