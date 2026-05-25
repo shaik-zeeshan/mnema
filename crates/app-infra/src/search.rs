@@ -404,20 +404,50 @@ impl SearchStore {
     }
 
     pub async fn list_searchable_apps(&self) -> Result<Vec<SearchableApp>> {
+        // Collapse to one row per stable app identity: bundle id when present,
+        // otherwise the normalized name. Grouping by (bundle, name) would emit a
+        // separate row whenever captures for the same bundle disagree on
+        // `app_name` (missing or relabeled), letting one app crowd out distinct
+        // apps in the capped result. Recency is ordered by `julianday()` rather
+        // than raw TEXT so mixed RFC3339 offsets compare by real instant (the
+        // same convention the date-range filter uses). The display name is the
+        // newest non-empty label for the identity, chosen deterministically so
+        // casing/label variants don't churn the suggestion list across runs.
         let rows = sqlx::query(
-            "SELECT \
-                NULLIF(TRIM(COALESCE(app_bundle_id, '')), '') AS bundle_id, \
-                app_name AS name \
-             FROM search_documents \
-             WHERE anchor_type = 'frame' \
-               AND ( \
-                    LENGTH(TRIM(COALESCE(app_bundle_id, ''))) > 0 \
-                    OR LENGTH(TRIM(COALESCE(app_name, ''))) > 0 \
-               ) \
-             GROUP BY LOWER(TRIM(COALESCE(app_bundle_id, ''))), \
-                      LOWER(TRIM(COALESCE(app_name, ''))) \
-             ORDER BY MAX(absolute_end_at) DESC \
-             LIMIT 50",
+            "WITH frame_apps AS ( \
+                SELECT \
+                    NULLIF(TRIM(COALESCE(app_bundle_id, '')), '') AS bundle_id, \
+                    NULLIF(TRIM(COALESCE(app_name, '')), '') AS name, \
+                    julianday(absolute_end_at) AS ended_at, \
+                    CASE \
+                        WHEN LENGTH(TRIM(COALESCE(app_bundle_id, ''))) > 0 \
+                            THEN 'bundle:' || LOWER(TRIM(app_bundle_id)) \
+                        ELSE 'name:' || LOWER(TRIM(COALESCE(app_name, ''))) \
+                    END AS identity_key \
+                FROM search_documents \
+                WHERE anchor_type = 'frame' \
+                  AND ( \
+                       LENGTH(TRIM(COALESCE(app_bundle_id, ''))) > 0 \
+                       OR LENGTH(TRIM(COALESCE(app_name, ''))) > 0 \
+                  ) \
+            ), \
+            ranked AS ( \
+                SELECT \
+                    identity_key, \
+                    bundle_id, \
+                    name, \
+                    MAX(ended_at) OVER (PARTITION BY identity_key) AS group_ended_at, \
+                    ROW_NUMBER() OVER ( \
+                        PARTITION BY identity_key \
+                        ORDER BY (name IS NULL), ended_at DESC, name \
+                    ) AS name_rank \
+                FROM frame_apps \
+            ) \
+            SELECT bundle_id, name \
+            FROM ranked \
+            WHERE name_rank = 1 \
+            ORDER BY group_ended_at DESC, identity_key \
+            LIMIT 50",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -6706,6 +6736,101 @@ mod tests {
             assert_eq!(apps[0].name.as_deref(), Some("Chrome"));
             assert_eq!(apps[1].bundle_id.as_deref(), Some("com.apple.Safari"));
             assert_eq!(apps[1].name.as_deref(), Some("Safari"));
+        });
+    }
+
+    #[test]
+    fn list_searchable_apps_collapses_one_bundle_id_with_missing_name() {
+        // Captures for the same app frequently disagree on `app_name`: some
+        // frames carry the label, others have it missing. Grouping by both
+        // bundle id and name would emit one row per (bundle, name) variant,
+        // letting a single app occupy several of the capped 50 slots. The list
+        // must expose a single row per stable identity (bundle id) and surface
+        // the best non-empty display name rather than the arbitrary newest one.
+        run_async_test(async {
+            let dir = test_dir("list-apps-dedupe-identity");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(
+                &infra,
+                "/tmp/list-apps-named.jpg",
+                "2026-05-17T10:00:00Z",
+                Some(frame_with_app(Some("com.apple.Safari"), Some("Safari"))),
+                "older named capture",
+            )
+            .await;
+            // Newer capture for the SAME bundle id but with no app name.
+            seed_frame_with_text(
+                &infra,
+                "/tmp/list-apps-unnamed.jpg",
+                "2026-05-17T11:00:00Z",
+                Some(frame_with_app(Some("com.apple.Safari"), None)),
+                "newer unnamed capture",
+            )
+            .await;
+
+            let apps = infra
+                .list_searchable_apps()
+                .await
+                .expect("list_searchable_apps should succeed");
+
+            assert_eq!(apps.len(), 1, "same bundle id must collapse to one row");
+            assert_eq!(apps[0].bundle_id.as_deref(), Some("com.apple.Safari"));
+            assert_eq!(
+                apps[0].name.as_deref(),
+                Some("Safari"),
+                "the non-empty name must win over the newer empty one"
+            );
+        });
+    }
+
+    #[test]
+    fn list_searchable_apps_orders_by_real_time_across_offsets() {
+        // `absolute_end_at` is stored verbatim as RFC3339 text and may carry
+        // non-UTC offsets. Ordering on raw TEXT max would compare the strings
+        // lexicographically and rank a later instant ("…T23:00:00-08:00",
+        // i.e. the next day in UTC) below an earlier UTC string. Recency order
+        // must follow the real instant, matching the julianday() comparison the
+        // date-range filter already uses.
+        run_async_test(async {
+            let dir = test_dir("list-apps-offset-recency");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            // Earlier instant, plain UTC text that sorts lexicographically high.
+            seed_frame_with_text(
+                &infra,
+                "/tmp/list-apps-utc.jpg",
+                "2026-05-18T05:00:00Z",
+                Some(frame_with_app(Some("com.example.Earlier"), Some("Earlier"))),
+                "earlier utc capture",
+            )
+            .await;
+            // Later instant (2026-05-18T07:00:00Z) expressed with a -08:00
+            // offset, so its raw text sorts lexicographically *below* the UTC
+            // string above.
+            seed_frame_with_text(
+                &infra,
+                "/tmp/list-apps-offset.jpg",
+                "2026-05-17T23:00:00-08:00",
+                Some(frame_with_app(Some("com.example.Later"), Some("Later"))),
+                "later offset capture",
+            )
+            .await;
+
+            let apps = infra
+                .list_searchable_apps()
+                .await
+                .expect("list_searchable_apps should succeed");
+
+            assert_eq!(apps.len(), 2);
+            assert_eq!(
+                apps[0].bundle_id.as_deref(),
+                Some("com.example.Later"),
+                "the later real instant must rank first regardless of text offset"
+            );
+            assert_eq!(apps[1].bundle_id.as_deref(), Some("com.example.Earlier"));
         });
     }
 }

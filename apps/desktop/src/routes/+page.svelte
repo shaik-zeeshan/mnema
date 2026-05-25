@@ -4225,7 +4225,7 @@
       return frameGen === searchFrameGeneration && audioGen === searchAudioGeneration;
     };
     if (query.length < 2) {
-      searchNormalizedQuery = query;
+      searchNormalizedQuery = normalizedQuery;
       searchFrames = [];
       searchAudio = [];
       searchHasMoreFrames = false;
@@ -4259,7 +4259,13 @@
         },
       });
       if (!requestIsCurrent()) return;
-      searchNormalizedQuery = response.normalizedQuery;
+      // Record the raw-input normalization that produced these results so the
+      // append guard (above) compares like with like. The backend's
+      // response.normalizedQuery is derived from the residual body (operators
+      // stripped), so storing it here would never match the operator-bearing
+      // input — e.g. `app:Safari target` -> residual `target` — and every
+      // "load more" would be downgraded to a full refresh (offset reset to 0).
+      searchNormalizedQuery = normalizedQuery;
       searchSnapshotDocumentId = response.snapshotDocumentId;
       // Validation feedback is delivered in-band via parseErrors. When the
       // backend reports parse errors it returns empty results; surface them
