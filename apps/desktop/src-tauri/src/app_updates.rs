@@ -555,6 +555,18 @@ async fn run_update_check(
                 runtime.restart_required = false;
                 runtime.last_checked_at_unix_ms = Some(now_unix_ms());
             }
+            // If the channel changed while the check was in flight, the stored
+            // result is from the wrong endpoint. Kick off a new check against
+            // the current channel and return early without emitting the stale result.
+            let current_channel = current_settings(
+                app_handle,
+                app_handle.state::<AppUpdateSettingsState>().inner(),
+            )
+            .channel;
+            if current_channel != settings.channel {
+                spawn_update_check(app_handle);
+                return current_status(app_handle);
+            }
             if notify_available {
                 push_update_available_notification(app_handle, &info);
             }
@@ -574,6 +586,15 @@ async fn run_update_check(
                 runtime.error = None;
                 runtime.restart_required = false;
                 runtime.last_checked_at_unix_ms = Some(now_unix_ms());
+            }
+            let current_channel = current_settings(
+                app_handle,
+                app_handle.state::<AppUpdateSettingsState>().inner(),
+            )
+            .channel;
+            if current_channel != settings.channel {
+                spawn_update_check(app_handle);
+                return current_status(app_handle);
             }
             emit_current_status(app_handle);
             current_status(app_handle)
@@ -609,6 +630,29 @@ pub fn start_startup_update_check(app_handle: &tauri::AppHandle) {
     });
 }
 
+fn spawn_update_check(app_handle: &tauri::AppHandle) {
+    let app_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = run_update_check(&app_handle, false).await;
+    });
+}
+
+/// Called whenever the native capture session changes. If install was previously
+/// blocked by an active recording, re-emit the update status so the frontend
+/// panel reflects the recording-stopped state immediately.
+pub fn on_capture_session_changed(app_handle: &tauri::AppHandle) {
+    let state = {
+        let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
+        let runtime = runtime_state
+            .lock()
+            .expect("app update runtime state poisoned");
+        runtime.state
+    };
+    if state == AppUpdateState::RecordingBlocked {
+        emit_current_status(app_handle);
+    }
+}
+
 #[tauri::command]
 pub fn get_app_update_status(app_handle: tauri::AppHandle) -> AppUpdateStatus {
     current_status(&app_handle)
@@ -638,7 +682,7 @@ pub async fn set_app_update_channel(
         if runtime.restart_required
             || matches!(
                 runtime.state,
-                AppUpdateState::Downloading | AppUpdateState::Installing
+                AppUpdateState::Checking | AppUpdateState::Downloading | AppUpdateState::Installing
             )
         {
             drop(runtime);

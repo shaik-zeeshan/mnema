@@ -771,6 +771,7 @@ pub(crate) fn emit_native_capture_session_changed(
     session: &capture_types::NativeCaptureSession,
 ) {
     let _ = app_handle.emit(NATIVE_CAPTURE_SESSION_CHANGED_EVENT, session);
+    crate::app_updates::on_capture_session_changed(app_handle);
 }
 
 fn emit_app_notifications_changed(
