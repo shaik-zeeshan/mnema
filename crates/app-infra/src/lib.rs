@@ -77,7 +77,7 @@ pub use processing::{
 pub use search::{
     AudioSearchResult, FrameSearchResult, SearchAppRefinement, SearchAppRefinementKind,
     SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
-    SearchDateRangeRefinement, SearchStore,
+    SearchDateRangeRefinement, SearchParseError, SearchStore, SearchableApp,
 };
 pub use status::AppInfraStatus;
 
@@ -1422,6 +1422,10 @@ impl AppInfra {
         request: SearchCaptureRequest,
     ) -> Result<SearchCaptureResponse> {
         self.search.search_capture(request).await
+    }
+
+    pub async fn list_searchable_apps(&self) -> Result<Vec<SearchableApp>> {
+        self.search.list_searchable_apps().await
     }
 
     pub async fn get_processing_result_for_job(

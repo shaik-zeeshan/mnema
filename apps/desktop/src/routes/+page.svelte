@@ -73,6 +73,9 @@
     SpeakerAnalysisStructuredPayload,
     SearchCaptureResponse,
     SearchCaptureRefinements,
+    SearchAppRefinement,
+    SearchableApp,
+    SearchParseError,
     SystemAudioSpeechActivityReprocessingResultDto,
     SpeakerClusterDto,
     SpeakerTurnDto,
@@ -537,10 +540,61 @@
   let searchLoadingMoreFrames = $state(false);
   let searchLoadingMoreAudio = $state(false);
   let searchError = $state<string | null>(null);
+  let searchParseErrors = $state<SearchParseError[]>([]);
   let searchSnapshotDocumentId: number | null = null;
   let searchFrameGeneration = 0;
   let searchAudioGeneration = 0;
   let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // ─── Operator autocomplete ────────────────────────────────────────────────
+  // A two-tier combobox (operator-name tier → value tier) under the search
+  // input. The token immediately before the caret drives which tier is shown.
+  // Value selection inserts `key:value` text and lets the backend parse it via
+  // runSearch({ commitResidual: true }); the frontend never resolves dates or
+  // builds refinement objects itself.
+  type SearchSuggestTier = "operator" | "value";
+  type SearchSuggestItem = {
+    // Text inserted into the box when this item is chosen. Empty for hint rows.
+    insertValue: string;
+    // The human label shown in the option row.
+    label: string;
+    // Secondary detail (e.g. bundle id) shown beneath the label.
+    detail?: string | null;
+    // Hint rows are rendered but cannot be highlighted/selected.
+    selectable: boolean;
+  };
+  let searchSuggestOpen = $state(false);
+  let searchSuggestTier = $state<SearchSuggestTier>("operator");
+  let searchSuggestKey = $state<string | null>(null);
+  let searchSuggestItems = $state<SearchSuggestItem[]>([]);
+  let searchSuggestActiveIndex = $state(-1);
+  let searchableApps = $state<SearchableApp[] | null>(null);
+  let searchableAppsLoading = false;
+  let searchSuggestBlurTimer: ReturnType<typeof setTimeout> | null = null;
+  const searchSuggestListId = "search-operator-combobox-list";
+
+  // Known operator names. The colon is part of the inserted text so selecting
+  // an operator name advances straight into its value tier.
+  const SEARCH_OPERATOR_NAMES = ["app", "source", "date", "after", "before"] as const;
+  // `source:` values across all three capture streams. `insertValue` is the
+  // token spliced into the box (parsed by the backend); `label` is the
+  // descriptive text shown in the dropdown — so `system` reads as "system
+  // audio" rather than the ambiguous bare "system".
+  const SEARCH_SOURCE_VALUES: { insertValue: string; label: string }[] = [
+    { insertValue: "mic", label: "microphone" },
+    { insertValue: "system", label: "system audio" },
+    { insertValue: "screen", label: "screen" },
+  ];
+  const SEARCH_DATE_VALUES = [
+    "today",
+    "yesterday",
+    "last-week",
+    "this-week",
+    "last-month",
+    "this-month",
+  ];
+  const SEARCH_RELATIVE_VALUES = ["today", "yesterday", "7d", "1h"];
+
   let windowPlatform = $state<KeyboardPlatform>(detectKeyboardPlatform());
 
   // Preview file paths keyed by frame id. Reactive so the rail re-renders as
@@ -3917,20 +3971,20 @@
   }
 
   function searchViewAllowed(view: SearchView, refinements = searchRefinements): boolean {
-    if ((refinements.app || refinements.windowTitle) && view !== "frames") return false;
-    if (refinements.audioSource && view !== "audio") return false;
+    if ((refinements.apps?.length || refinements.windowTitle || refinements.screenSource) && view !== "frames") return false;
+    if (refinements.audioSources?.length && view !== "audio") return false;
     return true;
   }
 
   function normalizeSearchViewForRefinements(view: SearchView, refinements: SearchCaptureRefinements): SearchView {
-    if (refinements.app || refinements.windowTitle) return "frames";
-    if (refinements.audioSource) return "audio";
+    if (refinements.apps?.length || refinements.windowTitle || refinements.screenSource) return "frames";
+    if (refinements.audioSources?.length) return "audio";
     return view;
   }
 
   function compatibleSearchRefinements(refinements: SearchCaptureRefinements): SearchCaptureRefinements {
     const next = { ...refinements };
-    if ((next.app || next.windowTitle) && next.audioSource) delete next.audioSource;
+    if ((next.apps?.length || next.windowTitle || next.screenSource) && next.audioSources?.length) delete next.audioSources;
     return next;
   }
 
@@ -3950,9 +4004,22 @@
     void runSearch();
   }
 
-  function removeSearchRefinement(kind: "dateRange" | "app" | "audioSource"): void {
+  function removeSearchRefinement(
+    kind: "dateRange" | "windowTitle" | "apps" | "audioSources" | "screenSource",
+    index?: number,
+  ): void {
     const next = { ...searchRefinements };
-    delete next[kind];
+    if (kind === "apps" && typeof index === "number") {
+      const remaining = (next.apps ?? []).filter((_, i) => i !== index);
+      if (remaining.length > 0) next.apps = remaining;
+      else delete next.apps;
+    } else if (kind === "audioSources" && typeof index === "number") {
+      const remaining = (next.audioSources ?? []).filter((_, i) => i !== index);
+      if (remaining.length > 0) next.audioSources = remaining;
+      else delete next.audioSources;
+    } else {
+      delete next[kind];
+    }
     applySearchRefinements(next, searchView);
   }
 
@@ -3966,14 +4033,6 @@
       ...searchRefinements,
       dateRange: { startAt: start.toISOString(), endAt: now.toISOString(), origin },
     });
-  }
-
-  function applyAudioSearchRefinement(audioSource: "microphone" | "system_audio"): void {
-    searchRefineMenuOpen = false;
-    const next = { ...searchRefinements, audioSource };
-    delete next.app;
-    delete next.windowTitle;
-    applySearchRefinements(next, "audio");
   }
 
   function searchDateChipLabel(): string | null {
@@ -4050,7 +4109,7 @@
     openSearchWithRefinements({ dateRange }, "all");
   }
 
-  function currentAppSearchRefinement(): SearchCaptureRefinements["app"] | null {
+  function currentAppSearchRefinement(): SearchAppRefinement | null {
     const frame = timelineActive;
     if (!frame) return null;
     const bundleId = frame.appBundleId?.trim();
@@ -4068,7 +4127,7 @@
     const app = currentAppSearchRefinement();
     if (!app) return;
     stageActionsMenuOpen = false;
-    openSearchWithRefinements({ app }, "frames");
+    openSearchWithRefinements({ apps: [app] }, "frames");
   }
 
   function clearSearchDebounceTimer(): void {
@@ -4079,6 +4138,8 @@
 
   function closeSearch(): void {
     clearSearchDebounceTimer();
+    clearSearchSuggestBlurTimer();
+    closeSearchSuggest();
     searchFrameGeneration += 1;
     searchAudioGeneration += 1;
     searchOpen = false;
@@ -4090,12 +4151,15 @@
     searchHasMoreAudio = false;
     searchSnapshotDocumentId = null;
     searchError = null;
+    searchParseErrors = [];
     searchLoading = false;
     searchLoadingMoreFrames = false;
     searchLoadingMoreAudio = false;
   }
 
-  async function runSearch(options: { appendFrames?: boolean; appendAudio?: boolean } = {}): Promise<void> {
+  async function runSearch(
+    options: { appendFrames?: boolean; appendAudio?: boolean; commitResidual?: boolean } = {},
+  ): Promise<void> {
     const query = searchQuery.trim();
     const normalizedQuery = query.split(/\s+/).filter(Boolean).join(" ");
     let appendFrames = options.appendFrames === true;
@@ -4138,6 +4202,7 @@
       searchLoadingMoreFrames = false;
       searchLoadingMoreAudio = false;
       searchError = null;
+      searchParseErrors = [];
       return;
     }
 
@@ -4163,9 +4228,21 @@
       if (!requestIsCurrent()) return;
       searchNormalizedQuery = response.normalizedQuery;
       searchSnapshotDocumentId = response.snapshotDocumentId;
-      searchRefinements = response.appliedRefinements ?? searchRefinements;
-      searchRefinementKey = searchRefinementsKey(searchRefinements);
-      searchView = normalizeSearchViewForRefinements(searchView, searchRefinements);
+      // Operators typed into the box are only PROMOTED to committed refinement
+      // chips (and a normalized view) on an explicit commit — Enter, or picking
+      // a dropdown value. On the live debounced path we leave the existing
+      // chips untouched so a half-typed `app:c` never materializes a chip the
+      // user never accepted; results are still filtered by the parsed operator,
+      // it just stays as editable text in the box until committed.
+      if (options.commitResidual === true) {
+        searchRefinements = response.appliedRefinements ?? searchRefinements;
+        searchRefinementKey = searchRefinementsKey(searchRefinements);
+        searchView = normalizeSearchViewForRefinements(searchView, searchRefinements);
+      }
+      // Validation feedback is delivered in-band via parseErrors. When the
+      // backend reports parse errors it returns empty results; surface them
+      // instead of (and in place of) the thrown-error path.
+      searchParseErrors = response.parseErrors ?? [];
       if (!appendAudio) {
         searchFrames = appendFrames ? [...searchFrames, ...response.frames] : response.frames;
         searchHasMoreFrames = response.hasMoreFrames;
@@ -4174,6 +4251,14 @@
       if (!appendFrames) {
         searchAudio = appendAudio ? [...searchAudio, ...response.audio] : response.audio;
         searchHasMoreAudio = response.hasMoreAudio;
+      }
+      // Explicit submit (Enter) rewrites the input to the backend's residual
+      // query so committed operators drop out of the box. Skip this on the
+      // live debounced path so we don't fight an actively typing user, and
+      // skip it when there are parse errors (the box should stay as typed so
+      // the user can fix the flagged token).
+      if (options.commitResidual === true && searchParseErrors.length === 0) {
+        searchQuery = response.residualQuery;
       }
     } catch (err) {
       if (!requestIsCurrent()) return;
@@ -4219,15 +4304,345 @@
     }, 250);
   }
 
+  // ─── Operator autocomplete helpers ────────────────────────────────────────
+
+  async function ensureSearchableAppsLoaded(): Promise<void> {
+    if (searchableApps !== null || searchableAppsLoading) return;
+    searchableAppsLoading = true;
+    try {
+      searchableApps = await invoke<SearchableApp[]>("list_searchable_apps");
+    } catch {
+      // A failed catalog load should not break operator-name discovery; treat
+      // it as an empty value list so the dropdown still degrades gracefully.
+      searchableApps = [];
+    } finally {
+      searchableAppsLoading = false;
+    }
+  }
+
+  // Returns the start index and text of the token immediately before the caret.
+  // A token is the run of non-whitespace characters ending at the caret. When
+  // the caret sits on whitespace (or at a word boundary) the token is empty.
+  function searchTokenBeforeCaret(value: string, caret: number): { start: number; token: string } {
+    let start = caret;
+    while (start > 0 && !/\s/.test(value[start - 1])) start -= 1;
+    return { start, token: value.slice(start, caret) };
+  }
+
+  // Quote a value if it contains whitespace so `key:value` survives the parser
+  // as a single token (e.g. app:"Google Chrome").
+  function quoteSearchValue(value: string): string {
+    return /\s/.test(value) ? `"${value}"` : value;
+  }
+
+  function searchableAppLabel(app: SearchableApp): string {
+    return (app.name ?? app.bundleId ?? "").trim();
+  }
+
+  // Recompute the dropdown contents from the current query + caret. Drives the
+  // tier (operator-name vs value), the active key, and the visible items.
+  function recomputeSearchSuggestions(caret: number): void {
+    const value = searchQuery;
+    const { token } = searchTokenBeforeCaret(value, caret);
+
+    const colonIndex = token.indexOf(":");
+    if (colonIndex >= 0) {
+      // `key:...` — only open the value tier for a KNOWN operator key.
+      const key = token.slice(0, colonIndex).toLowerCase();
+      const partial = token.slice(colonIndex + 1);
+      if (!(SEARCH_OPERATOR_NAMES as readonly string[]).includes(key)) {
+        closeSearchSuggest();
+        return;
+      }
+      searchSuggestTier = "value";
+      searchSuggestKey = key;
+      searchSuggestItems = valueSuggestionsFor(key, partial);
+      openSearchSuggestWithItems();
+      return;
+    }
+
+    // Bare word → operator-name tier. Only show it once the user is actually
+    // typing a token: an empty token (a freshly focused/opened empty field, or
+    // the boundary right after a space) must NOT auto-open the full operator
+    // list, and a non-prefix word means plain search text — both stay hidden.
+    const prefix = token.toLowerCase();
+    if (prefix.length === 0) {
+      closeSearchSuggest();
+      return;
+    }
+    const matches = SEARCH_OPERATOR_NAMES.filter((name) => name.startsWith(prefix));
+    if (matches.length === 0) {
+      closeSearchSuggest();
+      return;
+    }
+    searchSuggestTier = "operator";
+    searchSuggestKey = null;
+    searchSuggestItems = matches.map((name) => ({
+      insertValue: `${name}:`,
+      label: `${name}:`,
+      detail: searchOperatorHint(name),
+      selectable: true,
+    }));
+    openSearchSuggestWithItems();
+  }
+
+  function searchOperatorHint(name: string): string {
+    switch (name) {
+      case "app":
+        return "filter by app";
+      case "source":
+        return "microphone, system audio, or screen";
+      case "date":
+        return "named range";
+      case "after":
+        return "captured after";
+      case "before":
+        return "captured before";
+      default:
+        return "";
+    }
+  }
+
+  function valueSuggestionsFor(key: string, partial: string): SearchSuggestItem[] {
+    const needle = partial.trim().toLowerCase();
+    if (key === "app") {
+      void ensureSearchableAppsLoaded();
+      const apps = searchableApps ?? [];
+      return apps
+        .filter((app) => {
+          if (needle.length === 0) return true;
+          const name = (app.name ?? "").toLowerCase();
+          const bundle = (app.bundleId ?? "").toLowerCase();
+          return name.includes(needle) || bundle.includes(needle);
+        })
+        .map((app) => {
+          const label = searchableAppLabel(app);
+          return {
+            insertValue: label,
+            label: label || (app.bundleId ?? ""),
+            detail: app.name && app.bundleId && app.name !== app.bundleId ? app.bundleId : null,
+            selectable: label.length > 0,
+          };
+        })
+        .filter((item) => item.insertValue.length > 0);
+    }
+    if (key === "source") {
+      return SEARCH_SOURCE_VALUES
+        .filter(({ insertValue, label }) => insertValue.startsWith(needle) || label.startsWith(needle))
+        .map(({ insertValue, label }) => ({ insertValue, label, detail: null, selectable: true }));
+    }
+    if (key === "date") {
+      return SEARCH_DATE_VALUES
+        .filter((value) => value.startsWith(needle))
+        .map((value) => ({ insertValue: value, label: value, detail: null, selectable: true }));
+    }
+    // after: / before:
+    const items: SearchSuggestItem[] = SEARCH_RELATIVE_VALUES
+      .filter((value) => value.startsWith(needle))
+      .map((value) => ({ insertValue: value, label: value, detail: null, selectable: true }));
+    items.push({
+      insertValue: "",
+      label: "type a date: YYYY-MM-DD",
+      detail: null,
+      selectable: false,
+    });
+    return items;
+  }
+
+  // Open the dropdown with whatever items recompute produced, keeping a valid
+  // highlighted index (first selectable item), or close it if nothing renders.
+  function openSearchSuggestWithItems(): void {
+    if (searchSuggestItems.length === 0) {
+      closeSearchSuggest();
+      return;
+    }
+    searchSuggestOpen = true;
+    if (searchSuggestActiveIndex < 0 || searchSuggestActiveIndex >= searchSuggestItems.length) {
+      searchSuggestActiveIndex = firstSelectableSuggestIndex(0, 1);
+    } else if (!searchSuggestItems[searchSuggestActiveIndex]?.selectable) {
+      searchSuggestActiveIndex = firstSelectableSuggestIndex(searchSuggestActiveIndex, 1);
+    }
+  }
+
+  function closeSearchSuggest(): void {
+    searchSuggestOpen = false;
+    searchSuggestItems = [];
+    searchSuggestActiveIndex = -1;
+    searchSuggestKey = null;
+  }
+
+  // Find the next selectable item starting at `from`, scanning in `direction`
+  // (+1 or -1) with wrap-around. Returns -1 when no item is selectable.
+  function firstSelectableSuggestIndex(from: number, direction: number): number {
+    const count = searchSuggestItems.length;
+    if (count === 0) return -1;
+    for (let step = 0; step < count; step += 1) {
+      const index = ((from + direction * step) % count + count) % count;
+      if (searchSuggestItems[index]?.selectable) return index;
+    }
+    return -1;
+  }
+
+  function moveSearchSuggestActive(direction: number): void {
+    if (!searchSuggestOpen || searchSuggestItems.length === 0) return;
+    const base = searchSuggestActiveIndex < 0 ? (direction > 0 ? -1 : 0) : searchSuggestActiveIndex;
+    const next = firstSelectableSuggestIndex(base + direction, direction);
+    if (next >= 0) searchSuggestActiveIndex = next;
+  }
+
+  function searchInputElement(): HTMLInputElement | null {
+    return document.querySelector<HTMLInputElement>(".search-modal__input");
+  }
+
+  function refreshSearchSuggestionsFromInput(): void {
+    const input = searchInputElement();
+    const caret = input?.selectionStart ?? searchQuery.length;
+    recomputeSearchSuggestions(caret);
+  }
+
+  // Replace the in-progress token before `caret` with `replacement`, returning
+  // the new query string and the caret offset that should follow it.
+  function replaceTokenBeforeCaret(
+    value: string,
+    caret: number,
+    replacement: string,
+  ): { next: string; caret: number } {
+    const { start } = searchTokenBeforeCaret(value, caret);
+    const next = value.slice(0, start) + replacement + value.slice(caret);
+    return { next, caret: start + replacement.length };
+  }
+
+  // Selecting an operator name (e.g. `app:`) rewrites the partial token to
+  // `key:`, keeps the dropdown open, and advances to that key's value tier. No
+  // search runs yet.
+  function selectSearchOperatorName(item: SearchSuggestItem): void {
+    const input = searchInputElement();
+    const caret = input?.selectionStart ?? searchQuery.length;
+    const { next, caret: nextCaret } = replaceTokenBeforeCaret(searchQuery, caret, item.insertValue);
+    searchQuery = next;
+    void tick().then(() => {
+      const el = searchInputElement();
+      if (el) {
+        el.focus();
+        el.setSelectionRange(nextCaret, nextCaret);
+      }
+      // Re-derive the tier from the new caret position: now sitting after the
+      // colon, recompute lands us in the value tier for this key.
+      searchSuggestActiveIndex = -1;
+      recomputeSearchSuggestions(nextCaret);
+    });
+  }
+
+  // Selecting a value builds `key:value` (quoting values with spaces), splices
+  // it in with a trailing space, then commits via runSearch({commitResidual}).
+  // The backend resolves the operator into appliedRefinements (chips, incl.
+  // dates) and strips it back out via residualQuery — no frontend date math.
+  function selectSearchValue(item: SearchSuggestItem): void {
+    if (!searchSuggestKey || !item.selectable || item.insertValue.length === 0) return;
+    const input = searchInputElement();
+    const caret = input?.selectionStart ?? searchQuery.length;
+    const token = `${searchSuggestKey}:${quoteSearchValue(item.insertValue)} `;
+    const { next } = replaceTokenBeforeCaret(searchQuery, caret, token);
+    searchQuery = next;
+    closeSearchSuggest();
+    clearSearchDebounceTimer();
+    void runSearch({ commitResidual: true });
+  }
+
+  function commitActiveSearchSuggestion(): void {
+    const item = searchSuggestItems[searchSuggestActiveIndex];
+    if (!item || !item.selectable) return;
+    if (searchSuggestTier === "operator") {
+      selectSearchOperatorName(item);
+    } else {
+      selectSearchValue(item);
+    }
+  }
+
+  function selectSearchSuggestion(item: SearchSuggestItem): void {
+    if (!item.selectable) return;
+    if (searchSuggestTier === "operator") {
+      selectSearchOperatorName(item);
+    } else {
+      selectSearchValue(item);
+    }
+  }
+
+  function clearSearchSuggestBlurTimer(): void {
+    if (!searchSuggestBlurTimer) return;
+    clearTimeout(searchSuggestBlurTimer);
+    searchSuggestBlurTimer = null;
+  }
+
+  function onSearchInputFocus(): void {
+    clearSearchSuggestBlurTimer();
+    refreshSearchSuggestionsFromInput();
+  }
+
+  // Close on blur with a small delay so option pointerdown/click can register
+  // before the dropdown unmounts (mirrors the AppPrivacyExclusion pattern).
+  function onSearchInputBlur(): void {
+    clearSearchSuggestBlurTimer();
+    searchSuggestBlurTimer = setTimeout(() => {
+      searchSuggestBlurTimer = null;
+      closeSearchSuggest();
+    }, 120);
+  }
+
   function onSearchInput(): void {
+    refreshSearchSuggestionsFromInput();
     scheduleSearch();
   }
 
   function onSearchKeydown(event: KeyboardEvent): void {
+    // While the dropdown is OPEN, intercept navigation/commit keys BEFORE the
+    // submit/close logic so Enter selects an option (not a search submit) and
+    // Escape closes only the dropdown (not the modal).
+    if (searchSuggestOpen) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        moveSearchSuggestActive(1);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        moveSearchSuggestActive(-1);
+        return;
+      }
+      if (event.key === "Enter") {
+        const item = searchSuggestItems[searchSuggestActiveIndex];
+        if (item && item.selectable) {
+          event.preventDefault();
+          event.stopPropagation();
+          commitActiveSearchSuggestion();
+          return;
+        }
+        // No highlighted selectable option: fall through to submit below.
+      }
+      if (event.key === "Escape") {
+        // Close the dropdown only; stop propagation so onSearchModalKeydown
+        // does not also close the whole modal.
+        event.preventDefault();
+        event.stopPropagation();
+        closeSearchSuggest();
+        return;
+      }
+      if (event.key === "Tab") {
+        const item = searchSuggestItems[searchSuggestActiveIndex];
+        if (item && item.selectable) {
+          event.preventDefault();
+          commitActiveSearchSuggestion();
+        } else {
+          closeSearchSuggest();
+        }
+        return;
+      }
+    }
     if (event.key === "Enter") {
       event.preventDefault();
       clearSearchDebounceTimer();
-      void runSearch();
+      closeSearchSuggest();
+      void runSearch({ commitResidual: true });
     }
   }
 
@@ -7341,14 +7756,57 @@
             <circle cx="6" cy="6" r="4.5" />
             <path d="M9.5 9.5 13 13" />
           </svg>
-          <input
-            class="search-modal__input"
-            bind:value={searchQuery}
-            oninput={onSearchInput}
-            onkeydown={onSearchKeydown}
-            placeholder="Search frames and audio…"
-            aria-label="Search captured text or audio"
-          />
+          <div class="search-modal__combobox">
+            <input
+              class="search-modal__input"
+              role="combobox"
+              aria-expanded={searchSuggestOpen}
+              aria-controls={searchSuggestListId}
+              aria-autocomplete="list"
+              aria-activedescendant={searchSuggestOpen && searchSuggestActiveIndex >= 0
+                ? `${searchSuggestListId}-option-${searchSuggestActiveIndex}`
+                : undefined}
+              bind:value={searchQuery}
+              oninput={onSearchInput}
+              onkeydown={onSearchKeydown}
+              onfocus={onSearchInputFocus}
+              onblur={onSearchInputBlur}
+              onclick={refreshSearchSuggestionsFromInput}
+              onkeyup={(event) => {
+                if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End") {
+                  refreshSearchSuggestionsFromInput();
+                }
+              }}
+              placeholder="Search frames and audio…"
+              aria-label="Search captured text or audio"
+            />
+            {#if searchSuggestOpen}
+              <div class="search-modal__suggest" id={searchSuggestListId} role="listbox" aria-label="Search operator suggestions">
+                {#each searchSuggestItems as item, itemIndex (itemIndex)}
+                  {#if item.selectable}
+                    <button
+                      type="button"
+                      class="search-modal__suggest-option"
+                      class:search-modal__suggest-option--active={itemIndex === searchSuggestActiveIndex}
+                      id={`${searchSuggestListId}-option-${itemIndex}`}
+                      role="option"
+                      aria-selected={itemIndex === searchSuggestActiveIndex}
+                      onmousedown={(event) => event.preventDefault()}
+                      onpointerdown={(event) => { event.preventDefault(); selectSearchSuggestion(item); }}
+                      onmouseenter={() => (searchSuggestActiveIndex = itemIndex)}
+                    >
+                      <span class="search-modal__suggest-label">{item.label}</span>
+                      {#if item.detail}
+                        <span class="search-modal__suggest-detail">{item.detail}</span>
+                      {/if}
+                    </button>
+                  {:else}
+                    <span class="search-modal__suggest-hint">{item.label}</span>
+                  {/if}
+                {/each}
+              </div>
+            {/if}
+          </div>
           <kbd class="search-modal__kbd">esc</kbd>
           <button
             type="button"
@@ -7374,23 +7832,38 @@
               <button type="button" class="search-modal__filter-chip" onclick={() => applyDateSearchRefinement("today")}>Today</button>
               <button type="button" class="search-modal__filter-chip" onclick={() => applyDateSearchRefinement("last_hour")}>Last hour</button>
             {/if}
-            {#if searchRefinements.app}
-              <button type="button" class="search-modal__filter-chip search-modal__filter-chip--active" onclick={() => removeSearchRefinement("app")}>
-                {searchRefinements.app.displayName} <span aria-hidden="true">×</span>
+            {#if searchRefinements.windowTitle}
+              <button type="button" class="search-modal__filter-chip search-modal__filter-chip--active" onclick={() => removeSearchRefinement("windowTitle")}>
+                “{searchRefinements.windowTitle}” <span aria-hidden="true">×</span>
               </button>
             {/if}
-            {#if searchRefinements.audioSource}
-              <button type="button" class="search-modal__filter-chip search-modal__filter-chip--active" onclick={() => removeSearchRefinement("audioSource")}>
-                {audioSourceLabel(searchRefinements.audioSource === "microphone" ? "microphone" : "systemAudio")} <span aria-hidden="true">×</span>
+            {#each searchRefinements.apps ?? [] as appRefinement, appIndex (appIndex)}
+              <button type="button" class="search-modal__filter-chip search-modal__filter-chip--active" onclick={() => removeSearchRefinement("apps", appIndex)}>
+                {appRefinement.displayName} <span aria-hidden="true">×</span>
               </button>
-            {:else}
-              <button type="button" class="search-modal__filter-chip" onclick={() => applyAudioSearchRefinement("microphone")}>Mic</button>
-              <button type="button" class="search-modal__filter-chip" onclick={() => applyAudioSearchRefinement("system_audio")}>System</button>
+            {/each}
+            {#if searchRefinements.audioSources?.length}
+              {#each searchRefinements.audioSources as audioSource, audioIndex (audioIndex)}
+                <button type="button" class="search-modal__filter-chip search-modal__filter-chip--active" onclick={() => removeSearchRefinement("audioSources", audioIndex)}>
+                  {audioSourceLabel(audioSource === "microphone" ? "microphone" : "systemAudio")} <span aria-hidden="true">×</span>
+                </button>
+              {/each}
+            {/if}
+            {#if searchRefinements.screenSource}
+              <button type="button" class="search-modal__filter-chip search-modal__filter-chip--active" onclick={() => removeSearchRefinement("screenSource")}>
+                screen <span aria-hidden="true">×</span>
+              </button>
             {/if}
           </div>
         </div>
 
-        {#if searchError}
+        {#if searchParseErrors.length > 0}
+          <div class="search-modal__status search-modal__error">
+            {#each searchParseErrors as parseError, parseErrorIndex (parseErrorIndex)}
+              <p class="search-modal__error-line">{parseError.message}</p>
+            {/each}
+          </div>
+        {:else if searchError}
           <p class="search-modal__status search-modal__error">{searchError}</p>
         {:else if searchLoading}
           <p class="search-modal__status">searching…</p>
@@ -8554,7 +9027,11 @@
       0 0 0 1px rgba(0, 0, 0, 0.12),
       0 16px 48px rgba(0, 0, 0, 0.42),
       0 2px 8px rgba(0, 0, 0, 0.24);
-    overflow: hidden;
+    /* Stay overflow:visible so the combobox suggest dropdown can extend past a
+       short panel (e.g. the "Type 2 characters"/empty-results states) instead
+       of being clipped. The panel's own rounded background keeps the corners
+       clean; the scrolling body clips its own bottom corners (see below). */
+    overflow: visible;
   }
 
   .search-modal__header {
@@ -8570,8 +9047,14 @@
     color: var(--app-text-subtle);
   }
 
-  .search-modal__input {
+  .search-modal__combobox {
+    position: relative;
     flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .search-modal__input {
+    width: 100%;
     min-width: 0;
     height: 28px;
     padding: 0;
@@ -8585,6 +9068,73 @@
 
   .search-modal__input::placeholder {
     color: var(--app-text-subtle);
+  }
+
+  /* Two-tier operator autocomplete, mirroring AppPrivacyExclusion's combobox
+     panel (absolute, top: calc(100% + 4px), raised surface, soft shadow). */
+  .search-modal__suggest {
+    position: absolute;
+    z-index: 40;
+    top: calc(100% + 6px);
+    right: 0;
+    left: -4px;
+    display: flex;
+    max-height: 260px;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    box-shadow: 0 12px 30px color-mix(in srgb, var(--app-bg) 34%, transparent);
+  }
+
+  .search-modal__suggest-option {
+    display: flex;
+    width: 100%;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 9px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .search-modal__suggest-option:hover,
+  .search-modal__suggest-option--active {
+    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
+  }
+
+  .search-modal__suggest-label {
+    overflow: hidden;
+    color: var(--app-text-strong);
+    font-size: 12px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .search-modal__suggest-detail {
+    flex: 0 1 auto;
+    overflow: hidden;
+    color: var(--app-text-faint);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .search-modal__suggest-hint {
+    padding: 6px 9px;
+    color: var(--app-text-faint);
+    font-size: 10px;
+    font-style: italic;
   }
 
   .search-modal__kbd {
@@ -8722,6 +9272,10 @@
     min-height: 0;
     overflow-y: auto;
     padding: 4px 0;
+    /* Panel no longer clips, so the scroll region rounds its own bottom corners
+       (inner radius = panel 10px − 1px border). */
+    border-bottom-left-radius: 9px;
+    border-bottom-right-radius: 9px;
   }
 
   .search-modal__section {

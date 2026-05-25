@@ -183,9 +183,12 @@ export interface SearchCaptureRequest {
 
 export interface SearchCaptureRefinements {
 	dateRange?: SearchDateRangeRefinement;
-	app?: SearchAppRefinement;
+	apps?: SearchAppRefinement[];
 	windowTitle?: string;
-	audioSource?: AudioSegmentSourceKind;
+	audioSources?: AudioSegmentSourceKind[];
+	// `source:screen` — restricts results to captured frames (screen), the
+	// frame-side counterpart of audioSources. Mutually exclusive with them.
+	screenSource?: boolean;
 }
 
 export interface SearchDateRangeRefinement {
@@ -200,6 +203,19 @@ export interface SearchAppRefinement {
 	displayName: string;
 }
 
+export interface SearchParseError {
+	kind: string;
+	message: string;
+	start: number;
+	end: number;
+	token: string;
+}
+
+export interface SearchableApp {
+	bundleId: string | null;
+	name: string | null;
+}
+
 export interface SearchCaptureResponse {
 	normalizedQuery: string;
 	snapshotDocumentId: number;
@@ -208,6 +224,8 @@ export interface SearchCaptureResponse {
 	hasMoreFrames: boolean;
 	hasMoreAudio: boolean;
 	appliedRefinements: SearchCaptureRefinements;
+	residualQuery: string;
+	parseErrors: SearchParseError[];
 }
 
 export interface FrameSearchResultDto {

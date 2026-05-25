@@ -34,9 +34,16 @@ pub struct SearchCaptureRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SearchCaptureRefinements {
     pub date_range: Option<SearchDateRangeRefinement>,
-    pub app: Option<SearchAppRefinement>,
+    #[serde(default)]
+    pub apps: Vec<SearchAppRefinement>,
     pub window_title: Option<String>,
-    pub audio_source: Option<AudioSegmentSourceKind>,
+    #[serde(default)]
+    pub audio_sources: Vec<AudioSegmentSourceKind>,
+    /// `source:screen` restricts results to captured frames (screen), skipping
+    /// audio. It is the frame-side counterpart of `audio_sources` and cannot be
+    /// combined with them.
+    #[serde(default)]
+    pub screen_source: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +78,34 @@ pub enum SearchAppRefinementKind {
     AppName,
 }
 
+/// A strict validation problem detected while interpreting [`SearchQuerySyntax`].
+///
+/// Parse errors are returned in-band on [`SearchCaptureResponse::parse_errors`]
+/// rather than thrown, so a clear operator mistake surfaces an inline,
+/// span-highlighted message instead of a misleading or empty search. Spans are
+/// character (Unicode scalar) offsets into the original raw query.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchParseError {
+    /// Machine-readable category (for example `bad_date`, `unbalanced_quote`).
+    pub kind: String,
+    /// Human-readable explanation for the search input.
+    pub message: String,
+    /// Character (Unicode scalar) offset of the start of the offending token.
+    pub start: u32,
+    /// Character (Unicode scalar) offset of the end of the offending token.
+    pub end: u32,
+    /// The original raw token text that triggered the error.
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchableApp {
+    pub bundle_id: Option<String>,
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchCaptureResponse {
@@ -81,6 +116,11 @@ pub struct SearchCaptureResponse {
     pub has_more_frames: bool,
     pub has_more_audio: bool,
     pub applied_refinements: SearchCaptureRefinements,
+    /// The body query that remains after extracting field operators, i.e. the
+    /// text that drives FTS matching once typed scope is desugared into chips.
+    pub residual_query: String,
+    /// Strict validation problems found while interpreting query syntax.
+    pub parse_errors: Vec<SearchParseError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,9 +161,10 @@ pub struct AudioSearchResult {
 #[derive(Debug, Clone)]
 struct NormalizedSearchRefinements {
     date_range: Option<NormalizedDateRange>,
-    app: Option<NormalizedAppRefinement>,
+    apps: Vec<NormalizedAppRefinement>,
     window_title: Option<String>,
-    audio_source: Option<AudioSegmentSourceKind>,
+    audio_sources: Vec<AudioSegmentSourceKind>,
+    screen_source: bool,
     applied: SearchCaptureRefinements,
 }
 
@@ -236,31 +277,69 @@ impl SearchStore {
         &self,
         request: SearchCaptureRequest,
     ) -> Result<SearchCaptureResponse> {
-        let normalized_query = normalize_query(&request.query);
-        let refinements = normalize_search_refinements(request.refinements)?;
-        if normalized_query.chars().count() < 2 {
-            return Ok(SearchCaptureResponse {
-                normalized_query,
-                snapshot_document_id: 0,
-                frames: Vec::new(),
-                audio: Vec::new(),
-                has_more_frames: false,
-                has_more_audio: false,
-                applied_refinements: refinements.applied,
-            });
+        // Opt-in query syntax: field operators are lifted into refinements and
+        // body operators shape the residual that drives FTS matching. A query
+        // with no operators leaves the residual equal to the plain text, so
+        // plain-text search behaves exactly as before.
+        let parsed = parse_search_query(&request.query);
+
+        // Merge typed field operators into any caller-supplied refinements:
+        // apps/sources accumulate, the date slot overwrites (last write wins).
+        let merged_refinements =
+            merge_parsed_field_operators(request.refinements, &parsed);
+
+        let ParsedQuery {
+            fts_body,
+            residual_query,
+            errors: mut parse_errors,
+            ..
+        } = parsed;
+
+        // The residual body query drives FTS; it is normalized the same way the
+        // plain-text path always was.
+        let normalized_query = normalize_query(&residual_query);
+
+        let (refinements, applied_refinements) =
+            match normalize_search_refinements(Some(merged_refinements))? {
+                Ok(refinements) => {
+                    let applied = refinements.applied.clone();
+                    (Some(refinements), applied)
+                }
+                Err(mut refinement_errors) => {
+                    parse_errors.append(&mut refinement_errors);
+                    (None, SearchCaptureRefinements::default())
+                }
+            };
+
+        // Strict validation: when there are parse errors we suppress results
+        // instead of running a misleading search, but still surface the parsed
+        // refinements/residual/errors in an Ok response.
+        let empty_response = |snapshot_document_id: i64| SearchCaptureResponse {
+            normalized_query: normalized_query.clone(),
+            snapshot_document_id,
+            frames: Vec::new(),
+            audio: Vec::new(),
+            has_more_frames: false,
+            has_more_audio: false,
+            applied_refinements: applied_refinements.clone(),
+            residual_query: residual_query.clone(),
+            parse_errors: parse_errors.clone(),
+        };
+
+        let Some(refinements) = refinements else {
+            return Ok(empty_response(0));
+        };
+        if !parse_errors.is_empty() {
+            return Ok(empty_response(0));
         }
 
-        let fts_query = fts_query_for_plain_text(&normalized_query);
+        if normalized_query.chars().count() < 2 {
+            return Ok(empty_response(0));
+        }
+
+        let fts_query = fts_body;
         if fts_query.is_empty() {
-            return Ok(SearchCaptureResponse {
-                normalized_query,
-                snapshot_document_id: 0,
-                frames: Vec::new(),
-                audio: Vec::new(),
-                has_more_frames: false,
-                has_more_audio: false,
-                applied_refinements: refinements.applied,
-            });
+            return Ok(empty_response(0));
         }
 
         let frame_limit = clamp_limit(request.frame_limit);
@@ -274,7 +353,7 @@ impl SearchStore {
 
         let frame_end = frame_offset.saturating_add(frame_limit as usize);
         let audio_end = audio_offset.saturating_add(audio_limit as usize);
-        let all_frame_groups = if frame_limit == 0 || refinements.audio_source.is_some() {
+        let all_frame_groups = if frame_limit == 0 || !refinements.audio_sources.is_empty() {
             Vec::new()
         } else {
             fetch_grouped_frame_hits(
@@ -288,8 +367,9 @@ impl SearchStore {
             .await?
         };
         let all_audio_groups = if audio_limit == 0
-            || refinements.app.is_some()
+            || !refinements.apps.is_empty()
             || refinements.window_title.is_some()
+            || refinements.screen_source
         {
             Vec::new()
         } else {
@@ -317,127 +397,223 @@ impl SearchStore {
             audio,
             has_more_frames: all_frame_groups.len() > frame_end,
             has_more_audio: all_audio_groups.len() > audio_end,
-            applied_refinements: refinements.applied,
+            applied_refinements,
+            residual_query,
+            parse_errors,
         })
+    }
+
+    pub async fn list_searchable_apps(&self) -> Result<Vec<SearchableApp>> {
+        let rows = sqlx::query(
+            "SELECT \
+                NULLIF(TRIM(COALESCE(app_bundle_id, '')), '') AS bundle_id, \
+                app_name AS name \
+             FROM search_documents \
+             WHERE anchor_type = 'frame' \
+               AND ( \
+                    LENGTH(TRIM(COALESCE(app_bundle_id, ''))) > 0 \
+                    OR LENGTH(TRIM(COALESCE(app_name, ''))) > 0 \
+               ) \
+             GROUP BY LOWER(TRIM(COALESCE(app_bundle_id, ''))), \
+                      LOWER(TRIM(COALESCE(app_name, ''))) \
+             ORDER BY MAX(absolute_end_at) DESC \
+             LIMIT 50",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| SearchableApp {
+                bundle_id: row.get::<Option<String>, _>("bundle_id"),
+                name: row
+                    .get::<Option<String>, _>("name")
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty()),
+            })
+            .collect())
+    }
+}
+
+/// Outcome of normalizing refinements: either the normalized form, or a set of
+/// in-band parse errors that should suppress results without throwing.
+type NormalizationOutcome = std::result::Result<NormalizedSearchRefinements, Vec<SearchParseError>>;
+
+/// Builds a [`SearchParseError`] with a whole-query span. Used for refinement
+/// problems that have no narrower token origin (for example the app/source
+/// conflict, which spans the combination rather than one token).
+fn whole_query_parse_error(kind: &str, message: impl Into<String>) -> SearchParseError {
+    SearchParseError {
+        kind: kind.to_string(),
+        message: message.into(),
+        start: 0,
+        end: 0,
+        token: String::new(),
     }
 }
 
 fn normalize_search_refinements(
     refinements: Option<SearchCaptureRefinements>,
-) -> Result<NormalizedSearchRefinements> {
+) -> Result<NormalizationOutcome> {
     let refinements = refinements.unwrap_or_default();
-    if refinements.app.is_some() && refinements.audio_source.is_some() {
-        return Err(AppInfraError::InvalidSearchRequest(
-            "app and audioSource refinements cannot be combined".to_string(),
+    let screen_source = refinements.screen_source;
+    let mut errors: Vec<SearchParseError> = Vec::new();
+
+    if !refinements.apps.is_empty() && !refinements.audio_sources.is_empty() {
+        errors.push(whole_query_parse_error(
+            "app_source_conflict",
+            "app and source operators cannot be combined: app narrows screen results while source narrows audio results",
         ));
     }
-    let date_range = refinements
-        .date_range
-        .map(|range| {
-            let start = OffsetDateTime::parse(range.start_at.trim(), &Rfc3339).map_err(|_| {
-                AppInfraError::InvalidSearchRequest(
-                    "dateRange.startAt must be a valid RFC3339 timestamp".to_string(),
-                )
-            })?;
-            let end = OffsetDateTime::parse(range.end_at.trim(), &Rfc3339).map_err(|_| {
-                AppInfraError::InvalidSearchRequest(
-                    "dateRange.endAt must be a valid RFC3339 timestamp".to_string(),
-                )
-            })?;
-            if start > end {
-                return Err(AppInfraError::InvalidSearchRequest(
-                    "dateRange.startAt must be before or equal to dateRange.endAt".to_string(),
-                ));
-            }
-            let start_at = format_rfc3339_for_search(start)?;
-            let end_at = format_rfc3339_for_search(end)?;
-            Ok((
-                NormalizedDateRange {
-                    start_at: start_at.clone(),
-                    end_at: end_at.clone(),
-                },
-                SearchDateRangeRefinement {
-                    start_at,
-                    end_at,
-                    origin: range.origin,
-                },
-            ))
-        })
-        .transpose()?;
 
-    let app = refinements
-        .app
-        .map(|app| {
-            let value = app.value.trim().to_string();
-            let display_name = app.display_name.trim().to_string();
-            if value.is_empty() {
-                return Err(AppInfraError::InvalidSearchRequest(
-                    "app.value must be non-empty".to_string(),
-                ));
-            }
-            let normalized = match app.kind {
-                SearchAppRefinementKind::Any => NormalizedAppRefinement::Any {
-                    value: value.clone(),
-                    search_key: normalize_app_name_for_search(&value).ok_or_else(|| {
-                        AppInfraError::InvalidSearchRequest(
-                            "app.value must be non-empty".to_string(),
-                        )
-                    })?,
-                },
-                SearchAppRefinementKind::BundleId => NormalizedAppRefinement::BundleId {
-                    value: value.clone(),
-                },
-                SearchAppRefinementKind::AppName => NormalizedAppRefinement::AppName {
-                    search_key: normalize_app_name_for_search(&value).ok_or_else(|| {
-                        AppInfraError::InvalidSearchRequest(
-                            "app.value must be non-empty".to_string(),
-                        )
-                    })?,
-                },
-            };
-            Ok((
-                normalized,
-                SearchAppRefinement {
-                    kind: app.kind,
-                    value,
-                    display_name: if display_name.is_empty() {
-                        app.value.trim().to_string()
-                    } else {
-                        display_name
-                    },
-                },
-            ))
-        })
-        .transpose()?;
+    if screen_source && !refinements.audio_sources.is_empty() {
+        errors.push(whole_query_parse_error(
+            "screen_audio_source_conflict",
+            "source:screen cannot be combined with source:mic or source:system: screen narrows captured frames while those narrow audio",
+        ));
+    }
 
-    let window_title = refinements
-        .window_title
-        .map(|value| {
+    let date_range = match refinements.date_range {
+        Some(range) => {
+            match normalize_date_range_refinement(range) {
+                Ok(resolved) => Some(resolved),
+                Err(error) => {
+                    errors.push(error);
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
+    let mut normalized_apps = Vec::new();
+    let mut applied_apps = Vec::new();
+    for app in refinements.apps {
+        match normalize_app_refinement(app) {
+            Ok((normalized, applied)) => {
+                if !applied_apps.contains(&applied) {
+                    normalized_apps.push(normalized);
+                    applied_apps.push(applied);
+                }
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+
+    let window_title = match refinements.window_title {
+        Some(value) => {
             let value = value.trim().to_string();
             if value.is_empty() {
-                Err(AppInfraError::InvalidSearchRequest(
-                    "windowTitle must be non-empty".to_string(),
-                ))
+                errors.push(whole_query_parse_error(
+                    "empty_value",
+                    "windowTitle must be non-empty",
+                ));
+                None
             } else {
-                Ok(value)
+                Some(value)
             }
-        })
-        .transpose()?;
+        }
+        None => None,
+    };
 
-    Ok(NormalizedSearchRefinements {
-        date_range: date_range
-            .as_ref()
-            .map(|(normalized, _)| normalized.clone()),
-        app: app.as_ref().map(|(normalized, _)| normalized.clone()),
+    let mut audio_sources = Vec::new();
+    for source in refinements.audio_sources {
+        if !audio_sources.contains(&source) {
+            audio_sources.push(source);
+        }
+    }
+
+    if !errors.is_empty() {
+        return Ok(Err(errors));
+    }
+
+    Ok(Ok(NormalizedSearchRefinements {
+        date_range: date_range.as_ref().map(|(normalized, _)| normalized.clone()),
+        apps: normalized_apps,
         window_title: window_title.clone(),
-        audio_source: refinements.audio_source.clone(),
+        audio_sources: audio_sources.clone(),
+        screen_source,
         applied: SearchCaptureRefinements {
             date_range: date_range.map(|(_, applied)| applied),
-            app: app.map(|(_, applied)| applied),
+            apps: applied_apps,
             window_title,
-            audio_source: refinements.audio_source,
+            audio_sources,
+            screen_source,
         },
-    })
+    }))
+}
+
+fn normalize_date_range_refinement(
+    range: SearchDateRangeRefinement,
+) -> std::result::Result<(NormalizedDateRange, SearchDateRangeRefinement), SearchParseError> {
+    let start = OffsetDateTime::parse(range.start_at.trim(), &Rfc3339).map_err(|_| {
+        whole_query_parse_error("bad_date", "date range start must be a valid RFC3339 timestamp")
+    })?;
+    let end = OffsetDateTime::parse(range.end_at.trim(), &Rfc3339).map_err(|_| {
+        whole_query_parse_error("bad_date", "date range end must be a valid RFC3339 timestamp")
+    })?;
+    if start > end {
+        return Err(whole_query_parse_error(
+            "bad_date",
+            "date range start must be before or equal to date range end",
+        ));
+    }
+    let start_at = format_rfc3339_for_search(start)
+        .map_err(|error| whole_query_parse_error("bad_date", error.to_string()))?;
+    let end_at = format_rfc3339_for_search(end)
+        .map_err(|error| whole_query_parse_error("bad_date", error.to_string()))?;
+    Ok((
+        NormalizedDateRange {
+            start_at: start_at.clone(),
+            end_at: end_at.clone(),
+        },
+        SearchDateRangeRefinement {
+            start_at,
+            end_at,
+            origin: range.origin,
+        },
+    ))
+}
+
+fn normalize_app_refinement(
+    app: SearchAppRefinement,
+) -> std::result::Result<(NormalizedAppRefinement, SearchAppRefinement), SearchParseError> {
+    let value = app.value.trim().to_string();
+    let display_name = app.display_name.trim().to_string();
+    if value.is_empty() {
+        return Err(whole_query_parse_error(
+            "empty_value",
+            "app value must be non-empty",
+        ));
+    }
+    let normalized = match app.kind {
+        SearchAppRefinementKind::Any => NormalizedAppRefinement::Any {
+            value: value.clone(),
+            search_key: normalize_app_name_for_search(&value).ok_or_else(|| {
+                whole_query_parse_error("empty_value", "app value must be non-empty")
+            })?,
+        },
+        SearchAppRefinementKind::BundleId => NormalizedAppRefinement::BundleId {
+            value: value.clone(),
+        },
+        SearchAppRefinementKind::AppName => NormalizedAppRefinement::AppName {
+            search_key: normalize_app_name_for_search(&value).ok_or_else(|| {
+                whole_query_parse_error("empty_value", "app value must be non-empty")
+            })?,
+        },
+    };
+    Ok((
+        normalized,
+        SearchAppRefinement {
+            kind: app.kind,
+            value,
+            display_name: if display_name.is_empty() {
+                app.value.trim().to_string()
+            } else {
+                display_name
+            },
+        },
+    ))
 }
 
 fn format_rfc3339_for_search(value: OffsetDateTime) -> Result<String> {
@@ -1253,9 +1429,768 @@ fn fts_query_for_plain_text(query: &str) -> String {
     }
     searchable_terms
         .into_iter()
-        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .map(|term| fts_quote_phrase_term(term))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Wraps a single token as a safe FTS5 quoted phrase term, doubling embedded
+/// quotes. This is the canonical escaping used everywhere body text reaches
+/// MATCH so raw user input never reaches FTS5 unquoted.
+fn fts_quote_phrase_term(term: &str) -> String {
+    format!("\"{}\"", term.replace('"', "\"\""))
+}
+
+// === Search Query Syntax (ADR 0019) ===
+//
+// `parse_search_query` is the backend-canonical parser. It is quote-aware,
+// recognizes only the known field operators, extracts them into refinements,
+// translates the residual body operators into a safe FTS5 expression, and
+// returns any strict validation problems as in-band parse errors with
+// character (Unicode scalar) spans into the original raw query.
+
+/// The known field operator keys. Any other `key:value` token stays literal
+/// body text so URL, code, and `error:404`-style searches keep working.
+const FIELD_OPERATOR_KEYS: &[&str] = &["app", "source", "after", "before", "date"];
+
+/// Result of parsing a raw search query into refinements + residual body FTS.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ParsedQuery {
+    /// The safe FTS5 match expression derived from the residual body.
+    pub(crate) fts_body: String,
+    /// `app:` operators, extracted as `Any`-kind app refinements.
+    pub(crate) apps: Vec<SearchAppRefinement>,
+    /// `source:` operators, extracted as audio source kinds.
+    pub(crate) audio_sources: Vec<AudioSegmentSourceKind>,
+    /// `source:screen` operator, restricting results to captured frames.
+    pub(crate) screen_source: bool,
+    /// `after:`/`before:`/`date:` operators resolved to a single date range.
+    pub(crate) date_range: Option<SearchDateRangeRefinement>,
+    /// The plain residual body text (operators stripped) for display and FTS.
+    pub(crate) residual_query: String,
+    /// Strict validation problems found during parsing.
+    pub(crate) errors: Vec<SearchParseError>,
+}
+
+/// One tokenizer token, carrying the original character span for error
+/// reporting and whether the token (or its value) was quoted.
+#[derive(Debug, Clone)]
+struct QueryToken {
+    /// The token text with surrounding quotes removed.
+    text: String,
+    /// True when the token text was wrapped in double quotes.
+    quoted: bool,
+    /// Character (Unicode scalar) start offset into the original raw query.
+    start: u32,
+    /// Character (Unicode scalar) end offset (exclusive) into the raw query.
+    end: u32,
+    /// The raw token slice exactly as typed (including quotes), for echoing.
+    raw: String,
+}
+
+/// Outcome of quote-aware tokenization.
+struct Tokenized {
+    tokens: Vec<QueryToken>,
+    /// Present when a quote was opened but never closed.
+    unbalanced_quote: Option<SearchParseError>,
+}
+
+/// Quote-aware tokenizer. Splits on unquoted whitespace, keeps quoted runs
+/// (including embedded whitespace) as a single token, and tracks character
+/// spans into the original query.
+fn tokenize_query(raw: &str) -> Tokenized {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut tokens = Vec::new();
+    let mut index = 0_usize;
+    let len = chars.len();
+
+    while index < len {
+        // Skip unquoted whitespace between tokens.
+        while index < len && chars[index].is_whitespace() {
+            index += 1;
+        }
+        if index >= len {
+            break;
+        }
+
+        let token_start = index;
+        let mut text = String::new();
+        let mut had_quote = false;
+        let mut had_unquoted = false;
+
+        while index < len {
+            let ch = chars[index];
+            if ch == '"' {
+                had_quote = true;
+                // Toggle quote mode. Any whitespace inside quotes is literal.
+                let mut in_quote = true;
+                index += 1;
+                while index < len {
+                    let inner = chars[index];
+                    if inner == '"' {
+                        in_quote = false;
+                        index += 1;
+                        break;
+                    }
+                    text.push(inner);
+                    index += 1;
+                }
+                if in_quote {
+                    // Unterminated quote: report against the rest of the query.
+                    let token_end = len as u32;
+                    return Tokenized {
+                        tokens,
+                        unbalanced_quote: Some(SearchParseError {
+                            kind: "unbalanced_quote".to_string(),
+                            message: "a quoted phrase is missing its closing quote".to_string(),
+                            start: token_start as u32,
+                            end: token_end,
+                            token: chars[token_start..len].iter().collect(),
+                        }),
+                    };
+                }
+            } else if ch.is_whitespace() {
+                break;
+            } else {
+                text.push(ch);
+                had_unquoted = true;
+                index += 1;
+            }
+        }
+
+        let token_end = index as u32;
+        // A token is "quoted" (a literal body phrase) only when it was a pure
+        // quoted run with no characters outside the quotes. A mixed token such
+        // as `app:"Google Chrome"` keeps its key visible so it can still be
+        // recognized as a field operator rather than a literal body phrase.
+        let quoted = had_quote && !had_unquoted;
+        let raw: String = chars[token_start..index as usize].iter().collect();
+        tokens.push(QueryToken {
+            text,
+            quoted,
+            start: token_start as u32,
+            end: token_end,
+            raw,
+        });
+    }
+
+    Tokenized {
+        tokens,
+        unbalanced_quote: None,
+    }
+}
+
+/// Splits a token into a `(key, value)` field-operator pair when it looks like
+/// `key:value` with a non-empty alphanumeric key. The split happens on the
+/// first unquoted colon in the raw token, so `app:"Google Chrome"` and
+/// `error:404` are both detected as `key:value` shapes (recognition of known
+/// keys happens separately).
+fn split_field_operator(token: &QueryToken) -> Option<(String, String, bool)> {
+    // Fully-quoted tokens are always literal body phrases, never operators.
+    if token.quoted {
+        return None;
+    }
+    let raw = &token.raw;
+    let colon = raw.find(':')?;
+    let key = &raw[..colon];
+    if key.is_empty() || !key.chars().all(|ch| ch.is_alphanumeric()) {
+        return None;
+    }
+    let value_raw = &raw[colon + 1..];
+    // Strip surrounding quotes on the value (e.g. app:"Google Chrome").
+    let (value, value_quoted) = if value_raw.starts_with('"') && value_raw.ends_with('"')
+        && value_raw.chars().count() >= 2
+    {
+        (
+            value_raw[1..value_raw.len() - 1].replace("\"\"", "\""),
+            true,
+        )
+    } else {
+        (value_raw.to_string(), false)
+    };
+    Some((key.to_string(), value, value_quoted))
+}
+
+/// Parses a raw query into refinements and a safe FTS body. See module comment.
+pub(crate) fn parse_search_query(raw: &str) -> ParsedQuery {
+    let tokenized = tokenize_query(raw);
+    let mut parsed = ParsedQuery::default();
+    if let Some(error) = tokenized.unbalanced_quote {
+        parsed.errors.push(error);
+    }
+
+    let local_today = local_today_date();
+    let mut residual_tokens: Vec<QueryToken> = Vec::new();
+
+    for token in tokenized.tokens {
+        if let Some((key, value, value_quoted)) = split_field_operator(&token) {
+            let lower_key = key.to_lowercase();
+            if FIELD_OPERATOR_KEYS.contains(&lower_key.as_str()) {
+                apply_field_operator(
+                    &mut parsed,
+                    &lower_key,
+                    &value,
+                    value_quoted,
+                    &token,
+                    local_today,
+                );
+                continue;
+            }
+        }
+        // Not a known field operator: stays literal body text.
+        residual_tokens.push(token);
+    }
+
+    parsed.residual_query = residual_tokens
+        .iter()
+        .map(|token| token.raw.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    parsed.fts_body = fts_body_for_tokens(&residual_tokens, &mut parsed.errors);
+
+    parsed
+}
+
+/// Applies one recognized field operator to the parsed refinements.
+fn apply_field_operator(
+    parsed: &mut ParsedQuery,
+    key: &str,
+    value: &str,
+    _value_quoted: bool,
+    token: &QueryToken,
+    local_today: time::Date,
+) {
+    let trimmed = value.trim();
+    match key {
+        "app" => {
+            if trimmed.is_empty() {
+                parsed.errors.push(token_parse_error(
+                    token,
+                    "empty_value",
+                    "app: needs an application name or bundle id",
+                ));
+                return;
+            }
+            let app = SearchAppRefinement {
+                kind: SearchAppRefinementKind::Any,
+                value: trimmed.to_string(),
+                display_name: trimmed.to_string(),
+            };
+            if !parsed.apps.contains(&app) {
+                parsed.apps.push(app);
+            }
+        }
+        "source" => match trimmed.to_lowercase().as_str() {
+            "mic" | "microphone" => {
+                if !parsed
+                    .audio_sources
+                    .contains(&AudioSegmentSourceKind::Microphone)
+                {
+                    parsed.audio_sources.push(AudioSegmentSourceKind::Microphone);
+                }
+            }
+            "system" | "system_audio" => {
+                if !parsed
+                    .audio_sources
+                    .contains(&AudioSegmentSourceKind::SystemAudio)
+                {
+                    parsed
+                        .audio_sources
+                        .push(AudioSegmentSourceKind::SystemAudio);
+                }
+            }
+            "screen" => parsed.screen_source = true,
+            _ => parsed.errors.push(token_parse_error(
+                token,
+                "unknown_source",
+                "source: must be mic, system, or screen",
+            )),
+        },
+        "after" => match resolve_point_date(trimmed, local_today) {
+            Some(date) => set_date_bound(parsed, Some(start_of_day_rfc3339(date)), None),
+            None => parsed.errors.push(token_parse_error(
+                token,
+                "bad_date",
+                "after: needs a date (YYYY-MM-DD) or relative point (today, yesterday, Nd, Nh)",
+            )),
+        },
+        "before" => match resolve_point_date(trimmed, local_today) {
+            Some(date) => set_date_bound(parsed, None, Some(end_of_day_rfc3339(date))),
+            None => parsed.errors.push(token_parse_error(
+                token,
+                "bad_date",
+                "before: needs a date (YYYY-MM-DD) or relative point (today, yesterday, Nd, Nh)",
+            )),
+        },
+        "date" => match resolve_day_or_period(trimmed, local_today) {
+            Some((start_date, end_date)) => set_date_bound(
+                parsed,
+                Some(start_of_day_rfc3339(start_date)),
+                Some(end_of_day_rfc3339(end_date)),
+            ),
+            None => parsed.errors.push(token_parse_error(
+                token,
+                "bad_date",
+                "date: needs a day or period (today, yesterday, last-week, this-week, last-month, this-month, or YYYY-MM-DD)",
+            )),
+        },
+        _ => {}
+    }
+}
+
+/// Writes one or both bounds into the single date range slot, last-write-wins
+/// per bound. A one-sided write leaves the other bound at the wide-open
+/// sentinel so the range stays half-open at day granularity.
+fn set_date_bound(parsed: &mut ParsedQuery, start: Option<String>, end: Option<String>) {
+    let existing = parsed.date_range.take();
+    let mut start_at = existing
+        .as_ref()
+        .map(|range| range.start_at.clone())
+        .unwrap_or_else(open_lower_bound_rfc3339);
+    let mut end_at = existing
+        .as_ref()
+        .map(|range| range.end_at.clone())
+        .unwrap_or_else(open_upper_bound_rfc3339);
+    if let Some(start) = start {
+        start_at = start;
+    }
+    if let Some(end) = end {
+        end_at = end;
+    }
+    parsed.date_range = Some(SearchDateRangeRefinement {
+        start_at,
+        end_at,
+        origin: None,
+    });
+}
+
+fn token_parse_error(token: &QueryToken, kind: &str, message: &str) -> SearchParseError {
+    SearchParseError {
+        kind: kind.to_string(),
+        message: message.to_string(),
+        start: token.start,
+        end: token.end,
+        token: token.raw.clone(),
+    }
+}
+
+// --- Body Match Operator → FTS5 translation ---
+
+/// One residual body element after operator interpretation.
+#[derive(Debug, Clone)]
+enum BodyTerm {
+    /// A positive matchable element (already a safe FTS5 fragment).
+    Positive(String),
+    /// A negated element (`-term`); requires a positive sibling in its AND group.
+    Negative(String),
+}
+
+/// Translates residual tokens into a safe FTS5 expression. Body operators:
+/// quoted phrase, `-term` exclusion (FTS5 NOT), `OR` (uppercase only),
+/// `term*` prefix (>=2 leading chars), and implicit AND between terms.
+///
+/// When the residual contains no body operators at all, this delegates to the
+/// exact plain-text path so operator-free queries behave identically to before.
+fn fts_body_for_tokens(tokens: &[QueryToken], errors: &mut Vec<SearchParseError>) -> String {
+    if tokens.is_empty() {
+        return String::new();
+    }
+
+    let has_body_operator = tokens.iter().any(|token| {
+        token.quoted
+            || token.text == "OR"
+            || token.text.starts_with('-')
+            || token.text.ends_with('*')
+    });
+
+    if !has_body_operator {
+        let joined = tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        return fts_query_for_plain_text(&normalize_query(&joined));
+    }
+
+    // Split into OR-groups on bare uppercase `OR` tokens; within each group,
+    // terms are implicitly ANDed (AND binds tighter than OR in FTS5).
+    let mut groups: Vec<Vec<&QueryToken>> = vec![Vec::new()];
+    for token in tokens {
+        if !token.quoted && token.text == "OR" {
+            groups.push(Vec::new());
+            continue;
+        }
+        groups
+            .last_mut()
+            .expect("there is always at least one group")
+            .push(token);
+    }
+
+    let mut rendered_groups: Vec<String> = Vec::new();
+    for group in groups {
+        if let Some(rendered) = fts_and_group(&group, errors) {
+            if !rendered.is_empty() {
+                rendered_groups.push(rendered);
+            }
+        }
+    }
+
+    rendered_groups
+        .into_iter()
+        .map(|group| format!("({group})"))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+/// Renders one implicit-AND group of tokens into an FTS5 fragment. Returns
+/// `None` (and records an error) for pure-negation groups.
+fn fts_and_group(tokens: &[&QueryToken], errors: &mut Vec<SearchParseError>) -> Option<String> {
+    let mut body_terms: Vec<BodyTerm> = Vec::new();
+    let mut positive_count = 0_usize;
+    let mut negative_origin: Option<&QueryToken> = None;
+
+    for token in tokens {
+        if token.quoted {
+            // Quoted phrase forces literal matching of the whole phrase.
+            if token.text.trim().is_empty() {
+                continue;
+            }
+            body_terms.push(BodyTerm::Positive(fts_quote_phrase_term(&token.text)));
+            positive_count += 1;
+            continue;
+        }
+
+        let text = token.text.as_str();
+        if let Some(stripped) = text.strip_prefix('-') {
+            if let Some(fragment) = fts_fragment_for_word(stripped) {
+                body_terms.push(BodyTerm::Negative(fragment));
+                if negative_origin.is_none() {
+                    negative_origin = Some(token);
+                }
+            }
+            continue;
+        }
+
+        if let Some(fragment) = fts_fragment_for_word(text) {
+            body_terms.push(BodyTerm::Positive(fragment));
+            positive_count += 1;
+        }
+    }
+
+    if positive_count == 0 {
+        if let Some(token) = negative_origin {
+            errors.push(token_parse_error(
+                token,
+                "pure_negation",
+                "an exclusion (-term) needs at least one positive term to match",
+            ));
+        }
+        return None;
+    }
+
+    let positives = body_terms
+        .iter()
+        .filter_map(|term| match term {
+            BodyTerm::Positive(fragment) => Some(fragment.clone()),
+            BodyTerm::Negative(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let negatives = body_terms
+        .iter()
+        .filter_map(|term| match term {
+            BodyTerm::Negative(fragment) => Some(fragment.clone()),
+            BodyTerm::Positive(_) => None,
+        })
+        .collect::<Vec<_>>();
+
+    if negatives.is_empty() {
+        Some(positives)
+    } else {
+        Some(format!("{positives} NOT {}", negatives.join(" NOT ")))
+    }
+}
+
+/// Converts a single bare word into a safe FTS5 fragment, honoring the `term*`
+/// prefix operator (needs >=2 leading alphanumeric chars, else literal). The
+/// word is split on non-alphanumerics like the plain-text path so symbols stay
+/// safe; an all-symbol word yields no fragment.
+fn fts_fragment_for_word(word: &str) -> Option<String> {
+    let wants_prefix = word.ends_with('*');
+    let core = if wants_prefix {
+        word.trim_end_matches('*')
+    } else {
+        word
+    };
+
+    // Keep only alphanumeric runs, mirroring the plain-text tokenizer so the
+    // quoted FTS term never contains FTS5-significant punctuation.
+    let cleaned = core
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    if wants_prefix && cleaned.len() == 1 && cleaned[0].chars().count() >= 2 {
+        // term* → prefix query: "term"*
+        return Some(format!("{}*", fts_quote_phrase_term(cleaned[0])));
+    }
+
+    // Otherwise treat the cleaned parts as a phrase (handles symbol-joined
+    // words and prefix tokens that did not qualify, which become literal).
+    Some(
+        cleaned
+            .into_iter()
+            .map(fts_quote_phrase_term)
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+// --- Merge parsed field operators into caller refinements ---
+
+/// Merges parsed field operators into any caller-supplied refinements per each
+/// field's multiplicity rule: apps/sources accumulate (set, dedup) and the date
+/// slot is overwritten by parsed date operators (last-write-wins).
+fn merge_parsed_field_operators(
+    base: Option<SearchCaptureRefinements>,
+    parsed: &ParsedQuery,
+) -> SearchCaptureRefinements {
+    let mut refinements = base.unwrap_or_default();
+
+    for app in &parsed.apps {
+        if !refinements.apps.contains(app) {
+            refinements.apps.push(app.clone());
+        }
+    }
+    for source in &parsed.audio_sources {
+        if !refinements.audio_sources.contains(source) {
+            refinements.audio_sources.push(source.clone());
+        }
+    }
+    if parsed.screen_source {
+        refinements.screen_source = true;
+    }
+    if let Some(date_range) = &parsed.date_range {
+        refinements.date_range = Some(date_range.clone());
+    }
+
+    refinements
+}
+
+// --- Date resolution (ADR 0019, A3) ---
+//
+// All date operators resolve to frozen concrete instants at parse time in the
+// LOCAL timezone, both bounds inclusive at day granularity. The sound local
+// offset is obtained per-calendar-date via chrono::Local (mirroring
+// capture_retention), avoiding the `time` crate's unsound `local-offset`
+// feature. Week start defaults to Monday (locale first weekday).
+
+/// The current local calendar date, used as the anchor for relative tokens.
+fn local_today_date() -> time::Date {
+    use chrono::Datelike;
+    let now = chrono::Local::now().date_naive();
+    time::Date::from_calendar_date(
+        now.year(),
+        time::Month::try_from(now.month() as u8).unwrap_or(time::Month::January),
+        now.day() as u8,
+    )
+    .unwrap_or_else(|_| OffsetDateTime::now_utc().date())
+}
+
+/// Resolves an `after:`/`before:` point to a single calendar date. Accepts an
+/// absolute `YYYY-MM-DD`, or a relative point: `today`, `yesterday`, `Nd`
+/// (N days ago), `Nh` (N hours ago, resolved to that day).
+fn resolve_point_date(value: &str, today: time::Date) -> Option<time::Date> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    match value.to_lowercase().as_str() {
+        "today" => return Some(today),
+        "yesterday" => return today.previous_day(),
+        _ => {}
+    }
+
+    if let Ok(date) = time::Date::parse(
+        value,
+        &time::format_description::well_known::Iso8601::DATE,
+    ) {
+        return Some(date);
+    }
+
+    if let Some(days) = parse_relative_count(value, 'd') {
+        return today.checked_sub(time::Duration::days(days));
+    }
+    if let Some(hours) = parse_relative_count(value, 'h') {
+        // `Nh` resolves to the day N hours before local "now".
+        let now = local_now_offset_datetime();
+        let resolved = now.checked_sub(time::Duration::hours(hours))?;
+        return Some(resolved.date());
+    }
+
+    None
+}
+
+/// Resolves a `date:` value to an inclusive `(start_date, end_date)` span:
+/// a single day, or a named period (today, yesterday, last/this week/month).
+fn resolve_day_or_period(value: &str, today: time::Date) -> Option<(time::Date, time::Date)> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    match value.to_lowercase().as_str() {
+        "today" => return Some((today, today)),
+        "yesterday" => {
+            let yesterday = today.previous_day()?;
+            return Some((yesterday, yesterday));
+        }
+        "this-week" => return Some(week_span(today, 0)),
+        "last-week" => return Some(week_span(today, -1)),
+        "this-month" => return Some(month_span(today, 0)),
+        "last-month" => return Some(month_span(today, -1)),
+        _ => {}
+    }
+
+    if let Ok(date) = time::Date::parse(
+        value,
+        &time::format_description::well_known::Iso8601::DATE,
+    ) {
+        return Some((date, date));
+    }
+
+    None
+}
+
+/// Returns the inclusive Monday..Sunday span for the week containing `today`,
+/// shifted by `week_offset` weeks. Week start = Monday (locale default).
+fn week_span(today: time::Date, week_offset: i64) -> (time::Date, time::Date) {
+    let weekday_from_monday = today.weekday().number_days_from_monday() as i64;
+    let monday = today
+        .checked_sub(time::Duration::days(weekday_from_monday))
+        .unwrap_or(today);
+    let start = monday
+        .checked_add(time::Duration::weeks(week_offset))
+        .unwrap_or(monday);
+    let end = start
+        .checked_add(time::Duration::days(6))
+        .unwrap_or(start);
+    (start, end)
+}
+
+/// Returns the inclusive first..last day span for the month containing `today`,
+/// shifted by `month_offset` months.
+fn month_span(today: time::Date, month_offset: i64) -> (time::Date, time::Date) {
+    let (mut year, mut month_index) = (
+        today.year() as i64,
+        today.month() as i64 - 1 + month_offset,
+    );
+    year += month_index.div_euclid(12);
+    month_index = month_index.rem_euclid(12);
+    let month = time::Month::try_from((month_index + 1) as u8).unwrap_or(time::Month::January);
+    let start =
+        time::Date::from_calendar_date(year as i32, month, 1).unwrap_or(today);
+    let last_day = days_in_month(year as i32, month);
+    let end =
+        time::Date::from_calendar_date(year as i32, month, last_day).unwrap_or(start);
+    (start, end)
+}
+
+fn days_in_month(year: i32, month: time::Month) -> u8 {
+    match month {
+        time::Month::January
+        | time::Month::March
+        | time::Month::May
+        | time::Month::July
+        | time::Month::August
+        | time::Month::October
+        | time::Month::December => 31,
+        time::Month::April
+        | time::Month::June
+        | time::Month::September
+        | time::Month::November => 30,
+        time::Month::February => {
+            if time::util::is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
+    }
+}
+
+/// Parses a relative count like `7d`/`1h`. Returns the numeric magnitude when
+/// the value is digits followed by exactly the expected unit char.
+fn parse_relative_count(value: &str, unit: char) -> Option<i64> {
+    let lower = value.to_lowercase();
+    let stripped = lower.strip_suffix(unit)?;
+    if stripped.is_empty() || !stripped.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    stripped.parse::<i64>().ok()
+}
+
+/// The local offset for a given calendar date, resolved soundly through
+/// chrono::Local (see capture_retention::local_midnight_offset). Falls back to
+/// the current local offset, then UTC.
+fn local_offset_for_date(date: time::Date) -> UtcOffset {
+    use chrono::{Local, LocalResult, NaiveDate, Offset, TimeZone};
+    let resolved = NaiveDate::from_ymd_opt(
+        date.year(),
+        u32::from(u8::from(date.month())),
+        u32::from(date.day()),
+    )
+    .and_then(|local_date| local_date.and_hms_opt(0, 0, 0))
+    .and_then(|local_midnight| match Local.from_local_datetime(&local_midnight) {
+        LocalResult::Single(datetime) => Some(datetime.offset().fix().local_minus_utc()),
+        LocalResult::Ambiguous(earliest, _) => Some(earliest.offset().fix().local_minus_utc()),
+        LocalResult::None => None,
+    })
+    .and_then(|offset_seconds| UtcOffset::from_whole_seconds(offset_seconds).ok());
+    resolved.unwrap_or_else(|| local_now_offset_datetime().offset())
+}
+
+/// Current instant as an `OffsetDateTime` carrying the local offset, resolved
+/// through chrono (the `time` crate's `now_local` is feature-gated/unsound).
+fn local_now_offset_datetime() -> OffsetDateTime {
+    use chrono::Offset;
+    let now = chrono::Local::now();
+    let offset_seconds = now.offset().fix().local_minus_utc();
+    let offset = UtcOffset::from_whole_seconds(offset_seconds).unwrap_or(UtcOffset::UTC);
+    OffsetDateTime::now_utc().to_offset(offset)
+}
+
+/// `after:D` → D 00:00:00 local, formatted as RFC3339 for the existing
+/// `normalize_search_refinements` date path (which converts to UTC).
+fn start_of_day_rfc3339(date: time::Date) -> String {
+    let offset = local_offset_for_date(date);
+    date.with_hms_milli(0, 0, 0, 0)
+        .expect("midnight is always valid")
+        .assume_offset(offset)
+        .format(&Rfc3339)
+        .expect("RFC3339 formatting of a valid datetime should succeed")
+}
+
+/// `before:D` → D 23:59:59.999 local, formatted as RFC3339.
+fn end_of_day_rfc3339(date: time::Date) -> String {
+    let offset = local_offset_for_date(date);
+    date.with_hms_milli(23, 59, 59, 999)
+        .expect("end-of-day is always valid")
+        .assume_offset(offset)
+        .format(&Rfc3339)
+        .expect("RFC3339 formatting of a valid datetime should succeed")
+}
+
+/// A wide-open lower bound used when only an upper date bound is supplied.
+fn open_lower_bound_rfc3339() -> String {
+    "0001-01-01T00:00:00Z".to_string()
+}
+
+/// A wide-open upper bound used when only a lower date bound is supplied.
+fn open_upper_bound_rfc3339() -> String {
+    "9999-12-31T23:59:59.999Z".to_string()
 }
 
 fn clamp_limit(limit: Option<u32>) -> u32 {
@@ -1370,41 +2305,57 @@ fn push_search_refinement_predicates(
         query.push_bind(range.end_at.clone());
         query.push(")");
     }
-    if let Some(app) = &refinements.app {
-        match app {
-            NormalizedAppRefinement::Any { value, search_key } => {
-                query.push(
-                    " AND (LOWER(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = LOWER(",
-                );
-                query.push_bind(value.clone());
-                query.push(") OR search_documents.app_name_search_key = ");
-                query.push_bind(search_key.clone());
-                query.push(")");
+    if !refinements.apps.is_empty() {
+        // Multiple `app:` operators accumulate with OR semantics: a frame
+        // matches when its retained identity matches any of the apps.
+        query.push(" AND (");
+        for (index, app) in refinements.apps.iter().enumerate() {
+            if index > 0 {
+                query.push(" OR ");
             }
-            NormalizedAppRefinement::BundleId { value } => {
-                query.push(
-                    " AND LOWER(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = LOWER(",
-                );
-                query.push_bind(value.clone());
-                query.push(")");
-            }
-            NormalizedAppRefinement::AppName { search_key, .. } => {
-                query.push(
-                    " AND LENGTH(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = 0 \
-                      AND search_documents.app_name_search_key = ",
-                );
-                query.push_bind(search_key.clone());
+            match app {
+                NormalizedAppRefinement::Any { value, search_key } => {
+                    query.push(
+                        "(LOWER(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = LOWER(",
+                    );
+                    query.push_bind(value.clone());
+                    query.push(") OR search_documents.app_name_search_key = ");
+                    query.push_bind(search_key.clone());
+                    query.push(")");
+                }
+                NormalizedAppRefinement::BundleId { value } => {
+                    query.push(
+                        "LOWER(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = LOWER(",
+                    );
+                    query.push_bind(value.clone());
+                    query.push(")");
+                }
+                NormalizedAppRefinement::AppName { search_key, .. } => {
+                    query.push(
+                        "(LENGTH(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = 0 \
+                          AND search_documents.app_name_search_key = ",
+                    );
+                    query.push_bind(search_key.clone());
+                    query.push(")");
+                }
             }
         }
+        query.push(")");
     }
     if let Some(window_title) = &refinements.window_title {
         query.push(" AND LOWER(COALESCE(search_documents.window_title, '')) LIKE LOWER(");
         query.push_bind(sqlite_contains_like_pattern(window_title));
         query.push(") ESCAPE '\\'");
     }
-    if let Some(source) = &refinements.audio_source {
-        query.push(" AND search_documents.source_kind = ");
-        query.push_bind(source.as_str().to_string());
+    if !refinements.audio_sources.is_empty() {
+        query.push(" AND search_documents.source_kind IN (");
+        for (index, source) in refinements.audio_sources.iter().enumerate() {
+            if index > 0 {
+                query.push(", ");
+            }
+            query.push_bind(source.as_str().to_string());
+        }
+        query.push(")");
     }
 }
 
@@ -2065,10 +3016,12 @@ mod tests {
                 end_at: "2026-05-17T05:01:00-05:00".to_string(),
                 origin: Some(SearchDateRangeOrigin::LastHour),
             }),
-            app: None,
+            apps: Vec::new(),
             window_title: None,
-            audio_source: None,
+            audio_sources: Vec::new(),
+            screen_source: false,
         }))
+        .expect("refinements should not error")
         .expect("refinements should normalize");
 
         let range = normalized
@@ -2088,23 +3041,28 @@ mod tests {
     }
 
     #[test]
-    fn search_rejects_incompatible_app_and_audio_refinements() {
-        let error = normalize_search_refinements(Some(SearchCaptureRefinements {
+    fn search_rejects_incompatible_app_and_audio_refinements_in_band() {
+        let errors = normalize_search_refinements(Some(SearchCaptureRefinements {
             date_range: None,
-            app: Some(SearchAppRefinement {
+            apps: vec![SearchAppRefinement {
                 kind: SearchAppRefinementKind::BundleId,
                 value: "com.example.Linear".to_string(),
                 display_name: "Linear".to_string(),
-            }),
+            }],
             window_title: None,
-            audio_source: Some(AudioSegmentSourceKind::Microphone),
+            audio_sources: vec![AudioSegmentSourceKind::Microphone],
+            screen_source: false,
         }))
-        .expect_err("incompatible refinements should fail");
+        .expect("conflict should not throw")
+        .expect_err("incompatible refinements should surface in-band parse errors");
 
-        assert!(matches!(
-            error,
-            AppInfraError::InvalidSearchRequest(message) if message.contains("cannot be combined")
-        ));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == "app_source_conflict"
+                    && error.message.contains("cannot be combined")),
+            "expected an app_source_conflict parse error, got {errors:?}"
+        );
     }
 
     #[test]
@@ -2966,13 +3924,14 @@ mod tests {
                             end_at: "2026-05-17T05:30:00-05:00".to_string(),
                             origin: Some(SearchDateRangeOrigin::VisibleTimeline),
                         }),
-                        app: Some(SearchAppRefinement {
+                        apps: vec![SearchAppRefinement {
                             kind: SearchAppRefinementKind::BundleId,
                             value: " COM.EXAMPLE.LINEAR ".to_string(),
                             display_name: "Linear".to_string(),
-                        }),
+                        }],
                         window_title: None,
-                        audio_source: None,
+                        audio_sources: Vec::new(),
+                        screen_source: false,
                     }),
                 })
                 .await
@@ -2984,8 +3943,8 @@ mod tests {
             assert_eq!(
                 response
                     .applied_refinements
-                    .app
-                    .as_ref()
+                    .apps
+                    .first()
                     .map(|app| app.value.as_str()),
                 Some("COM.EXAMPLE.LINEAR")
             );
@@ -3028,13 +3987,14 @@ mod tests {
                     snapshot_document_id: None,
                     refinements: Some(SearchCaptureRefinements {
                         date_range: None,
-                        app: Some(SearchAppRefinement {
+                        apps: vec![SearchAppRefinement {
                             kind: SearchAppRefinementKind::Any,
                             value: "linear".to_string(),
                             display_name: "linear".to_string(),
-                        }),
+                        }],
                         window_title: Some("plan".to_string()),
-                        audio_source: None,
+                        audio_sources: Vec::new(),
+                        screen_source: false,
                     }),
                 })
                 .await
@@ -3054,9 +4014,10 @@ mod tests {
                     snapshot_document_id: None,
                     refinements: Some(SearchCaptureRefinements {
                         date_range: None,
-                        app: None,
+                        apps: Vec::new(),
                         window_title: None,
-                        audio_source: Some(AudioSegmentSourceKind::SystemAudio),
+                        audio_sources: vec![AudioSegmentSourceKind::SystemAudio],
+                        screen_source: false,
                     }),
                 })
                 .await
@@ -3066,8 +4027,8 @@ mod tests {
             assert_eq!(response.audio.len(), 1);
             assert_eq!(response.audio[0].audio_segment.id, system.id);
             assert_eq!(
-                response.applied_refinements.audio_source,
-                Some(AudioSegmentSourceKind::SystemAudio)
+                response.applied_refinements.audio_sources,
+                vec![AudioSegmentSourceKind::SystemAudio]
             );
         });
     }
@@ -3122,9 +4083,10 @@ mod tests {
                             end_at: "2026-05-17T10:00:30Z".to_string(),
                             origin: Some(SearchDateRangeOrigin::VisibleTimeline),
                         }),
-                        app: None,
+                        apps: Vec::new(),
                         window_title: None,
-                        audio_source: None,
+                        audio_sources: Vec::new(),
+                        screen_source: false,
                     }),
                 })
                 .await
@@ -3213,13 +4175,14 @@ mod tests {
                     snapshot_document_id: None,
                     refinements: Some(SearchCaptureRefinements {
                         date_range: None,
-                        app: Some(SearchAppRefinement {
+                        apps: vec![SearchAppRefinement {
                             kind: SearchAppRefinementKind::AppName,
                             value: "éditeur".to_string(),
                             display_name: "éditeur".to_string(),
-                        }),
+                        }],
                         window_title: None,
-                        audio_source: None,
+                        audio_sources: Vec::new(),
+                        screen_source: false,
                     }),
                 })
                 .await
@@ -5029,6 +5992,651 @@ mod tests {
                     .collect::<Vec<_>>(),
                 vec![1, 1]
             );
+        });
+    }
+
+    // === Search Query Syntax parser tests (ADR 0019, A7) ===
+
+    fn frame_with_app(
+        bundle_id: Option<&str>,
+        name: Option<&str>,
+    ) -> capture_metadata::FrameMetadataSnapshot {
+        capture_metadata::FrameMetadataSnapshot {
+            app_bundle_id: bundle_id.map(str::to_string),
+            app_name: name.map(str::to_string),
+            window_title: None,
+            window_id: None,
+            browser_url: None,
+            display_id: Some(1),
+            metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
+        }
+    }
+
+    async fn seed_frame_with_text(
+        infra: &AppInfra,
+        path: &str,
+        captured_at: &str,
+        metadata: Option<capture_metadata::FrameMetadataSnapshot>,
+        text: &str,
+    ) -> crate::Frame {
+        let mut new_frame = NewFrame::new("screen-session", path, captured_at);
+        if let Some(metadata) = metadata {
+            new_frame = new_frame.with_metadata_snapshot(metadata);
+        }
+        let frame = infra
+            .insert_frame(&new_frame)
+            .await
+            .expect("frame should insert");
+        let job = infra
+            .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+            .await
+            .expect("ocr job should enqueue");
+        complete_job(
+            infra,
+            job,
+            ProcessingResultDraft::new().with_result_text(text),
+        )
+        .await;
+        frame
+    }
+
+    #[test]
+    fn plain_text_query_has_no_operators_and_matches_plain_fts() {
+        // A query with no operators must behave exactly as the plain-text path:
+        // residual equals the input, no refinements, and the FTS body is exactly
+        // what the legacy plain-text translator produces.
+        let parsed = parse_search_query("hello world");
+        assert!(parsed.errors.is_empty());
+        assert!(parsed.apps.is_empty());
+        assert!(parsed.audio_sources.is_empty());
+        assert!(parsed.date_range.is_none());
+        assert_eq!(parsed.residual_query, "hello world");
+        assert_eq!(
+            parsed.fts_body,
+            fts_query_for_plain_text(&normalize_query("hello world"))
+        );
+        assert_eq!(parsed.fts_body, "\"hello\" \"world\"");
+    }
+
+    #[test]
+    fn quoted_phrase_body_operator_forces_literal_phrase() {
+        let parsed = parse_search_query("\"hello world\"");
+        assert!(parsed.errors.is_empty());
+        assert_eq!(parsed.fts_body, "(\"hello world\")");
+    }
+
+    #[test]
+    fn exclusion_body_operator_with_positive_term_is_fts_not() {
+        let parsed = parse_search_query("error -warning");
+        assert!(parsed.errors.is_empty());
+        assert_eq!(parsed.fts_body, "(\"error\" NOT \"warning\")");
+    }
+
+    #[test]
+    fn uppercase_or_body_operator_splits_groups_lowercase_or_is_literal() {
+        let parsed = parse_search_query("foo OR bar");
+        assert!(parsed.errors.is_empty());
+        assert_eq!(parsed.fts_body, "(\"foo\") OR (\"bar\")");
+
+        // lowercase `or` is a literal AND term, never a group split.
+        let lower = parse_search_query("foo or bar");
+        assert!(lower.errors.is_empty());
+        assert_eq!(lower.fts_body, "\"foo\" \"or\" \"bar\"");
+    }
+
+    #[test]
+    fn prefix_body_operator_requires_two_leading_chars() {
+        let parsed = parse_search_query("term*");
+        assert!(parsed.errors.is_empty());
+        assert_eq!(parsed.fts_body, "(\"term\"*)");
+
+        // A single leading char does not qualify; it stays a literal term.
+        let short = parse_search_query("a*");
+        assert!(short.errors.is_empty());
+        assert_eq!(short.fts_body, "(\"a\")");
+    }
+
+    #[test]
+    fn app_field_operator_desugars_into_any_app_refinement() {
+        let parsed = parse_search_query("app:Safari report");
+        assert!(parsed.errors.is_empty());
+        assert_eq!(parsed.apps.len(), 1);
+        assert!(matches!(
+            parsed.apps[0].kind,
+            SearchAppRefinementKind::Any
+        ));
+        assert_eq!(parsed.apps[0].value, "Safari");
+        assert_eq!(parsed.residual_query, "report");
+        assert_eq!(parsed.fts_body, "\"report\"");
+    }
+
+    #[test]
+    fn app_field_operator_supports_quoted_multiword_and_reverse_dns() {
+        let quoted = parse_search_query("app:\"Google Chrome\"");
+        assert!(quoted.errors.is_empty());
+        assert_eq!(quoted.apps.len(), 1);
+        assert_eq!(quoted.apps[0].value, "Google Chrome");
+        assert!(matches!(
+            quoted.apps[0].kind,
+            SearchAppRefinementKind::Any
+        ));
+
+        // A reverse-DNS-looking value still works via the Any match kind because
+        // a recognized `app:` value is never re-split as a field operator.
+        let bundle = parse_search_query("app:com.google.Chrome");
+        assert!(bundle.errors.is_empty());
+        assert_eq!(bundle.apps.len(), 1);
+        assert_eq!(bundle.apps[0].value, "com.google.Chrome");
+        assert!(matches!(
+            bundle.apps[0].kind,
+            SearchAppRefinementKind::Any
+        ));
+    }
+
+    #[test]
+    fn multiple_app_operators_accumulate_and_dedupe() {
+        let parsed = parse_search_query("app:Safari app:Chrome app:Safari");
+        assert!(parsed.errors.is_empty());
+        let values = parsed
+            .apps
+            .iter()
+            .map(|app| app.value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(values, vec!["Safari", "Chrome"]);
+    }
+
+    #[test]
+    fn source_field_operator_maps_to_audio_source_kinds() {
+        let mic = parse_search_query("source:mic");
+        assert!(mic.errors.is_empty());
+        assert_eq!(mic.audio_sources, vec![AudioSegmentSourceKind::Microphone]);
+
+        let both = parse_search_query("source:mic source:system");
+        assert!(both.errors.is_empty());
+        assert_eq!(
+            both.audio_sources,
+            vec![
+                AudioSegmentSourceKind::Microphone,
+                AudioSegmentSourceKind::SystemAudio
+            ]
+        );
+    }
+
+    #[test]
+    fn unknown_source_value_is_in_band_error() {
+        let parsed = parse_search_query("source:bluetooth");
+        assert!(parsed.audio_sources.is_empty());
+        assert_eq!(parsed.errors.len(), 1);
+        assert_eq!(parsed.errors[0].kind, "unknown_source");
+    }
+
+    #[test]
+    fn source_screen_operator_sets_screen_source_without_audio_sources() {
+        let parsed = parse_search_query("source:screen meeting");
+        assert!(parsed.errors.is_empty());
+        assert!(parsed.screen_source);
+        assert!(parsed.audio_sources.is_empty());
+    }
+
+    #[test]
+    fn screen_and_audio_source_conflict_is_in_band_error() {
+        let parsed = parse_search_query("source:screen source:mic");
+        assert!(parsed.errors.is_empty());
+
+        let errors = normalize_search_refinements(Some(merge_parsed_field_operators(None, &parsed)))
+            .expect("conflict should not throw")
+            .expect_err("screen + audio source should surface in-band parse errors");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == "screen_audio_source_conflict"),
+            "expected a screen_audio_source_conflict parse error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn date_field_operators_resolve_to_a_single_overwriting_slot() {
+        let parsed = parse_search_query("after:2026-01-01 before:2026-01-31");
+        assert!(parsed.errors.is_empty());
+        let range = parsed.date_range.expect("date range should be set");
+        assert!(range.start_at.starts_with("2026-01-01T00:00:00"));
+        assert!(range.end_at.starts_with("2026-01-31T23:59:59"));
+
+        // `date:` writes both bounds; last write wins per slot.
+        let day = parse_search_query("after:2020-01-01 date:2026-05-17");
+        assert!(day.errors.is_empty());
+        let day_range = day.date_range.expect("date range should be set");
+        assert!(day_range.start_at.starts_with("2026-05-17T00:00:00"));
+        assert!(day_range.end_at.starts_with("2026-05-17T23:59:59"));
+    }
+
+    #[test]
+    fn bad_date_value_is_in_band_error() {
+        let parsed = parse_search_query("after:notadate");
+        assert!(parsed.date_range.is_none());
+        assert_eq!(parsed.errors.len(), 1);
+        assert_eq!(parsed.errors[0].kind, "bad_date");
+        assert_eq!(parsed.errors[0].token, "after:notadate");
+    }
+
+    #[test]
+    fn unknown_key_value_tokens_stay_literal_body_text() {
+        // URL/code/error searches must keep working: only the known keys are
+        // field operators, every other `key:value` is literal body text.
+        for raw in ["http://github.com", "error:404", "fix: bug"] {
+            let parsed = parse_search_query(raw);
+            assert!(
+                parsed.apps.is_empty()
+                    && parsed.audio_sources.is_empty()
+                    && parsed.date_range.is_none(),
+                "`{raw}` must not desugar into any field operator"
+            );
+            assert!(parsed.errors.is_empty(), "`{raw}` must not error");
+            assert!(
+                parsed.residual_query.contains(raw.split(' ').next().unwrap()),
+                "`{raw}` should remain in the residual body, got {:?}",
+                parsed.residual_query
+            );
+        }
+
+        // The literal http URL still produces a non-empty (safe) FTS body.
+        let url = parse_search_query("http://github.com");
+        assert!(!url.fts_body.is_empty());
+    }
+
+    #[test]
+    fn unbalanced_quote_is_in_band_error() {
+        let parsed = parse_search_query("\"unterminated phrase");
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|error| error.kind == "unbalanced_quote"),
+            "expected an unbalanced_quote error, got {:?}",
+            parsed.errors
+        );
+    }
+
+    #[test]
+    fn pure_negation_without_positive_term_is_in_band_error() {
+        let parsed = parse_search_query("-foo");
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|error| error.kind == "pure_negation"),
+            "expected a pure_negation error, got {:?}",
+            parsed.errors
+        );
+    }
+
+    #[test]
+    fn error_spans_are_character_offsets_into_the_raw_query() {
+        // Use a multi-byte prefix to prove spans are character (not byte) offsets.
+        let parsed = parse_search_query("café source:bluetooth");
+        let error = parsed
+            .errors
+            .iter()
+            .find(|error| error.kind == "unknown_source")
+            .expect("unknown_source error");
+        // "café " is 5 characters; the 16-char token spans chars [5, 21).
+        assert_eq!(error.start, 5);
+        assert_eq!(error.end, 21);
+        assert_eq!(error.token, "source:bluetooth");
+    }
+
+    #[test]
+    fn plain_text_search_still_works_end_to_end() {
+        run_async_test(async {
+            let dir = test_dir("plain-text-still-works");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = seed_frame_with_text(
+                &infra,
+                "/tmp/plain-text-target.jpg",
+                "2026-05-17T10:00:00Z",
+                None,
+                "the quarterly planning notes",
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "quarterly planning".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert!(response.parse_errors.is_empty());
+            assert_eq!(response.residual_query, "quarterly planning");
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
+    fn app_operator_desugars_into_refinement_end_to_end() {
+        run_async_test(async {
+            let dir = test_dir("app-operator-e2e");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let safari = seed_frame_with_text(
+                &infra,
+                "/tmp/app-op-safari.jpg",
+                "2026-05-17T10:00:00Z",
+                Some(frame_with_app(Some("com.apple.Safari"), Some("Safari"))),
+                "shared target text",
+            )
+            .await;
+            let _chrome = seed_frame_with_text(
+                &infra,
+                "/tmp/app-op-chrome.jpg",
+                "2026-05-17T10:01:00Z",
+                Some(frame_with_app(Some("com.google.Chrome"), Some("Chrome"))),
+                "shared target text",
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "app:Safari target".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert!(response.parse_errors.is_empty());
+            assert_eq!(response.residual_query, "target");
+            assert_eq!(response.applied_refinements.apps.len(), 1);
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, safari.id);
+        });
+    }
+
+    #[test]
+    fn multi_app_operator_accumulates_as_or_end_to_end() {
+        run_async_test(async {
+            let dir = test_dir("multi-app-operator-e2e");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let safari = seed_frame_with_text(
+                &infra,
+                "/tmp/multi-app-safari.jpg",
+                "2026-05-17T10:00:00Z",
+                Some(frame_with_app(Some("com.apple.Safari"), Some("Safari"))),
+                "shared target text",
+            )
+            .await;
+            let chrome = seed_frame_with_text(
+                &infra,
+                "/tmp/multi-app-chrome.jpg",
+                "2026-05-17T10:01:00Z",
+                Some(frame_with_app(Some("com.google.Chrome"), Some("Chrome"))),
+                "shared target text",
+            )
+            .await;
+            let _notes = seed_frame_with_text(
+                &infra,
+                "/tmp/multi-app-notes.jpg",
+                "2026-05-17T10:02:00Z",
+                Some(frame_with_app(Some("com.apple.Notes"), Some("Notes"))),
+                "shared target text",
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "app:Safari app:Chrome target".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert!(response.parse_errors.is_empty());
+            assert_eq!(response.applied_refinements.apps.len(), 2);
+            let mut ids = response
+                .frames
+                .iter()
+                .map(|frame| frame.representative_frame.id)
+                .collect::<Vec<_>>();
+            ids.sort_unstable();
+            let mut expected = vec![safari.id, chrome.id];
+            expected.sort_unstable();
+            assert_eq!(ids, expected);
+        });
+    }
+
+    #[test]
+    fn source_operator_desugars_into_audio_refinement_end_to_end() {
+        run_async_test(async {
+            let dir = test_dir("source-operator-e2e");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let mic = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/source-op-mic.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:10Z",
+                ))
+                .await
+                .expect("mic segment should insert");
+            let system = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::SystemAudio,
+                    "system-session",
+                    1,
+                    "/tmp/source-op-system.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:10Z",
+                ))
+                .await
+                .expect("system segment should insert");
+            for segment in [&mic, &system] {
+                let job = infra
+                    .enqueue_processing_job(
+                        &ProcessingJobDraft::for_audio_segment_transcription(segment.id),
+                    )
+                    .await
+                    .expect("transcription job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("spoken target audio"),
+                )
+                .await;
+            }
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "source:mic source:system target".to_string(),
+                    frame_limit: Some(0),
+                    frame_offset: None,
+                    audio_limit: Some(10),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert!(response.parse_errors.is_empty());
+            assert_eq!(response.residual_query, "target");
+            assert_eq!(response.applied_refinements.audio_sources.len(), 2);
+            assert_eq!(response.audio.len(), 2);
+        });
+    }
+
+    #[test]
+    fn body_phrase_operator_filters_end_to_end() {
+        run_async_test(async {
+            let dir = test_dir("body-phrase-e2e");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let exact = seed_frame_with_text(
+                &infra,
+                "/tmp/body-phrase-exact.jpg",
+                "2026-05-17T10:00:00Z",
+                None,
+                "the quarterly planning meeting",
+            )
+            .await;
+            let _scrambled = seed_frame_with_text(
+                &infra,
+                "/tmp/body-phrase-scrambled.jpg",
+                "2026-05-17T10:01:00Z",
+                None,
+                "planning the quarterly meeting",
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "\"quarterly planning\"".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                })
+                .await
+                .expect("search should succeed");
+
+            assert!(response.parse_errors.is_empty());
+            assert_eq!(response.frames.len(), 1);
+            assert_eq!(response.frames[0].representative_frame.id, exact.id);
+        });
+    }
+
+    #[test]
+    fn in_band_errors_suppress_results_without_throwing() {
+        run_async_test(async {
+            let dir = test_dir("in-band-errors");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(
+                &infra,
+                "/tmp/in-band-frame.jpg",
+                "2026-05-17T10:00:00Z",
+                Some(frame_with_app(Some("com.apple.Safari"), Some("Safari"))),
+                "target text everywhere",
+            )
+            .await;
+
+            // Each of these is a strict mistake that must come back in
+            // parse_errors with results suppressed, never as a thrown Err.
+            let cases: &[(&str, &str)] = &[
+                ("after:notadate target", "bad_date"),
+                ("\"unterminated target", "unbalanced_quote"),
+                ("app:Safari source:mic target", "app_source_conflict"),
+                ("-target", "pure_negation"),
+            ];
+
+            for (query, expected_kind) in cases {
+                let response = infra
+                    .search_capture(SearchCaptureRequest {
+                        query: query.to_string(),
+                        frame_limit: Some(10),
+                        frame_offset: None,
+                        audio_limit: Some(10),
+                        audio_offset: None,
+                        snapshot_document_id: None,
+                        refinements: None,
+                    })
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("`{query}` should not throw, got {error:?}")
+                    });
+
+                assert!(
+                    response
+                        .parse_errors
+                        .iter()
+                        .any(|error| &error.kind == expected_kind),
+                    "`{query}` should surface a {expected_kind} parse error, got {:?}",
+                    response.parse_errors
+                );
+                assert!(
+                    response.frames.is_empty() && response.audio.is_empty(),
+                    "`{query}` should suppress results, got {} frames / {} audio",
+                    response.frames.len(),
+                    response.audio.len()
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn list_searchable_apps_returns_seeded_apps_by_recency() {
+        run_async_test(async {
+            let dir = test_dir("list-searchable-apps");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            // Oldest first, newest last; expected order is by recency desc.
+            seed_frame_with_text(
+                &infra,
+                "/tmp/list-apps-safari.jpg",
+                "2026-05-17T10:00:00Z",
+                Some(frame_with_app(Some("com.apple.Safari"), Some("Safari"))),
+                "older app text",
+            )
+            .await;
+            seed_frame_with_text(
+                &infra,
+                "/tmp/list-apps-chrome.jpg",
+                "2026-05-17T11:00:00Z",
+                Some(frame_with_app(Some("com.google.Chrome"), Some("Chrome"))),
+                "newer app text",
+            )
+            .await;
+            // A frame with no app identity should not appear in the list.
+            seed_frame_with_text(
+                &infra,
+                "/tmp/list-apps-anon.jpg",
+                "2026-05-17T12:00:00Z",
+                None,
+                "anonymous app text",
+            )
+            .await;
+
+            let apps = infra
+                .list_searchable_apps()
+                .await
+                .expect("list_searchable_apps should succeed");
+
+            assert_eq!(apps.len(), 2);
+            // Chrome is the most recent app-bearing frame, so it ranks first.
+            assert_eq!(apps[0].bundle_id.as_deref(), Some("com.google.Chrome"));
+            assert_eq!(apps[0].name.as_deref(), Some("Chrome"));
+            assert_eq!(apps[1].bundle_id.as_deref(), Some("com.apple.Safari"));
+            assert_eq!(apps[1].name.as_deref(), Some("Safari"));
         });
     }
 }

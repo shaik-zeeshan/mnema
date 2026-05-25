@@ -305,6 +305,15 @@ _Avoid_: automatic install, forced update, startup restart
 - Removing a **Search Refinement** should rerun the active search with the remaining query and refinements rather than closing or resetting the search modal.
 - Opening global search should not retain **Search Refinement** values from a previous contextual **Search Entry Point**.
 - **Search Refinement** values should persist across query changes within the same open search modal until the user removes them or opens global search anew.
+- Typed **Field Operator** tokens should surface as visible, removable **Search Refinement** chips identical to the controls produced by UI refinement actions, rather than staying as hidden inline scope.
+- The search input should stay plain text by default; **Search Query Syntax** is opt-in and an operator-free query behaves exactly as today's plain-text search.
+- A **Search Query Syntax** parse error should surface inline in the search modal and highlight the offending operator rather than running a misleading or empty search.
+- A frontend pre-parse of **Search Query Syntax** is a display optimization that may optimistically show **Field Operator** chips while typing, but the backend parse is authoritative and the frontend reconciles chips and errors to the search response.
+- The frontend pre-parse should be limited to recognizing known **Field Operator** prefixes for optimistic chips and must not reimplement value validation, date parsing, or **Body Match Operator** to FTS5 translation.
+- A **Search Operator Suggestion** dropdown is two-tier: it first offers operator names (`app:`, `source:`, `date:`, `after:`, `before:`) for discovery, then the values for the chosen operator.
+- Selecting a **Search Operator Suggestion** value commits the corresponding **Search Refinement** chip and removes the operator text from the input, converging the dropdown with typed **Field Operator** desugaring.
+- `date:`, `after:`, and `before:` **Search Operator Suggestion** values offer preset and relative tokens with a typed-date hint rather than a custom date-time picker.
+- A **Search Operator Suggestion** dropdown captures arrow, Enter, and Escape keys while open, where Enter selects the highlighted value and Escape closes only the dropdown, and falls back to submit and close-modal behavior when the dropdown is closed.
 - The first **Search Entry Point** values after global search should be visible timeline and current app.
 - The first **Search Refinement** controls after result type should be date range, app, and source.
 - **Visible Timeline Search** should derive a date-range **Search Refinement** from the timeline viewport time range rather than from the dashboard's loaded rows.

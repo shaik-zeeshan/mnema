@@ -500,6 +500,8 @@ pub struct SearchCaptureResponseDto {
     pub has_more_frames: bool,
     pub has_more_audio: bool,
     pub applied_refinements: ::app_infra::SearchCaptureRefinements,
+    pub residual_query: String,
+    pub parse_errors: Vec<::app_infra::SearchParseError>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -855,6 +857,8 @@ impl From<::app_infra::SearchCaptureResponse> for SearchCaptureResponseDto {
             has_more_frames: response.has_more_frames,
             has_more_audio: response.has_more_audio,
             applied_refinements: response.applied_refinements,
+            residual_query: response.residual_query,
+            parse_errors: response.parse_errors,
         }
     }
 }
@@ -4569,6 +4573,17 @@ pub async fn list_person_profiles(
         .await
         .map(|profiles| profiles.into_iter().map(PersonProfileDto::from).collect())
         .map_err(|error| format!("failed to list person profiles: {error}"))
+}
+
+#[tauri::command]
+pub async fn list_searchable_apps(
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<::app_infra::SearchableApp>, String> {
+    let infra = Arc::clone(&*state);
+    infra
+        .list_searchable_apps()
+        .await
+        .map_err(|error| format!("failed to list searchable apps: {error}"))
 }
 
 #[tauri::command]
