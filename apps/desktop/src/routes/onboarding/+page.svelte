@@ -114,6 +114,7 @@
   let starting = $state(false);
   let completing = $state(false);
   let refreshingPerms = $state(false);
+  let requestingPerm = $state<PermissionKey | null>(null);
   let applyingRecommended = $state(false);
   let error = $state<string | null>(null);
 
@@ -465,6 +466,35 @@
       error = serializeError(err);
     } finally {
       refreshingPerms = false;
+    }
+  }
+
+  // Granted/unsupported need no action. macOS won't re-prompt once denied, so
+  // those rows deep-link to System Settings instead of re-requesting.
+  function permissionAction(
+    value: PermissionValue | undefined,
+  ): { label: string; mode: "request" | "settings" } | null {
+    if (value === "granted" || value === "unsupported") return null;
+    if (value === "denied" || value === "restricted") return { label: "Open Settings", mode: "settings" };
+    return { label: "Grant access", mode: "request" };
+  }
+
+  async function requestPermission(key: PermissionKey): Promise<void> {
+    if (requestingPerm) return;
+    error = null;
+    requestingPerm = key;
+    try {
+      const action = permissionAction(permissions?.[key]);
+      if (action?.mode === "settings") {
+        await invoke("open_capture_privacy_settings", { kind: key });
+      } else {
+        const response = await invoke<GetPermissionsResponse>("request_capture_permission", { kind: key });
+        permissions = response.permissions as Record<PermissionKey, PermissionValue>;
+      }
+    } catch (err) {
+      error = serializeError(err);
+    } finally {
+      requestingPerm = null;
     }
   }
 
@@ -1103,16 +1133,29 @@
                     ] as p}
                       {@const value = permissions?.[p.key as PermissionKey]}
                       {@const tone = permissionTone(value)}
+                      {@const action = permissionAction(value)}
                       <li class="perm perm--{tone}">
                         <span class="perm__name">{p.name}</span>
-                        <span class="perm__pill">
-                          <span class="perm__dot"></span>{permissionLabel(value)}
+                        <span class="perm__right">
+                          <span class="perm__pill">
+                            <span class="perm__dot"></span>{permissionLabel(value)}
+                          </span>
+                          {#if action}
+                            <button
+                              type="button"
+                              class="btn btn--ghost btn--sm perm__action"
+                              onclick={() => requestPermission(p.key as PermissionKey)}
+                              disabled={requestingPerm !== null}
+                            >
+                              {requestingPerm === p.key ? "Requesting…" : action.label}
+                            </button>
+                          {/if}
                         </span>
                       </li>
                     {/each}
                   </ul>
 
-                  <p class="hint">Anything missing is requested by macOS when recording starts. If denied, enable manually under <em>System Settings › Privacy & Security</em>.</p>
+                  <p class="hint">Grant each source to arm the recorder now — macOS also prompts when recording starts. Once a permission is denied, use <em>Open Settings</em> to enable it under <em>Privacy &amp; Security</em>.</p>
 
                   <div class="row">
                     <button type="button" class="btn btn--ghost btn--sm" onclick={refreshPermissions} disabled={refreshingPerms}>
@@ -1909,6 +1952,14 @@
     color: var(--app-text-strong);
     font-size: 12px;
     font-weight: 600;
+  }
+  .perm__right {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .perm__action {
+    white-space: nowrap;
   }
   .perm__pill {
     display: inline-flex;

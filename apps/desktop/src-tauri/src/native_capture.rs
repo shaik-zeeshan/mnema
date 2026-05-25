@@ -2167,6 +2167,64 @@ pub fn get_capture_permissions(
     }
 }
 
+/// Trigger the native macOS permission prompt for a capture source, then return
+/// the refreshed permission state. `kind` is "screen", "microphone", or
+/// "systemAudio" (system audio shares the screen-recording permission). The
+/// underlying request blocks (microphone waits on a system callback), so it
+/// runs on a blocking thread to keep the UI responsive.
+#[tauri::command]
+pub async fn request_capture_permission(
+    kind: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, NativeCaptureState>,
+) -> Result<CapturePermissionsResponse, String> {
+    match kind.as_str() {
+        "screen" | "systemAudio" => {
+            tauri::async_runtime::spawn_blocking(|| {
+                capture_screen::ensure_screen_permission();
+            })
+            .await
+            .map_err(|error| format!("screen permission request failed: {error}"))?;
+        }
+        "microphone" => {
+            tauri::async_runtime::spawn_blocking(|| {
+                microphone_capture::ensure_microphone_permission();
+            })
+            .await
+            .map_err(|error| format!("microphone permission request failed: {error}"))?;
+        }
+        other => return Err(format!("unknown permission kind: {other}")),
+    }
+
+    Ok(get_capture_permissions(app_handle, state))
+}
+
+/// Open the macOS Privacy & Security pane for a capture source so the user can
+/// flip a permission that was already denied (macOS will not re-prompt once
+/// denied).
+#[tauri::command]
+pub fn open_capture_privacy_settings(
+    kind: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let url = match kind.as_str() {
+        "screen" | "systemAudio" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+        "microphone" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+        }
+        other => return Err(format!("unknown permission kind: {other}")),
+    };
+
+    app_handle
+        .opener()
+        .open_url(url, None::<String>)
+        .map_err(|error| format!("failed to open privacy settings: {error}"))
+}
+
 #[tauri::command]
 pub fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
     activity::get_idle_debug(state)
