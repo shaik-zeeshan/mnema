@@ -132,6 +132,8 @@ Do not make this the baseline system-audio dependency unless we are willing to r
 
 ## Media writers, frame export, and previews
 
+Focused follow-up: `docs/windows/media-writers-preview-research.md` maps the current macOS writer/preview code paths to Windows 11 replacements and open implementation decisions.
+
 ### Recommended native path: Media Foundation
 
 Use Media Foundation in `crates/capture-writers` for Windows:

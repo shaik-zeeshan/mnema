@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-05-25_
+_Last reviewed: 2026-05-26_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -95,7 +95,12 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 
 ## Windows checklist
 
-Research note: `docs/windows/runtime-capture-research.md` tracks the currently recommended Windows capture APIs and crate options.
+Research notes:
+
+- `docs/windows/runtime-capture-research.md` tracks recommended Windows capture APIs and crate options.
+- `docs/windows/media-processing-research.md` tracks OCR/transcription/speaker/media-processing provider choices and alternatives.
+- `docs/windows/permissions-privacy-metadata-research.md` tracks Windows permission, privacy, app identity, and metadata alternatives.
+- `docs/windows/storage-access-release-research.md` tracks Windows 11 storage paths, key-store/CLI access choices, and release/updater options.
 
 ### Bring-up / compilation
 
