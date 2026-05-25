@@ -1815,8 +1815,10 @@ fn fts_body_for_tokens(tokens: &[QueryToken], errors: &mut Vec<SearchParseError>
     // Split into OR-groups on bare uppercase `OR` tokens; within each group,
     // terms are implicitly ANDed (AND binds tighter than OR in FTS5).
     let mut groups: Vec<Vec<&QueryToken>> = vec![Vec::new()];
+    let mut or_tokens: Vec<&QueryToken> = Vec::new();
     for token in tokens {
         if !token.quoted && token.text == "OR" {
+            or_tokens.push(token);
             groups.push(Vec::new());
             continue;
         }
@@ -1824,6 +1826,24 @@ fn fts_body_for_tokens(tokens: &[QueryToken], errors: &mut Vec<SearchParseError>
             .last_mut()
             .expect("there is always at least one group")
             .push(token);
+    }
+
+    // A dangling `OR` (leading, trailing, or doubled) leaves an empty AND-group.
+    // ADR 0019 mandates strict validation of malformed Body Match Operators, so
+    // reject it as an in-band parse error instead of silently rewriting
+    // `foo OR` into `foo`. Attribute the error to the OR adjacent to the gap.
+    if let Some(empty_index) = groups.iter().position(|group| group.is_empty()) {
+        let or_index = empty_index
+            .saturating_sub(1)
+            .min(or_tokens.len().saturating_sub(1));
+        if let Some(token) = or_tokens.get(or_index) {
+            errors.push(token_parse_error(
+                token,
+                "dangling_or",
+                "OR needs a search term on both sides",
+            ));
+        }
+        return String::new();
     }
 
     let mut rendered_groups: Vec<String> = Vec::new();
@@ -6083,6 +6103,33 @@ mod tests {
         let lower = parse_search_query("foo or bar");
         assert!(lower.errors.is_empty());
         assert_eq!(lower.fts_body, "\"foo\" \"or\" \"bar\"");
+    }
+
+    #[test]
+    fn dangling_or_body_operator_is_a_parse_error() {
+        // Leading, trailing, and doubled `OR` all leave an empty AND-group.
+        // Strict validation (ADR 0019) rejects them instead of silently
+        // rewriting into a broader valid search; no FTS body is produced.
+        for query in ["foo OR", "OR foo", "foo OR OR bar"] {
+            let parsed = parse_search_query(query);
+            assert_eq!(
+                parsed.errors.len(),
+                1,
+                "expected one dangling_or error for {query:?}, got {:?}",
+                parsed.errors
+            );
+            assert_eq!(parsed.errors[0].kind, "dangling_or");
+            assert!(
+                parsed.fts_body.is_empty(),
+                "dangling OR should produce no FTS body for {query:?}, got {:?}",
+                parsed.fts_body
+            );
+        }
+
+        // A well-formed OR with terms on both sides still parses cleanly.
+        let ok = parse_search_query("foo OR bar");
+        assert!(ok.errors.is_empty());
+        assert_eq!(ok.fts_body, "(\"foo\") OR (\"bar\")");
     }
 
     #[test]

@@ -4299,6 +4299,11 @@
       }
     } catch (err) {
       if (!requestIsCurrent()) return;
+      // A thrown failure is a different class of problem than in-band parse
+      // errors. Clear any stale parse errors so the real backend/system error
+      // surfaces instead of an outdated parse message — the render path checks
+      // searchParseErrors before searchError.
+      searchParseErrors = [];
       searchError = typeof err === "string" ? err : JSON.stringify(err);
     } finally {
       if (requestIsCurrent()) {
@@ -4348,10 +4353,18 @@
     searchableAppsLoading = true;
     try {
       searchableApps = await invoke<SearchableApp[]>("list_searchable_apps");
+      // The catalog arrives after the first `app:` recompute already returned
+      // an empty list and closed the dropdown. If the search input is still
+      // focused, recompute from the live caret so first-use `app:` suggestions
+      // appear without requiring another keystroke.
+      const input = searchInputElement();
+      if (input && document.activeElement === input) {
+        refreshSearchSuggestionsFromInput();
+      }
     } catch {
-      // A failed catalog load should not break operator-name discovery; treat
-      // it as an empty value list so the dropdown still degrades gracefully.
-      searchableApps = [];
+      // Leave `searchableApps` null (rather than caching an empty list) so a
+      // transient backend failure is retried on the next `app:` recompute
+      // instead of permanently disabling value suggestions for the session.
     } finally {
       searchableAppsLoading = false;
     }
@@ -4366,10 +4379,14 @@
     return { start, token: value.slice(start, caret) };
   }
 
-  // Quote a value if it contains whitespace so `key:value` survives the parser
-  // as a single token (e.g. app:"Google Chrome").
+  // Quote a value when it contains whitespace or a double quote so `key:value`
+  // survives the parser as a single token (e.g. app:"Google Chrome"). Embedded
+  // quotes are doubled — the backend tokenizer/operator splitter treats `""`
+  // inside a quoted run as one literal `"` (see split_field_operator in
+  // crates/app-infra/src/search.rs), so a name like `My "Cool" App` becomes
+  // `"My ""Cool"" App"` and round-trips instead of breaking the parse.
   function quoteSearchValue(value: string): string {
-    return /\s/.test(value) ? `"${value}"` : value;
+    return /[\s"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
   }
 
   function searchableAppLabel(app: SearchableApp): string {
@@ -4445,6 +4462,16 @@
     if (key === "app") {
       void ensureSearchableAppsLoaded();
       const apps = searchableApps ?? [];
+      // App names are not unique — several bundles can share a display name.
+      // The backend's Any-kind match resolves a value as bundle id OR name, so
+      // inserting a shared name broadens the filter to every same-named app.
+      // Count names so an ambiguous pick inserts the bundle id (precise target)
+      // while a unique name keeps the friendlier label.
+      const nameCounts = new Map<string, number>();
+      for (const app of apps) {
+        const name = (app.name ?? "").trim().toLowerCase();
+        if (name.length > 0) nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+      }
       return apps
         .filter((app) => {
           if (needle.length === 0) return true;
@@ -4454,11 +4481,15 @@
         })
         .map((app) => {
           const label = searchableAppLabel(app);
+          const normalizedName = (app.name ?? "").trim().toLowerCase();
+          const bundleId = (app.bundleId ?? "").trim();
+          const ambiguous = normalizedName.length > 0 && (nameCounts.get(normalizedName) ?? 0) > 1;
+          const insertValue = ambiguous && bundleId.length > 0 ? bundleId : label;
           return {
-            insertValue: label,
-            label: label || (app.bundleId ?? ""),
+            insertValue,
+            label: label || bundleId,
             detail: app.name && app.bundleId && app.name !== app.bundleId ? app.bundleId : null,
-            selectable: label.length > 0,
+            selectable: insertValue.length > 0,
           };
         })
         .filter((item) => item.insertValue.length > 0);
@@ -4537,15 +4568,21 @@
     recomputeSearchSuggestions(caret);
   }
 
-  // Replace the in-progress token before `caret` with `replacement`, returning
-  // the new query string and the caret offset that should follow it.
+  // Replace the whole token the caret sits in with `replacement`, returning the
+  // new query string and the caret offset that should follow it. The token
+  // spans from its start (run of non-whitespace before the caret) through its
+  // end (run of non-whitespace after the caret); consuming the trailing run too
+  // avoids leaving stale characters behind when a suggestion is accepted with
+  // the caret in the middle of a token (e.g. `app:safa|ri` → `app:Safari`).
   function replaceTokenBeforeCaret(
     value: string,
     caret: number,
     replacement: string,
   ): { next: string; caret: number } {
     const { start } = searchTokenBeforeCaret(value, caret);
-    const next = value.slice(0, start) + replacement + value.slice(caret);
+    let end = caret;
+    while (end < value.length && !/\s/.test(value[end])) end += 1;
+    const next = value.slice(0, start) + replacement + value.slice(end);
     return { next, caret: start + replacement.length };
   }
 
