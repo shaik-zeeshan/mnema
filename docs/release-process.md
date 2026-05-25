@@ -54,7 +54,7 @@ The workflow:
 3. Runs `bun run check`.
 4. Prepares the debug Mnema CLI sidecar for Rust verification.
 5. Runs `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked`.
-6. Runs `tauri-apps/tauri-action@v1` for `--target aarch64-apple-darwin`.
+6. Runs `tauri-apps/tauri-action@v0` for `--target aarch64-apple-darwin`.
 7. Creates or updates a draft GitHub Release with the DMG, `.app.tar.gz`, `.app.tar.gz.sig`, and `latest.json`.
 8. Uploads staged workflow artifacts and `SHA256SUMS` for smoke testing convenience.
 
