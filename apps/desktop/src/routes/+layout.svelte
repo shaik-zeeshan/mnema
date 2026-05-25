@@ -1356,9 +1356,39 @@
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     overscroll-behavior: none;
+    /* Native-app selection model: the chrome (icons, buttons, decorative
+       glyphs, drag regions) is non-selectable by default like a macOS app,
+       and only genuine text-bearing elements opt selection back in below.
+       Components can still opt individual nodes in/out explicitly. */
+    user-select: none;
+    -webkit-user-select: none;
     /* Smooth the chrome flip when the user toggles `appearance`. Kept
        short so the change still feels responsive. */
     transition: background-color 0.18s ease, color 0.18s ease;
+  }
+
+  /* Re-enable text selection for content the user reads/copies. Deliberately
+     excludes `span`/`div` since those frequently wrap icons; text inside them
+     that must stay selectable opts in explicitly (e.g. OCR text). */
+  :global(p),
+  :global(h1),
+  :global(h2),
+  :global(h3),
+  :global(h4),
+  :global(h5),
+  :global(h6),
+  :global(input),
+  :global(textarea),
+  :global(code),
+  :global(pre),
+  :global(label),
+  :global(a),
+  :global(li),
+  :global(td),
+  :global(th),
+  :global([contenteditable]) {
+    user-select: text;
+    -webkit-user-select: text;
   }
 
   :global(body.dedicated-surface-window) {
