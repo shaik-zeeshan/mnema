@@ -564,6 +564,16 @@ async fn run_update_check(
             )
             .channel;
             if current_channel != settings.channel {
+                {
+                    let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
+                    let mut runtime = runtime_state
+                        .lock()
+                        .expect("app update runtime state poisoned");
+                    runtime.state = AppUpdateState::Idle;
+                    runtime.pending_update = None;
+                    runtime.update = None;
+                    runtime.error = None;
+                }
                 spawn_update_check(app_handle);
                 return current_status(app_handle);
             }
@@ -593,6 +603,13 @@ async fn run_update_check(
             )
             .channel;
             if current_channel != settings.channel {
+                {
+                    let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
+                    let mut runtime = runtime_state
+                        .lock()
+                        .expect("app update runtime state poisoned");
+                    runtime.state = AppUpdateState::Idle;
+                }
                 spawn_update_check(app_handle);
                 return current_status(app_handle);
             }
@@ -606,6 +623,23 @@ async fn run_update_check(
             } else {
                 AppUpdateState::Failed
             };
+            let current_channel = current_settings(
+                app_handle,
+                app_handle.state::<AppUpdateSettingsState>().inner(),
+            )
+            .channel;
+            if current_channel != settings.channel {
+                {
+                    let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
+                    let mut runtime = runtime_state
+                        .lock()
+                        .expect("app update runtime state poisoned");
+                    runtime.state = AppUpdateState::Idle;
+                    runtime.error = None;
+                }
+                spawn_update_check(app_handle);
+                return current_status(app_handle);
+            }
             set_runtime_error(app_handle, state, mapped)
         }
     }
