@@ -88,6 +88,8 @@
     lowQueuePressure: boolean;
     representativeDue: boolean;
     highQueuePressure: boolean;
+    fingerprintNovelInScope: boolean;
+    noveltyAdmissionAvailable: boolean;
   };
 
   type OcrAdmissionDebugEvent = {
@@ -205,6 +207,8 @@
     if (signals.lowQueuePressure) badges.push("low-q");
     if (signals.highQueuePressure) badges.push("high-q");
     if (signals.representativeDue) badges.push("repr");
+    if (signals.fingerprintNovelInScope) badges.push("novel");
+    if (signals.noveltyAdmissionAvailable) badges.push("novelty-ok");
     return badges;
   }
 

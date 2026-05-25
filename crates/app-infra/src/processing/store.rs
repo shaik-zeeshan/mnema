@@ -23,6 +23,13 @@ pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
     "processing job was marked failed during startup recovery after the app shut down while it was running";
 pub const SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY: &str = "speakerAnalysisPayload";
 
+/// Maximum number of attempts (including the first) the **Recording Lifecycle** will make for a
+/// failed **OCR Job** before leaving it terminally failed. A transient OCR failure on a frame that
+/// a later equivalent frame deferred to (via OCR Fallback Eligibility) is bounded-retried so the
+/// equivalent group recovers text instead of being left permanently unsearchable; once this cap is
+/// hit the job stays failed. Audio jobs are unaffected: this bound is OCR-only.
+pub(crate) const OCR_FAILED_JOB_MAX_ATTEMPTS: i64 = 3;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameProcessingJob {
@@ -1355,6 +1362,37 @@ impl ProcessingStore {
             .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
         transaction.commit().await?;
         Ok(job)
+    }
+
+    /// Bounded automatic retry for a failed **OCR Job**. If the job is OCR, currently failed, and
+    /// has been attempted fewer than [`OCR_FAILED_JOB_MAX_ATTEMPTS`] times, it is requeued (status
+    /// reset to `queued`, payload preserved) so the job loop re-runs it; the eventual completion
+    /// then back-projects recovered text across the equivalent group. Returns the requeued job when
+    /// a retry was scheduled, or `None` when the job is not an eligible OCR retry (wrong processor,
+    /// not failed, or the attempt cap was reached). Audio jobs are intentionally excluded.
+    pub(crate) async fn requeue_failed_ocr_job_within_attempt_cap(
+        &self,
+        job_id: i64,
+    ) -> Result<Option<ProcessingJob>> {
+        let mut transaction = self.pool.begin().await?;
+
+        let job = get_processing_job_optional(&mut *transaction, job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+
+        if job.processor != OCR_PROCESSOR
+            || job.status != ProcessingJobStatus::Failed
+            || job.attempt_count >= OCR_FAILED_JOB_MAX_ATTEMPTS
+        {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+
+        let requeued = self
+            .requeue_processing_job_in_transaction(&mut transaction, job_id, None)
+            .await?;
+        transaction.commit().await?;
+        Ok(Some(requeued))
     }
 
     pub async fn complete_job(

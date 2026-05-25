@@ -92,7 +92,7 @@ The rule for where an earlier equivalent **Captured Frame** may be searched when
 _Avoid_: workspace filter, lookup scope, same-segment rule
 
 **OCR Fallback Eligibility**:
-The rule that an earlier equivalent **Captured Frame** can stand in for a later frame's OCR only when that earlier frame already has an **OCR Job** (queued, running, or completed). A **Captured Frame** that was itself skipped by the **OCR Admission Budget** and has no **OCR Job** is not an eligible fallback, because there is no recognized text it will ever contribute.
+The rule that an earlier equivalent **Captured Frame** can stand in for a later frame's OCR only when that earlier frame already has a non-failed **OCR Job** — that is, a job whose status is queued, running, or completed (including completed with no recognized text). Eligibility does not require that the job already produced text: because equivalent frames share the same OCR-relevant content by definition, a later frame cannot contribute text that the representative's identical content didn't, so an equivalent group with a completed-but-textless job is still correctly suppressed. A **Captured Frame** that was itself skipped by the **OCR Admission Budget** and has no **OCR Job** is not an eligible fallback (there is no job whose result could ever project back); a frame whose only **OCR Job** has failed is likewise not eligible, since a failed job produced and persisted no result to project.
 _Avoid_: dedupe reuse, equivalent skip, text borrow
 
 **Visual Novelty Admission**:

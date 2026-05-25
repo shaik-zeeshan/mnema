@@ -618,7 +618,7 @@ fn ocr_eligible_lookup_ignores_equivalent_frame_without_ocr_job() {
 }
 
 #[test]
-fn ocr_eligible_lookup_prefers_job_having_over_nearer_jobless() {
+fn ocr_eligible_lookup_skips_nearer_jobless_for_farther_job_having() {
     run_async_test(async {
         let dir = TestDir::new("eligible-prefers-farther");
         let infra = AppInfra::initialize(dir.path())
@@ -671,8 +671,11 @@ fn ocr_eligible_lookup_prefers_job_having_over_nearer_jobless() {
 
         enqueue_queued_ocr_job(&infra, with_job.id).await;
 
-        // The nearest earlier equivalent (jobless) is skipped in favor of the farther
-        // frame that actually has an OCR job.
+        // The nearest earlier equivalent (jobless) is excluded by the eligibility filter, so the
+        // farther frame that actually has an OCR job is returned instead. NOTE: this asserts the
+        // SQL EXCLUSION of jobless frames, not NearestEarlier ordering — the filtered list is
+        // single-element, so it does not exercise ordering. See
+        // `ocr_eligible_lookup_returns_nearest_among_multiple_job_having` for that.
         let eligible = resolver
             .find_nearest_earlier_ocr_eligible_equivalent_frame(
                 &candidate,
@@ -683,6 +686,99 @@ fn ocr_eligible_lookup_prefers_job_having_over_nearer_jobless() {
         assert_eq!(eligible, Some(with_job));
         // The jobless frame is not what was returned.
         assert_ne!(eligible.map(|frame| frame.id), Some(jobless.id));
+    });
+}
+
+#[test]
+fn ocr_eligible_lookup_returns_nearest_among_multiple_job_having() {
+    run_async_test(async {
+        let dir = TestDir::new("eligible-nearest-ordering");
+        let infra = AppInfra::initialize(dir.path())
+            .await
+            .expect("app infra should initialize");
+        let resolver = CapturedFrameEquivalenceResolver::new(infra.processing().clone());
+        let width = 32;
+        let height = 32;
+        let pixels = solid_rgba(width, height, [135, 135, 135, 255]);
+
+        // Three earlier equivalent frames, ALL with OCR jobs, plus the candidate. Because every
+        // earlier frame survives the eligibility filter, the resolver receives a multi-element
+        // list and must genuinely apply NearestEarlier ordering (highest id below the candidate).
+        // An inverted ordering (e.g. ORDER BY id ASC, or the EarliestEarlier `.rev()`) would
+        // return `farthest` here and fail this assertion.
+        let farthest = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-nearest-multi",
+                "frame-1.png",
+                "2026-04-12T10:00:00Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+        let middle = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-nearest-multi",
+                "frame-2.png",
+                "2026-04-12T10:00:01Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+        let nearest = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-nearest-multi",
+                "frame-3.png",
+                "2026-04-12T10:00:02Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+        let candidate = persist_frame(
+            &infra,
+            &test_frame_with_equivalent_image(
+                &dir,
+                "session-nearest-multi",
+                "frame-4.png",
+                "2026-04-12T10:00:03Z",
+                &pixels,
+                width,
+                height,
+            ),
+        )
+        .await;
+
+        enqueue_queued_ocr_job(&infra, farthest.id).await;
+        enqueue_queued_ocr_job(&infra, middle.id).await;
+        enqueue_queued_ocr_job(&infra, nearest.id).await;
+
+        let eligible = resolver
+            .find_nearest_earlier_ocr_eligible_equivalent_frame(
+                &candidate,
+                &CapturedFrameEquivalenceScope::Session,
+            )
+            .await
+            .expect("eligible lookup should succeed");
+
+        assert_eq!(
+            eligible,
+            Some(nearest.clone()),
+            "the nearest earlier equivalent frame with an OCR job must be returned"
+        );
+        let eligible_id = eligible.map(|frame| frame.id);
+        assert_ne!(eligible_id, Some(middle.id));
+        assert_ne!(eligible_id, Some(farthest.id));
     });
 }
 

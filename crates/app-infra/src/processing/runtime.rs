@@ -108,11 +108,20 @@ impl ProcessingRuntime {
             Ok(result) => Ok(ProcessingJobRunOutcome::Completed(
                 self.store.complete_job(job.id, &result).await?,
             )),
-            Err(error) => Ok(ProcessingJobRunOutcome::Failed(
-                self.store
+            Err(error) => {
+                let failed = self
+                    .store
                     .mark_job_failed(job.id, Some(&error.to_string()))
-                    .await?,
-            )),
+                    .await?;
+                // A failed OCR job can leave its whole equivalent group textless, because later
+                // frames that deferred to it (OCR Fallback Eligibility) only receive text via
+                // back-projection on completion. Bounded-retry transient OCR failures so the group
+                // can still recover; once the attempt cap is reached the job stays failed.
+                self.store
+                    .requeue_failed_ocr_job_within_attempt_cap(failed.id)
+                    .await?;
+                Ok(ProcessingJobRunOutcome::Failed(failed))
+            }
         }
     }
 }
@@ -550,6 +559,93 @@ mod tests {
                 .get_result_for_job(queued_job.id)
                 .await
                 .expect("result lookup should succeed")
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn failed_ocr_jobs_are_bounded_retried_then_left_failed() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-runtime-ocr-bounded-retry");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(database.pool().clone());
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
+                    response: MockOcrResponse::Failure("vision bridge failed".to_string()),
+                })),
+            );
+
+            let frame = store
+                .insert_frame(&NewFrame::new(
+                    "session-runtime",
+                    "/tmp/frame-runtime-bounded-retry.png",
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+            let queued_job = store
+                .enqueue_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("job should persist");
+
+            // First failure: the job is requeued (eligible again) rather than left terminally
+            // failed, so the equivalent group can still recover text on a later attempt.
+            let outcome = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should attempt queued job")
+                .expect("queued job should exist");
+            let ProcessingJobRunOutcome::Failed(failed_job) = outcome else {
+                panic!("expected failed outcome on first attempt");
+            };
+            assert_eq!(failed_job.id, queued_job.id);
+            assert_eq!(failed_job.attempt_count, 1);
+
+            let after_first = store
+                .get_job(queued_job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(
+                after_first.status,
+                ProcessingJobStatus::Queued,
+                "a failed OCR job under the attempt cap should be requeued for retry"
+            );
+
+            // Drive remaining attempts; each one re-claims the requeued job until the cap is hit.
+            let mut last_attempt_count = after_first.attempt_count;
+            while let Some(outcome) = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should keep retrying the requeued ocr job")
+            {
+                let ProcessingJobRunOutcome::Failed(failed) = outcome else {
+                    panic!("expected failed outcome on retry");
+                };
+                last_attempt_count = failed.attempt_count;
+            }
+
+            // Once the cap is reached, the job is left terminally failed and not requeued again.
+            assert_eq!(last_attempt_count, super::super::OCR_FAILED_JOB_MAX_ATTEMPTS);
+            let terminal = store
+                .get_job(queued_job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(terminal.status, ProcessingJobStatus::Failed);
+            assert_eq!(
+                terminal.attempt_count,
+                super::super::OCR_FAILED_JOB_MAX_ATTEMPTS
+            );
+
+            // No further queued OCR work remains.
+            assert!(runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime poll should succeed")
                 .is_none());
         });
     }

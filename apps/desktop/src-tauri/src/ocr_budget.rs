@@ -23,8 +23,15 @@ const NOVELTY_MIN_INTERVAL_SECONDS: i64 = 2;
 const NOVELTY_RECENT_FINGERPRINT_CAPACITY: usize = 128;
 /// Number of consecutive novel frames that flips a scope into the
 /// continuous-novelty (video/animation) regime, suppressing novelty admission
-/// back to plain time-sampling until a repeated frame resets the run.
+/// back to plain time-sampling until the run breaks.
 const NOVELTY_SUSTAINED_RUN_SUPPRESS: u32 = 10;
+/// Maximum gap between two novel frames for them to count as part of the same
+/// continuous-novelty burst. Tied to the rate-floor interval: only a stream of
+/// novel frames arriving at least this often (video/animation) builds toward
+/// the suppressor; a longer pause in novel-content arrival un-latches it and
+/// starts a fresh potential burst, so temporally-sparse distinct screens
+/// (normal browsing) never trip the video guard.
+const NOVELTY_CONTINUOUS_GAP_SECONDS: i64 = NOVELTY_MIN_INTERVAL_SECONDS;
 const OCR_ACTIVE_RECORDING_COOLDOWN_MIN: Duration = Duration::from_millis(1000);
 const OCR_ACTIVE_RECORDING_COOLDOWN_MAX: Duration = Duration::from_millis(10000);
 const OCR_CATCH_UP_COOLDOWN_MIN: Duration = Duration::from_millis(250);
@@ -122,11 +129,17 @@ struct AdmissionScopeState {
     /// bounded by `NOVELTY_RECENT_FINGERPRINT_CAPACITY`. A frame is novel when
     /// its hash is absent here.
     recent_fingerprints: VecDeque<u64>,
-    /// Timestamp of the last frame admitted via the visual-novelty path; gates
-    /// the per-scope novelty rate floor.
+    /// Timestamp of the last frame that produced a real OCR read of current
+    /// content (any Admitted outcome); gates the per-scope novelty rate floor so
+    /// that any current-content read makes an immediate novelty read redundant.
     last_novelty_admitted_at: Option<OffsetDateTime>,
-    /// Count of consecutive novel frames seen so far; drives the
-    /// continuous-novelty (video) suppression guard.
+    /// Capture time of the last frame that counted as novel-for-bookkeeping;
+    /// used to decide whether a new novel frame is temporally continuous with
+    /// the previous one (and so extends the burst) or starts a fresh run.
+    last_novel_frame_at: Option<OffsetDateTime>,
+    /// Length of the current run of temporally-continuous novel frames; drives
+    /// the continuous-novelty (video) suppression guard. Only novel frames that
+    /// arrive close in time to the previous novel frame extend the run.
     consecutive_novel_run: u32,
 }
 
@@ -272,26 +285,101 @@ fn in_continuous_novelty_burst(consecutive_novel_run: u32) -> bool {
     consecutive_novel_run >= NOVELTY_SUSTAINED_RUN_SUPPRESS
 }
 
-/// Maintain a scope's novelty memory for a frame that was just processed.
-/// Called for every frame (admitted or skipped) so first-occurrence and the
-/// continuous-novelty run stay accurate.
+/// Two novel frames belong to the same continuous-novelty burst only when the
+/// later one arrives within `NOVELTY_CONTINUOUS_GAP_SECONDS` of the previous
+/// novel frame. A missing previous timestamp or an unparseable current capture
+/// time is treated as a gap, so the run restarts rather than extending blindly.
+fn novel_frame_is_temporally_continuous(
+    previous_novel_at: Option<OffsetDateTime>,
+    captured_at: Option<OffsetDateTime>,
+) -> bool {
+    match (previous_novel_at, captured_at) {
+        (Some(previous), Some(current)) => {
+            (current - previous).whole_seconds() <= NOVELTY_CONTINUOUS_GAP_SECONDS
+        }
+        _ => false,
+    }
+}
+
+/// Maintain a scope's novelty memory for a frame that was just processed,
+/// reasoning from the FINAL admission outcome/reason rather than only the
+/// decide-time signal.
+///
+/// `decide_time_fingerprint_novel` is the (possibly stale) novelty signal
+/// computed at decide time; the pipeline may have OVERRIDDEN the decision to
+/// `SkippedEquivalentFrame` afterward while keeping that stale signal, so a
+/// confirmed duplicate must not be treated as novel here (finding #5).
+///
+/// Bookkeeping rules:
+/// - "novel-for-bookkeeping" = decide-time novel AND the final reason is not
+///   `SkippedEquivalentFrame` (a confirmed duplicate is never novel).
+/// - Remember a fingerprint only when its content is actually OCR-covered:
+///   either the frame was Admitted (a real read happens) or it deduped to an
+///   eligible equivalent (`SkippedEquivalentFrame`, covered by reuse). A frame
+///   that was merely skipped for rate-floor / queue pressure / low value is
+///   left novel so a later frame of the same dwelled-on screen can still be
+///   admitted once the floor clears (finding #1).
+/// - The continuous-novelty run reflects TEMPORAL CONTINUITY: a
+///   novel-for-bookkeeping frame extends the run only when it is temporally
+///   adjacent to the previous novel frame, otherwise the run restarts at 1; a
+///   frame that is not novel-for-bookkeeping resets the run to 0. Only a
+///   genuinely continuous (high-frequency) novel stream trips the suppressor,
+///   and a pause in novel-content arrival un-latches it (finding #3).
+/// - The novelty rate-floor anchor advances whenever ANY frame is Admitted,
+///   because any real OCR read of current content makes an immediate novelty
+///   read redundant (finding #7); it is never stamped with a `None` capture
+///   time (finding #6).
+///
+/// Tension between #1 and burst recovery: because a rate-floor-skipped novel
+/// frame is intentionally NOT remembered, a later identical frame stays novel.
+/// During an active burst that repeated frame is still novel-for-bookkeeping,
+/// so it can re-extend the run rather than reset it; in the worst case a screen
+/// dwelled on during a burst is only re-read at the representative cadence
+/// (~`REPRESENTATIVE_SECONDS`) instead of via novelty. This matches the ADR's
+/// "video falls back to time-sampling" intent. The temporal-gap reset above is
+/// what un-latches the burst once novel content stops arriving continuously.
 fn record_novelty_memory(
     scope: &mut AdmissionScopeState,
-    frame_was_novel: bool,
+    decide_time_fingerprint_novel: bool,
     fingerprint: Option<u64>,
-    admitted_via_novelty: bool,
+    outcome: ::app_infra::OcrAdmissionOutcome,
+    reason: ::app_infra::OcrAdmissionReason,
     captured_at: Option<OffsetDateTime>,
 ) {
-    if frame_was_novel {
-        scope.consecutive_novel_run = scope.consecutive_novel_run.saturating_add(1);
-        if let Some(fingerprint) = fingerprint {
-            remember_fingerprint(&mut scope.recent_fingerprints, fingerprint);
+    let admitted = outcome == ::app_infra::OcrAdmissionOutcome::Admitted;
+    let deduped_to_equivalent =
+        reason == ::app_infra::OcrAdmissionReason::SkippedEquivalentFrame;
+    // A confirmed duplicate (equivalence reuse) is never novel, regardless of
+    // the stale decide-time signal.
+    let novel_for_bookkeeping = decide_time_fingerprint_novel && !deduped_to_equivalent;
+    // Content is OCR-covered when it was actually read (admitted) or reused via
+    // an eligible equivalent; only then do we remember its fingerprint.
+    let content_is_covered = admitted || deduped_to_equivalent;
+
+    if novel_for_bookkeeping {
+        if novel_frame_is_temporally_continuous(scope.last_novel_frame_at, captured_at) {
+            scope.consecutive_novel_run = scope.consecutive_novel_run.saturating_add(1);
+        } else {
+            scope.consecutive_novel_run = 1;
         }
+        scope.last_novel_frame_at = captured_at;
     } else {
         scope.consecutive_novel_run = 0;
     }
-    if admitted_via_novelty {
-        scope.last_novelty_admitted_at = captured_at;
+
+    if content_is_covered {
+        if let Some(fingerprint) = fingerprint {
+            remember_fingerprint(&mut scope.recent_fingerprints, fingerprint);
+        }
+    }
+
+    // Any real OCR read of current content advances the novelty rate-floor
+    // anchor; never stamp a `None` capture time (which would permanently
+    // disable the floor).
+    if admitted {
+        if let Some(captured_at) = captured_at {
+            scope.last_novelty_admitted_at = Some(captured_at);
+        }
     }
 }
 
@@ -458,10 +546,11 @@ pub fn record_admission_result(
         related_frame_id: decision.related_frame_id,
         signals: decision.signals.clone(),
     };
-    let frame_was_novel = decision.signals.fingerprint_novel_in_scope;
+    // The decide-time novelty signal; may be stale if the pipeline overrode the
+    // decision to SkippedEquivalentFrame afterward. `record_novelty_memory`
+    // reconciles it against the final outcome/reason.
+    let decide_time_fingerprint_novel = decision.signals.fingerprint_novel_in_scope;
     let fingerprint = stored_frame_fingerprint(&result.frame);
-    let admitted_via_novelty =
-        decision.reason == ::app_infra::OcrAdmissionReason::AdmittedVisualNovelty;
     with_state(infra.base_dir(), |state| {
         push_capped(&mut state.admission_events, event.clone());
         if decision.reason != ::app_infra::OcrAdmissionReason::SkippedOcrDisabled {
@@ -474,9 +563,10 @@ pub fn record_admission_result(
             // continuous-novelty run are tracked even when the frame is skipped.
             record_novelty_memory(
                 scope,
-                frame_was_novel,
+                decide_time_fingerprint_novel,
                 fingerprint,
-                admitted_via_novelty,
+                decision.outcome,
+                decision.reason,
                 parse_rfc3339(&result.frame.captured_at),
             );
         }
@@ -1013,33 +1103,231 @@ mod tests {
         assert!(in_continuous_novelty_burst(NOVELTY_SUSTAINED_RUN_SUPPRESS + 5));
     }
 
+    /// Capture time `base_seconds + offset` (UTC) for building temporally
+    /// adjacent or spaced novel frames in novelty-memory tests.
+    fn captured_at_seconds(offset: i64) -> Option<OffsetDateTime> {
+        Some(OffsetDateTime::from_unix_timestamp(1_700_000_000 + offset).unwrap())
+    }
+
+    fn admitted_novelty() -> (
+        ::app_infra::OcrAdmissionOutcome,
+        ::app_infra::OcrAdmissionReason,
+    ) {
+        (
+            ::app_infra::OcrAdmissionOutcome::Admitted,
+            ::app_infra::OcrAdmissionReason::AdmittedVisualNovelty,
+        )
+    }
+
+    fn skipped_low_value() -> (
+        ::app_infra::OcrAdmissionOutcome,
+        ::app_infra::OcrAdmissionReason,
+    ) {
+        (
+            ::app_infra::OcrAdmissionOutcome::Skipped,
+            ::app_infra::OcrAdmissionReason::SkippedLowOcrValue,
+        )
+    }
+
+    fn skipped_equivalent() -> (
+        ::app_infra::OcrAdmissionOutcome,
+        ::app_infra::OcrAdmissionReason,
+    ) {
+        (
+            ::app_infra::OcrAdmissionOutcome::Skipped,
+            ::app_infra::OcrAdmissionReason::SkippedEquivalentFrame,
+        )
+    }
+
     #[test]
-    fn novelty_memory_grows_run_on_novel_and_resets_on_repeat() {
+    fn temporally_continuous_novel_frames_grow_run_and_trip_burst() {
         let mut scope = AdmissionScopeState::default();
-        for value in 0..(NOVELTY_SUSTAINED_RUN_SUPPRESS as u64) {
-            record_novelty_memory(&mut scope, true, Some(value), false, None);
+        let (outcome, reason) = admitted_novelty();
+        // Distinct novel frames arriving one second apart (within the 2s gap).
+        for step in 0..(NOVELTY_SUSTAINED_RUN_SUPPRESS as i64) {
+            record_novelty_memory(
+                &mut scope,
+                true,
+                Some(step as u64),
+                outcome,
+                reason,
+                captured_at_seconds(step),
+            );
         }
         assert_eq!(scope.consecutive_novel_run, NOVELTY_SUSTAINED_RUN_SUPPRESS);
         assert!(in_continuous_novelty_burst(scope.consecutive_novel_run));
+    }
 
-        // A repeated (non-novel) frame breaks the burst and re-enables novelty.
-        record_novelty_memory(&mut scope, false, Some(0), false, None);
+    #[test]
+    fn non_novel_frame_resets_run() {
+        let mut scope = AdmissionScopeState {
+            consecutive_novel_run: NOVELTY_SUSTAINED_RUN_SUPPRESS,
+            last_novel_frame_at: captured_at_seconds(5),
+            ..Default::default()
+        };
+        let (outcome, reason) = skipped_low_value();
+        // A non-novel frame (decide-time not novel) resets the run to 0.
+        record_novelty_memory(&mut scope, false, Some(99), outcome, reason, captured_at_seconds(6));
         assert_eq!(scope.consecutive_novel_run, 0);
         assert!(!in_continuous_novelty_burst(scope.consecutive_novel_run));
     }
 
     #[test]
-    fn novelty_memory_records_admission_time_only_for_novelty_path() {
-        let captured_at = parse_rfc3339("2026-04-12T10:00:05Z");
+    fn rate_floor_skipped_novel_frame_is_not_remembered_and_stays_novel() {
+        // Finding #1: a NOVEL frame skipped for low OCR value (rate floor /
+        // queue pressure) must NOT be remembered, so a later identical frame is
+        // still novel and can be admitted once the floor clears.
         let mut scope = AdmissionScopeState::default();
+        let (outcome, reason) = skipped_low_value();
+        record_novelty_memory(
+            &mut scope,
+            true,
+            Some(42),
+            outcome,
+            reason,
+            captured_at_seconds(0),
+        );
+        // Fingerprint was not remembered.
+        assert!(fingerprint_is_novel(&scope.recent_fingerprints, Some(42)));
+        // A skipped frame is not novel-for-coverage but the decide-time novel
+        // signal still moves the run; here a single skipped frame leaves run at
+        // 1 (no prior novel frame to be continuous with).
+        assert_eq!(scope.consecutive_novel_run, 1);
 
-        // Novel but admitted via some other path (e.g. representative): no floor stamp.
-        record_novelty_memory(&mut scope, true, Some(1), false, captured_at);
-        assert!(scope.last_novelty_admitted_at.is_none());
+        // Later, the same screen is admitted via novelty: now it is covered.
+        let (outcome, reason) = admitted_novelty();
+        record_novelty_memory(
+            &mut scope,
+            true,
+            Some(42),
+            outcome,
+            reason,
+            captured_at_seconds(3),
+        );
+        assert!(!fingerprint_is_novel(&scope.recent_fingerprints, Some(42)));
+    }
 
-        // Admitted via the novelty path: floor stamp recorded.
-        record_novelty_memory(&mut scope, true, Some(2), true, captured_at);
-        assert_eq!(scope.last_novelty_admitted_at, captured_at);
+    #[test]
+    fn skipped_equivalent_resets_run_and_is_remembered() {
+        // Finding #5: a SkippedEquivalentFrame is a confirmed duplicate. Even
+        // though the stale decide-time signal says novel, it must reset the run
+        // (not count as novel) yet its fingerprint IS covered, so remember it.
+        let mut scope = AdmissionScopeState {
+            consecutive_novel_run: 4,
+            last_novel_frame_at: captured_at_seconds(0),
+            ..Default::default()
+        };
+        let (outcome, reason) = skipped_equivalent();
+        record_novelty_memory(
+            &mut scope,
+            true, // stale decide-time novelty
+            Some(7),
+            outcome,
+            reason,
+            captured_at_seconds(1),
+        );
+        // Confirmed duplicate resets the run.
+        assert_eq!(scope.consecutive_novel_run, 0);
+        // But its content is covered by reuse, so it is remembered.
+        assert!(!fingerprint_is_novel(&scope.recent_fingerprints, Some(7)));
+    }
+
+    #[test]
+    fn temporal_gap_un_latches_burst_and_restarts_run() {
+        // Finding #3: a continuous run of novel frames trips the burst, but a
+        // large gap before the next novel frame restarts the run (un-latch).
+        let mut scope = AdmissionScopeState::default();
+        let (outcome, reason) = admitted_novelty();
+        for step in 0..(NOVELTY_SUSTAINED_RUN_SUPPRESS as i64) {
+            record_novelty_memory(
+                &mut scope,
+                true,
+                Some(step as u64),
+                outcome,
+                reason,
+                captured_at_seconds(step),
+            );
+        }
+        assert!(in_continuous_novelty_burst(scope.consecutive_novel_run));
+
+        // A novel frame far in the future (well past the continuous gap)
+        // restarts the run at 1 rather than extending the burst.
+        let far = (NOVELTY_SUSTAINED_RUN_SUPPRESS as i64) + 100;
+        record_novelty_memory(
+            &mut scope,
+            true,
+            Some(9999),
+            outcome,
+            reason,
+            captured_at_seconds(far),
+        );
+        assert_eq!(scope.consecutive_novel_run, 1);
+        assert!(!in_continuous_novelty_burst(scope.consecutive_novel_run));
+    }
+
+    #[test]
+    fn any_admitted_reason_advances_novelty_rate_floor_anchor() {
+        // Finding #7: any Admitted frame (representative, initial, context,
+        // low-pressure, novelty) advances last_novelty_admitted_at.
+        let representative = (
+            ::app_infra::OcrAdmissionOutcome::Admitted,
+            ::app_infra::OcrAdmissionReason::AdmittedRepresentative,
+        );
+        let mut scope = AdmissionScopeState::default();
+        record_novelty_memory(
+            &mut scope,
+            true,
+            Some(1),
+            representative.0,
+            representative.1,
+            captured_at_seconds(5),
+        );
+        assert_eq!(scope.last_novelty_admitted_at, captured_at_seconds(5));
+
+        // A novelty admission also advances it.
+        let (outcome, reason) = admitted_novelty();
+        record_novelty_memory(
+            &mut scope,
+            true,
+            Some(2),
+            outcome,
+            reason,
+            captured_at_seconds(9),
+        );
+        assert_eq!(scope.last_novelty_admitted_at, captured_at_seconds(9));
+    }
+
+    #[test]
+    fn skipped_frame_does_not_advance_novelty_rate_floor_anchor() {
+        let mut scope = AdmissionScopeState {
+            last_novelty_admitted_at: captured_at_seconds(5),
+            ..Default::default()
+        };
+        let (outcome, reason) = skipped_low_value();
+        record_novelty_memory(
+            &mut scope,
+            true,
+            Some(1),
+            outcome,
+            reason,
+            captured_at_seconds(9),
+        );
+        // A skipped frame is not a real read of current content; anchor stays.
+        assert_eq!(scope.last_novelty_admitted_at, captured_at_seconds(5));
+    }
+
+    #[test]
+    fn none_capture_time_never_overwrites_novelty_rate_floor_anchor() {
+        // Finding #6: a None capture time must never be stamped into
+        // last_novelty_admitted_at (which would permanently disable the floor).
+        let mut scope = AdmissionScopeState {
+            last_novelty_admitted_at: captured_at_seconds(5),
+            ..Default::default()
+        };
+        let (outcome, reason) = admitted_novelty();
+        record_novelty_memory(&mut scope, true, Some(1), outcome, reason, None);
+        // Prior parseable anchor is preserved, not clobbered by None.
+        assert_eq!(scope.last_novelty_admitted_at, captured_at_seconds(5));
     }
 
     #[test]

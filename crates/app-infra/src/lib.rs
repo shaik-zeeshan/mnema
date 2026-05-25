@@ -4502,16 +4502,39 @@ mod tests {
             };
             assert_eq!(first_job_id, malformed_job.id);
 
-            let second = infra
-                .process_next_processing_job_for_processor(OCR_PROCESSOR)
+            // The malformed job is bounded-retried (its payload failure is the same each attempt),
+            // so later queued OCR work must still keep draining rather than being starved. Drain
+            // OCR jobs until the valid job runs; the malformed job goes terminally failed once its
+            // attempt cap is reached and stops being requeued.
+            let mut valid_job_ran = false;
+            for _ in 0..16 {
+                let Some(outcome) = infra
+                    .process_next_processing_job_for_processor(OCR_PROCESSOR)
+                    .await
+                    .expect("later queued jobs should keep draining")
+                else {
+                    break;
+                };
+                let job_id = match outcome {
+                    ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
+                    ProcessingJobRunOutcome::Failed(job) => job.id,
+                };
+                if job_id == valid_job.id {
+                    valid_job_ran = true;
+                    break;
+                }
+            }
+            assert!(
+                valid_job_ran,
+                "the valid OCR job must still drain even while the malformed job is bounded-retried"
+            );
+
+            let malformed_terminal = infra
+                .get_processing_job(malformed_job.id)
                 .await
-                .expect("later queued jobs should keep draining")
-                .expect("valid job should run next");
-            let second_job_id = match second {
-                ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
-                ProcessingJobRunOutcome::Failed(job) => job.id,
-            };
-            assert_eq!(second_job_id, valid_job.id);
+                .expect("malformed job should be readable")
+                .expect("malformed job should exist");
+            assert_eq!(malformed_terminal.status, ProcessingJobStatus::Failed);
         });
     }
 

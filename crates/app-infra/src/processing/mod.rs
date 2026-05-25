@@ -25,6 +25,8 @@ pub use speaker_analysis::{
     SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend, HELPER_TIMEOUT_SECONDS_OPTION,
 };
 pub(crate) use store::map_frame_for_search;
+#[cfg(test)]
+pub(crate) use store::OCR_FAILED_JOB_MAX_ATTEMPTS;
 pub use store::{
     FocusedFrameWindow, FrameProcessingJob, PersonProfile, ProcessingJobCompletion,
     ProcessingModelCleanupLock, ProcessingStore, SegmentWorkspaceOcrReference, SpeakerClusterView,
