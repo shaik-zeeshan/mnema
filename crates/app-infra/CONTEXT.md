@@ -95,6 +95,10 @@ _Avoid_: workspace filter, lookup scope, same-segment rule
 The rule that an earlier equivalent **Captured Frame** can stand in for a later frame's OCR only when that earlier frame already has an **OCR Job** (queued, running, or completed). A **Captured Frame** that was itself skipped by the **OCR Admission Budget** and has no **OCR Job** is not an eligible fallback, because there is no recognized text it will ever contribute.
 _Avoid_: dedupe reuse, equivalent skip, text borrow
 
+**Visual Novelty Admission**:
+The bounded **OCR Admission Budget** rule that admits a non-equivalent **Captured Frame** whose **Captured Frame Equivalence** fingerprint is new within its admission scope this run, so a one-off readable screen inside an unchanging window is still read rather than lost. It reuses the existing fingerprint as an **OCR-Relevant Change** signal and adds no **OCR-Relevance Probe**. It is bounded by the high-pressure gate, a per-scope rate cap, and a continuous-novelty suppressor that falls back to fixed time cadence for video/animation; it complements **OCR Fallback Eligibility**, which covers repeated frames while **Visual Novelty Admission** covers one-off frames.
+_Avoid_: new-frame OCR, fingerprint trigger, scroll detector, video OCR
+
 **Hidden Segment Workspace**:
 A hidden per-segment directory (`.<session>-segment-####/`) that stores temporary capture artifacts and exported JPEG frames for one screen segment. A **Hidden Segment Workspace** lives beside its visible sibling segment recording file.
 _Avoid_: temp folder, segment scratch dir, hidden segment temp
@@ -304,6 +308,9 @@ _Avoid_: duplicate result, grouped row, result cluster
 - An **OCR Admission Budget** should avoid creating **OCR Job** debt for automatic low OCR-value **OCR Candidate** values.
 - An **OCR Admission Budget** should prefer materially changed **OCR Candidate** values over fixed time cadence.
 - A fixed time cadence may dampen stable or low-change capture periods but must not hide materially new searchable text.
+- **Visual Novelty Admission** may admit a non-equivalent **OCR Candidate** whose **Captured Frame Equivalence** fingerprint is new in scope, reusing that fingerprint rather than adding an **OCR-Relevance Probe**.
+- **Visual Novelty Admission** must stay bounded: it does not fire under high **OCR Job** queue pressure, it is rate-capped to at most one novelty **OCR Job** per scope per short interval, and it suppresses back to fixed time cadence after a sustained run of continuously-novel frames so video/animation is not read frame-by-frame.
+- **Visual Novelty Admission** never overrides **Captured Frame Equivalence** or **OCR Fallback Eligibility**: equivalence reuse is evaluated first, so a novelty-admitted frame that has an eligible earlier equivalent still reuses that text instead of creating a new **OCR Job**.
 - **OCR Admission Budget** may use queued plus running **OCR Job** count as a pressure signal during active recording, admitting only stronger automatic **OCR Candidate** values when backlog is high.
 - **OCR-Relevant Change** is narrower than any visible pixel change and excludes cursor movement, small animations, spinners, video playback, and tiny layout shifts.
 - Foreground context changes such as app bundle, window title, browser URL, or display changes are strong positive **OCR-Relevant Change** signals when the frame is not equivalent to an earlier frame.

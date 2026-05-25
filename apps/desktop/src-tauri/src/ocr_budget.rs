@@ -14,6 +14,17 @@ use time::{
 const HIGH_PRESSURE_THRESHOLD: i64 = 3;
 const REPRESENTATIVE_SECONDS: i64 = 15;
 const DEBUG_RING_CAPACITY: usize = 256;
+/// Minimum gap between two visual-novelty admissions in the same scope. The
+/// firm cost bound: even a continuous stream of new frames adds at most one
+/// novelty OCR read per this interval on top of the representative sampling.
+const NOVELTY_MIN_INTERVAL_SECONDS: i64 = 2;
+/// How many recently-seen fingerprints each scope remembers when deciding
+/// whether a frame's `equivalence_hint` is new.
+const NOVELTY_RECENT_FINGERPRINT_CAPACITY: usize = 128;
+/// Number of consecutive novel frames that flips a scope into the
+/// continuous-novelty (video/animation) regime, suppressing novelty admission
+/// back to plain time-sampling until a repeated frame resets the run.
+const NOVELTY_SUSTAINED_RUN_SUPPRESS: u32 = 10;
 const OCR_ACTIVE_RECORDING_COOLDOWN_MIN: Duration = Duration::from_millis(1000);
 const OCR_ACTIVE_RECORDING_COOLDOWN_MAX: Duration = Duration::from_millis(10000);
 const OCR_CATCH_UP_COOLDOWN_MIN: Duration = Duration::from_millis(250);
@@ -107,6 +118,16 @@ struct AdmissionScopeKey {
 struct AdmissionScopeState {
     seen_candidate: bool,
     last_admitted_at: Option<OffsetDateTime>,
+    /// FIFO ring of recently-seen fingerprint hashes (`equivalence_hint`),
+    /// bounded by `NOVELTY_RECENT_FINGERPRINT_CAPACITY`. A frame is novel when
+    /// its hash is absent here.
+    recent_fingerprints: VecDeque<u64>,
+    /// Timestamp of the last frame admitted via the visual-novelty path; gates
+    /// the per-scope novelty rate floor.
+    last_novelty_admitted_at: Option<OffsetDateTime>,
+    /// Count of consecutive novel frames seen so far; drives the
+    /// continuous-novelty (video) suppression guard.
+    consecutive_novel_run: u32,
 }
 
 #[derive(Debug, Default)]
@@ -191,6 +212,89 @@ fn push_capped<T>(ring: &mut VecDeque<T>, value: T) {
     ring.push_back(value);
 }
 
+fn fingerprint_hash(hint: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hint.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn frame_fingerprint(frame: &::app_infra::NewFrame) -> Option<u64> {
+    frame
+        .equivalence
+        .ready_parts()
+        .map(|(hint, _, _)| fingerprint_hash(hint))
+}
+
+fn stored_frame_fingerprint(frame: &::app_infra::Frame) -> Option<u64> {
+    frame
+        .equivalence
+        .ready_parts()
+        .map(|(hint, _, _)| fingerprint_hash(hint))
+}
+
+fn remember_fingerprint(ring: &mut VecDeque<u64>, fingerprint: u64) {
+    while ring.len() >= NOVELTY_RECENT_FINGERPRINT_CAPACITY {
+        ring.pop_front();
+    }
+    ring.push_back(fingerprint);
+}
+
+/// First-occurrence detection: a frame is novel when its fingerprint is absent
+/// from the scope's recent ring. A missing fingerprint (equivalence not ready)
+/// is treated as non-novel so existing time-sampling behavior stands.
+fn fingerprint_is_novel(recent_fingerprints: &VecDeque<u64>, fingerprint: Option<u64>) -> bool {
+    match fingerprint {
+        Some(fingerprint) => !recent_fingerprints.contains(&fingerprint),
+        None => false,
+    }
+}
+
+/// Per-scope rate floor: at most one novelty admission per
+/// `NOVELTY_MIN_INTERVAL_SECONDS`. A scope with no prior novelty admission is
+/// clear; an unparseable capture time denies (cannot honor the floor).
+fn novelty_rate_floor_satisfied(
+    captured_at: Option<OffsetDateTime>,
+    last_novelty_admitted_at: Option<OffsetDateTime>,
+) -> bool {
+    match (captured_at, last_novelty_admitted_at) {
+        (_, None) => true,
+        (Some(captured_at), Some(last)) => {
+            (captured_at - last).whole_seconds() >= NOVELTY_MIN_INTERVAL_SECONDS
+        }
+        (None, Some(_)) => false,
+    }
+}
+
+/// Video/animation guard: once a scope has produced a sustained run of novel
+/// frames it is treated as continuous-novelty and novelty admission is
+/// suppressed until a repeated frame resets the run.
+fn in_continuous_novelty_burst(consecutive_novel_run: u32) -> bool {
+    consecutive_novel_run >= NOVELTY_SUSTAINED_RUN_SUPPRESS
+}
+
+/// Maintain a scope's novelty memory for a frame that was just processed.
+/// Called for every frame (admitted or skipped) so first-occurrence and the
+/// continuous-novelty run stay accurate.
+fn record_novelty_memory(
+    scope: &mut AdmissionScopeState,
+    frame_was_novel: bool,
+    fingerprint: Option<u64>,
+    admitted_via_novelty: bool,
+    captured_at: Option<OffsetDateTime>,
+) {
+    if frame_was_novel {
+        scope.consecutive_novel_run = scope.consecutive_novel_run.saturating_add(1);
+        if let Some(fingerprint) = fingerprint {
+            remember_fingerprint(&mut scope.recent_fingerprints, fingerprint);
+        }
+    } else {
+        scope.consecutive_novel_run = 0;
+    }
+    if admitted_via_novelty {
+        scope.last_novelty_admitted_at = captured_at;
+    }
+}
+
 pub async fn decide_admission(
     infra: &::app_infra::AppInfra,
     frame: &::app_infra::NewFrame,
@@ -226,12 +330,37 @@ pub async fn decide_admission(
     });
     let representative_due = !recent_admitted;
 
+    let fingerprint = frame_fingerprint(frame);
+    let empty_ring = VecDeque::new();
+    let (fingerprint_novel_in_scope, novelty_admission_available) =
+        with_state(infra.base_dir(), |state| {
+            let scope = state.admission_scopes.get(&key);
+            let recent_fingerprints = scope
+                .map(|scope| &scope.recent_fingerprints)
+                .unwrap_or(&empty_ring);
+            let fingerprint_novel_in_scope =
+                fingerprint_is_novel(recent_fingerprints, fingerprint);
+            let rate_floor_satisfied = novelty_rate_floor_satisfied(
+                captured_at,
+                scope.and_then(|scope| scope.last_novelty_admitted_at),
+            );
+            let in_burst = scope
+                .map(|scope| in_continuous_novelty_burst(scope.consecutive_novel_run))
+                .unwrap_or(false);
+            (
+                fingerprint_novel_in_scope,
+                rate_floor_satisfied && !in_burst,
+            )
+        });
+
     let signals = ::app_infra::OcrAdmissionSignals {
         first_candidate_in_scope: first_candidate,
         context_changed,
         low_queue_pressure,
         representative_due,
         high_queue_pressure,
+        fingerprint_novel_in_scope,
+        novelty_admission_available,
     };
 
     Ok(ocr_admission_decision_for_signals(
@@ -262,6 +391,15 @@ fn ocr_admission_decision_for_signals(
         if signals.low_queue_pressure && signals.representative_due {
             ::app_infra::OcrAdmissionDecision::admit(
                 ::app_infra::OcrAdmissionReason::AdmittedRepresentative,
+                queue_pressure,
+                recording_active,
+            )
+        } else if signals.low_queue_pressure
+            && signals.fingerprint_novel_in_scope
+            && signals.novelty_admission_available
+        {
+            ::app_infra::OcrAdmissionDecision::admit(
+                ::app_infra::OcrAdmissionReason::AdmittedVisualNovelty,
                 queue_pressure,
                 recording_active,
             )
@@ -320,6 +458,10 @@ pub fn record_admission_result(
         related_frame_id: decision.related_frame_id,
         signals: decision.signals.clone(),
     };
+    let frame_was_novel = decision.signals.fingerprint_novel_in_scope;
+    let fingerprint = stored_frame_fingerprint(&result.frame);
+    let admitted_via_novelty =
+        decision.reason == ::app_infra::OcrAdmissionReason::AdmittedVisualNovelty;
     with_state(infra.base_dir(), |state| {
         push_capped(&mut state.admission_events, event.clone());
         if decision.reason != ::app_infra::OcrAdmissionReason::SkippedOcrDisabled {
@@ -328,6 +470,15 @@ pub fn record_admission_result(
             if decision.outcome == ::app_infra::OcrAdmissionOutcome::Admitted {
                 scope.last_admitted_at = parse_rfc3339(&result.frame.captured_at);
             }
+            // Novelty memory updates for every frame so first-occurrence and the
+            // continuous-novelty run are tracked even when the frame is skipped.
+            record_novelty_memory(
+                scope,
+                frame_was_novel,
+                fingerprint,
+                admitted_via_novelty,
+                parse_rfc3339(&result.frame.captured_at),
+            );
         }
     });
     ocr_budget_trace!(
@@ -573,6 +724,8 @@ mod tests {
             low_queue_pressure,
             representative_due,
             high_queue_pressure,
+            fingerprint_novel_in_scope: false,
+            novelty_admission_available: false,
         }
     }
 
@@ -616,6 +769,93 @@ mod tests {
     }
 
     #[test]
+    fn active_recording_admits_novel_frame_when_novelty_available() {
+        let signals = ::app_infra::OcrAdmissionSignals {
+            fingerprint_novel_in_scope: true,
+            novelty_admission_available: true,
+            ..admission_signals(false, false, true, false, false)
+        };
+
+        let decision = ocr_admission_decision_for_signals(&signals, 0, true);
+
+        assert_eq!(decision.outcome, ::app_infra::OcrAdmissionOutcome::Admitted);
+        assert_eq!(
+            decision.reason,
+            ::app_infra::OcrAdmissionReason::AdmittedVisualNovelty
+        );
+    }
+
+    #[test]
+    fn active_recording_skips_novel_frame_when_novelty_unavailable() {
+        // Rate floor not satisfied or in a continuous-novelty burst.
+        let signals = ::app_infra::OcrAdmissionSignals {
+            fingerprint_novel_in_scope: true,
+            novelty_admission_available: false,
+            ..admission_signals(false, false, true, false, false)
+        };
+
+        let decision = ocr_admission_decision_for_signals(&signals, 0, true);
+
+        assert_eq!(decision.outcome, ::app_infra::OcrAdmissionOutcome::Skipped);
+        assert_eq!(
+            decision.reason,
+            ::app_infra::OcrAdmissionReason::SkippedLowOcrValue
+        );
+    }
+
+    #[test]
+    fn active_recording_skips_novel_frame_under_high_queue_pressure() {
+        let signals = ::app_infra::OcrAdmissionSignals {
+            fingerprint_novel_in_scope: true,
+            novelty_admission_available: true,
+            ..admission_signals(false, false, false, false, true)
+        };
+
+        let decision = ocr_admission_decision_for_signals(&signals, HIGH_PRESSURE_THRESHOLD, true);
+
+        assert_eq!(decision.outcome, ::app_infra::OcrAdmissionOutcome::Skipped);
+        assert_eq!(
+            decision.reason,
+            ::app_infra::OcrAdmissionReason::SkippedLowOcrValue
+        );
+    }
+
+    #[test]
+    fn active_recording_prefers_representative_over_novelty_when_due() {
+        // A due representative outranks the novelty path even if both qualify.
+        let signals = ::app_infra::OcrAdmissionSignals {
+            fingerprint_novel_in_scope: true,
+            novelty_admission_available: true,
+            ..admission_signals(false, false, true, true, false)
+        };
+
+        let decision = ocr_admission_decision_for_signals(&signals, 0, true);
+
+        assert_eq!(decision.outcome, ::app_infra::OcrAdmissionOutcome::Admitted);
+        assert_eq!(
+            decision.reason,
+            ::app_infra::OcrAdmissionReason::AdmittedRepresentative
+        );
+    }
+
+    #[test]
+    fn active_recording_skips_non_novel_frame_even_when_novelty_available() {
+        let signals = ::app_infra::OcrAdmissionSignals {
+            fingerprint_novel_in_scope: false,
+            novelty_admission_available: true,
+            ..admission_signals(false, false, true, false, false)
+        };
+
+        let decision = ocr_admission_decision_for_signals(&signals, 0, true);
+
+        assert_eq!(decision.outcome, ::app_infra::OcrAdmissionOutcome::Skipped);
+        assert_eq!(
+            decision.reason,
+            ::app_infra::OcrAdmissionReason::SkippedLowOcrValue
+        );
+    }
+
+    #[test]
     fn catch_up_still_admits_low_pressure_frames_when_not_recording() {
         let signals = admission_signals(false, false, true, false, false);
 
@@ -642,6 +882,7 @@ mod tests {
                 AdmissionScopeState {
                     seen_candidate: true,
                     last_admitted_at: parse_rfc3339("2026-04-12T10:00:00Z"),
+                    ..Default::default()
                 },
             );
         });
@@ -682,6 +923,7 @@ mod tests {
                 AdmissionScopeState {
                     seen_candidate: true,
                     last_admitted_at: parse_rfc3339("2026-04-12T10:00:00Z"),
+                    ..Default::default()
                 },
             );
             state.admission_scopes.insert(
@@ -692,6 +934,7 @@ mod tests {
                 AdmissionScopeState {
                     seen_candidate: true,
                     last_admitted_at: parse_rfc3339("2026-04-12T10:00:00Z"),
+                    ..Default::default()
                 },
             );
         });
@@ -708,6 +951,95 @@ mod tests {
                 .keys()
                 .any(|key| key.session_id == "active"));
         });
+    }
+
+    #[test]
+    fn fingerprint_is_novel_detects_first_occurrence_and_repeat() {
+        let mut ring = VecDeque::new();
+        assert!(fingerprint_is_novel(&ring, Some(7)));
+        remember_fingerprint(&mut ring, 7);
+        assert!(!fingerprint_is_novel(&ring, Some(7)));
+        assert!(fingerprint_is_novel(&ring, Some(8)));
+    }
+
+    #[test]
+    fn fingerprint_without_equivalence_is_not_novel() {
+        let ring = VecDeque::new();
+        assert!(!fingerprint_is_novel(&ring, None));
+    }
+
+    #[test]
+    fn fingerprint_ring_evicts_oldest_and_re_novels_it() {
+        let mut ring = VecDeque::new();
+        for value in 0..(NOVELTY_RECENT_FINGERPRINT_CAPACITY as u64) {
+            remember_fingerprint(&mut ring, value);
+        }
+        assert_eq!(ring.len(), NOVELTY_RECENT_FINGERPRINT_CAPACITY);
+        // The oldest fingerprint (0) is still remembered until one more pushes it out.
+        assert!(!fingerprint_is_novel(&ring, Some(0)));
+        remember_fingerprint(&mut ring, u64::MAX);
+        assert_eq!(ring.len(), NOVELTY_RECENT_FINGERPRINT_CAPACITY);
+        // After eviction the oldest fingerprint reads as novel again.
+        assert!(fingerprint_is_novel(&ring, Some(0)));
+        assert!(!fingerprint_is_novel(&ring, Some(1)));
+    }
+
+    #[test]
+    fn novelty_rate_floor_respects_minimum_interval() {
+        let last = parse_rfc3339("2026-04-12T10:00:00Z");
+        // No prior novelty admission: floor is clear regardless of capture time.
+        assert!(novelty_rate_floor_satisfied(
+            parse_rfc3339("2026-04-12T10:00:00Z"),
+            None
+        ));
+        // Below the interval: denied.
+        assert!(!novelty_rate_floor_satisfied(
+            parse_rfc3339("2026-04-12T10:00:01Z"),
+            last
+        ));
+        // Exactly at the interval: satisfied.
+        assert!(novelty_rate_floor_satisfied(
+            parse_rfc3339("2026-04-12T10:00:02Z"),
+            last
+        ));
+        // Unparseable capture time with a prior admission: denied.
+        assert!(!novelty_rate_floor_satisfied(None, last));
+    }
+
+    #[test]
+    fn continuous_novelty_burst_trips_at_threshold() {
+        assert!(!in_continuous_novelty_burst(NOVELTY_SUSTAINED_RUN_SUPPRESS - 1));
+        assert!(in_continuous_novelty_burst(NOVELTY_SUSTAINED_RUN_SUPPRESS));
+        assert!(in_continuous_novelty_burst(NOVELTY_SUSTAINED_RUN_SUPPRESS + 5));
+    }
+
+    #[test]
+    fn novelty_memory_grows_run_on_novel_and_resets_on_repeat() {
+        let mut scope = AdmissionScopeState::default();
+        for value in 0..(NOVELTY_SUSTAINED_RUN_SUPPRESS as u64) {
+            record_novelty_memory(&mut scope, true, Some(value), false, None);
+        }
+        assert_eq!(scope.consecutive_novel_run, NOVELTY_SUSTAINED_RUN_SUPPRESS);
+        assert!(in_continuous_novelty_burst(scope.consecutive_novel_run));
+
+        // A repeated (non-novel) frame breaks the burst and re-enables novelty.
+        record_novelty_memory(&mut scope, false, Some(0), false, None);
+        assert_eq!(scope.consecutive_novel_run, 0);
+        assert!(!in_continuous_novelty_burst(scope.consecutive_novel_run));
+    }
+
+    #[test]
+    fn novelty_memory_records_admission_time_only_for_novelty_path() {
+        let captured_at = parse_rfc3339("2026-04-12T10:00:05Z");
+        let mut scope = AdmissionScopeState::default();
+
+        // Novel but admitted via some other path (e.g. representative): no floor stamp.
+        record_novelty_memory(&mut scope, true, Some(1), false, captured_at);
+        assert!(scope.last_novelty_admitted_at.is_none());
+
+        // Admitted via the novelty path: floor stamp recorded.
+        record_novelty_memory(&mut scope, true, Some(2), true, captured_at);
+        assert_eq!(scope.last_novelty_admitted_at, captured_at);
     }
 
     #[test]
