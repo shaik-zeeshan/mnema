@@ -649,10 +649,33 @@ struct AgglomerativeNode {
 /// minimum member local-cluster key so ids are stable for a given partition.
 ///
 /// Returns the finalized global clusters and a `local key -> global id` map.
+/// Above this many local clusters the dense pairwise-similarity matrix is
+/// skipped in favour of recomputing similarities on demand. The matrix is
+/// `node_count^2 * 4` bytes, so the cap bounds its worst case at `4096^2 * 4 B
+/// = 64 MiB`. Realistic inputs stay far below it — per-segment analysis is
+/// capped well under a thousand clusters — so the dense fast path is what runs
+/// in practice; the cap is a safety valve against a pathological cluster count
+/// (e.g. a multi-hour single-call input) allocating gigabytes.
+#[cfg(feature = "sherpa-onnx")]
+const MAX_DENSE_SIMILARITY_NODES: usize = 4096;
+
 #[cfg(feature = "sherpa-onnx")]
 fn agglomerate_local_clusters(
     local_clusters: &[LocalSpeakerCluster],
     cross_chunk_threshold: f32,
+) -> (Vec<GlobalSpeakerClusterState>, BTreeMap<usize, usize>) {
+    agglomerate_local_clusters_impl(
+        local_clusters,
+        cross_chunk_threshold,
+        MAX_DENSE_SIMILARITY_NODES,
+    )
+}
+
+#[cfg(feature = "sherpa-onnx")]
+fn agglomerate_local_clusters_impl(
+    local_clusters: &[LocalSpeakerCluster],
+    cross_chunk_threshold: f32,
+    max_dense_nodes: usize,
 ) -> (Vec<GlobalSpeakerClusterState>, BTreeMap<usize, usize>) {
     let mut nodes: Vec<Option<AgglomerativeNode>> = local_clusters
         .iter()
@@ -668,27 +691,39 @@ fn agglomerate_local_clusters(
     let node_count = nodes.len();
 
     // Cache pairwise cosine similarities in a flat upper-triangular matrix.
-    // The previous implementation recomputed `cosine_similarity` for every live
-    // pair on every merge round, which is O(rounds * n^2 * embedding_dim) and,
-    // with up to n-1 merge rounds, O(n^3 * embedding_dim) overall. A merge only
-    // changes the centroid of the surviving (`left`) node, so we instead refresh
-    // just that node's row/column after each merge. The scan order, the `>`
+    // The naive approach recomputes `cosine_similarity` for every live pair on
+    // every merge round, which is O(rounds * n^2 * embedding_dim) and, with up
+    // to n-1 merge rounds, O(n^3 * embedding_dim) overall. A merge only changes
+    // the centroid of the surviving (`left`) node, so we instead refresh just
+    // that node's row/column after each merge. The scan order, the `>`
     // comparison, and the `None`-initialised tie-break below are unchanged, so
     // the pair chosen each round is bit-identical to recomputing fresh.
+    //
+    // The matrix costs O(n^2) memory, so above `max_dense_nodes` we leave it
+    // `None` and recompute similarities from the live centroids on demand in the
+    // scan below (O(n) memory, back to O(n^3) time). The partition is identical
+    // either way — the recompute path reads the same centroids the matrix would
+    // have cached — so this is a pure space/time trade keyed only on size.
     let sim_index = |left: usize, right: usize| left * node_count + right;
-    let mut similarities = vec![0.0f32; node_count * node_count];
-    for left in 0..node_count {
-        let left_embedding = nodes[left]
-            .as_ref()
-            .expect("node is live during initial fill")
-            .representative_embedding
-            .clone();
-        for right in (left + 1)..node_count {
-            let right_node = nodes[right].as_ref().expect("node is live during initial fill");
-            similarities[sim_index(left, right)] =
-                cosine_similarity(&left_embedding, &right_node.representative_embedding);
+    let mut similarities: Option<Vec<f32>> = if node_count <= max_dense_nodes {
+        let mut matrix = vec![0.0f32; node_count * node_count];
+        for left in 0..node_count {
+            let left_embedding = nodes[left]
+                .as_ref()
+                .expect("node is live during initial fill")
+                .representative_embedding
+                .clone();
+            for right in (left + 1)..node_count {
+                let right_node =
+                    nodes[right].as_ref().expect("node is live during initial fill");
+                matrix[sim_index(left, right)] =
+                    cosine_similarity(&left_embedding, &right_node.representative_embedding);
+            }
         }
-    }
+        Some(matrix)
+    } else {
+        None
+    };
 
     // Repeatedly find and merge the globally most-similar pair of live nodes.
     // Scanning all live pairs each round (rather than merging in input order)
@@ -703,7 +738,31 @@ fn agglomerate_local_clusters(
                 if nodes[right].is_none() {
                     continue;
                 }
-                let score = similarities[sim_index(left, right)];
+                let score = match &similarities {
+                    Some(matrix) => matrix[sim_index(left, right)],
+                    None => cosine_similarity(
+                        &nodes[left]
+                            .as_ref()
+                            .expect("left node is live")
+                            .representative_embedding,
+                        &nodes[right]
+                            .as_ref()
+                            .expect("right node is live")
+                            .representative_embedding,
+                    ),
+                };
+                // A non-finite similarity (NaN/inf, e.g. from a non-finite
+                // embedding) must never be selectable. `score > best_score` is
+                // always false for NaN, so a NaN latched as the first
+                // `None`-tie-break `best` could never be displaced and would
+                // then pass the `score < threshold` break check below (`NaN <
+                // threshold` is also false), merging unrelated speakers and
+                // potentially cascading into a collapsed partition. Skipping
+                // non-finite scores keeps merges to real, >= threshold pairs and
+                // is a no-op for the finite embeddings of the normal path.
+                if !score.is_finite() {
+                    continue;
+                }
                 let is_better = match best {
                     Some((_, _, best_score)) => score > best_score,
                     None => true,
@@ -740,26 +799,30 @@ fn agglomerate_local_clusters(
 
         // Only `left`'s centroid changed, so refresh just its cached
         // similarities against every still-live node; `right` is now dead and is
-        // skipped by the scan above.
-        let left_embedding = nodes[left]
-            .as_ref()
-            .expect("merged node is live")
-            .representative_embedding
-            .clone();
-        for other in 0..node_count {
-            if other == left {
-                continue;
+        // skipped by the scan above. In recompute mode (`None`) there is no cache
+        // to maintain — the scan recomputes from the live centroids next round.
+        if let Some(matrix) = similarities.as_mut() {
+            let left_embedding = nodes[left]
+                .as_ref()
+                .expect("merged node is live")
+                .representative_embedding
+                .clone();
+            for other in 0..node_count {
+                if other == left {
+                    continue;
+                }
+                let Some(other_node) = nodes[other].as_ref() else {
+                    continue;
+                };
+                let score =
+                    cosine_similarity(&left_embedding, &other_node.representative_embedding);
+                let (low, high) = if left < other {
+                    (left, other)
+                } else {
+                    (other, left)
+                };
+                matrix[sim_index(low, high)] = score;
             }
-            let Some(other_node) = nodes[other].as_ref() else {
-                continue;
-            };
-            let score = cosine_similarity(&left_embedding, &other_node.representative_embedding);
-            let (low, high) = if left < other {
-                (left, other)
-            } else {
-                (other, left)
-            };
-            similarities[sim_index(low, high)] = score;
         }
     }
 
@@ -1637,6 +1700,28 @@ mod tests {
         assert_ne!(local_to_global[&0], local_to_global[&1]);
     }
 
+    #[cfg(feature = "sherpa-onnx")]
+    #[test]
+    fn agglomerative_does_not_merge_on_non_finite_similarity() {
+        // A non-finite embedding makes `cosine_similarity` return NaN. With an
+        // unguarded scan the first (0,1) pair latches as `best` via the
+        // `None`-tie-break, can never be displaced (`x > NaN` is false), and
+        // `NaN < threshold` does not break — so cluster 0 would be merged into 1
+        // despite an undefined similarity. The guard must keep the NaN-producing
+        // cluster separate while the genuinely similar finite clusters still merge.
+        let locals = vec![
+            local_cluster(0, vec![f32::NAN, 0.0]),
+            local_cluster(1, vec![1.0, 0.0]),
+            local_cluster(2, vec![0.95, 0.05]),
+        ];
+
+        let (_, map) =
+            agglomerate_local_clusters(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
+
+        assert_eq!(map[&1], map[&2], "finite, near-identical clusters still merge");
+        assert_ne!(map[&0], map[&1], "non-finite cluster must not be merged in");
+    }
+
     // Reference reimplementation of the original O(n^3) agglomeration: recompute
     // the globally-best pair fresh every round and merge. The cached-similarity
     // optimisation in `agglomerate_local_clusters` must produce a bit-identical
@@ -1717,10 +1802,26 @@ mod tests {
                     total_samples: 1 + (k % 4),
                 })
                 .collect();
-            let (_, got) =
-                agglomerate_local_clusters(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
             let expected = reference_partition(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
-            assert_eq!(got, expected, "partition mismatch at trial {trial} (n={n})");
+            // Dense matrix path (the default for any realistic node count).
+            let (_, got_dense) =
+                agglomerate_local_clusters(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
+            assert_eq!(
+                got_dense, expected,
+                "dense partition mismatch at trial {trial} (n={n})"
+            );
+            // Recompute fallback: force it with max_dense_nodes = 0 and require
+            // the same partition, so the memory-bounded large-n path stays
+            // bit-identical to the matrix path.
+            let (_, got_recompute) = agglomerate_local_clusters_impl(
+                &locals,
+                crate::DEFAULT_CROSS_CHUNK_THRESHOLD,
+                0,
+            );
+            assert_eq!(
+                got_recompute, expected,
+                "recompute partition mismatch at trial {trial} (n={n})"
+            );
         }
     }
 
