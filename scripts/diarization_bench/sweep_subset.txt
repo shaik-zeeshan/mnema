@@ -1,0 +1,7 @@
+# Representative 5-clip subset of VoxConverse `test` for fast sweeps.
+# Spans the behavior seen in the baseline:
+0   # 7 spk, low DER but many internal clusters (over-clustering probe)
+1   # 12 spk, confusion-dominated (DER 21%)
+2   # 3 spk, easy (DER 1.2%) — regression guard
+5   # 10 spk, medium, confusion-y (DER 10.9%)
+6   # 8 spk, miss-dominated (DER 30.8%) — segmentation probe

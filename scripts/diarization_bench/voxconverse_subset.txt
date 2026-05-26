@@ -1,0 +1,18 @@
+# Fast-loop subset of the VoxConverse `test` split (diarizers-community/voxconverse).
+# One sample index per line; `#` starts a comment.
+#
+# Indices are stable for a pinned dataset revision (see DEFAULT_REVISION in
+# run_der.py). Use this for the quick "did my change help" loop:
+#   python run_der.py --manifest voxconverse_subset.txt
+# Run the full split for headline numbers:
+#   python run_der.py --all
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9

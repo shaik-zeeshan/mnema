@@ -1,0 +1,10 @@
+# Python virtualenv for the benchmark harness
+.venv/
+
+# Generated DER result files (regenerate with run_der.py --json-out)
+*.json
+
+# Kept WAV/RTTM exports (run_der.py --work-dir)
+work/
+*.wav
+*.rttm

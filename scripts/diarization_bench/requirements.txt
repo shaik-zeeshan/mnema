@@ -1,0 +1,5 @@
+# DER benchmark harness (scripts/diarization_bench/run_der.py)
+datasets>=2.18
+soundfile>=0.12
+pyannote.metrics>=3.2
+numpy>=1.24

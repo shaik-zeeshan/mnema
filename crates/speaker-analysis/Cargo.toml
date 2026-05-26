@@ -7,6 +7,13 @@ edition = "2021"
 default = []
 sherpa-onnx = ["dep:sherpa-onnx-runtime", "dep:tokio", "dep:cidre"]
 
+# DER benchmark harness binary (see scripts/diarization_bench/). Only built with
+# the sherpa-onnx feature, so default `cargo check`/`cargo test` stay clean.
+[[bin]]
+name = "diarize_to_rttm"
+path = "src/bin/diarize_to_rttm.rs"
+required-features = ["sherpa-onnx"]
+
 [dependencies]
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
