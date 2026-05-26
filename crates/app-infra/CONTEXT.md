@@ -99,6 +99,14 @@ _Avoid_: dedupe reuse, equivalent skip, text borrow
 The bounded **OCR Admission Budget** rule that admits a non-equivalent **Captured Frame** whose **Captured Frame Equivalence** fingerprint is new within its admission scope this run, so a one-off readable screen inside an unchanging window is still read rather than lost. It reuses the existing fingerprint as an **OCR-Relevant Change** signal and adds no **OCR-Relevance Probe**. It is bounded by the high-pressure gate, a per-scope rate cap, and a continuous-novelty suppressor that falls back to fixed time cadence for video/animation; it complements **OCR Fallback Eligibility**, which covers repeated frames while **Visual Novelty Admission** covers one-off frames.
 _Avoid_: new-frame OCR, fingerprint trigger, scroll detector, video OCR
 
+**Orphaned Processing Job**:
+A processing job left in `running` because its execution was abandoned — the owning worker was aborted at app quit or on a crash — with no live executor still working it.
+_Avoid_: stuck job, zombie job, hung job, running-forever job
+
+**Processing Job Reclamation**:
+The startup-and-shutdown policy that returns an **Orphaned Processing Job** to `queued` so it re-runs and still produces its result, instead of marking it permanently failed.
+_Avoid_: orphan cleanup, fail-all-running sweep, requeue hack
+
 **Hidden Segment Workspace**:
 A hidden per-segment directory (`.<session>-segment-####/`) that stores temporary capture artifacts and exported JPEG frames for one screen segment. A **Hidden Segment Workspace** lives beside its visible sibling segment recording file.
 _Avoid_: temp folder, segment scratch dir, hidden segment temp
@@ -364,6 +372,12 @@ _Avoid_: duplicate result, grouped row, result cluster
 - A **Search Index Projection** may carry type-specific anchor data for **Captured Frame** and **Audio Transcription Span** results.
 - A **Search Index Projection** may be rebuilt from retained OCR and transcription results.
 - **Retention Cleanup** must remove **Search Index Projection** rows for deleted **Captured Frame** and **Audio Segment** sources in the same cleanup transaction.
+- **Processing Job Reclamation** requeues an **Orphaned Processing Job** rather than failing it, so abandoned capture work (audio transcription, speaker analysis, system-audio speech activity, and OCR) still completes after a quit or crash.
+- **Processing Job Reclamation** distinguishes abandonment from failure: an abandoned job re-runs without spending a failure attempt and is bounded only by a generous safety ceiling, while a genuinely failed job is bounded by a small retry cap with backoff.
+- Bounded automatic retry with backoff applies to audio processors as well as OCR; it is no longer OCR-only.
+- Graceful shutdown requeues in-flight jobs before aborting workers, so a normal quit does not strand work as an **Orphaned Processing Job**; the short shutdown timeout is kept rather than blocking quit on a multi-minute job.
+- A reclaimed transcription job that completes re-chains its speaker analysis, so recovering a transcription also recovers downstream speaker work.
+- **Processing Job Reclamation** runs at startup and at shutdown only; there is no live-session reclamation watchdog, because a single sequential worker cannot orphan its own lane mid-session.
 
 ## Example Dialogue
 
@@ -442,6 +456,12 @@ _Avoid_: duplicate result, grouped row, result cluster
 > **Dev:** "Should users have to choose between exact text matching and meaning-based search?"
 > **Domain expert:** "No — start with **Text Search**, then move toward **Hybrid Search** so literal and semantic matches work together."
 
+> **Dev:** "A transcription job is stuck `running` while other transcription jobs complete — is it hung?"
+> **Domain expert:** "No — a single worker can't run two at once, so it's an **Orphaned Processing Job**: its worker was aborted at quit. **Processing Job Reclamation** should requeue it so it re-runs, not fail it."
+
+> **Dev:** "If the user quits while reprocessing a segment a few times, should that segment eventually be marked permanently failed?"
+> **Domain expert:** "No — that's abandonment, not failure. It re-runs without spending a failure attempt. Only genuine engine failures count toward the small retry cap."
+
 ## Flagged Ambiguities
 
 - "pipeline" previously meant both frame intake and OCR execution; resolved: **Captured Frame Pipeline** means frame intake through batch-finalization readiness, while **OCR Job** means the recognition work for one frame.
@@ -451,3 +471,4 @@ _Avoid_: duplicate result, grouped row, result cluster
 - "30% CPU" suggested live CPU feedback; resolved: the first **OCR Execution Budget** should use deterministic pacing rather than live process-wide CPU measurement.
 - "search support" was used to mean both literal matching and embedding-based retrieval; resolved: **Text Search** is the first tier, while **Hybrid Search** is the direction once **Semantic Search** exists.
 - "query syntax" was listed only as something a **Search Refinement** avoids; resolved: typed **Search Query Syntax** is supported as an opt-in input path whose **Field Operator** tokens desugar into **Search Refinement** values, while a **Search Refinement** itself remains a UI control rather than a syntax mode.
+- "running forever" meant a job stuck in `running` that never completes; resolved: this is an **Orphaned Processing Job** (execution abandoned at quit/crash), addressed by **Processing Job Reclamation** (requeue, not fail) per [ADR 0020](../../docs/adr/0020-reclaim-orphaned-processing-jobs-by-requeue.md), not by a job-execution timeout or an audio throughput budget.

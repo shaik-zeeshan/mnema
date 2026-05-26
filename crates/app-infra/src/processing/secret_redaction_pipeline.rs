@@ -362,6 +362,7 @@ mod tests {
             processor: processor.to_string(),
             status: ProcessingJobStatus::Running,
             attempt_count: 1,
+            failure_count: 0,
             payload_json: None,
             last_error: None,
             created_at: "2026-05-21T00:00:00Z".to_string(),

@@ -19,38 +19,103 @@ use super::{
     SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 
-pub(crate) const ORPHANED_RUNNING_PROCESSING_JOB_ERROR: &str =
-    "processing job was marked failed during startup recovery after the app shut down while it was running";
+/// Reason recorded on an **Orphaned Processing Job** that **Processing Job Reclamation**
+/// returned to `queued` so it re-runs after the app shut down while it was running. Unlike the
+/// old fail-all-running sweep, this is not a terminal error; it is cleared when the job is
+/// re-claimed, and exists only as a breadcrumb for support diagnosis between requeue and re-run.
+pub(crate) const RECLAIMED_ORPHANED_PROCESSING_JOB_REASON: &str =
+    "processing job was requeued by reclamation after the app shut down while it was running";
+
+/// Terminal error recorded when an **Orphaned Processing Job** has been reclaimed
+/// [`RECLAIM_ATTEMPT_CEILING`] times without ever completing. This is the crash-loop backstop:
+/// reclamation gives up and leaves the job failed rather than requeueing it forever.
+pub(crate) const RECLAIM_CEILING_EXCEEDED_PROCESSING_JOB_ERROR: &str =
+    "processing job exceeded the reclamation attempt ceiling and was left failed";
+
 pub const SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY: &str = "speakerAnalysisPayload";
 
-/// Maximum number of attempts (including the first) the **Recording Lifecycle** will make for a
-/// failed **OCR Job** before leaving it terminally failed. A transient OCR failure on a frame that
-/// a later equivalent frame deferred to (via OCR Fallback Eligibility) is bounded-retried so the
-/// equivalent group recovers text instead of being left permanently unsearchable; once this cap is
-/// hit the job stays failed. Audio jobs are unaffected: this bound is OCR-only.
+/// Absolute ceiling on a job's total `attempt_count` before **Processing Job Reclamation** stops
+/// requeueing an **Orphaned Processing Job** and leaves it failed. This is a generous crash-loop
+/// backstop, not a failure cap: abandonment (quit/crash) requeues *without* spending a failure
+/// attempt, so this ceiling only trips when the same job is repeatedly claimed and abandoned
+/// before it can finish — never merely because a user quit the app a few times.
+pub(crate) const RECLAIM_ATTEMPT_CEILING: i64 = 10;
+
+/// Maximum number of genuine failures (tracked by `failure_count`) a failed **OCR Job** may
+/// accumulate before it is left terminally failed. A transient OCR failure on a frame that a
+/// later equivalent frame deferred to (via OCR Fallback Eligibility) is bounded-retried so the
+/// equivalent group recovers text instead of being left permanently unsearchable; once this cap
+/// is hit the job stays failed.
 pub(crate) const OCR_FAILED_JOB_MAX_ATTEMPTS: i64 = 3;
 
-/// Backoff applied before a failed **OCR Job** may be re-claimed by the automatic
-/// queue drain, indexed by the number of attempts already made (so index 0 is the
-/// wait after the first failure, index 1 after the second, and so on). Because the
-/// claim selects queued jobs oldest-id-first, an immediate requeue would let a
-/// deterministically-failing job re-claim ahead of fresh capture work every cycle
-/// until the attempt cap; spacing retries lets newer OCR jobs drain in the gap and
-/// gives a transient provider outage time to recover before the cap is reached.
+/// Maximum number of genuine failures (tracked by `failure_count`) an audio processing job
+/// (`audio_transcription`, `speaker_analysis`, `system_audio_speech_activity`) may accumulate
+/// before it is left terminally failed. A genuinely poison segment (engine error, malformed
+/// output, the speaker-helper subprocess timeout) gives up after a few real failures rather than
+/// burning CPU forever; abandonment at quit/crash does not count toward this cap.
+pub(crate) const AUDIO_FAILED_JOB_MAX_ATTEMPTS: i64 = 3;
+
+/// Backoff applied before a failed **OCR Job** may be re-claimed by the automatic queue drain,
+/// indexed by the number of failures already recorded (so index 0 is the wait after the first
+/// failure, index 1 after the second, and so on). Because the claim selects queued jobs
+/// oldest-id-first, an immediate requeue would let a deterministically-failing job re-claim ahead
+/// of fresh capture work every cycle until the cap; spacing retries lets newer OCR jobs drain in
+/// the gap and gives a transient provider outage time to recover before the cap is reached.
 const OCR_RETRY_BACKOFF_SECONDS: [i64; 2] = [30, 120];
 
-/// The backoff (seconds) before the next attempt of a failed OCR job, given how
-/// many attempts have already been made. Saturates at the last configured step.
-fn ocr_retry_backoff_seconds(attempts_made: i64) -> i64 {
-    let index = attempts_made.max(1).saturating_sub(1) as usize;
-    OCR_RETRY_BACKOFF_SECONDS
-        .get(index)
-        .copied()
-        .unwrap_or_else(|| {
-            *OCR_RETRY_BACKOFF_SECONDS
-                .last()
-                .expect("OCR_RETRY_BACKOFF_SECONDS is non-empty")
-        })
+/// Backoff before a failed audio job may be re-claimed, indexed like [`OCR_RETRY_BACKOFF_SECONDS`].
+/// Audio jobs are minutes-long (a Whisper pass or sherpa diarization), so retries are spaced wider
+/// than OCR's so a transient failure (e.g. a model still loading) has real time to clear and so a
+/// failing audio lane does not re-claim ahead of fresh work every cycle.
+const AUDIO_RETRY_BACKOFF_SECONDS: [i64; 2] = [60, 300];
+
+/// Bounded failure-retry policy for one processor kind: how many genuine failures it tolerates
+/// before staying failed, and the per-attempt backoff. Returned by
+/// [`failure_retry_policy_for_processor`] for processors that participate in bounded retry.
+struct FailureRetryPolicy {
+    max_attempts: i64,
+    backoff_seconds: &'static [i64],
+}
+
+impl FailureRetryPolicy {
+    /// The backoff (seconds) before the next attempt, given how many failures have already been
+    /// recorded. Saturates at the last configured step.
+    fn backoff_seconds(&self, failures_recorded: i64) -> i64 {
+        let index = failures_recorded.max(1).saturating_sub(1) as usize;
+        self.backoff_seconds
+            .get(index)
+            .copied()
+            .or_else(|| self.backoff_seconds.last().copied())
+            .unwrap_or(0)
+    }
+}
+
+/// The bounded failure-retry policy for a processor, or `None` for processors that are not
+/// automatically retried on failure. OCR and the three audio processors are retried; anything
+/// else (e.g. ad hoc document processors) stays failed on first failure.
+fn failure_retry_policy_for_processor(processor: &str) -> Option<FailureRetryPolicy> {
+    match processor {
+        OCR_PROCESSOR => Some(FailureRetryPolicy {
+            max_attempts: OCR_FAILED_JOB_MAX_ATTEMPTS,
+            backoff_seconds: &OCR_RETRY_BACKOFF_SECONDS,
+        }),
+        AUDIO_TRANSCRIPTION_PROCESSOR
+        | SPEAKER_ANALYSIS_PROCESSOR
+        | SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR => Some(FailureRetryPolicy {
+            max_attempts: AUDIO_FAILED_JOB_MAX_ATTEMPTS,
+            backoff_seconds: &AUDIO_RETRY_BACKOFF_SECONDS,
+        }),
+        _ => None,
+    }
+}
+
+/// Outcome counts from one **Processing Job Reclamation** pass, for support-diagnosis logging.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProcessingJobReclamationSummary {
+    /// **Orphaned Processing Job** rows returned to `queued` so they re-run.
+    pub requeued: u64,
+    /// Rows left `failed` because they hit [`RECLAIM_ATTEMPT_CEILING`].
+    pub failed_on_ceiling: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -248,7 +313,7 @@ impl ProcessingStore {
     ) -> Result<Option<ProcessingJob>> {
         let row = sqlx::query(
             "SELECT \
-                id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+                id, subject_type, subject_id, processor, status, attempt_count, failure_count, payload_json, last_error, \
                 created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE subject_type = ?1 AND subject_id = ?2 AND processor = ?3 \
@@ -768,7 +833,7 @@ impl ProcessingStore {
     ) -> Result<Vec<ProcessingJob>> {
         let rows = sqlx::query(
             "SELECT \
-                id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+                id, subject_type, subject_id, processor, status, attempt_count, failure_count, payload_json, last_error, \
                 created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE subject_type = ?1 AND subject_id = ?2 \
@@ -788,7 +853,7 @@ impl ProcessingStore {
     ) -> Result<Vec<ProcessingJob>> {
         let rows = sqlx::query(
             "SELECT \
-                id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+                id, subject_type, subject_id, processor, status, attempt_count, failure_count, payload_json, last_error, \
                 created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE processor = ?1 AND status = 'running' \
@@ -865,7 +930,7 @@ impl ProcessingStore {
     ) -> Result<Vec<ProcessingJob>> {
         let rows = sqlx::query(
             "SELECT \
-                id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+                id, subject_type, subject_id, processor, status, attempt_count, failure_count, payload_json, last_error, \
                 created_at, queued_at, updated_at, started_at, finished_at \
              FROM processing_jobs \
              WHERE processor = ?1 AND status IN ('queued', 'failed') \
@@ -1019,7 +1084,7 @@ impl ProcessingStore {
             let row = match (processor, excluded_processors.is_empty()) {
                 (Some(processor), _) => sqlx::query(
                     "SELECT \
-                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
+                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, pj.failure_count, \
                         pj.payload_json, pj.last_error, pj.created_at, pj.queued_at, pj.updated_at, pj.started_at, \
                         pj.finished_at \
                      FROM processing_jobs AS pj \
@@ -1053,7 +1118,7 @@ impl ProcessingStore {
                 (None, false) => {
                     let mut query = sqlx::QueryBuilder::new(
                         "SELECT \
-                            pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
+                            pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, pj.failure_count, \
                             pj.payload_json, pj.last_error, pj.created_at, pj.queued_at, pj.updated_at, pj.started_at, \
                             pj.finished_at \
                          FROM processing_jobs AS pj \
@@ -1092,7 +1157,7 @@ impl ProcessingStore {
                 }
                 (None, true) => sqlx::query(
                     "SELECT \
-                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, \
+                        pj.id, pj.subject_type, pj.subject_id, pj.processor, pj.status, pj.attempt_count, pj.failure_count, \
                         pj.payload_json, pj.last_error, pj.created_at, pj.queued_at, pj.updated_at, pj.started_at, \
                         pj.finished_at \
                      FROM processing_jobs AS pj \
@@ -1261,8 +1326,39 @@ impl ProcessingStore {
         Ok(job)
     }
 
-    pub async fn reconcile_orphaned_running_jobs(&self) -> Result<u64> {
-        let result = sqlx::query(
+    /// **Processing Job Reclamation**: return every **Orphaned Processing Job** (a row left
+    /// `running` because its worker was aborted at quit/crash) to `queued` so it re-runs and still
+    /// produces its result, instead of failing it. Abandonment does **not** spend a failure attempt
+    /// (`failure_count` is untouched), so repeated quits never exhaust the failure cap; only a job
+    /// that has been reclaimed [`RECLAIM_ATTEMPT_CEILING`] times without ever completing is left
+    /// `failed` as a crash-loop backstop. Safe to run only when nothing is executing: at startup
+    /// (workers spawn afterward) and at graceful shutdown (after workers are aborted and awaited).
+    pub async fn reconcile_orphaned_running_jobs(&self) -> Result<ProcessingJobReclamationSummary> {
+        let mut transaction = self.pool.begin().await?;
+
+        // Requeue orphaned running jobs that are still under the ceiling. `next_attempt_at` is
+        // cleared so they are immediately eligible (abandonment is not a failure to back off from),
+        // and `failure_count` is deliberately left untouched.
+        let requeued = sqlx::query(
+            "UPDATE processing_jobs \
+             SET status = 'queued', \
+                 last_error = ?1, \
+                 next_attempt_at = NULL, \
+                 queued_at = CURRENT_TIMESTAMP, \
+                 started_at = NULL, \
+                 finished_at = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE status = 'running' AND attempt_count < ?2",
+        )
+        .bind(RECLAIMED_ORPHANED_PROCESSING_JOB_REASON)
+        .bind(RECLAIM_ATTEMPT_CEILING)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+
+        // Any still-running row has reached the ceiling: leave it failed as a backstop against a
+        // pathological claim/abandon crash-loop.
+        let failed_on_ceiling = sqlx::query(
             "UPDATE processing_jobs \
              SET status = 'failed', \
                  last_error = ?1, \
@@ -1270,11 +1366,17 @@ impl ProcessingStore {
                  updated_at = CURRENT_TIMESTAMP \
              WHERE status = 'running'",
         )
-        .bind(ORPHANED_RUNNING_PROCESSING_JOB_ERROR)
-        .execute(&self.pool)
-        .await?;
+        .bind(RECLAIM_CEILING_EXCEEDED_PROCESSING_JOB_ERROR)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
 
-        Ok(result.rows_affected())
+        transaction.commit().await?;
+
+        Ok(ProcessingJobReclamationSummary {
+            requeued,
+            failed_on_ceiling,
+        })
     }
 
     pub async fn backfill_frame_equivalence(&self) -> Result<u64> {
@@ -1361,6 +1463,7 @@ impl ProcessingStore {
         let update = sqlx::query(
             "UPDATE processing_jobs \
              SET status = 'failed', \
+                  failure_count = failure_count + 1, \
                   last_error = ?2, \
                   finished_at = CURRENT_TIMESTAMP, \
                   updated_at = CURRENT_TIMESTAMP \
@@ -1391,13 +1494,17 @@ impl ProcessingStore {
         Ok(job)
     }
 
-    /// Bounded automatic retry for a failed **OCR Job**. If the job is OCR, currently failed, and
-    /// has been attempted fewer than [`OCR_FAILED_JOB_MAX_ATTEMPTS`] times, it is requeued (status
-    /// reset to `queued`, payload preserved) so the job loop re-runs it; the eventual completion
-    /// then back-projects recovered text across the equivalent group. Returns the requeued job when
-    /// a retry was scheduled, or `None` when the job is not an eligible OCR retry (wrong processor,
-    /// not failed, or the attempt cap was reached). Audio jobs are intentionally excluded.
-    pub(crate) async fn requeue_failed_ocr_job_within_attempt_cap(
+    /// Bounded automatic retry for a genuinely *failed* processing job (OCR or any audio
+    /// processor). If the job's processor participates in bounded failure retry, the job is
+    /// currently failed, and it has accumulated fewer than its processor's failure cap of genuine
+    /// failures (`failure_count`), it is requeued (status reset to `queued`, payload preserved) so
+    /// the job loop re-runs it after a backoff window. Returns the requeued job when a retry was
+    /// scheduled, or `None` when the job is not an eligible retry (processor without retry, not
+    /// failed, or the failure cap was reached).
+    ///
+    /// This is the *failure* lane and is gated on `failure_count`, distinct from **Processing Job
+    /// Reclamation**, which requeues an abandoned job without spending a failure attempt.
+    pub(crate) async fn requeue_failed_job_within_attempt_cap(
         &self,
         job_id: i64,
     ) -> Result<Option<ProcessingJob>> {
@@ -1407,10 +1514,12 @@ impl ProcessingStore {
             .await?
             .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
 
-        if job.processor != OCR_PROCESSOR
-            || job.status != ProcessingJobStatus::Failed
-            || job.attempt_count >= OCR_FAILED_JOB_MAX_ATTEMPTS
-        {
+        let Some(policy) = failure_retry_policy_for_processor(&job.processor) else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+
+        if job.status != ProcessingJobStatus::Failed || job.failure_count >= policy.max_attempts {
             transaction.commit().await?;
             return Ok(None);
         }
@@ -1419,11 +1528,11 @@ impl ProcessingStore {
             .requeue_processing_job_in_transaction(&mut transaction, job_id, None)
             .await?;
 
-        // Defer the retry by a backoff window so this failing job does not re-claim
-        // the queue ahead of fresh OCR work every cycle. `job.attempt_count` is the
-        // number of attempts already made (the requeue does not change it), so it
-        // selects the backoff step for the upcoming attempt.
-        let backoff_seconds = ocr_retry_backoff_seconds(job.attempt_count);
+        // Defer the retry by a backoff window so this failing job does not re-claim the queue
+        // ahead of fresh work every cycle. `job.failure_count` already includes the failure that
+        // just occurred (mark_job_failed incremented it), so it selects the backoff step for the
+        // upcoming attempt.
+        let backoff_seconds = policy.backoff_seconds(job.failure_count);
         sqlx::query(
             "UPDATE processing_jobs \
              SET next_attempt_at = datetime(CURRENT_TIMESTAMP, ?2), \
@@ -3040,7 +3149,7 @@ where
 {
     let row = sqlx::query(
         "SELECT \
-            id, subject_type, subject_id, processor, status, attempt_count, payload_json, last_error, \
+            id, subject_type, subject_id, processor, status, attempt_count, failure_count, payload_json, last_error, \
             created_at, queued_at, updated_at, started_at, finished_at \
          FROM processing_jobs \
          WHERE id = ?1",
@@ -3202,6 +3311,7 @@ fn map_processing_job(row: SqliteRow) -> Result<ProcessingJob> {
         processor: row.get("processor"),
         status: ProcessingJobStatus::from_str(row.get("status"))?,
         attempt_count: row.get("attempt_count"),
+        failure_count: row.get("failure_count"),
         payload_json: row.get("payload_json"),
         last_error: row.get("last_error"),
         created_at: row.get("created_at"),

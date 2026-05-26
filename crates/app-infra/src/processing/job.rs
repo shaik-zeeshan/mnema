@@ -76,6 +76,7 @@ pub struct ProcessingJob {
     pub processor: String,
     pub status: ProcessingJobStatus,
     pub attempt_count: i64,
+    pub failure_count: i64,
     pub payload_json: Option<String>,
     pub last_error: Option<String>,
     pub created_at: String,

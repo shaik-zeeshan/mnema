@@ -1703,6 +1703,25 @@ pub(crate) async fn shutdown_background_workers_for_app_exit(app_handle: &tauri:
         "app infrastructure background worker shutdown completed (tracked_tasks={}, timed_out_tasks={})",
         summary.tracked_tasks, summary.timed_out_tasks
     ));
+
+    // Workers are now aborted and awaited, so nothing is executing: reclaim any job a worker was
+    // mid-flight on (Processing Job Reclamation) so a normal quit requeues it for the next launch
+    // rather than stranding it as an Orphaned Processing Job. We keep the short shutdown timeout
+    // and requeue-and-exit rather than block quit on a multi-minute transcription.
+    match app_handle.try_state::<AppInfraState>() {
+        Some(infra) => match infra.reconcile_orphaned_processing_jobs().await {
+            Ok(reclamation) => crate::native_capture::debug_log::log_info(format!(
+                "graceful shutdown reclaimed in-flight processing jobs (requeued={}, failed_on_ceiling={})",
+                reclamation.requeued, reclamation.failed_on_ceiling
+            )),
+            Err(error) => crate::native_capture::debug_log::log_error(format!(
+                "graceful shutdown failed to reclaim in-flight processing jobs: {error}"
+            )),
+        },
+        None => crate::native_capture::debug_log::log_warn(
+            "app infrastructure state was not initialized during app exit; skipping processing job reclamation",
+        ),
+    }
 }
 
 pub(crate) async fn run_audio_transcription_backfill_after_model_install(
