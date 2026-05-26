@@ -18,7 +18,7 @@ Likely minimum target if we want direct HWND/HMONITOR capture without only using
 
 ## Windows 11 note
 
-Windows 11 is the easiest first target for the Windows runtime capture backend. All recommended baseline APIs are present:
+Windows 11 is the easiest first target for the Windows runtime capture backend. A local check on this machine (`Microsoft Windows 11 Pro`, version `10.0.26200`, x64; some legacy registry fields still say `Windows 10 Pro`) is compatible with the API baseline below. All recommended baseline APIs are present:
 
 - WGC display/window capture and HWND/HMONITOR interop are available.
 - WGC cursor capture, border controls, and newer capture-session helpers are available on normal Windows 11 builds.
@@ -193,7 +193,7 @@ Windows equivalents to wire into the Recording Lifecycle:
 
 ## Suggested first tracer-bullet plan
 
-1. Add Windows-only compile gates and CI before runtime work.
+1. Add Windows-only compile gates and CI before runtime work. Current Windows compile blockers include at least `crates/capture-screen`: `mod equivalence` is macOS-gated while its types/functions are re-exported unconditionally.
 2. Prototype WGC monitor capture to JPEG frames with QPC timestamps; validate frame activity, resize, display sleep, lock/unlock, HDR, multi-monitor.
 3. Prototype Media Foundation MP4 screen writer from captured frames; write a frame-index sidecar and validate exact preview extraction.
 4. Prototype WASAPI microphone capture to PCM + VAD feed + `.m4a`/`.wav` writer.

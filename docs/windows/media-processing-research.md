@@ -13,7 +13,7 @@ For a Windows 11 first port, keep Mnema's local-processing architecture and repl
 - **Speaker diarization/recognition:** keep **Sherpa ONNX**. The crate and upstream toolkit support Windows; Mnema mainly lacks Windows audio decode and verification.
 - **VAD / system-audio speech gate:** keep **Silero VAD** and **WebRTC VAD**. They are already cross-platform-ish; the missing piece is decoding captured audio files to mono PCM on Windows.
 - **Media processing seam:** implement a Windows media backend around **Media Foundation Source Reader/Sink Writer** for decode, encode, validation, frame extraction, and trim/convert. Consider **Symphonia** for audio-only decode if we want pure Rust and accept format coverage/licensing. Keep **FFmpeg** as a fallback, not the default, because packaging/licensing is heavier.
-- **Build target:** start with Windows 11 x64 MSVC. Expect Visual Studio Build Tools, CMake, and LLVM/libclang to be needed for current native crates (`whisper-rs`, `tesseract-rs`, `ocr-rs` bindgen). Later decide whether to prebuild/cache native libraries for release builds.
+- **Build target:** start with Windows 11 x64 MSVC. Expect Visual Studio Build Tools, CMake, and LLVM/libclang to be needed for current native crates (`whisper-rs`, `tesseract-rs`, `ocr-rs` bindgen). The desktop build also needs SQLCipher/OpenSSL setup through `libsqlite3-sys`/`bundled-sqlcipher` before processing crates can be checked. Later decide whether to prebuild/cache native libraries for release builds.
 
 ## What Mnema currently enables in the desktop build
 
@@ -287,6 +287,7 @@ Windows recommendation:
 
 ## Main risks / open decisions
 
+- **Local toolchain gap on the checked Windows machine:** `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` currently fails before app code links because `OPENSSL_DIR` is unset for SQLCipher (`libsqlite3-sys` with `bundled-sqlcipher`) and `LIBCLANG_PATH`/`clang.dll` is missing for `whisper-rs` bindgen. `cmake` and `bun` are also not on `PATH` in this shell.
 - **Output container choice:** Windows runtime-capture research recommends `.mp4` for screen and `.m4a` for audio. Existing code assumes `.mov` in several places; if Windows uses `.mp4`, ensure DB/schema/UI paths do not hard-code `.mov` semantics beyond macOS.
 - **Package identity:** Windows.Media.Ocr requires package identity, so it does not fit a normal Tauri NSIS/MSI default.
 - **Native build toolchain:** `ocr-rs`, `tesseract-rs`, and `whisper-rs` all have native build requirements. Release should probably prebuild/cache artifacts rather than making every developer build from scratch.
