@@ -77,7 +77,7 @@ The bundled sidecar binary is named `mnema-cli`, but the user-facing installed c
 
 ## Workflow
 
-1. Convert the user's time wording into concrete RFC3339 timestamps with timezone. If they say "today", use the current local date from the conversation.
+1. Convert the user's time wording into concrete RFC3339 timestamps **in the user's local timezone**. "Today" means local midnight to now in that timezone (for example `2026-05-26T00:00:00+05:30` to now), which maps to a UTC range that begins on the *previous* UTC calendar date for east-of-UTC offsets — do not assume the local date equals the UTC date, or you will silently drop early-morning local activity. Apply the same care to "this morning", "last night", "yesterday", and other day-relative wording.
 2. Run `mnema access known-clients` when deciding whether the current agent should rely on auto-detect or pass `--client`.
 3. Run `mnema access status` before any data query.
 4. If status reports an inferred active grant, run data commands without `--client` so they use the same inferred identity.
@@ -134,5 +134,7 @@ Structured error codes include `authorization_required`, `authorization_timeout`
 - Normalize `<mark>` tags from snippets into plain emphasis or remove them in final prose.
 - Treat `context.appName`, `context.appBundleId`, and `context.windowTitle` as broker-visible search context. Use them to disambiguate results, but avoid over-reporting window titles when they are not relevant to the user's question.
 - Do not expose config paths, grant file paths, raw database paths, or media paths in final answers unless directly relevant and requested.
+- Result `startedAt` / `endedAt` are UTC (`Z`-suffixed). Convert them to the user's local timezone before describing time-of-day or reasoning about which record is "first", "earliest", "latest", "morning", or "evening"; the raw UTC clock can fall on a different local date.
+- `search` and `timeline` results are not guaranteed to be in chronological order. For "first / earliest / last / latest" requests, sort the candidate results by `startedAt` and pick the extreme — never assume the first item in the response is the earliest. Widen the time window and raise `--limit` (and page with `nextCursor` when present) so the true earliest/latest is not cut off before you conclude.
 - Cite timestamps and opaque IDs when they help the user verify a claim, for example `2026-05-21T09:42:10+05:30`, `screenText <id>`, or `audioTranscript <id>`.
 - If a query is blocked by authorization, missing CLI installation, or an expired grant, stop and explain the exact next action.
