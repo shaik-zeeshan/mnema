@@ -28,6 +28,15 @@ const MIN_DIARIZATION_PEAK: f32 = 1.0e-5;
 const SAFE_SINGLE_CHUNK_DIARIZATION_MS: u64 = 10_000;
 const SAFE_CHUNK_OVERLAP_MS: u64 = 1_000;
 const MERGE_ADJACENT_TURN_GAP_MS: u64 = 250;
+/// Maximum audio (in samples) fed to the speaker-embedding extractor in a single
+/// call. The NeMo TitaNet ONNX models have a fixed internal dimension (~12288
+/// frames, ≈123s) and throw an uncatchable C++ exception that aborts the process
+/// when a speaker's concatenated audio exceeds it (see the global representative
+/// embedding loop). 60s is well under that limit and is far more than enough for
+/// a stable speaker embedding, so we cap the concatenation defensively. This only
+/// bounds the stored representative embedding — turns and cluster assignments are
+/// already finalized — so it does not change diarization labeling.
+const MAX_EMBEDDING_AUDIO_SAMPLES: usize = 60 * SAMPLE_RATE_HZ as usize;
 const MIN_RECOGNITION_SUGGESTION_SCORE: f32 = 0.60;
 const HIGH_RECOGNITION_SUGGESTION_SCORE: f32 = 0.72;
 const PERSON_AMBIGUITY_MARGIN: f32 = 0.05;
@@ -396,7 +405,15 @@ fn analyze_long_audio_with_safe_chunking(
     output.turns = mark_overlapping_turns(merge_adjacent_turns(output.turns));
 
     for cluster in global_clusters {
-        let cluster_samples = concatenate_ranges(samples, &cluster.ranges);
+        // Cap the audio fed to the extractor: an unbounded concatenation of a
+        // talkative speaker's whole-clip ranges overflows TitaNet's fixed input
+        // dimension and aborts the process (see MAX_EMBEDDING_AUDIO_SAMPLES).
+        let cluster_samples = if range_sample_count(&cluster.ranges) > MAX_EMBEDDING_AUDIO_SAMPLES {
+            add_warning_reason(&mut output, "global_embedding_capped");
+            concatenate_ranges_capped(samples, &cluster.ranges, MAX_EMBEDDING_AUDIO_SAMPLES)
+        } else {
+            concatenate_ranges(samples, &cluster.ranges)
+        };
         let embedding = match compute_embedding(extractor, &cluster_samples) {
             Ok(embedding) => embedding,
             Err(_) => {
@@ -1204,6 +1221,26 @@ fn concatenate_ranges(samples: &[f32], ranges: &[(usize, usize)]) -> Vec<f32> {
     out
 }
 
+/// Like [`concatenate_ranges`] but stops once `max_samples` have been collected,
+/// truncating the final range as needed. Ranges are taken in order, so the result
+/// is the speaker's earliest `max_samples` of audio — enough for a representative
+/// embedding while staying within the extractor's input limit.
+fn concatenate_ranges_capped(
+    samples: &[f32],
+    ranges: &[(usize, usize)],
+    max_samples: usize,
+) -> Vec<f32> {
+    let mut out = Vec::with_capacity(range_sample_count(ranges).min(max_samples));
+    for (start, end) in ranges {
+        if out.len() >= max_samples {
+            break;
+        }
+        let take = (max_samples - out.len()).min(end - start);
+        out.extend_from_slice(&samples[*start..*start + take]);
+    }
+    out
+}
+
 fn f32_embedding_to_le_bytes(embedding: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(embedding.len() * 4);
     for value in embedding {
@@ -1884,6 +1921,25 @@ mod tests {
             SpeakerAnalysisError::Runtime { ref stage, .. }
                 if stage == "validate_decoded_samples"
         ));
+    }
+
+    #[test]
+    fn concatenate_ranges_capped_truncates_in_order() {
+        let samples: Vec<f32> = (0..100).map(|n| n as f32).collect();
+        let ranges = [(0usize, 30usize), (50, 80), (90, 100)]; // 30 + 30 + 10 = 70 samples
+
+        // Under the cap: identical to the uncapped concatenation.
+        assert_eq!(
+            concatenate_ranges_capped(&samples, &ranges, 1000),
+            concatenate_ranges(&samples, &ranges)
+        );
+
+        // Over the cap: earliest `max_samples` only, truncating the spanning range.
+        let capped = concatenate_ranges_capped(&samples, &ranges, 45);
+        assert_eq!(capped.len(), 45);
+        let mut expected: Vec<f32> = (0..30).map(|n| n as f32).collect();
+        expected.extend((50..65).map(|n| n as f32)); // 15 of the second range
+        assert_eq!(capped, expected);
     }
 
     #[cfg(feature = "sherpa-onnx")]
