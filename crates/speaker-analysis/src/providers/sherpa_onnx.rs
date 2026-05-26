@@ -422,6 +422,65 @@ fn analyze_long_audio_with_safe_chunking(
     Ok(output)
 }
 
+/// Which audio source produced a chunk-local cluster embedding, recorded so the
+/// caller can set the correct cross-chunk blend weight and provenance warning.
+#[cfg(feature = "sherpa-onnx")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClusterEmbeddingSource {
+    /// The min-turn-filtered ranges (the preferred, cleanest signal).
+    Filtered,
+    /// This speaker's full unfiltered ranges — still single-speaker, used when
+    /// the filtered ranges held too little audio for the extractor.
+    UnfilteredRanges,
+    /// The whole chunk (mixes speakers); last resort that can corrupt identity.
+    WholeChunk,
+}
+
+#[cfg(feature = "sherpa-onnx")]
+fn range_sample_count(ranges: &[(usize, usize)]) -> usize {
+    ranges.iter().map(|(start, end)| end - start).sum()
+}
+
+/// Compute a chunk-local cluster embedding with a tiered fallback that keeps the
+/// audio as close to a single speaker as possible.
+///
+/// Order: (1) the min-turn-filtered ranges; (2) this speaker's full unfiltered
+/// ranges, but only when the filter actually dropped turns, since those ranges
+/// are still single-speaker and merely add back short turns; (3) the whole
+/// chunk, which mixes every speaker in the window and is used only when even the
+/// speaker's full audio is too short for the extractor to be ready.
+///
+/// Tiers (1) and (2) are tried via `try_embed`, which returns an error when the
+/// extractor lacks enough audio; that error is swallowed so the next tier runs.
+/// Only the whole-chunk tier's error propagates.
+#[cfg(feature = "sherpa-onnx")]
+fn compute_cluster_embedding_with_fallback<E>(
+    all_samples: &[f32],
+    chunk_start: usize,
+    chunk_len: usize,
+    filtered_ranges: &[(usize, usize)],
+    speaker_ranges: &[(usize, usize)],
+    mut try_embed: E,
+) -> SpeakerAnalysisResult<(Vec<f32>, ClusterEmbeddingSource)>
+where
+    E: FnMut(&[f32]) -> SpeakerAnalysisResult<Vec<f32>>,
+{
+    if let Ok(embedding) = try_embed(&concatenate_ranges(all_samples, filtered_ranges)) {
+        return Ok((embedding, ClusterEmbeddingSource::Filtered));
+    }
+    // `filtered_ranges` is a subset of `speaker_ranges`; a length difference
+    // means the min-turn filter dropped turns, so the unfiltered ranges hold
+    // strictly more of this same speaker's audio and are worth trying before we
+    // fall back to the whole, speaker-mixed chunk.
+    if filtered_ranges.len() != speaker_ranges.len() {
+        if let Ok(embedding) = try_embed(&concatenate_ranges(all_samples, speaker_ranges)) {
+            return Ok((embedding, ClusterEmbeddingSource::UnfilteredRanges));
+        }
+    }
+    let fallback_samples = &all_samples[chunk_start..chunk_start + chunk_len];
+    Ok((try_embed(fallback_samples)?, ClusterEmbeddingSource::WholeChunk))
+}
+
 #[cfg(feature = "sherpa-onnx")]
 fn analyze_single_safe_chunk(
     all_samples: &[f32],
@@ -491,19 +550,32 @@ fn analyze_single_safe_chunk(
                 filtered
             }
         };
-        let cluster_samples = concatenate_ranges(all_samples, &embedding_ranges);
-        let embedding = match compute_embedding(extractor, &cluster_samples) {
-            Ok(embedding) => embedding,
-            Err(_) => {
-                warning_reasons.push("chunk_embedding_fallback".to_string());
-                let fallback_samples = &all_samples[chunk_start..chunk_start + chunk_len];
-                compute_embedding(extractor, fallback_samples)?
-            }
-        };
+        // Tiered embedding fallback: prefer the min-turn-filtered ranges, then
+        // this speaker's full unfiltered ranges (still single-speaker) before
+        // resorting to the whole chunk, which mixes every speaker in the window
+        // and would corrupt this cluster's identity.
+        let (embedding, embedding_source) = compute_cluster_embedding_with_fallback(
+            all_samples,
+            chunk_start,
+            chunk_len,
+            &embedding_ranges,
+            &ranges,
+            |samples| compute_embedding(extractor, samples),
+        )?;
         let key = next_local_cluster_key + index;
         // `total_samples` is the cross-chunk blending weight, so weight by the
         // ranges that actually fed the embedding.
-        let total_samples = embedding_ranges.iter().map(|(start, end)| end - start).sum();
+        let total_samples = match embedding_source {
+            ClusterEmbeddingSource::Filtered => range_sample_count(&embedding_ranges),
+            ClusterEmbeddingSource::UnfilteredRanges => {
+                warning_reasons.push("chunk_unfiltered_ranges_fallback".to_string());
+                range_sample_count(&ranges)
+            }
+            ClusterEmbeddingSource::WholeChunk => {
+                warning_reasons.push("chunk_embedding_fallback".to_string());
+                range_sample_count(&embedding_ranges)
+            }
+        };
         speaker_to_local_key.insert(speaker, key);
         local_clusters.push(LocalSpeakerCluster {
             key,
@@ -575,24 +647,45 @@ fn agglomerate_local_clusters(
             })
         })
         .collect();
+    let node_count = nodes.len();
+
+    // Cache pairwise cosine similarities in a flat upper-triangular matrix.
+    // The previous implementation recomputed `cosine_similarity` for every live
+    // pair on every merge round, which is O(rounds * n^2 * embedding_dim) and,
+    // with up to n-1 merge rounds, O(n^3 * embedding_dim) overall. A merge only
+    // changes the centroid of the surviving (`left`) node, so we instead refresh
+    // just that node's row/column after each merge. The scan order, the `>`
+    // comparison, and the `None`-initialised tie-break below are unchanged, so
+    // the pair chosen each round is bit-identical to recomputing fresh.
+    let sim_index = |left: usize, right: usize| left * node_count + right;
+    let mut similarities = vec![0.0f32; node_count * node_count];
+    for left in 0..node_count {
+        let left_embedding = nodes[left]
+            .as_ref()
+            .expect("node is live during initial fill")
+            .representative_embedding
+            .clone();
+        for right in (left + 1)..node_count {
+            let right_node = nodes[right].as_ref().expect("node is live during initial fill");
+            similarities[sim_index(left, right)] =
+                cosine_similarity(&left_embedding, &right_node.representative_embedding);
+        }
+    }
 
     // Repeatedly find and merge the globally most-similar pair of live nodes.
     // Scanning all live pairs each round (rather than merging in input order)
     // is what makes the result independent of chunk processing order.
     loop {
         let mut best: Option<(usize, usize, f32)> = None;
-        for left in 0..nodes.len() {
-            let Some(left_node) = &nodes[left] else {
+        for left in 0..node_count {
+            if nodes[left].is_none() {
                 continue;
-            };
-            for right in (left + 1)..nodes.len() {
-                let Some(right_node) = &nodes[right] else {
+            }
+            for right in (left + 1)..node_count {
+                if nodes[right].is_none() {
                     continue;
-                };
-                let score = cosine_similarity(
-                    &left_node.representative_embedding,
-                    &right_node.representative_embedding,
-                );
+                }
+                let score = similarities[sim_index(left, right)];
                 let is_better = match best {
                     Some((_, _, best_score)) => score > best_score,
                     None => true,
@@ -626,6 +719,30 @@ fn agglomerate_local_clusters(
         left_node.representative_weight += right_node.representative_weight;
         left_node.ranges.append(&mut right_node.ranges);
         left_node.member_keys.append(&mut right_node.member_keys);
+
+        // Only `left`'s centroid changed, so refresh just its cached
+        // similarities against every still-live node; `right` is now dead and is
+        // skipped by the scan above.
+        let left_embedding = nodes[left]
+            .as_ref()
+            .expect("merged node is live")
+            .representative_embedding
+            .clone();
+        for other in 0..node_count {
+            if other == left {
+                continue;
+            }
+            let Some(other_node) = nodes[other].as_ref() else {
+                continue;
+            };
+            let score = cosine_similarity(&left_embedding, &other_node.representative_embedding);
+            let (low, high) = if left < other {
+                (left, other)
+            } else {
+                (other, left)
+            };
+            similarities[sim_index(low, high)] = score;
+        }
     }
 
     // Collect surviving nodes and order them by their smallest member key so
@@ -1471,6 +1588,197 @@ mod tests {
 
         assert_eq!(global_clusters.len(), 2);
         assert_ne!(local_to_global[&0], local_to_global[&1]);
+    }
+
+    // Reference reimplementation of the original O(n^3) agglomeration: recompute
+    // the globally-best pair fresh every round and merge. The cached-similarity
+    // optimisation in `agglomerate_local_clusters` must produce a bit-identical
+    // partition to this.
+    #[cfg(feature = "sherpa-onnx")]
+    fn reference_partition(
+        locals: &[LocalSpeakerCluster],
+        threshold: f32,
+    ) -> BTreeMap<usize, usize> {
+        #[derive(Clone)]
+        struct Node {
+            keys: Vec<usize>,
+            emb: Vec<f32>,
+            weight: usize,
+        }
+        let mut nodes: Vec<Option<Node>> = locals
+            .iter()
+            .map(|l| {
+                Some(Node {
+                    keys: vec![l.key],
+                    emb: l.embedding.clone(),
+                    weight: l.total_samples,
+                })
+            })
+            .collect();
+        loop {
+            let mut best: Option<(usize, usize, f32)> = None;
+            for i in 0..nodes.len() {
+                let Some(ni) = &nodes[i] else { continue };
+                for j in (i + 1)..nodes.len() {
+                    let Some(nj) = &nodes[j] else { continue };
+                    let score = cosine_similarity(&ni.emb, &nj.emb);
+                    if best.map_or(true, |(_, _, b)| score > b) {
+                        best = Some((i, j, score));
+                    }
+                }
+            }
+            let Some((i, j, score)) = best else { break };
+            if score < threshold {
+                break;
+            }
+            let mut nj = nodes[j].take().unwrap();
+            let ni = nodes[i].as_mut().unwrap();
+            blend_embeddings(&mut ni.emb, ni.weight, &nj.emb, nj.weight);
+            ni.weight += nj.weight;
+            ni.keys.append(&mut nj.keys);
+        }
+        let mut surviving: Vec<Node> = nodes.into_iter().flatten().collect();
+        surviving.sort_by_key(|n| n.keys.iter().copied().min().unwrap_or(usize::MAX));
+        let mut map = BTreeMap::new();
+        for (id, n) in surviving.into_iter().enumerate() {
+            for k in n.keys {
+                map.insert(k, id);
+            }
+        }
+        map
+    }
+
+    #[cfg(feature = "sherpa-onnx")]
+    #[test]
+    fn agglomerative_matches_bruteforce_reference_on_random_embeddings() {
+        // Deterministic xorshift so the differential check is reproducible.
+        let mut state = 0x1234_5678_9abc_def0u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 40) as f32 / (1u32 << 24) as f32
+        };
+        for trial in 0..300 {
+            let n = 2 + (trial % 14);
+            let dim = 4;
+            let locals: Vec<LocalSpeakerCluster> = (0..n)
+                .map(|k| LocalSpeakerCluster {
+                    key: k,
+                    ranges: vec![(k * 10, k * 10 + 5)],
+                    embedding: (0..dim).map(|_| next() * 2.0 - 1.0).collect(),
+                    total_samples: 1 + (k % 4),
+                })
+                .collect();
+            let (_, got) =
+                agglomerate_local_clusters(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
+            let expected = reference_partition(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
+            assert_eq!(got, expected, "partition mismatch at trial {trial} (n={n})");
+        }
+    }
+
+    // --- P2: tiered cluster-embedding fallback ---------------------------------
+    // `try_embed` models the extractor: it is only "ready" once it has at least
+    // `min_ready` samples, mirroring `compute_embedding`'s `is_ready` gate.
+    #[cfg(feature = "sherpa-onnx")]
+    fn embed_with_min_ready(min_ready: usize) -> impl FnMut(&[f32]) -> SpeakerAnalysisResult<Vec<f32>> {
+        move |samples: &[f32]| {
+            if samples.len() >= min_ready {
+                // Marker embedding: the sample count actually fed in.
+                Ok(vec![samples.len() as f32])
+            } else {
+                Err(SpeakerAnalysisError::Runtime {
+                    stage: "compute_embedding".to_string(),
+                    message: "not enough speaker audio to compute embedding".to_string(),
+                })
+            }
+        }
+    }
+
+    #[cfg(feature = "sherpa-onnx")]
+    #[test]
+    fn cluster_embedding_prefers_filtered_ranges() {
+        let all_samples = vec![0.0f32; 1_000];
+        let filtered = vec![(0usize, 200usize)];
+        let speaker = vec![(0usize, 200usize), (300, 360)];
+        let (embedding, source) = compute_cluster_embedding_with_fallback(
+            &all_samples,
+            0,
+            1_000,
+            &filtered,
+            &speaker,
+            embed_with_min_ready(100),
+        )
+        .expect("embedding");
+        assert_eq!(source, ClusterEmbeddingSource::Filtered);
+        assert_eq!(embedding, vec![200.0]); // only the filtered range was embedded
+    }
+
+    #[cfg(feature = "sherpa-onnx")]
+    #[test]
+    fn cluster_embedding_falls_back_to_unfiltered_before_whole_chunk() {
+        // The bug: filtered ranges are too short for the extractor, but this
+        // speaker's full ranges are long enough. We must use the speaker's own
+        // audio, not the speaker-mixed whole chunk.
+        let all_samples = vec![0.0f32; 1_000];
+        let filtered = vec![(0usize, 30usize)]; // 30 samples, below min_ready
+        let speaker = vec![(0usize, 30usize), (40, 200)]; // 190 samples total
+        let (embedding, source) = compute_cluster_embedding_with_fallback(
+            &all_samples,
+            0,
+            1_000,
+            &filtered,
+            &speaker,
+            embed_with_min_ready(100),
+        )
+        .expect("embedding");
+        assert_eq!(source, ClusterEmbeddingSource::UnfilteredRanges);
+        assert_eq!(embedding, vec![190.0]); // speaker's full ranges, NOT 1000 (chunk)
+    }
+
+    #[cfg(feature = "sherpa-onnx")]
+    #[test]
+    fn cluster_embedding_uses_whole_chunk_only_when_even_unfiltered_too_short() {
+        let all_samples = vec![0.0f32; 1_000];
+        let filtered = vec![(0usize, 20usize)];
+        let speaker = vec![(0usize, 20usize), (40, 70)]; // 50 samples total, still short
+        let (embedding, source) = compute_cluster_embedding_with_fallback(
+            &all_samples,
+            0,
+            1_000,
+            &filtered,
+            &speaker,
+            embed_with_min_ready(100),
+        )
+        .expect("embedding");
+        assert_eq!(source, ClusterEmbeddingSource::WholeChunk);
+        assert_eq!(embedding, vec![1_000.0]); // the whole chunk
+    }
+
+    #[cfg(feature = "sherpa-onnx")]
+    #[test]
+    fn cluster_embedding_skips_unfiltered_when_no_turns_were_dropped() {
+        // Filter dropped nothing (filtered == speaker ranges), so there is no
+        // distinct unfiltered tier to try; go straight to the whole chunk.
+        let all_samples = vec![0.0f32; 1_000];
+        let ranges = vec![(0usize, 50usize)];
+        let mut calls = 0usize;
+        let (embedding, source) = compute_cluster_embedding_with_fallback(
+            &all_samples,
+            0,
+            1_000,
+            &ranges,
+            &ranges,
+            |samples: &[f32]| {
+                calls += 1;
+                embed_with_min_ready(100)(samples)
+            },
+        )
+        .expect("embedding");
+        assert_eq!(source, ClusterEmbeddingSource::WholeChunk);
+        assert_eq!(embedding, vec![1_000.0]);
+        // Only two attempts: filtered (fails) then whole chunk. No unfiltered tier.
+        assert_eq!(calls, 2);
     }
 
     #[cfg(feature = "sherpa-onnx")]
