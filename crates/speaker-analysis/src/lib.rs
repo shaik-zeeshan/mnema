@@ -51,13 +51,13 @@ pub const DEFAULT_CLUSTERING_THRESHOLD: f32 = 0.65;
 /// similarity scales differ from titanet-small and have not been measured.
 pub const DEFAULT_CROSS_CHUNK_THRESHOLD: f32 = 0.60;
 /// Cross-chunk cluster similarity threshold for the Balanced (titanet-small)
-/// preset, lowered from the historical 0.60 to fix long-recording speaker
-/// over-splitting (accuracy improvement #1). Empirically calibrated on the
-/// 3-speaker validation clip: distinct-speaker cross-chunk similarities top out
-/// at ~0.18 there, while genuine same-speaker chunk fragments dip to ~0.56, so
-/// 0.50 sits in that gap — it re-merges split same-speaker fragments while
-/// keeping a wide (~0.32) margin above the observed distinct-speaker band.
-pub const BALANCED_CROSS_CHUNK_THRESHOLD: f32 = 0.50;
+/// preset. A brief experiment lowered this from the historical 0.60 to 0.50,
+/// calibrated on a single 3-speaker clip. The DER benchmark
+/// (`scripts/diarization_bench/`, VoxConverse 10-clip subset) showed that
+/// over-fit: 0.50 wrongly merges distinct speakers on harder multi-speaker audio
+/// (confusion-dominated DER), and 0.60 is the empirical optimum of a clean
+/// U-curve (DER 10.89% -> 9.71%). Restored to 0.60, matching the other presets.
+pub const BALANCED_CROSS_CHUNK_THRESHOLD: f32 = 0.60;
 /// Default minimum speaker-turn duration (milliseconds) below which a turn is
 /// skipped when forming per-chunk cluster embeddings (accuracy improvement #2).
 pub const DEFAULT_MIN_TURN_MS: u64 = 500;
@@ -726,10 +726,9 @@ mod tests {
         // clustering_threshold (fast-clustering, #3) keeps the historical 0.65.
         assert_eq!(params.clustering_threshold, 0.65_f32);
         assert_eq!(params.clustering_threshold, DEFAULT_CLUSTERING_THRESHOLD);
-        // cross_chunk_threshold was lowered from the historical 0.60 to 0.50 to
-        // fix long-recording over-splitting (#1), empirically calibrated on the
-        // 3-speaker validation clip.
-        assert_eq!(params.cross_chunk_threshold, 0.50_f32);
+        // cross_chunk_threshold restored to 0.60 (the DER-benchmark optimum;
+        // a single-clip calibration had briefly lowered it to 0.50).
+        assert_eq!(params.cross_chunk_threshold, 0.60_f32);
         assert_eq!(params.cross_chunk_threshold, BALANCED_CROSS_CHUNK_THRESHOLD);
         assert_eq!(params.min_turn_ms, DEFAULT_MIN_TURN_MS);
     }

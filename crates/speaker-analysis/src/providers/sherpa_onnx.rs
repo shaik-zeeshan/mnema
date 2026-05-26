@@ -1337,10 +1337,9 @@ mod tests {
             )
         );
         // Balanced preset: clustering threshold is the historical 0.65; the
-        // cross-chunk threshold was calibrated down to 0.50 for the #1
-        // over-split fix.
+        // cross-chunk threshold is the DER-benchmark optimum 0.60.
         assert_eq!(selection.clustering_threshold, 0.65_f32);
-        assert_eq!(selection.cross_chunk_threshold, 0.50_f32);
+        assert_eq!(selection.cross_chunk_threshold, 0.60_f32);
         assert_eq!(selection.cross_chunk_threshold, crate::BALANCED_CROSS_CHUNK_THRESHOLD);
         assert_eq!(selection.min_turn_ms, crate::DEFAULT_MIN_TURN_MS);
     }
