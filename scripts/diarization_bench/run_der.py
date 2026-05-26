@@ -34,9 +34,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASET_ID = "diarizers-community/voxconverse"
-# Pin for reproducibility; override with --revision. Sample order (and therefore
-# the indices in voxconverse_subset.txt) is stable for a given revision.
-DEFAULT_REVISION = "main"
+# Pin to an immutable dataset commit for reproducibility; override with
+# --revision for ad-hoc runs. "main" is a moving branch and would let DER
+# baselines drift as the upstream dataset changes. Sample order (and therefore
+# the indices in voxconverse_subset.txt) is stable for a given revision. This
+# SHA is `main` as of 2024-05-31, the dataset's last upstream change.
+DEFAULT_REVISION = "3acfa1b45ca4b7419aee999d67d94c617f9c9d47"
 
 
 def find_binary(explicit: str | None) -> Path:
