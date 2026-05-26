@@ -2586,7 +2586,7 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
         .file_name()
         .expect("microphone reconnect path should have file name")
         .to_string_lossy()
-        .starts_with("microphone-session-1-segment-0003-"));
+        .starts_with("session-1-segment-0003-"));
     assert!(path.ends_with(".m4a"));
     assert!(!path.starts_with("/tmp/current-screen/"));
     assert!(!path.starts_with("/tmp/finalized-screen/"));
@@ -2614,13 +2614,13 @@ fn segment_planner_uses_session_level_audio_directories_for_audio_outputs() {
     assert_eq!(
         planner.microphone_file(4),
         std::path::PathBuf::from(
-            "/tmp/native-capture-output-layout/2026/04/16/audio/microphone-session-1-segment-0004.m4a"
+            "/tmp/native-capture-output-layout/2026/04/16/audio/session-1-segment-0004.m4a"
         )
     );
     assert_eq!(
         planner.system_audio_file(4),
         std::path::PathBuf::from(
-            "/tmp/native-capture-output-layout/2026/04/16/audio/system-audio-session-1-segment-0004.m4a"
+            "/tmp/native-capture-output-layout/2026/04/16/audio/session-1-segment-0004.m4a"
         )
     );
 }
@@ -2653,13 +2653,13 @@ fn per_source_planners_keep_screen_microphone_and_system_audio_paths_independent
     assert_eq!(
         microphone_planner.microphone_file(4),
         std::path::PathBuf::from(
-            "/tmp/native-capture-output-layout/2026/04/16/audio/microphone-microphone-session-segment-0004.m4a"
+            "/tmp/native-capture-output-layout/2026/04/16/audio/microphone-session-segment-0004.m4a"
         )
     );
     assert_eq!(
         system_audio_planner.system_audio_file(4),
         std::path::PathBuf::from(
-            "/tmp/native-capture-output-layout/2026/04/16/audio/system-audio-system-audio-session-segment-0004.m4a"
+            "/tmp/native-capture-output-layout/2026/04/16/audio/system-audio-session-segment-0004.m4a"
         )
     );
 }
@@ -2794,9 +2794,9 @@ fn next_microphone_output_file_for_runtime_uses_microphone_planner_session() {
     let expected_audio_dir = std::path::Path::new(&save_root_dir).join("2026/04/16/audio");
 
     assert_eq!(output_path.parent(), Some(expected_audio_dir.as_path()));
-    assert!(path.contains("audio/microphone-microphone-session-segment-0003-"));
+    assert!(path.contains("audio/microphone-session-segment-0003-"));
     assert!(!path.contains("screen-session-segment"));
-    assert!(!path.contains("system-audio-system-audio-session-segment"));
+    assert!(!path.contains("system-audio-session-segment"));
 }
 
 #[cfg(target_os = "macos")]
@@ -3049,7 +3049,7 @@ fn rotation_seeds_missing_system_audio_planner_before_planning_output_path() {
             .as_ref()
             .expect("system audio path should be planned")
             .to_string_lossy(),
-        "/tmp/native-capture-tests/2026/04/28/audio/system-audio-system-audio-session-segment-0005.m4a"
+        "/tmp/native-capture-tests/2026/04/28/audio/system-audio-session-segment-0005.m4a"
     );
 }
 
@@ -3529,7 +3529,7 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
             assert_eq!(
                 system_audio_output_path,
                 Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/23/audio/system-audio-native-session-wake-system-audio-segment-0002.m4a"
+                    "/tmp/native-capture-tests/2026/04/23/audio/native-session-wake-system-audio-segment-0002.m4a"
                 ))
             );
 
@@ -3546,7 +3546,7 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
     assert_eq!(
         runtime.system_audio_recording_file.as_deref(),
         Some(
-            "/tmp/native-capture-tests/2026/04/23/audio/system-audio-native-session-wake-system-audio-segment-0002.m4a"
+            "/tmp/native-capture-tests/2026/04/23/audio/native-session-wake-system-audio-segment-0002.m4a"
         )
     );
     let outputs = runtime
@@ -3845,7 +3845,7 @@ fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
     let expected_screen_file = format!(
         "/tmp/native-capture-tests/{expected_date_prefix}/native-session-screen-pause-segment-0002.mov"
     );
-    let expected_system_audio_file = "/tmp/native-capture-tests/2026/04/23/audio/system-audio-native-session-screen-pause-system-audio-segment-0002.m4a"
+    let expected_system_audio_file = "/tmp/native-capture-tests/2026/04/23/audio/native-session-screen-pause-system-audio-segment-0002.m4a"
         .to_string();
     let recovered = recover_screen_capture_after_wake_with_start_segment(
         &mut runtime,
@@ -5900,7 +5900,7 @@ fn resume_screen_includes_system_audio_when_audio_not_paused() {
             assert_eq!(
                 system_audio_output_path,
                 Some(std::path::Path::new(
-                    format!("/tmp/native-capture-tests/{expected_date_prefix}/audio/system-audio-system-audio-session-segment-0002.m4a").as_str()
+                    format!("/tmp/native-capture-tests/{expected_date_prefix}/audio/system-audio-session-segment-0002.m4a").as_str()
                 ))
             );
 
