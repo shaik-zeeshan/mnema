@@ -9,7 +9,7 @@
 - Run repo commands from the repo root.
 - Frontend flow: `bun run dev`, `bun run check`, `bun run build`.
 - Tauri CLI from the root: `bun run tauri -- dev` or `bun run tauri -- build`.
-- Rust-only verification for the desktop app: `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`.
+- Rust-only verification for the desktop app: `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`. This requires the `mnema-cli` sidecar to exist first (see Verification) — a clean checkout will not have it.
 - Focused Rust work: `cargo check -p <crate>` and `cargo test -p <crate>`.
 
 ## Boundaries
@@ -64,6 +64,7 @@
 - Recommended App Exclusions are Rust-owned exact bundle-id catalog matches with finite curated categories. Keep Known Browser App values separate from the Sensitive App Recommendation Catalog, and do not default-recommend broad workflow apps such as System Settings, Terminal/developer tools, messaging, or email.
 - Delete Recent Capture is not Retention Cleanup. It is a confirmed recovery action over recent wall-clock windows that deletes whole overlapping Capture Segments/Audio Segments and derived app data from Mnema's library without promising secure erase.
 - User Capture Pause is distinct from inactivity pause: it keeps the Capture Session alive, finalizes the active segment, records no requested sources while paused, and resumes only from explicit user action.
+- `install_from_tar_bz2` (`apps/desktop/src-tauri/src/speaker_analysis_models.rs`) extracts tarball entries by matching whole final path components via `Path::ends_with("model.onnx")`. This means a quantized sibling like `model.int8.onnx` is correctly skipped (different component) and only `model.onnx` is extracted — relevant when adding a `tar.bz2`-packaged speaker segmentation preset whose archive ships multiple `*.onnx` files. Set each descriptor's `required_files` + `sherpa_params.segmentation_relative_path` to the destination subdir the extractor writes to.
 
 ## Verification
 - UI-only changes: `bun run check`.
@@ -73,6 +74,7 @@
 - Focused tests in `apps/desktop/src-tauri/src/lib.rs` may need `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib <test-filter>`; without `--lib`, filtered Tauri tests may not run as expected.
 - Status-bar menu model changes: run `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib status_bar`.
 - Verifying the `audio-transcription` crate's `local-whisper` feature requires `cmake` in `PATH`, because `whisper-rs-sys` builds bundled `whisper.cpp`/GGML artifacts.
+- Any `cargo check`/`cargo test` against `apps/desktop/src-tauri/Cargo.toml` needs the `mnema-cli` sidecar present, or the Tauri build script fails with `resource path 'binaries/mnema-cli-<triple>' doesn't exist`. `bun run tauri -- dev`/`build` build it automatically, but a bare `cargo` invocation does not — run `bash scripts/prepare-mnema-cli-sidecar.sh debug` (or `release`) first to compile/copy it into `apps/desktop/src-tauri/binaries/`.
 
 ## Workflow
 - For desktop confirmations, alerts, and file dialogs, use Tauri dialog APIs/plugins (for example `@tauri-apps/plugin-dialog` in Svelte) instead of browser-native `window.confirm`, `window.alert`, or ad hoc browser dialogs.
