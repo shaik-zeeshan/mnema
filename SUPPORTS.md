@@ -184,6 +184,10 @@ Research notes:
 
 Linux support is not the immediate target, but these are the likely seams if/when Mnema expands beyond macOS/Windows.
 
+Research notes:
+
+- `docs/linux/runtime-capture-research.md` tracks recommended Linux runtime-capture APIs (portal ScreenCast + PipeWire, monitor-source system audio, idle/liveness/sleep-wake) and crate options.
+
 ### Bring-up / compilation
 
 - [ ] Add Linux CI job for Rust and frontend checks.
