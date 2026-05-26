@@ -14,23 +14,19 @@ use crate::{
     },
     model_install_dir, SpeakerAnalysisError, SpeakerAnalysisMetadata, SpeakerAnalysisOutput,
     SpeakerAnalysisProvider, SpeakerAnalysisRequest, SpeakerAnalysisResult, SpeakerCluster,
-    SpeakerRecognitionSuggestion, SpeakerTurn, DEFAULT_SHERPA_ONNX_MODEL_ID,
-    SHERPA_ONNX_PROVIDER_ID,
+    SpeakerRecognitionSuggestion, SpeakerTurn, DEFAULT_CLUSTERING_THRESHOLD,
+    DEFAULT_SHERPA_ONNX_MODEL_ID, SHERPA_ONNX_PROVIDER_ID,
 };
 
 const SAMPLE_RATE_HZ: u32 = 16_000;
-const SEGMENTATION_MODEL_RELATIVE_PATH: &str = "pyannote-segmentation-3.0/model.onnx";
-const EMBEDDING_MODEL_RELATIVE_PATH: &str = "nemo_en_titanet_small.onnx";
 const CLUSTERING_THRESHOLD_OPTION: &str = "clusteringThreshold";
 const NUM_CLUSTERS_OPTION: &str = "numClusters";
 const MIN_DURATION_ON_OPTION: &str = "minDurationOn";
 const MIN_DURATION_OFF_OPTION: &str = "minDurationOff";
 const MIN_DIARIZATION_AUDIO_MS: u64 = 1_000;
 const MIN_DIARIZATION_PEAK: f32 = 1.0e-5;
-const DEFAULT_CLUSTERING_THRESHOLD: f32 = 0.65;
 const SAFE_SINGLE_CHUNK_DIARIZATION_MS: u64 = 10_000;
 const SAFE_CHUNK_OVERLAP_MS: u64 = 1_000;
-const CROSS_CHUNK_CLUSTER_SIMILARITY_THRESHOLD: f32 = 0.60;
 const MERGE_ADJACENT_TURN_GAP_MS: u64 = 250;
 const MIN_RECOGNITION_SUGGESTION_SCORE: f32 = 0.60;
 const HIGH_RECOGNITION_SUGGESTION_SCORE: f32 = 0.72;
@@ -48,6 +44,16 @@ struct SherpaModelSelection {
     model_id: String,
     segmentation_model_path: PathBuf,
     embedding_model_path: PathBuf,
+    /// Per-model fast-clustering similarity threshold (accuracy #3). The
+    /// request-option override still wins over this in `diarization_config`.
+    clustering_threshold: f32,
+    /// Per-model cross-chunk cluster similarity threshold used by the
+    /// order-independent agglomerative pass (`agglomerate_local_clusters`)
+    /// when stitching safe-chunked clusters.
+    cross_chunk_threshold: f32,
+    /// Per-model minimum speaker-turn duration in milliseconds (accuracy #2);
+    /// turns shorter than this are skipped when forming per-chunk embeddings.
+    min_turn_ms: u64,
 }
 
 impl SherpaOnnxSpeakerAnalysisProvider {
@@ -81,7 +87,6 @@ struct GlobalSpeakerClusterState {
     id: usize,
     ranges: Vec<(usize, usize)>,
     representative_embedding: Vec<f32>,
-    representative_weight: usize,
 }
 
 #[async_trait]
@@ -347,6 +352,7 @@ fn analyze_long_audio_with_safe_chunking(
             &segments,
             extractor,
             next_local_cluster_key,
+            selection.min_turn_ms,
             &mut warning_reasons,
         )?;
         next_local_cluster_key += chunk_clusters.len();
@@ -367,12 +373,13 @@ fn analyze_long_audio_with_safe_chunking(
         return Ok(output);
     }
 
-    let mut global_clusters = Vec::<GlobalSpeakerClusterState>::new();
-    let mut local_to_global = BTreeMap::<usize, usize>::new();
-    for local in &local_clusters {
-        let global_id = assign_global_cluster(&mut global_clusters, local);
-        local_to_global.insert(local.key, global_id);
-    }
+    // Accuracy #1: order-independent agglomerative pass over ALL chunk-local
+    // clusters at once, instead of greedily assigning each local cluster as
+    // chunks stream in. The greedy pass seeded global clusters in chunk order
+    // and blended into a moving representative, so a real speaker could split
+    // into several global clusters depending on which chunk arrived first.
+    let (global_clusters, local_to_global) =
+        agglomerate_local_clusters(&local_clusters, selection.cross_chunk_threshold);
 
     for pending in pending_turns {
         let Some(global_id) = local_to_global.get(&pending.local_cluster_key).copied() else {
@@ -425,6 +432,7 @@ fn analyze_single_safe_chunk(
     segments: &[sherpa_onnx_runtime::OfflineSpeakerDiarizationSegment],
     extractor: &sherpa_onnx_runtime::SpeakerEmbeddingExtractor,
     next_local_cluster_key: usize,
+    min_turn_ms: u64,
     warning_reasons: &mut Vec<String>,
 ) -> SpeakerAnalysisResult<(Vec<LocalSpeakerCluster>, Vec<PendingSpeakerTurn>)> {
     let mut ranges_by_speaker = BTreeMap::<i32, Vec<(usize, usize)>>::new();
@@ -461,10 +469,29 @@ fn analyze_single_safe_chunk(
         }
     }
 
+    let min_turn_samples = min_turn_samples(min_turn_ms);
     let mut local_clusters = Vec::<LocalSpeakerCluster>::new();
     let mut speaker_to_local_key = BTreeMap::<i32, usize>::new();
     for (index, (speaker, ranges)) in ranges_by_speaker.into_iter().enumerate() {
-        let cluster_samples = concatenate_ranges(all_samples, &ranges);
+        // Accuracy #2: skip sub-second (per-model `min_turn_ms`) ranges when
+        // forming the cluster embedding, since short turns carry noisy speaker
+        // identity. Preserve current behavior if filtering would drop every
+        // range for this speaker in the chunk: keep all ranges rather than emit
+        // a zero-length embedding or drop the speaker entirely.
+        let embedding_ranges: Vec<(usize, usize)> = {
+            let filtered: Vec<(usize, usize)> = ranges
+                .iter()
+                .copied()
+                .filter(|(start, end)| end.saturating_sub(*start) >= min_turn_samples)
+                .collect();
+            if filtered.is_empty() {
+                warning_reasons.push("chunk_all_turns_sub_min".to_string());
+                ranges.clone()
+            } else {
+                filtered
+            }
+        };
+        let cluster_samples = concatenate_ranges(all_samples, &embedding_ranges);
         let embedding = match compute_embedding(extractor, &cluster_samples) {
             Ok(embedding) => embedding,
             Err(_) => {
@@ -474,7 +501,9 @@ fn analyze_single_safe_chunk(
             }
         };
         let key = next_local_cluster_key + index;
-        let total_samples = ranges.iter().map(|(start, end)| end - start).sum();
+        // `total_samples` is the cross-chunk blending weight, so weight by the
+        // ranges that actually fed the embedding.
+        let total_samples = embedding_ranges.iter().map(|(start, end)| end - start).sum();
         speaker_to_local_key.insert(speaker, key);
         local_clusters.push(LocalSpeakerCluster {
             key,
@@ -499,52 +528,126 @@ fn analyze_single_safe_chunk(
     Ok((local_clusters, pending_turns))
 }
 
+/// Working node for the agglomerative cross-chunk clustering pass. Each node
+/// starts as a single chunk-local cluster and accumulates the local cluster
+/// keys it absorbs as merges happen.
 #[cfg(feature = "sherpa-onnx")]
-fn assign_global_cluster(
-    global_clusters: &mut Vec<GlobalSpeakerClusterState>,
-    local_cluster: &LocalSpeakerCluster,
-) -> usize {
-    let best_match = global_clusters
-        .iter()
-        .map(|cluster| {
-            (
-                cluster.id,
-                cosine_similarity(&cluster.representative_embedding, &local_cluster.embedding),
-            )
-        })
-        .max_by(|left, right| {
-            left.1
-                .partial_cmp(&right.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+#[derive(Debug, Clone)]
+struct AgglomerativeNode {
+    member_keys: Vec<usize>,
+    ranges: Vec<(usize, usize)>,
+    /// `total_samples`-weighted centroid embedding (average linkage).
+    representative_embedding: Vec<f32>,
+    representative_weight: usize,
+}
 
-    if let Some((cluster_id, score)) = best_match {
-        if score >= CROSS_CHUNK_CLUSTER_SIMILARITY_THRESHOLD {
-            if let Some(cluster) = global_clusters
-                .iter_mut()
-                .find(|cluster| cluster.id == cluster_id)
-            {
-                cluster.ranges.extend(local_cluster.ranges.iter().copied());
-                blend_embeddings(
-                    &mut cluster.representative_embedding,
-                    cluster.representative_weight,
-                    &local_cluster.embedding,
-                    local_cluster.total_samples,
+/// Accuracy #1: one order-independent agglomerative clustering pass over ALL
+/// chunk-local cluster embeddings.
+///
+/// Starting from one node per local cluster, this repeatedly merges the single
+/// most-similar pair of nodes (by cosine similarity of their
+/// `total_samples`-weighted centroid embeddings) while the best pairwise
+/// similarity is `>= cross_chunk_threshold`, then stops. Centroid (average)
+/// linkage reuses the existing `blend_embeddings` weighting, so a merged node's
+/// representative is the `total_samples`-weighted mean of its members.
+///
+/// Order independence: the merge order is driven purely by pairwise similarity
+/// (the globally best pair each round), with deterministic tie-breaking by node
+/// index, not by the order chunks were processed. The same set of local
+/// clusters therefore always collapses to the same partition regardless of
+/// chunk arrival order. Final global cluster ids are assigned by ascending
+/// minimum member local-cluster key so ids are stable for a given partition.
+///
+/// Returns the finalized global clusters and a `local key -> global id` map.
+#[cfg(feature = "sherpa-onnx")]
+fn agglomerate_local_clusters(
+    local_clusters: &[LocalSpeakerCluster],
+    cross_chunk_threshold: f32,
+) -> (Vec<GlobalSpeakerClusterState>, BTreeMap<usize, usize>) {
+    let mut nodes: Vec<Option<AgglomerativeNode>> = local_clusters
+        .iter()
+        .map(|local| {
+            Some(AgglomerativeNode {
+                member_keys: vec![local.key],
+                ranges: local.ranges.clone(),
+                representative_embedding: local.embedding.clone(),
+                representative_weight: local.total_samples,
+            })
+        })
+        .collect();
+
+    // Repeatedly find and merge the globally most-similar pair of live nodes.
+    // Scanning all live pairs each round (rather than merging in input order)
+    // is what makes the result independent of chunk processing order.
+    loop {
+        let mut best: Option<(usize, usize, f32)> = None;
+        for left in 0..nodes.len() {
+            let Some(left_node) = &nodes[left] else {
+                continue;
+            };
+            for right in (left + 1)..nodes.len() {
+                let Some(right_node) = &nodes[right] else {
+                    continue;
+                };
+                let score = cosine_similarity(
+                    &left_node.representative_embedding,
+                    &right_node.representative_embedding,
                 );
-                cluster.representative_weight += local_cluster.total_samples;
+                let is_better = match best {
+                    Some((_, _, best_score)) => score > best_score,
+                    None => true,
+                };
+                if is_better {
+                    best = Some((left, right, score));
+                }
             }
-            return cluster_id;
         }
+
+        let Some((left, right, score)) = best else {
+            break;
+        };
+        if score < cross_chunk_threshold {
+            break;
+        }
+
+        // Merge `right` into `left`: blend the weighted centroid, union the
+        // ranges and member keys. `blend_embeddings` weights the existing
+        // centroid by its accumulated weight and the incoming centroid by its
+        // weight, yielding the `total_samples`-weighted mean of all members
+        // (average linkage), so the merge is commutative in the members.
+        let mut right_node = nodes[right].take().expect("right node is live");
+        let left_node = nodes[left].as_mut().expect("left node is live");
+        blend_embeddings(
+            &mut left_node.representative_embedding,
+            left_node.representative_weight,
+            &right_node.representative_embedding,
+            right_node.representative_weight,
+        );
+        left_node.representative_weight += right_node.representative_weight;
+        left_node.ranges.append(&mut right_node.ranges);
+        left_node.member_keys.append(&mut right_node.member_keys);
     }
 
-    let cluster_id = global_clusters.len();
-    global_clusters.push(GlobalSpeakerClusterState {
-        id: cluster_id,
-        ranges: local_cluster.ranges.clone(),
-        representative_embedding: local_cluster.embedding.clone(),
-        representative_weight: local_cluster.total_samples,
-    });
-    cluster_id
+    // Collect surviving nodes and order them by their smallest member key so
+    // global cluster ids are stable for a given partition (independent of which
+    // input index happened to be the merge target).
+    let mut surviving: Vec<AgglomerativeNode> = nodes.into_iter().flatten().collect();
+    surviving.sort_by_key(|node| node.member_keys.iter().copied().min().unwrap_or(usize::MAX));
+
+    let mut global_clusters = Vec::with_capacity(surviving.len());
+    let mut local_to_global = BTreeMap::new();
+    for (id, node) in surviving.into_iter().enumerate() {
+        for key in &node.member_keys {
+            local_to_global.insert(*key, id);
+        }
+        global_clusters.push(GlobalSpeakerClusterState {
+            id,
+            ranges: node.ranges,
+            representative_embedding: node.representative_embedding,
+        });
+    }
+
+    (global_clusters, local_to_global)
 }
 
 #[cfg(feature = "sherpa-onnx")]
@@ -589,6 +692,14 @@ fn safe_single_chunk_sample_limit() -> usize {
     SAMPLE_RATE_HZ as usize * SAFE_SINGLE_CHUNK_DIARIZATION_MS as usize / 1000
 }
 
+/// Convert a per-model minimum turn duration (ms) into a sample count at the
+/// fixed 16 kHz analysis rate, for accuracy #2 sub-second turn filtering.
+fn min_turn_samples(min_turn_ms: u64) -> usize {
+    (min_turn_ms as usize)
+        .saturating_mul(SAMPLE_RATE_HZ as usize)
+        / 1000
+}
+
 fn overlap_sample_limit() -> usize {
     SAMPLE_RATE_HZ as usize * SAFE_CHUNK_OVERLAP_MS as usize / 1000
 }
@@ -618,7 +729,8 @@ fn diarization_config(
             .options
             .get(CLUSTERING_THRESHOLD_OPTION)
             .and_then(serde_json::Value::as_f64)
-            .unwrap_or(DEFAULT_CLUSTERING_THRESHOLD as f64) as f32,
+            .map(|value| value as f32)
+            .unwrap_or(selection.clustering_threshold),
     );
     let num_clusters = sanitize_num_clusters(
         request
@@ -846,10 +958,18 @@ fn resolve_model_selection(
         })?;
     let install_dir = model_install_dir(models_dir, &descriptor)
         .map_err(|error| SpeakerAnalysisError::InvalidRequest(error.to_string()))?;
+    let params = descriptor.sherpa_params.as_ref().ok_or_else(|| {
+        SpeakerAnalysisError::InvalidRequest(format!(
+            "sherpa-onnx model id '{model_id}' is missing sherpa_params in the manifest descriptor"
+        ))
+    })?;
     Ok(SherpaModelSelection {
         model_id,
-        segmentation_model_path: install_dir.join(SEGMENTATION_MODEL_RELATIVE_PATH),
-        embedding_model_path: install_dir.join(EMBEDDING_MODEL_RELATIVE_PATH),
+        segmentation_model_path: install_dir.join(&params.segmentation_relative_path),
+        embedding_model_path: install_dir.join(&params.embedding_relative_path),
+        clustering_threshold: params.clustering_threshold,
+        cross_chunk_threshold: params.cross_chunk_threshold,
+        min_turn_ms: params.min_turn_ms,
     })
 }
 
@@ -1025,17 +1145,20 @@ mod tests {
     use super::*;
     use crate::{PersonEnrollment, PersonRecognitionRejection, SpeakerAnalysisRequest};
 
-    #[test]
-    fn resolves_model_paths_from_app_model_store() {
+    fn selection_for(model_id: &str) -> SherpaModelSelection {
         let request = SpeakerAnalysisRequest::new(
             "/tmp/audio.m4a",
             SHERPA_ONNX_PROVIDER_ID,
-            Some(DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+            Some(model_id.to_string()),
             "session-a",
             7,
         );
+        resolve_model_selection(&request, Path::new("/tmp/models")).expect("model")
+    }
 
-        let selection = resolve_model_selection(&request, Path::new("/tmp/models")).expect("model");
+    #[test]
+    fn resolves_model_paths_from_app_model_store() {
+        let selection = selection_for(DEFAULT_SHERPA_ONNX_MODEL_ID);
 
         assert_eq!(selection.model_id, DEFAULT_SHERPA_ONNX_MODEL_ID);
         assert_eq!(
@@ -1048,6 +1171,72 @@ mod tests {
                 "/tmp/models/sherpa_onnx/pyannote-3.0-nemo-titanet-small/nemo_en_titanet_small.onnx"
             )
         );
+        // Balanced preset: clustering threshold is the historical 0.65; the
+        // cross-chunk threshold was calibrated down to 0.50 for the #1
+        // over-split fix.
+        assert_eq!(selection.clustering_threshold, 0.65_f32);
+        assert_eq!(selection.cross_chunk_threshold, 0.50_f32);
+        assert_eq!(selection.cross_chunk_threshold, crate::BALANCED_CROSS_CHUNK_THRESHOLD);
+        assert_eq!(selection.min_turn_ms, crate::DEFAULT_MIN_TURN_MS);
+    }
+
+    #[test]
+    fn resolves_multilingual_preset_paths() {
+        let selection = selection_for(crate::MULTILINGUAL_SHERPA_ONNX_MODEL_ID);
+
+        assert_eq!(selection.model_id, crate::MULTILINGUAL_SHERPA_ONNX_MODEL_ID);
+        assert_eq!(
+            selection.segmentation_model_path,
+            PathBuf::from(
+                "/tmp/models/sherpa_onnx/pyannote-3.0-campplus-zh-en/pyannote-segmentation-3.0/model.onnx"
+            )
+        );
+        assert_eq!(
+            selection.embedding_model_path,
+            PathBuf::from(
+                "/tmp/models/sherpa_onnx/pyannote-3.0-campplus-zh-en/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+            )
+        );
+    }
+
+    #[test]
+    fn resolves_high_accuracy_preset_paths() {
+        let selection = selection_for(crate::HIGH_ACCURACY_SHERPA_ONNX_MODEL_ID);
+
+        assert_eq!(selection.model_id, crate::HIGH_ACCURACY_SHERPA_ONNX_MODEL_ID);
+        assert_eq!(
+            selection.segmentation_model_path,
+            PathBuf::from(
+                "/tmp/models/sherpa_onnx/reverb-v1-nemo-titanet-large/reverb-diarization-v1/model.onnx"
+            )
+        );
+        assert_eq!(
+            selection.embedding_model_path,
+            PathBuf::from(
+                "/tmp/models/sherpa_onnx/reverb-v1-nemo-titanet-large/nemo_en_titanet_large.onnx"
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_model_id() {
+        let request = SpeakerAnalysisRequest::new(
+            "/tmp/audio.m4a",
+            SHERPA_ONNX_PROVIDER_ID,
+            Some("does-not-exist".to_string()),
+            "session-a",
+            7,
+        );
+        let error =
+            resolve_model_selection(&request, Path::new("/tmp/models")).expect_err("unknown id");
+        assert!(matches!(error, SpeakerAnalysisError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn min_turn_samples_converts_ms_at_16khz() {
+        assert_eq!(min_turn_samples(0), 0);
+        assert_eq!(min_turn_samples(500), 8_000);
+        assert_eq!(min_turn_samples(1_000), 16_000);
     }
 
     #[test]
@@ -1211,35 +1400,77 @@ mod tests {
     }
 
     #[cfg(feature = "sherpa-onnx")]
+    fn local_cluster(key: usize, embedding: Vec<f32>) -> LocalSpeakerCluster {
+        LocalSpeakerCluster {
+            key,
+            ranges: vec![(key * 100, key * 100 + 100)],
+            embedding,
+            total_samples: 100,
+        }
+    }
+
+    #[cfg(feature = "sherpa-onnx")]
     #[test]
-    fn assigns_similar_local_clusters_to_the_same_global_cluster() {
-        let mut global_clusters = Vec::new();
-        let first = LocalSpeakerCluster {
-            key: 1,
-            ranges: vec![(0, 100)],
-            embedding: vec![1.0, 0.0],
-            total_samples: 100,
-        };
-        let second = LocalSpeakerCluster {
-            key: 2,
-            ranges: vec![(100, 200)],
-            embedding: vec![0.95, 0.05],
-            total_samples: 100,
-        };
-        let third = LocalSpeakerCluster {
-            key: 3,
-            ranges: vec![(200, 300)],
-            embedding: vec![0.0, 1.0],
-            total_samples: 100,
-        };
+    fn agglomerative_merges_similar_local_clusters_and_splits_distinct() {
+        let locals = vec![
+            local_cluster(1, vec![1.0, 0.0]),
+            local_cluster(2, vec![0.95, 0.05]),
+            local_cluster(3, vec![0.0, 1.0]),
+        ];
 
-        let first_id = assign_global_cluster(&mut global_clusters, &first);
-        let second_id = assign_global_cluster(&mut global_clusters, &second);
-        let third_id = assign_global_cluster(&mut global_clusters, &third);
+        let (global_clusters, local_to_global) =
+            agglomerate_local_clusters(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
 
-        assert_eq!(first_id, second_id);
-        assert_ne!(first_id, third_id);
         assert_eq!(global_clusters.len(), 2);
+        assert_eq!(local_to_global[&1], local_to_global[&2]);
+        assert_ne!(local_to_global[&1], local_to_global[&3]);
+    }
+
+    #[cfg(feature = "sherpa-onnx")]
+    #[test]
+    fn agglomerative_is_order_independent() {
+        // Three near-identical embeddings for one real speaker plus one
+        // distinct speaker. Greedy chunk-order assignment could split the
+        // first speaker; the agglomerative pass must collapse them regardless
+        // of input order and produce the same partition either way.
+        let forward = vec![
+            local_cluster(0, vec![1.0, 0.0, 0.0]),
+            local_cluster(1, vec![0.92, 0.10, 0.05]),
+            local_cluster(2, vec![0.88, 0.12, 0.08]),
+            local_cluster(3, vec![0.0, 0.0, 1.0]),
+        ];
+        let mut reversed = forward.clone();
+        reversed.reverse();
+
+        let (forward_clusters, forward_map) =
+            agglomerate_local_clusters(&forward, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
+        let (reversed_clusters, reversed_map) =
+            agglomerate_local_clusters(&reversed, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
+
+        // Same number of clusters and the same local->global partition.
+        assert_eq!(forward_clusters.len(), reversed_clusters.len());
+        assert_eq!(forward_clusters.len(), 2);
+        assert_eq!(forward_map, reversed_map);
+        // The three similar speakers collapse into one cluster.
+        assert_eq!(forward_map[&0], forward_map[&1]);
+        assert_eq!(forward_map[&0], forward_map[&2]);
+        assert_ne!(forward_map[&0], forward_map[&3]);
+    }
+
+    #[cfg(feature = "sherpa-onnx")]
+    #[test]
+    fn agglomerative_single_chunk_one_cluster_per_speaker() {
+        // Single-chunk path: distinct speakers, nothing to merge across chunks.
+        let locals = vec![
+            local_cluster(0, vec![1.0, 0.0]),
+            local_cluster(1, vec![0.0, 1.0]),
+        ];
+
+        let (global_clusters, local_to_global) =
+            agglomerate_local_clusters(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
+
+        assert_eq!(global_clusters.len(), 2);
+        assert_ne!(local_to_global[&0], local_to_global[&1]);
     }
 
     #[cfg(feature = "sherpa-onnx")]
@@ -1367,5 +1598,97 @@ mod tests {
             analyze_sherpa_request_blocking(request, Path::new(&models_dir)).expect("analysis");
 
         assert!(!output.turns.is_empty(), "speaker turns should be returned");
+    }
+
+    /// Slice 4 cross-chunk clustering validation harness.
+    ///
+    /// Count-level smoke test (not a DER benchmark) that runs the real
+    /// sherpa-onnx provider on two known clips and prints the resulting
+    /// global cluster counts. Reads the models dir and clip paths from env
+    /// vars so it stays reproducible across machines:
+    /// - `MNEMA_SPEAKER_ANALYSIS_MODELS_DIR`
+    /// - `MNEMA_SPEAKER_ANALYSIS_CLIP_3SPK` (chunked >10s path, 3 speakers)
+    /// - `MNEMA_SPEAKER_ANALYSIS_CLIP_2SPK` (2 speakers)
+    ///
+    /// Run with:
+    /// `cargo test -p speaker-analysis --features sherpa-onnx -- --ignored cross_chunk_cluster_count_validation_harness --nocapture`
+    #[cfg(feature = "sherpa-onnx")]
+    #[test]
+    #[ignore = "integration: requires downloaded models + local clips; run with --ignored --nocapture"]
+    fn cross_chunk_cluster_count_validation_harness() {
+        let models_dir = std::env::var("MNEMA_SPEAKER_ANALYSIS_MODELS_DIR").unwrap_or_else(|_| {
+            format!(
+                "{}/Library/Application Support/com.shaikzeeshan.mnema/speaker-analysis-models",
+                std::env::var("HOME").expect("HOME")
+            )
+        });
+        let clip_3spk = std::env::var("MNEMA_SPEAKER_ANALYSIS_CLIP_3SPK").unwrap_or_else(|_| {
+            format!(
+                "{}/Downloads/test_1.wav",
+                std::env::var("HOME").expect("HOME")
+            )
+        });
+        let clip_2spk = std::env::var("MNEMA_SPEAKER_ANALYSIS_CLIP_2SPK").unwrap_or_else(|_| {
+            format!(
+                "{}/Downloads/test.wav",
+                std::env::var("HOME").expect("HOME")
+            )
+        });
+
+        let _provider = SherpaOnnxSpeakerAnalysisProvider::with_models_dir(&models_dir);
+        let mut analyzed_any = false;
+        for (label, clip, expected) in [
+            ("test_1.wav (3 speakers, chunked)", clip_3spk, 3usize),
+            ("test.wav (2 speakers)", clip_2spk, 2usize),
+        ] {
+            if !Path::new(&clip).is_file() {
+                println!("[slice4-validation] {label}: SKIPPED (clip not found at {clip})");
+                continue;
+            }
+            let request = SpeakerAnalysisRequest::new(
+                &clip,
+                SHERPA_ONNX_PROVIDER_ID,
+                Some(DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+                "slice4-validation",
+                1,
+            );
+            let output = match analyze_sherpa_request_blocking(request, Path::new(&models_dir)) {
+                Ok(output) => output,
+                Err(error) => {
+                    println!(
+                        "[slice4-validation] {label}: SKIPPED (analysis error, e.g. unreadable file): {error:?}"
+                    );
+                    continue;
+                }
+            };
+            analyzed_any = true;
+            let chunking = output
+                .metadata
+                .provenance
+                .get("chunkingMode")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?");
+            let chunk_count = output
+                .metadata
+                .provenance
+                .get("chunkCount")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            println!(
+                "[slice4-validation] {label}: clusters={} turns={} chunkingMode={} chunkCount={} (expected~{expected})",
+                output.clusters.len(),
+                output.turns.len(),
+                chunking,
+                chunk_count,
+            );
+            assert!(
+                !output.turns.is_empty(),
+                "speaker turns should be returned for {label}"
+            );
+        }
+        assert!(
+            analyzed_any,
+            "no validation clip could be analyzed; set MNEMA_SPEAKER_ANALYSIS_CLIP_3SPK / _2SPK"
+        );
     }
 }
