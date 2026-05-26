@@ -20,6 +20,7 @@ use crate::{
 
 const SAMPLE_RATE_HZ: u32 = 16_000;
 const CLUSTERING_THRESHOLD_OPTION: &str = "clusteringThreshold";
+const CROSS_CHUNK_THRESHOLD_OPTION: &str = "crossChunkThreshold";
 const NUM_CLUSTERS_OPTION: &str = "numClusters";
 const MIN_DURATION_ON_OPTION: &str = "minDurationOn";
 const MIN_DURATION_OFF_OPTION: &str = "minDurationOff";
@@ -1097,12 +1098,22 @@ fn resolve_model_selection(
             "sherpa-onnx model id '{model_id}' is missing sherpa_params in the manifest descriptor"
         ))
     })?;
+    // The cross-chunk agglomeration threshold drives the global cluster count on
+    // long, multi-chunk audio. It defaults to the per-model calibrated value but
+    // is request-overridable (like clusteringThreshold) so it can be swept by the
+    // DER benchmark harness without rebuilding.
+    let cross_chunk_threshold = request
+        .options
+        .get(CROSS_CHUNK_THRESHOLD_OPTION)
+        .and_then(serde_json::Value::as_f64)
+        .map(|value| sanitize_threshold(value as f32))
+        .unwrap_or(params.cross_chunk_threshold);
     Ok(SherpaModelSelection {
         model_id,
         segmentation_model_path: install_dir.join(&params.segmentation_relative_path),
         embedding_model_path: install_dir.join(&params.embedding_relative_path),
         clustering_threshold: params.clustering_threshold,
-        cross_chunk_threshold: params.cross_chunk_threshold,
+        cross_chunk_threshold,
         min_turn_ms: params.min_turn_ms,
     })
 }
