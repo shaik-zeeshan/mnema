@@ -33,8 +33,8 @@ use super::runtime::{
     has_any_capture_sources, mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms,
     prefixed_capture_id, privacy_suspended_sources_for_runtime_state,
     refresh_runtime_planner_dates, reset_runtime_after_start_error, screen_planner_for_runtime,
-    should_recover_from_segment_finalize_error, NativeCaptureRuntime, PrivacyCaptureSuspension,
-    PrivacyCaptureSuspensionStatus, SegmentLoopControl,
+    should_recover_from_segment_finalize_error, CaptureSuspensionKind, NativeCaptureRuntime,
+    PrivacyCaptureSuspension, PrivacyCaptureSuspensionStatus, SegmentLoopControl,
 };
 use super::NativeCaptureState;
 
@@ -45,6 +45,11 @@ use super::NativeCaptureState;
 const FRAME_ARTIFACT_BUFFER_CAPACITY: usize = 64;
 const SEGMENT_LOOP_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const PRIVACY_FILTER_POLL_INTERVAL: Duration = Duration::from_secs(1);
+// While capture is suspended because the display is unavailable (display sleep,
+// screen lock, lid close, monitor disconnect), throttle recovery attempts to
+// this cadence so we don't churn ScreenCaptureKit restarts on every 1s poll.
+#[cfg(target_os = "macos")]
+const DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL: Duration = Duration::from_secs(2);
 
 #[cfg(target_os = "macos")]
 fn persist_capture_session_started(
@@ -838,10 +843,11 @@ fn active_sources_for_runtime_pause_state(
 }
 
 #[cfg(target_os = "macos")]
-fn suspend_screen_system_audio_for_privacy_failure(
+fn suspend_screen_system_audio_capture(
     app_handle: Option<&tauri::AppHandle>,
     runtime: &mut NativeCaptureRuntime,
     error: &CaptureErrorResponse,
+    kind: CaptureSuspensionKind,
 ) -> Result<(), CaptureErrorResponse> {
     if let Err(stop_error) =
         capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
@@ -854,8 +860,15 @@ fn suspend_screen_system_audio_for_privacy_failure(
         }
     }
     runtime.current_segment_sources = Some(explicit_privacy_suspension_sources(runtime));
-    runtime.privacy_capture_suspension = Some(PrivacyCaptureSuspension::new(error));
-    commit_suspended_screen_system_outputs(app_handle, runtime);
+    runtime.privacy_capture_suspension = Some(PrivacyCaptureSuspension::with_kind(kind, error));
+    // A display-unavailable suspension means macOS already tore the screen stream
+    // down, so the in-flight segment's `.mov` is incomplete/unopenable. Trying to
+    // finalize it only emits a spurious "screen output missing" error every time
+    // the display sleeps; the prior segments are already committed and recovery
+    // starts a fresh segment, so skip the doomed commit for that kind.
+    if kind != CaptureSuspensionKind::DisplayUnavailable {
+        commit_suspended_screen_system_outputs(app_handle, runtime);
+    }
     runtime.recording_file = None;
     runtime.system_audio_recording_file = None;
     preserve_live_microphone_continuation_outputs(runtime);
@@ -917,10 +930,27 @@ fn attempt_privacy_suspension_recovery(
     app_handle: &tauri::AppHandle,
     runtime: &mut NativeCaptureRuntime,
 ) -> PrivacySuspensionRecoveryOutcome {
-    let Some(suspension) = runtime.privacy_capture_suspension.as_ref() else {
-        return PrivacySuspensionRecoveryOutcome::NotSuspended;
+    let suspension_kind = match runtime.privacy_capture_suspension.as_ref() {
+        Some(suspension) => suspension.kind,
+        None => return PrivacySuspensionRecoveryOutcome::NotSuspended,
     };
-    if !suspension.can_retry() {
+
+    // For a transient display loss, don't attempt a (noisy, churny) capture
+    // restart until a display is actually back — otherwise every poll would hit
+    // ScreenCaptureKit with a doomed start and log another "no displays" error
+    // while the screen is locked or the display is asleep. Waiting is not a
+    // recovery failure, so leave the retry budget untouched.
+    if suspension_kind == CaptureSuspensionKind::DisplayUnavailable
+        && !capture_screen::screen_display_available()
+    {
+        return PrivacySuspensionRecoveryOutcome::RetryPending;
+    }
+
+    let can_retry = runtime
+        .privacy_capture_suspension
+        .as_ref()
+        .is_some_and(PrivacyCaptureSuspension::can_retry);
+    if !can_retry {
         return PrivacySuspensionRecoveryOutcome::RestartRequired;
     }
 
@@ -3472,6 +3502,9 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
         let mut last_privacy_filter_poll = Instant::now()
             .checked_sub(PRIVACY_FILTER_POLL_INTERVAL)
             .unwrap_or_else(Instant::now);
+        let mut last_suspension_recovery_attempt = Instant::now()
+            .checked_sub(DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL)
+            .unwrap_or_else(Instant::now);
         loop {
             let sleep_duration = {
                 let capture_state = app_handle.state::<NativeCaptureState>();
@@ -3526,15 +3559,32 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
 
             if let Some(privacy_filter_update) = privacy_filter_update {
                 if runtime.runtime().privacy_capture_suspension.is_some() {
-                    match attempt_privacy_suspension_recovery(&app_handle, runtime.runtime_mut()) {
-                        PrivacySuspensionRecoveryOutcome::Recovered => {
-                            super::debug_log::log(
-                                "privacy filter recovered; restarted screen/system-audio capture",
-                            );
+                    // Throttle display-unavailable recovery so we probe for a
+                    // returning display at a calm cadence instead of on every 1s
+                    // poll. Privacy-filter recovery is left to retry promptly
+                    // (it's capped at a few attempts).
+                    let suspension_kind = runtime
+                        .runtime()
+                        .privacy_capture_suspension
+                        .as_ref()
+                        .map(|suspension| suspension.kind);
+                    let throttle_display_recovery = suspension_kind
+                        == Some(CaptureSuspensionKind::DisplayUnavailable)
+                        && last_suspension_recovery_attempt.elapsed()
+                            < DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL;
+                    if !throttle_display_recovery {
+                        last_suspension_recovery_attempt = Instant::now();
+                        match attempt_privacy_suspension_recovery(&app_handle, runtime.runtime_mut())
+                        {
+                            PrivacySuspensionRecoveryOutcome::Recovered => {
+                                super::debug_log::log(
+                                    "screen/system-audio capture recovered; restarted after suspension",
+                                );
+                            }
+                            PrivacySuspensionRecoveryOutcome::RestartRequired => {}
+                            PrivacySuspensionRecoveryOutcome::RetryPending
+                            | PrivacySuspensionRecoveryOutcome::NotSuspended => {}
                         }
-                        PrivacySuspensionRecoveryOutcome::RestartRequired => {}
-                        PrivacySuspensionRecoveryOutcome::RetryPending
-                        | PrivacySuspensionRecoveryOutcome::NotSuspended => {}
                     }
                 } else {
                     let apply_result = privacy::apply_privacy_filter_update(
@@ -3562,17 +3612,32 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                             );
                         }
                         Err(error) => {
-                            super::debug_log::log(format!(
-                    "privacy filter update failed; suspending screen/system-audio capture: [{}] {}",
-                    error.code, error.message
-                ));
-                            if let Err(stop_error) = suspend_screen_system_audio_for_privacy_failure(
+                            let display_unavailable =
+                                error.code == privacy::PRIVACY_FILTER_DISPLAY_UNAVAILABLE_CODE;
+                            let suspension_kind = if display_unavailable {
+                                CaptureSuspensionKind::DisplayUnavailable
+                            } else {
+                                CaptureSuspensionKind::PrivacyFilter
+                            };
+                            if display_unavailable {
+                                super::debug_log::log(format!(
+                                    "capture display unavailable; suspending screen/system-audio until the display returns: [{}] {}",
+                                    error.code, error.message
+                                ));
+                            } else {
+                                super::debug_log::log(format!(
+                                    "privacy filter update failed; suspending screen/system-audio capture: [{}] {}",
+                                    error.code, error.message
+                                ));
+                            }
+                            if let Err(stop_error) = suspend_screen_system_audio_capture(
                                 Some(&app_handle),
                                 runtime.runtime_mut(),
                                 &error,
+                                suspension_kind,
                             ) {
                                 super::debug_log::log(format!(
-                        "privacy failure suspension could not stop screen/system-audio capture; preserving runtime state: [{}] {}",
+                        "capture suspension could not stop screen/system-audio capture; preserving runtime state: [{}] {}",
                         stop_error.code, stop_error.message
                     ));
                                 if !capture_screen::should_preserve_runtime_on_stop_error(
@@ -3583,11 +3648,17 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                                 }
                                 continue;
                             }
-                            if !runtime
-                                .runtime()
-                                .requested_sources
-                                .as_ref()
-                                .is_some_and(|sources| sources.microphone)
+                            // A transient display loss keeps the session alive so
+                            // recovery can resume screen/system-audio when the
+                            // display returns, even with no microphone. A genuine
+                            // privacy-filter failure with no other live source
+                            // can't make progress, so end the session.
+                            if !display_unavailable
+                                && !runtime
+                                    .runtime()
+                                    .requested_sources
+                                    .as_ref()
+                                    .is_some_and(|sources| sources.microphone)
                             {
                                 mark_runtime_session_failed(runtime.runtime_mut());
                                 break;
@@ -3607,6 +3678,28 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 TickOutcome::Continue => {}
                 TickOutcome::SkipRotation => continue,
                 TickOutcome::StopLoop => break,
+            }
+        }
+
+        // The loop only falls out on its own when the session ended internally
+        // (a fatal capture failure, a privacy/display suspension that could not
+        // continue, lost sources, etc.). User- and command-initiated stops set
+        // the worker stop flag and broadcast the new session state themselves, so
+        // skip those to avoid racing their teardown. For an internal end nobody
+        // else announces it, so the frontend and the native status-bar tray would
+        // otherwise keep showing a running session (e.g. "Stop Recording") that no
+        // longer exists. Broadcast the real state so both surfaces resync.
+        if !worker_control.stop.load(Ordering::Relaxed) {
+            let session = app_handle
+                .state::<NativeCaptureState>()
+                .lock()
+                .ok()
+                .map(|runtime| runtime.session());
+            if let Some(session) = session {
+                if !session.is_running {
+                    super::emit_native_capture_session_changed(&app_handle, &session);
+                    crate::status_bar::refresh(&app_handle);
+                }
             }
         }
     });
@@ -3655,8 +3748,13 @@ mod tests {
             message: "privacy update failed".to_string(),
         };
 
-        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error)
-            .expect("privacy suspension should succeed");
+        suspend_screen_system_audio_capture(
+            None,
+            &mut runtime,
+            &error,
+            CaptureSuspensionKind::PrivacyFilter,
+        )
+        .expect("privacy suspension should succeed");
         assert!(
             runtime.current_segment_output_files.is_none(),
             "without microphone continuation, suspended screen/system outputs should already be committed and detached"
@@ -3673,6 +3771,77 @@ mod tests {
             Some(screen_path.as_str())
         );
         assert_eq!(output_files.screen_files, vec![screen_path]);
+    }
+
+    #[test]
+    fn display_unavailable_suspension_skips_dead_segment_commit_and_stays_running() {
+        // A display-unavailable suspension means macOS already tore the screen
+        // stream down, so the in-flight segment is unrecoverable. Even with an
+        // (otherwise openable) current segment, the suspend path must skip the
+        // commit — and must not fail the session — so a screen-only recording can
+        // resume automatically when the display returns.
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_path = temp_dir.path().join("screen-segment.mov");
+        std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+            .expect("fake openable mov should be written");
+        let screen_path = screen_path.to_string_lossy().into_owned();
+
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: false,
+            }),
+            current_segment_sources: Some(CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: false,
+            }),
+            output_files: Some(empty_output_files()),
+            current_segment_output_files: Some(CaptureOutputFiles {
+                screen_file: Some(screen_path.clone()),
+                screen_files: vec![screen_path.clone()],
+                microphone_file: None,
+                microphone_files: Vec::new(),
+                system_audio_file: None,
+                system_audio_files: Vec::new(),
+            }),
+            recording_file: Some(screen_path.clone()),
+            ..Default::default()
+        };
+        let error = CaptureErrorResponse {
+            code: "privacy_filter_display_unavailable".to_string(),
+            message: "no display".to_string(),
+        };
+
+        suspend_screen_system_audio_capture(
+            None,
+            &mut runtime,
+            &error,
+            CaptureSuspensionKind::DisplayUnavailable,
+        )
+        .expect("display-unavailable suspension should succeed");
+
+        // The session is kept alive for recovery rather than failed.
+        assert!(runtime.is_running);
+        assert_eq!(
+            runtime
+                .privacy_capture_suspension
+                .as_ref()
+                .map(|suspension| suspension.kind),
+            Some(CaptureSuspensionKind::DisplayUnavailable)
+        );
+        // The dead in-flight segment is dropped, not committed.
+        assert!(runtime.current_segment_output_files.is_none());
+        assert!(runtime.recording_file.is_none());
+        let output_files = runtime
+            .output_files
+            .expect("output files collection should be preserved");
+        assert!(
+            output_files.screen_file.is_none() && output_files.screen_files.is_empty(),
+            "the unrecoverable in-flight segment must not be committed"
+        );
     }
 
     #[test]
@@ -3713,8 +3882,13 @@ mod tests {
             message: "privacy update failed".to_string(),
         };
 
-        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error)
-            .expect("privacy suspension should succeed");
+        suspend_screen_system_audio_capture(
+            None,
+            &mut runtime,
+            &error,
+            CaptureSuspensionKind::PrivacyFilter,
+        )
+        .expect("privacy suspension should succeed");
 
         assert_eq!(
             runtime.current_segment_sources,
@@ -3774,8 +3948,13 @@ mod tests {
             message: "privacy update failed".to_string(),
         };
 
-        suspend_screen_system_audio_for_privacy_failure(None, &mut runtime, &error)
-            .expect("privacy suspension should succeed");
+        suspend_screen_system_audio_capture(
+            None,
+            &mut runtime,
+            &error,
+            CaptureSuspensionKind::PrivacyFilter,
+        )
+        .expect("privacy suspension should succeed");
 
         assert!(runtime.recording_file.is_none());
         assert!(runtime.system_audio_recording_file.is_none());

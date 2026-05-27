@@ -28,9 +28,30 @@ pub(crate) enum PrivacyCaptureSuspensionStatus {
     RestartRequired,
 }
 
+/// Why screen/system-audio capture was suspended. Both kinds drive the same
+/// recovery loop — restart a fresh screen segment once it's possible again — but
+/// they retry on different terms.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CaptureSuspensionKind {
+    /// A privacy content-filter apply failed. The failure is likely persistent,
+    /// so recovery is capped and then escalates to a manual stop/start.
+    PrivacyFilter,
+    /// The capture display became unavailable (display sleep, screen lock, lid
+    /// close, monitor disconnect). This is a transient liveness condition, not an
+    /// error, so recovery never gives up: it waits for a display to return and
+    /// then resumes capture automatically.
+    DisplayUnavailable,
+}
+
+/// A suspension of screen/system-audio capture that the segment loop keeps
+/// trying to recover from. Despite the name it now covers both privacy-filter
+/// failures and transient display-unavailable conditions (see
+/// [`CaptureSuspensionKind`]); `kind` selects the retry policy.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PrivacyCaptureSuspension {
+    pub kind: CaptureSuspensionKind,
     pub reason: String,
     pub last_error_code: String,
     pub last_error_message: String,
@@ -40,9 +61,14 @@ pub(crate) struct PrivacyCaptureSuspension {
 
 #[cfg(target_os = "macos")]
 impl PrivacyCaptureSuspension {
-    pub fn new(error: &CaptureErrorResponse) -> Self {
+    pub fn with_kind(kind: CaptureSuspensionKind, error: &CaptureErrorResponse) -> Self {
+        let reason = match kind {
+            CaptureSuspensionKind::PrivacyFilter => "privacy_filter_apply_failed",
+            CaptureSuspensionKind::DisplayUnavailable => "capture_display_unavailable",
+        };
         Self {
-            reason: "privacy_filter_apply_failed".to_string(),
+            kind,
+            reason: reason.to_string(),
             last_error_code: error.code.clone(),
             last_error_message: error.message.clone(),
             recovery_attempts: 0,
@@ -51,15 +77,28 @@ impl PrivacyCaptureSuspension {
     }
 
     pub fn can_retry(&self) -> bool {
-        self.status == PrivacyCaptureSuspensionStatus::Retryable
-            && self.recovery_attempts < MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS
+        if self.status != PrivacyCaptureSuspensionStatus::Retryable {
+            return false;
+        }
+        match self.kind {
+            // A display coming back is expected, not a failure to give up on.
+            CaptureSuspensionKind::DisplayUnavailable => true,
+            CaptureSuspensionKind::PrivacyFilter => {
+                self.recovery_attempts < MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS
+            }
+        }
     }
 
     pub fn record_recovery_failure(&mut self, error: &CaptureErrorResponse) {
         self.recovery_attempts = self.recovery_attempts.saturating_add(1);
         self.last_error_code = error.code.clone();
         self.last_error_message = error.message.clone();
-        if self.recovery_attempts >= MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS {
+        // Only privacy-filter failures escalate to "needs a manual restart". A
+        // display-unavailable suspension keeps retrying so it can resume on its
+        // own when the display returns.
+        if self.kind == CaptureSuspensionKind::PrivacyFilter
+            && self.recovery_attempts >= MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS
+        {
             self.status = PrivacyCaptureSuspensionStatus::RestartRequired;
             self.reason = "privacy_recovery_restart_required".to_string();
         }
@@ -788,7 +827,7 @@ mod tests {
     use super::source_session_suffix;
     #[cfg(target_os = "macos")]
     use super::{
-        PrivacyCaptureSuspension, PrivacyCaptureSuspensionStatus,
+        CaptureSuspensionKind, PrivacyCaptureSuspension, PrivacyCaptureSuspensionStatus,
         MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS,
     };
     #[cfg(target_os = "macos")]
@@ -817,7 +856,8 @@ mod tests {
             code: "privacy_filter_apply_failed".to_string(),
             message: "filter failed".to_string(),
         };
-        let mut suspension = PrivacyCaptureSuspension::new(&error);
+        let mut suspension =
+            PrivacyCaptureSuspension::with_kind(CaptureSuspensionKind::PrivacyFilter, &error);
 
         for _ in 0..MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS {
             assert!(suspension.can_retry());
@@ -830,5 +870,27 @@ mod tests {
             PrivacyCaptureSuspensionStatus::RestartRequired
         );
         assert_eq!(suspension.reason, "privacy_recovery_restart_required");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn display_unavailable_suspension_never_stops_retrying() {
+        let error = CaptureErrorResponse {
+            code: "privacy_filter_display_unavailable".to_string(),
+            message: "no display".to_string(),
+        };
+        let mut suspension =
+            PrivacyCaptureSuspension::with_kind(CaptureSuspensionKind::DisplayUnavailable, &error);
+
+        // A display returning is expected, not a failure to give up on: even far
+        // past the privacy-filter cap, recovery keeps retrying and never escalates
+        // to the manual-restart state.
+        for _ in 0..(MAX_PRIVACY_CAPTURE_RECOVERY_ATTEMPTS as u16 + 5) {
+            assert!(suspension.can_retry());
+            suspension.record_recovery_failure(&error);
+        }
+
+        assert!(suspension.can_retry());
+        assert_eq!(suspension.status, PrivacyCaptureSuspensionStatus::Retryable);
     }
 }

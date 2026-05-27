@@ -1225,6 +1225,32 @@ pub fn poll_screen_activity() -> bool {
     false
 }
 
+/// Whether the system currently has at least one active (drawable) display.
+///
+/// This is a cheap CoreGraphics check used to decide whether it's worth
+/// attempting to restart ScreenCaptureKit capture after a display-unavailable
+/// suspension: while a display is asleep, the lid is closed, or the monitor is
+/// unplugged, this returns `false`, so callers can wait quietly instead of
+/// hammering ScreenCaptureKit and logging repeated "no displays" errors.
+#[cfg(target_os = "macos")]
+pub fn screen_display_available() -> bool {
+    let mut display_ids = [0; MAX_ACTIVE_DISPLAY_COUNT as usize];
+    let mut display_count = 0;
+    let status = unsafe {
+        CGGetActiveDisplayList(
+            MAX_ACTIVE_DISPLAY_COUNT,
+            display_ids.as_mut_ptr(),
+            &mut display_count,
+        )
+    };
+    status == 0 && display_count > 0
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn screen_display_available() -> bool {
+    true
+}
+
 #[cfg(target_os = "macos")]
 pub fn reset_last_screen_activity_unix_ms() {
     LAST_SCREEN_ACTIVITY_UNIX_MS.store(0, Ordering::Relaxed);

@@ -7,6 +7,14 @@ use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
 
+/// Error code reported when a privacy-filter apply fails specifically because no
+/// capture display is available (display sleep, screen lock, lid close, monitor
+/// disconnect). The segment loop treats this as a transient liveness condition
+/// to recover from, distinct from a genuine privacy-filter failure.
+#[cfg(target_os = "macos")]
+pub(super) const PRIVACY_FILTER_DISPLAY_UNAVAILABLE_CODE: &str =
+    "privacy_filter_display_unavailable";
+
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone)]
 pub(super) struct InitialPrivacyFilter {
@@ -433,7 +441,13 @@ pub(super) fn apply_privacy_filter_update(
     let outcome =
         capture_screen::update_active_privacy_filter(&mut runtime.active_screen_session, filter)
             .map_err(|error| CaptureErrorResponse {
-                code: "privacy_filter_apply_failed".to_string(),
+                code: if error.kind
+                    == capture_screen::PrivacyFilterApplyErrorKind::DisplayUnavailable
+                {
+                    PRIVACY_FILTER_DISPLAY_UNAVAILABLE_CODE.to_string()
+                } else {
+                    "privacy_filter_apply_failed".to_string()
+                },
                 message: error.message,
             })?;
     mark_privacy_decision_applied(app_handle, update.decision);

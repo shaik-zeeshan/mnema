@@ -54,6 +54,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Inactivity pause/resume for screen, microphone, and system audio families.
 - [x] Sleep/wake recovery for screen/system-audio while preserving microphone continuation.
 - [x] Screen/system-audio liveness reconciliation from AppKit wake notifications and ScreenCaptureKit stream delegate failures.
+- [x] Display-unavailable recovery: a display sleep/lock/lid-close/disconnect surfaced as a `DisplayUnavailable` privacy-filter apply error suspends screen/system-audio (preserving microphone continuation) and auto-resumes when a display returns, instead of failing the session.
 - [x] Screen frame export, captured-frame equivalence, OCR batching, and frame-index sidecars.
 
 ### Media and processing
