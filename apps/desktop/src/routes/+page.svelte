@@ -36,6 +36,12 @@
     setKeyboardHelpGroups,
     type KeyboardHelpGroup,
   } from "$lib/keyboard-help.svelte";
+  import {
+    getShortcutBinding,
+    keyboardBindings,
+    shortcutDefinitionWithBinding,
+    type EditableShortcutActionId,
+  } from "$lib/keyboard-bindings.svelte";
   import type {
     AudioSegmentDto,
     AudioSegmentMediaDto,
@@ -396,6 +402,14 @@
       scope: "audioDrawer",
     },
   } satisfies Record<string, ShortcutDefinition>;
+
+  function effectiveShortcut(definition: ShortcutDefinition): ShortcutDefinition {
+    if (definition.kind !== "command") return definition;
+    return shortcutDefinitionWithBinding(
+      definition,
+      getShortcutBinding(keyboardBindings.settings, definition.id as EditableShortcutActionId),
+    );
+  }
 
   type AudioSegmentSource = "microphone" | "systemAudio";
   type TrimmedTimelineFrames = {
@@ -2497,19 +2511,13 @@
     audioCurrentTime = nextTime;
   }
 
-  function isAudioDrawerSpaceSuppressedTarget(target: EventTarget | null): boolean {
+  function isAudioDrawerShortcutSuppressedTarget(target: EventTarget | null): boolean {
     if (!(target instanceof Element)) return false;
     return Boolean(
       target.closest(
         'button, input, textarea, select, [contenteditable="true"], [role="button"], [role="slider"], [data-shortcuts-ignore]',
       ),
     );
-  }
-
-  function isAudioDrawerRangeTarget(target: EventTarget | null): boolean {
-    if (!(target instanceof Element)) return false;
-    const input = target.closest("input");
-    return input instanceof HTMLInputElement && input.type === "range";
   }
 
   function onAudioDrawerKeydown(e: KeyboardEvent) {
@@ -2526,8 +2534,8 @@
     }
 
     if (
-      matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.playPause, "other") &&
-      !isAudioDrawerSpaceSuppressedTarget(e.target)
+      matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.playPause), windowPlatform) &&
+      !isAudioDrawerShortcutSuppressedTarget(e.target)
     ) {
       e.preventDefault();
       togglePlayPause();
@@ -2535,20 +2543,20 @@
     }
 
     if (
-      !isAudioDrawerRangeTarget(e.target) &&
+      !isAudioDrawerShortcutSuppressedTarget(e.target) &&
       (
-        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBack, "other") ||
-        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBackFast, "other") ||
-        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekForward, "other") ||
-        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekForwardFast, "other")
+        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBack), windowPlatform) ||
+        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBackFast), windowPlatform) ||
+        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForward), windowPlatform) ||
+        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForwardFast), windowPlatform)
       )
     ) {
       e.preventDefault();
-      if (matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBackFast, "other")) {
+      if (matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBackFast), windowPlatform)) {
         seekAudioBySeconds(-30);
-      } else if (matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekForwardFast, "other")) {
+      } else if (matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForwardFast), windowPlatform)) {
         seekAudioBySeconds(30);
-      } else if (matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBack, "other")) {
+      } else if (matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBack), windowPlatform)) {
         seekAudioBySeconds(-5);
       } else {
         seekAudioBySeconds(5);
@@ -5885,14 +5893,20 @@
     event: KeyboardEvent,
     definition: ShortcutDefinition,
   ): boolean {
-    return matchShortcut(event, definition, windowPlatform);
+    return matchShortcut(event, effectiveShortcut(definition), windowPlatform);
   }
 
   function isShortcutHelpKey(event: KeyboardEvent): boolean {
-    if (event.metaKey || event.ctrlKey || event.altKey) return false;
-    return (
-      (!event.shiftKey && event.key === "/") ||
-      (event.shiftKey && event.key === "?")
+    return matchShortcut(
+      event,
+      effectiveShortcut({
+        id: "toggleShortcutsHelp",
+        label: "Show keyboard shortcuts",
+        bindings: [{ key: "/" }],
+        kind: "command",
+        scope: "global",
+      }),
+      windowPlatform,
     );
   }
 
@@ -5927,48 +5941,49 @@
       return;
     }
 
+    const timelineShortcutSuppressed = isTimelineShortcutSuppressedTarget(event.target);
+    if (!timelineShortcutSuppressed) {
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.openJumpPicker)) {
+        event.preventDefault();
+        if (!pickerOpen) togglePicker();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.jumpLatest)) {
+        if (!showJumpToLatestButton || timelineLoading || timelineLoadingMore || pickerJumping) return;
+        event.preventDefault();
+        void jumpToLatestFrame();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.toggleOcr)) {
+        if (!timelineActive) return;
+        event.preventDefault();
+        void toggleOcrForActiveFrame();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.refreshTimeline)) {
+        if (timelineLoading || timelineLoadingMore || audioSegmentsLoading) return;
+        event.preventDefault();
+        void refreshTimelineAndDashboard();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.copyFrame)) {
+        if (!activePreviewPath) return;
+        event.preventDefault();
+        void copyActiveFrameImage();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.downloadFrame)) {
+        if (!activePreviewPath) return;
+        event.preventDefault();
+        void downloadActiveFrameImage();
+        return;
+      }
+    }
+
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (isTimelineShortcutSuppressedTarget(event.target)) return;
+    if (timelineShortcutSuppressed) return;
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
       onTimelineKeyDown(event);
-      return;
-    }
-
-    if (event.shiftKey) return;
-
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.openJumpPicker)) {
-      event.preventDefault();
-      if (!pickerOpen) togglePicker();
-      return;
-    }
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.jumpLatest)) {
-      if (!showJumpToLatestButton || timelineLoading || timelineLoadingMore || pickerJumping) return;
-      event.preventDefault();
-      void jumpToLatestFrame();
-      return;
-    }
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.toggleOcr)) {
-      if (!timelineActive) return;
-      event.preventDefault();
-      void toggleOcrForActiveFrame();
-      return;
-    }
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.refreshTimeline)) {
-      if (timelineLoading || timelineLoadingMore || audioSegmentsLoading) return;
-      event.preventDefault();
-      void refreshTimelineAndDashboard();
-      return;
-    }
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.copyFrame)) {
-      if (!activePreviewPath) return;
-      event.preventDefault();
-      void copyActiveFrameImage();
-      return;
-    }
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.downloadFrame)) {
-      if (!activePreviewPath) return;
-      event.preventDefault();
-      void downloadActiveFrameImage();
     }
   }
 
@@ -7392,15 +7407,15 @@
     }
     timelineRows.push(
       {
-        ...DASHBOARD_SHORTCUTS.openJumpPicker,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.openJumpPicker),
         enabled: !pickerOpen,
       },
       {
-        ...DASHBOARD_SHORTCUTS.jumpLatest,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.jumpLatest),
         enabled: showJumpToLatestButton && !timelineLoading && !timelineLoadingMore && !pickerJumping,
       },
       {
-        ...DASHBOARD_SHORTCUTS.refreshTimeline,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.refreshTimeline),
         enabled: !timelineLoading && !timelineLoadingMore && !audioSegmentsLoading,
       },
       DASHBOARD_SHORTCUTS.closeSurface,
@@ -7408,16 +7423,16 @@
 
     const frameRows: KeyboardHelpGroup["rows"] = [
       {
-        ...DASHBOARD_SHORTCUTS.toggleOcr,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.toggleOcr),
         label: ocrVisible ? "Hide OCR panel" : "Show OCR panel",
         enabled: timelineActive != null,
       },
       {
-        ...DASHBOARD_SHORTCUTS.copyFrame,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.copyFrame),
         enabled: activePreviewPath != null,
       },
       {
-        ...DASHBOARD_SHORTCUTS.downloadFrame,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.downloadFrame),
         enabled: activePreviewPath != null,
       },
     ];
@@ -7441,23 +7456,23 @@
         title: "Audio Drawer",
         rows: [
           {
-            ...AUDIO_DRAWER_SHORTCUTS.playPause,
+            ...effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.playPause),
             enabled: selectedAudioSrc != null,
           },
           {
-            ...AUDIO_DRAWER_SHORTCUTS.seekBack,
+            ...effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBack),
             enabled: selectedAudioSrc != null,
           },
           {
-            ...AUDIO_DRAWER_SHORTCUTS.seekForward,
+            ...effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForward),
             enabled: selectedAudioSrc != null,
           },
           {
-            ...AUDIO_DRAWER_SHORTCUTS.seekBackFast,
+            ...effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBackFast),
             enabled: selectedAudioSrc != null,
           },
           {
-            ...AUDIO_DRAWER_SHORTCUTS.seekForwardFast,
+            ...effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForwardFast),
             enabled: selectedAudioSrc != null,
           },
           AUDIO_DRAWER_SHORTCUTS.close,

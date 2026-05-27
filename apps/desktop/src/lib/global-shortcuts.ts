@@ -3,11 +3,17 @@ import {
   type KeyboardPlatform,
   type ShortcutDefinition,
 } from "$lib/keyboard";
+import {
+  getShortcutBinding,
+  keyboardBindings,
+  shortcutDefinitionWithBinding,
+} from "$lib/keyboard-bindings.svelte";
 
 export type SourceShortcutKey = "screen" | "microphone" | "systemAudio";
 
 export type GlobalShortcutId =
   | "toggleRecording"
+  | "pauseResumeRecording"
   | "openSettings"
   | "openDebug"
   | "toggleMainWindow"
@@ -21,6 +27,7 @@ export type GlobalShortcutAction =
   | { type: "closeShortcutsHelp" }
   | { type: "toggleShortcutsHelp" }
   | { type: "toggleRecording" }
+  | { type: "pauseResumeRecording" }
   | { type: "toggleMainWindow" }
   | { type: "openSettings" }
   | { type: "openDebug" }
@@ -28,7 +35,7 @@ export type GlobalShortcutAction =
 
 export type GlobalShortcutKeyEvent = Pick<
   KeyboardEvent,
-  "altKey" | "ctrlKey" | "key" | "metaKey" | "repeat" | "shiftKey"
+  "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "repeat" | "shiftKey"
 >;
 
 export type GlobalShortcutContext = {
@@ -45,6 +52,13 @@ export const GLOBAL_SHORTCUTS: Record<GlobalShortcutId, ShortcutDefinition> = {
     id: "toggleRecording",
     label: "Start or stop recording",
     bindings: [{ key: "R", primary: true, alt: true }],
+    kind: "command",
+    scope: "global",
+  },
+  pauseResumeRecording: {
+    id: "pauseResumeRecording",
+    label: "Pause or resume recording",
+    bindings: [{ key: "P", primary: true, alt: true }],
     kind: "command",
     scope: "global",
   },
@@ -106,6 +120,16 @@ export const GLOBAL_SHORTCUTS: Record<GlobalShortcutId, ShortcutDefinition> = {
   },
 };
 
+export function getEffectiveGlobalShortcut(id: GlobalShortcutId): ShortcutDefinition {
+  if (id === "closeShortcutsHelp") return GLOBAL_SHORTCUTS[id];
+  const binding = getShortcutBinding(keyboardBindings.settings, id);
+  return shortcutDefinitionWithBinding(GLOBAL_SHORTCUTS[id], binding);
+}
+
+function effectiveShortcut(id: GlobalShortcutId): ShortcutDefinition {
+  return getEffectiveGlobalShortcut(id);
+}
+
 export function getGlobalShortcutAction(
   event: GlobalShortcutKeyEvent,
   context: GlobalShortcutContext,
@@ -115,7 +139,7 @@ export function getGlobalShortcutAction(
 
   if (
     context.shortcutsHelpOpen &&
-    matchShortcut(event, GLOBAL_SHORTCUTS.closeShortcutsHelp, platform)
+    matchShortcut(event, effectiveShortcut("closeShortcutsHelp"), platform)
   ) {
     return { type: "closeShortcutsHelp" };
   }
@@ -125,41 +149,45 @@ export function getGlobalShortcutAction(
 
   if (
     !context.isShortcutSuppressedTarget &&
-    matchShortcut(event, GLOBAL_SHORTCUTS.toggleShortcutsHelp, platform)
+    matchShortcut(event, effectiveShortcut("toggleShortcutsHelp"), platform)
   ) {
     return { type: "toggleShortcutsHelp" };
   }
 
   if (context.isShortcutSuppressedTarget) return null;
 
-  if (matchShortcut(event, GLOBAL_SHORTCUTS.toggleRecording, platform)) {
+  if (matchShortcut(event, effectiveShortcut("toggleRecording"), platform)) {
     return { type: "toggleRecording" };
   }
 
-  if (matchShortcut(event, GLOBAL_SHORTCUTS.toggleMainWindow, platform)) {
+  if (matchShortcut(event, effectiveShortcut("pauseResumeRecording"), platform)) {
+    return { type: "pauseResumeRecording" };
+  }
+
+  if (matchShortcut(event, effectiveShortcut("toggleMainWindow"), platform)) {
     return { type: "toggleMainWindow" };
   }
 
-  if (matchShortcut(event, GLOBAL_SHORTCUTS.openSettings, platform)) {
+  if (matchShortcut(event, effectiveShortcut("openSettings"), platform)) {
     return { type: "openSettings" };
   }
 
   if (
     context.devEnabled &&
-    matchShortcut(event, GLOBAL_SHORTCUTS.openDebug, platform)
+    matchShortcut(event, effectiveShortcut("openDebug"), platform)
   ) {
     return { type: "openDebug" };
   }
 
   if (!context.isIdle) return null;
 
-  if (matchShortcut(event, GLOBAL_SHORTCUTS.toggleSourceScreen, platform)) {
+  if (matchShortcut(event, effectiveShortcut("toggleSourceScreen"), platform)) {
     return { type: "toggleSource", source: "screen" };
   }
-  if (matchShortcut(event, GLOBAL_SHORTCUTS.toggleSourceMicrophone, platform)) {
+  if (matchShortcut(event, effectiveShortcut("toggleSourceMicrophone"), platform)) {
     return { type: "toggleSource", source: "microphone" };
   }
-  if (matchShortcut(event, GLOBAL_SHORTCUTS.toggleSourceSystemAudio, platform)) {
+  if (matchShortcut(event, effectiveShortcut("toggleSourceSystemAudio"), platform)) {
     return { type: "toggleSource", source: "systemAudio" };
   }
 

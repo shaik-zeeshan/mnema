@@ -74,6 +74,22 @@ _Avoid_: Privacy settings, Developer settings, Agent Access tab
 The settings surface for app identity, version details, release channel information, and manual **App Update** checks.
 _Avoid_: status-bar updater, automatic update prompt, release dashboard
 
+**Keyboard Shortcuts Settings**:
+The top-level settings surface for viewing shortcuts and changing user-editable **Keyboard Bindings**.
+_Avoid_: capture settings keyboard section, hotkey debug panel, shortcut help overlay
+
+**Keyboard Bindings**:
+Persisted user preferences that assign editable key combinations to supported Mnema actions, including app-wide/native shortcuts and in-app shortcuts.
+_Avoid_: shortcut reference, keyboard help rows, recording setting
+
+**Pause/Resume Recording Shortcut**:
+A **Keyboard Binding** action that pauses an active **Capture Session** when recording is not user-paused and resumes it when the session is in **User Capture Pause**.
+_Avoid_: inactivity pause shortcut, stop/start recording shortcut, privacy mode shortcut
+
+**Shortcut Scope**:
+The active UI context in which a **Keyboard Binding** can fire, used to decide whether two bindings conflict.
+_Avoid_: settings tab, settings ownership domain, native registration scope
+
 **Settings Ownership Domain**:
 A coherent settings area whose values can be loaded, validated, saved, and broadcast without overwriting unrelated user preferences.
 _Avoid_: UI tab, settings category, full settings payload
@@ -130,6 +146,20 @@ _Avoid_: automatic install, forced update, startup restart
 - **Access Settings** treats expired and revoked **CLI Access Grant** values as history rather than active access.
 - **Access Settings** is a top-level settings surface distinct from Privacy and Developer settings.
 - **About Settings** is a top-level settings surface with settings tab id `about`.
+- **Keyboard Shortcuts Settings** is a top-level settings surface with settings tab id `shortcuts`, sidebar label `Shortcuts`, page title `Keyboard Shortcuts`, and description equivalent to `View and customize Mnema keyboard shortcuts`.
+- **Keyboard Shortcuts Settings** replaces the old Capture-tab global-shortcuts section rather than duplicating it.
+- **Keyboard Bindings** remain the persisted **Settings Ownership Domain** for editable shortcuts even when shown inside **Keyboard Shortcuts Settings**.
+- **Keyboard Bindings** include both app-wide/native actions and in-app actions; read-only shortcut help should render from the same effective bindings where possible.
+- V1 editable **Keyboard Bindings** cover command shortcuts; behavior/accessibility shortcuts such as close-on-Escape and focus trapping remain fixed unless a later design explicitly expands editability.
+- **Keyboard Bindings** use scoped uniqueness: two actions may share a shortcut only when their **Shortcut Scope** values cannot be active together.
+- App-wide/native **Keyboard Bindings** are reserved against conflicting in-app bindings when both could fire in the same foreground context.
+- Native background registration is limited to Start/Stop Recording, **Pause/Resume Recording Shortcut**, and Show/Hide Mnema; other **Keyboard Bindings** are foreground-only even when they are app-wide UI actions.
+- Foreground **Keyboard Bindings** may use single-key shortcuts or modifier chords, while native/background **Keyboard Bindings** require a modifier chord except for future explicitly-supported safe keys.
+- Foreground **Keyboard Bindings** should remain suppressed while typing in text inputs, textareas, editable content, and equivalent interactive controls.
+- **Keyboard Shortcuts Settings** should support clearing/unsetting an editable action, per-action reset to default, and a confirmed restore-all-defaults action.
+- **Keyboard Shortcuts Settings** should show scoped shortcut conflicts inline and disable saving until the user resolves them; V1 should not automatically replace another action's binding.
+- The **Pause/Resume Recording Shortcut** defaults to `CommandOrControl+Alt+P` (`⌥⌘P` on macOS).
+- The **Pause/Resume Recording Shortcut** controls only **User Capture Pause** and must not resume an inactivity-paused session unless the user had explicitly paused it.
 - A **Settings Ownership Domain** is defined by persistence and validation ownership rather than by the visual settings tab where its controls appear.
 - Autosave should save one **Settings Ownership Domain** at a time so an older settings draft cannot overwrite unrelated preferences from another domain.
 - Autosave may save different **Settings Ownership Domain** values concurrently, but saves within one domain should be serialized.
@@ -139,6 +169,7 @@ _Avoid_: automatic install, forced update, startup restart
 - Initial **Settings Ownership Domain** values are Capture Source Settings, Capture Timing Settings, Video Settings, Storage Settings, Display Settings, Metadata Settings, App Privacy Exclusion, Inactivity Settings, Processing Settings, and Developer Settings.
 - Stable **Settings Ownership Domain** ids are `capture_sources`, `capture_timing`, `video`, `storage`, `display`, `metadata`, `app_privacy_exclusion`, `inactivity`, `processing`, `developer`, `keyboard_bindings`, `microphone_controller`, `app_update`, `access`, and `one_time_prompt_state`.
 - Keyboard Bindings, Microphone Controller Preferences, App Update Settings, Access Settings, and **One-Time Prompt State** remain separate existing **Settings Ownership Domain** values rather than being folded into recording settings.
+- `keyboard-bindings.json` is the single persisted source of truth for editable **Keyboard Bindings**, including app-wide/native actions and in-app command shortcuts.
 - **App Privacy Exclusion** stays a dedicated **Settings Ownership Domain** with purpose-built mutation commands instead of full-payload autosave.
 - Normal settings autosave and visible controls should use **Settings Ownership Domain** mutation APIs rather than a full recording-settings payload.
 - A full recording-settings update path may remain only as a compatibility, migration, import, or debug backstop.

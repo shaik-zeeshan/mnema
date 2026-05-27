@@ -28,7 +28,7 @@ export type ShortcutDefinition = {
 type ShortcutKeyboardEvent = Pick<
   KeyboardEvent,
   "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey"
->;
+> & { code?: string };
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -65,6 +65,34 @@ function normalizedKey(key: string): string {
   return key.length === 1 ? key.toLowerCase() : key.toLowerCase();
 }
 
+function keyFromPhysicalCode(code: string | undefined): string | null {
+  if (!code) return null;
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit\d$/.test(code)) return code.slice(5);
+  switch (code) {
+    case "Backquote": return "`";
+    case "Minus": return "-";
+    case "Equal": return "=";
+    case "BracketLeft": return "[";
+    case "BracketRight": return "]";
+    case "Backslash": return "\\";
+    case "Semicolon": return ";";
+    case "Quote": return "'";
+    case "Comma": return ",";
+    case "Period": return ".";
+    case "Slash": return "/";
+    case "Space": return "Space";
+    default: return null;
+  }
+}
+
+function shortcutEventKey(event: ShortcutKeyboardEvent, platform: KeyboardPlatform): string {
+  if (platform === "macos" && event.altKey) {
+    return keyFromPhysicalCode(event.code) ?? event.key;
+  }
+  return event.key;
+}
+
 export function keyboardPlatformFromUserAgent(userAgent: string): KeyboardPlatform {
   const ua = userAgent.toLowerCase();
   if (ua.includes("mac os x") || ua.includes("macintosh")) return "macos";
@@ -97,7 +125,7 @@ export function matchShortcut(
     if (!eventMatchesPrimary(event, platform, binding.primary === true)) return false;
     if (event.altKey !== (binding.alt === true)) return false;
     if (event.shiftKey !== (binding.shift === true)) return false;
-    return normalizedKey(event.key) === normalizedKey(binding.key);
+    return normalizedKey(shortcutEventKey(event, platform)) === normalizedKey(binding.key);
   });
 }
 

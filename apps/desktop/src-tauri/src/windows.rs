@@ -363,6 +363,7 @@ fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
         "about" => Some("about"),
         "privacy" | "metadata" => Some("privacy"),
         "access" | "cliAccess" | "cli-access" => Some("access"),
+        "shortcuts" | "keyboard" | "keyboard-shortcuts" | "keyboard_bindings" => Some("shortcuts"),
         "video" => Some("video"),
         "audio" | "microphone" => Some("audio"),
         "processing" | "ocr" | "transcription" | "speakers" => Some("processing"),
@@ -955,6 +956,7 @@ mod tests {
         assert!(is_known_settings_tab("microphone"));
         assert!(is_known_settings_tab("capture"));
         assert!(is_known_settings_tab("privacy"));
+        assert!(is_known_settings_tab("shortcuts"));
         assert!(!is_known_settings_tab("transcripts"));
         assert!(!is_known_settings_tab("../developer"));
     }
@@ -967,6 +969,10 @@ mod tests {
         assert_eq!(normalize_settings_tab("microphone"), Some("audio"));
         assert_eq!(normalize_settings_tab("behavior"), Some("capture"));
         assert_eq!(normalize_settings_tab("metadata"), Some("privacy"));
+        assert_eq!(normalize_settings_tab("shortcuts"), Some("shortcuts"));
+        assert_eq!(normalize_settings_tab("keyboard"), Some("shortcuts"));
+        assert_eq!(normalize_settings_tab("keyboard-shortcuts"), Some("shortcuts"));
+        assert_eq!(normalize_settings_tab("keyboard_bindings"), Some("shortcuts"));
         assert_eq!(normalize_settings_tab("about"), Some("about"));
     }
 
