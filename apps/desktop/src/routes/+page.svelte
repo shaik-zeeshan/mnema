@@ -5947,48 +5947,49 @@
       return;
     }
 
+    const timelineShortcutSuppressed = isTimelineShortcutSuppressedTarget(event.target);
+    if (!timelineShortcutSuppressed) {
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.openJumpPicker)) {
+        event.preventDefault();
+        if (!pickerOpen) togglePicker();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.jumpLatest)) {
+        if (!showJumpToLatestButton || timelineLoading || timelineLoadingMore || pickerJumping) return;
+        event.preventDefault();
+        void jumpToLatestFrame();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.toggleOcr)) {
+        if (!timelineActive) return;
+        event.preventDefault();
+        void toggleOcrForActiveFrame();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.refreshTimeline)) {
+        if (timelineLoading || timelineLoadingMore || audioSegmentsLoading) return;
+        event.preventDefault();
+        void refreshTimelineAndDashboard();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.copyFrame)) {
+        if (!activePreviewPath) return;
+        event.preventDefault();
+        void copyActiveFrameImage();
+        return;
+      }
+      if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.downloadFrame)) {
+        if (!activePreviewPath) return;
+        event.preventDefault();
+        void downloadActiveFrameImage();
+        return;
+      }
+    }
+
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (isTimelineShortcutSuppressedTarget(event.target)) return;
+    if (timelineShortcutSuppressed) return;
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
       onTimelineKeyDown(event);
-      return;
-    }
-
-    if (event.shiftKey) return;
-
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.openJumpPicker)) {
-      event.preventDefault();
-      if (!pickerOpen) togglePicker();
-      return;
-    }
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.jumpLatest)) {
-      if (!showJumpToLatestButton || timelineLoading || timelineLoadingMore || pickerJumping) return;
-      event.preventDefault();
-      void jumpToLatestFrame();
-      return;
-    }
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.toggleOcr)) {
-      if (!timelineActive) return;
-      event.preventDefault();
-      void toggleOcrForActiveFrame();
-      return;
-    }
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.refreshTimeline)) {
-      if (timelineLoading || timelineLoadingMore || audioSegmentsLoading) return;
-      event.preventDefault();
-      void refreshTimelineAndDashboard();
-      return;
-    }
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.copyFrame)) {
-      if (!activePreviewPath) return;
-      event.preventDefault();
-      void copyActiveFrameImage();
-      return;
-    }
-    if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.downloadFrame)) {
-      if (!activePreviewPath) return;
-      event.preventDefault();
-      void downloadActiveFrameImage();
     }
   }
 

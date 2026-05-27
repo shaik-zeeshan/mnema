@@ -137,6 +137,19 @@ struct EditableAction {
     policy: BindingPolicy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReservedShortcutScope {
+    Foreground,
+    Dashboard,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReservedShortcut {
+    scope: ReservedShortcutScope,
+    binding: &'static str,
+    label: &'static str,
+}
+
 #[derive(Debug, Clone)]
 struct ParsedShortcut {
     primary: bool,
@@ -144,6 +157,16 @@ struct ParsedShortcut {
     shift: bool,
     key: String,
 }
+
+const RESERVED_SHORTCUTS: &[ReservedShortcut] = &[
+    ReservedShortcut { scope: ReservedShortcutScope::Foreground, binding: "Escape", label: "close the active surface" },
+    ReservedShortcut { scope: ReservedShortcutScope::Foreground, binding: "Tab", label: "move keyboard focus" },
+    ReservedShortcut { scope: ReservedShortcutScope::Foreground, binding: "Shift+Tab", label: "move keyboard focus backward" },
+    ReservedShortcut { scope: ReservedShortcutScope::Dashboard, binding: "ArrowLeft", label: "move to an older frame" },
+    ReservedShortcut { scope: ReservedShortcutScope::Dashboard, binding: "ArrowRight", label: "move to a newer frame" },
+    ReservedShortcut { scope: ReservedShortcutScope::Dashboard, binding: "Shift+ArrowLeft", label: "move 10 frames older" },
+    ReservedShortcut { scope: ReservedShortcutScope::Dashboard, binding: "Shift+ArrowRight", label: "move 10 frames newer" },
+];
 
 const EDITABLE_ACTIONS: &[EditableAction] = &[
     EditableAction { id: "toggleRecording", label: "Start or stop recording", scope: ShortcutScope::NativeGlobal, policy: BindingPolicy::NativeBackground },
@@ -454,6 +477,37 @@ fn scopes_conflict(left: ShortcutScope, right: ShortcutScope) -> bool {
     left == ShortcutScope::NativeGlobal || right == ShortcutScope::NativeGlobal || left == right
 }
 
+fn action_matches_reserved_scope(
+    action: &EditableAction,
+    reserved_scope: ReservedShortcutScope,
+) -> bool {
+    match reserved_scope {
+        ReservedShortcutScope::Foreground => action.scope != ShortcutScope::NativeGlobal,
+        ReservedShortcutScope::Dashboard => action.id.starts_with("dashboard."),
+    }
+}
+
+fn validate_reserved_conflicts(settings: &KeyboardBindingsSettings) -> Result<(), String> {
+    for action in EDITABLE_ACTIONS {
+        let binding = get_binding(settings, action.id).trim();
+        if binding.is_empty() {
+            continue;
+        }
+        let key = binding.to_ascii_lowercase();
+        for reserved in RESERVED_SHORTCUTS {
+            if key == reserved.binding.to_ascii_lowercase()
+                && action_matches_reserved_scope(action, reserved.scope)
+            {
+                return Err(format!(
+                    "Shortcut '{}' for '{}' is reserved to {}",
+                    binding, action.label, reserved.label
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_conflicts(settings: &KeyboardBindingsSettings) -> Result<(), String> {
     let mut seen: HashMap<String, (&EditableAction, String)> = HashMap::new();
     for action in EDITABLE_ACTIONS {
@@ -471,7 +525,7 @@ fn validate_conflicts(settings: &KeyboardBindingsSettings) -> Result<(), String>
         }
         seen.insert(key, (action, binding.to_string()));
     }
-    Ok(())
+    validate_reserved_conflicts(settings)
 }
 
 fn keyboard_bindings_file_path(app: &tauri::AppHandle) -> PathBuf {
@@ -805,6 +859,28 @@ mod tests {
         settings.dashboard_shortcuts.open_jump_picker = "shift+j".to_string();
         let settings = settings.validated_for_update().expect("shortcut should canonicalize");
         assert_eq!(settings.dashboard_shortcuts.open_jump_picker, "Shift+J");
+    }
+
+    #[test]
+    fn unsupported_keys_are_rejected() {
+        let mut settings = KeyboardBindingsSettings::defaults();
+        settings.dashboard_shortcuts.open_jump_picker = "Home".to_string();
+        assert!(settings.validated_for_update().is_err());
+    }
+
+    #[test]
+    fn fixed_foreground_behavior_shortcuts_are_reserved() {
+        let mut settings = KeyboardBindingsSettings::defaults();
+        settings.audio_drawer_shortcuts.play_pause = "Escape".to_string();
+        assert!(settings.validated_for_update().is_err());
+    }
+
+    #[test]
+    fn fixed_dashboard_behavior_shortcuts_are_reserved() {
+        let mut settings = KeyboardBindingsSettings::defaults();
+        settings.audio_drawer_shortcuts.seek_back = "".to_string();
+        settings.dashboard_shortcuts.open_jump_picker = "ArrowLeft".to_string();
+        assert!(settings.validated_for_update().is_err());
     }
 
     #[test]

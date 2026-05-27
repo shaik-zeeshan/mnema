@@ -66,6 +66,14 @@ export type EditableShortcutActionId =
 
 export type ShortcutCategory = "global" | "app" | "dashboard" | "audioDrawer";
 
+type ReservedShortcutScope = "foreground" | "dashboard";
+
+export type ReservedShortcutBinding = {
+  scope: ReservedShortcutScope;
+  binding: string;
+  label: string;
+};
+
 export type EditableShortcutAction = {
   id: EditableShortcutActionId;
   label: string;
@@ -73,6 +81,28 @@ export type EditableShortcutAction = {
   category: ShortcutCategory;
   nativeBackground: boolean;
 };
+
+export const RESERVED_SHORTCUT_BINDINGS: ReservedShortcutBinding[] = [
+  { scope: "foreground", binding: "Escape", label: "close the active surface" },
+  { scope: "foreground", binding: "Tab", label: "move keyboard focus" },
+  { scope: "foreground", binding: "Shift+Tab", label: "move keyboard focus backward" },
+  { scope: "dashboard", binding: "ArrowLeft", label: "move to an older frame" },
+  { scope: "dashboard", binding: "ArrowRight", label: "move to a newer frame" },
+  { scope: "dashboard", binding: "Shift+ArrowLeft", label: "move 10 frames older" },
+  { scope: "dashboard", binding: "Shift+ArrowRight", label: "move 10 frames newer" },
+];
+
+export function reservedShortcutConflict(
+  action: EditableShortcutAction,
+  normalizedBinding: string,
+): ReservedShortcutBinding | null {
+  const key = normalizedBinding.toLowerCase();
+  return RESERVED_SHORTCUT_BINDINGS.find((reserved) => {
+    if (reserved.binding.toLowerCase() !== key) return false;
+    if (reserved.scope === "foreground") return action.category !== "global";
+    return reserved.scope === action.category;
+  }) ?? null;
+}
 
 export const EDITABLE_SHORTCUT_ACTIONS: EditableShortcutAction[] = [
   { id: "toggleRecording", label: "Start or stop recording", description: "Works even when Mnema is in the background.", category: "global", nativeBackground: true },
@@ -294,12 +324,13 @@ export function parseShortcutBinding(value: string | null | undefined): KeyBindi
   return { key, primary, alt, shift };
 }
 
-function normalizeKey(key: string): string {
+function normalizeKey(key: string): string | null {
   const lower = key.toLowerCase();
   switch (lower) {
     case "esc":
     case "escape":
       return "Escape";
+    case " ":
     case "space":
     case "spacebar":
       return "Space";
@@ -320,8 +351,20 @@ function normalizeKey(key: string): string {
     case "enter":
     case "return":
       return "Enter";
-    default:
-      return key.length === 1 ? key.toUpperCase() : key;
+    case "backspace":
+      return "Backspace";
+    case "delete":
+      return "Delete";
+    default: {
+      if (key.length === 1) return key.toUpperCase();
+      if (/^f\d+$/i.test(key)) {
+        const number = Number(key.slice(1));
+        if (Number.isInteger(number) && number >= 0 && number <= 255) {
+          return key.toUpperCase();
+        }
+      }
+      return null;
+    }
   }
 }
 
@@ -333,6 +376,8 @@ export function shortcutBindingFromKeyboardEvent(event: KeyboardEvent): string |
   if (event.metaKey || event.ctrlKey) parts.push("CommandOrControl");
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
-  parts.push(normalizeKey(event.key));
+  const key = normalizeKey(event.key);
+  if (!key) return null;
+  parts.push(key);
   return parts.join("+");
 }

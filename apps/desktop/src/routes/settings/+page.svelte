@@ -21,6 +21,7 @@
     getShortcutBinding,
     normalizeShortcutBinding,
     parseShortcutBinding,
+    reservedShortcutConflict,
     setShortcutBinding,
     shortcutBindingFromKeyboardEvent,
     withKeyboardBindingDefaults,
@@ -409,6 +410,7 @@
   let activeTab = $state<SettingsTab>("capture");
   let brokerAuthorizationPromptVisible = $state(false);
   let shortcutCaptureActionId = $state<EditableShortcutActionId | null>(null);
+  let shortcutCaptureError = $state<{ actionId: EditableShortcutActionId; message: string } | null>(null);
   const keyboardPlatform = detectKeyboardPlatform();
   let agentAccessSection = $state<HTMLElement | null>(null);
 
@@ -1525,6 +1527,11 @@
         issues[action.id] = "Background shortcuts must include a modifier.";
         continue;
       }
+      const reserved = reservedShortcutConflict(action, normalized);
+      if (reserved) {
+        issues[action.id] = `Reserved to ${reserved.label}.`;
+        continue;
+      }
       const key = normalized.toLowerCase();
       const previous = seen.get(key);
       if (previous) {
@@ -1542,6 +1549,7 @@
   const keyboardShortcutSaveBlocked = $derived(Object.keys(keyboardShortcutIssues).length > 0 || shortcutCaptureActionId !== null);
 
   function shortcutIssueFor(actionId: EditableShortcutActionId): string | null {
+    if (shortcutCaptureError?.actionId === actionId) return shortcutCaptureError.message;
     return keyboardShortcutIssues[actionId] ?? null;
   }
 
@@ -1577,10 +1585,12 @@
   }
 
   function startShortcutCapture(actionId: EditableShortcutActionId): void {
+    shortcutCaptureError = null;
     shortcutCaptureActionId = shortcutCaptureActionId === actionId ? null : actionId;
   }
 
   function cancelShortcutCapture(): void {
+    shortcutCaptureError = null;
     shortcutCaptureActionId = null;
   }
 
@@ -1589,16 +1599,24 @@
     event.stopPropagation();
     event.stopImmediatePropagation();
     if (event.key === "Escape") {
+      shortcutCaptureError = null;
       shortcutCaptureActionId = null;
       return;
     }
     if (event.key === "Backspace" || event.key === "Delete") {
+      shortcutCaptureError = null;
       clearShortcut(actionId);
       shortcutCaptureActionId = null;
       return;
     }
     const binding = shortcutBindingFromKeyboardEvent(event);
-    if (!binding) return;
+    if (!binding) {
+      if (event.key !== "Meta" && event.key !== "Control" && event.key !== "Alt" && event.key !== "Shift") {
+        shortcutCaptureError = { actionId, message: "That key is not supported for shortcuts." };
+      }
+      return;
+    }
+    shortcutCaptureError = null;
     setShortcutDraft(actionId, binding);
     shortcutCaptureActionId = null;
   }
