@@ -282,10 +282,18 @@ impl KeyboardBindingsSettings {
         }
     }
 
+    #[cfg(test)]
     fn sanitized_for_load(self) -> Self {
+        self.sanitized_for_load_with_defaulted_bindings(HashSet::new())
+    }
+
+    fn sanitized_for_load_with_defaulted_bindings(
+        self,
+        mut defaulted_bindings: HashSet<&'static str>,
+    ) -> Self {
         let mut settings = self;
         settings.schema_version = 1;
-        settings.normalize_or_fallback();
+        settings.normalize_or_fallback(&mut defaulted_bindings);
         settings
     }
 
@@ -296,20 +304,21 @@ impl KeyboardBindingsSettings {
         Ok(self)
     }
 
-    fn normalize_or_fallback(&mut self) {
+    fn normalize_or_fallback(&mut self, defaulted_bindings: &mut HashSet<&'static str>) {
         let defaults = Self::defaults();
         for action in EDITABLE_ACTIONS {
             let value = get_binding(self, action.id).to_string();
             let normalized = match normalize_binding(&value, action.policy) {
                 Ok(Some(binding)) => binding,
                 Ok(None) => String::new(),
-                Err(_) => get_binding(&defaults, action.id).to_string(),
+                Err(_) => {
+                    defaulted_bindings.insert(action.id);
+                    get_binding(&defaults, action.id).to_string()
+                }
             };
             set_binding(self, action.id, normalized);
         }
-        if validate_conflicts(self).is_err() {
-            *self = defaults;
-        }
+        repair_load_conflicts(self, &defaults, defaulted_bindings);
     }
 
     fn normalize_or_error(&mut self) -> Result<(), String> {
@@ -528,6 +537,59 @@ fn validate_conflicts(settings: &KeyboardBindingsSettings) -> Result<(), String>
     validate_reserved_conflicts(settings)
 }
 
+fn repair_load_conflicts(
+    settings: &mut KeyboardBindingsSettings,
+    defaults: &KeyboardBindingsSettings,
+    defaulted_bindings: &HashSet<&'static str>,
+) {
+    let mut accepted: HashMap<String, (&EditableAction, String)> = HashMap::new();
+    for repair_defaulted in [false, true] {
+        for action in EDITABLE_ACTIONS {
+            if defaulted_bindings.contains(action.id) != repair_defaulted { continue; }
+            let binding = get_binding(settings, action.id).trim().to_string();
+            if binding.is_empty() { continue; }
+
+            if binding_conflicts_with_accepted(action, &binding, &accepted)
+                || binding_conflicts_with_reserved(action, &binding)
+            {
+                let fallback = get_binding(defaults, action.id).trim().to_string();
+                let replacement = if !fallback.is_empty()
+                    && !binding_conflicts_with_accepted(action, &fallback, &accepted)
+                    && !binding_conflicts_with_reserved(action, &fallback)
+                {
+                    fallback
+                } else {
+                    String::new()
+                };
+                set_binding(settings, action.id, replacement.clone());
+                if replacement.is_empty() { continue; }
+                accepted.insert(replacement.to_ascii_lowercase(), (action, replacement));
+                continue;
+            }
+
+            accepted.insert(binding.to_ascii_lowercase(), (action, binding));
+        }
+    }
+}
+
+fn binding_conflicts_with_accepted(
+    action: &EditableAction,
+    binding: &str,
+    accepted: &HashMap<String, (&EditableAction, String)>,
+) -> bool {
+    accepted
+        .get(&binding.to_ascii_lowercase())
+        .is_some_and(|(previous, _)| scopes_conflict(previous.scope, action.scope))
+}
+
+fn binding_conflicts_with_reserved(action: &EditableAction, binding: &str) -> bool {
+    let key = binding.to_ascii_lowercase();
+    RESERVED_SHORTCUTS.iter().any(|reserved| {
+        key == reserved.binding.to_ascii_lowercase()
+            && action_matches_reserved_scope(action, reserved.scope)
+    })
+}
+
 fn keyboard_bindings_file_path(app: &tauri::AppHandle) -> PathBuf {
     if let Ok(config_dir) = app.path().app_config_dir() {
         return config_dir.join(KEYBOARD_BINDINGS_FILE_NAME);
@@ -552,12 +614,59 @@ fn persist_settings(
         .map_err(|error| format!("Failed to persist keyboard bindings: {error}"))
 }
 
+fn parse_settings_from_raw(raw: &str) -> Option<KeyboardBindingsSettings> {
+    let defaulted_bindings = defaulted_binding_ids(raw);
+    serde_json::from_str::<KeyboardBindingsSettings>(raw)
+        .ok()
+        .map(|settings| settings.sanitized_for_load_with_defaulted_bindings(defaulted_bindings))
+}
+
+fn defaulted_binding_ids(raw: &str) -> HashSet<&'static str> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return HashSet::new();
+    };
+    EDITABLE_ACTIONS
+        .iter()
+        .filter_map(|action| {
+            binding_json_pointer(action.id)
+                .filter(|pointer| value.pointer(pointer).is_none())
+                .map(|_| action.id)
+        })
+        .collect()
+}
+
+fn binding_json_pointer(id: &str) -> Option<&'static str> {
+    match id {
+        "toggleRecording" => Some("/globalShortcuts/bindings/toggleRecording"),
+        "pauseResumeRecording" => Some("/globalShortcuts/bindings/pauseResumeRecording"),
+        "toggleMainWindow" => Some("/globalShortcuts/bindings/toggleMainWindow"),
+        "openSettings" => Some("/appShortcuts/openSettings"),
+        "openDebug" => Some("/appShortcuts/openDebug"),
+        "toggleSourceScreen" => Some("/appShortcuts/toggleSourceScreen"),
+        "toggleSourceMicrophone" => Some("/appShortcuts/toggleSourceMicrophone"),
+        "toggleSourceSystemAudio" => Some("/appShortcuts/toggleSourceSystemAudio"),
+        "toggleShortcutsHelp" => Some("/appShortcuts/toggleShortcutsHelp"),
+        "dashboard.openJumpPicker" => Some("/dashboardShortcuts/openJumpPicker"),
+        "dashboard.search" => Some("/dashboardShortcuts/search"),
+        "dashboard.jumpLatest" => Some("/dashboardShortcuts/jumpLatest"),
+        "dashboard.toggleOcr" => Some("/dashboardShortcuts/toggleOcr"),
+        "dashboard.refreshTimeline" => Some("/dashboardShortcuts/refreshTimeline"),
+        "dashboard.copyFrame" => Some("/dashboardShortcuts/copyFrame"),
+        "dashboard.downloadFrame" => Some("/dashboardShortcuts/downloadFrame"),
+        "audioDrawer.playPause" => Some("/audioDrawerShortcuts/playPause"),
+        "audioDrawer.seekBack" => Some("/audioDrawerShortcuts/seekBack"),
+        "audioDrawer.seekForward" => Some("/audioDrawerShortcuts/seekForward"),
+        "audioDrawer.seekBackFast" => Some("/audioDrawerShortcuts/seekBackFast"),
+        "audioDrawer.seekForwardFast" => Some("/audioDrawerShortcuts/seekForwardFast"),
+        _ => None,
+    }
+}
+
 fn load_settings_from_disk(app: &tauri::AppHandle) -> KeyboardBindingsSettings {
     let path = keyboard_bindings_file_path(app);
     let settings = std::fs::read_to_string(&path)
         .ok()
-        .and_then(|raw| serde_json::from_str::<KeyboardBindingsSettings>(&raw).ok())
-        .map(KeyboardBindingsSettings::sanitized_for_load)
+        .and_then(|raw| parse_settings_from_raw(&raw))
         .unwrap_or_else(KeyboardBindingsSettings::defaults);
 
     if let Err(error) = persist_settings(app, &settings) {
@@ -829,6 +938,45 @@ mod tests {
         assert!(!settings.global_shortcuts.enabled);
         assert_eq!(settings.global_shortcuts.bindings.toggle_recording, "");
         assert_eq!(settings.global_shortcuts.bindings.pause_resume_recording, PAUSE_RESUME_RECORDING_DEFAULT);
+    }
+
+    #[test]
+    fn load_sanitization_preserves_existing_bindings_when_new_default_collides() {
+        let settings = parse_settings_from_raw(r#"{
+            "schemaVersion": 1,
+            "globalShortcuts": {
+                "enabled": true,
+                "bindings": {
+                    "toggleRecording": "CommandOrControl+Alt+P",
+                    "toggleMainWindow": "CommandOrControl+Alt+M"
+                }
+            },
+            "appShortcuts": {
+                "openSettings": "CommandOrControl+Shift+,"
+            }
+        }"#)
+        .expect("legacy settings should deserialize");
+
+        assert_eq!(settings.global_shortcuts.bindings.toggle_recording, PAUSE_RESUME_RECORDING_DEFAULT);
+        assert_eq!(settings.global_shortcuts.bindings.pause_resume_recording, "");
+        assert_eq!(settings.app_shortcuts.open_settings, "CommandOrControl+Shift+,");
+        validate_conflicts(&settings).expect("sanitized settings should be conflict-free");
+
+        let settings = parse_settings_from_raw(r#"{
+            "schemaVersion": 1,
+            "globalShortcuts": {
+                "enabled": true,
+                "bindings": {
+                    "toggleRecording": "CommandOrControl+Alt+R",
+                    "toggleMainWindow": "CommandOrControl+Alt+P"
+                }
+            }
+        }"#)
+        .expect("legacy settings should deserialize");
+
+        assert_eq!(settings.global_shortcuts.bindings.pause_resume_recording, "");
+        assert_eq!(settings.global_shortcuts.bindings.toggle_main_window, PAUSE_RESUME_RECORDING_DEFAULT);
+        validate_conflicts(&settings).expect("sanitized settings should be conflict-free");
     }
 
     #[test]
