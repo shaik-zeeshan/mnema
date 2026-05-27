@@ -1,0 +1,13 @@
+{
+  "name": "mnema-data",
+  "description": "Query your local Mnema activity (screen OCR, audio transcripts, timeline) through the brokered, read-only mnema CLI.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Shaik Zeeshan"
+  },
+  "skills": ["./"],
+  "homepage": "https://github.com/shaik-zeeshan/mnema",
+  "repository": "https://github.com/shaik-zeeshan/mnema",
+  "license": "MIT",
+  "keywords": ["mnema", "activity", "recall", "timeline", "cli", "privacy"]
+}

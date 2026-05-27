@@ -3178,6 +3178,45 @@
               {/if}
             {/if}
           </div>
+          <section class="access-guide" aria-label="How CLI Access works">
+            <div class="access-guide__lead">
+              <h3>For AI agents and local tools</h3>
+              <p>
+                Agents use the same <code>mnema</code> CLI path as humans. Known clients such as Codex, Claude Code,
+                Cursor, OpenCode, and PI can be labeled automatically, or a tool can declare a label with
+                <code>--client</code> or <code>MNEMA_CLI_CLIENT</code>.
+              </p>
+            </div>
+            <div class="access-guide__grid">
+              <article class="access-guide__item">
+                <span class="access-guide__kicker">Access</span>
+                <p>
+                  First use opens a Mnema approval prompt. Grants are read-only, redacted, time-bounded, and
+                  revocable from this screen.
+                </p>
+              </article>
+              <article class="access-guide__item">
+                <span class="access-guide__kicker">CLI</span>
+                <p>
+                  Search returns redacted snippets and opaque result IDs. <code>show-text</code> expands an ID, and
+                  <code>open</code> brings the result back into Mnema.
+                </p>
+              </article>
+              <article class="access-guide__item">
+                <span class="access-guide__kicker">Skill</span>
+                <p>
+                  The <code>mnema-data</code> agent skill is the supported wrapper for agent workflows. It should use
+                  CLI Access, not direct SQLite or media-file reads.
+                </p>
+              </article>
+            </div>
+            <div class="access-guide__commands" aria-label="Common commands">
+              <code>mnema access request --scope last-day --duration 24h</code>
+              <code>mnema search --query "project notes" --format json</code>
+              <code>mnema show-text &lt;result-id&gt;</code>
+              <code>mnema open &lt;result-id&gt;</code>
+            </div>
+          </section>
           <div class="row-actions">
             <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
               {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
@@ -7301,6 +7340,91 @@
     color: var(--app-text-muted);
     font-size: 11px;
     line-height: 1.5;
+  }
+
+  .access-guide {
+    display: grid;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--app-surface-subtle) 82%, var(--app-surface));
+  }
+
+  .access-guide__lead {
+    display: grid;
+    gap: 5px;
+  }
+
+  .access-guide__lead h3 {
+    margin: 0;
+    color: var(--app-text);
+    font-size: 13px;
+    font-weight: 750;
+    line-height: 1.25;
+  }
+
+  .access-guide__lead p,
+  .access-guide__item p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .access-guide code {
+    color: var(--app-text);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 10.5px;
+  }
+
+  .access-guide__grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .access-guide__item {
+    display: grid;
+    align-content: start;
+    gap: 5px;
+    min-width: 0;
+    padding: 9px;
+    border: 1px solid var(--app-border);
+    border-radius: 5px;
+    background: var(--app-surface);
+  }
+
+  .access-guide__kicker {
+    color: var(--app-text);
+    font-size: 10px;
+    font-weight: 750;
+    line-height: 1.2;
+    text-transform: uppercase;
+  }
+
+  .access-guide__commands {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .access-guide__commands code {
+    min-width: 0;
+    overflow: hidden;
+    padding: 7px 8px;
+    border: 1px solid var(--app-border);
+    border-radius: 5px;
+    background: var(--app-surface);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 760px) {
+    .access-guide__grid,
+    .access-guide__commands {
+      grid-template-columns: 1fr;
+    }
   }
 
   .agent-access-callout {
