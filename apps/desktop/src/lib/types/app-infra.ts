@@ -420,6 +420,7 @@ export interface ProcessingJobDto {
 	payloadJson: string | null;
 	lastError: string | null;
 	createdAt: string;
+	queuedAt: string;
 	updatedAt: string;
 	startedAt: string | null;
 	finishedAt: string | null;
