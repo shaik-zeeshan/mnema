@@ -35,7 +35,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Browser URL metadata | [x] | [ ] | [ ] | macOS uses AppleScript for supported browsers. |
 | Recommended app exclusions | [x] | [ ] | [ ] | Current catalog uses macOS bundle IDs. |
 | Status bar / tray | [x] | [~] | [~] | Tauri tray exists cross-platform; current UX includes macOS-only Exclude Current App behavior. |
-| Global shortcuts | [x] | [~] | [~] | Uses Tauri global shortcut plugin; platform behavior needs verification. |
+| Global shortcuts | [x] | [~] | [~] | Uses Tauri global shortcut plugin for background start/stop, pause/resume, and show/hide; platform behavior needs verification. |
 | Encrypted Capture Index key store | [x] | [ ] | [ ] | macOS uses Keychain. Windows/Linux platform key stores are missing. |
 | Broker Authorization Channel | [x] | [ ] | [~] | Unix socket implementation works for macOS/Linux shape; Windows needs named pipe/TCP/etc. |
 | CLI sidecar build | [x] | [~] | [~] | Script has target-aware `.exe` handling, but packaging/release not verified. |
@@ -82,7 +82,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Recommended sensitive app exclusion catalog using macOS bundle IDs.
 - [x] Native status-bar tray menu.
 - [x] Dock visibility and macOS terminate handling.
-- [x] Global shortcuts through Tauri plugin.
+- [x] Global shortcuts through Tauri plugin for background start/stop recording, pause/resume recording, and show/hide Mnema.
 
 ### Storage, access, and release
 

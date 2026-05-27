@@ -121,6 +121,9 @@ export type UpdateDeveloperSettingsRequest = Partial<
 export interface KeyboardBindingsSettings {
 	schemaVersion: number;
 	globalShortcuts: GlobalShortcutsSettings;
+	appShortcuts: AppShortcutBindings;
+	dashboardShortcuts: DashboardShortcutBindings;
+	audioDrawerShortcuts: AudioDrawerShortcutBindings;
 }
 
 export interface GlobalShortcutsSettings {
@@ -130,7 +133,35 @@ export interface GlobalShortcutsSettings {
 
 export interface GlobalShortcutBindings {
 	toggleRecording: string;
+	pauseResumeRecording: string;
 	toggleMainWindow: string;
+}
+
+export interface AppShortcutBindings {
+	openSettings: string;
+	openDebug: string;
+	toggleSourceScreen: string;
+	toggleSourceMicrophone: string;
+	toggleSourceSystemAudio: string;
+	toggleShortcutsHelp: string;
+}
+
+export interface DashboardShortcutBindings {
+	openJumpPicker: string;
+	search: string;
+	jumpLatest: string;
+	toggleOcr: string;
+	refreshTimeline: string;
+	copyFrame: string;
+	downloadFrame: string;
+}
+
+export interface AudioDrawerShortcutBindings {
+	playPause: string;
+	seekBack: string;
+	seekForward: string;
+	seekBackFast: string;
+	seekForwardFast: string;
 }
 
 export type VideoBitratePreset = "low" | "medium" | "high";

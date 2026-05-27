@@ -36,6 +36,12 @@
     setKeyboardHelpGroups,
     type KeyboardHelpGroup,
   } from "$lib/keyboard-help.svelte";
+  import {
+    getShortcutBinding,
+    keyboardBindings,
+    shortcutDefinitionWithBinding,
+    type EditableShortcutActionId,
+  } from "$lib/keyboard-bindings.svelte";
   import type {
     AudioSegmentDto,
     AudioSegmentMediaDto,
@@ -396,6 +402,14 @@
       scope: "audioDrawer",
     },
   } satisfies Record<string, ShortcutDefinition>;
+
+  function effectiveShortcut(definition: ShortcutDefinition): ShortcutDefinition {
+    if (definition.kind !== "command") return definition;
+    return shortcutDefinitionWithBinding(
+      definition,
+      getShortcutBinding(keyboardBindings.settings, definition.id as EditableShortcutActionId),
+    );
+  }
 
   type AudioSegmentSource = "microphone" | "systemAudio";
   type TrimmedTimelineFrames = {
@@ -2526,7 +2540,7 @@
     }
 
     if (
-      matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.playPause, "other") &&
+      matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.playPause), windowPlatform) &&
       !isAudioDrawerSpaceSuppressedTarget(e.target)
     ) {
       e.preventDefault();
@@ -2537,18 +2551,18 @@
     if (
       !isAudioDrawerRangeTarget(e.target) &&
       (
-        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBack, "other") ||
-        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBackFast, "other") ||
-        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekForward, "other") ||
-        matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekForwardFast, "other")
+        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBack), windowPlatform) ||
+        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBackFast), windowPlatform) ||
+        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForward), windowPlatform) ||
+        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForwardFast), windowPlatform)
       )
     ) {
       e.preventDefault();
-      if (matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBackFast, "other")) {
+      if (matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBackFast), windowPlatform)) {
         seekAudioBySeconds(-30);
-      } else if (matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekForwardFast, "other")) {
+      } else if (matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForwardFast), windowPlatform)) {
         seekAudioBySeconds(30);
-      } else if (matchShortcut(e, AUDIO_DRAWER_SHORTCUTS.seekBack, "other")) {
+      } else if (matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBack), windowPlatform)) {
         seekAudioBySeconds(-5);
       } else {
         seekAudioBySeconds(5);
@@ -5885,14 +5899,20 @@
     event: KeyboardEvent,
     definition: ShortcutDefinition,
   ): boolean {
-    return matchShortcut(event, definition, windowPlatform);
+    return matchShortcut(event, effectiveShortcut(definition), windowPlatform);
   }
 
   function isShortcutHelpKey(event: KeyboardEvent): boolean {
-    if (event.metaKey || event.ctrlKey || event.altKey) return false;
-    return (
-      (!event.shiftKey && event.key === "/") ||
-      (event.shiftKey && event.key === "?")
+    return matchShortcut(
+      event,
+      effectiveShortcut({
+        id: "toggleShortcutsHelp",
+        label: "Show keyboard shortcuts",
+        bindings: [{ key: "/" }],
+        kind: "command",
+        scope: "global",
+      }),
+      windowPlatform,
     );
   }
 
@@ -7392,15 +7412,15 @@
     }
     timelineRows.push(
       {
-        ...DASHBOARD_SHORTCUTS.openJumpPicker,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.openJumpPicker),
         enabled: !pickerOpen,
       },
       {
-        ...DASHBOARD_SHORTCUTS.jumpLatest,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.jumpLatest),
         enabled: showJumpToLatestButton && !timelineLoading && !timelineLoadingMore && !pickerJumping,
       },
       {
-        ...DASHBOARD_SHORTCUTS.refreshTimeline,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.refreshTimeline),
         enabled: !timelineLoading && !timelineLoadingMore && !audioSegmentsLoading,
       },
       DASHBOARD_SHORTCUTS.closeSurface,
@@ -7408,16 +7428,16 @@
 
     const frameRows: KeyboardHelpGroup["rows"] = [
       {
-        ...DASHBOARD_SHORTCUTS.toggleOcr,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.toggleOcr),
         label: ocrVisible ? "Hide OCR panel" : "Show OCR panel",
         enabled: timelineActive != null,
       },
       {
-        ...DASHBOARD_SHORTCUTS.copyFrame,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.copyFrame),
         enabled: activePreviewPath != null,
       },
       {
-        ...DASHBOARD_SHORTCUTS.downloadFrame,
+        ...effectiveShortcut(DASHBOARD_SHORTCUTS.downloadFrame),
         enabled: activePreviewPath != null,
       },
     ];
@@ -7441,23 +7461,23 @@
         title: "Audio Drawer",
         rows: [
           {
-            ...AUDIO_DRAWER_SHORTCUTS.playPause,
+            ...effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.playPause),
             enabled: selectedAudioSrc != null,
           },
           {
-            ...AUDIO_DRAWER_SHORTCUTS.seekBack,
+            ...effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBack),
             enabled: selectedAudioSrc != null,
           },
           {
-            ...AUDIO_DRAWER_SHORTCUTS.seekForward,
+            ...effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForward),
             enabled: selectedAudioSrc != null,
           },
           {
-            ...AUDIO_DRAWER_SHORTCUTS.seekBackFast,
+            ...effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBackFast),
             enabled: selectedAudioSrc != null,
           },
           {
-            ...AUDIO_DRAWER_SHORTCUTS.seekForwardFast,
+            ...effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForwardFast),
             enabled: selectedAudioSrc != null,
           },
           AUDIO_DRAWER_SHORTCUTS.close,

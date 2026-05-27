@@ -31,9 +31,11 @@
   } from "$lib/notifications.svelte";
   import {
     GLOBAL_SHORTCUTS,
+    getEffectiveGlobalShortcut,
     getGlobalShortcutAction,
     type GlobalShortcutId,
   } from "$lib/global-shortcuts";
+  import { getShortcutBinding, initKeyboardBindings, keyboardBindings, parseShortcutBinding } from "$lib/keyboard-bindings.svelte";
   import {
     detectKeyboardPlatform,
     formatShortcut,
@@ -90,6 +92,7 @@
   // SPA-only setup.
   initTheme();
   initAppNotifications();
+  initKeyboardBindings();
 
   $effect(() => {
     chromeAppearance = theme.appearance;
@@ -172,6 +175,7 @@
     if (notification.action?.type !== "open_settings_tab") return "Open";
     if (notification.action.tab === "about") return "Open update settings";
     if (notification.action.tab === "processing") return "Open processing settings";
+    if (notification.action.tab === "shortcuts") return "Open shortcut settings";
     return "Open settings";
   }
 
@@ -326,12 +330,14 @@
   }
 
   function shortcutDisplay(id: GlobalShortcutId): string {
-    return formatShortcut(GLOBAL_SHORTCUTS[id].bindings[0], windowPlatform).join("");
+    const binding = getEffectiveGlobalShortcut(id).bindings[0];
+    return binding ? formatShortcut(binding, windowPlatform).join("") : "—";
   }
 
-  const searchShortcutLabel = $derived(
-    formatShortcut({ key: "K", primary: true }, windowPlatform).join(""),
-  );
+  const searchShortcutLabel = $derived.by(() => {
+    const binding = parseShortcutBinding(getShortcutBinding(keyboardBindings.settings, "dashboard.search"));
+    return binding ? formatShortcut(binding, windowPlatform).join("") : "—";
+  });
 
   function shortcutWithLabel(
     definition: ShortcutDefinition,
@@ -346,28 +352,37 @@
     if (canToggleRecordingByShortcut) {
       rows.push(
         shortcutWithLabel(
-          GLOBAL_SHORTCUTS.toggleRecording,
+          getEffectiveGlobalShortcut("toggleRecording"),
           isCapturing ? "Stop recording" : "Start recording",
         ),
       );
     }
 
-    rows.push(GLOBAL_SHORTCUTS.toggleMainWindow);
-    rows.push(GLOBAL_SHORTCUTS.openSettings);
+    if (isCapturing) {
+      rows.push(
+        shortcutWithLabel(
+          getEffectiveGlobalShortcut("pauseResumeRecording"),
+          captureControls.isUserPaused ? "Resume recording" : "Pause recording",
+        ),
+      );
+    }
+
+    rows.push(getEffectiveGlobalShortcut("toggleMainWindow"));
+    rows.push(getEffectiveGlobalShortcut("openSettings"));
 
     if (devEnabled) {
-      rows.push(GLOBAL_SHORTCUTS.openDebug);
+      rows.push(getEffectiveGlobalShortcut("openDebug"));
     }
 
     if (canToggleSourcesByShortcut) {
       rows.push(
-        GLOBAL_SHORTCUTS.toggleSourceScreen,
-        GLOBAL_SHORTCUTS.toggleSourceMicrophone,
-        GLOBAL_SHORTCUTS.toggleSourceSystemAudio,
+        getEffectiveGlobalShortcut("toggleSourceScreen"),
+        getEffectiveGlobalShortcut("toggleSourceMicrophone"),
+        getEffectiveGlobalShortcut("toggleSourceSystemAudio"),
       );
     }
 
-    rows.push(GLOBAL_SHORTCUTS.toggleShortcutsHelp, GLOBAL_SHORTCUTS.closeShortcutsHelp);
+    rows.push(getEffectiveGlobalShortcut("toggleShortcutsHelp"), GLOBAL_SHORTCUTS.closeShortcutsHelp);
 
     return {
       id: "global",
@@ -380,7 +395,7 @@
     const groups = [globalShortcutHelpGroup, ...keyboardHelp.contextualGroups]
       .map((group) => ({
         ...group,
-        rows: group.rows.filter((row) => row.enabled !== false),
+        rows: group.rows.filter((row) => row.enabled !== false && row.bindings.length > 0),
       }))
       .filter((group) => group.rows.length > 0);
     return groups;
@@ -398,6 +413,15 @@
   async function toggleSourceShortcut(key: SourceLane["key"]): Promise<void> {
     if (!canToggleSourcesByShortcut || sourceSelection.isSaving(key)) return;
     await toggleSourceSelected(key);
+  }
+
+  async function pauseResumeRecordingShortcut(): Promise<void> {
+    if (!isCapturing || captureLoadingPause || captureLoadingStop || captureLoadingStart) return;
+    if (captureControls.isUserPaused) {
+      await resumeCapture();
+    } else {
+      await pauseCapture();
+    }
   }
 
   async function restartCaptureForPrivacyRecovery(): Promise<void> {
@@ -528,6 +552,11 @@
 
     if (action.type === "toggleRecording") {
       void toggleRecordingShortcut();
+      return;
+    }
+
+    if (action.type === "pauseResumeRecording") {
+      void pauseResumeRecordingShortcut();
       return;
     }
 

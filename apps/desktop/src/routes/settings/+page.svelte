@@ -14,6 +14,19 @@
   import SelectMenu from "$lib/components/Select.svelte";
   import ThemeModeControl from "$lib/components/ThemeModeControl.svelte";
   import { createAppPrivacyExclusionController } from "$lib/app-privacy-exclusion.svelte";
+  import { detectKeyboardPlatform, formatShortcut } from "$lib/keyboard";
+  import {
+    DEFAULT_KEYBOARD_BINDINGS,
+    EDITABLE_SHORTCUT_ACTIONS,
+    getShortcutBinding,
+    normalizeShortcutBinding,
+    parseShortcutBinding,
+    setShortcutBinding,
+    shortcutBindingFromKeyboardEvent,
+    withKeyboardBindingDefaults,
+    type EditableShortcutAction,
+    type EditableShortcutActionId,
+  } from "$lib/keyboard-bindings.svelte";
   import { setDeveloperOptionsEnabled } from "$lib/developer-options.svelte";
   import { setAppearance } from "$lib/theme.svelte";
   import type {
@@ -384,6 +397,7 @@
     | "video"
     | "access"
     | "privacy"
+    | "shortcuts"
     | "audio"
     | "processing"
     | "storage"
@@ -394,6 +408,8 @@
 
   let activeTab = $state<SettingsTab>("capture");
   let brokerAuthorizationPromptVisible = $state(false);
+  let shortcutCaptureActionId = $state<EditableShortcutActionId | null>(null);
+  const keyboardPlatform = detectKeyboardPlatform();
   let agentAccessSection = $state<HTMLElement | null>(null);
 
   // Scroll-region element. The wrapper persists across tab switches (only
@@ -562,6 +578,7 @@
     { id: "capture",    label: "Capture",     description: "Sources, segments, inactivity" },
     { id: "access",     label: "Access",      description: "CLI and local tools" },
     { id: "privacy",    label: "Privacy",     description: "Metadata and exclusions" },
+    { id: "shortcuts",  label: "Shortcuts",   description: "View and customize keys" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
     { id: "audio",      label: "Audio",       description: "Microphone devices & disconnects" },
     { id: "processing", label: "Processing",  description: "OCR, transcription, speakers" },
@@ -576,6 +593,7 @@
     if (value === "capture" || value === "behavior") return "capture";
     if (value === "access" || value === "cliAccess" || value === "cli-access") return "access";
     if (value === "privacy" || value === "metadata") return "privacy";
+    if (value === "shortcuts" || value === "keyboard" || value === "keyboard-shortcuts" || value === "keyboard_bindings") return "shortcuts";
     if (value === "video") return "video";
     if (value === "audio" || value === "microphone") return "audio";
     if (value === "processing" || value === "ocr" || value === "transcription" || value === "speakers") return "processing";
@@ -885,7 +903,8 @@
   }
 
   function syncKeyboardBindingsDrafts(s: KeyboardBindingsSettings) {
-    draftGlobalShortcutsEnabled = s.globalShortcuts.enabled;
+    keyboardBindingsSettings = withKeyboardBindingDefaults(s);
+    draftGlobalShortcutsEnabled = keyboardBindingsSettings.globalShortcuts.enabled;
     lastSavedKeyboardBindingsSnapshot = buildKeyboardBindingsSnapshot();
   }
 
@@ -1006,16 +1025,7 @@
   }
 
   function buildKeyboardBindingsRequest(): KeyboardBindingsSettings {
-    const current = keyboardBindingsSettings ?? {
-      schemaVersion: 1,
-      globalShortcuts: {
-        enabled: true,
-        bindings: {
-          toggleRecording: "CommandOrControl+Alt+R",
-          toggleMainWindow: "CommandOrControl+Alt+M",
-        },
-      },
-    };
+    const current = withKeyboardBindingDefaults(keyboardBindingsSettings ?? DEFAULT_KEYBOARD_BINDINGS);
     return {
       ...current,
       globalShortcuts: {
@@ -1478,6 +1488,149 @@
     return JSON.stringify(buildKeyboardBindingsRequest());
   }
 
+  function shortcutCategoryLabel(category: string): string {
+    if (category === "global") return "Recording & window";
+    if (category === "app") return "App";
+    if (category === "dashboard") return "Dashboard";
+    return "Audio Drawer";
+  }
+
+  function shortcutCategoryActions(category: string): EditableShortcutAction[] {
+    return EDITABLE_SHORTCUT_ACTIONS.filter((action) => action.category === category);
+  }
+
+  function shortcutDraftBinding(actionId: EditableShortcutActionId): string {
+    return getShortcutBinding(buildKeyboardBindingsRequest(), actionId);
+  }
+
+  function bindingHasModifier(binding: string): boolean {
+    const parsed = parseShortcutBinding(binding);
+    return parsed?.primary === true || parsed?.alt === true || parsed?.shift === true;
+  }
+
+  function shortcutIssues(): Record<string, string> {
+    const settings = buildKeyboardBindingsRequest();
+    const issues: Record<string, string> = {};
+    const seen = new Map<string, EditableShortcutAction>();
+
+    for (const action of EDITABLE_SHORTCUT_ACTIONS) {
+      const raw = getShortcutBinding(settings, action.id).trim();
+      if (!raw) continue;
+      const normalized = normalizeShortcutBinding(raw);
+      if (!normalized) {
+        issues[action.id] = "Use a valid shortcut such as J, ⌘K, or ⌥⌘P.";
+        continue;
+      }
+      if (action.nativeBackground && !bindingHasModifier(normalized)) {
+        issues[action.id] = "Background shortcuts must include a modifier.";
+        continue;
+      }
+      const key = normalized.toLowerCase();
+      const previous = seen.get(key);
+      if (previous) {
+        issues[action.id] = `Conflicts with ${previous.label}.`;
+        issues[previous.id] = `Conflicts with ${action.label}.`;
+      } else {
+        seen.set(key, action);
+      }
+    }
+
+    return issues;
+  }
+
+  const keyboardShortcutIssues = $derived(shortcutIssues());
+  const keyboardShortcutSaveBlocked = $derived(Object.keys(keyboardShortcutIssues).length > 0 || shortcutCaptureActionId !== null);
+
+  function shortcutIssueFor(actionId: EditableShortcutActionId): string | null {
+    return keyboardShortcutIssues[actionId] ?? null;
+  }
+
+  function setShortcutDraft(actionId: EditableShortcutActionId, binding: string): void {
+    const base = withKeyboardBindingDefaults(keyboardBindingsSettings ?? DEFAULT_KEYBOARD_BINDINGS);
+    keyboardBindingsSettings = setShortcutBinding(base, actionId, binding);
+  }
+
+  function clearShortcut(actionId: EditableShortcutActionId): void {
+    setShortcutDraft(actionId, "");
+  }
+
+  function resetShortcut(actionId: EditableShortcutActionId): void {
+    setShortcutDraft(actionId, getShortcutBinding(DEFAULT_KEYBOARD_BINDINGS, actionId));
+  }
+
+  async function restoreDefaultShortcuts(): Promise<void> {
+    const ok = await ask("Restore all keyboard shortcuts to their defaults?", {
+      title: "Restore default shortcuts",
+      kind: "warning",
+      okLabel: "Restore defaults",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    keyboardBindingsSettings = withKeyboardBindingDefaults(DEFAULT_KEYBOARD_BINDINGS);
+    draftGlobalShortcutsEnabled = DEFAULT_KEYBOARD_BINDINGS.globalShortcuts.enabled;
+  }
+
+  function shortcutKeyTokens(binding: string): string[] | null {
+    const parsed = parseShortcutBinding(binding);
+    if (!parsed) return null;
+    return formatShortcut(parsed, keyboardPlatform);
+  }
+
+  function startShortcutCapture(actionId: EditableShortcutActionId): void {
+    shortcutCaptureActionId = shortcutCaptureActionId === actionId ? null : actionId;
+  }
+
+  function cancelShortcutCapture(): void {
+    shortcutCaptureActionId = null;
+  }
+
+  function captureShortcut(actionId: EditableShortcutActionId, event: KeyboardEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    if (event.key === "Escape") {
+      shortcutCaptureActionId = null;
+      return;
+    }
+    if (event.key === "Backspace" || event.key === "Delete") {
+      clearShortcut(actionId);
+      shortcutCaptureActionId = null;
+      return;
+    }
+    const binding = shortcutBindingFromKeyboardEvent(event);
+    if (!binding) return;
+    setShortcutDraft(actionId, binding);
+    shortcutCaptureActionId = null;
+  }
+
+  // While listening for a new shortcut we intercept keys at the window in the
+  // capture phase. This is required because (a) WebKit (Tauri's WKWebView) does
+  // not focus a <button> on click, so a button-local onkeydown never fires, and
+  // (b) the layout's window keydown handler would otherwise swallow plain keys
+  // like "1"/"J"/"K" as app shortcuts before this row could record them.
+  $effect(() => {
+    const actionId = shortcutCaptureActionId;
+    if (actionId === null) return;
+
+    const onKeydown = (event: KeyboardEvent) => {
+      captureShortcut(actionId, event);
+    };
+    const onPointerDown = (event: Event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(`[data-shortcut-capture="${actionId}"]`)) {
+        return;
+      }
+      cancelShortcutCapture();
+    };
+
+    window.addEventListener("keydown", onKeydown, { capture: true });
+    window.addEventListener("pointerdown", onPointerDown, { capture: true });
+    return () => {
+      window.removeEventListener("keydown", onKeydown, { capture: true });
+      window.removeEventListener("pointerdown", onPointerDown, { capture: true });
+    };
+  });
+
   function buildMicSnapshot(): string {
     return JSON.stringify(buildMicRequest());
   }
@@ -1603,7 +1756,6 @@
     keyboardBindingsError = null;
     try {
       const s = await invoke<KeyboardBindingsSettings>("get_keyboard_bindings_settings");
-      keyboardBindingsSettings = s;
       syncKeyboardBindingsDrafts(s);
     } catch (err) {
       keyboardBindingsError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
@@ -2111,12 +2263,13 @@
     if (keyboardBindingsSettings === null || lastSavedKeyboardBindingsSnapshot === null) return;
     const current = buildKeyboardBindingsSnapshot();
     if (current === lastSavedKeyboardBindingsSnapshot) return;
+    if (keyboardShortcutSaveBlocked) return;
     if (savingKeyboardBindings) return;
 
     if (keyboardBindingsAutoSaveTimer !== null) clearTimeout(keyboardBindingsAutoSaveTimer);
     keyboardBindingsAutoSaveTimer = setTimeout(() => {
       keyboardBindingsAutoSaveTimer = null;
-      if (savingKeyboardBindings) return;
+      if (savingKeyboardBindings || keyboardShortcutSaveBlocked) return;
       if (buildKeyboardBindingsSnapshot() === lastSavedKeyboardBindingsSnapshot) return;
       void saveKeyboardBindingsSettings();
     }, RECORDING_AUTOSAVE_DEBOUNCE_MS);
@@ -2740,6 +2893,14 @@
         <path d="M9 12h6" />
         <path d="M12 9v6" />
       </svg>
+    {:else if kind === "shortcuts"}
+      <svg viewBox="0 0 24 24">
+        <rect x="3" y="6" width="18" height="12" rx="2" />
+        <path d="M7 10h.01" />
+        <path d="M11 10h.01" />
+        <path d="M15 10h.01" />
+        <path d="M8 14h8" />
+      </svg>
     {:else if kind === "video"}
       <svg viewBox="0 0 24 24">
         <rect x="3" y="5" width="18" height="14" rx="2" />
@@ -3283,19 +3444,122 @@
       <p class="group-hint">How long each recording segment is before a new one starts.</p>
     </div>
 
-    <div class="settings-divider"></div>
+  {/if}
+</section>
+</div>
+{/if}
 
+{#if activeTab === "shortcuts"}
+<div role="tabpanel" id="settings-panel-shortcuts" aria-labelledby="settings-tab-shortcuts" tabindex="0">
+<section class="card">
+  <div class="card__header">
+    <div class="card__heading">
+      <h2 class="card__title">Keyboard Shortcuts</h2>
+      <p class="card__subtitle">View and customize Mnema keyboard shortcuts.</p>
+    </div>
+    <div class="card__actions">
+      <button class="btn btn--ghost btn--sm" onclick={loadKeyboardBindingsSettings} disabled={savingKeyboardBindings}>
+        Reload
+      </button>
+      <button class="btn btn--ghost btn--sm" onclick={restoreDefaultShortcuts} disabled={savingKeyboardBindings}>
+        Restore defaults
+      </button>
+    </div>
+  </div>
+
+  {#if keyboardBindingsSettings === null}
+    <p class="loading-text">Loading shortcuts…</p>
+  {:else}
     <div class="settings-group">
-      <span class="group-label">Keyboard</span>
+      <span class="group-label">Background shortcuts</span>
       <Switch
         bind:checked={draftGlobalShortcutsEnabled}
         label="Global shortcuts"
-        description="Use system-wide shortcuts to show Mnema and start or stop recording while it is in the background"
+        description="Use system-wide shortcuts for recording and showing Mnema while it is in the background"
       />
-      <p class="group-hint">
-        Show or hide Mnema with <strong>⌥⌘M</strong>. Start or stop recording with <strong>⌥⌘R</strong>.
-      </p>
+      <p class="group-hint">Background shortcuts require a modifier chord. Foreground shortcuts are ignored while typing in text fields.</p>
+      <p class="group-hint">Click a shortcut to rebind it, then press the keys. <strong>Esc</strong> cancels, <strong>⌫</strong> clears. Changes save automatically.</p>
     </div>
+
+    {#if keyboardShortcutSaveBlocked && Object.keys(keyboardShortcutIssues).length > 0}
+      <div class="inline-error" role="alert">
+        <span class="inline-error__icon" aria-hidden="true">⚠</span>
+        <span class="inline-error__msg">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</span>
+      </div>
+    {/if}
+
+    {#each ["global", "app", "dashboard", "audioDrawer"] as category (category)}
+      <div class="settings-divider"></div>
+      <div class="settings-group">
+        <span class="group-label">{shortcutCategoryLabel(category)}</span>
+        <div class="shortcut-editor-list">
+          {#each shortcutCategoryActions(category) as action (action.id)}
+            {@const binding = shortcutDraftBinding(action.id)}
+            {@const issue = shortcutIssueFor(action.id)}
+            {@const tokens = shortcutKeyTokens(binding)}
+            {@const listening = shortcutCaptureActionId === action.id}
+            <div class="shortcut-editor-row" class:shortcut-editor-row--error={issue !== null} class:shortcut-editor-row--listening={listening}>
+              <div class="shortcut-editor-row__main">
+                <span class="shortcut-editor-row__title">{action.label}</span>
+                <span class="shortcut-editor-row__description">{action.description}</span>
+                {#if issue}
+                  <span class="shortcut-editor-row__error">{issue}</span>
+                {/if}
+              </div>
+              <div class="shortcut-editor-row__controls">
+                <button
+                  class="shortcut-capture"
+                  class:shortcut-capture--recording={listening}
+                  class:shortcut-capture--empty={!tokens && !listening}
+                  type="button"
+                  data-shortcut-capture={action.id}
+                  aria-label={listening ? `Listening for ${action.label} shortcut` : `Set shortcut for ${action.label}`}
+                  onclick={(event) => { startShortcutCapture(action.id); event.currentTarget.focus(); }}
+                >
+                  {#if listening}
+                    <span class="shortcut-capture__pulse" aria-hidden="true"></span>
+                    <span class="shortcut-capture__hint">Press keys…</span>
+                  {:else if tokens}
+                    <span class="shortcut-capture__keys">
+                      {#each tokens as token, i (i)}
+                        <kbd class="shortcut-cap">{token}</kbd>
+                      {/each}
+                    </span>
+                  {:else}
+                    <span class="shortcut-capture__hint">Set shortcut</span>
+                  {/if}
+                </button>
+                <button
+                  class="shortcut-icon-btn"
+                  type="button"
+                  title="Reset to default"
+                  aria-label={`Reset ${action.label} to default`}
+                  onclick={() => resetShortcut(action.id)}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 4v5h5" />
+                    <path d="M4 9a8 8 0 1 1-1.5 5" />
+                  </svg>
+                </button>
+                <button
+                  class="shortcut-icon-btn"
+                  type="button"
+                  title="Clear shortcut"
+                  aria-label={`Clear ${action.label}`}
+                  disabled={!binding}
+                  onclick={() => clearShortcut(action.id)}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m6 6 12 12" />
+                    <path d="m18 6-12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/each}
   {/if}
 </section>
 </div>
@@ -5545,6 +5809,14 @@
     min-width: 0;
   }
 
+  .card__actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
   .card--combobox-open {
     overflow: visible;
     z-index: 10;
@@ -5604,6 +5876,203 @@
     height: 1px;
     background: var(--app-border);
   }
+
+  .shortcut-editor-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .shortcut-editor-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 14px;
+    align-items: center;
+    padding: 9px 10px;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+  }
+
+  .shortcut-editor-row--error {
+    border-color: var(--app-danger-border);
+  }
+
+  .shortcut-editor-row__main {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .shortcut-editor-row__title {
+    color: var(--app-text);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+
+  .shortcut-editor-row__description {
+    color: var(--app-text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .shortcut-editor-row__error {
+    color: var(--app-danger-text);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .shortcut-editor-row__controls {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .shortcut-editor-row--listening {
+    border-color: var(--app-accent-border);
+  }
+
+  .shortcut-capture {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 104px;
+    min-height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-raised);
+    color: var(--app-text-strong);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease, color 0.12s ease, background 0.12s ease;
+  }
+
+  .shortcut-capture:hover,
+  .shortcut-capture:focus-visible {
+    border-color: var(--app-accent-border);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    outline: none;
+  }
+
+  .shortcut-capture--empty {
+    border-style: dashed;
+    color: var(--app-text-muted);
+    font-weight: 600;
+  }
+
+  .shortcut-capture--recording,
+  .shortcut-capture--recording:hover {
+    border-style: solid;
+    border-color: var(--app-accent);
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+
+  .shortcut-capture__keys {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .shortcut-cap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 4px;
+    background: var(--app-bg);
+    color: var(--app-text-strong);
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .shortcut-capture__hint {
+    line-height: 1;
+  }
+
+  .shortcut-capture__pulse {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--app-accent);
+    animation: shortcut-capture-pulse 1.3s ease-out infinite;
+  }
+
+  @keyframes shortcut-capture-pulse {
+    0% { box-shadow: 0 0 0 0 var(--app-accent-glow); opacity: 1; }
+    70% { box-shadow: 0 0 0 6px transparent; opacity: 0.55; }
+    100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .shortcut-capture__pulse {
+      animation: none;
+    }
+  }
+
+  .shortcut-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+  }
+
+  .shortcut-icon-btn svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .shortcut-icon-btn:hover:not(:disabled),
+  .shortcut-icon-btn:focus-visible {
+    border-color: var(--app-border-strong);
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+    outline: none;
+  }
+
+  .shortcut-icon-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  @media (max-width: 720px) {
+    .shortcut-editor-row {
+      grid-template-columns: 1fr;
+    }
+
+    .shortcut-editor-row__controls {
+      justify-content: flex-start;
+    }
+  }
+
 
   .about-card {
     gap: 14px;
