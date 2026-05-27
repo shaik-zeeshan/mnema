@@ -691,23 +691,47 @@ fn default_app_config_dir() -> Option<PathBuf> {
 }
 
 fn resolve_identity(explicit: Option<&str>) -> Result<BrokerClientIdentity, CliError> {
+    resolve_identity_from_env(
+        explicit,
+        |key| env::var(key).ok(),
+        |key| env::var_os(key).is_some(),
+    )
+}
+
+// Identity precedence, highest first:
+//   1. --client flag                  (explicit caller intent)
+//   2. MNEMA_CLI_CLIENT env value      (deliberate mnema-specific override)
+//   3. curated known-agent detection   (stable, version-free catalog label)
+//   4. AI_AGENT env value              (generic fallback for unrecognized agents)
+//   5. default CLI identity
+//
+// Curated detection deliberately outranks AI_AGENT: it keys off the env *key*
+// presence (e.g. CLAUDECODE) and yields a stable label, whereas AI_AGENT carries
+// a value that may embed a version (e.g. `claude-code_2-1-152_agent`). Matching on
+// the versioned value would force a fresh broker grant on every release, so a known
+// agent collapses to its catalog label and reuses one grant across versions.
+fn resolve_identity_from_env(
+    explicit: Option<&str>,
+    env_value: impl Fn(&str) -> Option<String>,
+    env_has_key: impl Fn(&str) -> bool,
+) -> Result<BrokerClientIdentity, CliError> {
     if let Some(value) = explicit {
         return BrokerClientIdentity::new(value, BrokerClientIdentitySource::Explicit)
             .map_err(|_| usage_error("--client must contain a visible client name"));
     }
-    for (key, source) in [
-        ("MNEMA_CLI_CLIENT", BrokerClientIdentitySource::Env),
-        ("AI_AGENT", BrokerClientIdentitySource::Env),
-    ] {
-        if let Ok(value) = env::var(key) {
-            if let Ok(identity) = BrokerClientIdentity::new(value, source) {
-                return Ok(identity);
-            }
+    if let Some(value) = env_value("MNEMA_CLI_CLIENT") {
+        if let Ok(identity) = BrokerClientIdentity::new(value, BrokerClientIdentitySource::Env) {
+            return Ok(identity);
         }
     }
-    if let Some(label) = inferred_agent_label_from_env(|key| env::var_os(key).is_some()) {
+    if let Some(label) = inferred_agent_label_from_env(&env_has_key) {
         return BrokerClientIdentity::new(label, BrokerClientIdentitySource::Inferred)
             .map_err(broker_error);
+    }
+    if let Some(value) = env_value("AI_AGENT") {
+        if let Ok(identity) = BrokerClientIdentity::new(value, BrokerClientIdentitySource::Env) {
+            return Ok(identity);
+        }
     }
     Ok(BrokerClientIdentity::default_cli())
 }
@@ -1193,5 +1217,50 @@ mod tests {
             inferred_agent_labels(),
             vec!["Claude Code", "Cursor", "Codex", "OpenCode", "PI"]
         );
+    }
+
+    #[test]
+    fn known_agent_detection_beats_versioned_ai_agent_value() {
+        // Claude Code sets both CLAUDECODE=1 and a versioned AI_AGENT value.
+        // Curated detection must win so the identity is version-free.
+        let identity = resolve_identity_from_env(
+            None,
+            |key| (key == "AI_AGENT").then(|| "claude-code_2-1-152_agent".to_string()),
+            |key| key == "CLAUDECODE",
+        )
+        .expect("identity resolves");
+        assert_eq!(identity.normalized_label, "claude code");
+        assert!(matches!(
+            identity.source,
+            BrokerClientIdentitySource::Inferred
+        ));
+    }
+
+    #[test]
+    fn explicit_mnema_client_env_overrides_known_agent_detection() {
+        let identity = resolve_identity_from_env(
+            None,
+            |key| match key {
+                "MNEMA_CLI_CLIENT" => Some("Custom Label".to_string()),
+                "AI_AGENT" => Some("claude-code_2-1-152_agent".to_string()),
+                _ => None,
+            },
+            |key| key == "CLAUDECODE",
+        )
+        .expect("identity resolves");
+        assert_eq!(identity.normalized_label, "custom label");
+        assert!(matches!(identity.source, BrokerClientIdentitySource::Env));
+    }
+
+    #[test]
+    fn unrecognized_agent_falls_back_to_ai_agent_value() {
+        let identity = resolve_identity_from_env(
+            None,
+            |key| (key == "AI_AGENT").then(|| "Some Tool".to_string()),
+            |_| false,
+        )
+        .expect("identity resolves");
+        assert_eq!(identity.normalized_label, "some tool");
+        assert!(matches!(identity.source, BrokerClientIdentitySource::Env));
     }
 }
