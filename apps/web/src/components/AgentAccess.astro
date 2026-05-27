@@ -1,5 +1,5 @@
 ---
-import { GITHUB_OWNER, GITHUB_REPO, GITHUB_URL } from "../config";
+import { GITHUB_OWNER, GITHUB_REPO } from "../config";
 
 const repoSlug = `${GITHUB_OWNER}/${GITHUB_REPO}`;
 const skillsCliUrl = "https://github.com/vercel-labs/skills";
@@ -8,6 +8,7 @@ const skillsCliCommand = `npx skills@latest add ${repoSlug}`;
 const installLines = [
   `/plugin marketplace add ${repoSlug}`,
   "/plugin install mnema-data@mnema",
+  "/reload-plugins",
 ];
 
 const usageLines = [
@@ -38,8 +39,10 @@ const usageLines = [
         </div>
         <p>
           In Mnema, open <strong>Settings &rarr; Access</strong> and install the
-          CLI. That puts the <code>mnema</code> command on your PATH. Grants are
-          read-only, time-bounded, and approved per client from inside the app.
+          CLI. Mnema installs the <code>mnema</code> command in its managed CLI
+          directory, usually <code>~/.local/bin</code> on macOS and Linux. If that
+          directory is not on your shell PATH yet, Settings will show the follow-up.
+          Grants are read-only, time-bounded, and approved per client from inside the app.
         </p>
       </li>
 

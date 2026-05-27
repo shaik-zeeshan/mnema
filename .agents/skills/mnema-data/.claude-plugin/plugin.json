@@ -5,6 +5,7 @@
   "author": {
     "name": "Shaik Zeeshan"
   },
+  "skills": ["./"],
   "homepage": "https://github.com/shaik-zeeshan/mnema",
   "repository": "https://github.com/shaik-zeeshan/mnema",
   "license": "MIT",
