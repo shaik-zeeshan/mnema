@@ -1,0 +1,14 @@
+{
+  "name": "mnema",
+  "owner": {
+    "name": "Shaik Zeeshan"
+  },
+  "description": "Plugins for working with Mnema, the local personal-activity record.",
+  "plugins": [
+    {
+      "name": "mnema-data",
+      "source": "./.agents/skills/mnema-data",
+      "description": "Query your local Mnema activity (screen OCR, audio transcripts, timeline) through the brokered, read-only mnema CLI."
+    }
+  ]
+}
