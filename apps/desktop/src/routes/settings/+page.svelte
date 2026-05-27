@@ -1505,9 +1505,9 @@
     return getShortcutBinding(buildKeyboardBindingsRequest(), actionId);
   }
 
-  function bindingHasModifier(binding: string): boolean {
+  function bindingHasNonShiftModifier(binding: string): boolean {
     const parsed = parseShortcutBinding(binding);
-    return parsed?.primary === true || parsed?.alt === true || parsed?.shift === true;
+    return parsed?.primary === true || parsed?.alt === true;
   }
 
   function shortcutIssues(): Record<string, string> {
@@ -1523,8 +1523,8 @@
         issues[action.id] = "Use a valid shortcut such as J, ⌘K, or ⌥⌘P.";
         continue;
       }
-      if (action.nativeBackground && !bindingHasModifier(normalized)) {
-        issues[action.id] = "Background shortcuts must include a modifier.";
+      if (action.nativeBackground && !bindingHasNonShiftModifier(normalized)) {
+        issues[action.id] = "Background shortcuts must include Command/Control or Alt.";
         continue;
       }
       const reserved = reservedShortcutConflict(action, normalized);
@@ -1609,9 +1609,11 @@
       shortcutCaptureActionId = null;
       return;
     }
-    const binding = shortcutBindingFromKeyboardEvent(event);
+    const binding = shortcutBindingFromKeyboardEvent(event, keyboardPlatform);
     if (!binding) {
-      if (event.key !== "Meta" && event.key !== "Control" && event.key !== "Alt" && event.key !== "Shift") {
+      if (keyboardPlatform === "macos" && event.ctrlKey && event.key !== "Control") {
+        shortcutCaptureError = { actionId, message: "Control shortcuts are not supported on macOS. Use Command or Option." };
+      } else if (event.key !== "Meta" && event.key !== "Control" && event.key !== "Alt" && event.key !== "Shift") {
         shortcutCaptureError = { actionId, message: "That key is not supported for shortcuts." };
       }
       return;
@@ -3495,7 +3497,7 @@
         label="Global shortcuts"
         description="Use system-wide shortcuts for recording and showing Mnema while it is in the background"
       />
-      <p class="group-hint">Background shortcuts require a modifier chord. Foreground shortcuts are ignored while typing in text fields.</p>
+      <p class="group-hint">Background shortcuts require Command/Control or Alt. Foreground shortcuts are ignored while typing in text fields.</p>
       <p class="group-hint">Click a shortcut to rebind it, then press the keys. <strong>Esc</strong> cancels, <strong>⌫</strong> clears. Changes save automatically.</p>
     </div>
 

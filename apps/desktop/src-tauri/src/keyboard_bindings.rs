@@ -382,8 +382,8 @@ fn normalize_binding(value: &str, policy: BindingPolicy) -> Result<Option<String
         return Ok(None);
     }
     let parsed = parse_shortcut(trimmed)?;
-    if policy == BindingPolicy::NativeBackground && !parsed.has_modifier() {
-        return Err("Background shortcuts must include a modifier".to_string());
+    if policy == BindingPolicy::NativeBackground && !parsed.has_non_shift_modifier() {
+        return Err("Background shortcuts must include Command/Control or Alt".to_string());
     }
     let canonical = parsed.canonical();
     if policy == BindingPolicy::NativeBackground && Shortcut::try_from(canonical.as_str()).is_err() {
@@ -459,8 +459,8 @@ fn normalize_key(key: &str) -> Result<String, String> {
 }
 
 impl ParsedShortcut {
-    fn has_modifier(&self) -> bool {
-        self.primary || self.alt || self.shift
+    fn has_non_shift_modifier(&self) -> bool {
+        self.primary || self.alt
     }
 
     fn canonical(&self) -> String {
@@ -840,10 +840,16 @@ mod tests {
     }
 
     #[test]
-    fn native_shortcuts_require_modifier() {
+    fn native_shortcuts_require_non_shift_modifier() {
         let mut settings = KeyboardBindingsSettings::defaults();
         settings.global_shortcuts.bindings.pause_resume_recording = "P".to_string();
-        assert!(settings.validated_for_update().is_err());
+        assert!(settings.clone().validated_for_update().is_err());
+
+        settings.global_shortcuts.bindings.pause_resume_recording = "Shift+P".to_string();
+        assert!(settings.clone().validated_for_update().is_err());
+
+        settings.global_shortcuts.bindings.pause_resume_recording = "Alt+P".to_string();
+        assert!(settings.validated_for_update().is_ok());
     }
 
     #[test]

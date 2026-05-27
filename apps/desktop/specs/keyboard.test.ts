@@ -4,6 +4,10 @@ import {
   matchShortcut,
   type ShortcutDefinition,
 } from "../src/lib/keyboard";
+import {
+  shortcutBindingFromKeyboardEvent,
+  shortcutDefinitionWithBinding,
+} from "../src/lib/keyboard-binding-utils";
 
 const searchShortcut: ShortcutDefinition = {
   id: "dashboard.search",
@@ -59,5 +63,47 @@ describe("keyboard helpers", () => {
     expect(
       matchShortcut(keyEvent({ metaKey: true, ctrlKey: true }), searchShortcut, "windows"),
     ).toBe(false);
+  });
+
+  test("does not capture macOS Control as CommandOrControl", () => {
+    expect(
+      shortcutBindingFromKeyboardEvent(
+        keyEvent({ ctrlKey: true, key: "p" }) as KeyboardEvent,
+        "macos",
+      ),
+    ).toBeNull();
+    expect(
+      shortcutBindingFromKeyboardEvent(
+        keyEvent({ metaKey: true, key: "p" }) as KeyboardEvent,
+        "macos",
+      ),
+    ).toBe("CommandOrControl+P");
+  });
+
+  test("captures Windows Control as CommandOrControl", () => {
+    expect(
+      shortcutBindingFromKeyboardEvent(
+        keyEvent({ ctrlKey: true, key: "p" }) as KeyboardEvent,
+        "windows",
+      ),
+    ).toBe("CommandOrControl+P");
+  });
+
+  test("preserves built-in alternate bindings when the editable binding is built in", () => {
+    const shortcutHelp: ShortcutDefinition = {
+      id: "toggleShortcutsHelp",
+      label: "Show keyboard shortcuts",
+      bindings: [{ key: "/" }, { key: "?", shift: true }],
+      kind: "command",
+      scope: "global",
+    };
+
+    expect(shortcutDefinitionWithBinding(shortcutHelp, "/").bindings).toEqual([
+      { key: "/", primary: false, alt: false, shift: false },
+      { key: "?", shift: true },
+    ]);
+    expect(shortcutDefinitionWithBinding(shortcutHelp, "H").bindings).toEqual([
+      { key: "H", primary: false, alt: false, shift: false },
+    ]);
   });
 });
