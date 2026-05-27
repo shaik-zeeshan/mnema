@@ -26,11 +26,14 @@ pub use speaker_analysis::{
 };
 pub(crate) use store::map_frame_for_search;
 #[cfg(test)]
-pub(crate) use store::OCR_FAILED_JOB_MAX_ATTEMPTS;
+pub(crate) use store::{
+    AUDIO_FAILED_JOB_MAX_ATTEMPTS, OCR_FAILED_JOB_MAX_ATTEMPTS, RECLAIM_ATTEMPT_CEILING,
+};
 pub use store::{
     FocusedFrameWindow, FrameProcessingJob, PersonProfile, ProcessingJobCompletion,
-    ProcessingModelCleanupLock, ProcessingStore, SegmentWorkspaceOcrReference, SpeakerClusterView,
-    SpeakerTurnView, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
+    ProcessingJobReclamationSummary, ProcessingModelCleanupLock, ProcessingStore,
+    SegmentWorkspaceOcrReference, SpeakerClusterView, SpeakerTurnView,
+    SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
 };
 pub use system_audio_speech_activity::{
     SystemAudioSpeechActivityJobPayload, SystemAudioSpeechActivityProcessorBackend,

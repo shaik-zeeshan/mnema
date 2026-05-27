@@ -3,8 +3,8 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use speaker_analysis::{
-    SpeakerAnalysisProvider, SpeakerAnalysisRequest, SpeakerAnalysisResult as ProviderResult,
-    DEFAULT_SHERPA_ONNX_MODEL_ID, SHERPA_ONNX_PROVIDER_ID,
+    builtin_model_manifest, find_model_descriptor, SpeakerAnalysisProvider, SpeakerAnalysisRequest,
+    SpeakerAnalysisResult as ProviderResult, DEFAULT_SHERPA_ONNX_MODEL_ID, SHERPA_ONNX_PROVIDER_ID,
 };
 
 use crate::{AppInfraError, AudioSegment, Result};
@@ -40,7 +40,12 @@ impl SpeakerAnalysisJobPayload {
 
     pub fn normalize_model_selection(&mut self) {
         if self.provider == SHERPA_ONNX_PROVIDER_ID
-            && self.model_id.as_deref() != Some(DEFAULT_SHERPA_ONNX_MODEL_ID)
+            && find_model_descriptor(
+                &builtin_model_manifest(),
+                SHERPA_ONNX_PROVIDER_ID,
+                self.model_id.as_deref(),
+            )
+            .is_none()
         {
             self.model_id = Some(DEFAULT_SHERPA_ONNX_MODEL_ID.to_string());
         }
@@ -160,4 +165,61 @@ impl super::ProcessorBackend for SpeakerAnalysisProcessorBackend {
 
 fn map_provider_result<T>(result: ProviderResult<T>) -> Result<T> {
     result.map_err(|error| AppInfraError::SpeakerAnalysisEngine(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use speaker_analysis::MULTILINGUAL_SHERPA_ONNX_MODEL_ID;
+
+    #[test]
+    fn normalize_model_selection_keeps_default_sherpa_model() {
+        let mut payload = SpeakerAnalysisJobPayload {
+            provider: SHERPA_ONNX_PROVIDER_ID.to_string(),
+            model_id: Some(DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+            recognize_people: false,
+            options: serde_json::Map::new(),
+        };
+
+        payload.normalize_model_selection();
+
+        assert_eq!(
+            payload.model_id.as_deref(),
+            Some(DEFAULT_SHERPA_ONNX_MODEL_ID)
+        );
+    }
+
+    #[test]
+    fn normalize_model_selection_keeps_known_non_default_sherpa_model() {
+        let mut payload = SpeakerAnalysisJobPayload {
+            provider: SHERPA_ONNX_PROVIDER_ID.to_string(),
+            model_id: Some(MULTILINGUAL_SHERPA_ONNX_MODEL_ID.to_string()),
+            recognize_people: false,
+            options: serde_json::Map::new(),
+        };
+
+        payload.normalize_model_selection();
+
+        assert_eq!(
+            payload.model_id.as_deref(),
+            Some(MULTILINGUAL_SHERPA_ONNX_MODEL_ID)
+        );
+    }
+
+    #[test]
+    fn normalize_model_selection_falls_back_to_default_for_unknown_sherpa_model() {
+        let mut payload = SpeakerAnalysisJobPayload {
+            provider: SHERPA_ONNX_PROVIDER_ID.to_string(),
+            model_id: Some("bogus-model-xyz".to_string()),
+            recognize_people: false,
+            options: serde_json::Map::new(),
+        };
+
+        payload.normalize_model_selection();
+
+        assert_eq!(
+            payload.model_id.as_deref(),
+            Some(DEFAULT_SHERPA_ONNX_MODEL_ID)
+        );
+    }
 }

@@ -64,6 +64,7 @@
     SpeakerAnalysisModelDownloadProgress,
     SpeakerAnalysisModelStatus,
     SpeakerAnalysisModelStatusResponse,
+    PersonProfileDto,
     KeyboardBindingsSettings,
     AppUpdateChannel,
     AppUpdateStatus,
@@ -296,6 +297,10 @@
   let draftSpeakerProvider = $state("sherpa_onnx");
   let draftSpeakerModelId = $state<string | null>("pyannote-3.0-nemo-titanet-small");
   let draftSpeakerTimeoutMinutes = $state(10);
+  // Saved-person count drives the preset-switch warning (over-warns for any
+  // profile, not strictly the current Voiceprint Space — acceptable for V1).
+  let personProfileCount = $state(0);
+  let switchingSpeakerModel = $state(false);
   let speakerModelStatus = $state<SpeakerAnalysisModelStatusResponse | null>(null);
   let loadingSpeakerModelStatus = $state(false);
   let speakerModelError = $state<string | null>(null);
@@ -1786,6 +1791,17 @@
     }
   }
 
+  // Best-effort saved-person count for the preset-switch warning. A failed load
+  // simply leaves the count at 0 (no warning), never blocking preset selection.
+  async function loadPersonProfileCount() {
+    try {
+      const profiles = await invoke<PersonProfileDto[]>("list_person_profiles");
+      personProfileCount = profiles.length;
+    } catch {
+      personProfileCount = 0;
+    }
+  }
+
   async function startSelectedSpeakerModelDownload() {
     if (!selectedSpeakerModel?.modelId) return;
     startingSpeakerDownload = true;
@@ -2360,6 +2376,18 @@
     selectedSpeakerModels.find((model) => model.modelId === draftSpeakerModelId) ?? selectedSpeakerModels[0] ?? null
   );
 
+  // Preset picker options. Each curated Speaker Model Preset surfaces its
+  // download size from the same model-status descriptor the status panel uses
+  // (`model.download.byteSize`), formatted via the shared `formatBytes` helper.
+  const speakerModelOptions = $derived(
+    selectedSpeakerModels.map((model) => ({
+      value: model.modelId ?? "__os_managed__",
+      label: model.download
+        ? `${model.displayName} · ${formatBytes(model.download.byteSize)}`
+        : model.displayName,
+    }))
+  );
+
   const selectedSpeakerDownloadProgress = $derived(
     speakerDownloadProgress
       && speakerDownloadProgress.provider === selectedSpeakerModel?.provider
@@ -2511,6 +2539,40 @@
     draftTranscriptionModelId = value === "__os_managed__" ? null : value;
   }
 
+  // Switching Speaker Model Presets is non-destructive and reversible, so the
+  // warning is purely informational: it fires only when the user is moving AWAY
+  // from the saved preset while saved-person recognition is on and at least one
+  // Person profile exists. Confirming proceeds (the existing autosave persists
+  // the new modelId); cancelling leaves draftSpeakerModelId unchanged so the
+  // controlled picker reverts to the saved selection. It NEVER auto-migrates,
+  // re-enrolls, or blocks the choice.
+  async function chooseSpeakerModel(value: string) {
+    const next = value === "__os_managed__" ? null : value;
+    if (next === draftSpeakerModelId) return;
+
+    const savedModelId = recordingSettings?.speakerAnalysis?.modelId ?? null;
+    const switchingAwayFromSaved = next !== savedModelId;
+    const needsWarning =
+      switchingAwayFromSaved && draftSpeakerRecognizeSavedPeople && personProfileCount > 0;
+
+    if (needsWarning) {
+      switchingSpeakerModel = true;
+      try {
+        const ok = await ask(
+          "Switching the speaker model is safe and reversible — your saved people are not deleted. "
+            + "But saved voices won't be recognized under the new model until you re-tag each person once. "
+            + "Switching back to the previous model restores them. Switch anyway?",
+          { title: "Switch speaker model?", kind: "warning", okLabel: "Switch", cancelLabel: "Keep current" }
+        );
+        if (!ok) return;
+      } finally {
+        switchingSpeakerModel = false;
+      }
+    }
+
+    draftSpeakerModelId = next;
+  }
+
   // ─── Init ─────────────────────────────────────────────────────────────────
 
   $effect(() => {
@@ -2521,6 +2583,7 @@
     loadOcrModelStatus();
     loadTranscriptionModelStatus();
     loadSpeakerModelStatus();
+    void loadPersonProfileCount();
     loadDebugLogStatus();
     loadGeneralLogStatus();
     loadAppUpdateStatus();
@@ -4411,6 +4474,19 @@
 
       <div class="settings-group">
         <span class="group-label">Speaker model</span>
+        <SelectMenu
+          value={draftSpeakerModelId ?? "__os_managed__"}
+          onValueChange={chooseSpeakerModel}
+          disabled={!draftSpeakerSeparateSpeakers || switchingSpeakerModel}
+          label="Preset"
+          options={speakerModelOptions.length > 0 ? speakerModelOptions : [
+            { value: draftSpeakerModelId ?? "__os_managed__", label: "Loading preset options" },
+          ]}
+        />
+        <p class="group-hint">
+          Pick a preset by intent. Each preset's download size is shown in the list. Recognition is scoped per preset:
+          switching is safe and reversible, but saved voices need a one-time re-tag under the new preset.
+        </p>
         {#if speakerModelError}
           <p class="group-hint group-hint--warn">Failed to load speaker model status: {speakerModelError}</p>
         {:else if selectedSpeakerModel}
@@ -4449,7 +4525,7 @@
             {:else}
               <div class="debug-log-actions">
                 <button class="btn btn--ghost" onclick={startSelectedSpeakerModelDownload} disabled={startingSpeakerDownload || selectedSpeakerModel.available}>
-                  {startingSpeakerDownload ? "Starting" : "Download speaker model"}
+                  {startingSpeakerDownload ? "Starting" : `Download (${formatBytes(selectedSpeakerModel.download.byteSize)})`}
                 </button>
                 <button class="btn btn--danger" onclick={deleteSelectedSpeakerModel} disabled={deletingSpeakerModel || selectedSpeakerDownloadRunning || !selectedSpeakerModel.available}>
                   {deletingSpeakerModel ? "Deleting" : "Delete speaker model"}

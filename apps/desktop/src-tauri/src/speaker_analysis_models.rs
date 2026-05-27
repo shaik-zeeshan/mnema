@@ -120,7 +120,7 @@ pub struct SpeakerAnalysisModelDownloadDto {
     pub shape: serde_json::Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct DownloadPlan {
     provider: String,
     model_id: String,

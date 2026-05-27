@@ -454,6 +454,36 @@ pub(crate) fn finalize_capture_outputs(
         }
     }
 
+    // A requested screen segment that produced no usable `.mov` normally fails
+    // the whole segment. Callers treat that as a recoverable error and run
+    // `cleanup_unusable_segment_artifacts`, which deletes the segment's audio
+    // files and skips persistence — so a screen-capture failure silently throws
+    // away microphone/system audio that was captured just fine. When valid
+    // audio *was* produced and the missing screen output is the only failure,
+    // preserve it: drop the unusable screen recording and commit the audio-only
+    // segment instead of discarding everything.
+    //
+    // `failures` only ever carries the missing-screen failure (every other
+    // failure routes through `audio_failures`), so `failures.len() == 1` plus an
+    // empty `audio_failures` means the screen output is the lone problem.
+    let preserve_audio_despite_missing_screen = requested_sources
+        .is_some_and(|sources| sources.screen && (sources.microphone || sources.system_audio))
+        && !has_screen_output
+        && audio_failures.is_empty()
+        && failures.len() == 1
+        && !audio_output_files_are_empty(output_files);
+
+    if preserve_audio_despite_missing_screen {
+        // Best-effort: drop the unusable screen recording so it cannot later
+        // masquerade as a preview source. A failure here must not block the
+        // audio commit, so its errors are intentionally discarded.
+        if let Some(recording_file) = recording_file {
+            let mut discarded_failures = Vec::new();
+            maybe_remove_intermediate_file(recording_file, "screen", &mut discarded_failures);
+        }
+        return capture_writers::aggregate_output_processing_failures(Vec::new());
+    }
+
     if !has_screen_output || !failures.is_empty() {
         failures.extend(audio_failures);
     }
@@ -557,6 +587,55 @@ mod tests {
             .expect("screen artifact should exist");
     }
 
+    // Produces a real, positive-duration AAC/m4a file so that the AVFoundation
+    // duration validation inside `finalize_capture_outputs` accepts it as usable
+    // captured audio. The AAC fourcc is written directly to avoid depending on
+    // cidre's optional `cat` module from this crate.
+    #[cfg(target_os = "macos")]
+    fn write_valid_m4a_audio_file(path: &Path) {
+        use cidre::{av, ns};
+
+        let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+        let path_str = path.to_string_lossy().to_string();
+        let url = ns::Url::with_fs_path_str(&path_str, false);
+        let sample_rate = 48_000.0_f64;
+        let format_id = ns::Number::with_u32(u32::from_be_bytes(*b"aac "));
+        let sample_rate_value = ns::Number::with_f64(sample_rate);
+        let channel_count_value = ns::Number::with_i64(1);
+        let settings: cidre::arc::R<ns::Dictionary<ns::String, ns::Id>> =
+            ns::Dictionary::with_keys_values(
+                &[
+                    av::audio::all_formats_keys::id(),
+                    av::audio::all_formats_keys::sample_rate(),
+                    av::audio::all_formats_keys::number_of_channels(),
+                ],
+                &[
+                    format_id.as_id_ref(),
+                    sample_rate_value.as_id_ref(),
+                    channel_count_value.as_id_ref(),
+                ],
+            );
+        let mut file = av::AudioFile::open_write_common_format(
+            &url,
+            &settings,
+            av::AudioCommonFormat::PcmF32,
+            false,
+        )
+        .expect("writable test audio file should open");
+        let processing_format = file.processing_format();
+        let frames: u32 = 24_000; // 0.5s @ 48kHz — comfortably positive duration.
+        let mut buffer = av::AudioPcmBuf::with_format(&processing_format, frames)
+            .expect("test audio buffer should allocate");
+        buffer.set_frame_len(frames).expect("frame length should set");
+        if let Some(samples) = buffer.data_f32_mut_at(0) {
+            for (index, sample) in samples.iter_mut().enumerate() {
+                *sample = ((index as f32) * 0.05).sin() * 0.1;
+            }
+        }
+        file.write(&buffer).expect("test audio should write");
+        file.close();
+    }
+
     #[cfg(target_os = "macos")]
     impl Drop for TestDir {
         fn drop(&mut self) {
@@ -600,6 +679,57 @@ mod tests {
 
         assert_eq!(output_files.screen_file, None);
         assert!(output_files.screen_files.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finalize_capture_outputs_preserves_audio_when_requested_screen_output_missing() {
+        let dir = TestDir::new("preserve-audio-missing-screen");
+        // A screen .mov that exists on disk but is not openable (no `moov`),
+        // exactly the failure mode that was discarding captured audio.
+        let recording_file = dir.path.join("screen.mov");
+        fs::write(
+            &recording_file,
+            b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10mdatjunk",
+        )
+        .expect("broken screen artifact should exist");
+        let recording_file = recording_file.to_string_lossy().to_string();
+
+        let microphone_file = dir.path.join("microphone.m4a");
+        write_valid_m4a_audio_file(&microphone_file);
+        let microphone_file = microphone_file.to_string_lossy().to_string();
+
+        let requested_sources = CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        };
+        let mut output_files = CaptureOutputFiles {
+            screen_file: Some(recording_file.clone()),
+            screen_files: vec![recording_file.clone()],
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        };
+
+        finalize_capture_outputs(
+            Some(&mut output_files),
+            Some(&recording_file),
+            None,
+            None,
+            Some(&requested_sources),
+        )
+        .expect("captured audio must survive a missing screen segment");
+
+        // The unusable screen output is dropped from bookkeeping and disk...
+        assert_eq!(output_files.screen_file, None);
+        assert!(output_files.screen_files.is_empty());
+        assert!(!Path::new(&recording_file).exists());
+        // ...but the captured microphone audio is preserved for commit.
+        assert_eq!(output_files.microphone_file, Some(microphone_file.clone()));
+        assert_eq!(output_files.microphone_files, vec![microphone_file.clone()]);
+        assert!(Path::new(&microphone_file).exists());
     }
 
     #[cfg(target_os = "macos")]

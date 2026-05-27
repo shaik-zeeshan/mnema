@@ -4,6 +4,10 @@ Speaker analysis jobs, diarization result policy, speaker turn alignment, and se
 
 Root entry point: [CONTEXT-MAP.md](../../CONTEXT-MAP.md).
 
+## Decisions
+
+- [ADR 0001: Speaker Model Presets and Per-Preset Voiceprint Scope](docs/adr/0001-speaker-model-presets-and-voiceprint-scope.md)
+
 ## Language
 
 **Speaker Analysis Job**:
@@ -17,6 +21,14 @@ _Avoid_: transcript rewriting, diarization-owned text timing, speaker text retim
 **Speaker Continuity**:
 The session-level policy that keeps a real speaker associated with a stable speaker cluster across **Audio Segment** values with the same `session_id`, provider, and model.
 _Avoid_: segment-local speaker identity, provider cluster identity, cross-session speaker identity
+
+**Speaker Model Preset**:
+A curated, named choice (e.g. Balanced, Multilingual, High-accuracy) that a user selects, backed by exactly one combined segmentation+embedding `model_id` in the manifest.
+_Avoid_: raw segmentation/embedding pickers, model file names, arbitrary user-built model combos
+
+**Voiceprint Space**:
+The set of enrolled **Person Profile** embeddings that are comparable to each other, scoped to one **Speaker Model Preset**'s `model_id`; recognition only matches within the active preset's space.
+_Avoid_: global voiceprints, cross-model recognition, embedding-only scope
 
 ## Relationships
 
@@ -37,6 +49,10 @@ _Avoid_: segment-local speaker identity, provider cluster identity, cross-sessio
 - Speaker merge suggestions are preferred over aggressive automatic merges when continuity matching is ambiguous or only moderately similar.
 - VAD-based audio cutting or trimming is outside **Speaker Analysis Job** quality policy; audio segment production remains owned by the recording flow.
 - Speaker turns may decorate an **Audio Transcription Span** when available, but they do not define the searchable audio unit.
+- A **Speaker Model Preset** maps to exactly one manifest `model_id` (one combined segmentation+embedding artifact); presets are curated, not assembled by users.
+- Each **Speaker Model Preset** defines its own **Voiceprint Space**; switching presets changes both **Speaker Continuity** keying and which enrolled people are recognizable.
+- Switching **Speaker Model Preset** does not delete prior enrollments: **Person Profile** embeddings persist per `model_id`, so an earlier preset's recognition returns if the user switches back.
+- Changing **Speaker Model Preset** warns (when enrolled people exist) but does not block, auto-migrate voiceprints, or re-run diarization on past recordings; re-enrollment is organic re-tagging under the new preset.
 
 ## Example Dialogue
 

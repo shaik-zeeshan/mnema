@@ -64,8 +64,9 @@ pub use processing::{
     AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend, FocusedFrameWindow, Frame,
     FrameEquivalence, FrameEquivalenceStatus, FrameProcessingJob, FrameSummary, NewFrame,
     OcrProcessorBackend, PersonProfile, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
-    ProcessingJobRunOutcome, ProcessingJobStatus, ProcessingModelCleanupLock, ProcessingResult,
-    ProcessingResultDraft, ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend,
+    ProcessingJobReclamationSummary, ProcessingJobRunOutcome, ProcessingJobStatus,
+    ProcessingModelCleanupLock, ProcessingResult, ProcessingResultDraft, ProcessingRuntime,
+    ProcessingStore, ProcessingSubject, ProcessorBackend,
     ProcessorRegistry, SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload,
     SpeakerAnalysisProcessorBackend, SpeakerClusterView, SpeakerTurnView,
     SystemAudioSpeechActivityJobPayload, SystemAudioSpeechActivityProcessorBackend,
@@ -286,7 +287,14 @@ impl AppInfra {
         processing.backfill_frame_equivalence().await?;
         search.backfill_missing_projections().await?;
         jobs.reconcile_orphaned_running_jobs().await?;
-        processing.reconcile_orphaned_running_jobs().await?;
+        let reclamation = processing.reconcile_orphaned_running_jobs().await?;
+        if reclamation.requeued > 0 || reclamation.failed_on_ceiling > 0 {
+            capture_runtime::debug_log!(
+                "[app-infra] startup reclaimed orphaned processing jobs (requeued={}, failed_on_ceiling={})",
+                reclamation.requeued,
+                reclamation.failed_on_ceiling
+            );
+        }
         frame_batches
             .reconcile_closed_batches_without_finalize_jobs()
             .await?;
@@ -1230,6 +1238,15 @@ impl AppInfra {
             .await
     }
 
+    /// **Processing Job Reclamation**: requeue any **Orphaned Processing Job** left `running` so it
+    /// re-runs and still produces its result. Call at graceful shutdown *after* background workers
+    /// have been aborted and awaited (nothing executing), mirroring the startup reclamation pass.
+    pub async fn reconcile_orphaned_processing_jobs(
+        &self,
+    ) -> Result<ProcessingJobReclamationSummary> {
+        self.processing.reconcile_orphaned_running_jobs().await
+    }
+
     pub async fn acquire_ocr_model_cleanup_locks(
         &self,
         model_keys: &BTreeSet<String>,
@@ -1745,8 +1762,8 @@ mod tests {
     use crate::{db::Database, jobs::ORPHANED_RUNNING_JOB_ERROR};
 
     const TEST_PROCESSOR: &str = "mock-recovery";
-    const ORPHANED_RUNNING_PROCESSING_JOB_MESSAGE: &str =
-        "processing job was marked failed during startup recovery after the app shut down while it was running";
+    const RECLAIMED_ORPHANED_PROCESSING_JOB_MESSAGE: &str =
+        "processing job was requeued by reclamation after the app shut down while it was running";
 
     struct TestDir {
         path: PathBuf,
@@ -2734,7 +2751,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_reconciles_orphaned_running_processing_jobs() {
+    fn startup_reclaims_orphaned_running_processing_jobs_by_requeue() {
         run_async_test(async {
             let dir = TestDir::new("processing-running-restart");
             let initial = AppInfra::initialize_with_processing_registry(
@@ -2770,19 +2787,27 @@ mod tests {
             .await
             .expect("app infra should re-initialize");
 
-            let failed = recovered
+            // Startup reclamation requeues the orphaned job so it re-runs, rather than failing it.
+            let reclaimed = recovered
                 .get_processing_job(persisted.job.id)
                 .await
                 .expect("recovered job should be readable")
                 .expect("recovered job should exist");
-            assert_eq!(failed.status, ProcessingJobStatus::Failed);
-            assert_eq!(failed.attempt_count, 1);
+            assert_eq!(reclaimed.status, ProcessingJobStatus::Queued);
             assert_eq!(
-                failed.last_error.as_deref(),
-                Some(ORPHANED_RUNNING_PROCESSING_JOB_MESSAGE)
+                reclaimed.attempt_count, 1,
+                "the abandoned run still counts toward the total attempt ceiling"
             );
-            assert!(failed.started_at.is_some());
-            assert!(failed.finished_at.is_some());
+            assert_eq!(
+                reclaimed.failure_count, 0,
+                "abandonment must not spend a failure attempt"
+            );
+            assert_eq!(
+                reclaimed.last_error.as_deref(),
+                Some(RECLAIMED_ORPHANED_PROCESSING_JOB_MESSAGE)
+            );
+            assert!(reclaimed.started_at.is_none());
+            assert!(reclaimed.finished_at.is_none());
             assert!(recovered
                 .get_processing_result_for_job(persisted.job.id)
                 .await
@@ -2844,16 +2869,18 @@ mod tests {
             .await
             .expect("app infra should re-initialize");
 
-            let failed = recovered
+            // Startup reclamation requeues the orphaned re-run rather than failing it, and the
+            // stale result from the previous run stays cleared.
+            let reclaimed = recovered
                 .get_processing_job(persisted.job.id)
                 .await
                 .expect("recovered job should be readable")
                 .expect("recovered job should exist");
-            assert_eq!(failed.status, ProcessingJobStatus::Failed);
-            assert_eq!(failed.attempt_count, 2);
+            assert_eq!(reclaimed.status, ProcessingJobStatus::Queued);
+            assert_eq!(reclaimed.attempt_count, 2);
             assert_eq!(
-                failed.last_error.as_deref(),
-                Some(ORPHANED_RUNNING_PROCESSING_JOB_MESSAGE)
+                reclaimed.last_error.as_deref(),
+                Some(RECLAIMED_ORPHANED_PROCESSING_JOB_MESSAGE)
             );
             assert!(recovered
                 .get_processing_result_for_job(persisted.job.id)
@@ -2861,13 +2888,7 @@ mod tests {
                 .expect("recovered result lookup should succeed")
                 .is_none());
 
-            let retried = recovered
-                .mark_processing_job_running(persisted.job.id)
-                .await
-                .expect("recovered failed job should restart");
-            assert_eq!(retried.status, ProcessingJobStatus::Running);
-            assert_eq!(retried.attempt_count, 3);
-
+            // The reclaimed (requeued) job re-runs on the next drain and produces a fresh result.
             let retried_outcome = recovered
                 .process_processing_job(persisted.job.id)
                 .await
@@ -2875,6 +2896,7 @@ mod tests {
             let ProcessingJobRunOutcome::Completed(retried_completion) = retried_outcome else {
                 panic!("expected completed outcome");
             };
+            assert_eq!(retried_completion.job.attempt_count, 3);
 
             assert_eq!(
                 retried_completion.result.result_text.as_deref(),
@@ -5903,6 +5925,111 @@ mod tests {
                 .await
                 .expect("speaker result lookup should succeed")
                 .is_none());
+        });
+    }
+
+    #[test]
+    fn reclaimed_transcription_completion_rechains_speaker_analysis() {
+        run_async_test(async {
+            let dir = TestDir::new("reclaimed-transcription-rechains-speaker");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "reclaim-rechain-session",
+                    1,
+                    "/tmp/reclaim-rechain.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("audio segment should insert");
+
+            let mut speaker_payload = SpeakerAnalysisJobPayload::new(
+                "sherpa_onnx",
+                Some("pyannote-3.0-nemo-titanet-small".to_string()),
+            );
+            speaker_payload.recognize_people = true;
+            let speaker_payload_value =
+                serde_json::to_value(&speaker_payload).expect("speaker payload should encode");
+            let mut transcription_payload = AudioTranscriptionJobPayload::new(
+                "local_whisper",
+                Some("base".to_string()),
+                "auto",
+            );
+            transcription_payload.options.insert(
+                SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY.to_string(),
+                speaker_payload_value,
+            );
+            let transcription_payload_json = serde_json::to_string(&transcription_payload)
+                .expect("transcription payload should serialize");
+            let transcription_job = infra
+                .enqueue_processing_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(segment.id)
+                        .with_payload_json(transcription_payload_json),
+                )
+                .await
+                .expect("transcription job should enqueue");
+
+            // Claim then abandon the transcription (quit/crash), leaving it running, and reclaim it.
+            infra
+                .claim_queued_processing_job(transcription_job.id)
+                .await
+                .expect("transcription job should claim")
+                .expect("transcription job should exist");
+            let summary = infra
+                .reconcile_orphaned_processing_jobs()
+                .await
+                .expect("reclamation should succeed");
+            assert_eq!(summary.requeued, 1);
+            assert_eq!(summary.failed_on_ceiling, 0);
+            let reclaimed = infra
+                .get_processing_job(transcription_job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(reclaimed.status, ProcessingJobStatus::Queued);
+
+            // Re-run the reclaimed transcription to completion.
+            infra
+                .claim_queued_processing_job(transcription_job.id)
+                .await
+                .expect("reclaimed transcription should re-claim")
+                .expect("reclaimed transcription should exist");
+            infra
+                .complete_processing_job(
+                    transcription_job.id,
+                    &ProcessingResultDraft::new().with_result_text("recovered transcript"),
+                )
+                .await
+                .expect("reclaimed transcription completion should chain speaker analysis");
+
+            // The reclaimed transcription's completion still chains speaker analysis, so a recovered
+            // transcript also recovers its speaker labels.
+            let jobs = infra
+                .list_processing_jobs_for_subject(&ProcessingSubject::audio_segment(segment.id))
+                .await
+                .expect("jobs should list");
+            let speaker_jobs = jobs
+                .iter()
+                .filter(|job| job.processor == SPEAKER_ANALYSIS_PROCESSOR)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                speaker_jobs.len(),
+                1,
+                "a reclaimed transcription should still enqueue its speaker analysis"
+            );
+            assert_eq!(speaker_jobs[0].status, ProcessingJobStatus::Queued);
+            let actual_payload: SpeakerAnalysisJobPayload = serde_json::from_str(
+                speaker_jobs[0]
+                    .payload_json
+                    .as_deref()
+                    .expect("speaker payload should be present"),
+            )
+            .expect("speaker payload should decode");
+            assert_eq!(actual_payload, speaker_payload);
         });
     }
 

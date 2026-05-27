@@ -416,9 +416,11 @@ export interface ProcessingJobDto {
 	processor: string;
 	status: ProcessingJobStatus;
 	attemptCount: number;
+	failureCount: number;
 	payloadJson: string | null;
 	lastError: string | null;
 	createdAt: string;
+	queuedAt: string;
 	updatedAt: string;
 	startedAt: string | null;
 	finishedAt: string | null;

@@ -113,12 +113,14 @@ impl ProcessingRuntime {
                     .store
                     .mark_job_failed(job.id, Some(&error.to_string()))
                     .await?;
-                // A failed OCR job can leave its whole equivalent group textless, because later
-                // frames that deferred to it (OCR Fallback Eligibility) only receive text via
-                // back-projection on completion. Bounded-retry transient OCR failures so the group
-                // can still recover; once the attempt cap is reached the job stays failed.
+                // Bounded-retry genuinely failed work so a transient failure can still recover:
+                // a failed OCR job can leave its whole equivalent group textless (later frames
+                // that deferred to it via OCR Fallback Eligibility only receive text via
+                // back-projection on completion), and a failed audio job loses a segment's
+                // transcript and chained speaker labels. Each processor gives up after its own
+                // failure cap so a genuinely poison segment stays failed rather than looping.
                 self.store
-                    .requeue_failed_ocr_job_within_attempt_cap(failed.id)
+                    .requeue_failed_job_within_attempt_cap(failed.id)
                     .await?;
                 Ok(ProcessingJobRunOutcome::Failed(failed))
             }
@@ -142,7 +144,7 @@ mod tests {
         db::Database,
         processing::{
             NewFrame, OcrProcessorBackend, ProcessingJobDraft, ProcessingResultDraft,
-            ProcessingSubject,
+            ProcessingSubject, AUDIO_TRANSCRIPTION_PROCESSOR,
         },
     };
     use ocr::{
@@ -226,6 +228,36 @@ mod tests {
                 .push(job.id);
 
             Ok(self.result.clone())
+        }
+    }
+
+    /// A backend that always fails, used to exercise the bounded failure-retry path for a given
+    /// processor (notably the audio processors, which are now retried like OCR).
+    #[derive(Debug)]
+    struct FailingBackend {
+        processor: &'static str,
+    }
+
+    impl FailingBackend {
+        fn new(processor: &'static str) -> Self {
+            Self { processor }
+        }
+    }
+
+    #[async_trait]
+    impl crate::ProcessorBackend for FailingBackend {
+        fn processor(&self) -> &'static str {
+            self.processor
+        }
+
+        async fn process(
+            &self,
+            _store: &ProcessingStore,
+            _job: &crate::ProcessingJob,
+        ) -> Result<ProcessingResultDraft> {
+            Err(AppInfraError::AudioTranscriptionEngine(
+                "audio engine failed".to_string(),
+            ))
         }
     }
 
@@ -793,6 +825,310 @@ mod tests {
                 AppInfraError::ProcessingJobNotRunnable { job_id, ref status }
                     if job_id == job.id && status == "completed"
             ));
+        });
+    }
+
+    #[test]
+    fn orphaned_audio_job_is_requeued_not_failed_and_reruns_to_completion() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-reclaim-audio-requeue");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(database.pool().clone());
+            let backend = Arc::new(RecordingBackend::successful(
+                AUDIO_TRANSCRIPTION_PROCESSOR,
+                "recovered transcript",
+            ));
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new().register_arc(backend.clone()),
+            );
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            // Simulate a worker claiming the job and being aborted mid-job (quit/crash): the row is
+            // left running with no live executor.
+            let claimed = store
+                .claim_queued_job(job.id)
+                .await
+                .expect("job claim should succeed")
+                .expect("job should claim");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+            assert_eq!(claimed.attempt_count, 1);
+
+            // Reclamation requeues the orphaned job rather than failing it.
+            let summary = store
+                .reconcile_orphaned_running_jobs()
+                .await
+                .expect("reclamation should succeed");
+            assert_eq!(summary.requeued, 1);
+            assert_eq!(summary.failed_on_ceiling, 0);
+
+            let reclaimed = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(
+                reclaimed.status,
+                ProcessingJobStatus::Queued,
+                "an orphaned audio job must be requeued, not failed"
+            );
+            assert_eq!(
+                reclaimed.failure_count, 0,
+                "abandonment must not spend a failure attempt"
+            );
+            assert_eq!(
+                reclaimed.attempt_count, 1,
+                "the abandoned run still counts toward the total attempt ceiling"
+            );
+
+            // The reclaimed job re-runs to completion on the next drain.
+            let outcome = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should process the reclaimed job")
+                .expect("the reclaimed job should be claimable");
+            let ProcessingJobRunOutcome::Completed(completion) = outcome else {
+                panic!("expected the reclaimed job to complete");
+            };
+            assert_eq!(completion.job.id, job.id);
+            assert_eq!(completion.job.status, ProcessingJobStatus::Completed);
+            assert_eq!(completion.job.attempt_count, 2);
+            assert_eq!(backend.processed_job_ids(), vec![job.id]);
+        });
+    }
+
+    #[test]
+    fn repeated_abandonment_requeues_without_spending_a_failure_attempt() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-reclaim-no-failure-spend");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(database.pool().clone());
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            // Quit-mid-job several times in a row. Each cycle claims (running) then reclaims
+            // (requeue); the failure cap must never be touched by abandonment.
+            for expected_attempts in 1..=5 {
+                store
+                    .claim_queued_job(job.id)
+                    .await
+                    .expect("job claim should succeed")
+                    .expect("job should claim");
+                let summary = store
+                    .reconcile_orphaned_running_jobs()
+                    .await
+                    .expect("reclamation should succeed");
+                assert_eq!(summary.requeued, 1);
+                assert_eq!(summary.failed_on_ceiling, 0);
+
+                let reclaimed = store
+                    .get_job(job.id)
+                    .await
+                    .expect("job should be readable")
+                    .expect("job should exist");
+                assert_eq!(reclaimed.status, ProcessingJobStatus::Queued);
+                assert_eq!(reclaimed.attempt_count, expected_attempts);
+                assert_eq!(
+                    reclaimed.failure_count, 0,
+                    "repeated quits must never exhaust the failure cap"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn reclamation_fails_only_after_attempt_ceiling_is_reached() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-reclaim-ceiling");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(database.pool().clone());
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            // Claim-then-abandon until the absolute attempt ceiling is reached. The ceiling-th
+            // claim leaves attempt_count == RECLAIM_ATTEMPT_CEILING, after which reclamation gives
+            // up and leaves the job failed instead of requeueing it forever.
+            for attempt in 1..=super::super::RECLAIM_ATTEMPT_CEILING {
+                store
+                    .claim_queued_job(job.id)
+                    .await
+                    .expect("job claim should succeed")
+                    .expect("job should claim while under the ceiling");
+                let summary = store
+                    .reconcile_orphaned_running_jobs()
+                    .await
+                    .expect("reclamation should succeed");
+                if attempt < super::super::RECLAIM_ATTEMPT_CEILING {
+                    assert_eq!(summary.requeued, 1, "under the ceiling the job is requeued");
+                    assert_eq!(summary.failed_on_ceiling, 0);
+                } else {
+                    assert_eq!(
+                        summary.requeued, 0,
+                        "at the ceiling the job is not requeued again"
+                    );
+                    assert_eq!(summary.failed_on_ceiling, 1);
+                }
+            }
+
+            let terminal = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(terminal.status, ProcessingJobStatus::Failed);
+            assert_eq!(terminal.attempt_count, super::super::RECLAIM_ATTEMPT_CEILING);
+            assert_eq!(
+                terminal.failure_count, 0,
+                "reaching the reclaim ceiling is not a failure attempt"
+            );
+        });
+    }
+
+    #[test]
+    fn failed_audio_jobs_are_bounded_retried_then_left_failed() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-audio-bounded-retry");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(database.pool().clone());
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new()
+                    .register_arc(Arc::new(FailingBackend::new(AUDIO_TRANSCRIPTION_PROCESSOR))),
+            );
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            // First failure: requeued for retry rather than left terminally failed.
+            let ProcessingJobRunOutcome::Failed(first_failed) = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should attempt the audio job")
+                .expect("a queued audio job should exist")
+            else {
+                panic!("expected the audio job to fail");
+            };
+            assert_eq!(first_failed.id, job.id);
+            assert_eq!(first_failed.failure_count, 1);
+
+            let after_first = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(
+                after_first.status,
+                ProcessingJobStatus::Queued,
+                "a failed audio job under the cap should be requeued for retry"
+            );
+
+            // The requeued job is deferred by its backoff window (audio backoff is longer than
+            // OCR's), so it is not immediately re-claimable.
+            assert!(
+                runtime
+                    .process_next_queued_job()
+                    .await
+                    .expect("runtime poll should succeed")
+                    .is_none(),
+                "a requeued audio job should be deferred by its retry backoff"
+            );
+
+            // Drive remaining attempts, expiring the backoff before each retry.
+            let mut last_failure_count = after_first.failure_count;
+            loop {
+                store
+                    .expire_processing_job_retry_backoff_for_test(job.id)
+                    .await
+                    .expect("retry backoff should expire for test");
+                let Some(outcome) = runtime
+                    .process_next_queued_job()
+                    .await
+                    .expect("runtime should keep retrying the requeued audio job")
+                else {
+                    break;
+                };
+                let ProcessingJobRunOutcome::Failed(failed) = outcome else {
+                    panic!("expected failed outcome on retry");
+                };
+                last_failure_count = failed.failure_count;
+            }
+
+            // Once the failure cap is reached, the job stays terminally failed.
+            assert_eq!(
+                last_failure_count,
+                super::super::AUDIO_FAILED_JOB_MAX_ATTEMPTS
+            );
+            let terminal = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(terminal.status, ProcessingJobStatus::Failed);
+            assert_eq!(
+                terminal.failure_count,
+                super::super::AUDIO_FAILED_JOB_MAX_ATTEMPTS
+            );
+            assert!(runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime poll should succeed")
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn newly_enqueued_job_starts_with_zero_failure_count() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-failure-count-default");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(database.pool().clone());
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            assert_eq!(
+                job.failure_count, 0,
+                "the failure_count column should default to 0 after migration"
+            );
         });
     }
 }

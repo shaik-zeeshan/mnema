@@ -281,7 +281,6 @@ pub(crate) fn canonicalize_app_bundle_id(bundle_id: &str) -> String {
 
 fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> SpeakerAnalysisSettings {
     const SHERPA_ONNX_PROVIDER_ID: &str = "sherpa_onnx";
-    const DEFAULT_SHERPA_MODEL_ID: &str = "pyannote-3.0-nemo-titanet-small";
     const MIN_TIMEOUT_SECONDS: u64 = 60;
     const MAX_TIMEOUT_SECONDS: u64 = 3600;
 
@@ -294,7 +293,14 @@ fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> Speaker
         .model_id
         .as_deref()
         .map(str::trim)
-        .filter(|model_id| *model_id == DEFAULT_SHERPA_MODEL_ID)
+        .filter(|model_id| {
+            speaker_analysis::find_model_descriptor(
+                &speaker_analysis::builtin_model_manifest(),
+                SHERPA_ONNX_PROVIDER_ID,
+                Some(model_id),
+            )
+            .is_some()
+        })
         .map(ToOwned::to_owned)
         .or_else(default_speaker_analysis_model_id);
 
@@ -1835,5 +1841,47 @@ mod tests {
             error.message,
             format!("previewCacheTtlSeconds must be between 0 and {MAX_PREVIEW_CACHE_TTL_SECONDS}")
         );
+    }
+
+    #[test]
+    fn validate_speaker_analysis_settings_keeps_default_model() {
+        let settings = SpeakerAnalysisSettings {
+            model_id: Some(speaker_analysis::DEFAULT_SHERPA_ONNX_MODEL_ID.to_string()),
+            ..default_speaker_analysis_settings()
+        };
+
+        let validated = validate_speaker_analysis_settings(settings);
+
+        assert_eq!(
+            validated.model_id.as_deref(),
+            Some(speaker_analysis::DEFAULT_SHERPA_ONNX_MODEL_ID)
+        );
+    }
+
+    #[test]
+    fn validate_speaker_analysis_settings_keeps_known_non_default_model() {
+        let settings = SpeakerAnalysisSettings {
+            model_id: Some(speaker_analysis::MULTILINGUAL_SHERPA_ONNX_MODEL_ID.to_string()),
+            ..default_speaker_analysis_settings()
+        };
+
+        let validated = validate_speaker_analysis_settings(settings);
+
+        assert_eq!(
+            validated.model_id.as_deref(),
+            Some(speaker_analysis::MULTILINGUAL_SHERPA_ONNX_MODEL_ID)
+        );
+    }
+
+    #[test]
+    fn validate_speaker_analysis_settings_falls_back_for_unknown_model() {
+        let settings = SpeakerAnalysisSettings {
+            model_id: Some("bogus-model-xyz".to_string()),
+            ..default_speaker_analysis_settings()
+        };
+
+        let validated = validate_speaker_analysis_settings(settings);
+
+        assert_eq!(validated.model_id, default_speaker_analysis_model_id());
     }
 }

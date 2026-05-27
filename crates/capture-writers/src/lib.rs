@@ -16,6 +16,12 @@ use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
+/// Trim `input` to the `[start_secs, end_secs]` range and re-encode the result
+/// as AAC/m4a at `output`.
+///
+/// This runs entirely on AVFoundation (`AVAudioFile`) so it works inside the
+/// sandboxed/packaged desktop app, which does not inherit a shell `PATH` and so
+/// cannot rely on an external `ffmpeg` binary being discoverable.
 #[cfg(target_os = "macos")]
 pub fn trim_audio_file_to_m4a(
     input: &str,
@@ -23,6 +29,8 @@ pub fn trim_audio_file_to_m4a(
     start_secs: f64,
     end_secs: f64,
 ) -> Result<(), CaptureErrorResponse> {
+    use cidre::{av, cat, ns};
+
     if !start_secs.is_finite() || !end_secs.is_finite() || end_secs < start_secs {
         return Err(CaptureErrorResponse {
             code: "invalid_audio_trim_range".to_string(),
@@ -30,37 +38,109 @@ pub fn trim_audio_file_to_m4a(
         });
     }
 
-    let duration = (end_secs - start_secs).max(0.0);
-    let status = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            &format!("{start_secs:.6}"),
-            "-t",
-            &format!("{duration:.6}"),
-            "-i",
-            input,
-            "-vn",
-            "-c:a",
-            "aac",
-            output,
-        ])
-        .status()
-        .map_err(|error| CaptureErrorResponse {
-            code: "audio_trim_unavailable".to_string(),
-            message: format!("Failed to launch audio trim exporter: {error}"),
-        })?;
+    let _autorelease_pool = AutoreleasePoolPage::push();
 
-    if !status.success() {
-        let _ = std::fs::remove_file(output);
+    let input_url = ns::Url::with_fs_path_str(input, false);
+    let mut reader =
+        av::AudioFile::open_read_common_format(&input_url, av::AudioCommonFormat::PcmF32, false)
+            .map_err(|error| CaptureErrorResponse {
+                code: "audio_trim_failed".to_string(),
+                message: format!("Failed to open audio for trim {input}: {error}"),
+            })?;
+
+    let processing_format = reader.processing_format();
+    let sample_rate = processing_format.absd().sample_rate;
+    if !sample_rate.is_finite() || sample_rate <= 0.0 {
         return Err(CaptureErrorResponse {
             code: "audio_trim_failed".to_string(),
-            message: format!("Audio trim exporter failed with status {status}"),
+            message: format!("Audio file {input} reported invalid sample rate for trim"),
         });
     }
+    let channel_count = processing_format.channel_count();
+    if channel_count == 0 {
+        return Err(CaptureErrorResponse {
+            code: "audio_trim_failed".to_string(),
+            message: format!("Audio file {input} reported zero channels for trim"),
+        });
+    }
+
+    let total_frames = reader.len().max(0);
+    let frame_for_secs = |secs: f64| -> i64 {
+        let frame = (secs * sample_rate).round();
+        if !frame.is_finite() || frame <= 0.0 {
+            0
+        } else if frame >= total_frames as f64 {
+            total_frames
+        } else {
+            frame as i64
+        }
+    };
+    let start_frame = frame_for_secs(start_secs);
+    let end_frame = frame_for_secs(end_secs).max(start_frame);
+    let frames_to_copy = (end_frame - start_frame).max(0) as u64;
+
+    let _ = std::fs::remove_file(output);
+    let output_url = ns::Url::with_fs_path_str(output, false);
+    let format_id = ns::Number::with_u32(cat::audio::Format::MPEG4_AAC.0);
+    let sample_rate_value = ns::Number::with_f64(sample_rate);
+    let channel_count_value = ns::Number::with_i64(channel_count as i64);
+    let output_settings: cidre::arc::R<ns::Dictionary<ns::String, ns::Id>> =
+        ns::Dictionary::with_keys_values(
+            &[
+                av::audio::all_formats_keys::id(),
+                av::audio::all_formats_keys::sample_rate(),
+                av::audio::all_formats_keys::number_of_channels(),
+            ],
+            &[
+                format_id.as_id_ref(),
+                sample_rate_value.as_id_ref(),
+                channel_count_value.as_id_ref(),
+            ],
+        );
+    let mut writer = av::AudioFile::open_write_common_format(
+        &output_url,
+        &output_settings,
+        av::AudioCommonFormat::PcmF32,
+        false,
+    )
+    .map_err(|error| CaptureErrorResponse {
+        code: "audio_trim_failed".to_string(),
+        message: format!("Failed to open trimmed audio output {output}: {error}"),
+    })?;
+
+    if frames_to_copy > 0 {
+        reader.set_frame_pos(start_frame);
+        let mut remaining = frames_to_copy;
+        while remaining > 0 {
+            let want = remaining.min(16_384) as u32;
+            let mut buffer = av::AudioPcmBuf::with_format(&processing_format, want).ok_or_else(
+                || CaptureErrorResponse {
+                    code: "audio_trim_failed".to_string(),
+                    message: "Failed to allocate audio trim buffer".to_string(),
+                },
+            )?;
+            reader
+                .read_n(&mut buffer, want)
+                .map_err(|error| CaptureErrorResponse {
+                    code: "audio_trim_failed".to_string(),
+                    message: format!("Failed reading audio for trim {input}: {error}"),
+                })?;
+            let read_frames = buffer.frame_len();
+            if read_frames == 0 {
+                break;
+            }
+            writer.write(&buffer).map_err(|error| CaptureErrorResponse {
+                code: "audio_trim_failed".to_string(),
+                message: format!("Failed writing trimmed audio {output}: {error}"),
+            })?;
+            remaining = remaining.saturating_sub(read_frames as u64);
+            if (read_frames as u64) < (want as u64) {
+                break;
+            }
+        }
+    }
+
+    writer.close();
 
     match validate_trimmed_audio_output_file(output) {
         Ok(()) => Ok(()),
@@ -1580,6 +1660,97 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    fn write_test_tone_m4a(path: &str, duration_secs: f64) {
+        use cidre::{av, cat, ns};
+
+        let _autorelease_pool = AutoreleasePoolPage::push();
+        let url = ns::Url::with_fs_path_str(path, false);
+        let sample_rate = 48_000.0_f64;
+        let format_id = ns::Number::with_u32(cat::audio::Format::MPEG4_AAC.0);
+        let sample_rate_value = ns::Number::with_f64(sample_rate);
+        let channel_count_value = ns::Number::with_i64(1);
+        let settings: cidre::arc::R<ns::Dictionary<ns::String, ns::Id>> =
+            ns::Dictionary::with_keys_values(
+                &[
+                    av::audio::all_formats_keys::id(),
+                    av::audio::all_formats_keys::sample_rate(),
+                    av::audio::all_formats_keys::number_of_channels(),
+                ],
+                &[
+                    format_id.as_id_ref(),
+                    sample_rate_value.as_id_ref(),
+                    channel_count_value.as_id_ref(),
+                ],
+            );
+        let mut file = av::AudioFile::open_write_common_format(
+            &url,
+            &settings,
+            av::AudioCommonFormat::PcmF32,
+            false,
+        )
+        .expect("test tone file should open for writing");
+        let processing_format = file.processing_format();
+        let total_frames = (duration_secs * sample_rate).round().max(0.0) as u32;
+        let mut written = 0_u32;
+        while written < total_frames {
+            let want = (total_frames - written).min(16_384);
+            let mut buffer = av::AudioPcmBuf::with_format(&processing_format, want)
+                .expect("test tone buffer should allocate");
+            buffer.set_frame_len(want).expect("frame length should set");
+            if let Some(samples) = buffer.data_f32_mut_at(0) {
+                for (index, sample) in samples.iter_mut().enumerate() {
+                    let n = (written + index as u32) as f32;
+                    *sample = (n * 0.05).sin() * 0.2;
+                }
+            }
+            file.write(&buffer).expect("test tone should write");
+            written += want;
+        }
+        file.close();
+    }
+
+    #[test]
+    fn trim_audio_file_to_m4a_extracts_subrange_without_external_tools() {
+        let temp = std::env::temp_dir();
+        let input = temp
+            .join(format!("mnema-native-trim-input-{}.m4a", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+        let output = temp
+            .join(format!(
+                "mnema-native-trim-output-{}.m4a",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&output);
+
+        write_test_tone_m4a(&input, 2.0);
+
+        trim_audio_file_to_m4a(&input, &output, 0.5, 1.0)
+            .expect("native AVFoundation trim should succeed without ffmpeg on PATH");
+
+        let trimmed = decode_audio_file_to_mono_pcm(std::path::Path::new(&output))
+            .expect("trimmed output should decode");
+        let trimmed_secs = trimmed.samples.len() as f64 / trimmed.sample_rate_hz as f64;
+        let source = decode_audio_file_to_mono_pcm(std::path::Path::new(&input))
+            .expect("source should decode");
+        let source_secs = source.samples.len() as f64 / source.sample_rate_hz as f64;
+
+        assert!(
+            (0.2..1.2).contains(&trimmed_secs),
+            "expected ~0.5s trimmed audio, got {trimmed_secs}s"
+        );
+        assert!(
+            trimmed_secs < source_secs - 0.5,
+            "trim must shorten the audio: trimmed {trimmed_secs}s vs source {source_secs}s"
+        );
+
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&output);
     }
 
     #[test]
