@@ -24,6 +24,8 @@
     reservedShortcutConflict,
     setShortcutBinding,
     shortcutBindingFromKeyboardEvent,
+    shortcutConflictScope,
+    shortcutScopesConflict,
     withKeyboardBindingDefaults,
     type EditableShortcutAction,
     type EditableShortcutActionId,
@@ -1513,7 +1515,7 @@
   function shortcutIssues(): Record<string, string> {
     const settings = buildKeyboardBindingsRequest();
     const issues: Record<string, string> = {};
-    const seen = new Map<string, EditableShortcutAction>();
+    const seen = new Map<string, EditableShortcutAction[]>();
 
     for (const action of EDITABLE_SHORTCUT_ACTIONS) {
       const raw = getShortcutBinding(settings, action.id).trim();
@@ -1533,13 +1535,18 @@
         continue;
       }
       const key = normalized.toLowerCase();
-      const previous = seen.get(key);
-      if (previous) {
-        issues[action.id] = `Conflicts with ${previous.label}.`;
-        issues[previous.id] = `Conflicts with ${action.label}.`;
-      } else {
-        seen.set(key, action);
+      const previousActions = seen.get(key) ?? [];
+      const conflictingPreviousActions = previousActions.filter((previous) =>
+        shortcutScopesConflict(shortcutConflictScope(previous), shortcutConflictScope(action)),
+      );
+      if (conflictingPreviousActions.length > 0) {
+        issues[action.id] = `Conflicts with ${conflictingPreviousActions[0].label}.`;
+        for (const previous of conflictingPreviousActions) {
+          issues[previous.id] = `Conflicts with ${action.label}.`;
+        }
       }
+      previousActions.push(action);
+      seen.set(key, previousActions);
     }
 
     return issues;

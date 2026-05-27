@@ -2511,19 +2511,13 @@
     audioCurrentTime = nextTime;
   }
 
-  function isAudioDrawerSpaceSuppressedTarget(target: EventTarget | null): boolean {
+  function isAudioDrawerShortcutSuppressedTarget(target: EventTarget | null): boolean {
     if (!(target instanceof Element)) return false;
     return Boolean(
       target.closest(
         'button, input, textarea, select, [contenteditable="true"], [role="button"], [role="slider"], [data-shortcuts-ignore]',
       ),
     );
-  }
-
-  function isAudioDrawerRangeTarget(target: EventTarget | null): boolean {
-    if (!(target instanceof Element)) return false;
-    const input = target.closest("input");
-    return input instanceof HTMLInputElement && input.type === "range";
   }
 
   function onAudioDrawerKeydown(e: KeyboardEvent) {
@@ -2541,7 +2535,7 @@
 
     if (
       matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.playPause), windowPlatform) &&
-      !isAudioDrawerSpaceSuppressedTarget(e.target)
+      !isAudioDrawerShortcutSuppressedTarget(e.target)
     ) {
       e.preventDefault();
       togglePlayPause();
@@ -2549,7 +2543,7 @@
     }
 
     if (
-      !isAudioDrawerRangeTarget(e.target) &&
+      !isAudioDrawerShortcutSuppressedTarget(e.target) &&
       (
         matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBack), windowPlatform) ||
         matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBackFast), windowPlatform) ||

@@ -126,6 +126,33 @@ function normalizeKey(key: string): string | null {
   }
 }
 
+function keyFromPhysicalCode(code: string): string | null {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit\d$/.test(code)) return code.slice(5);
+  switch (code) {
+    case "Backquote": return "`";
+    case "Minus": return "-";
+    case "Equal": return "=";
+    case "BracketLeft": return "[";
+    case "BracketRight": return "]";
+    case "Backslash": return "\\";
+    case "Semicolon": return ";";
+    case "Quote": return "'";
+    case "Comma": return ",";
+    case "Period": return ".";
+    case "Slash": return "/";
+    case "Space": return "Space";
+    default: return null;
+  }
+}
+
+function shortcutCaptureKey(event: KeyboardEvent, platform: KeyboardPlatform): string {
+  if (platform === "macos" && event.altKey) {
+    return keyFromPhysicalCode(event.code) ?? event.key;
+  }
+  return event.key;
+}
+
 export function shortcutBindingFromKeyboardEvent(
   event: KeyboardEvent,
   platform: KeyboardPlatform = "other",
@@ -144,7 +171,7 @@ export function shortcutBindingFromKeyboardEvent(
   }
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
-  const key = normalizeKey(event.key);
+  const key = normalizeKey(shortcutCaptureKey(event, platform));
   if (!key) return null;
   parts.push(key);
   return parts.join("+");

@@ -71,6 +71,7 @@ export type EditableShortcutActionId =
 
 export type ShortcutCategory = "global" | "app" | "dashboard" | "audioDrawer";
 
+type ShortcutConflictScope = "global" | "foreground" | "dashboard" | "audioDrawer";
 type ReservedShortcutScope = "foreground" | "dashboard";
 
 export type ReservedShortcutBinding = {
@@ -86,6 +87,24 @@ export type EditableShortcutAction = {
   category: ShortcutCategory;
   nativeBackground: boolean;
 };
+
+export function shortcutConflictScope(action: EditableShortcutAction): ShortcutConflictScope {
+  if (action.nativeBackground) return "global";
+  if (action.category === "dashboard") return "dashboard";
+  if (action.category === "audioDrawer") return "audioDrawer";
+  return "foreground";
+}
+
+export function shortcutScopesConflict(
+  left: ShortcutConflictScope,
+  right: ShortcutConflictScope,
+): boolean {
+  return left === "global"
+    || right === "global"
+    || left === "foreground"
+    || right === "foreground"
+    || left === right;
+}
 
 export const RESERVED_SHORTCUT_BINDINGS: ReservedShortcutBinding[] = [
   { scope: "foreground", binding: "Escape", label: "close the active surface" },

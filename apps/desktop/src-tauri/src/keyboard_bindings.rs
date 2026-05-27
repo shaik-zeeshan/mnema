@@ -127,6 +127,8 @@ enum BindingPolicy {
 enum ShortcutScope {
     NativeGlobal,
     Foreground,
+    Dashboard,
+    AudioDrawer,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -178,18 +180,18 @@ const EDITABLE_ACTIONS: &[EditableAction] = &[
     EditableAction { id: "toggleSourceMicrophone", label: "Toggle microphone for the next recording", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
     EditableAction { id: "toggleSourceSystemAudio", label: "Toggle system audio for the next recording", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
     EditableAction { id: "toggleShortcutsHelp", label: "Show keyboard shortcuts", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.openJumpPicker", label: "Open jump picker", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.search", label: "Search captured content", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.jumpLatest", label: "Jump to latest", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.toggleOcr", label: "Toggle OCR panel", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.refreshTimeline", label: "Refresh timeline", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.copyFrame", label: "Copy active frame image", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "dashboard.downloadFrame", label: "Download active frame image", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "audioDrawer.playPause", label: "Play or pause", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "audioDrawer.seekBack", label: "Seek back 5 seconds", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "audioDrawer.seekForward", label: "Seek forward 5 seconds", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "audioDrawer.seekBackFast", label: "Seek back 30 seconds", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
-    EditableAction { id: "audioDrawer.seekForwardFast", label: "Seek forward 30 seconds", scope: ShortcutScope::Foreground, policy: BindingPolicy::Foreground },
+    EditableAction { id: "dashboard.openJumpPicker", label: "Open jump picker", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
+    EditableAction { id: "dashboard.search", label: "Search captured content", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
+    EditableAction { id: "dashboard.jumpLatest", label: "Jump to latest", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
+    EditableAction { id: "dashboard.toggleOcr", label: "Toggle OCR panel", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
+    EditableAction { id: "dashboard.refreshTimeline", label: "Refresh timeline", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
+    EditableAction { id: "dashboard.copyFrame", label: "Copy active frame image", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
+    EditableAction { id: "dashboard.downloadFrame", label: "Download active frame image", scope: ShortcutScope::Dashboard, policy: BindingPolicy::Foreground },
+    EditableAction { id: "audioDrawer.playPause", label: "Play or pause", scope: ShortcutScope::AudioDrawer, policy: BindingPolicy::Foreground },
+    EditableAction { id: "audioDrawer.seekBack", label: "Seek back 5 seconds", scope: ShortcutScope::AudioDrawer, policy: BindingPolicy::Foreground },
+    EditableAction { id: "audioDrawer.seekForward", label: "Seek forward 5 seconds", scope: ShortcutScope::AudioDrawer, policy: BindingPolicy::Foreground },
+    EditableAction { id: "audioDrawer.seekBackFast", label: "Seek back 30 seconds", scope: ShortcutScope::AudioDrawer, policy: BindingPolicy::Foreground },
+    EditableAction { id: "audioDrawer.seekForwardFast", label: "Seek forward 30 seconds", scope: ShortcutScope::AudioDrawer, policy: BindingPolicy::Foreground },
 ];
 
 fn schema_version_default() -> u32 { 1 }
@@ -483,7 +485,11 @@ impl ParsedShortcut {
 }
 
 fn scopes_conflict(left: ShortcutScope, right: ShortcutScope) -> bool {
-    left == ShortcutScope::NativeGlobal || right == ShortcutScope::NativeGlobal || left == right
+    left == ShortcutScope::NativeGlobal
+        || right == ShortcutScope::NativeGlobal
+        || left == ShortcutScope::Foreground
+        || right == ShortcutScope::Foreground
+        || left == right
 }
 
 fn action_matches_reserved_scope(
@@ -1004,6 +1010,20 @@ mod tests {
     fn scoped_conflicts_are_rejected() {
         let mut settings = KeyboardBindingsSettings::defaults();
         settings.dashboard_shortcuts.copy_frame = "J".to_string();
+        assert!(settings.validated_for_update().is_err());
+    }
+
+    #[test]
+    fn dashboard_and_audio_drawer_shortcuts_can_overlap() {
+        let mut settings = KeyboardBindingsSettings::defaults();
+        settings.audio_drawer_shortcuts.play_pause = "J".to_string();
+        assert!(settings.validated_for_update().is_ok());
+    }
+
+    #[test]
+    fn app_and_audio_drawer_shortcuts_still_conflict() {
+        let mut settings = KeyboardBindingsSettings::defaults();
+        settings.audio_drawer_shortcuts.play_pause = "/".to_string();
         assert!(settings.validated_for_update().is_err());
     }
 

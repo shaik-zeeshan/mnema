@@ -35,7 +35,7 @@ export type GlobalShortcutAction =
 
 export type GlobalShortcutKeyEvent = Pick<
   KeyboardEvent,
-  "altKey" | "ctrlKey" | "key" | "metaKey" | "repeat" | "shiftKey"
+  "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "repeat" | "shiftKey"
 >;
 
 export type GlobalShortcutContext = {
