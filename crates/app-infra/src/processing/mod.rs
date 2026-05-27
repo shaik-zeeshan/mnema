@@ -25,6 +25,7 @@ pub use speaker_analysis::{
     SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend, HELPER_TIMEOUT_SECONDS_OPTION,
 };
 pub(crate) use store::map_frame_for_search;
+pub(crate) use store::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS;
 #[cfg(test)]
 pub(crate) use store::{
     AUDIO_FAILED_JOB_MAX_ATTEMPTS, OCR_FAILED_JOB_MAX_ATTEMPTS, RECLAIM_ATTEMPT_CEILING,

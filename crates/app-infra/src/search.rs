@@ -243,12 +243,11 @@ impl SearchStore {
                    OR (subject_type = ?3 AND processor = ?4) \
                 GROUP BY subject_type, subject_id, processor\
              ) latest_results ON latest_results.id = processing_results.id \
-             WHERE LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
-               AND NOT EXISTS (\
-                    SELECT 1 FROM search_documents \
-                    WHERE search_documents.text_source_kind = 'direct' \
-                      AND search_documents.processing_result_id = processing_results.id\
-               ) \
+             LEFT JOIN search_documents AS existing_direct \
+                    ON existing_direct.processing_result_id = processing_results.id \
+                   AND existing_direct.text_source_kind = 'direct' \
+             WHERE existing_direct.id IS NULL \
+               AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
              ORDER BY processing_results.id ASC",
         )
         .bind(FRAME_SUBJECT_TYPE)
@@ -3265,6 +3264,215 @@ mod tests {
                 .expect("fresh search should succeed");
             assert_eq!(fresh.frames.len(), 1);
             assert_eq!(fresh.frames[0].representative_frame.id, frame.id);
+        });
+    }
+
+    #[test]
+    fn fast_initialize_defers_search_projection_backfill_until_maintenance_runs() {
+        run_async_test(async {
+            let dir = test_dir("fast-init-defers-backfill");
+
+            // Seed a frame + OCR result (projected on write), then delete the
+            // projection so the index needs the startup repair to be searchable.
+            let frame_id;
+            {
+                let infra = AppInfra::initialize(&dir)
+                    .await
+                    .expect("infra should initialize");
+                let frame = infra
+                    .insert_frame(&NewFrame::new(
+                        "screen-session",
+                        "/tmp/fast-init-defers-backfill.jpg",
+                        "2026-05-17T10:00:00Z",
+                    ))
+                    .await
+                    .expect("frame should insert");
+                frame_id = frame.id;
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                    .await
+                    .expect("ocr job should enqueue");
+                complete_job(
+                    &infra,
+                    job,
+                    ProcessingResultDraft::new().with_result_text("deferred backfill text"),
+                )
+                .await;
+                sqlx::query("DELETE FROM search_documents")
+                    .execute(infra.pool())
+                    .await
+                    .expect("search documents should delete");
+            }
+
+            let search_request = || SearchCaptureRequest {
+                query: "deferred".to_string(),
+                frame_limit: Some(5),
+                frame_offset: None,
+                audio_limit: Some(0),
+                audio_offset: None,
+                snapshot_document_id: None,
+                refinements: None,
+            };
+
+            // The fast init path opens the index but must NOT run the projection
+            // backfill — that is what keeps the expensive scans off the
+            // window-open critical path — so the missing projection stays missing.
+            let infra = AppInfra::initialize_fast_with_processing_registry(
+                &dir,
+                crate::default_processing_registry(),
+            )
+            .await
+            .expect("fast infra should initialize");
+            let before = infra
+                .search_capture(search_request())
+                .await
+                .expect("search before maintenance should succeed");
+            assert!(
+                before.frames.is_empty(),
+                "fast init should defer the search projection backfill"
+            );
+
+            // Running startup maintenance repairs the missing projection.
+            infra
+                .run_startup_maintenance()
+                .await
+                .expect("startup maintenance should run");
+            let after = infra
+                .search_capture(search_request())
+                .await
+                .expect("search after maintenance should succeed");
+            assert_eq!(after.frames.len(), 1);
+            assert_eq!(after.frames[0].representative_frame.id, frame_id);
+        });
+    }
+
+    #[test]
+    fn startup_backfill_does_not_double_project_multi_span_audio_result() {
+        run_async_test(async {
+            let dir = test_dir("backfill-audio-multi-span");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // A single audio transcription result with two segments projects two
+            // `direct` search_documents (one per span) for the same
+            // processing_result. This is the exact case where the
+            // backfill LEFT JOIN would row-multiply if its `IS NULL` anti-join
+            // guard regressed to an inner join, so it must be re-projected once.
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    "/tmp/backfill-audio-multi-span.m4a",
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:20Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let metadata = TranscriptionMetadata {
+                provider: "test".to_string(),
+                model_id: None,
+                language: "en".to_string(),
+                segments: vec![
+                    TranscriptionSegment {
+                        start_ms: 1_000,
+                        end_ms: 2_500,
+                        text: "deferred backfill alpha".to_string(),
+                        confidence: None,
+                    },
+                    TranscriptionSegment {
+                        start_ms: 3_000,
+                        end_ms: 4_500,
+                        text: "deferred backfill beta".to_string(),
+                        confidence: None,
+                    },
+                ],
+                words: Vec::new(),
+                provenance: Default::default(),
+            };
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            complete_job(
+                &infra,
+                job,
+                ProcessingResultDraft::new()
+                    .with_result_text("deferred backfill alpha deferred backfill beta")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await;
+
+            // Two `direct` docs were projected on write.
+            let direct_count = || async {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM search_documents \
+                     WHERE audio_segment_id = ?1 AND text_source_kind = 'direct'",
+                )
+                .bind(segment.id)
+                .fetch_one(infra.pool())
+                .await
+                .expect("direct doc count should load")
+            };
+            assert_eq!(direct_count().await, 2, "write path projects two direct docs");
+
+            // Drop the projection so the startup backfill must repair it.
+            sqlx::query("DELETE FROM search_documents")
+                .execute(infra.pool())
+                .await
+                .expect("search documents should delete");
+            assert_eq!(direct_count().await, 0);
+
+            // Backfill must re-project the multi-span result exactly once: two
+            // direct docs total, not four.
+            infra
+                .run_startup_maintenance()
+                .await
+                .expect("startup maintenance should run");
+            assert_eq!(
+                direct_count().await,
+                2,
+                "anti-join must re-project the multi-span audio result exactly once"
+            );
+
+            // Re-running the backfill while both direct docs already exist must be
+            // a no-op for this result: the anti-join must NOT re-select an
+            // already-projected multi-span result and append a second copy of its
+            // spans (which an inner join / dropped `IS NULL` guard would do).
+            infra
+                .run_startup_maintenance()
+                .await
+                .expect("repeat startup maintenance should run");
+            assert_eq!(
+                direct_count().await,
+                2,
+                "anti-join must not double-project an already-projected multi-span result"
+            );
+
+            // Search returns the single grouped audio result, not N duplicates.
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "deferred".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(5),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                })
+                .await
+                .expect("search should succeed");
+            assert!(response.frames.is_empty());
+            assert_eq!(
+                response.audio.len(),
+                1,
+                "the grouped audio result must not be duplicated by the backfill"
+            );
         });
     }
 

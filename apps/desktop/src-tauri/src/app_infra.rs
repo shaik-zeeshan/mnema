@@ -1580,12 +1580,13 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
 
     let processing_registry =
         desktop_processing_registry(&app_handle).map_err(AppInfraInitializeError::Other)?;
-    let infra =
-        tauri::async_runtime::block_on(::app_infra::AppInfra::initialize_with_processing_registry(
+    let infra = tauri::async_runtime::block_on(
+        ::app_infra::AppInfra::initialize_fast_with_processing_registry(
             &resolved_base_dir.base_dir,
             processing_registry,
-        ))
-        .map_err(|error| {
+        ),
+    )
+    .map_err(|error| {
             crate::native_capture::debug_log::log_error(format!(
             "failed to initialize app infrastructure (save_directory='{}', base_dir='{}'): {error}",
             resolved_base_dir.save_directory,
@@ -1643,29 +1644,134 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         resolved_base_dir.base_dir.display()
     ));
 
-    run_generated_frame_preview_cache_startup_pass(&app_handle);
-    run_frame_index_sidecar_conversion_startup_pass(&resolved_base_dir.base_dir);
-    run_hidden_segment_workspace_repair_startup_pass(&infra, &resolved_base_dir.base_dir);
-    if let Ok(settings) = app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
-        .lock()
-    {
-        if !settings.settings.ocr.enabled {
-            match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled()) {
-                Ok(failed_count) => crate::native_capture::debug_log::log_info(format!(
-                    "startup marked queued OCR jobs failed because OCR is disabled (count={failed_count})"
-                )),
-                Err(error) => crate::native_capture::debug_log::log_error(format!(
-                    "startup failed to mark queued OCR jobs failed while OCR is disabled: {error}"
-                )),
-            }
-        }
-    } else {
+    // The database pool and all stores are now ready, so the window can open and
+    // serve queries immediately. The heavy startup maintenance scans (index
+    // backfills, orphaned-job reconciliation, hidden-segment workspace repair,
+    // frame-index sidecar conversion, audio/speaker backfill) and the background
+    // workers are run off the window-open critical path by the caller via
+    // `run_deferred_startup_blocking`, so they no longer delay the first paint.
+    Ok(())
+}
+
+/// Runs every startup task that does not need to complete before the window is
+/// shown: the [`::app_infra::AppInfra::run_startup_maintenance`] passes, the
+/// filesystem repair/conversion scans, OCR-disabled reconciliation, the
+/// audio/speaker transcription backfill, and finally spawning the background
+/// processing/retention/repair workers.
+///
+/// This is intended to be invoked from a dedicated background thread *after* the
+/// window has opened (see `lib.rs` setup). Ordering matters and is preserved from
+/// the previous synchronous path: maintenance and hidden-segment repair complete
+/// before any worker (or capture auto-start) runs, and orphaned-job reconciliation
+/// (inside `run_startup_maintenance`) completes before the processing workers
+/// spawn — it is only safe while nothing is executing those jobs (ADR 0020).
+pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
+    // Defense in depth against a quit requested before deferred startup even
+    // began (see also the gate in `run_deferred_startup`): if a graceful exit is
+    // already in progress, there is nothing to spin up. Bail before running any
+    // maintenance/repair or spawning workers so we never start new background
+    // work while the app is tearing down. Interrupted maintenance is safe to skip
+    // here — it is re-run (idempotently) on the next launch.
+    if crate::windows::is_graceful_exit_in_progress(app_handle) {
+        crate::native_capture::debug_log::log_info(
+            "graceful exit already in progress; skipping deferred startup before it began",
+        );
+        return;
+    }
+
+    // NOTE on #11 (duplicated state-lookup boilerplate): these two
+    // `try_state ... else { log; return }` blocks superficially resemble the
+    // pair in `shutdown_background_workers_for_app_exit`, but they differ in log
+    // level (error vs warn), message, and the fact that shutdown only needs the
+    // background-workers state while startup needs both states with different
+    // failure copy. A shared helper would be more indirection than the two-line
+    // pattern saves, so they are intentionally left inline.
+    let Some(infra) = app_handle.try_state::<AppInfraState>() else {
         crate::native_capture::debug_log::log_error(
-            "failed to read recording settings during OCR disabled startup reconciliation",
+            "app infrastructure state was not initialized; skipping deferred startup",
+        );
+        return;
+    };
+    let infra = infra.inner().clone();
+    let Some(background_workers) = app_handle.try_state::<BackgroundWorkersState>() else {
+        crate::native_capture::debug_log::log_error(
+            "background workers state was not initialized; skipping deferred startup",
+        );
+        return;
+    };
+    let background_workers = background_workers.inner().clone();
+    let base_dir = infra.base_dir().to_path_buf();
+
+    // #3: This runs on a detached background thread, so we cannot cleanly
+    // fail-fast the app from here (the old synchronous path could). We
+    // deliberately keep startup best-effort: a maintenance failure is logged at
+    // ERROR level and startup proceeds to spawn the workers anyway. Aborting or
+    // skipping worker spawn on a maintenance error would strand processing far
+    // worse than re-running the (idempotent, SQLite-WAL-safe) maintenance on the
+    // next launch. The ADR-0020 ordering still holds: orphaned-job reconciliation
+    // lives inside `run_startup_maintenance` and completes (or this thread is
+    // gone via a panic — see below) before the workers spawn.
+    if let Err(error) = tauri::async_runtime::block_on(infra.run_startup_maintenance()) {
+        crate::native_capture::debug_log::log_error(format!(
+            "startup maintenance failed (base_dir='{}'): {error}",
+            base_dir.display()
+        ));
+    }
+
+    // If a quit was requested during maintenance, stop here rather than running
+    // the remaining filesystem/backfill passes or spawning workers. We only
+    // short-circuit *between* major passes, never mid-transaction, so already
+    // committed work stays consistent and the rest is re-run on next launch.
+    if crate::windows::is_graceful_exit_in_progress(app_handle) {
+        crate::native_capture::debug_log::log_info(
+            "graceful exit requested during startup maintenance; skipping remaining deferred startup",
+        );
+        return;
+    }
+
+    // #4: The passes below are *not* ordering-critical for ADR-0020 (the
+    // reconcile already completed inside `run_startup_maintenance` above). Wrap
+    // them in `catch_unwind` so a panic in the filesystem repair / sidecar
+    // conversion / OCR-disabled reconciliation / audio backfill is logged and
+    // still lets the processing/retention workers spawn — otherwise a bug in a
+    // non-critical pass would leave the app with no background workers at all. A
+    // panic *inside* `run_startup_maintenance` (which contains the reconcile)
+    // intentionally remains uncaught: it unwinds this thread, is recorded by the
+    // installed panic hook, and prevents worker spawn because the reconcile may
+    // not have completed.
+    let post_maintenance = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_generated_frame_preview_cache_startup_pass(app_handle);
+        run_frame_index_sidecar_conversion_startup_pass(&base_dir);
+        run_hidden_segment_workspace_repair_startup_pass(&infra, &base_dir, app_handle);
+        if let Ok(settings) = app_handle
+            .state::<crate::native_capture::RecordingSettingsState>()
+            .lock()
+        {
+            if !settings.settings.ocr.enabled {
+                match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled()) {
+                    Ok(failed_count) => crate::native_capture::debug_log::log_info(format!(
+                        "startup marked queued OCR jobs failed because OCR is disabled (count={failed_count})"
+                    )),
+                    Err(error) => crate::native_capture::debug_log::log_error(format!(
+                        "startup failed to mark queued OCR jobs failed while OCR is disabled: {error}"
+                    )),
+                }
+            }
+        } else {
+            crate::native_capture::debug_log::log_error(
+                "failed to read recording settings during OCR disabled startup reconciliation",
+            );
+        }
+        run_audio_transcription_backfill_startup_pass(&infra, app_handle);
+    }));
+    if post_maintenance.is_err() {
+        // The panic itself is already recorded by the installed panic hook; we
+        // intentionally continue to spawn workers because these passes are not
+        // ordering-critical and stranding processing is worse than skipping them.
+        crate::native_capture::debug_log::log_error(
+            "deferred startup post-maintenance passes panicked; continuing to spawn background workers",
         );
     }
-    run_audio_transcription_backfill_startup_pass(&infra, &app_handle);
 
     spawn_retention_cleanup_worker(
         Arc::clone(&infra),
@@ -1673,14 +1779,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         background_workers.clone(),
     );
 
-    spawn_processing_worker(
-        infra,
-        resolved_base_dir.base_dir,
-        app_handle,
-        background_workers,
-    );
-
-    Ok(())
+    spawn_processing_worker(infra, base_dir, app_handle.clone(), background_workers);
 }
 
 pub(crate) async fn shutdown_background_workers_for_app_exit(app_handle: &tauri::AppHandle) {
@@ -2085,13 +2184,20 @@ fn insert_speaker_analysis_timeout_option(
 fn run_hidden_segment_workspace_repair_startup_pass(
     infra: &::app_infra::AppInfra,
     base_dir: &Path,
+    app_handle: &tauri::AppHandle,
 ) {
     let recordings_root =
         crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir.to_path_buf())
             .recordings_root();
     let recordings_root_display = recordings_root.display().to_string();
 
-    let active_workspace_dirs = BTreeSet::new();
+    // This pass now runs on the deferred-startup thread *after* the window is
+    // open, by which point a manual `start_native_capture` (or the recording
+    // global shortcut) may already be live. Exclude any workspace the running
+    // capture is using — mirroring the periodic repair worker — so we never
+    // delete the just-created (still empty) workspace of an active recording.
+    // Returns an empty set when no capture is running.
+    let active_workspace_dirs = active_workspace_dirs_for_hidden_workspace_repair(app_handle);
     match tauri::async_runtime::block_on(repair_hidden_segment_workspaces_once(
         infra,
         &recordings_root,

@@ -273,6 +273,26 @@ impl AppInfra {
         base_dir: P,
         processing_registry: ProcessorRegistry,
     ) -> Result<Self> {
+        let infra =
+            Self::initialize_fast_with_processing_registry(base_dir, processing_registry).await?;
+        infra.run_startup_maintenance().await?;
+        Ok(infra)
+    }
+
+    /// Fast initialization path: opens the database and constructs every store
+    /// and runtime, but does **not** run the startup maintenance scans
+    /// (frame-equivalence / search-projection backfills, orphaned-job
+    /// reconciliation, frame-batch reconciliation).
+    ///
+    /// This exists so the desktop app can open its window without blocking on
+    /// the maintenance passes, which scan the whole index and dominate startup
+    /// time. Callers that take this path **must** run [`Self::run_startup_maintenance`]
+    /// before spawning processing workers (see ADR 0020): orphaned-job
+    /// reconciliation is only safe while nothing is executing those jobs.
+    pub async fn initialize_fast_with_processing_registry<P: AsRef<Path>>(
+        base_dir: P,
+        processing_registry: ProcessorRegistry,
+    ) -> Result<Self> {
         let database = db::Database::initialize(base_dir.as_ref()).await?;
         let jobs = JobStore::new(database.pool().clone());
         let audio_segments = AudioSegmentStore::new(database.pool().clone());
@@ -283,24 +303,6 @@ impl AppInfra {
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
-        processing.clear_model_cleanup_locks().await?;
-        processing.backfill_frame_equivalence().await?;
-        search.backfill_missing_projections().await?;
-        jobs.reconcile_orphaned_running_jobs().await?;
-        let reclamation = processing.reconcile_orphaned_running_jobs().await?;
-        if reclamation.requeued > 0 || reclamation.failed_on_ceiling > 0 {
-            capture_runtime::debug_log!(
-                "[app-infra] startup reclaimed orphaned processing jobs (requeued={}, failed_on_ceiling={})",
-                reclamation.requeued,
-                reclamation.failed_on_ceiling
-            );
-        }
-        frame_batches
-            .reconcile_closed_batches_without_finalize_jobs()
-            .await?;
-        frame_batches
-            .reconcile_open_batches_without_active_capture()
-            .await?;
         let runtime = JobRuntime::new(default_worker_thread_count())?;
         let frame_batch_runtime = FrameBatchRuntime::new(frame_batches.clone());
         let processing_runtime = ProcessingRuntime::new(processing.clone(), processing_registry);
@@ -319,6 +321,44 @@ impl AppInfra {
             frame_batch_runtime,
             processing_runtime,
         })
+    }
+
+    /// Runs the one-time startup maintenance passes that repair/reconcile the
+    /// index: clearing stale model-cleanup locks, backfilling frame-equivalence
+    /// and search projections, reconciling orphaned `running` jobs (ADR 0020),
+    /// and reconciling frame batches left without finalize jobs / active capture.
+    ///
+    /// These passes are scans over the whole index; in steady state they find
+    /// nothing to do (the normal write paths keep everything current) but still
+    /// cost real time, so the desktop app runs this off the window-open path.
+    /// It must complete before processing workers are spawned.
+    pub async fn run_startup_maintenance(&self) -> Result<()> {
+        // Stale-only: this runs on the deferred-startup thread while model-deletion commands can be
+        // live and holding a freshly acquired cleanup lock, so only clear locks old enough to be
+        // orphaned by a prior crash (see `MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS`).
+        self.processing
+            .clear_stale_model_cleanup_locks(
+                processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS,
+            )
+            .await?;
+        self.processing.backfill_frame_equivalence().await?;
+        self.search.backfill_missing_projections().await?;
+        self.jobs.reconcile_orphaned_running_jobs().await?;
+        let reclamation = self.processing.reconcile_orphaned_running_jobs().await?;
+        if reclamation.requeued > 0 || reclamation.failed_on_ceiling > 0 {
+            capture_runtime::debug_log!(
+                "[app-infra] startup reclaimed orphaned processing jobs (requeued={}, failed_on_ceiling={})",
+                reclamation.requeued,
+                reclamation.failed_on_ceiling
+            );
+        }
+        self.frame_batches
+            .reconcile_closed_batches_without_finalize_jobs()
+            .await?;
+        self.frame_batches
+            .reconcile_open_batches_without_active_capture()
+            .await?;
+        Ok(())
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -4480,6 +4520,78 @@ mod tests {
     }
 
     #[test]
+    fn startup_stale_model_cleanup_clear_preserves_fresh_locks() {
+        run_async_test(async {
+            let dir = TestDir::new("startup-stale-cleanup-clear");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            // A lock left orphaned by a prior crashed session: backdated well past the threshold.
+            let stale_lock = infra
+                .acquire_ocr_model_cleanup_locks(&BTreeSet::from([
+                    "tesseract/tesseract-5.5.2".to_string()
+                ]))
+                .await
+                .expect("stale cleanup lock should acquire");
+            sqlx::query(
+                "UPDATE processing_model_cleanup_locks \
+                 SET created_at = datetime('now', '-1 day') \
+                 WHERE model_key = ?1",
+            )
+            .bind("tesseract/tesseract-5.5.2")
+            .execute(infra.pool())
+            .await
+            .expect("stale lock created_at should backdate");
+
+            // A lock a live model-deletion command just acquired (created_at = now).
+            let fresh_lock = infra
+                .acquire_ocr_model_cleanup_locks(&BTreeSet::from([
+                    "paddleocr/paddleocr-en-v5".to_string()
+                ]))
+                .await
+                .expect("fresh cleanup lock should acquire");
+
+            let cleared = infra
+                .processing()
+                .clear_stale_model_cleanup_locks(
+                    processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS,
+                )
+                .await
+                .expect("stale-only clear should run");
+            assert_eq!(cleared, 1, "only the stale lock should be cleared");
+
+            let stale_remaining: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM processing_model_cleanup_locks WHERE model_key = ?1",
+            )
+            .bind("tesseract/tesseract-5.5.2")
+            .fetch_one(infra.pool())
+            .await
+            .expect("stale lock count should query");
+            assert_eq!(stale_remaining, 0, "stale orphaned lock should be gone");
+
+            let fresh_remaining: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM processing_model_cleanup_locks WHERE model_key = ?1",
+            )
+            .bind("paddleocr/paddleocr-en-v5")
+            .fetch_one(infra.pool())
+            .await
+            .expect("fresh lock count should query");
+            assert_eq!(fresh_remaining, 1, "freshly acquired live lock should survive");
+
+            infra
+                .release_processing_model_cleanup_locks(&fresh_lock)
+                .await
+                .expect("fresh cleanup lock should release");
+            // The stale lock was already cleared; releasing it is a no-op but must not error.
+            infra
+                .release_processing_model_cleanup_locks(&stale_lock)
+                .await
+                .expect("releasing an already-cleared lock should be a no-op");
+        });
+    }
+
+    #[test]
     fn malformed_ocr_payload_is_isolated_to_that_job_during_next_claim() {
         run_async_test(async {
             let dir = TestDir::new("ocr-malformed-payload-next-claim");
@@ -5006,6 +5118,20 @@ mod tests {
                 .await
                 .expect("cleanup lock should acquire");
             assert_eq!(lock.acquired_model_keys.len(), 1);
+            // Simulate a lock orphaned by a prior crashed session: by the time the
+            // app restarts and deferred startup maintenance runs, an orphaned lock
+            // is well past the stale threshold. Startup maintenance now clears only
+            // stale locks (it runs while live model-deletion commands may hold a
+            // fresh lock), so the orphaned lock must be backdated to be cleared.
+            sqlx::query(
+                "UPDATE processing_model_cleanup_locks \
+                 SET created_at = datetime('now', '-1 day') \
+                 WHERE model_key = ?1",
+            )
+            .bind("tesseract/tesseract-5.5.2")
+            .execute(initial.pool())
+            .await
+            .expect("orphaned lock created_at should backdate");
             drop(initial);
 
             let recovered = AppInfra::initialize(dir.path())

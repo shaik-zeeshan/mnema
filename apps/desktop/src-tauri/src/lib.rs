@@ -221,6 +221,32 @@ fn exit_request_action_for_exit_request(
     ExitRequestAction::AllowExit
 }
 
+/// Startup work that runs after the main window is shown, off the window-open
+/// critical path: app-infra maintenance + background workers (see
+/// [`app_infra::run_deferred_startup_blocking`]) and, once onboarding is
+/// complete, capture auto-start and the startup update check. Auto-start runs
+/// only after the maintenance/repair passes complete so it preserves the
+/// ordering the previous synchronous startup path guaranteed.
+fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool) {
+    app_infra::run_deferred_startup_blocking(app_handle);
+    // If the user quit while the (now background) startup work was running,
+    // graceful exit may have already stopped capture and be heading for a hard
+    // process exit. Do not auto-start a NEW capture session or kick off the
+    // update check on top of that teardown — that would record a segment
+    // `complete_graceful_exit` then kills mid-write. The deferred maintenance
+    // above already bails on this condition too (defense in depth).
+    if windows::is_graceful_exit_in_progress(app_handle) {
+        native_capture::debug_log::log_info(
+            "graceful exit in progress; skipping capture auto-start and startup update check",
+        );
+        return;
+    }
+    if onboarding_complete {
+        native_capture::maybe_auto_start_native_capture(app_handle);
+        app_updates::start_startup_update_check(app_handle);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -483,9 +509,41 @@ pub fn run() {
                 windows::open_startup_window(app.handle(), onboarding_state.inner())
                     .map_err(std::io::Error::other)?;
             }
-            if onboarding_complete {
-                native_capture::maybe_auto_start_native_capture(app.handle());
-                app_updates::start_startup_update_check(app.handle());
+            // The window is open and the database is ready; run the remaining
+            // startup work (index maintenance, filesystem repair, background
+            // workers) off the window-open critical path so it no longer delays
+            // the first paint. Capture auto-start and the update check run only
+            // after that maintenance completes, preserving the ordering the old
+            // synchronous path guaranteed (notably: hidden-segment workspace
+            // repair respects the live active-capture workspace set so it never
+            // deletes a workspace a manually-started recording is already using).
+            //
+            // This thread is detached and never joined. That is safe: it is
+            // best-effort and bails early once a graceful exit is requested (both
+            // at its start and after maintenance), so it does not start NEW
+            // capture or workers while the app is tearing down. Any maintenance
+            // step it does not finish is re-run on the next launch — every step
+            // commits through SQLite WAL, so a hard process exit mid-step is
+            // crash-safe and idempotent to re-run. We therefore do not build a
+            // join-with-timeout against the hard `complete_graceful_exit` path.
+            let deferred_app_handle = app.handle().clone();
+            if let Err(error) = std::thread::Builder::new()
+                .name("mnema-deferred-startup".to_string())
+                .spawn(move || {
+                    run_deferred_startup(&deferred_app_handle, onboarding_complete)
+                })
+            {
+                // Spawning a thread effectively never fails; if it does, run the
+                // deferred startup inline as a last resort rather than leaving the
+                // app without background workers or capture. This re-blocks first
+                // paint with the full maintenance workload, which is why it is the
+                // fallback and not the normal path. Logged through the app log sink
+                // so a "no background workers" incident is captured in the packaged
+                // app log rather than only on stderr.
+                native_capture::debug_log::log_error(format!(
+                    "failed to spawn deferred startup thread; running inline (re-blocks first paint): {error}"
+                ));
+                run_deferred_startup(app.handle(), onboarding_complete);
             }
             if should_notify_pending_broker_authorization_request(
                 onboarding_complete,

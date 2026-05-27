@@ -55,6 +55,15 @@ pub(crate) const OCR_FAILED_JOB_MAX_ATTEMPTS: i64 = 3;
 /// burning CPU forever; abandonment at quit/crash does not count toward this cap.
 pub(crate) const AUDIO_FAILED_JOB_MAX_ATTEMPTS: i64 = 3;
 
+/// Age past which a `processing_model_cleanup_locks` row is treated as orphaned by a prior crash
+/// and is safe to clear during startup maintenance. A live model-deletion command acquires its
+/// lock and releases it within the deletion (seconds to a couple of minutes for the largest model
+/// archives), whereas a lock left behind by a crashed prior session is at minimum an app restart
+/// old by the time deferred startup maintenance runs. Ten minutes is comfortably above any
+/// realistic model-deletion duration, so the stale-only startup clear never wipes the freshly
+/// acquired lock of a model-deletion command running concurrently on the deferred-startup thread.
+pub(crate) const MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS: i64 = 600;
+
 /// Backoff applied before a failed **OCR Job** may be re-claimed by the automatic queue drain,
 /// indexed by the number of failures already recorded (so index 0 is the wait after the first
 /// failure, index 1 after the second, and so on). Because the claim selects queued jobs
@@ -1041,6 +1050,28 @@ impl ProcessingStore {
         let delete = sqlx::query("DELETE FROM processing_model_cleanup_locks")
             .execute(&self.pool)
             .await?;
+
+        Ok(delete.rows_affected())
+    }
+
+    /// Clears only **orphaned** model-cleanup locks: rows whose `created_at` is older than
+    /// `stale_after`. This is the startup-maintenance variant of [`Self::clear_model_cleanup_locks`].
+    ///
+    /// Startup maintenance now runs on the deferred-startup thread *after* Tauri commands are live,
+    /// so a model-deletion command can be holding a freshly acquired cleanup lock while this runs.
+    /// An unconditional `DELETE` would wipe that live lock, removing the guard that stops a worker
+    /// from claiming a job against a model whose files are mid-deletion. A lock left by a crashed
+    /// prior session is at least an app restart old, while a live command's lock is seconds old, so
+    /// the age threshold cleanly separates the two. `created_at` is UTC `CURRENT_TIMESTAMP`, so it is
+    /// compared against `datetime('now')`, which is also UTC.
+    pub async fn clear_stale_model_cleanup_locks(&self, stale_after_seconds: i64) -> Result<u64> {
+        let delete = sqlx::query(
+            "DELETE FROM processing_model_cleanup_locks \
+             WHERE created_at <= datetime('now', printf('-%d seconds', ?1))",
+        )
+        .bind(stale_after_seconds)
+        .execute(&self.pool)
+        .await?;
 
         Ok(delete.rows_affected())
     }
