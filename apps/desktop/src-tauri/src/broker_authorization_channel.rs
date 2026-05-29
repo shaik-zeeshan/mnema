@@ -730,6 +730,9 @@ mod tests {
         );
     }
 
+    // `read_request_line` and `REQUEST_MAX_BYTES` are #[cfg(unix)] (Unix
+    // socket plumbing) so the oversized-request test must match that gate.
+    #[cfg(unix)]
     #[test]
     fn request_line_reader_rejects_oversized_requests() {
         tauri::async_runtime::block_on(async {

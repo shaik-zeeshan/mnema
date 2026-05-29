@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-05-26_
+_Last reviewed: 2026-05-29_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -105,10 +105,10 @@ Research notes:
 ### Bring-up / compilation
 
 - [ ] Add Windows CI job for `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`, `cargo check --workspace --all-targets`, and `bun run check`.
-- [ ] Audit all `cfg(target_os = "macos")` / non-mac stubs and ensure Windows builds cleanly with the desktop feature set.
+- [x] Audit all `cfg(target_os = "macos")` / non-mac stubs and ensure Windows builds cleanly with the desktop feature set. Both `cargo check --workspace --all-targets` and `bun run check` now succeed on Windows; `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml` produces `target/debug/mnema.exe`. Gating relies on: (a) `libsqlite3-sys` switching to plain `bundled` (no SQLCipher) on non-macOS, (b) `audio-transcription`/`speaker-analysis`/`ocr` provider features (`local-whisper`, `parakeet-onnx`, `sherpa-onnx`, `paddle-rs`, `tesseract-embedded`) only enabled in the `apps/desktop/src-tauri` macOS target-deps block, and (c) `mod speaker_analysis_runtime` and the Sherpa subprocess provider registration being `#[cfg(target_os = "macos")]`.
 - [ ] Decide whether capture output remains `.mov`/`.m4a` or becomes Windows-native formats with schema/runtime support for extensions.
 - [ ] Remove user-facing “only macOS” errors once Windows adapters exist.
-- [ ] Add Windows Tauri bundle config, installer target, signing plan, and updater artifacts.
+- [~] Add Windows Tauri bundle config, installer target, signing plan, and updater artifacts. `tauri.conf.json` now declares `bundle.windows.webviewInstallMode = { type: "downloadBootstrapper" }`; default NSIS installer target is already covered by `bundle.targets = "all"` and `icons/icon.ico` is present. Signing thumbprint/timestamp configuration is still pending.
 
 ### Runtime capture
 

@@ -154,9 +154,11 @@ impl CaptureIndexKeyStoreAdapter for FileCaptureIndexKeyStoreAdapter {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]
 struct PlatformKeychainCaptureIndexKeyStoreAdapter;
 
+#[cfg(target_os = "macos")]
 impl CaptureIndexKeyStoreAdapter for PlatformKeychainCaptureIndexKeyStoreAdapter {
     fn load_key(&self, index_id: &str) -> Result<Option<String>> {
         load_platform_key(index_id)
@@ -186,8 +188,23 @@ pub(crate) fn resolve_capture_index_database_key_for_current_process(
             .resolve_database_key(base_dir, database_path);
     }
 
-    CaptureIndexKeyStore::new(PlatformKeychainCaptureIndexKeyStoreAdapter)
-        .resolve_database_key(base_dir, database_path)
+    // Platform key stores are macOS-only for now (SUPPORTS.md: "Encrypted
+    // Capture Index key store: Windows missing"). On non-macOS targets we
+    // intentionally fall through to a plaintext capture index until a Windows
+    // Credential Manager / DPAPI or Linux Secret Service path lands. The
+    // shared SQLite build also drops SQLCipher off-macOS, so a non-`None` key
+    // here would fail to apply the `key` pragma anyway.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (base_dir, database_path);
+        return Ok(None);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        CaptureIndexKeyStore::new(PlatformKeychainCaptureIndexKeyStoreAdapter)
+            .resolve_database_key(base_dir, database_path)
+    }
 }
 
 fn test_process_allows_plaintext_index() -> bool {
@@ -302,19 +319,8 @@ fn store_platform_key(index_id: &str, key: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-fn load_platform_key(_index_id: &str) -> Result<Option<String>> {
-    Err(AppInfraError::CaptureIndexEncryption(
-        "capture index key store is unsupported on this platform".to_string(),
-    ))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn store_platform_key(_index_id: &str, _key: &str) -> Result<()> {
-    Err(AppInfraError::CaptureIndexEncryption(
-        "capture index key store is unsupported on this platform".to_string(),
-    ))
-}
+// Non-macOS targets do not have a platform key store; the resolver above
+// returns Ok(None) (plaintext) before reaching these, so no stubs are needed.
 
 #[cfg(test)]
 mod tests {

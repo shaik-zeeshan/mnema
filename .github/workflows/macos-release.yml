@@ -94,7 +94,7 @@ jobs:
         run: bun run check
 
       - name: Prepare Mnema CLI sidecar for Tauri check
-        run: ./scripts/prepare-mnema-cli-sidecar.sh debug --locked
+        run: bun run ./scripts/prepare-mnema-cli-sidecar.ts debug --locked
 
       - name: Check Tauri Rust app
         run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked

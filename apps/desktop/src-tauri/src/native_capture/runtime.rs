@@ -466,6 +466,11 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
     runtime.runtime_state = RuntimeState::Idle;
 }
 
+// Gated to macOS because `is_missing_requested_screen_output_failure_detail`
+// in `super::output` is itself macOS-only (ScreenCaptureKit output detection).
+// The sole non-test caller (`recover_from_segment_finalize_error` in
+// segments.rs) is also macOS-only.
+#[cfg(target_os = "macos")]
 pub(super) fn should_recover_from_segment_finalize_error(error: &CaptureErrorResponse) -> bool {
     let is_missing_requested_screen_output =
         capture_writers::single_output_processing_failure_detail(

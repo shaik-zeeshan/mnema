@@ -20,7 +20,6 @@ use cidre::dispatch;
 use cidre::objc;
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
-#[cfg(target_os = "macos")]
 mod equivalence;
 
 use std::ffi::c_void;

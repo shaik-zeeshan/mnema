@@ -16,7 +16,11 @@ mod segments;
 pub(crate) mod settings;
 #[path = "native_capture_system_idle.rs"]
 pub(crate) mod system_idle;
-#[cfg(test)]
+// The native_capture test suite reaches into macOS-only runtime fields and
+// segment helpers. Gate the whole module to macOS so `cargo check
+// --all-targets` and `cargo test` pass on other platforms; the macOS-only
+// behavior these tests cover does not run elsewhere yet.
+#[cfg(all(test, target_os = "macos"))]
 mod tests;
 
 use capture_microphone as microphone_capture;
@@ -2401,16 +2405,27 @@ fn finish_recording_settings_update(
     }
     let privacy_changed = previous_settings.privacy != settings.privacy;
     let metadata_changed = previous_settings.metadata != settings.metadata;
-    if metadata_changed {
-        privacy::request_privacy_filter_refresh(
-            app_handle,
-            privacy::PrivacyRefreshReason::MetadataSettingsMutation,
-        );
-    } else if privacy_changed {
-        privacy::request_privacy_filter_refresh(
-            app_handle,
-            privacy::PrivacyRefreshReason::StaticAppRuleMutation,
-        );
+    // The privacy filter refresh plumbing (`PrivacyRefreshReason`,
+    // `request_privacy_filter_refresh`) is macOS-only because it drives the
+    // ScreenCaptureKit content-filter rebuild. On other platforms there is no
+    // privacy filter to refresh, so we no-op.
+    #[cfg(target_os = "macos")]
+    {
+        if metadata_changed {
+            privacy::request_privacy_filter_refresh(
+                app_handle,
+                privacy::PrivacyRefreshReason::MetadataSettingsMutation,
+            );
+        } else if privacy_changed {
+            privacy::request_privacy_filter_refresh(
+                app_handle,
+                privacy::PrivacyRefreshReason::StaticAppRuleMutation,
+            );
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (privacy_changed, metadata_changed);
     }
     crate::status_bar::refresh(app_handle);
 

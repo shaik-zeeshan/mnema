@@ -339,6 +339,12 @@ fn open_or_focus_window(
         .transparent(config.transparent)
         .shadow(config.shadow);
 
+    // `WebviewWindowBuilder::title_bar_style` / `hidden_title` are only
+    // exposed for macOS in Tauri (they map to NSWindow traffic-light styles
+    // with no Windows/Linux equivalent), so the overlay title-bar branch is
+    // a no-op on non-macOS shells and the platform default decorations are
+    // used instead.
+    #[cfg(target_os = "macos")]
     if config.overlay_title_bar {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)

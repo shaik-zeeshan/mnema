@@ -706,7 +706,8 @@ fn recognized_observations(
         .collect()
 }
 
-#[cfg(any(target_os = "macos", test))]
+// Used by both Apple Vision (macOS) and the cross-platform paddle/tesseract
+// providers, so it must be unconditionally available.
 fn normalize_candidate_text(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
@@ -1632,6 +1633,11 @@ mod tests {
         assert_eq!(status.status, ModelStatusKind::Installed);
     }
 
+    // The two tests below exercise Apple Vision request shape helpers
+    // (`AppleVisionRequestOptions`, `remap_tiled_observation`) that are
+    // themselves `#[cfg(target_os = "macos")]`, so the tests must match the
+    // platform gate or `cargo check --all-targets` fails on Windows/Linux.
+    #[cfg(target_os = "macos")]
     #[test]
     fn apple_vision_options_accept_benchmark_tuning_fields() {
         let options: AppleVisionRequestOptions = serde_json::from_value(serde_json::json!({
@@ -1647,6 +1653,7 @@ mod tests {
         assert_eq!(options.tile_columns, Some(2));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn remap_tiled_observation_offsets_into_full_image_coordinates() {
         let remapped = remap_tiled_observation(

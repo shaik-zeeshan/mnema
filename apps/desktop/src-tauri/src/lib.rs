@@ -13,6 +13,10 @@ mod one_time_prompts;
 mod privacy_redaction_sources;
 mod sensitive_capture_recommendations;
 mod speaker_analysis_models;
+// `speaker_analysis_runtime` wraps the `sherpa-onnx` provider, which is
+// macOS-only today (cidre-backed AVFoundation audio decode). Gate it
+// alongside the feature flag in `Cargo.toml`.
+#[cfg(target_os = "macos")]
 mod speaker_analysis_runtime;
 mod status_bar;
 mod windows;
@@ -530,6 +534,7 @@ pub fn run() {
 }
 
 pub fn maybe_run_speaker_analysis_helper_and_exit() {
+    #[cfg(target_os = "macos")]
     speaker_analysis_runtime::maybe_run_subprocess_helper_and_exit();
 }
 

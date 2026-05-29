@@ -1516,11 +1516,12 @@ fn desktop_processing_registry(
         format!("failed to resolve app data directory for processing registry: {error}")
     })?;
     let models_dir = audio_transcription::audio_transcription_models_dir(&app_data_dir);
+    #[cfg(target_os = "macos")]
     let speaker_models_dir = speaker_analysis::speaker_analysis_models_dir(&app_data_dir);
 
     let ocr_models_dir = ocr::ocr_models_dir(&app_data_dir);
 
-    Ok(::app_infra::ProcessorRegistry::new()
+    let registry = ::app_infra::ProcessorRegistry::new()
         .register(::app_infra::OcrProcessorBackend::from_provider_arcs([
             Arc::new(::app_infra::AppleVisionProvider::new()) as Arc<dyn ocr::OcrProvider>,
             Arc::new(::app_infra::TesseractProvider::with_models_dir(
@@ -1542,13 +1543,22 @@ fn desktop_processing_registry(
                     audio_transcription::providers::ParakeetProvider::with_models_dir(models_dir),
                 ),
             ]),
-        )
-        .register(::app_infra::SpeakerAnalysisProcessorBackend::new(
-            crate::speaker_analysis_runtime::SubprocessSherpaOnnxSpeakerAnalysisProvider::with_models_dir(
-                speaker_models_dir,
-            ),
-        ))
-        .register(::app_infra::SystemAudioSpeechActivityProcessorBackend))
+        );
+
+    // The sherpa-onnx speaker analysis provider runs out-of-process and
+    // depends on the macOS-only `sherpa-onnx` feature of the
+    // `speaker-analysis` crate (currently the only platform with the
+    // matching audio decode path). Skip registering it on non-macOS so the
+    // processing pipeline still boots; speaker analysis will report
+    // unsupported when reached.
+    #[cfg(target_os = "macos")]
+    let registry = registry.register(::app_infra::SpeakerAnalysisProcessorBackend::new(
+        crate::speaker_analysis_runtime::SubprocessSherpaOnnxSpeakerAnalysisProvider::with_models_dir(
+            speaker_models_dir,
+        ),
+    ));
+
+    Ok(registry.register(::app_infra::SystemAudioSpeechActivityProcessorBackend))
 }
 
 pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
@@ -2639,40 +2649,58 @@ fn active_workspace_dirs_for_hidden_workspace_repair(
         return BTreeSet::new();
     }
 
-    let mut active_workspace_dirs = BTreeSet::new();
-    for screen_file in [
-        runtime.recording_file.as_deref(),
-        runtime
-            .current_segment_output_files
-            .as_ref()
-            .and_then(|files| files.screen_file.as_deref()),
-    ]
-    .into_iter()
-    .flatten()
+    // The runtime's screen recording file / per-segment output files are
+    // macOS-only fields on `NativeCaptureRuntime` because native screen
+    // capture (and its hidden workspace artifacts) is macOS-only today. On
+    // non-macOS targets the runtime cannot enter `is_running == true` for a
+    // screen source, but if some other source ever does, just return an
+    // empty active-workspace set so the periodic repair never thinks a
+    // hidden directory is in use.
+    #[cfg(not(target_os = "macos"))]
     {
-        if let Some(workspace_dir) = hidden_workspace_dir_for_screen_recording_file(screen_file) {
-            active_workspace_dirs.insert(workspace_dir);
-        }
+        let _ = runtime;
+        return BTreeSet::new();
     }
 
-    if active_workspace_dirs.is_empty()
-        && runtime
-            .source_sessions
-            .as_ref()
-            .and_then(|source_sessions| source_sessions.screen.as_ref())
-            .is_some()
+    #[cfg(target_os = "macos")]
     {
-        if let Some(planner) = runtime.segment_planner.as_ref() {
-            active_workspace_dirs.insert(
-                planner
-                    .segment_workspace_dir(runtime.current_segment_index)
-                    .to_string_lossy()
-                    .to_string(),
-            );
+        let mut active_workspace_dirs = BTreeSet::new();
+        for screen_file in [
+            runtime.recording_file.as_deref(),
+            runtime
+                .current_segment_output_files
+                .as_ref()
+                .and_then(|files| files.screen_file.as_deref()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(workspace_dir) =
+                hidden_workspace_dir_for_screen_recording_file(screen_file)
+            {
+                active_workspace_dirs.insert(workspace_dir);
+            }
         }
-    }
 
-    active_workspace_dirs
+        if active_workspace_dirs.is_empty()
+            && runtime
+                .source_sessions
+                .as_ref()
+                .and_then(|source_sessions| source_sessions.screen.as_ref())
+                .is_some()
+        {
+            if let Some(planner) = runtime.segment_planner.as_ref() {
+                active_workspace_dirs.insert(
+                    planner
+                        .segment_workspace_dir(runtime.current_segment_index)
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+        }
+
+        active_workspace_dirs
+    }
 }
 
 fn hidden_workspace_dir_for_screen_recording_file(screen_file: &str) -> Option<String> {

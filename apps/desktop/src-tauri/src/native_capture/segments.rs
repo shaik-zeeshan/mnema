@@ -1,6 +1,14 @@
+// `append_committed_segment_output_files`, `cleanup_unusable_segment_artifacts`,
+// and `finalize_capture_outputs` are macOS-only because they finalize files
+// emitted by ScreenCaptureKit/AVFoundation, which are not produced on other
+// platforms. The `set_current_*` helpers are cross-platform pure setters.
+#[cfg(target_os = "macos")]
 use super::output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
-    finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
+    finalize_capture_outputs,
+};
+use super::output::{
+    set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file,
 };
 use super::settings::compute_effective_screen_bitrate_bps;
@@ -31,10 +39,18 @@ use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
     has_any_capture_sources, mark_runtime_session_failed, now_monotonic_marker_ms, now_unix_ms,
-    prefixed_capture_id, privacy_suspended_sources_for_runtime_state,
-    refresh_runtime_planner_dates, reset_runtime_after_start_error, screen_planner_for_runtime,
-    should_recover_from_segment_finalize_error, NativeCaptureRuntime, PrivacyCaptureSuspension,
-    PrivacyCaptureSuspensionStatus, SegmentLoopControl,
+    prefixed_capture_id, refresh_runtime_planner_dates, reset_runtime_after_start_error,
+    screen_planner_for_runtime, NativeCaptureRuntime, SegmentLoopControl,
+};
+// `privacy_suspended_sources_for_runtime_state`, `PrivacyCaptureSuspension`,
+// `PrivacyCaptureSuspensionStatus`, and `should_recover_from_segment_finalize_error`
+// are macOS-only because they touch the privacy-filter suspension state machine
+// (tied to ScreenCaptureKit) or call into macOS-only output finalization. The
+// segments.rs callers of these items are themselves macOS-gated.
+#[cfg(target_os = "macos")]
+use super::runtime::{
+    privacy_suspended_sources_for_runtime_state, should_recover_from_segment_finalize_error,
+    PrivacyCaptureSuspension, PrivacyCaptureSuspensionStatus,
 };
 use super::NativeCaptureState;
 

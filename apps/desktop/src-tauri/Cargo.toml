@@ -44,9 +44,15 @@ sha2 = "0.10"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls"] }
 thiserror = "2"
 app-infra = { path = "../../../crates/app-infra" }
-audio-transcription = { path = "../../../crates/audio-transcription", features = ["local-whisper", "parakeet-onnx"] }
-speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["sherpa-onnx"] }
-ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }
+# Audio transcription / speaker analysis providers depend on macOS-only audio
+# decode (AVFoundation) today (SUPPORTS.md). Their model runtimes
+# (whisper-rs, ort, sherpa-onnx) also pull in heavy native build deps
+# (libclang/cmake/OpenSSL) that the Windows toolchain does not have set up
+# yet, so we gate the optional provider features to macOS and let the Windows
+# build fall through to the empty-provider runtime path.
+audio-transcription = { path = "../../../crates/audio-transcription" }
+speaker-analysis = { path = "../../../crates/speaker-analysis" }
+ocr = { path = "../../../crates/ocr" }
 capture-types = { path = "../../../crates/capture-types" }
 capture-metadata = { path = "../../../crates/capture-metadata" }
 capture-runtime = { path = "../../../crates/capture-runtime" }
@@ -70,3 +76,8 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 cidre = { version = "0.15", default-features = false, features = ["app", "async", "av", "blocks", "cf", "cg", "cm", "iio", "ns", "ut", "macos_15_0"] }
 objc = "0.2"
+# Apple-only processing providers; cross-platform crate code is gated to
+# return "unsupported on this platform" when these features are off.
+audio-transcription = { path = "../../../crates/audio-transcription", features = ["local-whisper", "parakeet-onnx"] }
+speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["sherpa-onnx"] }
+ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }
