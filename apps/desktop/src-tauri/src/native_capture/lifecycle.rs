@@ -849,7 +849,6 @@ impl RecordingLifecycle {
             }
         }
 
-        #[cfg(target_os = "macos")]
         if let Some(tx) = self.runtime.frame_artifact_tx.as_ref() {
             super::segments::flush_frame_artifacts(tx);
         }

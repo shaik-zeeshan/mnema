@@ -20,7 +20,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Native system-audio capture | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit and currently requires screen capture. |
 | Capture segment lifecycle | [x] | [ ] | [ ] | Lifecycle is generic in shape but active runtime fields are macOS-gated. |
 | Media writers/finalization | [x] | [ ] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. |
-| Screen frame export / frame index | [x] | [ ] | [ ] | Required for OCR, exact frame lookup, duplicate detection, and scrub previews. |
+| Screen frame export / frame index | [x] | [~] | [ ] | Windows writes ~1 fps JPEG frame artifacts; frame-index sidecars remain missing. |
 | Exact frame preview from video | [x] | [ ] | [ ] | macOS uses AVAssetImageGenerator. |
 | Scrub preview generation | [x] | [ ] | [ ] | macOS-only today. |
 | OCR: Apple Vision | [x] | [ ] | [ ] | Apple-only provider. |
@@ -133,7 +133,7 @@ Research notes:
 - [ ] Implement cross-platform or Windows-specific audio/video writers.
   - Candidate APIs: Media Foundation, FFmpeg, GStreamer, or a Rust media pipeline.
 - [ ] Implement finalized video validation equivalent to “openable `.mov` with moov”.
-- [ ] Implement screen frame export to JPEG artifacts.
+- [x] Implement screen frame export to JPEG artifacts.
 - [ ] Implement frame-index sidecar generation from finalized video timing.
 - [ ] Implement exact frame preview extraction from video.
 - [ ] Implement scrub preview batch generation.

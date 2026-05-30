@@ -4296,6 +4296,9 @@ pub(super) fn start_capture_runtime(
             let segment_schedule =
                 SegmentSchedule::new(Duration::from_secs(settings.segment_duration_seconds));
             let capture_clock = CaptureClock::start_now();
+            let frame_artifact_tx = sources
+                .screen
+                .then(|| spawn_frame_artifact_worker(&app_handle, session_id.clone()));
             std::fs::create_dir_all(&recordings_root).map_err(|error| CaptureErrorResponse {
                 code: "io_error".to_string(),
                 message: format!("Failed to create capture recordings directory: {error}"),
@@ -4319,7 +4322,12 @@ pub(super) fn start_capture_runtime(
                 settings.screen_frame_rate,
                 &settings.screen_resolution,
                 effective_screen_bitrate_bps,
-                capture_screen::ScreenCaptureSessionOptions::default(),
+                capture_session_options(
+                    frame_artifact_tx.clone(),
+                    Some(metadata::frame_metadata_snapshot_provider(&app_handle)),
+                    0,
+                    None,
+                ),
             )?;
 
             let mut segment_outputs = empty_output_files();
@@ -4354,7 +4362,7 @@ pub(super) fn start_capture_runtime(
             runtime.segment_planner = Some(segment_planner);
             runtime.microphone_planner = None;
             runtime.system_audio_planner = None;
-            runtime.frame_artifact_tx = None;
+            runtime.frame_artifact_tx = frame_artifact_tx;
             runtime.recording_file = Some(screen_capture.recording_file);
             runtime.microphone_recording_file = None;
             runtime.system_audio_recording_file = None;
@@ -4511,6 +4519,10 @@ pub(super) fn stop_capture_runtime(
             active_session: &mut runtime.active_screen_session,
             inactivity_tail_trim_seconds: 0,
         })?;
+
+        if let Some(tx) = runtime.frame_artifact_tx.as_ref() {
+            flush_frame_artifacts(tx);
+        }
 
         if let (Some(committed), Some(segment)) = (
             runtime.output_files.as_mut(),

@@ -4,10 +4,9 @@
 //! **primary monitor** with Windows Graphics Capture (WGC) and encode it to a
 //! single playable H.264 `.mp4` via the Media Foundation `IMFSinkWriter`.
 //!
-//! Scope is deliberately the thinnest end-to-end slice (issue #45): no frame
-//! export, no resolution/bitrate honoring, no system audio, no privacy filters.
-//! Segment rotation *is* implemented because the runtime rotates on a ~60s
-//! cadence and the closed segment must be finalized before `rotate()` returns.
+//! Scope is deliberately narrow: primary-monitor screen video, segment rotation,
+//! and low-cadence frame export. Resolution/bitrate honoring, system audio, and
+//! privacy filters are still out of scope.
 //!
 //! ## Threading model
 //!
@@ -21,12 +20,14 @@
 //! the runtime.
 
 use std::any::Any;
+use std::fs::File;
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use capture_types::{CaptureOutputFiles, CapturePermissionState, ScreenResolution};
 use windows::core::{IInspectable, Interface, Result as WinResult, GUID, HSTRING, PCWSTR};
@@ -67,13 +68,17 @@ use crate::frame_schedule::{
     lookahead_sample_duration_ticks, should_drop_frame, SegmentTimeline,
 };
 use crate::{
-    PrivacyFilterApplyOutcome, RotatedCaptureOutputs, ScreenCaptureSession,
-    ScreenCaptureSessionOptions, ScreenCaptureSources, StartedCaptureSession,
+    captured_frame_equivalence_from_interleaved_bytes, screen_frame_artifact_path,
+    CapturedFrameEquivalenceOutcome, PrivacyFilterApplyOutcome, RotatedCaptureOutputs,
+    ScreenCaptureSession, ScreenCaptureSessionOptions, ScreenCaptureSources, ScreenFrameArtifact,
+    ScreenFrameArtifactHandler, ScreenFrameExportConfig, StartedCaptureSession,
 };
 use capture_types::CaptureErrorResponse;
 
 /// 100ns ticks in one second (Media Foundation / WGC time unit).
 const TICKS_PER_SECOND: i64 = 10_000_000;
+
+const FRAME_EXPORT_JPEG_QUALITY: u8 = 85;
 
 /// WinRT type name whose `IsBorderRequired` property gates Win11 22000+ support.
 const GRAPHICS_CAPTURE_SESSION_TYPE: &str = "Windows.Graphics.Capture.GraphicsCaptureSession";
@@ -150,6 +155,7 @@ enum Message {
     Closed,
     /// Finalize the current segment and begin writing the next one.
     Rotate {
+        segment_dir: PathBuf,
         output_path: PathBuf,
         reply: Sender<Result<(), CaptureErrorResponse>>,
     },
@@ -238,6 +244,7 @@ impl ScreenCaptureSession for ActiveCaptureSession {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.sender
             .send(Message::Rotate {
+                segment_dir: segment_dir.to_path_buf(),
                 output_path: output_path.clone(),
                 reply: reply_tx,
             })
@@ -273,7 +280,7 @@ impl ScreenCaptureSession for ActiveCaptureSession {
     }
 
     fn supports_frame_export(&self) -> bool {
-        false
+        true
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -304,7 +311,7 @@ pub fn start_capture_session_with_options(
     screen_frame_rate: u32,
     _screen_resolution: &ScreenResolution,
     video_bitrate_bps: Option<u32>,
-    _options: ScreenCaptureSessionOptions,
+    options: ScreenCaptureSessionOptions,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     if !sources.screen {
         return Err(CaptureErrorResponse {
@@ -341,9 +348,11 @@ pub fn start_capture_session_with_options(
     let thread_shared = Arc::clone(&shared);
     let thread_output = output_path.clone();
     let config = CaptureThreadConfig {
+        segment_dir: session_dir.to_path_buf(),
         output_path: thread_output,
         frame_rate: screen_frame_rate,
         video_bitrate_bps,
+        frame_export: options.frame_export,
     };
 
     let join_handle = std::thread::Builder::new()
@@ -393,9 +402,11 @@ pub fn start_capture_session_with_options(
 // ---------------------------------------------------------------------------
 
 struct CaptureThreadConfig {
+    segment_dir: PathBuf,
     output_path: PathBuf,
     frame_rate: u32,
     video_bitrate_bps: Option<u32>,
+    frame_export: Option<ScreenFrameExportConfig>,
 }
 
 /// Entry point for the dedicated capture thread.
@@ -461,8 +472,12 @@ fn run_message_loop(
                 // Keep the loop alive so a subsequent stop() still finalizes the
                 // partially-written segment.
             }
-            Message::Rotate { output_path, reply } => {
-                let result = engine.rotate(&output_path);
+            Message::Rotate {
+                segment_dir,
+                output_path,
+                reply,
+            } => {
+                let result = engine.rotate(&segment_dir, &output_path);
                 let _ = reply.send(result);
             }
             Message::Stop { reply } => {
@@ -496,6 +511,7 @@ struct CaptureEngine {
     session: GraphicsCaptureSession,
     writer: Option<SinkWriter>,
     staging: Option<ID3D11Texture2D>,
+    frame_export: Option<WindowsFrameExportRuntime>,
     width: u32,
     height: u32,
     frame_rate: u32,
@@ -522,6 +538,59 @@ struct SinkWriter {
 struct PendingEncodedFrame {
     relative_ticks: i64,
     nv12: Vec<u8>,
+}
+
+struct WindowsFrameExportRuntime {
+    artifact_dir: PathBuf,
+    on_frame_exported: ScreenFrameArtifactHandler,
+    minimum_interval: Duration,
+    last_exported_at: Option<Instant>,
+    next_frame_index: u64,
+    staging: Option<ID3D11Texture2D>,
+    rgb: Vec<u8>,
+}
+
+impl WindowsFrameExportRuntime {
+    fn reset_for_segment(&mut self, segment_dir: &Path) -> Result<(), CaptureErrorResponse> {
+        self.artifact_dir = windows_frame_artifact_dir(segment_dir)?;
+        self.last_exported_at = None;
+        self.next_frame_index = 0;
+        Ok(())
+    }
+}
+
+fn windows_frame_export_runtime(
+    segment_dir: &Path,
+    config: Option<ScreenFrameExportConfig>,
+    width: u32,
+    height: u32,
+) -> Result<Option<WindowsFrameExportRuntime>, CaptureErrorResponse> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+
+    let artifact_dir = windows_frame_artifact_dir(segment_dir)?;
+    Ok(Some(WindowsFrameExportRuntime {
+        artifact_dir,
+        on_frame_exported: config.on_frame_exported,
+        minimum_interval: config.minimum_interval,
+        last_exported_at: None,
+        next_frame_index: 0,
+        staging: None,
+        rgb: vec![0u8; (width as usize) * (height as usize) * 3],
+    }))
+}
+
+fn windows_frame_artifact_dir(segment_dir: &Path) -> Result<PathBuf, CaptureErrorResponse> {
+    let artifact_dir = segment_dir.join("frames");
+    std::fs::create_dir_all(&artifact_dir).map_err(|error| CaptureErrorResponse {
+        code: "io_error".to_string(),
+        message: format!(
+            "Failed to create screen frame artifact directory {}: {error}",
+            artifact_dir.display()
+        ),
+    })?;
+    Ok(artifact_dir)
 }
 
 impl CaptureEngine {
@@ -609,6 +678,12 @@ impl CaptureEngine {
                 session,
                 writer: Some(writer),
                 staging: None,
+                frame_export: windows_frame_export_runtime(
+                    &config.segment_dir,
+                    config.frame_export.clone(),
+                    width,
+                    height,
+                )?,
                 width,
                 height,
                 frame_rate: config.frame_rate,
@@ -657,11 +732,21 @@ impl CaptureEngine {
             .Duration;
         let relative_ticks = self.timeline.relative_ticks(absolute_ticks);
 
-        if should_drop_frame(
+        let now = Instant::now();
+        let should_export_frame = self.frame_export.as_ref().is_some_and(|runtime| {
+            crate::should_export_screen_frame(
+                runtime.last_exported_at,
+                now,
+                runtime.minimum_interval,
+            )
+        });
+        let should_encode_frame = !should_drop_frame(
             self.last_kept_ticks,
             relative_ticks,
             self.min_interval_ticks,
-        ) {
+        );
+
+        if !should_encode_frame && !should_export_frame {
             return Ok(());
         }
 
@@ -674,8 +759,20 @@ impl CaptureEngine {
         let texture: ID3D11Texture2D = unsafe { access.GetInterface() }
             .map_err(|e| win_error("GetInterface::<ID3D11Texture2D> failed", &e))?;
 
-        self.encode_texture(&texture, relative_ticks)?;
-        self.last_kept_ticks = Some(relative_ticks);
+        if should_encode_frame {
+            self.encode_texture(&texture, relative_ticks)?;
+            self.last_kept_ticks = Some(relative_ticks);
+        }
+
+        if should_export_frame {
+            if let Err(error) = self.export_frame_artifact(&texture, now_unix_ms()) {
+                capture_runtime::debug_log!(
+                    "[capture-screen] failed to export Windows screen frame artifact: [{}] {}",
+                    error.code,
+                    error.message
+                );
+            }
+        }
         Ok(())
     }
 
@@ -737,6 +834,78 @@ impl CaptureEngine {
         Ok(())
     }
 
+    fn export_frame_artifact(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        captured_at_unix_ms: u64,
+    ) -> Result<(), CaptureErrorResponse> {
+        let Some(runtime) = self.frame_export.as_mut() else {
+            return Ok(());
+        };
+        runtime.last_exported_at = Some(Instant::now());
+
+        let frame_index = runtime.next_frame_index;
+        runtime.next_frame_index = runtime.next_frame_index.saturating_add(1);
+        let file_path =
+            screen_frame_artifact_path(&runtime.artifact_dir, frame_index, captured_at_unix_ms);
+
+        ensure_frame_export_staging(&self.device, texture, runtime)?;
+        let staging = runtime
+            .staging
+            .as_ref()
+            .expect("frame export staging texture initialized above")
+            .clone();
+
+        let captured_frame_equivalence = unsafe {
+            self.context.CopyResource(&staging, texture);
+
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            self.context
+                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                .map_err(|e| win_error("ID3D11DeviceContext.Map(frame export) failed", &e))?;
+
+            let src_stride = mapped.RowPitch as usize;
+            let width = self.width as usize;
+            let height = self.height as usize;
+            let mapped_bytes =
+                std::slice::from_raw_parts(mapped.pData as *const u8, src_stride * height);
+            let equivalence = captured_frame_equivalence_from_interleaved_bytes(
+                mapped_bytes,
+                src_stride,
+                width,
+                height,
+                [2, 1, 0, 3],
+            )
+            .map(CapturedFrameEquivalenceOutcome::ready)
+            .unwrap_or_else(|| {
+                CapturedFrameEquivalenceOutcome::quarantined(
+                    "failed to derive captured frame equivalence from Windows frame readback",
+                )
+            });
+            bgra_to_rgb(
+                mapped.pData as *const u8,
+                src_stride,
+                width,
+                height,
+                &mut runtime.rgb,
+            );
+
+            self.context.Unmap(&staging, 0);
+            equivalence
+        };
+
+        save_rgb_as_jpeg(&file_path, self.width, self.height, &runtime.rgb)?;
+        (runtime.on_frame_exported)(ScreenFrameArtifact {
+            file_path: file_path.to_string_lossy().to_string(),
+            captured_at_unix_ms,
+            width: Some(self.width),
+            height: Some(self.height),
+            captured_frame_equivalence,
+        });
+
+        Ok(())
+    }
+
     /// Lazily create the CPU-readable staging texture.
     ///
     /// Its dimensions and format are taken from the **source** frame texture, not
@@ -748,31 +917,11 @@ impl CaptureEngine {
         if self.staging.is_some() {
             return Ok(());
         }
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        unsafe { source.GetDesc(&mut desc) };
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.SampleDesc = DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        };
-        desc.Usage = D3D11_USAGE_STAGING;
-        desc.BindFlags = 0;
-        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
-        desc.MiscFlags = 0;
-        let mut staging: Option<ID3D11Texture2D> = None;
-        unsafe {
-            self.device
-                .CreateTexture2D(&desc, None, Some(&mut staging))
-                .map_err(|e| win_error("CreateTexture2D(staging) failed", &e))?;
-        }
-        if staging.is_none() {
-            return Err(CaptureErrorResponse {
-                code: "screen_capture_staging_failed".to_string(),
-                message: "CreateTexture2D returned a null staging texture".to_string(),
-            });
-        }
-        self.staging = staging;
+        self.staging = Some(create_staging_texture(
+            &self.device,
+            source,
+            "CreateTexture2D(staging)",
+        )?);
         Ok(())
     }
 
@@ -807,7 +956,11 @@ impl CaptureEngine {
         Ok(())
     }
 
-    fn rotate(&mut self, output_path: &Path) -> Result<(), CaptureErrorResponse> {
+    fn rotate(
+        &mut self,
+        segment_dir: &Path,
+        output_path: &Path,
+    ) -> Result<(), CaptureErrorResponse> {
         // Flush the closing segment at its boundary, then finalize it so it is
         // playable before the runtime is told the new segment has opened.
         let boundary_ticks = (self.segment_start.elapsed().as_nanos() / 100) as i64;
@@ -833,6 +986,9 @@ impl CaptureEngine {
         self.last_kept_ticks = None;
         self.pending_frame = None;
         self.segment_start = Instant::now();
+        if let Some(frame_export) = self.frame_export.as_mut() {
+            frame_export.reset_for_segment(segment_dir)?;
+        }
         Ok(())
     }
 
@@ -884,6 +1040,52 @@ impl Drop for CaptureEngine {
 // ---------------------------------------------------------------------------
 // Native helpers
 // ---------------------------------------------------------------------------
+
+fn create_staging_texture(
+    device: &ID3D11Device,
+    source: &ID3D11Texture2D,
+    context: &str,
+) -> Result<ID3D11Texture2D, CaptureErrorResponse> {
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    unsafe { source.GetDesc(&mut desc) };
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.SampleDesc = DXGI_SAMPLE_DESC {
+        Count: 1,
+        Quality: 0,
+    };
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+    desc.MiscFlags = 0;
+
+    let mut staging: Option<ID3D11Texture2D> = None;
+    unsafe {
+        device
+            .CreateTexture2D(&desc, None, Some(&mut staging))
+            .map_err(|e| win_error(context, &e))?;
+    }
+    staging.ok_or_else(|| CaptureErrorResponse {
+        code: "screen_capture_staging_failed".to_string(),
+        message: format!("{context} returned a null staging texture"),
+    })
+}
+
+fn ensure_frame_export_staging(
+    device: &ID3D11Device,
+    source: &ID3D11Texture2D,
+    runtime: &mut WindowsFrameExportRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    if runtime.staging.is_some() {
+        return Ok(());
+    }
+    runtime.staging = Some(create_staging_texture(
+        device,
+        source,
+        "CreateTexture2D(frame export staging)",
+    )?);
+    Ok(())
+}
 
 fn create_d3d_device() -> Result<(ID3D11Device, ID3D11DeviceContext), CaptureErrorResponse> {
     // Try a hardware device first, fall back to WARP (software) so capture still
@@ -1109,6 +1311,52 @@ fn bgra_to_nv12(src: *const u8, src_stride: usize, width: usize, height: usize, 
     }
 }
 
+/// Convert a tightly-or-padded BGRA buffer to contiguous RGB bytes for JPEG.
+fn bgra_to_rgb(src: *const u8, src_stride: usize, width: usize, height: usize, dst: &mut [u8]) {
+    debug_assert!(dst.len() >= width * height * 3);
+
+    for y in 0..height {
+        let row = unsafe { std::slice::from_raw_parts(src.add(y * src_stride), width * 4) };
+        let rgb_out = &mut dst[y * width * 3..y * width * 3 + width * 3];
+        for x in 0..width {
+            rgb_out[x * 3] = row[x * 4 + 2];
+            rgb_out[x * 3 + 1] = row[x * 4 + 1];
+            rgb_out[x * 3 + 2] = row[x * 4];
+        }
+    }
+}
+
+fn save_rgb_as_jpeg(
+    output_path: &Path,
+    width: u32,
+    height: u32,
+    rgb: &[u8],
+) -> Result<(), CaptureErrorResponse> {
+    if let Some(parent) = output_path.parent() {
+        create_dir(parent)?;
+    }
+
+    let file = File::create(output_path).map_err(|error| CaptureErrorResponse {
+        code: "io_error".to_string(),
+        message: format!(
+            "Failed to create screen frame artifact {}: {error}",
+            output_path.display()
+        ),
+    })?;
+    let mut output = BufWriter::new(file);
+    let mut encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, FRAME_EXPORT_JPEG_QUALITY);
+    encoder
+        .encode(rgb, width, height, image::ColorType::Rgb8.into())
+        .map_err(|error| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to encode Windows screen frame artifact {}: {error}",
+                output_path.display()
+            ),
+        })
+}
+
 #[inline]
 fn clamp_u8(value: i32) -> u8 {
     value.clamp(0, 255) as u8
@@ -1132,6 +1380,13 @@ fn default_bitrate_bps(width: u32, height: u32, frame_rate: u32) -> u32 {
     let pixels = width as u64 * height as u64;
     let raw = pixels * frame_rate as u64 / 10;
     raw.clamp(2_000_000, 60_000_000) as u32
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------

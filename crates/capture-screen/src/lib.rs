@@ -44,7 +44,7 @@ use std::sync::mpsc;
 #[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1684,7 +1684,7 @@ struct PreparedScreenFrameExport {
     captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn should_export_screen_frame(
     last_exported_at: Option<Instant>,
     now: Instant,
@@ -4292,7 +4292,12 @@ pub fn supports_frame_export() -> bool {
         supports_screen_capture_kit_backend()
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        true
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         false
     }
@@ -5608,7 +5613,7 @@ mod tests {
         ));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn screen_frame_export_cadence_allows_first_frame_and_due_frames() {
         let first_export = Instant::now();
@@ -5630,7 +5635,7 @@ mod tests {
         ));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn screen_frame_export_cadence_can_be_disabled() {
         let first_export = Instant::now();
