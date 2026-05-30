@@ -38,6 +38,7 @@ use windows::Graphics::Capture::{
 };
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
+use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
@@ -80,6 +81,7 @@ use capture_types::CaptureErrorResponse;
 const TICKS_PER_SECOND: i64 = 10_000_000;
 
 const FRAME_EXPORT_JPEG_QUALITY: u8 = 85;
+const FRAME_POOL_BUFFER_COUNT: i32 = 2;
 
 /// WinRT type name whose `IsBorderRequired` property gates Win11 22000+ support.
 const GRAPHICS_CAPTURE_SESSION_TYPE: &str = "Windows.Graphics.Capture.GraphicsCaptureSession";
@@ -494,6 +496,7 @@ fn run_message_loop(
 }
 
 fn record_stop_error(shared: &Arc<SharedState>, error: CaptureErrorResponse) {
+    shared.live.store(false, Ordering::Relaxed);
     let mut slot = shared.stop_error.lock().unwrap_or_else(|p| p.into_inner());
     if slot.is_none() {
         *slot = Some(error);
@@ -506,11 +509,13 @@ fn record_stop_error(shared: &Arc<SharedState>, error: CaptureErrorResponse) {
 
 struct CaptureEngine {
     device: ID3D11Device,
+    d3d_device: IDirect3DDevice,
     context: ID3D11DeviceContext,
     // Held for the lifetime of the session so the captured item (and its
     // `Closed` event registration) stays alive; not read after construction.
     _item: GraphicsCaptureItem,
     frame_pool: Direct3D11CaptureFramePool,
+    frame_pool_size: SizeInt32,
     session: GraphicsCaptureSession,
     writer: Option<SinkWriter>,
     staging: Option<ID3D11Texture2D>,
@@ -531,7 +536,7 @@ struct CaptureEngine {
     /// duration to match real time when the screen is mostly static (so a
     /// 60s segment is a 60s `.mp4`, not a single 33ms frame).
     segment_start: Instant,
-    logged_size_mismatch: bool,
+    logged_invalid_content_size: bool,
     closed: bool,
 }
 
@@ -617,8 +622,16 @@ impl CaptureEngine {
             let size = item
                 .Size()
                 .map_err(|e| win_error("GraphicsCaptureItem.Size failed", &e))?;
-            let source_width = (size.Width.max(0) as u32) & !1;
-            let source_height = (size.Height.max(0) as u32) & !1;
+            let source =
+                normalized_source_dimensions(size).ok_or_else(|| CaptureErrorResponse {
+                    code: "screen_capture_invalid_size".to_string(),
+                    message: format!(
+                        "Primary monitor reported an unusable size {}x{}",
+                        size.Width, size.Height
+                    ),
+                })?;
+            let source_width = source.width;
+            let source_height = source.height;
             if source_width == 0 || source_height == 0 {
                 return Err(CaptureErrorResponse {
                     code: "screen_capture_invalid_size".to_string(),
@@ -641,7 +654,7 @@ impl CaptureEngine {
             let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
                 &d3d_device,
                 DirectXPixelFormat::B8G8R8A8UIntNormalized,
-                2,
+                FRAME_POOL_BUFFER_COUNT,
                 size,
             )
             .map_err(|e| win_error("CreateFreeThreaded frame pool failed", &e))?;
@@ -692,9 +705,11 @@ impl CaptureEngine {
 
             Ok(Self {
                 device,
+                d3d_device,
                 context,
                 _item: item,
                 frame_pool,
+                frame_pool_size: size,
                 session,
                 writer: Some(writer),
                 staging: None,
@@ -717,7 +732,7 @@ impl CaptureEngine {
                 pending_frame: None,
                 nv12: vec![0u8; (width as usize) * (height as usize) * 3 / 2],
                 segment_start: Instant::now(),
-                logged_size_mismatch: false,
+                logged_invalid_content_size: false,
                 closed: false,
             })
         }
@@ -733,19 +748,12 @@ impl CaptureEngine {
         let content_size = frame
             .ContentSize()
             .map_err(|e| win_error("frame.ContentSize failed", &e))?;
-        let content_w = (content_size.Width.max(0) as u32) & !1;
-        let content_h = (content_size.Height.max(0) as u32) & !1;
-        if content_w != self.source_width || content_h != self.source_height {
-            // Resolution/DPI change mid-session: skip for the MVP rather than
-            // reconfiguring the encoder. Logged once to avoid spam.
-            if !self.logged_size_mismatch {
-                self.logged_size_mismatch = true;
-                capture_runtime::debug_log!(
-                    "[capture-screen] skipping frame with content size {content_w}x{content_h}; source fixed at {}x{}",
-                    self.source_width,
-                    self.source_height
-                );
-            }
+        let Some(source_dimensions) = self.source_dimensions_for_content_size(content_size) else {
+            return Ok(());
+        };
+        if capture_size_changed(self.frame_pool_size, content_size) {
+            drop(frame);
+            self.recreate_frame_pool(content_size, source_dimensions)?;
             return Ok(());
         }
 
@@ -796,6 +804,67 @@ impl CaptureEngine {
                 );
             }
         }
+        Ok(())
+    }
+
+    fn source_dimensions_for_content_size(
+        &mut self,
+        content_size: SizeInt32,
+    ) -> Option<SourceDimensions> {
+        let source = normalized_source_dimensions(content_size);
+        if source.is_none() {
+            if !self.logged_invalid_content_size {
+                self.logged_invalid_content_size = true;
+                capture_runtime::debug_log!(
+                    "[capture-screen] skipping frame with unusable Windows content size {}x{}",
+                    content_size.Width,
+                    content_size.Height
+                );
+            }
+        }
+        source
+    }
+
+    /// Recreate the free-threaded WGC frame pool after resolution, DPI, or
+    /// display-mode changes. The encoder output size stays fixed for the open
+    /// segment; subsequent frames are scaled from the new source size.
+    fn recreate_frame_pool(
+        &mut self,
+        content_size: SizeInt32,
+        source: SourceDimensions,
+    ) -> Result<(), CaptureErrorResponse> {
+        self.frame_pool
+            .Recreate(
+                &self.d3d_device,
+                DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                FRAME_POOL_BUFFER_COUNT,
+                content_size,
+            )
+            .map_err(|e| win_error("Direct3D11CaptureFramePool.Recreate failed", &e))?;
+
+        capture_runtime::debug_log!(
+            "[capture-screen] recreated Windows frame pool for content size {}x{} (was {}x{})",
+            content_size.Width,
+            content_size.Height,
+            self.frame_pool_size.Width,
+            self.frame_pool_size.Height
+        );
+
+        self.frame_pool_size = content_size;
+        self.source_width = source.width;
+        self.source_height = source.height;
+        self.scale_map = ScaleMap::new(
+            self.source_width as usize,
+            self.source_height as usize,
+            self.width as usize,
+            self.height as usize,
+        );
+        self.staging = None;
+        if let Some(frame_export) = self.frame_export.as_mut() {
+            frame_export.staging = None;
+        }
+        self.logged_invalid_content_size = false;
+
         Ok(())
     }
 
@@ -1147,6 +1216,22 @@ fn create_d3d_device() -> Result<(ID3D11Device, ID3D11DeviceContext), CaptureErr
         code: "d3d_device_create_failed".to_string(),
         message: "D3D11CreateDevice failed for both hardware and WARP drivers".to_string(),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceDimensions {
+    width: u32,
+    height: u32,
+}
+
+fn normalized_source_dimensions(size: SizeInt32) -> Option<SourceDimensions> {
+    let width = (size.Width.max(0) as u32) & !1;
+    let height = (size.Height.max(0) as u32) & !1;
+    (width > 0 && height > 0).then_some(SourceDimensions { width, height })
+}
+
+fn capture_size_changed(previous: SizeInt32, next: SizeInt32) -> bool {
+    previous.Width != next.Width || previous.Height != next.Height
 }
 
 fn direct3d_device_from_d3d11(
@@ -1609,6 +1694,62 @@ mod tests {
                 y_from_bgr(7, 57, 107),
             ]
         );
+    }
+
+    #[test]
+    fn normalized_source_dimensions_rounds_down_to_even_nonzero_size() {
+        assert_eq!(
+            normalized_source_dimensions(SizeInt32 {
+                Width: 1919,
+                Height: 1079,
+            }),
+            Some(SourceDimensions {
+                width: 1918,
+                height: 1078,
+            })
+        );
+    }
+
+    #[test]
+    fn normalized_source_dimensions_rejects_zero_or_negative_size() {
+        assert_eq!(
+            normalized_source_dimensions(SizeInt32 {
+                Width: 0,
+                Height: 1080,
+            }),
+            None
+        );
+        assert_eq!(
+            normalized_source_dimensions(SizeInt32 {
+                Width: 1920,
+                Height: -1,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn capture_size_changed_compares_raw_frame_pool_size() {
+        assert!(!capture_size_changed(
+            SizeInt32 {
+                Width: 1920,
+                Height: 1080,
+            },
+            SizeInt32 {
+                Width: 1920,
+                Height: 1080,
+            }
+        ));
+        assert!(capture_size_changed(
+            SizeInt32 {
+                Width: 1920,
+                Height: 1080,
+            },
+            SizeInt32 {
+                Width: 1920,
+                Height: 1079,
+            }
+        ));
     }
 }
 

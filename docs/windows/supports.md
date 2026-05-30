@@ -73,9 +73,12 @@ is more likely to surprise Windows users.
 
 ### Disruption handling
 
-- **Resolution / DPI / display-mode change:** frames whose content size no longer
-  matches the fixed native source size are **skipped** for the MVP (logged once);
-  in-session `frame_pool.Recreate(...)` re-acquisition is a follow-up.
+- **Resolution / DPI / display-mode change:** when a frame reports a
+  `ContentSize` different from the current WGC frame-pool size, the capture
+  thread calls `Direct3D11CaptureFramePool::Recreate(...)` in-session and
+  continues recording without restarting the runtime. The encoded output size is
+  still the configured segment size; frames from the new native source size are
+  scaled into that output size.
 - **Monitor sleep / DPMS off:** frames pause and resume; usually no action needed.
 - **Primary monitor disconnected (`GraphicsCaptureItem.Closed`):** the session is
   marked failed and surfaced; **recording stops until the user restarts it.** No

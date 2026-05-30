@@ -57,6 +57,38 @@ pub(crate) enum TickOutcome {
 }
 
 impl RecordingLifecycle {
+    #[cfg(target_os = "windows")]
+    fn fail_if_windows_screen_capture_stopped(&mut self) -> TickOutcome {
+        let stop_error = capture_screen::take_screen_capture_session_stop_error(
+            self.runtime.active_screen_session.as_mut(),
+        );
+        if let Some(error) = stop_error {
+            super::debug_log::log(format!(
+                "windows screen capture stopped unexpectedly; failing runtime session: [{}] {}",
+                error.code, error.message
+            ));
+            stop_active_sessions_after_failure(&mut self.runtime);
+            mark_runtime_session_failed(&mut self.runtime);
+            return TickOutcome::StopLoop;
+        }
+
+        if self.runtime.active_screen_session.is_some()
+            && !capture_screen::screen_capture_session_is_live(
+                self.runtime.active_screen_session.as_ref(),
+            )
+        {
+            super::debug_log::log(
+                "windows screen capture stopped unexpectedly without a backend error; failing runtime session"
+                    .to_string(),
+            );
+            stop_active_sessions_after_failure(&mut self.runtime);
+            mark_runtime_session_failed(&mut self.runtime);
+            return TickOutcome::StopLoop;
+        }
+
+        TickOutcome::Continue
+    }
+
     #[cfg(target_os = "macos")]
     fn clear_screen_state_for_sleep_or_stop(&mut self) -> bool {
         let Some(requested_sources) = self.runtime.requested_sources.clone() else {
@@ -546,6 +578,11 @@ impl RecordingLifecycle {
         #[cfg(target_os = "windows")]
         let _ = app_handle;
 
+        #[cfg(target_os = "windows")]
+        if self.fail_if_windows_screen_capture_stopped() == TickOutcome::StopLoop {
+            return TickOutcome::StopLoop;
+        }
+
         refresh_runtime_planner_dates(&mut self.runtime);
 
         let mut previous_segment_output_files = self.runtime.current_segment_output_files.clone();
@@ -971,5 +1008,114 @@ impl RecordingLifecycle {
         &mut self,
     ) -> Option<MicrophoneVadFallbackNotice> {
         self.runtime.microphone_vad.take_new_fallback_notification()
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+    use capture_runtime::RuntimeState;
+    use capture_screen::{RotatedCaptureOutputs, ScreenCaptureSession};
+    use capture_types::{CaptureErrorResponse, CaptureOutputFiles};
+    use std::path::Path;
+
+    #[derive(Debug)]
+    struct FakeScreenCaptureSession {
+        live: bool,
+        pending_stop_error: Option<CaptureErrorResponse>,
+    }
+
+    impl ScreenCaptureSession for FakeScreenCaptureSession {
+        fn rotate(
+            &mut self,
+            _segment_dir: &Path,
+            _screen_output_file: Option<&Path>,
+            _system_audio_output_path: Option<&Path>,
+        ) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
+            Ok(RotatedCaptureOutputs {
+                recording_file: "fake.mp4".to_string(),
+                system_audio_recording_file: None,
+                output_files: CaptureOutputFiles {
+                    screen_file: None,
+                    screen_files: Vec::new(),
+                    microphone_file: None,
+                    microphone_files: Vec::new(),
+                    system_audio_file: None,
+                    system_audio_files: Vec::new(),
+                },
+            })
+        }
+
+        fn stop(&mut self, _inactivity_tail_trim_seconds: u64) -> Result<(), CaptureErrorResponse> {
+            self.live = false;
+            Ok(())
+        }
+
+        fn is_live(&self) -> bool {
+            self.live
+        }
+
+        fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+            self.pending_stop_error.take()
+        }
+
+        fn supports_frame_export(&self) -> bool {
+            false
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    fn closed_error() -> CaptureErrorResponse {
+        CaptureErrorResponse {
+            code: "screen_capture_item_closed".to_string(),
+            message: "fake monitor disconnect".to_string(),
+        }
+    }
+
+    fn lifecycle_with_screen_session(session: FakeScreenCaptureSession) -> RecordingLifecycle {
+        let mut lifecycle = RecordingLifecycle::default();
+        lifecycle.runtime.is_running = true;
+        lifecycle.runtime.runtime_state = RuntimeState::Running;
+        lifecycle.runtime.active_screen_session = Some(Box::new(session));
+        lifecycle
+    }
+
+    #[test]
+    fn windows_screen_stop_error_marks_runtime_failed() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: Some(closed_error()),
+        });
+
+        assert_eq!(
+            lifecycle.fail_if_windows_screen_capture_stopped(),
+            TickOutcome::StopLoop
+        );
+        assert!(!lifecycle.runtime.is_running);
+        assert_eq!(lifecycle.runtime.runtime_state, RuntimeState::Failed);
+        assert!(lifecycle.runtime.active_screen_session.is_none());
+    }
+
+    #[test]
+    fn windows_dead_screen_session_without_error_marks_runtime_failed() {
+        let mut lifecycle = lifecycle_with_screen_session(FakeScreenCaptureSession {
+            live: false,
+            pending_stop_error: None,
+        });
+
+        assert_eq!(
+            lifecycle.fail_if_windows_screen_capture_stopped(),
+            TickOutcome::StopLoop
+        );
+        assert!(!lifecycle.runtime.is_running);
+        assert_eq!(lifecycle.runtime.runtime_state, RuntimeState::Failed);
+        assert!(lifecycle.runtime.active_screen_session.is_none());
     }
 }

@@ -115,7 +115,7 @@ Research notes:
 
 - [~] Implement a Windows screen capture backend behind `crates/capture-screen`.
   - Candidate APIs: Windows Graphics Capture or DXGI Desktop Duplication.
-  - WGC primary-monitor screen capture exists with frame timing, segment rotation, stop/error reporting, frame export, resolution scaling, and H.264 bitrate control; output activity samples and broader source support remain outstanding.
+  - WGC primary-monitor screen capture exists with frame timing, segment rotation, stop/error reporting, frame export, resolution scaling, in-session frame-pool recreation for resolution/DPI/display-mode changes, and H.264 bitrate control; output activity samples and broader source support remain outstanding.
 - [ ] Implement Windows microphone capture behind `crates/capture-microphone`.
   - Candidate APIs: WASAPI input, CPAL, or another native audio layer.
   - Must support device listing, default device tracking, selected-device reconnect policy, and VAD PCM feed.
@@ -125,8 +125,8 @@ Research notes:
 - [ ] Implement Windows capture session IDs and source-session bookkeeping.
 - [ ] Implement segment rotation without dropping OCR/frame-index invariants.
 - [ ] Implement user pause/resume and inactivity pause/resume for each requested source family.
-- [ ] Implement capture liveness/error propagation equivalent to ScreenCaptureKit delegate stop errors.
-- [ ] Implement sleep/wake/session-lock recovery.
+- [~] Implement capture liveness/error propagation equivalent to ScreenCaptureKit delegate stop errors. Windows now surfaces `GraphicsCaptureItem.Closed` primary-monitor disconnects as failed sessions; broader source recovery is still outstanding.
+- [~] Implement sleep/wake/session-lock recovery. Windows monitor sleep / DPMS-off pauses and resumes WGC frames implicitly, but broader OS sleep/session-lock recovery policy is still outstanding.
 
 ### Media writers and previews
 
