@@ -21,6 +21,20 @@ pub fn current_date_prefix() -> String {
     Local::now().format("%Y/%m/%d").to_string()
 }
 
+/// Container extension for the final per-segment screen video file.
+///
+/// macOS records QuickTime `.mov` (AVFoundation / ScreenCaptureKit); the Windows
+/// backend records H.264 `.mp4` via the Media Foundation sink writer. Frame-index
+/// sidecar derivation keys off `file_stem`, so the extension is otherwise opaque
+/// to the runtime.
+pub const fn screen_segment_extension() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "mp4"
+    } else {
+        "mov"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeState {
     Idle,
@@ -164,11 +178,13 @@ impl SegmentPlanner {
     }
 
     /// Final visible screen output path.
-    /// `<save_root>/YYYY/MM/DD/<session_id>-segment-####.mov`
+    /// `<save_root>/YYYY/MM/DD/<session_id>-segment-####.<ext>` where `<ext>` is
+    /// `mov` on macOS and `mp4` on Windows (see [`screen_segment_extension`]).
     pub fn segment_screen_output(&self, segment_index: u64) -> PathBuf {
         self.date_dir().join(format!(
-            "{}-segment-{segment_index:04}.mov",
-            self.session_id
+            "{}-segment-{segment_index:04}.{}",
+            self.session_id,
+            screen_segment_extension()
         ))
     }
 
@@ -389,7 +405,10 @@ mod tests {
         // Final visible screen output
         assert_eq!(
             planner.segment_screen_output(7),
-            PathBuf::from("/tmp/records/2026/04/16/native-session-123-segment-0007.mov")
+            PathBuf::from(format!(
+                "/tmp/records/2026/04/16/native-session-123-segment-0007.{}",
+                screen_segment_extension()
+            ))
         );
 
         // Audio layout: all audio files are flat under dated audio/

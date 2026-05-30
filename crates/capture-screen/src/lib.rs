@@ -22,6 +22,13 @@ use cidre::objc;
 use std::collections::HashMap;
 mod equivalence;
 
+pub mod frame_schedule;
+
+#[cfg(target_os = "windows")]
+mod windows_capture;
+#[cfg(target_os = "windows")]
+pub use windows_capture::ActiveCaptureSession;
+
 use std::ffi::c_void;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
@@ -4296,12 +4303,13 @@ pub fn supports_frame_export() -> bool {
 /// On these targets the session factory (`start_capture_session_with_options`)
 /// returns an error before any session is constructed, so this type is never
 /// boxed at runtime; the trait impl exists only so the workspace compiles and
-/// so a future Windows/Linux backend can slot in behind the same seam.
-#[cfg(not(target_os = "macos"))]
+/// so a future Linux backend can slot in behind the same seam. Windows has a
+/// real backend ([`windows_capture::ActiveCaptureSession`]).
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 #[derive(Debug)]
 pub struct ActiveCaptureSession;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 impl ScreenCaptureSession for ActiveCaptureSession {
     fn rotate(
         &mut self,
@@ -4337,7 +4345,7 @@ impl ScreenCaptureSession for ActiveCaptureSession {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn unsupported_platform_error() -> CaptureErrorResponse {
     CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
@@ -4361,7 +4369,12 @@ pub struct RotatedCaptureOutputs {
     pub output_files: CaptureOutputFiles,
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn new_session_id() -> Result<String, CaptureErrorResponse> {
+    windows_capture::new_session_id()
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn new_session_id() -> Result<String, CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
@@ -4383,7 +4396,31 @@ pub fn start_capture_session(
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
+pub fn start_capture_session_with_options(
+    session_dir: &Path,
+    screen_output_file: Option<&Path>,
+    system_audio_output_path: Option<&Path>,
+    sources: &ScreenCaptureSources,
+    screen_frame_rate: u32,
+    screen_resolution: &ScreenResolution,
+    video_bitrate_bps: Option<u32>,
+    options: ScreenCaptureSessionOptions,
+) -> Result<StartedCaptureSession, CaptureErrorResponse> {
+    windows_capture::start_capture_session_with_options(
+        session_dir,
+        screen_output_file,
+        system_audio_output_path,
+        sources,
+        screen_frame_rate,
+        screen_resolution,
+        video_bitrate_bps,
+        options,
+    )
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn start_capture_session_with_options(
     _session_dir: &Path,
     _screen_output_file: Option<&Path>,
@@ -4443,12 +4480,22 @@ pub fn resume_screen_outputs(
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn screen_permission_state() -> CapturePermissionState {
+    windows_capture::screen_permission_state()
+}
+
+#[cfg(target_os = "windows")]
+pub fn ensure_screen_permission() -> bool {
+    windows_capture::ensure_screen_permission()
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn screen_permission_state() -> CapturePermissionState {
     CapturePermissionState::Unsupported
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn ensure_screen_permission() -> bool {
     false
 }
@@ -4484,7 +4531,21 @@ pub fn support_for_current_platform() -> ScreenCaptureSupport {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let supported = windows_capture::native_capture_supported();
+        ScreenCaptureSupport {
+            platform: "windows".to_string(),
+            native_capture_supported: supported,
+            screen: supported,
+            // System audio (WASAPI loopback) is a deferred follow-up; keeping it
+            // false also keeps the resolution UI locked to "Original", which is
+            // consistent with capturing at native resolution.
+            system_audio: false,
+        }
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         ScreenCaptureSupport {
             platform: std::env::consts::OS.to_string(),
