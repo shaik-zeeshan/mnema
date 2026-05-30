@@ -329,8 +329,21 @@ fn open_or_focus_window(
         return Ok(());
     }
 
+    open_new_app_window(app, window, config.path.to_string())
+}
+
+/// Builds (but does not show) one of the app's windows pointing at `url_path`.
+///
+/// `url_path` is normally the window's configured path; the settings window
+/// overrides it to deep-link a specific tab.
+fn build_app_window(
+    app: &tauri::AppHandle,
+    window: AppWindow,
+    url_path: &str,
+) -> Result<WebviewWindow, String> {
+    let config = window.config();
     let mut builder =
-        WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(config.path.into()));
+        WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(url_path.into()));
     builder = builder
         .title(config.title)
         .inner_size(config.inner_size.0, config.inner_size.1)
@@ -353,9 +366,45 @@ fn open_or_focus_window(
         apply_macos_rounded_content_view(&built, radius);
     }
 
-    show_and_focus_window(&built);
+    Ok(built)
+}
 
-    Ok(())
+/// Creates a brand-new app window and shows it.
+///
+/// On Windows, `WebviewWindowBuilder::build()` deadlocks when it runs inside a
+/// synchronous command or an event-loop callback: the WebView2 controller is
+/// created through a callback that needs the main event loop to keep pumping,
+/// but the synchronous caller is blocking that very loop. The native window
+/// frame appears while its webview never finishes initializing, so it stays a
+/// blank white surface until something else forces it to reload. Building on a
+/// separate thread keeps the main loop free to drive WebView2 creation, so the
+/// window paints on first open. Other platforms don't have this constraint —
+/// and macOS must run the Cocoa corner-radius tweak on the calling main
+/// thread — so they keep building inline.
+fn open_new_app_window(
+    app: &tauri::AppHandle,
+    window: AppWindow,
+    url_path: String,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let app = app.clone();
+        std::thread::spawn(move || match build_app_window(&app, window, &url_path) {
+            Ok(built) => show_and_focus_window(&built),
+            Err(err) => crate::native_capture::debug_log::log_error(format!(
+                "failed to open {} window: {err}",
+                window.config().label
+            )),
+        });
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let built = build_app_window(app, window, &url_path)?;
+        show_and_focus_window(&built);
+        Ok(())
+    }
 }
 
 fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
@@ -427,25 +476,7 @@ fn open_or_focus_settings_window_to_tab(
         return Ok(());
     }
 
-    let mut builder = WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(path.into()));
-    builder = builder
-        .title(config.title)
-        .inner_size(config.inner_size.0, config.inner_size.1)
-        .min_inner_size(config.min_inner_size.0, config.min_inner_size.1)
-        .decorations(config.decorations)
-        .transparent(config.transparent)
-        .shadow(config.shadow);
-
-    let built = builder.build().map_err(|err| err.to_string())?;
-
-    #[cfg(target_os = "macos")]
-    if let Some(radius) = config.macos_corner_radius {
-        apply_macos_rounded_content_view(&built, radius);
-    }
-
-    show_and_focus_window(&built);
-
-    Ok(())
+    open_new_app_window(app, AppWindow::Settings, path)
 }
 
 #[cfg(target_os = "macos")]
@@ -774,13 +805,20 @@ pub fn open_startup_window(
     store: &OnboardingStateStore,
 ) -> Result<bool, String> {
     let state = current_onboarding_state(app, store);
-    if state.is_complete() {
-        open_or_focus_window(app, AppWindow::Main, None)?;
-        Ok(true)
+    let window = if state.is_complete() {
+        AppWindow::Main
     } else {
-        open_or_focus_window(app, AppWindow::Onboarding, None)?;
-        Ok(false)
-    }
+        AppWindow::Onboarding
+    };
+
+    // Build synchronously here: this runs from `setup()` before the event loop
+    // starts blocking, so the Windows WebView2 deadlock that `open_new_app_window`
+    // guards against doesn't apply, and a synchronous build guarantees a window
+    // exists before the loop begins.
+    let built = build_app_window(app, window, window.config().path)?;
+    show_and_focus_window(&built);
+
+    Ok(state.is_complete())
 }
 
 pub(crate) fn is_onboarding_complete(app: &tauri::AppHandle) -> bool {
@@ -843,9 +881,39 @@ pub fn complete_onboarding(
     }
 
     persist_onboarding_state(&app, state.inner(), OnboardingState::completed_now())?;
-    open_or_focus_window(&app, AppWindow::Main, None)?;
     crate::status_bar::refresh(&app);
-    window.close().map_err(|err| err.to_string())
+    // Open the main window, then close onboarding once main exists so the app
+    // never momentarily drops to zero windows. On Windows the build must run
+    // off the event-loop thread (see `open_new_app_window`), so the close is
+    // sequenced after the build on that same worker thread.
+    open_main_window_then_close(&app, AppWindow::Onboarding.config().label);
+    Ok(())
+}
+
+fn open_main_window_then_close(app: &tauri::AppHandle, close_label: &'static str) {
+    fn build_show_and_close(app: &tauri::AppHandle, close_label: &str) {
+        let main = AppWindow::Main;
+        match build_app_window(app, main, main.config().path) {
+            Ok(built) => {
+                show_and_focus_window(&built);
+                if let Some(previous) = app.get_webview_window(close_label) {
+                    let _ = previous.close();
+                }
+            }
+            Err(err) => crate::native_capture::debug_log::log_error(format!(
+                "failed to open main window after onboarding: {err}"
+            )),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let app = app.clone();
+        std::thread::spawn(move || build_show_and_close(&app, close_label));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    build_show_and_close(app, close_label);
 }
 
 #[cfg(test)]
