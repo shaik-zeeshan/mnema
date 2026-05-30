@@ -17,15 +17,16 @@ use super::microphone::{
 };
 use super::output::set_current_microphone_output_file;
 #[cfg(target_os = "macos")]
-use super::runtime::{CaptureSuspensionKind, PrivacyCaptureSuspension};
+use super::runtime::{
+    microphone_backend_active_for_runtime, system_audio_writer_active_for_runtime,
+    CaptureSuspensionKind, PrivacyCaptureSuspension,
+};
 use super::runtime::{
     active_sources_for_inactivity_paused_state, current_segment_sources_for_runtime,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
-    mark_runtime_session_stopped, microphone_backend_active_for_runtime,
-    microphone_planner_for_runtime, reset_runtime_after_start_error, session_from_runtime,
-    should_recover_from_segment_finalize_error, should_rotate_segment,
-    stopped_session_from_runtime, system_audio_planner_for_runtime,
-    system_audio_writer_active_for_runtime, validate_start_request, NativeCaptureRuntime,
+    mark_runtime_session_stopped, microphone_planner_for_runtime, reset_runtime_after_start_error,
+    session_from_runtime, should_recover_from_segment_finalize_error, stopped_session_from_runtime,
+    system_audio_planner_for_runtime, validate_start_request, NativeCaptureRuntime,
 };
 #[cfg(target_os = "macos")]
 use super::segments::{
@@ -38,11 +39,11 @@ use super::segments::{
     recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
-    segment_loop_sleep_duration, stop_capture_runtime, StartedSegmentState,
+    stop_capture_runtime, StartedSegmentState,
 };
 use super::segments::{
-    flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
-    FrameArtifactEnvelope, FrameArtifactForwardingResult, FrameArtifactMessage,
+    flush_frame_artifacts, try_forward_frame_artifact, FrameArtifactEnvelope,
+    FrameArtifactForwardingResult, FrameArtifactMessage,
 };
 use super::settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
@@ -56,10 +57,8 @@ use super::{
     AppNotificationsRuntime,
 };
 #[cfg(target_os = "macos")]
-use capture_runtime::{
-    current_date_prefix, CaptureClock, RuntimeSignal, SegmentPlanner, SegmentSchedule,
-};
-use capture_runtime::{RuntimeController, RuntimeState};
+use capture_runtime::{current_date_prefix, CaptureClock, SegmentSchedule};
+use capture_runtime::{RuntimeController, RuntimeSignal, RuntimeState, SegmentPlanner};
 use capture_types::{
     default_appearance, default_audio_speech_detection_settings,
     default_audio_transcription_settings, default_inactivity_activity_mode,
@@ -1528,6 +1527,9 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
     assert_eq!(compute_effective_screen_bitrate_bps(&settings), None);
 }
 
+// Exercises macOS-only runtime fields (`current_segment_output_files`,
+// `privacy_capture_suspension`), so it only compiles on macOS.
+#[cfg(target_os = "macos")]
 #[test]
 fn mark_runtime_session_stopped_preserves_session_metadata() {
     let mut runtime = NativeCaptureRuntime {
@@ -1649,6 +1651,9 @@ fn stop_capture_runtime_accepts_idle_recording_boundary() {
     assert_eq!(runtime.runtime_state, RuntimeState::Idle);
 }
 
+// Exercises macOS-only runtime fields (`current_segment_output_files`,
+// `privacy_capture_suspension`), so it only compiles on macOS.
+#[cfg(target_os = "macos")]
 #[test]
 fn stopped_session_from_runtime_preserves_finalized_metadata() {
     let runtime = NativeCaptureRuntime {
@@ -2874,20 +2879,11 @@ fn set_current_microphone_output_file_tracks_all_segments() {
     );
 }
 
-#[test]
-fn should_rotate_segment_only_after_boundary_crossing() {
-    assert!(!should_rotate_segment(1, 1));
-    assert!(should_rotate_segment(1, 2));
-    assert!(should_rotate_segment(3, 5));
-}
-
-#[test]
-fn rotation_keeps_emitted_segment_numbering_contiguous_when_schedule_jumps_ahead() {
-    let scheduled_index = 10;
-
-    assert!(should_rotate_segment(4, scheduled_index));
-    assert_eq!(next_emitted_segment_index(4), 5);
-}
+// `should_rotate_segment_only_after_boundary_crossing` and
+// `rotation_keeps_emitted_segment_numbering_contiguous_when_schedule_jumps_ahead`
+// are platform-neutral scheduling tests that now live alongside the scheduling
+// code in `segments.rs` under a `cfg(any(macos, windows))` gate so they also run
+// on Windows CI.
 
 #[cfg(target_os = "macos")]
 #[test]
@@ -3090,16 +3086,9 @@ fn plan_live_rotation_segment_does_not_rotate_for_zero_duration_schedule() {
     );
 }
 
-#[test]
-fn segment_loop_sleep_duration_uses_idle_poll_interval_for_zero_duration_schedule() {
-    let schedule = SegmentSchedule::new(std::time::Duration::ZERO);
-    let clock = CaptureClock::start_now();
-
-    assert_eq!(
-        segment_loop_sleep_duration(&schedule, &clock),
-        std::time::Duration::from_secs(1)
-    );
-}
+// `segment_loop_sleep_duration_uses_idle_poll_interval_for_zero_duration_schedule`
+// is a platform-neutral scheduling test that now lives alongside the scheduling
+// code in `segments.rs` under a `cfg(any(macos, windows))` gate.
 
 #[test]
 fn should_recover_from_segment_finalize_error_accepts_wrapped_missing_screen_output() {

@@ -60,3 +60,52 @@ jobs:
 
       - name: Check Rust workspace
         run: cargo check --workspace --all-targets --locked
+
+  windows-check:
+    name: Windows compile check
+    runs-on: windows-latest
+
+    env:
+      # SQLCipher (libsqlite3-sys, bundled-sqlcipher) needs OpenSSL headers to
+      # run its build script. `cargo check` never links a binary, so the headers
+      # shipped with the runner's pre-installed Strawberry Perl are sufficient.
+      OPENSSL_DIR: C:\Strawberry\c
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'apps/desktop/src-tauri/Cargo.lock', '**/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Stage placeholder CLI sidecar
+        shell: pwsh
+        # `cargo check` only needs the Tauri externalBin resource to exist, not
+        # to be a real binary (a true sidecar build would need an MSVC-format
+        # OpenSSL to link). The compile check never runs it.
+        run: |
+          New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries | Out-Null
+          Set-Content -Path apps/desktop/src-tauri/binaries/mnema-cli-x86_64-pc-windows-msvc.exe -Value 'placeholder compile-check sidecar'
+
+      - name: Check Rust workspace
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Test platform-neutral crates
+        run: >
+          cargo test --locked
+          -p capture-runtime
+          -p capture-types
+          -p capture-vad
+          -p secret-redaction
+          -p capture-metadata

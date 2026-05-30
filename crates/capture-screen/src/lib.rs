@@ -2384,6 +2384,53 @@ enum CaptureBackendSession {
     ScreenCaptureKit(ScreenCaptureKitCaptureSession),
 }
 
+/// Cross-platform seam for an active screen capture session.
+///
+/// The trait carries only the genuinely cross-platform capture lifecycle:
+/// rotating to a new segment, stopping, reporting liveness, draining a
+/// late-arriving stop error, and advertising frame-export capability. Platform
+/// specific operations (the macOS privacy content filter, system-audio/screen
+/// soft pause/resume, wake recovery) deliberately stay **off** this trait; the
+/// already platform-gated call sites reach them by downcasting through
+/// [`ScreenCaptureSession::as_any_mut`] to the concrete backend session.
+///
+/// `start` is not a method here: constructing a session is a platform factory
+/// (`start_capture_session_with_options`) that returns a
+/// `Box<dyn ScreenCaptureSession>`.
+pub trait ScreenCaptureSession: std::any::Any + Send + std::fmt::Debug {
+    /// Rotate the live capture onto a fresh segment, returning the outputs that
+    /// describe the segment that just closed.
+    fn rotate(
+        &mut self,
+        segment_dir: &Path,
+        screen_output_file: Option<&Path>,
+        system_audio_output_path: Option<&Path>,
+    ) -> Result<RotatedCaptureOutputs, CaptureErrorResponse>;
+
+    /// Stop the capture session. When `inactivity_tail_trim_seconds` is greater
+    /// than zero the backend trims that many seconds of trailing inactivity from
+    /// the final segment instead of stopping immediately.
+    fn stop(&mut self, inactivity_tail_trim_seconds: u64) -> Result<(), CaptureErrorResponse>;
+
+    /// Whether the underlying screen stream is currently live.
+    fn is_live(&self) -> bool;
+
+    /// Take and clear any stop error the backend recorded asynchronously (e.g. a
+    /// ScreenCaptureKit stream delegate failure).
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse>;
+
+    /// Whether this session can export individual frames for OCR / frame-index
+    /// sidecars.
+    fn supports_frame_export(&self) -> bool;
+
+    /// Downcast hook for reaching platform-specific session operations that are
+    /// intentionally not part of this cross-platform trait.
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Mutable downcast hook (see [`ScreenCaptureSession::as_any`]).
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
 pub struct ActiveCaptureSession {
@@ -2409,13 +2456,6 @@ impl ActiveCaptureSession {
         }
     }
 
-    fn stop(&mut self) -> Result<(), CaptureErrorResponse> {
-        match &mut self.backend {
-            CaptureBackendSession::AvFoundation(session) => session.stop(),
-            CaptureBackendSession::ScreenCaptureKit(session) => session.stop(),
-        }
-    }
-
     fn stop_for_inactivity(&mut self, tail_trim_seconds: u64) -> Result<(), CaptureErrorResponse> {
         match &mut self.backend {
             CaptureBackendSession::AvFoundation(session) => session.stop(),
@@ -2438,6 +2478,63 @@ impl ActiveCaptureSession {
                 message: "Privacy content filters require ScreenCaptureKit".to_string(),
             }),
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl ScreenCaptureSession for ActiveCaptureSession {
+    fn rotate(
+        &mut self,
+        segment_dir: &Path,
+        screen_output_file: Option<&Path>,
+        system_audio_output_path: Option<&Path>,
+    ) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
+        match &mut self.backend {
+            CaptureBackendSession::ScreenCaptureKit(session) => session.rotate_output_files(
+                segment_dir,
+                screen_output_file,
+                system_audio_output_path,
+            ),
+            CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
+                code: "capture_rotation_requires_restart".to_string(),
+                message: "This capture backend requires full restart for segment rotation"
+                    .to_string(),
+            }),
+        }
+    }
+
+    fn stop(&mut self, inactivity_tail_trim_seconds: u64) -> Result<(), CaptureErrorResponse> {
+        if inactivity_tail_trim_seconds > 0 {
+            self.stop_for_inactivity(inactivity_tail_trim_seconds)
+        } else {
+            match &mut self.backend {
+                CaptureBackendSession::AvFoundation(session) => session.stop(),
+                CaptureBackendSession::ScreenCaptureKit(session) => session.stop(),
+            }
+        }
+    }
+
+    fn is_live(&self) -> bool {
+        self.is_screen_stream_live()
+    }
+
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+        self.take_screen_stop_error()
+    }
+
+    fn supports_frame_export(&self) -> bool {
+        match &self.backend {
+            CaptureBackendSession::ScreenCaptureKit(_) => true,
+            CaptureBackendSession::AvFoundation(_) => false,
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -3922,9 +4019,8 @@ where
     }
 }
 
-#[cfg(target_os = "macos")]
 pub struct RotateScreenCaptureSessionArgs<'a> {
-    pub active_session: &'a mut Option<ActiveCaptureSession>,
+    pub active_session: &'a mut Option<Box<dyn ScreenCaptureSession>>,
     pub segment_dir: &'a Path,
     /// Visible dated output path for the screen recording.
     /// When `Some`, the video file is written here instead of `segment_dir/screen.mov`.
@@ -3934,7 +4030,6 @@ pub struct RotateScreenCaptureSessionArgs<'a> {
     pub system_audio_output_path: Option<&'a Path>,
 }
 
-#[cfg(target_os = "macos")]
 pub fn rotate_screen_capture_session(
     args: RotateScreenCaptureSessionArgs<'_>,
 ) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
@@ -3945,22 +4040,29 @@ pub fn rotate_screen_capture_session(
         });
     };
 
-    match &mut session.backend {
-        CaptureBackendSession::ScreenCaptureKit(session) => session.rotate_output_files(
-            args.segment_dir,
-            args.screen_output_file,
-            args.system_audio_output_path,
-        ),
-        CaptureBackendSession::AvFoundation(_) => Err(CaptureErrorResponse {
-            code: "capture_rotation_requires_restart".to_string(),
-            message: "This capture backend requires full restart for segment rotation".to_string(),
-        }),
-    }
+    session.rotate(
+        args.segment_dir,
+        args.screen_output_file,
+        args.system_audio_output_path,
+    )
+}
+
+/// Downcast the active session to the concrete macOS backend so the
+/// already-macOS-gated call sites can reach platform-specific operations that
+/// are intentionally not part of the cross-platform [`ScreenCaptureSession`]
+/// trait.
+#[cfg(target_os = "macos")]
+fn downcast_macos_capture_session(
+    active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
+) -> Option<&mut ActiveCaptureSession> {
+    active_session
+        .as_mut()
+        .and_then(|session| session.as_any_mut().downcast_mut::<ActiveCaptureSession>())
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn update_active_privacy_filter(
-    _active_session: &mut Option<ActiveCaptureSession>,
+    _active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
     _filter: PrivacyContentFilter,
 ) -> Result<PrivacyFilterApplyOutcome, PrivacyFilterApplyError> {
     Err(PrivacyFilterApplyError {
@@ -3971,10 +4073,10 @@ pub fn update_active_privacy_filter(
 
 #[cfg(target_os = "macos")]
 pub fn update_active_privacy_filter(
-    active_session: &mut Option<ActiveCaptureSession>,
+    active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
     filter: PrivacyContentFilter,
 ) -> Result<PrivacyFilterApplyOutcome, PrivacyFilterApplyError> {
-    let Some(session) = active_session.as_mut() else {
+    let Some(session) = downcast_macos_capture_session(active_session) else {
         return Err(PrivacyFilterApplyError {
             kind: PrivacyFilterApplyErrorKind::FilterUpdateFailed,
             message: "Missing active screen capture session for privacy filter update".to_string(),
@@ -3988,17 +4090,17 @@ pub fn update_active_privacy_filter(
 /// there was no writer to pause (idempotent).
 #[cfg(target_os = "macos")]
 pub fn pause_system_audio_writer(
-    active_session: &mut Option<ActiveCaptureSession>,
+    active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
 ) -> Result<(), CaptureErrorResponse> {
     pause_system_audio_writer_for_inactivity(active_session, 0)
 }
 
 #[cfg(target_os = "macos")]
 pub fn pause_system_audio_writer_for_inactivity(
-    active_session: &mut Option<ActiveCaptureSession>,
+    active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
     tail_trim_seconds: u64,
 ) -> Result<(), CaptureErrorResponse> {
-    let Some(session) = active_session.as_mut() else {
+    let Some(session) = downcast_macos_capture_session(active_session) else {
         return Err(CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),
             message: "No active screen capture session for system audio pause".to_string(),
@@ -4020,10 +4122,10 @@ pub fn pause_system_audio_writer_for_inactivity(
 /// session that was previously paused.  The caller supplies the new output path.
 #[cfg(target_os = "macos")]
 pub fn resume_system_audio_writer(
-    active_session: &mut Option<ActiveCaptureSession>,
+    active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
     output_path: &str,
 ) -> Result<(), CaptureErrorResponse> {
-    let Some(session) = active_session.as_mut() else {
+    let Some(session) = downcast_macos_capture_session(active_session) else {
         return Err(CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),
             message: "No active screen capture session for system audio resume".to_string(),
@@ -4041,9 +4143,9 @@ pub fn resume_system_audio_writer(
 
 #[cfg(target_os = "macos")]
 pub fn pause_screen_outputs_for_inactivity(
-    active_session: &mut Option<ActiveCaptureSession>,
+    active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
 ) -> Result<(), CaptureErrorResponse> {
-    let Some(session) = active_session.as_mut() else {
+    let Some(session) = downcast_macos_capture_session(active_session) else {
         return Err(CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),
             message: "No active screen capture session for screen output pause".to_string(),
@@ -4061,11 +4163,11 @@ pub fn pause_screen_outputs_for_inactivity(
 
 #[cfg(target_os = "macos")]
 pub fn resume_screen_outputs(
-    active_session: &mut Option<ActiveCaptureSession>,
+    active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
     segment_dir: &Path,
     recording_file: &str,
 ) -> Result<(), CaptureErrorResponse> {
-    let Some(session) = active_session.as_mut() else {
+    let Some(session) = downcast_macos_capture_session(active_session) else {
         return Err(CaptureErrorResponse {
             code: "invalid_runtime_state".to_string(),
             message: "No active screen capture session for screen output resume".to_string(),
@@ -4083,30 +4185,22 @@ pub fn resume_screen_outputs(
     }
 }
 
-#[cfg(target_os = "macos")]
 pub struct StopScreenCaptureSessionArgs<'a> {
-    pub active_session: &'a mut Option<ActiveCaptureSession>,
+    pub active_session: &'a mut Option<Box<dyn ScreenCaptureSession>>,
     pub inactivity_tail_trim_seconds: u64,
 }
 
-#[cfg(target_os = "macos")]
 pub fn stop_screen_capture_session(
     args: StopScreenCaptureSessionArgs<'_>,
 ) -> Result<(), CaptureErrorResponse> {
     let mut stop_error: Option<CaptureErrorResponse> = None;
 
     if let Some(session) = args.active_session.as_mut() {
-        match if args.inactivity_tail_trim_seconds > 0 {
-            session.stop_for_inactivity(args.inactivity_tail_trim_seconds)
-        } else {
-            session.stop()
-        } {
+        match session.stop(args.inactivity_tail_trim_seconds) {
             Ok(()) => {
                 *args.active_session = None;
             }
-            Err(error)
-                if ScreenCaptureKitCaptureSession::is_stop_timeout_code(error.code.as_str()) =>
-            {
+            Err(error) if should_preserve_runtime_on_stop_error(&error) => {
                 return Err(error);
             }
             Err(error) => {
@@ -4166,16 +4260,18 @@ pub fn should_preserve_runtime_on_stop_error(error: &CaptureErrorResponse) -> bo
     ScreenCaptureKitCaptureSession::is_stop_timeout_code(error.code.as_str())
 }
 
-#[cfg(target_os = "macos")]
-pub fn screen_capture_session_is_live(active_session: Option<&ActiveCaptureSession>) -> bool {
-    active_session.is_some_and(ActiveCaptureSession::is_screen_stream_live)
+#[allow(clippy::borrowed_box)]
+pub fn screen_capture_session_is_live(
+    active_session: Option<&Box<dyn ScreenCaptureSession>>,
+) -> bool {
+    active_session.is_some_and(|session| session.is_live())
 }
 
-#[cfg(target_os = "macos")]
+#[allow(clippy::borrowed_box)]
 pub fn take_screen_capture_session_stop_error(
-    active_session: Option<&mut ActiveCaptureSession>,
+    active_session: Option<&mut Box<dyn ScreenCaptureSession>>,
 ) -> Option<CaptureErrorResponse> {
-    active_session.and_then(ActiveCaptureSession::take_screen_stop_error)
+    active_session.and_then(|session| session.take_stop_error())
 }
 
 #[cfg(target_os = "macos")]
@@ -4195,8 +4291,59 @@ pub fn supports_frame_export() -> bool {
     }
 }
 
+/// Stub screen-capture session for platforms without a native backend yet.
+///
+/// On these targets the session factory (`start_capture_session_with_options`)
+/// returns an error before any session is constructed, so this type is never
+/// boxed at runtime; the trait impl exists only so the workspace compiles and
+/// so a future Windows/Linux backend can slot in behind the same seam.
 #[cfg(not(target_os = "macos"))]
+#[derive(Debug)]
 pub struct ActiveCaptureSession;
+
+#[cfg(not(target_os = "macos"))]
+impl ScreenCaptureSession for ActiveCaptureSession {
+    fn rotate(
+        &mut self,
+        _segment_dir: &Path,
+        _screen_output_file: Option<&Path>,
+        _system_audio_output_path: Option<&Path>,
+    ) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
+        Err(unsupported_platform_error())
+    }
+
+    fn stop(&mut self, _inactivity_tail_trim_seconds: u64) -> Result<(), CaptureErrorResponse> {
+        Ok(())
+    }
+
+    fn is_live(&self) -> bool {
+        false
+    }
+
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+        None
+    }
+
+    fn supports_frame_export(&self) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn unsupported_platform_error() -> CaptureErrorResponse {
+    CaptureErrorResponse {
+        code: "unsupported_platform".to_string(),
+        message: "Native capture is currently supported only on macOS".to_string(),
+    }
+}
 
 #[cfg(not(target_os = "macos"))]
 pub struct StartedCaptureSession {
@@ -4212,20 +4359,6 @@ pub struct RotatedCaptureOutputs {
     pub recording_file: String,
     pub system_audio_recording_file: Option<String>,
     pub output_files: CaptureOutputFiles,
-}
-
-#[cfg(not(target_os = "macos"))]
-pub struct StopScreenCaptureSessionArgs<'a> {
-    pub active_session: &'a mut Option<ActiveCaptureSession>,
-    pub inactivity_tail_trim_seconds: u64,
-}
-
-#[cfg(not(target_os = "macos"))]
-pub struct RotateScreenCaptureSessionArgs<'a> {
-    pub active_session: &'a mut Option<ActiveCaptureSession>,
-    pub segment_dir: &'a Path,
-    pub screen_output_file: Option<&'a Path>,
-    pub system_audio_output_path: Option<&'a Path>,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -4269,7 +4402,7 @@ pub fn start_capture_session_with_options(
 
 #[cfg(not(target_os = "macos"))]
 pub fn pause_system_audio_writer(
-    _active_session: &mut Option<ActiveCaptureSession>,
+    _active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
 ) -> Result<(), CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
@@ -4279,7 +4412,7 @@ pub fn pause_system_audio_writer(
 
 #[cfg(not(target_os = "macos"))]
 pub fn resume_system_audio_writer(
-    _active_session: &mut Option<ActiveCaptureSession>,
+    _active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
     _output_path: &str,
 ) -> Result<(), CaptureErrorResponse> {
     Err(CaptureErrorResponse {
@@ -4290,7 +4423,7 @@ pub fn resume_system_audio_writer(
 
 #[cfg(not(target_os = "macos"))]
 pub fn pause_screen_outputs_for_inactivity(
-    _active_session: &mut Option<ActiveCaptureSession>,
+    _active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
 ) -> Result<(), CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
@@ -4300,30 +4433,13 @@ pub fn pause_screen_outputs_for_inactivity(
 
 #[cfg(not(target_os = "macos"))]
 pub fn resume_screen_outputs(
-    _active_session: &mut Option<ActiveCaptureSession>,
+    _active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
     _segment_dir: &Path,
     _recording_file: &str,
 ) -> Result<(), CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
         message: "Screen soft-resume is currently supported only on macOS".to_string(),
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn stop_screen_capture_session(
-    _args: StopScreenCaptureSessionArgs<'_>,
-) -> Result<(), CaptureErrorResponse> {
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn rotate_screen_capture_session(
-    _args: RotateScreenCaptureSessionArgs<'_>,
-) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
-    Err(CaptureErrorResponse {
-        code: "unsupported_platform".to_string(),
-        message: "Native capture is currently supported only on macOS".to_string(),
     })
 }
 

@@ -2818,7 +2818,7 @@ pub(super) type StartedSegmentState = (
     Option<String>,
     Option<String>,
     Option<String>,
-    Option<capture_screen::ActiveCaptureSession>,
+    Option<Box<dyn capture_screen::ScreenCaptureSession>>,
     Option<microphone_capture::AvFoundationMicrophoneCaptureSession>,
 );
 
@@ -3373,7 +3373,7 @@ fn start_segment_with_inactivity_tail_trim_seconds(
         Option<String>,
         Option<String>,
         Option<String>,
-        Option<capture_screen::ActiveCaptureSession>,
+        Option<Box<dyn capture_screen::ScreenCaptureSession>>,
         Option<microphone_capture::AvFoundationMicrophoneCaptureSession>,
         Option<capture_screen::PrivacyFilterApplyOutcome>,
     ),
@@ -3389,7 +3389,7 @@ fn start_segment_with_inactivity_tail_trim_seconds(
     let mut recording_file: Option<String> = None;
     let mut microphone_recording_file: Option<String> = None;
     let mut system_audio_recording_file: Option<String> = None;
-    let mut active_screen_session: Option<capture_screen::ActiveCaptureSession> = None;
+    let mut active_screen_session: Option<Box<dyn capture_screen::ScreenCaptureSession>> = None;
     let mut active_microphone_session: Option<
         microphone_capture::AvFoundationMicrophoneCaptureSession,
     > = None;
@@ -3442,7 +3442,7 @@ fn start_segment_with_inactivity_tail_trim_seconds(
         recording_file = Some(screen_capture.recording_file);
         system_audio_recording_file = screen_capture.system_audio_recording_file;
         initial_privacy_filter_outcome = screen_capture.initial_privacy_filter_outcome;
-        active_screen_session = Some(screen_capture.session);
+        active_screen_session = Some(Box::new(screen_capture.session));
     }
 
     if sources.microphone {
@@ -4358,5 +4358,253 @@ fn request_runtime_stop_transition_if_needed(
         }
         _ if runtime.is_running => apply_runtime_signal(runtime, RuntimeSignal::StopRequested),
         _ => Ok(()),
+    }
+}
+
+/// Platform-neutral segment scheduling tests.
+///
+/// These exercise pure scheduling logic (rotation boundaries, contiguous
+/// segment numbering, idle sleep cadence) with no OS capture APIs, so they run
+/// on every target that has a capture CI lane — currently macOS and Windows.
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+mod scheduling_tests {
+    use super::{next_emitted_segment_index, segment_loop_sleep_duration};
+    use crate::native_capture::runtime::should_rotate_segment;
+    use capture_runtime::{CaptureClock, SegmentSchedule};
+    use std::time::Duration;
+
+    #[test]
+    fn should_rotate_segment_only_after_boundary_crossing() {
+        assert!(!should_rotate_segment(1, 1));
+        assert!(should_rotate_segment(1, 2));
+        assert!(should_rotate_segment(3, 5));
+    }
+
+    #[test]
+    fn rotation_keeps_emitted_segment_numbering_contiguous_when_schedule_jumps_ahead() {
+        let scheduled_index = 10;
+
+        assert!(should_rotate_segment(4, scheduled_index));
+        assert_eq!(next_emitted_segment_index(4), 5);
+    }
+
+    #[test]
+    fn segment_loop_sleep_duration_uses_idle_poll_interval_for_zero_duration_schedule() {
+        let schedule = SegmentSchedule::new(Duration::ZERO);
+        let clock = CaptureClock::start_now();
+
+        assert_eq!(
+            segment_loop_sleep_duration(&schedule, &clock),
+            Duration::from_secs(1)
+        );
+    }
+}
+
+/// Cross-platform tests for the [`capture_screen::ScreenCaptureSession`] seam.
+///
+/// They drive the lifecycle helpers (`stop`, `rotate`, liveness, stop-error
+/// draining) through a fully in-memory fake session, so the orchestration
+/// contract is verified on every platform without a real capture backend.
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+mod screen_capture_session_seam_tests {
+    use super::empty_output_files;
+    use capture_screen::{
+        rotate_screen_capture_session, screen_capture_session_is_live,
+        stop_screen_capture_session, take_screen_capture_session_stop_error, RotateScreenCaptureSessionArgs,
+        RotatedCaptureOutputs, ScreenCaptureSession, StopScreenCaptureSessionArgs,
+    };
+    use capture_types::CaptureErrorResponse;
+    use std::path::Path;
+
+    /// In-memory [`ScreenCaptureSession`] for orchestration tests.
+    #[derive(Debug)]
+    struct FakeScreenCaptureSession {
+        live: bool,
+        stop_result: Result<(), CaptureErrorResponse>,
+        pending_stop_error: Option<CaptureErrorResponse>,
+        rotate_recording_file: String,
+        stop_calls: u32,
+        rotate_calls: u32,
+        last_stop_tail_trim_seconds: u64,
+    }
+
+    // `Result` has no `Default`, so spell the defaults out instead of deriving.
+    impl Default for FakeScreenCaptureSession {
+        fn default() -> Self {
+            Self {
+                live: false,
+                stop_result: Ok(()),
+                pending_stop_error: None,
+                rotate_recording_file: String::new(),
+                stop_calls: 0,
+                rotate_calls: 0,
+                last_stop_tail_trim_seconds: 0,
+            }
+        }
+    }
+
+    impl FakeScreenCaptureSession {
+        fn live() -> Self {
+            Self {
+                live: true,
+                rotate_recording_file: "fake-rotated.mov".to_string(),
+                ..Self::default()
+            }
+        }
+
+        fn failing_stop(code: &str) -> Self {
+            Self {
+                live: true,
+                stop_result: Err(CaptureErrorResponse {
+                    code: code.to_string(),
+                    message: "fake stop failure".to_string(),
+                }),
+                ..Self::default()
+            }
+        }
+
+        fn with_pending_stop_error(code: &str) -> Self {
+            Self {
+                live: false,
+                pending_stop_error: Some(CaptureErrorResponse {
+                    code: code.to_string(),
+                    message: "fake delegate stop error".to_string(),
+                }),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl ScreenCaptureSession for FakeScreenCaptureSession {
+        fn rotate(
+            &mut self,
+            _segment_dir: &Path,
+            _screen_output_file: Option<&Path>,
+            _system_audio_output_path: Option<&Path>,
+        ) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
+            self.rotate_calls += 1;
+            Ok(RotatedCaptureOutputs {
+                recording_file: self.rotate_recording_file.clone(),
+                system_audio_recording_file: None,
+                output_files: empty_output_files(),
+            })
+        }
+
+        fn stop(&mut self, inactivity_tail_trim_seconds: u64) -> Result<(), CaptureErrorResponse> {
+            self.stop_calls += 1;
+            self.last_stop_tail_trim_seconds = inactivity_tail_trim_seconds;
+            self.live = false;
+            self.stop_result.clone()
+        }
+
+        fn is_live(&self) -> bool {
+            self.live
+        }
+
+        fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+            self.pending_stop_error.take()
+        }
+
+        fn supports_frame_export(&self) -> bool {
+            false
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    fn boxed(session: FakeScreenCaptureSession) -> Option<Box<dyn ScreenCaptureSession>> {
+        Some(Box::new(session))
+    }
+
+    #[test]
+    fn liveness_reflects_underlying_session() {
+        assert!(screen_capture_session_is_live(
+            boxed(FakeScreenCaptureSession::live()).as_ref()
+        ));
+        assert!(!screen_capture_session_is_live(
+            boxed(FakeScreenCaptureSession::default()).as_ref()
+        ));
+        assert!(!screen_capture_session_is_live(None));
+    }
+
+    #[test]
+    fn successful_stop_clears_the_session() {
+        let mut session = boxed(FakeScreenCaptureSession::live());
+
+        let result = stop_screen_capture_session(StopScreenCaptureSessionArgs {
+            active_session: &mut session,
+            inactivity_tail_trim_seconds: 7,
+        });
+
+        assert!(result.is_ok());
+        assert!(session.is_none(), "a clean stop detaches the session");
+    }
+
+    #[test]
+    fn failed_stop_still_clears_the_session_and_surfaces_the_error() {
+        let mut session = boxed(FakeScreenCaptureSession::failing_stop("fake_stop_failed"));
+
+        let result = stop_screen_capture_session(StopScreenCaptureSessionArgs {
+            active_session: &mut session,
+            inactivity_tail_trim_seconds: 0,
+        });
+
+        assert_eq!(
+            result.err().map(|error| error.code),
+            Some("fake_stop_failed".to_string())
+        );
+        assert!(session.is_none());
+    }
+
+    #[test]
+    fn stop_error_is_drained_once() {
+        let mut session = boxed(FakeScreenCaptureSession::with_pending_stop_error("fake_delegate"));
+
+        let first = take_screen_capture_session_stop_error(session.as_mut());
+        assert_eq!(first.map(|error| error.code), Some("fake_delegate".to_string()));
+
+        let second = take_screen_capture_session_stop_error(session.as_mut());
+        assert!(second.is_none(), "the stop error is cleared after draining");
+    }
+
+    #[test]
+    fn rotate_returns_backend_outputs() {
+        let mut session = boxed(FakeScreenCaptureSession::live());
+
+        let outputs = rotate_screen_capture_session(RotateScreenCaptureSessionArgs {
+            active_session: &mut session,
+            segment_dir: Path::new("/tmp/segment"),
+            screen_output_file: None,
+            system_audio_output_path: None,
+        })
+        .expect("rotation should succeed");
+
+        assert_eq!(outputs.recording_file, "fake-rotated.mov");
+    }
+
+    #[test]
+    fn rotate_without_active_session_is_invalid_state() {
+        let mut session: Option<Box<dyn ScreenCaptureSession>> = None;
+
+        let result = rotate_screen_capture_session(RotateScreenCaptureSessionArgs {
+            active_session: &mut session,
+            segment_dir: Path::new("/tmp/segment"),
+            screen_output_file: None,
+            system_audio_output_path: None,
+        });
+
+        // `RotatedCaptureOutputs` is intentionally not `Debug`, so match instead
+        // of `expect_err`.
+        let error = match result {
+            Ok(_) => panic!("rotation without a session should error"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "invalid_runtime_state");
     }
 }

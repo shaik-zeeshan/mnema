@@ -730,6 +730,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn request_line_reader_rejects_oversized_requests() {
         tauri::async_runtime::block_on(async {

@@ -144,8 +144,11 @@ pub struct NativeCaptureRuntime {
     pub microphone_recording_file: Option<String>,
     #[cfg(target_os = "macos")]
     pub system_audio_recording_file: Option<String>,
-    #[cfg(target_os = "macos")]
-    pub active_screen_session: Option<capture_screen::ActiveCaptureSession>,
+    /// The live screen capture session behind the cross-platform
+    /// [`capture_screen::ScreenCaptureSession`] seam. Populated only when a
+    /// platform backend successfully starts capture; macOS-only operations reach
+    /// the concrete backend via an `Any` downcast from already-gated call sites.
+    pub active_screen_session: Option<Box<dyn capture_screen::ScreenCaptureSession>>,
     #[cfg(target_os = "macos")]
     pub active_microphone_session: Option<microphone_capture::AvFoundationMicrophoneCaptureSession>,
     #[cfg(target_os = "macos")]

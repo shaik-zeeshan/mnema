@@ -1631,6 +1631,7 @@ mod tests {
         assert_eq!(status.status, ModelStatusKind::Installed);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn apple_vision_options_accept_benchmark_tuning_fields() {
         let options: AppleVisionRequestOptions = serde_json::from_value(serde_json::json!({
@@ -1646,6 +1647,7 @@ mod tests {
         assert_eq!(options.tile_columns, Some(2));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn remap_tiled_observation_offsets_into_full_image_coordinates() {
         let remapped = remap_tiled_observation(
