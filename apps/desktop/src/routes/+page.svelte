@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { fly } from "svelte/transition";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { Image } from "@tauri-apps/api/image";
@@ -2716,6 +2717,39 @@
     hoveredFrameId != null && hoveredX != null,
   );
 
+  // App identity of the frame shown in the centered readout. Keying the icon
+  // and app-name on this makes them animate only when the *app* changes as the
+  // user scrubs across an app boundary — not on every frame within one app
+  // (the time/date update live inside the same DOM node).
+  const tooltipAppKey = $derived(
+    timelineAppIdentity(
+      normalizedTimelineAppBundleId(tooltipFrame ?? ({} as FrameDto)),
+      normalizedTimelineAppName(tooltipFrame ?? ({} as FrameDto)),
+    ) ?? "__none__",
+  );
+  // Scrub direction (+1 = scrubbing toward older frames / "backward" in time,
+  // -1 = toward newer). Drives which way the readout icon/name slide so the
+  // swap reads as motion in the direction of travel rather than a hard cut.
+  // Set synchronously in the scroll handler, so it's already current by the
+  // time the resulting active-frame change re-keys the readout.
+  let readoutScrubDirection = $state<1 | -1>(1);
+  const READOUT_FLY_OFFSET_PX = 9;
+  const READOUT_FLY_DURATION_MS = 190;
+  // The readout transition is JS-driven (Svelte `fly`), so the CSS
+  // `prefers-reduced-motion` rules elsewhere can't disable it — gate the
+  // duration here instead so reduced-motion users get an instant swap.
+  let readoutPrefersReducedMotion = $state(false);
+  $effect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    readoutPrefersReducedMotion = mq.matches;
+    const onChange = () => (readoutPrefersReducedMotion = mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  });
+  const readoutFlyDurationMs = $derived(
+    readoutPrefersReducedMotion ? 0 : READOUT_FLY_DURATION_MS,
+  );
+
   // Maximum scrollLeft for the rail. Track width = N * SLOT; rail has
   // symmetric viewport-sized margins on each side (`50cqi - 4px`) so the
   // first/last slot can sit under the centered cursor. That makes the total
@@ -3226,6 +3260,25 @@
     const d = new Date(ms);
     if (isNaN(d.getTime())) return "unknown";
     return d.toLocaleString();
+  }
+
+  /** Time-of-day for the rail readout, where the date is shown alongside it.
+   *  Split out from {@link formatCapturedAt} so the readout can lead with the
+   *  precise time and de-emphasize the calendar date. */
+  function formatCapturedTimeOnly(ts: string): string {
+    const d = parseCapturedAt(ts);
+    if (isNaN(d.getTime())) return ts;
+    return d.toLocaleTimeString();
+  }
+
+  function formatCapturedDateOnly(ts: string): string {
+    const d = parseCapturedAt(ts);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
   }
 
   /** Compact `HH:MM:SS` (locale-aware) for the player panel header where the
@@ -5744,9 +5797,14 @@
     const scrollLeft = el.scrollLeft;
     latestTimelineScrollLeft = scrollLeft;
     const deltaMs = now - lastTimelineScrollSample.at;
+    const scrollDelta = scrollLeft - lastTimelineScrollSample.left;
     if (deltaMs > 0) {
-      latestTimelineScrubVelocityPxPerMs = Math.abs(scrollLeft - lastTimelineScrollSample.left) / deltaMs;
+      latestTimelineScrubVelocityPxPerMs = Math.abs(scrollDelta) / deltaMs;
     }
+    // Newest frame is anchored at the right, so a growing scrollLeft moves the
+    // viewport toward older frames ("backward" in time → +1).
+    if (scrollDelta > 0) readoutScrubDirection = 1;
+    else if (scrollDelta < 0) readoutScrubDirection = -1;
     lastTimelineScrollSample = { left: scrollLeft, at: now };
     syncTimelineAudioLaneScroll(scrollLeft);
     // Resize-induced scroll guard: when the window grows, `cqi`-based track
@@ -8635,19 +8693,39 @@
             class:timeline-rail__tooltip-icon--image={!!tooltipAppIconSrc}
             aria-hidden="true"
           >
-            {#if tooltipAppIconSrc}
-              <img src={tooltipAppIconSrc} alt="" loading="lazy" />
-            {:else}
-              <span>{timelineFrameAppFallback(tooltipFrame)}</span>
-            {/if}
+            {#key tooltipAppKey}
+              <span
+                class="timeline-rail__tooltip-icon-inner"
+                in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+                out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+              >
+                {#if tooltipAppIconSrc}
+                  <img src={tooltipAppIconSrc} alt="" loading="lazy" />
+                {:else}
+                  <span>{timelineFrameAppFallback(tooltipFrame)}</span>
+                {/if}
+              </span>
+            {/key}
           </span>
           <span class="timeline-rail__tooltip-copy">
-            <span class="timeline-rail__tooltip-app-name">{tooltipAppLabel}</span>
-            <span class="timeline-rail__tooltip-date">{formatCapturedAt(tooltipFrame.capturedAt)}</span>
+            <span class="timeline-rail__tooltip-name-stack">
+              {#key tooltipAppKey}
+                <span
+                  class="timeline-rail__tooltip-app-name"
+                  in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+                  out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+                >{tooltipAppLabel}</span>
+              {/key}
+            </span>
+            <span class="timeline-rail__tooltip-meta">
+              <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
+              <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
+            </span>
           </span>
         {:else}
-          <span class="timeline-rail__tooltip-date timeline-rail__tooltip-date--solo">
-            {formatCapturedAt(tooltipFrame.capturedAt)}
+          <span class="timeline-rail__tooltip-copy timeline-rail__tooltip-copy--solo">
+            <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
+            <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
           </span>
         {/if}
       </div>
@@ -11813,7 +11891,7 @@
     box-sizing: border-box;
     display: grid;
     place-items: center;
-    border-radius: 4px;
+    border-radius: 5px;
     overflow: hidden;
     color: var(--app-text-strong);
     font-size: 10px;
@@ -11821,12 +11899,13 @@
     line-height: 1;
     background: color-mix(in srgb, var(--app-surface-raised) 96%, var(--app-bg));
     box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--app-border-strong) 82%, transparent),
-      0 2px 6px rgba(0, 0, 0, 0.28);
+      0 0 0 1px color-mix(in srgb, var(--app-border-strong) 70%, transparent),
+      0 1px 3px rgba(0, 0, 0, 0.22);
   }
 
   .timeline-rail__app-group-icon--image {
     padding: 2px;
+    background: color-mix(in srgb, var(--app-surface-raised) 88%, var(--app-bg));
   }
 
   .timeline-rail__app-group-icon img {
@@ -12172,10 +12251,28 @@
     object-fit: contain;
   }
 
+  /* Both the outgoing and incoming icon (during an app-change transition) are
+     pinned to the same grid cell so they cross-slide in place instead of
+     stacking into two rows; the icon container's `overflow: hidden` clips the
+     slide. */
+  .timeline-rail__tooltip-icon-inner {
+    grid-area: 1 / 1;
+    width: 100%;
+    height: 100%;
+    display: grid;
+    place-items: center;
+  }
+
   .timeline-rail__tooltip-copy {
     min-width: 0;
     display: grid;
     gap: 4px;
+  }
+
+  /* When no app label is known there's no icon column, so the copy spans the
+     full bubble width instead of being squeezed into the 24px icon track. */
+  .timeline-rail__tooltip-copy--solo {
+    grid-column: 1 / -1;
   }
 
   .timeline-rail__tooltip-app-name,
@@ -12186,11 +12283,40 @@
     white-space: nowrap;
   }
 
+  /* Overlap container for the keyed app name so the cross-slide copies share
+     one grid cell — the cell auto-sizes to the wider name (no width collapse)
+     and clips the horizontal slide. */
+  .timeline-rail__tooltip-name-stack {
+    min-width: 0;
+    display: grid;
+    overflow: hidden;
+  }
+
   .timeline-rail__tooltip-app-name {
+    grid-area: 1 / 1;
     color: var(--app-text-strong);
     font-size: 11px;
     font-weight: 760;
     line-height: 1.05;
+  }
+
+  /* Time leads, date trails on the same baseline so the readout answers
+     "when" at a glance without a second wrapped line. */
+  .timeline-rail__tooltip-meta {
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .timeline-rail__tooltip-time {
+    flex: 0 0 auto;
+    color: var(--app-text-strong);
+    font-size: 10px;
+    font-weight: 720;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    white-space: nowrap;
   }
 
   .timeline-rail__tooltip-date {
@@ -12199,12 +12325,6 @@
     font-variant-numeric: tabular-nums;
     font-weight: 680;
     line-height: 1;
-  }
-
-  .timeline-rail__tooltip-date--solo {
-    grid-column: 1 / -1;
-    color: var(--app-text-strong);
-    font-size: 10px;
   }
 
   .timeline-rail__tooltip::after {
@@ -12503,6 +12623,9 @@
     color: var(--app-text);
   }
   :global([data-theme="light"]) .timeline-rail__tooltip-app-name {
+    color: var(--app-text-strong);
+  }
+  :global([data-theme="light"]) .timeline-rail__tooltip-time {
     color: var(--app-text-strong);
   }
   :global([data-theme="light"]) .timeline-rail__tooltip-date {
