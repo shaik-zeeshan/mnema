@@ -66,14 +66,13 @@ pub use processing::{
     OcrProcessorBackend, PersonProfile, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
     ProcessingJobReclamationSummary, ProcessingJobRunOutcome, ProcessingJobStatus,
     ProcessingModelCleanupLock, ProcessingResult, ProcessingResultDraft, ProcessingRuntime,
-    ProcessingStore, ProcessingSubject, ProcessorBackend,
-    ProcessorRegistry, SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload,
-    SpeakerAnalysisProcessorBackend, SpeakerClusterView, SpeakerTurnView,
-    SystemAudioSpeechActivityJobPayload, SystemAudioSpeechActivityProcessorBackend,
-    SystemAudioSpeechActivityResult, AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR,
-    FRAME_SUBJECT_TYPE, HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR,
-    SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY, SPEAKER_ANALYSIS_PROCESSOR,
-    SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+    ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
+    SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend,
+    SpeakerClusterView, SpeakerTurnView, SystemAudioSpeechActivityJobPayload,
+    SystemAudioSpeechActivityProcessorBackend, SystemAudioSpeechActivityResult,
+    AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE,
+    HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
+    SPEAKER_ANALYSIS_PROCESSOR, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 pub use search::{
     AudioSearchResult, FrameSearchResult, SearchAppRefinement, SearchAppRefinementKind,
@@ -337,9 +336,7 @@ impl AppInfra {
         // live and holding a freshly acquired cleanup lock, so only clear locks old enough to be
         // orphaned by a prior crash (see `MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS`).
         self.processing
-            .clear_stale_model_cleanup_locks(
-                processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS,
-            )
+            .clear_stale_model_cleanup_locks(processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS)
             .await?;
         self.processing.backfill_frame_equivalence().await?;
         self.search.backfill_missing_projections().await?;
@@ -2015,7 +2012,9 @@ mod tests {
 
             // No equivalent existed, so the equivalence gate did not override the
             // novelty admission: an OCR job is enqueued for the singleton.
-            let job = captured.job.expect("novel singleton should enqueue an OCR job");
+            let job = captured
+                .job
+                .expect("novel singleton should enqueue an OCR job");
             let decision = captured
                 .ocr_admission_decision
                 .expect("admission decision should be recorded");
@@ -2039,12 +2038,16 @@ mod tests {
             // The previously-skippable singleton now carries a direct search row,
             // which is the exact criterion for CLI find-by-content.
             assert_eq!(
-                search_document_kind(&infra, captured.frame.id).await.as_deref(),
+                search_document_kind(&infra, captured.frame.id)
+                    .await
+                    .as_deref(),
                 Some("direct")
             );
-            assert!(search_representative_frame_ids(&infra, "scrolled pull request")
-                .await
-                .contains(&captured.frame.id));
+            assert!(
+                search_representative_frame_ids(&infra, "scrolled pull request")
+                    .await
+                    .contains(&captured.frame.id)
+            );
         });
     }
 
@@ -2094,7 +2097,10 @@ mod tests {
                 .await
                 .expect("repeat frame should persist");
 
-            assert!(repeat.job.is_none(), "repeat must not spend a novelty OCR read");
+            assert!(
+                repeat.job.is_none(),
+                "repeat must not spend a novelty OCR read"
+            );
             let decision = repeat
                 .ocr_admission_decision
                 .expect("admission decision should be recorded");
@@ -2104,11 +2110,15 @@ mod tests {
 
             // The repeat is still searchable, via reused text rather than a direct read.
             assert_eq!(
-                search_document_kind(&infra, first.frame.id).await.as_deref(),
+                search_document_kind(&infra, first.frame.id)
+                    .await
+                    .as_deref(),
                 Some("direct")
             );
             assert_eq!(
-                search_document_kind(&infra, repeat.frame.id).await.as_deref(),
+                search_document_kind(&infra, repeat.frame.id)
+                    .await
+                    .as_deref(),
                 Some("equivalent_reuse")
             );
         });
@@ -4554,9 +4564,7 @@ mod tests {
 
             let cleared = infra
                 .processing()
-                .clear_stale_model_cleanup_locks(
-                    processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS,
-                )
+                .clear_stale_model_cleanup_locks(processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS)
                 .await
                 .expect("stale-only clear should run");
             assert_eq!(cleared, 1, "only the stale lock should be cleared");
@@ -4577,7 +4585,10 @@ mod tests {
             .fetch_one(infra.pool())
             .await
             .expect("fresh lock count should query");
-            assert_eq!(fresh_remaining, 1, "freshly acquired live lock should survive");
+            assert_eq!(
+                fresh_remaining, 1,
+                "freshly acquired live lock should survive"
+            );
 
             infra
                 .release_processing_model_cleanup_locks(&fresh_lock)

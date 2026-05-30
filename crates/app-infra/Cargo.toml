@@ -46,6 +46,7 @@ cidre = { version = "0.15", default-features = false, features = ["vn", "blocks"
 # preinstalled on `windows-latest`. macOS/Linux keep the system-linked
 # `bundled-sqlcipher` from `[dependencies]`.
 libsqlite3-sys = { version = "0.30.1", features = ["bundled-sqlcipher-vendored-openssl"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

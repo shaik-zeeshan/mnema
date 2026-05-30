@@ -67,7 +67,10 @@ fn main() {
                 m.len(),
                 out.display()
             );
-            println!("[win_smoke] recording_file reported by session: {}", started.recording_file);
+            println!(
+                "[win_smoke] recording_file reported by session: {}",
+                started.recording_file
+            );
         }
         Ok(_) => {
             eprintln!("[win_smoke] output file is empty");

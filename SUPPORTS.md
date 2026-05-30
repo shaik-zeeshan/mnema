@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-05-26_
+_Last reviewed: 2026-05-30_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -36,7 +36,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Recommended app exclusions | [x] | [ ] | [ ] | Current catalog uses macOS bundle IDs. |
 | Status bar / tray | [x] | [~] | [~] | Tauri tray exists cross-platform; current UX includes macOS-only Exclude Current App behavior. |
 | Global shortcuts | [x] | [~] | [~] | Uses Tauri global shortcut plugin for background start/stop, pause/resume, and show/hide; platform behavior needs verification. |
-| Encrypted Capture Index key store | [x] | [ ] | [ ] | macOS uses Keychain. Windows/Linux platform key stores are missing. |
+| Encrypted Capture Index key store | [x] | [x] | [ ] | macOS uses Keychain. Windows uses Credential Manager. Linux platform key store is missing. |
 | Broker Authorization Channel | [x] | [ ] | [~] | Unix socket implementation works for macOS/Linux shape; Windows needs named pipe/TCP/etc. |
 | CLI sidecar build | [x] | [~] | [~] | Script has target-aware `.exe` handling, but packaging/release not verified. |
 | Release/updater pipeline | [x] | [ ] | [ ] | Current release workflow ships Apple Silicon macOS only. |
@@ -171,7 +171,7 @@ Research notes:
 
 ### Storage, access, and release
 
-- [ ] Implement Windows Capture Index Key Store using Credential Manager, DPAPI, or another platform-owned secret store.
+- [x] Implement Windows Capture Index Key Store using Credential Manager, DPAPI, or another platform-owned secret store.
 - [ ] Implement Broker Authorization Channel for Windows.
   - Candidate transports: named pipes, localhost loopback, or another app-mediated IPC.
 - [ ] Update `crates/cli` authorization request path for Windows.

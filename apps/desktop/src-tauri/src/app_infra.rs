@@ -1587,17 +1587,17 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         ),
     )
     .map_err(|error| {
-            crate::native_capture::debug_log::log_error(format!(
+        crate::native_capture::debug_log::log_error(format!(
             "failed to initialize app infrastructure (save_directory='{}', base_dir='{}'): {error}",
             resolved_base_dir.save_directory,
             resolved_base_dir.base_dir.display()
         ));
 
-            AppInfraInitializeError::Other(format!(
-                "failed to initialize app infrastructure at {}: {error}",
-                resolved_base_dir.base_dir.display()
-            ))
-        })?;
+        AppInfraInitializeError::Other(format!(
+            "failed to initialize app infrastructure at {}: {error}",
+            resolved_base_dir.base_dir.display()
+        ))
+    })?;
     let infra = Arc::new(infra);
     crate::ocr_budget::reset_for_base_dir(&resolved_base_dir.base_dir);
     let frame_preview_cache = FramePreviewCacheState::default();

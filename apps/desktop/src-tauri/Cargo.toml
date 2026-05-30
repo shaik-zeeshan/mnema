@@ -47,7 +47,6 @@ thiserror = "2"
 app-infra = { path = "../../../crates/app-infra" }
 audio-transcription = { path = "../../../crates/audio-transcription", features = ["local-whisper", "parakeet-onnx"] }
 speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["sherpa-onnx"] }
-ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }
 capture-types = { path = "../../../crates/capture-types" }
 capture-metadata = { path = "../../../crates/capture-metadata" }
 capture-runtime = { path = "../../../crates/capture-runtime" }
@@ -63,6 +62,12 @@ url = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
+[target.'cfg(windows)'.dependencies]
+ocr = { path = "../../../crates/ocr", features = ["tesseract-embedded"] }
+
+[target.'cfg(not(windows))'.dependencies]
+ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

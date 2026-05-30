@@ -972,8 +972,14 @@ mod tests {
         assert_eq!(normalize_settings_tab("metadata"), Some("privacy"));
         assert_eq!(normalize_settings_tab("shortcuts"), Some("shortcuts"));
         assert_eq!(normalize_settings_tab("keyboard"), Some("shortcuts"));
-        assert_eq!(normalize_settings_tab("keyboard-shortcuts"), Some("shortcuts"));
-        assert_eq!(normalize_settings_tab("keyboard_bindings"), Some("shortcuts"));
+        assert_eq!(
+            normalize_settings_tab("keyboard-shortcuts"),
+            Some("shortcuts")
+        );
+        assert_eq!(
+            normalize_settings_tab("keyboard_bindings"),
+            Some("shortcuts")
+        );
         assert_eq!(normalize_settings_tab("about"), Some("about"));
     }
 

@@ -284,8 +284,7 @@ impl SearchStore {
 
         // Merge typed field operators into any caller-supplied refinements:
         // apps/sources accumulate, the date slot overwrites (last write wins).
-        let merged_refinements =
-            merge_parsed_field_operators(request.refinements, &parsed);
+        let merged_refinements = merge_parsed_field_operators(request.refinements, &parsed);
 
         let ParsedQuery {
             fts_body,
@@ -503,15 +502,13 @@ fn normalize_search_refinements(
     }
 
     let date_range = match refinements.date_range {
-        Some(range) => {
-            match normalize_date_range_refinement(range) {
-                Ok(resolved) => Some(resolved),
-                Err(error) => {
-                    errors.push(error);
-                    None
-                }
+        Some(range) => match normalize_date_range_refinement(range) {
+            Ok(resolved) => Some(resolved),
+            Err(error) => {
+                errors.push(error);
+                None
             }
-        }
+        },
         None => None,
     };
 
@@ -557,7 +554,9 @@ fn normalize_search_refinements(
     }
 
     Ok(Ok(NormalizedSearchRefinements {
-        date_range: date_range.as_ref().map(|(normalized, _)| normalized.clone()),
+        date_range: date_range
+            .as_ref()
+            .map(|(normalized, _)| normalized.clone()),
         apps: normalized_apps,
         window_title: window_title.clone(),
         audio_sources: audio_sources.clone(),
@@ -576,10 +575,16 @@ fn normalize_date_range_refinement(
     range: SearchDateRangeRefinement,
 ) -> std::result::Result<(NormalizedDateRange, SearchDateRangeRefinement), SearchParseError> {
     let start = OffsetDateTime::parse(range.start_at.trim(), &Rfc3339).map_err(|_| {
-        whole_query_parse_error("bad_date", "date range start must be a valid RFC3339 timestamp")
+        whole_query_parse_error(
+            "bad_date",
+            "date range start must be a valid RFC3339 timestamp",
+        )
     })?;
     let end = OffsetDateTime::parse(range.end_at.trim(), &Rfc3339).map_err(|_| {
-        whole_query_parse_error("bad_date", "date range end must be a valid RFC3339 timestamp")
+        whole_query_parse_error(
+            "bad_date",
+            "date range end must be a valid RFC3339 timestamp",
+        )
     })?;
     if start > end {
         return Err(whole_query_parse_error(
@@ -1635,16 +1640,16 @@ fn split_field_operator(token: &QueryToken) -> Option<(String, String, bool)> {
     }
     let value_raw = &raw[colon + 1..];
     // Strip surrounding quotes on the value (e.g. app:"Google Chrome").
-    let (value, value_quoted) = if value_raw.starts_with('"') && value_raw.ends_with('"')
-        && value_raw.chars().count() >= 2
-    {
-        (
-            value_raw[1..value_raw.len() - 1].replace("\"\"", "\""),
-            true,
-        )
-    } else {
-        (value_raw.to_string(), false)
-    };
+    let (value, value_quoted) =
+        if value_raw.starts_with('"') && value_raw.ends_with('"') && value_raw.chars().count() >= 2
+        {
+            (
+                value_raw[1..value_raw.len() - 1].replace("\"\"", "\""),
+                true,
+            )
+        } else {
+            (value_raw.to_string(), false)
+        };
     Some((key.to_string(), value, value_quoted))
 }
 
@@ -2071,10 +2076,8 @@ fn resolve_point_date(value: &str, today: time::Date) -> Option<time::Date> {
         _ => {}
     }
 
-    if let Ok(date) = time::Date::parse(
-        value,
-        &time::format_description::well_known::Iso8601::DATE,
-    ) {
+    if let Ok(date) = time::Date::parse(value, &time::format_description::well_known::Iso8601::DATE)
+    {
         return Some(date);
     }
 
@@ -2111,10 +2114,8 @@ fn resolve_day_or_period(value: &str, today: time::Date) -> Option<(time::Date, 
         _ => {}
     }
 
-    if let Ok(date) = time::Date::parse(
-        value,
-        &time::format_description::well_known::Iso8601::DATE,
-    ) {
+    if let Ok(date) = time::Date::parse(value, &time::format_description::well_known::Iso8601::DATE)
+    {
         return Some((date, date));
     }
 
@@ -2131,27 +2132,21 @@ fn week_span(today: time::Date, week_offset: i64) -> (time::Date, time::Date) {
     let start = monday
         .checked_add(time::Duration::weeks(week_offset))
         .unwrap_or(monday);
-    let end = start
-        .checked_add(time::Duration::days(6))
-        .unwrap_or(start);
+    let end = start.checked_add(time::Duration::days(6)).unwrap_or(start);
     (start, end)
 }
 
 /// Returns the inclusive first..last day span for the month containing `today`,
 /// shifted by `month_offset` months.
 fn month_span(today: time::Date, month_offset: i64) -> (time::Date, time::Date) {
-    let (mut year, mut month_index) = (
-        today.year() as i64,
-        today.month() as i64 - 1 + month_offset,
-    );
+    let (mut year, mut month_index) =
+        (today.year() as i64, today.month() as i64 - 1 + month_offset);
     year += month_index.div_euclid(12);
     month_index = month_index.rem_euclid(12);
     let month = time::Month::try_from((month_index + 1) as u8).unwrap_or(time::Month::January);
-    let start =
-        time::Date::from_calendar_date(year as i32, month, 1).unwrap_or(today);
+    let start = time::Date::from_calendar_date(year as i32, month, 1).unwrap_or(today);
     let last_day = days_in_month(year as i32, month);
-    let end =
-        time::Date::from_calendar_date(year as i32, month, last_day).unwrap_or(start);
+    let end = time::Date::from_calendar_date(year as i32, month, last_day).unwrap_or(start);
     (start, end)
 }
 
@@ -2164,10 +2159,9 @@ fn days_in_month(year: i32, month: time::Month) -> u8 {
         | time::Month::August
         | time::Month::October
         | time::Month::December => 31,
-        time::Month::April
-        | time::Month::June
-        | time::Month::September
-        | time::Month::November => 30,
+        time::Month::April | time::Month::June | time::Month::September | time::Month::November => {
+            30
+        }
         time::Month::February => {
             if time::util::is_leap_year(year) {
                 29
@@ -2200,11 +2194,13 @@ fn local_offset_for_date(date: time::Date) -> UtcOffset {
         u32::from(date.day()),
     )
     .and_then(|local_date| local_date.and_hms_opt(0, 0, 0))
-    .and_then(|local_midnight| match Local.from_local_datetime(&local_midnight) {
-        LocalResult::Single(datetime) => Some(datetime.offset().fix().local_minus_utc()),
-        LocalResult::Ambiguous(earliest, _) => Some(earliest.offset().fix().local_minus_utc()),
-        LocalResult::None => None,
-    })
+    .and_then(
+        |local_midnight| match Local.from_local_datetime(&local_midnight) {
+            LocalResult::Single(datetime) => Some(datetime.offset().fix().local_minus_utc()),
+            LocalResult::Ambiguous(earliest, _) => Some(earliest.offset().fix().local_minus_utc()),
+            LocalResult::None => None,
+        },
+    )
     .and_then(|offset_seconds| UtcOffset::from_whole_seconds(offset_seconds).ok());
     resolved.unwrap_or_else(|| local_now_offset_datetime().offset())
 }
@@ -2381,9 +2377,8 @@ fn push_search_refinement_predicates(
                     query.push(")");
                 }
                 NormalizedAppRefinement::BundleId { value } => {
-                    query.push(
-                        "LOWER(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = LOWER(",
-                    );
+                    query
+                        .push("LOWER(TRIM(COALESCE(search_documents.app_bundle_id, ''))) = LOWER(");
                     query.push_bind(value.clone());
                     query.push(")");
                 }
@@ -3419,7 +3414,11 @@ mod tests {
                 .await
                 .expect("direct doc count should load")
             };
-            assert_eq!(direct_count().await, 2, "write path projects two direct docs");
+            assert_eq!(
+                direct_count().await,
+                2,
+                "write path projects two direct docs"
+            );
 
             // Drop the projection so the startup backfill must repair it.
             sqlx::query("DELETE FROM search_documents")
@@ -6409,10 +6408,7 @@ mod tests {
         let parsed = parse_search_query("app:Safari report");
         assert!(parsed.errors.is_empty());
         assert_eq!(parsed.apps.len(), 1);
-        assert!(matches!(
-            parsed.apps[0].kind,
-            SearchAppRefinementKind::Any
-        ));
+        assert!(matches!(parsed.apps[0].kind, SearchAppRefinementKind::Any));
         assert_eq!(parsed.apps[0].value, "Safari");
         assert_eq!(parsed.residual_query, "report");
         assert_eq!(parsed.fts_body, "\"report\"");
@@ -6424,10 +6420,7 @@ mod tests {
         assert!(quoted.errors.is_empty());
         assert_eq!(quoted.apps.len(), 1);
         assert_eq!(quoted.apps[0].value, "Google Chrome");
-        assert!(matches!(
-            quoted.apps[0].kind,
-            SearchAppRefinementKind::Any
-        ));
+        assert!(matches!(quoted.apps[0].kind, SearchAppRefinementKind::Any));
 
         // A reverse-DNS-looking value still works via the Any match kind because
         // a recognized `app:` value is never re-split as a field operator.
@@ -6435,10 +6428,7 @@ mod tests {
         assert!(bundle.errors.is_empty());
         assert_eq!(bundle.apps.len(), 1);
         assert_eq!(bundle.apps[0].value, "com.google.Chrome");
-        assert!(matches!(
-            bundle.apps[0].kind,
-            SearchAppRefinementKind::Any
-        ));
+        assert!(matches!(bundle.apps[0].kind, SearchAppRefinementKind::Any));
     }
 
     #[test]
@@ -6491,9 +6481,10 @@ mod tests {
         let parsed = parse_search_query("source:screen source:mic");
         assert!(parsed.errors.is_empty());
 
-        let errors = normalize_search_refinements(Some(merge_parsed_field_operators(None, &parsed)))
-            .expect("conflict should not throw")
-            .expect_err("screen + audio source should surface in-band parse errors");
+        let errors =
+            normalize_search_refinements(Some(merge_parsed_field_operators(None, &parsed)))
+                .expect("conflict should not throw")
+                .expect_err("screen + audio source should surface in-band parse errors");
         assert!(
             errors
                 .iter()
@@ -6541,7 +6532,9 @@ mod tests {
             );
             assert!(parsed.errors.is_empty(), "`{raw}` must not error");
             assert!(
-                parsed.residual_query.contains(raw.split(' ').next().unwrap()),
+                parsed
+                    .residual_query
+                    .contains(raw.split(' ').next().unwrap()),
                 "`{raw}` should remain in the residual body, got {:?}",
                 parsed.residual_query
             );
@@ -6764,9 +6757,9 @@ mod tests {
                 .expect("system segment should insert");
             for segment in [&mic, &system] {
                 let job = infra
-                    .enqueue_processing_job(
-                        &ProcessingJobDraft::for_audio_segment_transcription(segment.id),
-                    )
+                    .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                        segment.id,
+                    ))
                     .await
                     .expect("transcription job should enqueue");
                 complete_job(
@@ -6877,9 +6870,7 @@ mod tests {
                         refinements: None,
                     })
                     .await
-                    .unwrap_or_else(|error| {
-                        panic!("`{query}` should not throw, got {error:?}")
-                    });
+                    .unwrap_or_else(|error| panic!("`{query}` should not throw, got {error:?}"));
 
                 assert!(
                     response

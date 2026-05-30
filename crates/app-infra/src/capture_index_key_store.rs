@@ -9,6 +9,14 @@ use rand::RngCore;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::{GetLastError, ERROR_NOT_FOUND},
+    Security::Credentials::{
+        CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+    },
+};
+
 use crate::error::{AppInfraError, Result};
 
 pub(crate) const CAPTURE_INDEX_DATABASE_DIR_NAME: &str = "db";
@@ -168,7 +176,7 @@ impl CaptureIndexKeyStoreAdapter for PlatformKeychainCaptureIndexKeyStoreAdapter
 
     fn missing_key_error(&self, index_id: &str) -> AppInfraError {
         AppInfraError::CaptureIndexEncryption(format!(
-            "capture index key for {index_id} is missing from Keychain"
+            "capture index key for {index_id} is missing from the platform key store"
         ))
     }
 }
@@ -302,14 +310,115 @@ fn store_platform_key(index_id: &str, key: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn load_platform_key(index_id: &str) -> Result<Option<String>> {
+    let target = windows_credential_target(index_id);
+    let mut credential = std::ptr::null_mut::<CREDENTIALW>();
+
+    let ok = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
+    if ok == 0 {
+        let code = unsafe { GetLastError() };
+        if code == ERROR_NOT_FOUND {
+            return Ok(None);
+        }
+        return Err(AppInfraError::CaptureIndexEncryption(format!(
+            "Windows Credential Manager failed to read capture index key for {index_id}: error {code}"
+        )));
+    }
+
+    if credential.is_null() {
+        return Ok(None);
+    }
+    let _guard = WindowsCredentialGuard(credential);
+    let credential = unsafe { &*credential };
+    if credential.CredentialBlobSize == 0 {
+        return Ok(None);
+    }
+    if credential.CredentialBlob.is_null() {
+        return Err(AppInfraError::CaptureIndexEncryption(format!(
+            "Windows Credential Manager returned an empty capture index key blob for {index_id}"
+        )));
+    }
+
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            credential.CredentialBlob,
+            credential.CredentialBlobSize as usize,
+        )
+    };
+    let key = std::str::from_utf8(bytes)
+        .map_err(|error| {
+            AppInfraError::CaptureIndexEncryption(format!(
+                "Windows Credential Manager returned a non-UTF-8 capture index key for {index_id}: {error}"
+            ))
+        })?
+        .trim()
+        .to_string();
+    if key.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(key))
+}
+
+#[cfg(target_os = "windows")]
+fn store_platform_key(index_id: &str, key: &str) -> Result<()> {
+    let mut target = windows_credential_target(index_id);
+    let mut user_name = windows_credential_user_name();
+    let mut key_bytes = key.as_bytes().to_vec();
+
+    let mut credential = CREDENTIALW::default();
+    credential.Type = CRED_TYPE_GENERIC;
+    credential.TargetName = target.as_mut_ptr();
+    credential.CredentialBlobSize = key_bytes.len().try_into().map_err(|_| {
+        AppInfraError::CaptureIndexEncryption("capture index key is too large".to_string())
+    })?;
+    credential.CredentialBlob = key_bytes.as_mut_ptr();
+    credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    credential.UserName = user_name.as_mut_ptr();
+
+    let ok = unsafe { CredWriteW(&credential, 0) };
+    if ok == 0 {
+        let code = unsafe { GetLastError() };
+        return Err(AppInfraError::CaptureIndexEncryption(format!(
+            "Windows Credential Manager failed to store capture index key for {index_id}: error {code}"
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsCredentialGuard(*mut CREDENTIALW);
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsCredentialGuard {
+    fn drop(&mut self) {
+        unsafe { CredFree(self.0.cast()) };
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_credential_target(index_id: &str) -> Vec<u16> {
+    format!("{KEYCHAIN_SERVICE}:{index_id}")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_credential_user_name() -> Vec<u16> {
+    APP_ID.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn load_platform_key(_index_id: &str) -> Result<Option<String>> {
     Err(AppInfraError::CaptureIndexEncryption(
         "capture index key store is unsupported on this platform".to_string(),
     ))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn store_platform_key(_index_id: &str, _key: &str) -> Result<()> {
     Err(AppInfraError::CaptureIndexEncryption(
         "capture index key store is unsupported on this platform".to_string(),
