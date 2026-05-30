@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use capture_types::{CapturePermissionState, CaptureOutputFiles, ScreenResolution};
 use windows::core::{IInspectable, Interface, Result as WinResult, GUID, HSTRING, PCWSTR};
@@ -43,7 +44,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ,
     D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::{MonitorFromPoint, HMONITOR, MONITOR_DEFAULTTOPRIMARY};
 use windows::Win32::Media::MediaFoundation::{
@@ -494,6 +495,10 @@ struct CaptureEngine {
     timeline: SegmentTimeline,
     last_kept_ticks: Option<i64>,
     nv12: Vec<u8>,
+    /// Wall-clock start of the current segment, used to extend the encoded
+    /// duration to match real time when the screen is mostly static (so a
+    /// 60s segment is a 60s `.mp4`, not a single 33ms frame).
+    segment_start: Instant,
     logged_size_mismatch: bool,
     closed: bool,
 }
@@ -598,6 +603,7 @@ impl CaptureEngine {
                 timeline: SegmentTimeline::new(),
                 last_kept_ticks: None,
                 nv12: vec![0u8; (width as usize) * (height as usize) * 3 / 2],
+                segment_start: Instant::now(),
                 logged_size_mismatch: false,
                 closed: false,
             })
@@ -659,7 +665,7 @@ impl CaptureEngine {
         texture: &ID3D11Texture2D,
         relative_ticks: i64,
     ) -> Result<(), CaptureErrorResponse> {
-        self.ensure_staging()?;
+        self.ensure_staging(texture)?;
         let staging = self
             .staging
             .as_ref()
@@ -675,7 +681,7 @@ impl CaptureEngine {
                 .map_err(|e| win_error("ID3D11DeviceContext.Map failed", &e))?;
 
             // SAFETY: `mapped.pData` points to at least height*RowPitch bytes of
-            // BGRA data; we only read within those bounds.
+            // BGRA data; we only read the even-rounded sub-region within bounds.
             bgra_to_nv12(
                 mapped.pData as *const u8,
                 mapped.RowPitch as usize,
@@ -702,25 +708,29 @@ impl CaptureEngine {
         Ok(())
     }
 
-    fn ensure_staging(&mut self) -> Result<(), CaptureErrorResponse> {
+    /// Lazily create the CPU-readable staging texture.
+    ///
+    /// Its dimensions and format are taken from the **source** frame texture, not
+    /// the (even-rounded) encoder dimensions: `CopyResource` requires both
+    /// resources to be identical in size/format, and the captured surface height
+    /// can be odd (e.g. 2039). The even-rounded `self.width`/`self.height` are
+    /// used only when reading the mapped sub-region for NV12 conversion.
+    fn ensure_staging(&mut self, source: &ID3D11Texture2D) -> Result<(), CaptureErrorResponse> {
         if self.staging.is_some() {
             return Ok(());
         }
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: self.width,
-            Height: self.height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_STAGING,
-            BindFlags: 0,
-            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-            MiscFlags: 0,
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { source.GetDesc(&mut desc) };
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.SampleDesc = DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
         };
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+        desc.MiscFlags = 0;
         let mut staging: Option<ID3D11Texture2D> = None;
         unsafe {
             self.device
@@ -737,9 +747,41 @@ impl CaptureEngine {
         Ok(())
     }
 
+    /// Re-emit the last captured frame at the segment's elapsed wall-clock time
+    /// so the encoded video spans the real recording duration.
+    ///
+    /// Capture is change-driven: a static screen may produce a single frame at
+    /// t=0, which would otherwise yield a ~33ms `.mp4` for a 60s segment. By
+    /// writing the last frame again at `elapsed`, the prior frame's display
+    /// duration stretches to fill the segment. No-op when nothing was captured
+    /// or the stream already spans the elapsed time.
+    fn extend_segment_to_elapsed(&mut self) -> Result<(), CaptureErrorResponse> {
+        let Some(last) = self.last_kept_ticks else {
+            return Ok(());
+        };
+        let Some(writer) = self.writer.as_ref() else {
+            return Ok(());
+        };
+        let elapsed_ticks = (self.segment_start.elapsed().as_nanos() / 100) as i64;
+        let duration = frame_duration_ticks(self.frame_rate);
+        if elapsed_ticks <= last + duration {
+            return Ok(());
+        }
+        write_nv12_sample(
+            &writer.writer,
+            writer.stream_index,
+            &self.nv12,
+            elapsed_ticks,
+            duration,
+        )?;
+        self.last_kept_ticks = Some(elapsed_ticks);
+        Ok(())
+    }
+
     fn rotate(&mut self, output_path: &Path) -> Result<(), CaptureErrorResponse> {
-        // Finalize the segment that just closed so it is playable before the
-        // runtime is told the new segment has opened.
+        // Stretch the closing segment to its real duration, then finalize it so
+        // it is playable before the runtime is told the new segment has opened.
+        self.extend_segment_to_elapsed()?;
         if let Some(writer) = self.writer.take() {
             unsafe {
                 writer
@@ -759,11 +801,13 @@ impl CaptureEngine {
         self.writer = Some(writer);
         self.timeline.reset();
         self.last_kept_ticks = None;
+        self.segment_start = Instant::now();
         Ok(())
     }
 
     fn stop(&mut self) -> Result<(), CaptureErrorResponse> {
         self.teardown_capture();
+        self.extend_segment_to_elapsed()?;
         if let Some(writer) = self.writer.take() {
             unsafe {
                 writer
@@ -789,6 +833,7 @@ impl CaptureEngine {
     /// sender was dropped). Finalizes any open writer so the file is playable.
     fn shutdown(&mut self) {
         self.teardown_capture();
+        let _ = self.extend_segment_to_elapsed();
         if let Some(writer) = self.writer.take() {
             unsafe {
                 let _ = writer.writer.Finalize();
