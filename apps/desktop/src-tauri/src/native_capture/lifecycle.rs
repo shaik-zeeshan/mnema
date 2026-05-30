@@ -1,12 +1,10 @@
 use super::activity::current_activity_snapshot;
+use super::output::append_committed_segment_output_files;
+#[cfg(target_os = "macos")]
+use super::output::{cleanup_unusable_segment_artifacts, finalize_capture_outputs};
 use super::output::{
     set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file,
-};
-#[cfg(target_os = "macos")]
-use super::output::{
-    append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
-    finalize_capture_outputs,
 };
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
@@ -18,19 +16,22 @@ use super::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
     stopped_session_from_runtime, NativeCaptureRuntime,
 };
-use super::segments::{empty_output_files, start_capture_runtime, stop_capture_runtime};
 #[cfg(target_os = "macos")]
 use super::segments::{
-    apply_microphone_output_finalization, cleanup_failed_segment_dirs, create_segment_output_dirs,
-    handle_inactivity_resume_error, pause_microphone_for_inactivity_with_app_handle,
-    pause_runtime_for_inactivity_with_app_handle, pause_screen_for_inactivity_with_app_handle,
-    pause_system_audio_for_inactivity_with_app_handle, plan_live_rotation_segment,
-    reanchor_active_segment_timing, recover_from_segment_finalize_error,
-    recover_screen_capture_after_wake, resume_microphone_from_inactivity,
-    resume_runtime_from_inactivity, resume_screen_from_inactivity,
-    resume_system_audio_from_inactivity, start_segment_with_current_privacy_filter,
-    stop_active_sessions_after_failure,
+    apply_microphone_output_finalization, handle_inactivity_resume_error,
+    pause_microphone_for_inactivity_with_app_handle, pause_runtime_for_inactivity_with_app_handle,
+    pause_screen_for_inactivity_with_app_handle, pause_system_audio_for_inactivity_with_app_handle,
+    recover_from_segment_finalize_error, recover_screen_capture_after_wake,
+    resume_microphone_from_inactivity, resume_runtime_from_inactivity,
+    resume_screen_from_inactivity, resume_system_audio_from_inactivity,
+    start_segment_with_current_privacy_filter,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use super::segments::{
+    cleanup_failed_segment_dirs, create_segment_output_dirs, plan_live_rotation_segment,
+    reanchor_active_segment_timing, stop_active_sessions_after_failure,
+};
+use super::segments::{empty_output_files, start_capture_runtime, stop_capture_runtime};
 use capture_runtime::RuntimeSignal;
 use capture_types::{
     CaptureErrorResponse, CaptureSources, NativeCaptureSession, RecordingSettings,
@@ -540,8 +541,11 @@ impl RecordingLifecycle {
         TickOutcome::Continue
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) fn tick_rotation(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
+        #[cfg(target_os = "windows")]
+        let _ = app_handle;
+
         refresh_runtime_planner_dates(&mut self.runtime);
 
         let mut previous_segment_output_files = self.runtime.current_segment_output_files.clone();
@@ -567,6 +571,7 @@ impl RecordingLifecycle {
             mark_runtime_session_failed(&mut self.runtime);
             return TickOutcome::StopLoop;
         };
+        #[cfg(target_os = "macos")]
         let active_sources = if self.runtime.privacy_capture_suspension.is_some() {
             current_segment_sources_for_runtime(&self.runtime)
         } else {
@@ -582,6 +587,10 @@ impl RecordingLifecycle {
             microphone: false,
             system_audio: false,
         });
+        #[cfg(target_os = "windows")]
+        let active_sources = current_segment_sources_for_runtime(&self.runtime).unwrap_or(sources);
+
+        #[cfg(target_os = "macos")]
         let system_audio_planner = if active_sources.system_audio {
             match ensure_system_audio_planner_for_runtime(&mut self.runtime, "rotating segments") {
                 Ok(planner) => planner,
@@ -597,6 +606,8 @@ impl RecordingLifecycle {
         } else {
             system_audio_planner_for_runtime(&self.runtime).cloned()
         };
+        #[cfg(target_os = "windows")]
+        let system_audio_planner = system_audio_planner_for_runtime(&self.runtime).cloned();
 
         let Some(planned_rotation) = plan_live_rotation_segment(
             &self.runtime,
@@ -640,6 +651,7 @@ impl RecordingLifecycle {
         let mut next_recording_file = self.runtime.recording_file.clone();
         let mut next_microphone_recording_file = self.runtime.microphone_recording_file.clone();
         let mut next_system_audio_recording_file = self.runtime.system_audio_recording_file.clone();
+        #[cfg(target_os = "macos")]
         let mut legacy_rotated = false;
 
         if active_sources.screen || active_sources.system_audio {
@@ -663,6 +675,7 @@ impl RecordingLifecycle {
                     next_recording_file = Some(rotated.recording_file);
                     next_system_audio_recording_file = rotated.system_audio_recording_file;
                 }
+                #[cfg(target_os = "macos")]
                 Err(error) if error.code == "capture_rotation_requires_restart" => {
                     legacy_rotated = true;
                 }
@@ -679,6 +692,7 @@ impl RecordingLifecycle {
             }
         }
 
+        #[cfg(target_os = "macos")]
         if legacy_rotated {
             if capture_screen::stop_screen_capture_session(
                 capture_screen::StopScreenCaptureSessionArgs {
@@ -788,7 +802,10 @@ impl RecordingLifecycle {
                     next_microphone_recording_file = Some(microphone_output_file);
                 }
             }
-        } else if active_sources.microphone {
+        }
+
+        #[cfg(target_os = "macos")]
+        if !legacy_rotated && active_sources.microphone {
             if let Some(session) = self.runtime.active_microphone_session.as_mut() {
                 let microphone_output_file = microphone_planner
                     .as_ref()
@@ -832,10 +849,12 @@ impl RecordingLifecycle {
             }
         }
 
+        #[cfg(target_os = "macos")]
         if let Some(tx) = self.runtime.frame_artifact_tx.as_ref() {
             super::segments::flush_frame_artifacts(tx);
         }
 
+        #[cfg(target_os = "macos")]
         let previous_segment_committed = match finalize_capture_outputs(
             previous_segment_output_files.as_mut(),
             recording_file.as_deref(),
@@ -879,6 +898,8 @@ impl RecordingLifecycle {
                 return TickOutcome::StopLoop;
             }
         };
+        #[cfg(target_os = "windows")]
+        let previous_segment_committed = true;
 
         if previous_segment_committed {
             if let (Some(committed), Some(segment)) = (
@@ -887,6 +908,7 @@ impl RecordingLifecycle {
             ) {
                 append_committed_segment_output_files(committed, segment);
             }
+            #[cfg(target_os = "macos")]
             super::segments::persist_committed_audio_segments(
                 Some(app_handle),
                 self.runtime.source_sessions.as_ref(),
@@ -894,6 +916,7 @@ impl RecordingLifecycle {
                 self.runtime.current_segment_index,
                 previous_segment_output_files.as_ref(),
             );
+            #[cfg(target_os = "macos")]
             super::segments::warm_scrub_previews_for_committed_screen_outputs(
                 Some(app_handle),
                 previous_segment_output_files.as_ref(),
@@ -902,12 +925,19 @@ impl RecordingLifecycle {
 
         self.runtime.current_segment_index = next_index;
         self.runtime.current_segment_output_files = Some(next_segment_outputs);
-        self.runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
-            &active_sources,
-            self.runtime.inactivity.screen_paused,
-            self.runtime.inactivity.microphone_paused,
-            self.runtime.inactivity.system_audio_paused,
-        );
+        #[cfg(target_os = "macos")]
+        {
+            self.runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
+                &active_sources,
+                self.runtime.inactivity.screen_paused,
+                self.runtime.inactivity.microphone_paused,
+                self.runtime.inactivity.system_audio_paused,
+            );
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.runtime.current_segment_sources = Some(active_sources);
+        }
         self.runtime.recording_file = next_recording_file;
         self.runtime.microphone_recording_file = next_microphone_recording_file;
         self.runtime.system_audio_recording_file = next_system_audio_recording_file;

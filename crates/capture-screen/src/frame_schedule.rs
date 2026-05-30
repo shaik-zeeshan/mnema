@@ -48,6 +48,35 @@ pub fn should_drop_frame(
     }
 }
 
+/// Duration for a sample once the following kept frame is known.
+///
+/// Media Foundation timestamps are segment-relative. With one-frame lookahead,
+/// the current sample lasts until the next kept sample time. Out-of-order or
+/// duplicate timestamps fall back to the nominal frame duration so callers do
+/// not write zero/negative durations.
+pub fn lookahead_sample_duration_ticks(
+    sample_ticks: i64,
+    next_sample_ticks: i64,
+    fallback_duration_ticks: i64,
+) -> i64 {
+    (next_sample_ticks - sample_ticks).max(fallback_duration_ticks.max(1))
+}
+
+/// Duration for the held final sample when a segment is closed at a known
+/// boundary.
+///
+/// The duration is clamped so the sample does not extend past the segment
+/// boundary. If the held sample is already at or beyond the boundary, there is
+/// no positive-duration sample to write.
+pub fn boundary_clamped_lookahead_duration_ticks(
+    sample_ticks: i64,
+    boundary_ticks: i64,
+) -> Option<i64> {
+    (boundary_ticks - sample_ticks)
+        .checked_sub(0)
+        .filter(|duration| *duration > 0)
+}
+
 /// Rebases absolute capture timestamps so each segment's first kept frame starts
 /// at tick zero.
 ///
@@ -112,13 +141,21 @@ mod tests {
     fn sub_interval_frame_is_dropped() {
         let interval = frame_cap_min_interval_ticks(30);
         // Arrives only half an interval after the last kept frame.
-        assert!(should_drop_frame(Some(1_000_000), 1_000_000 + interval / 2, interval));
+        assert!(should_drop_frame(
+            Some(1_000_000),
+            1_000_000 + interval / 2,
+            interval
+        ));
     }
 
     #[test]
     fn frame_at_or_above_interval_is_kept() {
         let interval = frame_cap_min_interval_ticks(30);
-        assert!(!should_drop_frame(Some(1_000_000), 1_000_000 + interval, interval));
+        assert!(!should_drop_frame(
+            Some(1_000_000),
+            1_000_000 + interval,
+            interval
+        ));
         assert!(!should_drop_frame(
             Some(1_000_000),
             1_000_000 + interval + 1,
@@ -153,5 +190,42 @@ mod tests {
         // The next segment rebaselines from its own first frame.
         assert_eq!(timeline.relative_ticks(20_000_000), 0);
         assert_eq!(timeline.relative_ticks(21_000_000), 1_000_000);
+    }
+
+    #[test]
+    fn lookahead_duration_uses_next_frame_delta() {
+        assert_eq!(
+            lookahead_sample_duration_ticks(1_000_000, 1_400_000, frame_cap_min_interval_ticks(30)),
+            400_000
+        );
+    }
+
+    #[test]
+    fn lookahead_duration_falls_back_for_non_increasing_timestamps() {
+        let fallback = frame_cap_min_interval_ticks(30);
+        assert_eq!(
+            lookahead_sample_duration_ticks(1_000_000, 1_000_000, fallback),
+            fallback
+        );
+        assert_eq!(
+            lookahead_sample_duration_ticks(1_000_000, 900_000, fallback),
+            fallback
+        );
+    }
+
+    #[test]
+    fn boundary_clamped_lookahead_duration_stops_at_segment_boundary() {
+        assert_eq!(
+            boundary_clamped_lookahead_duration_ticks(59_900_000, 60_000_000),
+            Some(100_000)
+        );
+        assert_eq!(
+            boundary_clamped_lookahead_duration_ticks(60_000_000, 60_000_000),
+            None
+        );
+        assert_eq!(
+            boundary_clamped_lookahead_duration_ticks(60_100_000, 60_000_000),
+            None
+        );
     }
 }

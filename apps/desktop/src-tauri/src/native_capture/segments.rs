@@ -1,12 +1,9 @@
 use super::output::{
-    set_current_microphone_output_file, set_current_screen_output_file,
-    set_current_system_audio_output_file,
+    append_committed_segment_output_files, set_current_microphone_output_file,
+    set_current_screen_output_file, set_current_system_audio_output_file,
 };
 #[cfg(target_os = "macos")]
-use super::output::{
-    append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
-    finalize_capture_outputs,
-};
+use super::output::{cleanup_unusable_segment_artifacts, finalize_capture_outputs};
 use super::settings::compute_effective_screen_bitrate_bps;
 use super::{metadata, privacy};
 use capture_microphone as microphone_capture;
@@ -232,12 +229,15 @@ pub(super) fn flush_frame_artifacts(frame_artifact_tx: &mpsc::Sender<FrameArtifa
     let _ = response_rx.recv_timeout(Duration::from_secs(30));
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn stop_active_sessions_after_failure(runtime: &mut NativeCaptureRuntime) {
-    if let Some(session) = runtime.active_microphone_session.as_mut() {
-        let _ = session.stop();
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(session) = runtime.active_microphone_session.as_mut() {
+            let _ = session.stop();
+        }
+        runtime.active_microphone_session = None;
     }
-    runtime.active_microphone_session = None;
 
     let _ = capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
         active_session: &mut runtime.active_screen_session,
@@ -245,7 +245,7 @@ pub(super) fn stop_active_sessions_after_failure(runtime: &mut NativeCaptureRunt
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn cleanup_failed_segment_dirs(
     segment_dir: &Path,
     microphone_audio_dir: Option<&Path>,
@@ -286,7 +286,7 @@ fn cleanup_failed_audio_outputs(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn create_segment_output_dirs(
     segment_dir: &Path,
     microphone_audio_dir: Option<&Path>,
@@ -670,7 +670,7 @@ pub(super) struct PlannedSegmentRotation {
     pub(super) system_audio_output_path: Option<PathBuf>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn plan_live_rotation_segment(
     runtime: &NativeCaptureRuntime,
     sources: &CaptureSources,
@@ -3582,8 +3582,10 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                             < DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL;
                     if !throttle_display_recovery {
                         last_suspension_recovery_attempt = Instant::now();
-                        match attempt_privacy_suspension_recovery(&app_handle, runtime.runtime_mut())
-                        {
+                        match attempt_privacy_suspension_recovery(
+                            &app_handle,
+                            runtime.runtime_mut(),
+                        ) {
                             PrivacySuspensionRecoveryOutcome::Recovered => {
                                 super::debug_log::log(
                                     "screen/system-audio capture recovered; restarted after suspension",
@@ -3697,6 +3699,78 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
         // else announces it, so the frontend and the native status-bar tray would
         // otherwise keep showing a running session (e.g. "Stop Recording") that no
         // longer exists. Broadcast the real state so both surfaces resync.
+        if !worker_control.stop.load(Ordering::Relaxed) {
+            let session = app_handle
+                .state::<NativeCaptureState>()
+                .lock()
+                .ok()
+                .map(|runtime| runtime.session());
+            if let Some(session) = session {
+                if !session.is_running {
+                    super::emit_native_capture_session_changed(&app_handle, &session);
+                    crate::status_bar::refresh(&app_handle);
+                }
+            }
+        }
+    });
+
+    control
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
+    let control = SegmentLoopControl::new();
+    let worker_control = control.clone();
+
+    thread::spawn(move || {
+        loop {
+            let sleep_duration = {
+                let capture_state = app_handle.state::<NativeCaptureState>();
+                let runtime = match capture_state.lock() {
+                    Ok(runtime) => runtime,
+                    Err(_) => break,
+                };
+                let runtime = runtime.runtime();
+
+                if !runtime.is_running {
+                    break;
+                }
+
+                let Some(schedule) = runtime.segment_schedule.as_ref() else {
+                    break;
+                };
+                let Some(clock) = runtime.capture_clock.as_ref() else {
+                    break;
+                };
+
+                segment_loop_sleep_duration(schedule, clock)
+            };
+
+            if !sleep_duration.is_zero() {
+                worker_control.wait_timeout(sleep_duration);
+            }
+
+            if worker_control.stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let capture_state = app_handle.state::<NativeCaptureState>();
+            let mut runtime = match capture_state.lock() {
+                Ok(runtime) => runtime,
+                Err(_) => break,
+            };
+
+            if !runtime.runtime().is_running || worker_control.stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            match runtime.tick_rotation(&app_handle) {
+                TickOutcome::Continue => {}
+                TickOutcome::SkipRotation => continue,
+                TickOutcome::StopLoop => break,
+            }
+        }
+
         if !worker_control.stop.load(Ordering::Relaxed) {
             let session = app_handle
                 .state::<NativeCaptureState>()
@@ -4198,7 +4272,98 @@ pub(super) fn start_capture_runtime(
             Ok(())
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            if sources.microphone || sources.system_audio {
+                return Err(CaptureErrorResponse {
+                    code: "unsupported_platform".to_string(),
+                    message: "Windows native capture currently supports screen recording only"
+                        .to_string(),
+                });
+            }
+
+            let started = now_unix_ms();
+            let session_id = prefixed_capture_id("screen")?;
+            let recordings_root =
+                crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+                    &settings.save_directory,
+                )
+                .recordings_root();
+            let segment_planner = SegmentPlanner::new(
+                recordings_root.to_string_lossy().to_string(),
+                session_id.clone(),
+            );
+            let segment_schedule =
+                SegmentSchedule::new(Duration::from_secs(settings.segment_duration_seconds));
+            let capture_clock = CaptureClock::start_now();
+            std::fs::create_dir_all(&recordings_root).map_err(|error| CaptureErrorResponse {
+                code: "io_error".to_string(),
+                message: format!("Failed to create capture recordings directory: {error}"),
+            })?;
+
+            let segment_index = 1;
+            let first_segment_dir = segment_planner.segment_dir(segment_index);
+            let first_screen_output_file = segment_planner.segment_screen_output(segment_index);
+            let effective_screen_bitrate_bps = compute_effective_screen_bitrate_bps(settings);
+            create_segment_output_dirs(&first_segment_dir, None, None, &sources)?;
+
+            let screen_sources = capture_screen::ScreenCaptureSources {
+                screen: sources.screen,
+                system_audio: false,
+            };
+            let screen_capture = capture_screen::start_capture_session_with_options(
+                &first_segment_dir,
+                Some(&first_screen_output_file),
+                None,
+                &screen_sources,
+                settings.screen_frame_rate,
+                &settings.screen_resolution,
+                effective_screen_bitrate_bps,
+                capture_screen::ScreenCaptureSessionOptions::default(),
+            )?;
+
+            let mut segment_outputs = empty_output_files();
+            if let Some(screen_file) = screen_capture.output_files.screen_file {
+                set_current_screen_output_file(&mut segment_outputs, screen_file);
+            }
+
+            let source_sessions = SourceSessions {
+                screen: sources.screen.then(|| SourceSessionMeta {
+                    session_id,
+                    started_at_unix_ms: started,
+                }),
+                microphone: None,
+                system_audio: None,
+            };
+            let segment_loop_control = spawn_segment_loop(app_handle.clone());
+
+            runtime.is_running = true;
+            runtime.source_sessions = Some(source_sessions);
+            runtime.requested_sources = Some(sources.clone());
+            runtime.current_segment_sources = Some(sources);
+            runtime.output_files = Some(empty_output_files());
+            runtime.current_segment_output_files = Some(segment_outputs);
+            runtime.current_segment_index = segment_index;
+            runtime.screen_frame_rate = settings.screen_frame_rate;
+            runtime.screen_resolution = settings.screen_resolution.clone();
+            runtime.effective_screen_bitrate_bps = effective_screen_bitrate_bps;
+            runtime.microphone_device_id_for_capture = microphone_device_id_for_capture;
+            runtime.segment_loop_control = Some(segment_loop_control);
+            runtime.capture_clock = Some(capture_clock);
+            runtime.segment_schedule = Some(segment_schedule);
+            runtime.segment_planner = Some(segment_planner);
+            runtime.microphone_planner = None;
+            runtime.system_audio_planner = None;
+            runtime.frame_artifact_tx = None;
+            runtime.recording_file = Some(screen_capture.recording_file);
+            runtime.microphone_recording_file = None;
+            runtime.system_audio_recording_file = None;
+            runtime.active_screen_session = Some(Box::new(screen_capture.session));
+            apply_runtime_signal(runtime, RuntimeSignal::SourcesReady)?;
+            Ok(())
+        }
+
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
         {
             let _ = sources;
             let _ = microphone_device_id_for_capture;
@@ -4335,7 +4500,32 @@ pub(super) fn stop_capture_runtime(
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app_handle;
+        if runtime.is_running {
+            apply_runtime_signal(runtime, RuntimeSignal::StopRequested)?;
+        }
+
+        capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
+            active_session: &mut runtime.active_screen_session,
+            inactivity_tail_trim_seconds: 0,
+        })?;
+
+        if let (Some(committed), Some(segment)) = (
+            runtime.output_files.as_mut(),
+            runtime.current_segment_output_files.as_ref(),
+        ) {
+            append_committed_segment_output_files(committed, segment);
+        }
+
+        if runtime.runtime_state == RuntimeState::Stopping {
+            apply_runtime_signal(runtime, RuntimeSignal::SourcesStopped)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         let _ = runtime;
         let _ = app_handle;
@@ -4409,8 +4599,8 @@ mod scheduling_tests {
 mod screen_capture_session_seam_tests {
     use super::empty_output_files;
     use capture_screen::{
-        rotate_screen_capture_session, screen_capture_session_is_live,
-        stop_screen_capture_session, take_screen_capture_session_stop_error, RotateScreenCaptureSessionArgs,
+        rotate_screen_capture_session, screen_capture_session_is_live, stop_screen_capture_session,
+        take_screen_capture_session_stop_error, RotateScreenCaptureSessionArgs,
         RotatedCaptureOutputs, ScreenCaptureSession, StopScreenCaptureSessionArgs,
     };
     use capture_types::CaptureErrorResponse;
@@ -4564,10 +4754,15 @@ mod screen_capture_session_seam_tests {
 
     #[test]
     fn stop_error_is_drained_once() {
-        let mut session = boxed(FakeScreenCaptureSession::with_pending_stop_error("fake_delegate"));
+        let mut session = boxed(FakeScreenCaptureSession::with_pending_stop_error(
+            "fake_delegate",
+        ));
 
         let first = take_screen_capture_session_stop_error(session.as_mut());
-        assert_eq!(first.map(|error| error.code), Some("fake_delegate".to_string()));
+        assert_eq!(
+            first.map(|error| error.code),
+            Some("fake_delegate".to_string())
+        );
 
         let second = take_screen_capture_session_stop_error(session.as_mut());
         assert!(second.is_none(), "the stop error is cleared after draining");

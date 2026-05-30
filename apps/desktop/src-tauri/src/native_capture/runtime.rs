@@ -111,7 +111,7 @@ pub struct NativeCaptureRuntime {
     pub requested_sources: Option<CaptureSources>,
     pub current_segment_sources: Option<CaptureSources>,
     pub output_files: Option<CaptureOutputFiles>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub current_segment_output_files: Option<CaptureOutputFiles>,
     pub current_segment_index: u64,
     pub screen_frame_rate: u32,
@@ -138,11 +138,11 @@ pub struct NativeCaptureRuntime {
     pub microphone_vad: MicrophoneVadRuntime,
     /// Per-source session metadata. Populated when a recording starts, cleared on reset.
     pub source_sessions: Option<SourceSessions>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub recording_file: Option<String>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub microphone_recording_file: Option<String>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub system_audio_recording_file: Option<String>,
     /// The live screen capture session behind the cross-platform
     /// [`capture_screen::ScreenCaptureSession`] seam. Populated only when a

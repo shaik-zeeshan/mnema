@@ -497,7 +497,7 @@ pub(crate) fn finalize_capture_outputs(
     capture_writers::aggregate_output_processing_failures(failures)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn append_output_file(current_file: &mut Option<String>, files: &mut Vec<String>, file: &str) {
     let file = file.to_string();
     *current_file = Some(file.clone());
@@ -506,7 +506,7 @@ fn append_output_file(current_file: &mut Option<String>, files: &mut Vec<String>
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn append_committed_segment_output_files(
     committed: &mut CaptureOutputFiles,
     segment: &CaptureOutputFiles,
@@ -623,7 +623,9 @@ mod tests {
         let frames: u32 = 24_000; // 0.5s @ 48kHz — comfortably positive duration.
         let mut buffer = av::AudioPcmBuf::with_format(&processing_format, frames)
             .expect("test audio buffer should allocate");
-        buffer.set_frame_len(frames).expect("frame length should set");
+        buffer
+            .set_frame_len(frames)
+            .expect("frame length should set");
         if let Some(samples) = buffer.data_f32_mut_at(0) {
             for (index, sample) in samples.iter_mut().enumerate() {
                 *sample = ((index as f32) * 0.05).sin() * 0.1;

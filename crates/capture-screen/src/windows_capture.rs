@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use capture_types::{CapturePermissionState, CaptureOutputFiles, ScreenResolution};
+use capture_types::{CaptureOutputFiles, CapturePermissionState, ScreenResolution};
 use windows::core::{IInspectable, Interface, Result as WinResult, GUID, HSTRING, PCWSTR};
 use windows::Foundation::Metadata::ApiInformation;
 use windows::Foundation::TypedEventHandler;
@@ -40,30 +40,35 @@ use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ,
-    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::{MonitorFromPoint, HMONITOR, MONITOR_DEFAULTTOPRIMARY};
 use windows::Win32::Media::MediaFoundation::{
     IMFMediaBuffer, IMFSample, IMFSinkWriter, MFCreateMediaType, MFCreateMemoryBuffer,
-    MFCreateSample, MFCreateSinkWriterFromURL, MFShutdown, MFStartup, MFMediaType_Video,
-    MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MF_MT_AVG_BITRATE,
-    MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_VERSION, MFSTARTUP_FULL,
+    MFCreateSample, MFCreateSinkWriterFromURL, MFMediaType_Video, MFShutdown, MFStartup,
+    MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFSTARTUP_FULL,
+    MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
+    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_VERSION,
 };
-use windows::Win32::System::Com::{CoCreateGuid, CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{
+    CoCreateGuid, CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED,
+};
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 
-use crate::frame_schedule::{frame_cap_min_interval_ticks, should_drop_frame, SegmentTimeline};
+use crate::frame_schedule::{
+    boundary_clamped_lookahead_duration_ticks, frame_cap_min_interval_ticks,
+    lookahead_sample_duration_ticks, should_drop_frame, SegmentTimeline,
+};
 use crate::{
-    PrivacyFilterApplyOutcome, RotatedCaptureOutputs, ScreenCaptureSession, ScreenCaptureSources,
-    ScreenCaptureSessionOptions, StartedCaptureSession,
+    PrivacyFilterApplyOutcome, RotatedCaptureOutputs, ScreenCaptureSession,
+    ScreenCaptureSessionOptions, ScreenCaptureSources, StartedCaptureSession,
 };
 use capture_types::CaptureErrorResponse;
 
@@ -217,12 +222,14 @@ impl ScreenCaptureSession for ActiveCaptureSession {
         screen_output_file: Option<&Path>,
         _system_audio_output_path: Option<&Path>,
     ) -> Result<RotatedCaptureOutputs, CaptureErrorResponse> {
-        let output_path = screen_output_file.map(Path::to_path_buf).unwrap_or_else(|| {
-            segment_dir.join(format!(
-                "screen.{}",
-                capture_runtime::screen_segment_extension()
-            ))
-        });
+        let output_path = screen_output_file
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| {
+                segment_dir.join(format!(
+                    "screen.{}",
+                    capture_runtime::screen_segment_extension()
+                ))
+            });
 
         if let Some(parent) = output_path.parent() {
             create_dir(parent)?;
@@ -314,12 +321,14 @@ pub fn start_capture_session_with_options(
     }
 
     create_dir(session_dir)?;
-    let output_path = screen_output_file.map(Path::to_path_buf).unwrap_or_else(|| {
-        session_dir.join(format!(
-            "screen.{}",
-            capture_runtime::screen_segment_extension()
-        ))
-    });
+    let output_path = screen_output_file
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            session_dir.join(format!(
+                "screen.{}",
+                capture_runtime::screen_segment_extension()
+            ))
+        });
     if let Some(parent) = output_path.parent() {
         create_dir(parent)?;
     }
@@ -494,6 +503,7 @@ struct CaptureEngine {
     min_interval_ticks: i64,
     timeline: SegmentTimeline,
     last_kept_ticks: Option<i64>,
+    pending_frame: Option<PendingEncodedFrame>,
     nv12: Vec<u8>,
     /// Wall-clock start of the current segment, used to extend the encoded
     /// duration to match real time when the screen is mostly static (so a
@@ -507,6 +517,11 @@ struct CaptureEngine {
 struct SinkWriter {
     writer: IMFSinkWriter,
     stream_index: u32,
+}
+
+struct PendingEncodedFrame {
+    relative_ticks: i64,
+    nv12: Vec<u8>,
 }
 
 impl CaptureEngine {
@@ -555,13 +570,12 @@ impl CaptureEngine {
             // FrameArrived / Closed handlers only ever touch the channel sender,
             // so the COM objects stay confined to this thread.
             let frame_sender = handler_sender.clone();
-            let frame_handler = TypedEventHandler::<
-                Direct3D11CaptureFramePool,
-                IInspectable,
-            >::new(move |_pool, _args| {
-                let _ = frame_sender.send(Message::Frame);
-                Ok(())
-            });
+            let frame_handler = TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(
+                move |_pool, _args| {
+                    let _ = frame_sender.send(Message::Frame);
+                    Ok(())
+                },
+            );
             frame_pool
                 .FrameArrived(&frame_handler)
                 .map_err(|e| win_error("FrameArrived registration failed", &e))?;
@@ -602,6 +616,7 @@ impl CaptureEngine {
                 min_interval_ticks: frame_cap_min_interval_ticks(config.frame_rate),
                 timeline: SegmentTimeline::new(),
                 last_kept_ticks: None,
+                pending_frame: None,
                 nv12: vec![0u8; (width as usize) * (height as usize) * 3 / 2],
                 segment_start: Instant::now(),
                 logged_size_mismatch: false,
@@ -642,7 +657,11 @@ impl CaptureEngine {
             .Duration;
         let relative_ticks = self.timeline.relative_ticks(absolute_ticks);
 
-        if should_drop_frame(self.last_kept_ticks, relative_ticks, self.min_interval_ticks) {
+        if should_drop_frame(
+            self.last_kept_ticks,
+            relative_ticks,
+            self.min_interval_ticks,
+        ) {
             return Ok(());
         }
 
@@ -697,14 +716,24 @@ impl CaptureEngine {
             .writer
             .as_ref()
             .ok_or_else(|| no_active_writer_error("write sample"))?;
-        let duration = frame_duration_ticks(self.frame_rate);
-        write_nv12_sample(
-            &writer.writer,
-            writer.stream_index,
-            &self.nv12,
+        if let Some(previous) = self.pending_frame.take() {
+            let duration = lookahead_sample_duration_ticks(
+                previous.relative_ticks,
+                relative_ticks,
+                frame_duration_ticks(self.frame_rate),
+            );
+            write_nv12_sample(
+                &writer.writer,
+                writer.stream_index,
+                &previous.nv12,
+                previous.relative_ticks,
+                duration,
+            )?;
+        }
+        self.pending_frame = Some(PendingEncodedFrame {
             relative_ticks,
-            duration,
-        )?;
+            nv12: self.nv12.clone(),
+        });
         Ok(())
     }
 
@@ -747,41 +776,42 @@ impl CaptureEngine {
         Ok(())
     }
 
-    /// Re-emit the last captured frame at the segment's elapsed wall-clock time
-    /// so the encoded video spans the real recording duration.
+    /// Flush the held lookahead frame at the segment boundary so the encoded
+    /// video spans the real recording duration.
     ///
     /// Capture is change-driven: a static screen may produce a single frame at
-    /// t=0, which would otherwise yield a ~33ms `.mp4` for a 60s segment. By
-    /// writing the last frame again at `elapsed`, the prior frame's display
-    /// duration stretches to fill the segment. No-op when nothing was captured
-    /// or the stream already spans the elapsed time.
-    fn extend_segment_to_elapsed(&mut self) -> Result<(), CaptureErrorResponse> {
-        let Some(last) = self.last_kept_ticks else {
+    /// t=0. Holding that frame until rotation lets us write it once with a
+    /// duration clamped exactly to the boundary, rather than writing a duplicate
+    /// frame past the segment edge.
+    fn flush_pending_frame_at_boundary(
+        &mut self,
+        boundary_ticks: i64,
+    ) -> Result<(), CaptureErrorResponse> {
+        let Some(pending) = self.pending_frame.take() else {
             return Ok(());
         };
         let Some(writer) = self.writer.as_ref() else {
             return Ok(());
         };
-        let elapsed_ticks = (self.segment_start.elapsed().as_nanos() / 100) as i64;
-        let duration = frame_duration_ticks(self.frame_rate);
-        if elapsed_ticks <= last + duration {
-            return Ok(());
+        if let Some(duration) =
+            boundary_clamped_lookahead_duration_ticks(pending.relative_ticks, boundary_ticks)
+        {
+            write_nv12_sample(
+                &writer.writer,
+                writer.stream_index,
+                &pending.nv12,
+                pending.relative_ticks,
+                duration,
+            )?;
         }
-        write_nv12_sample(
-            &writer.writer,
-            writer.stream_index,
-            &self.nv12,
-            elapsed_ticks,
-            duration,
-        )?;
-        self.last_kept_ticks = Some(elapsed_ticks);
         Ok(())
     }
 
     fn rotate(&mut self, output_path: &Path) -> Result<(), CaptureErrorResponse> {
-        // Stretch the closing segment to its real duration, then finalize it so
-        // it is playable before the runtime is told the new segment has opened.
-        self.extend_segment_to_elapsed()?;
+        // Flush the closing segment at its boundary, then finalize it so it is
+        // playable before the runtime is told the new segment has opened.
+        let boundary_ticks = (self.segment_start.elapsed().as_nanos() / 100) as i64;
+        self.flush_pending_frame_at_boundary(boundary_ticks)?;
         if let Some(writer) = self.writer.take() {
             unsafe {
                 writer
@@ -801,13 +831,15 @@ impl CaptureEngine {
         self.writer = Some(writer);
         self.timeline.reset();
         self.last_kept_ticks = None;
+        self.pending_frame = None;
         self.segment_start = Instant::now();
         Ok(())
     }
 
     fn stop(&mut self) -> Result<(), CaptureErrorResponse> {
         self.teardown_capture();
-        self.extend_segment_to_elapsed()?;
+        let boundary_ticks = (self.segment_start.elapsed().as_nanos() / 100) as i64;
+        self.flush_pending_frame_at_boundary(boundary_ticks)?;
         if let Some(writer) = self.writer.take() {
             unsafe {
                 writer
@@ -833,7 +865,8 @@ impl CaptureEngine {
     /// sender was dropped). Finalizes any open writer so the file is playable.
     fn shutdown(&mut self) {
         self.teardown_capture();
-        let _ = self.extend_segment_to_elapsed();
+        let boundary_ticks = (self.segment_start.elapsed().as_nanos() / 100) as i64;
+        let _ = self.flush_pending_frame_at_boundary(boundary_ticks);
         if let Some(writer) = self.writer.take() {
             unsafe {
                 let _ = writer.writer.Finalize();
@@ -928,7 +961,8 @@ fn create_sink_writer(
         let writer = MFCreateSinkWriterFromURL(PCWSTR(url.as_ptr()), None, None)
             .map_err(|e| win_error("MFCreateSinkWriterFromURL failed", &e))?;
 
-        let output_type = MFCreateMediaType().map_err(|e| win_error("MFCreateMediaType (output) failed", &e))?;
+        let output_type =
+            MFCreateMediaType().map_err(|e| win_error("MFCreateMediaType (output) failed", &e))?;
         output_type
             .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
             .map_err(|e| win_error("set output major type failed", &e))?;
@@ -955,7 +989,8 @@ fn create_sink_writer(
             .AddStream(&output_type)
             .map_err(|e| win_error("AddStream failed", &e))?;
 
-        let input_type = MFCreateMediaType().map_err(|e| win_error("MFCreateMediaType (input) failed", &e))?;
+        let input_type =
+            MFCreateMediaType().map_err(|e| win_error("MFCreateMediaType (input) failed", &e))?;
         input_type
             .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
             .map_err(|e| win_error("set input major type failed", &e))?;
