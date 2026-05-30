@@ -65,15 +65,14 @@ jobs:
     name: Windows compile check
     runs-on: windows-latest
 
-    env:
-      # SQLCipher (libsqlite3-sys, bundled-sqlcipher) needs OpenSSL headers to
-      # run its build script. `cargo check` never links a binary, so the headers
-      # shipped with the runner's pre-installed Strawberry Perl are sufficient.
-      OPENSSL_DIR: C:\Strawberry\c
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
 
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal
@@ -89,14 +88,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Stage placeholder CLI sidecar
-        shell: pwsh
-        # `cargo check` only needs the Tauri externalBin resource to exist, not
-        # to be a real binary (a true sidecar build would need an MSVC-format
-        # OpenSSL to link). The compile check never runs it.
-        run: |
-          New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries | Out-Null
-          Set-Content -Path apps/desktop/src-tauri/binaries/mnema-cli-x86_64-pc-windows-msvc.exe -Value 'placeholder compile-check sidecar'
+      - name: Build Mnema CLI sidecar
+        # Compiles and *links* `mnema-cli`, which exercises the Windows SQLCipher
+        # build end to end: `libsqlite3-sys` (bundled-sqlcipher-vendored-openssl
+        # on Windows) builds OpenSSL from source via `openssl-src` using the
+        # runner's pre-installed Perl + NASM + MSVC, then links libcrypto
+        # statically. No system OpenSSL or OPENSSL_DIR is required. This stages a
+        # real sidecar for the Tauri externalBin resource instead of a placeholder.
+        run: bun scripts/prepare-mnema-cli-sidecar.mjs debug --locked
 
       - name: Check Rust workspace
         run: cargo check --workspace --all-targets --locked
