@@ -8,10 +8,13 @@ use std::{
 use async_trait::async_trait;
 use serde_json::json;
 
+#[cfg(target_os = "macos")]
+use crate::macos_audio_decode::{
+    decode_audio_to_mono_with_avassetreader_fallback, DecodedAudio,
+};
+#[cfg(any(test, target_os = "macos"))]
+use crate::macos_audio_decode::resample_linear;
 use crate::{
-    macos_audio_decode::{
-        decode_audio_to_mono_with_avassetreader_fallback, resample_linear, DecodedAudio,
-    },
     model_install_dir, SpeakerAnalysisError, SpeakerAnalysisMetadata, SpeakerAnalysisOutput,
     SpeakerAnalysisProvider, SpeakerAnalysisRequest, SpeakerAnalysisResult, SpeakerCluster,
     SpeakerRecognitionSuggestion, SpeakerTurn, DEFAULT_CLUSTERING_THRESHOLD,

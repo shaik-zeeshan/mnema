@@ -4,9 +4,9 @@
   "version": "0.1.8",
   "identifier": "com.shaikzeeshan.mnema",
   "build": {
-    "beforeDevCommand": "../../scripts/prepare-mnema-cli-sidecar.sh debug && bun run dev",
+    "beforeDevCommand": "bun ../../scripts/prepare-mnema-cli-sidecar.mjs debug && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "../../scripts/prepare-mnema-cli-sidecar.sh release && bun run build",
+    "beforeBuildCommand": "bun ../../scripts/prepare-mnema-cli-sidecar.mjs release && bun run build",
     "frontendDist": "../build"
   },
   "app": {
@@ -40,6 +40,15 @@
     "macOS": {
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"
+    },
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "perMachine"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
     },
     "icon": [
       "icons/32x32.png",

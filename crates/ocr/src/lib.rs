@@ -706,7 +706,6 @@ fn recognized_observations(
         .collect()
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn normalize_candidate_text(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {

@@ -1,8 +1,12 @@
 use super::activity::current_activity_snapshot;
 use super::output::{
-    append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
-    finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
+    set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file,
+};
+#[cfg(target_os = "macos")]
+use super::output::{
+    append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
+    finalize_capture_outputs,
 };
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
@@ -14,17 +18,18 @@ use super::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
     stopped_session_from_runtime, NativeCaptureRuntime,
 };
+use super::segments::{empty_output_files, start_capture_runtime, stop_capture_runtime};
+#[cfg(target_os = "macos")]
 use super::segments::{
     apply_microphone_output_finalization, cleanup_failed_segment_dirs, create_segment_output_dirs,
-    empty_output_files, handle_inactivity_resume_error,
-    pause_microphone_for_inactivity_with_app_handle, pause_runtime_for_inactivity_with_app_handle,
-    pause_screen_for_inactivity_with_app_handle, pause_system_audio_for_inactivity_with_app_handle,
-    plan_live_rotation_segment, reanchor_active_segment_timing,
-    recover_from_segment_finalize_error, recover_screen_capture_after_wake,
-    resume_microphone_from_inactivity, resume_runtime_from_inactivity,
-    resume_screen_from_inactivity, resume_system_audio_from_inactivity, start_capture_runtime,
-    start_segment_with_current_privacy_filter, stop_active_sessions_after_failure,
-    stop_capture_runtime,
+    handle_inactivity_resume_error, pause_microphone_for_inactivity_with_app_handle,
+    pause_runtime_for_inactivity_with_app_handle, pause_screen_for_inactivity_with_app_handle,
+    pause_system_audio_for_inactivity_with_app_handle, plan_live_rotation_segment,
+    reanchor_active_segment_timing, recover_from_segment_finalize_error,
+    recover_screen_capture_after_wake, resume_microphone_from_inactivity,
+    resume_runtime_from_inactivity, resume_screen_from_inactivity,
+    resume_system_audio_from_inactivity, start_segment_with_current_privacy_filter,
+    stop_active_sessions_after_failure,
 };
 use capture_runtime::RuntimeSignal;
 use capture_types::{
@@ -268,6 +273,7 @@ impl RecordingLifecycle {
         Ok(self.session())
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn recover_after_wake(
         &mut self,
         app_handle: Option<&tauri::AppHandle>,

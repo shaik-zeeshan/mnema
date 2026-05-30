@@ -2399,18 +2399,21 @@ fn finish_recording_settings_update(
             },
         );
     }
-    let privacy_changed = previous_settings.privacy != settings.privacy;
-    let metadata_changed = previous_settings.metadata != settings.metadata;
-    if metadata_changed {
-        privacy::request_privacy_filter_refresh(
-            app_handle,
-            privacy::PrivacyRefreshReason::MetadataSettingsMutation,
-        );
-    } else if privacy_changed {
-        privacy::request_privacy_filter_refresh(
-            app_handle,
-            privacy::PrivacyRefreshReason::StaticAppRuleMutation,
-        );
+    #[cfg(target_os = "macos")]
+    {
+        let privacy_changed = previous_settings.privacy != settings.privacy;
+        let metadata_changed = previous_settings.metadata != settings.metadata;
+        if metadata_changed {
+            privacy::request_privacy_filter_refresh(
+                app_handle,
+                privacy::PrivacyRefreshReason::MetadataSettingsMutation,
+            );
+        } else if privacy_changed {
+            privacy::request_privacy_filter_refresh(
+                app_handle,
+                privacy::PrivacyRefreshReason::StaticAppRuleMutation,
+            );
+        }
     }
     crate::status_bar::refresh(app_handle);
 

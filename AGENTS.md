@@ -78,7 +78,7 @@
 - Focused tests in `apps/desktop/src-tauri/src/lib.rs` may need `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib <test-filter>`; without `--lib`, filtered Tauri tests may not run as expected.
 - Status-bar menu model changes: run `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib status_bar`.
 - Verifying the `audio-transcription` crate's `local-whisper` feature requires `cmake` in `PATH`, because `whisper-rs-sys` builds bundled `whisper.cpp`/GGML artifacts.
-- Any `cargo check`/`cargo test` against `apps/desktop/src-tauri/Cargo.toml` needs the `mnema-cli` sidecar present, or the Tauri build script fails with `resource path 'binaries/mnema-cli-<triple>' doesn't exist`. `bun run tauri -- dev`/`build` build it automatically, but a bare `cargo` invocation does not — run `bash scripts/prepare-mnema-cli-sidecar.sh debug` (or `release`) first to compile/copy it into `apps/desktop/src-tauri/binaries/`.
+- Any `cargo check`/`cargo test` against `apps/desktop/src-tauri/Cargo.toml` needs the `mnema-cli` sidecar present, or the Tauri build script fails with `resource path 'binaries/mnema-cli-<triple>' doesn't exist`. `bun run tauri -- dev`/`build` build it automatically, but a bare `cargo` invocation does not — run `bun scripts/prepare-mnema-cli-sidecar.mjs debug` (or `release`) first to compile/copy it into `apps/desktop/src-tauri/binaries/`.
 
 ## Workflow
 - For desktop confirmations, alerts, and file dialogs, use Tauri dialog APIs/plugins (for example `@tauri-apps/plugin-dialog` in Svelte) instead of browser-native `window.confirm`, `window.alert`, or ad hoc browser dialogs.

@@ -53,7 +53,7 @@ For a Windows 11 bring-up:
 | Current use | Source | Windows 11 status / action |
 | --- | --- | --- |
 | Tauri bundling with `targets: "all"`, `createUpdaterArtifacts: true`, `externalBin: ["binaries/mnema-cli"]` | `apps/desktop/src-tauri/tauri.conf.json` | Add Windows-specific bundle config. Prefer NSIS-only initially or set Tauri Action to prefer NSIS if MSI and NSIS are both built. |
-| CLI sidecar target suffix script supports `.exe` | `scripts/prepare-mnema-cli-sidecar.sh` | Good shape. Run it on `windows-latest` under Git Bash/PowerShell before relying on it. |
+| CLI sidecar target suffix script supports `.exe` | `scripts/prepare-mnema-cli-sidecar.mjs` | Cross-platform (`bun`/Node); appends `.exe` for Windows target triples and runs natively on `windows-latest`. |
 | macOS-only release workflows and docs | `.github/workflows/macos-release*.yml`, `docs/release-process.md` | Add Windows release workflow/docs. Decide whether one multi-platform release workflow owns `latest.json` or whether a post-build step merges platform manifests. |
 | App update feed stable/preview | `app_updates.rs`, `docs/release-process.md` | Tauri updater supports Windows. Static `latest.json` must include `windows-x86_64` target entries with URL and signature. |
 | Incompatible update copy says “Mac” | `apps/desktop/src-tauri/src/app_updates.rs` | Change to platform-neutral copy before Windows release. |
@@ -147,7 +147,7 @@ Windows-specific follow-ups:
 Tauri sidecar packaging is mostly ready:
 
 - `externalBin: ["binaries/mnema-cli"]` expects `mnema-cli-x86_64-pc-windows-msvc.exe` for Windows x64.
-- `scripts/prepare-mnema-cli-sidecar.sh` already appends `.exe` for Windows target triples.
+- `scripts/prepare-mnema-cli-sidecar.mjs` already appends `.exe` for Windows target triples.
 - `bundled_mnema_cli_path_in_dir` already searches plain and target-triple `.exe` sidecar names.
 
 Open Windows install-path decision:

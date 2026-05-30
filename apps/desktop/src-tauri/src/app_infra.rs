@@ -2767,6 +2767,7 @@ fn active_workspace_dirs_for_hidden_workspace_repair(
     }
 
     let mut active_workspace_dirs = BTreeSet::new();
+    #[cfg(target_os = "macos")]
     for screen_file in [
         runtime.recording_file.as_deref(),
         runtime

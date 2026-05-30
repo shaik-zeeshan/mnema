@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(feature = "parakeet-onnx")]
+#[cfg(all(feature = "parakeet-onnx", target_os = "macos"))]
 use crate::macos_audio_decode::decode_audio_to_mono_with_avassetreader_fallback;
 #[cfg(any(test, feature = "parakeet-onnx"))]
 use crate::macos_audio_decode::resample_linear;

@@ -339,6 +339,7 @@ fn open_or_focus_window(
         .transparent(config.transparent)
         .shadow(config.shadow);
 
+    #[cfg(target_os = "macos")]
     if config.overlay_title_bar {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)

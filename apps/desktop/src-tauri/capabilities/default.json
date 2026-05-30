@@ -8,6 +8,7 @@
     "core:window:allow-start-dragging",
     "dialog:allow-ask",
     "opener:default",
+    "os:default",
     "clipboard-manager:allow-write-image",
     "clipboard-manager:allow-write-text",
     {

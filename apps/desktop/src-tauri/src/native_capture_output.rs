@@ -44,10 +44,8 @@ pub(crate) fn clear_current_system_audio_output_file(output_files: &mut CaptureO
     output_files.system_audio_files.clear();
 }
 
-#[cfg(target_os = "macos")]
 const MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX: &str =
     "screen output missing: expected screen recording file";
-#[cfg(target_os = "macos")]
 const MISSING_REQUESTED_SCREEN_OUTPUT_AT_PATH_PREFIX: &str =
     "screen output missing: expected screen recording file at ";
 
@@ -327,7 +325,6 @@ fn missing_requested_screen_output_failure(recording_file: Option<&str>) -> Stri
     format!("{MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX}{path_detail}")
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn is_missing_requested_screen_output_failure_detail(detail: &str) -> bool {
     detail == MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX
         || detail.starts_with(MISSING_REQUESTED_SCREEN_OUTPUT_AT_PATH_PREFIX)

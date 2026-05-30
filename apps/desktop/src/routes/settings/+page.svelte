@@ -6,6 +6,7 @@
   import { ask } from "@tauri-apps/plugin-dialog";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { platform } from "@tauri-apps/plugin-os";
   import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
   import AppPrivacyExclusionPrompt from "$lib/components/AppPrivacyExclusionPrompt.svelte";
   import Switch from "$lib/components/Switch.svelte";
@@ -710,6 +711,14 @@
   let captureSupportLoading = $state(false);
   let captureSupportFailed = $state(false);
 
+  // Platform of the running app, from the Tauri OS plugin (authoritative,
+  // unlike user-agent sniffing). Native capture (ScreenCaptureKit, system
+  // audio, bitrate control) is macOS-only today, so several settings strings
+  // are phrased for macOS and softened to platform-neutral / "macOS-only"
+  // copy elsewhere. The platform cannot change at runtime, so a plain const
+  // is sufficient.
+  const isMacOS = platform() === "macos";
+
   // ─── Backend capability ────────────────────────────────────────────────────
   const nativeCaptureUnsupported = $derived(
     captureSupport !== null && !captureSupport.nativeCaptureSupported
@@ -1208,7 +1217,7 @@
       case "downloading": return "Downloading the update package.";
       case "installing": return "Installing the update. Keep Mnema open until this finishes.";
       case "restartRequired": return "Restart Mnema when you are ready to finish updating.";
-      case "incompatible": return "No compatible update is available for this Mac.";
+      case "incompatible": return "No compatible update is available for this device.";
       case "failed": return "The last update operation failed. You can retry.";
       default: return "Update status is unavailable.";
     }
@@ -1220,8 +1229,18 @@
 
   function platformLabel(status: AppUpdateStatus | null): string {
     if (!status) return "Unknown";
-    const os = status.app.platform === "macos" ? "macOS" : status.app.platform;
-    const arch = status.app.arch === "aarch64" ? "Apple Silicon" : status.app.arch;
+    const os =
+      status.app.platform === "macos" ? "macOS"
+      : status.app.platform === "windows" ? "Windows"
+      : status.app.platform === "linux" ? "Linux"
+      : status.app.platform;
+    // "Apple Silicon" only reads correctly on macOS; on other platforms an
+    // aarch64 build is plain ARM64.
+    const arch =
+      status.app.arch === "aarch64"
+        ? (status.app.platform === "macos" ? "Apple Silicon" : "ARM64")
+      : status.app.arch === "x86_64" ? "x86-64"
+      : status.app.arch;
     return `${os} · ${arch}`;
   }
 
@@ -3488,7 +3507,9 @@
           bind:checked={draftCaptureSystemAudio}
           disabled={!draftCaptureScreen}
           label="System Audio"
-          description="Capture Mac system audio (macOS 15+)"
+          description={isMacOS
+            ? "Capture Mac system audio (macOS 15+)"
+            : "Capture system audio (macOS 15+ only)"}
         />
         {#if !draftCaptureScreen}
           <p class="capture-source-hint">System Audio is unavailable — enable Screen first.</p>
@@ -3708,6 +3729,10 @@
           </span>
         </div>
       {:else if onlyOriginalResolutionSupported}
+        <!-- This branch requires nativeCaptureSupported === true, which is
+             macOS-only today, so the macOS 15 / ScreenCaptureKit copy is
+             always accurate here. On platforms without a native backend the
+             "unsupported" branch above renders instead. -->
         <div class="resolution-locked-notice">
           <span class="resolution-locked-notice__icon">ℹ</span>
           <span class="resolution-locked-notice__text">
@@ -3828,8 +3853,14 @@
         Higher bitrate = sharper image and less compression artefact, but
         larger files and higher CPU/GPU load. Lower bitrate reduces file size
         and power use at the cost of some visual quality.
-        This setting is applied on <strong>macOS 15+ via ScreenCaptureKit</strong>;
-        older systems fall back to the macOS system-default bitrate.
+        {#if isMacOS}
+          This setting is applied on <strong>macOS 15+ via ScreenCaptureKit</strong>;
+          older systems fall back to the macOS system-default bitrate.
+        {:else}
+          This setting currently applies only to <strong>macOS 15+ captures
+          (ScreenCaptureKit)</strong>; native capture is not yet available on this
+          platform.
+        {/if}
       </p>
 
       <!-- Mode selector (preset chips + custom) -->
@@ -3926,8 +3957,14 @@
       <div class="bitrate-compat-notice">
         <span class="bitrate-compat-notice__icon">ℹ</span>
         <span class="bitrate-compat-notice__text">
-          Bitrate is applied only on macOS 15+ (ScreenCaptureKit path).
-          On older macOS the system default bitrate is used regardless of this setting.
+          {#if isMacOS}
+            Bitrate is applied only on macOS 15+ (ScreenCaptureKit path).
+            On older macOS the system default bitrate is used regardless of this setting.
+          {:else}
+            Bitrate is applied only on macOS 15+ (ScreenCaptureKit path).
+            Native capture is not yet available on this platform, so this setting
+            has no effect here.
+          {/if}
         </span>
       </div>
     </div>
@@ -4061,7 +4098,7 @@
         </div>
         <p class="group-hint">
           Capture pauses after <strong>{draftIdleTimeoutSeconds}s</strong> of system-wide inactivity (no mouse, keyboard,
-          or other input anywhere on the Mac). It resumes automatically when system activity is detected again.
+          or other input anywhere on the system). It resumes automatically when system activity is detected again.
         </p>
 
         <div class="settings-divider"></div>
