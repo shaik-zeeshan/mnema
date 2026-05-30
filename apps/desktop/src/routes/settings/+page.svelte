@@ -579,10 +579,25 @@
     };
   });
 
+  // Platform of the running app, from the Tauri OS plugin (authoritative,
+  // unlike user-agent sniffing). The platform cannot change at runtime, so a
+  // plain const is sufficient. Declared up here so the tab definitions and
+  // platform-gated UI below can both reference it.
+  const isMacOS = platform() === "macos";
+  const isWindows = platform() === "windows";
+
   const tabs: { id: SettingsTab; label: string; description: string }[] = [
-    { id: "capture",    label: "Capture",     description: "Sources, segments, inactivity" },
+    {
+      id: "capture",
+      label: "Capture",
+      description: isWindows ? "Sources and segments" : "Sources, segments, inactivity",
+    },
     { id: "access",     label: "Access",      description: "CLI and local tools" },
-    { id: "privacy",    label: "Privacy",     description: "Metadata and exclusions" },
+    {
+      id: "privacy",
+      label: "Privacy",
+      description: isWindows ? "Frame metadata" : "Metadata and exclusions",
+    },
     { id: "shortcuts",  label: "Shortcuts",   description: "View and customize keys" },
     { id: "video",      label: "Video",       description: "Frame rate, resolution, bitrate" },
     { id: "audio",      label: "Audio",       description: "Microphone devices & disconnects" },
@@ -710,12 +725,6 @@
   // is still running and whether it ended in an unrecoverable failure.
   let captureSupportLoading = $state(false);
   let captureSupportFailed = $state(false);
-
-  // Platform of the running app, from the Tauri OS plugin (authoritative,
-  // unlike user-agent sniffing). The platform cannot change at runtime, so a
-  // plain const is sufficient.
-  const isMacOS = platform() === "macos";
-  const isWindows = platform() === "windows";
 
   // ─── Backend capability ────────────────────────────────────────────────────
   const nativeCaptureUnsupported = $derived(
@@ -3494,23 +3503,30 @@
           label="Screen"
           description="Capture the display"
         />
-        <Switch
-          bind:checked={draftCaptureMicrophone}
-          label="Microphone"
-          description="Capture audio from microphone"
-        />
-        <Switch
-          bind:checked={draftCaptureSystemAudio}
-          disabled={!draftCaptureScreen}
-          label="System Audio"
-          description={isMacOS
-            ? "Capture Mac system audio (macOS 15+)"
-            : "Capture system audio (macOS 15+ only)"}
-        />
-        {#if !draftCaptureScreen}
-          <p class="capture-source-hint">System Audio is unavailable — enable Screen first.</p>
+        {#if !isWindows}
+          <Switch
+            bind:checked={draftCaptureMicrophone}
+            label="Microphone"
+            description="Capture audio from microphone"
+          />
+          <Switch
+            bind:checked={draftCaptureSystemAudio}
+            disabled={!draftCaptureScreen}
+            label="System Audio"
+            description={isMacOS
+              ? "Capture Mac system audio (macOS 15+)"
+              : "Capture system audio (macOS 15+ only)"}
+          />
+          {#if !draftCaptureScreen}
+            <p class="capture-source-hint">System Audio is unavailable — enable Screen first.</p>
+          {/if}
         {/if}
       </div>
+      {#if isWindows}
+        <p class="group-hint">
+          Microphone and system-audio capture are macOS-only. Windows records screen video only.
+        </p>
+      {/if}
     </div>
 
     <div class="settings-group">
@@ -3682,10 +3698,12 @@
           <p class="group-hint">Sanitized URLs keep scheme, host, port, and path while dropping query strings and fragments.</p>
         </div>
 
-        <div class="settings-group">
-          <span class="group-label">Excluded Apps</span>
-          <AppPrivacyExclusion controller={appPrivacyExclusion} />
-        </div>
+        {#if !isWindows}
+          <div class="settings-group">
+            <span class="group-label">Excluded Apps</span>
+            <AppPrivacyExclusion controller={appPrivacyExclusion} />
+          </div>
+        {/if}
       </section>
     </div>
   {/if}
@@ -3711,6 +3729,13 @@
         unit=" fps"
       />
       <p class="group-hint">Higher frame rates produce larger files.</p>
+      {#if isWindows}
+        <p class="group-hint group-hint--warn">
+          Windows uses a software H.264 encoder, so higher frame rates cost more CPU.
+          <strong>30 fps</strong> is opt-in and expensive (roughly 30–80% of one core while recording);
+          1–5 fps is the expected mode.
+        </p>
+      {/if}
     </div>
 
     <div class="settings-group">
@@ -4060,7 +4085,7 @@
     </div>
   {/if}
 
-  {#if activeTab === "capture"}
+  {#if activeTab === "capture" && !isWindows}
     <div role="tabpanel" id="settings-panel-capture-inactivity" aria-labelledby="settings-tab-capture" tabindex="0">
     <!-- ── Card: Inactivity ─────────────────────── -->
     <section class="card">
