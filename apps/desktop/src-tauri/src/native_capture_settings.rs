@@ -507,7 +507,7 @@ fn is_original_screen_resolution(value: &ScreenResolution) -> bool {
 }
 
 fn supports_non_original_screen_resolution() -> bool {
-    capture_screen::support_for_current_platform().system_audio
+    capture_screen::support_for_current_platform().non_original_resolution
 }
 
 pub(crate) fn validate_recording_settings(
@@ -604,7 +604,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
     {
         return Err(CaptureErrorResponse {
             code: "screen_resolution_unsupported".to_string(),
-            message: "Selected screen resolution requires the ScreenCaptureKit backend (macOS 15+). On this backend, only the original display resolution is supported.".to_string(),
+            message: "Selected screen resolution is not supported by the active native capture backend. Only the original display resolution is supported on this system.".to_string(),
         });
     }
 

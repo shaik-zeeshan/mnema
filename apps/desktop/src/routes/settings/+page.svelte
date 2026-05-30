@@ -712,32 +712,28 @@
   let captureSupportFailed = $state(false);
 
   // Platform of the running app, from the Tauri OS plugin (authoritative,
-  // unlike user-agent sniffing). Native capture (ScreenCaptureKit, system
-  // audio, bitrate control) is macOS-only today, so several settings strings
-  // are phrased for macOS and softened to platform-neutral / "macOS-only"
-  // copy elsewhere. The platform cannot change at runtime, so a plain const
-  // is sufficient.
+  // unlike user-agent sniffing). The platform cannot change at runtime, so a
+  // plain const is sufficient.
   const isMacOS = platform() === "macos";
+  const isWindows = platform() === "windows";
 
   // ─── Backend capability ────────────────────────────────────────────────────
   const nativeCaptureUnsupported = $derived(
     captureSupport !== null && !captureSupport.nativeCaptureSupported
   );
 
-  // The AVFoundation fallback backend (pre-macOS 15) only supports "original"
-  // resolution. ScreenCaptureKit (macOS 15+) supports all modes.
-  // The same macOS version gate controls both system audio and the SCKit
-  // backend, so `supportedSources.systemAudio === false` is a precise proxy.
+  // The backend reports resolution support directly because Windows supports
+  // downscaled screen output even though system audio is still deferred.
   const onlyOriginalResolutionSupported = $derived(
     captureSupport !== null
     && captureSupport.nativeCaptureSupported
-    && !captureSupport.supportedSources.systemAudio
+    && !captureSupport.supportsNonOriginalResolution
   );
 
   const nonOriginalResolutionSupported = $derived(
     captureSupport !== null
     && captureSupport.nativeCaptureSupported
-    && captureSupport.supportedSources.systemAudio
+    && captureSupport.supportsNonOriginalResolution
   );
 
   // True ONLY while the support request is actively in-flight.
@@ -747,9 +743,9 @@
   const resolutionSupportPending = $derived(captureSupportLoading);
 
   // Preset and custom are selectable only once support is confirmed available.
-  // Three cases: (1) in-flight → disabled, (2) loaded but AVFoundation-only →
-  // disabled, (3) loaded with SCKit OR lookup failed → enabled (backend
-  // validates at save time if we could not determine support locally).
+  // Three cases: (1) in-flight -> disabled, (2) loaded but unsupported backend
+  // -> disabled, (3) loaded with a scaling backend OR lookup failed -> enabled
+  // (backend validates at save time if we could not determine support locally).
   const nonOriginalResolutionDisabled = $derived(
     draftCaptureScreen
     && (resolutionSupportPending || nativeCaptureUnsupported || onlyOriginalResolutionSupported)
@@ -3729,14 +3725,10 @@
           </span>
         </div>
       {:else if onlyOriginalResolutionSupported}
-        <!-- This branch requires nativeCaptureSupported === true, which is
-             macOS-only today, so the macOS 15 / ScreenCaptureKit copy is
-             always accurate here. On platforms without a native backend the
-             "unsupported" branch above renders instead. -->
         <div class="resolution-locked-notice">
           <span class="resolution-locked-notice__icon">ℹ</span>
           <span class="resolution-locked-notice__text">
-            Preset and custom resolutions require macOS 15 or later (ScreenCaptureKit).
+            Preset and custom resolutions require a native capture backend with output scaling.
             Only <strong>Original</strong> resolution is available on this system.
           </span>
         </div>
@@ -3759,7 +3751,7 @@
         <div class="resolution-supported-notice">
           <span class="resolution-supported-notice__icon">✓</span>
           <span class="resolution-supported-notice__text">
-            Native capture supports Preset and Custom output resolutions.
+            Native capture scales output to Preset and Custom resolutions.
           </span>
         </div>
       {/if}
@@ -3856,10 +3848,12 @@
         {#if isMacOS}
           This setting is applied on <strong>macOS 15+ via ScreenCaptureKit</strong>;
           older systems fall back to the macOS system-default bitrate.
+        {:else if isWindows}
+          This setting is applied to <strong>Windows H.264 screen captures</strong>
+          encoded through Media Foundation.
         {:else}
-          This setting currently applies only to <strong>macOS 15+ captures
-          (ScreenCaptureKit)</strong>; native capture is not yet available on this
-          platform.
+          This setting applies when a native capture backend supports bitrate
+          control.
         {/if}
       </p>
 
@@ -3960,10 +3954,10 @@
           {#if isMacOS}
             Bitrate is applied only on macOS 15+ (ScreenCaptureKit path).
             On older macOS the system default bitrate is used regardless of this setting.
+          {:else if isWindows}
+            Bitrate is applied to Windows H.264 screen captures.
           {:else}
-            Bitrate is applied only on macOS 15+ (ScreenCaptureKit path).
-            Native capture is not yet available on this platform, so this setting
-            has no effect here.
+            Bitrate is applied when the active native capture backend supports it.
           {/if}
         </span>
       </div>

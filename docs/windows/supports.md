@@ -25,8 +25,13 @@ Companion research: [`runtime-capture-research.md`](./runtime-capture-research.m
   (`CreateForMonitor`), encoded to **H.264 `.mp4`** through the Media Foundation
   `IMFSinkWriter`.
 - **Cursor** is included in the recording (hardcoded on for the MVP).
-- **Native resolution only** ("Original"). Capture runs at the primary monitor's
-  native size; resolution/bitrate preset honoring is a deferred follow-up.
+- **Resolution presets and custom output sizes are honored.** WGC still captures
+  the primary monitor at native size, then the CPU BGRA -> NV12 conversion scales
+  to the resolved output size. "Original" preserves the native size.
+- **Bitrate presets and custom bitrate are honored** through `MF_MT_AVG_BITRATE`
+  on the Media Foundation H.264 output type.
+- **JPEG frame export** writes low-cadence frame artifacts at the configured
+  output resolution, matching the encoded video size.
 
 ## Explicitly out of scope for the MVP (deferred follow-ups)
 
@@ -34,14 +39,10 @@ These are **not bugs** — they are deliberately deferred:
 
 - **No system-audio capture** (WASAPI loopback). Screen video only.
 - **No microphone capture.**
-- **No JPEG frame export.** The macOS backend emits `ScreenFrameArtifact`s at
-  ~1 fps for OCR; the Windows MVP produces the `.mp4` only. Frame export (and the
-  OCR/search that consumes it) is a deferred follow-up — `supports_frame_export()`
-  stays `false` on Windows, and `default_ocr_provider()` is still `AppleVision`
-  (macOS-only). The cross-platform Tesseract provider is the intended later path.
-- **No resolution / bitrate preset honoring.** Capture is fixed at the primary
-  monitor's native resolution ("Original"). Downscaling and bitrate presets are a
-  later follow-up.
+- **No finalized-video frame-index sidecars yet.** Windows can export JPEG frame
+  artifacts, but indexed finalized-video preview timing remains a later follow-up.
+- **No Windows OCR provider default yet.** The cross-platform Tesseract provider
+  is the intended later path.
 - **No privacy / per-app exclusion filters.** WGC has no ScreenCaptureKit-style
   live app-exclusion for full-monitor capture; do not promise it.
 - **No inactivity auto-pause.** See below.
@@ -73,7 +74,7 @@ is more likely to surprise Windows users.
 ### Disruption handling
 
 - **Resolution / DPI / display-mode change:** frames whose content size no longer
-  matches the encoder's fixed size are **skipped** for the MVP (logged once);
+  matches the fixed native source size are **skipped** for the MVP (logged once);
   in-session `frame_pool.Recreate(...)` re-acquisition is a follow-up.
 - **Monitor sleep / DPMS off:** frames pause and resume; usually no action needed.
 - **Primary monitor disconnected (`GraphicsCaptureItem.Closed`):** the session is
@@ -97,8 +98,9 @@ use more CPU on Windows. Hardware encode (a later optimization) removes this cos
 ## Settings copy that changes on Windows
 
 - Screen capture reads as **supported** (was "macOS-only").
-- Resolution stays locked to **"Original"** on Windows (we capture at native
-  resolution); resolution/bitrate preset honoring is a deferred follow-up, so the
-  existing "Original-locked" copy is unchanged.
+- Resolution preset/custom controls are enabled on Windows and describe output
+  scaling.
+- Bitrate preset/custom controls are enabled on Windows and describe Media
+  Foundation H.264 bitrate control.
 - System audio, microphone, privacy filters, and inactivity remain **macOS-only**
   / hidden on Windows.

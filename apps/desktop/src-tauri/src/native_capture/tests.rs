@@ -1098,6 +1098,7 @@ fn validate_start_request_rejects_system_audio_when_not_supported() {
     let support = CaptureSupportResponse {
         platform: "macos".to_string(),
         native_capture_supported: true,
+        supports_non_original_resolution: true,
         supported_sources: CaptureSources {
             screen: true,
             microphone: true,

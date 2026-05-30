@@ -1398,6 +1398,7 @@ pub fn start_system_wake_notifier(_app_handle: tauri::AppHandle) {}
 struct CaptureSupportSnapshot {
     platform: String,
     native_capture_supported: bool,
+    supports_non_original_resolution: bool,
     supported_sources: CaptureSources,
 }
 
@@ -1683,6 +1684,7 @@ fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
     let snapshot = CaptureSupportSnapshot {
         platform: response.platform.clone(),
         native_capture_supported: response.native_capture_supported,
+        supports_non_original_resolution: response.supports_non_original_resolution,
         supported_sources: response.supported_sources.clone(),
     };
     let mut last_snapshot = capture_support_log_snapshot_state()
@@ -1696,9 +1698,10 @@ fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
     *last_snapshot = Some(snapshot.clone());
 
     debug_log::log(format!(
-        "observed native capture support (platform='{}', native_supported={}, supported_sources={})",
+        "observed native capture support (platform='{}', native_supported={}, non_original_resolution={}, supported_sources={})",
         snapshot.platform,
         snapshot.native_capture_supported,
+        snapshot.supports_non_original_resolution,
         format_capture_source_flags(&snapshot.supported_sources)
     ));
 }
@@ -2112,6 +2115,7 @@ pub fn get_capture_support() -> CaptureSupportResponse {
     let response = CaptureSupportResponse {
         platform: screen_support.platform,
         native_capture_supported: screen_support.native_capture_supported,
+        supports_non_original_resolution: screen_support.non_original_resolution,
         supported_sources: CaptureSources {
             screen: screen_support.screen,
             microphone: microphone_supported,

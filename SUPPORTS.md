@@ -15,11 +15,11 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Area | macOS | Windows | Linux | Notes |
 | --- | --- | --- | --- | --- |
 | Tauri desktop shell | [x] | [~] | [~] | Shell is mostly cross-platform, but window chrome/dock behavior has macOS-specific paths. |
-| Native screen capture | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit / AVFoundation fallback. |
+| Native screen capture | [x] | [~] | [ ] | macOS uses ScreenCaptureKit / AVFoundation fallback. Windows uses WGC for primary-monitor screen capture. |
 | Native microphone capture | [x] | [ ] | [ ] | macOS uses AVFoundation. |
 | Native system-audio capture | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit and currently requires screen capture. |
 | Capture segment lifecycle | [x] | [ ] | [ ] | Lifecycle is generic in shape but active runtime fields are macOS-gated. |
-| Media writers/finalization | [x] | [ ] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. |
+| Media writers/finalization | [x] | [~] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. Windows uses Media Foundation for H.264 `.mp4` screen output. |
 | Screen frame export / frame index | [x] | [~] | [ ] | Windows writes ~1 fps JPEG frame artifacts; frame-index sidecars remain missing. |
 | Exact frame preview from video | [x] | [ ] | [ ] | macOS uses AVAssetImageGenerator. |
 | Scrub preview generation | [x] | [ ] | [ ] | macOS-only today. |
@@ -113,9 +113,9 @@ Research notes:
 
 ### Runtime capture
 
-- [ ] Implement a Windows screen capture backend behind `crates/capture-screen`.
+- [~] Implement a Windows screen capture backend behind `crates/capture-screen`.
   - Candidate APIs: Windows Graphics Capture or DXGI Desktop Duplication.
-  - Must support frame timing, segment rotation, stop/error reporting, and output activity samples.
+  - WGC primary-monitor screen capture exists with frame timing, segment rotation, stop/error reporting, frame export, resolution scaling, and H.264 bitrate control; output activity samples and broader source support remain outstanding.
 - [ ] Implement Windows microphone capture behind `crates/capture-microphone`.
   - Candidate APIs: WASAPI input, CPAL, or another native audio layer.
   - Must support device listing, default device tracking, selected-device reconnect policy, and VAD PCM feed.
@@ -130,8 +130,10 @@ Research notes:
 
 ### Media writers and previews
 
-- [ ] Implement cross-platform or Windows-specific audio/video writers.
+- [~] Implement cross-platform or Windows-specific audio/video writers.
   - Candidate APIs: Media Foundation, FFmpeg, GStreamer, or a Rust media pipeline.
+- [x] Honor Windows screen resolution presets/custom dimensions by scaling WGC frames during CPU BGRA -> NV12 conversion and JPEG frame export.
+- [x] Honor Windows screen bitrate presets/custom bitrate through Media Foundation H.264 `MF_MT_AVG_BITRATE`.
 - [ ] Implement finalized video validation equivalent to “openable `.mov` with moov”.
 - [x] Implement screen frame export to JPEG artifacts.
 - [ ] Implement frame-index sidecar generation from finalized video timing.

@@ -376,7 +376,7 @@ pub fn decode_screen_segment_frame_index(bytes: &[u8]) -> Result<ScreenSegmentFr
     Ok(ScreenSegmentFrameIndex { version, entries })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn resolve_stream_resolution(
     requested: &ScreenResolution,
     display_width: u32,
@@ -426,6 +426,7 @@ pub struct ScreenCaptureSupport {
     pub platform: String,
     pub native_capture_supported: bool,
     pub screen: bool,
+    pub non_original_resolution: bool,
     pub system_audio: bool,
 }
 
@@ -4532,6 +4533,7 @@ pub fn support_for_current_platform() -> ScreenCaptureSupport {
             platform: "macos".to_string(),
             native_capture_supported: true,
             screen: true,
+            non_original_resolution: supports_system_audio_capture(),
             system_audio: supports_system_audio_capture(),
         }
     }
@@ -4543,9 +4545,8 @@ pub fn support_for_current_platform() -> ScreenCaptureSupport {
             platform: "windows".to_string(),
             native_capture_supported: supported,
             screen: supported,
-            // System audio (WASAPI loopback) is a deferred follow-up; keeping it
-            // false also keeps the resolution UI locked to "Original", which is
-            // consistent with capturing at native resolution.
+            non_original_resolution: supported,
+            // System audio (WASAPI loopback) is a deferred follow-up.
             system_audio: false,
         }
     }
@@ -4556,6 +4557,7 @@ pub fn support_for_current_platform() -> ScreenCaptureSupport {
             platform: std::env::consts::OS.to_string(),
             native_capture_supported: false,
             screen: false,
+            non_original_resolution: false,
             system_audio: false,
         }
     }
@@ -4863,7 +4865,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn resolve_stream_resolution_scales_preset_with_display_aspect_ratio() {
         let resolved = resolve_stream_resolution(
@@ -4878,7 +4880,7 @@ mod tests {
         assert_eq!(resolved.height, 720);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn resolve_stream_resolution_clamps_preset_to_display_size() {
         let resolved = resolve_stream_resolution(
@@ -4893,7 +4895,7 @@ mod tests {
         assert_eq!(resolved.height, 768);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn resolve_stream_resolution_keeps_custom_dimensions() {
         let resolved = resolve_stream_resolution(

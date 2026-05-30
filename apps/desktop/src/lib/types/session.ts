@@ -9,6 +9,7 @@ export interface SupportedSources {
 export interface CaptureSupport {
 	platform: string;
 	nativeCaptureSupported: boolean;
+	supportsNonOriginalResolution: boolean;
 	supportedSources: SupportedSources;
 }
 

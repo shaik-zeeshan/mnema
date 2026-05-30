@@ -68,10 +68,11 @@ use crate::frame_schedule::{
     lookahead_sample_duration_ticks, should_drop_frame, SegmentTimeline,
 };
 use crate::{
-    captured_frame_equivalence_from_interleaved_bytes, screen_frame_artifact_path,
-    CapturedFrameEquivalenceOutcome, PrivacyFilterApplyOutcome, RotatedCaptureOutputs,
-    ScreenCaptureSession, ScreenCaptureSessionOptions, ScreenCaptureSources, ScreenFrameArtifact,
-    ScreenFrameArtifactHandler, ScreenFrameExportConfig, StartedCaptureSession,
+    captured_frame_equivalence_from_interleaved_bytes, resolve_stream_resolution,
+    screen_frame_artifact_path, CapturedFrameEquivalenceOutcome, PrivacyFilterApplyOutcome,
+    RotatedCaptureOutputs, ScreenCaptureSession, ScreenCaptureSessionOptions, ScreenCaptureSources,
+    ScreenFrameArtifact, ScreenFrameArtifactHandler, ScreenFrameExportConfig,
+    StartedCaptureSession,
 };
 use capture_types::CaptureErrorResponse;
 
@@ -309,7 +310,7 @@ pub fn start_capture_session_with_options(
     _system_audio_output_path: Option<&Path>,
     sources: &ScreenCaptureSources,
     screen_frame_rate: u32,
-    _screen_resolution: &ScreenResolution,
+    screen_resolution: &ScreenResolution,
     video_bitrate_bps: Option<u32>,
     options: ScreenCaptureSessionOptions,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
@@ -351,6 +352,7 @@ pub fn start_capture_session_with_options(
         segment_dir: session_dir.to_path_buf(),
         output_path: thread_output,
         frame_rate: screen_frame_rate,
+        screen_resolution: screen_resolution.clone(),
         video_bitrate_bps,
         frame_export: options.frame_export,
     };
@@ -405,6 +407,7 @@ struct CaptureThreadConfig {
     segment_dir: PathBuf,
     output_path: PathBuf,
     frame_rate: u32,
+    screen_resolution: ScreenResolution,
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportConfig>,
 }
@@ -512,8 +515,11 @@ struct CaptureEngine {
     writer: Option<SinkWriter>,
     staging: Option<ID3D11Texture2D>,
     frame_export: Option<WindowsFrameExportRuntime>,
+    source_width: u32,
+    source_height: u32,
     width: u32,
     height: u32,
+    scale_map: ScaleMap,
     frame_rate: u32,
     video_bitrate_bps: Option<u32>,
     min_interval_ticks: i64,
@@ -548,6 +554,7 @@ struct WindowsFrameExportRuntime {
     next_frame_index: u64,
     staging: Option<ID3D11Texture2D>,
     rgb: Vec<u8>,
+    rgba_for_equivalence: Vec<u8>,
 }
 
 impl WindowsFrameExportRuntime {
@@ -578,6 +585,7 @@ fn windows_frame_export_runtime(
         next_frame_index: 0,
         staging: None,
         rgb: vec![0u8; (width as usize) * (height as usize) * 3],
+        rgba_for_equivalence: vec![0u8; (width as usize) * (height as usize) * 4],
     }))
 }
 
@@ -609,14 +617,26 @@ impl CaptureEngine {
             let size = item
                 .Size()
                 .map_err(|e| win_error("GraphicsCaptureItem.Size failed", &e))?;
-            let width = (size.Width.max(0) as u32) & !1;
-            let height = (size.Height.max(0) as u32) & !1;
-            if width == 0 || height == 0 {
+            let source_width = (size.Width.max(0) as u32) & !1;
+            let source_height = (size.Height.max(0) as u32) & !1;
+            if source_width == 0 || source_height == 0 {
                 return Err(CaptureErrorResponse {
                     code: "screen_capture_invalid_size".to_string(),
-                    message: format!("Primary monitor reported an unusable size {width}x{height}"),
+                    message: format!(
+                        "Primary monitor reported an unusable size {source_width}x{source_height}"
+                    ),
                 });
             }
+            let output_resolution =
+                resolve_stream_resolution(&config.screen_resolution, source_width, source_height);
+            let width = output_resolution.width;
+            let height = output_resolution.height;
+            let scale_map = ScaleMap::new(
+                source_width as usize,
+                source_height as usize,
+                width as usize,
+                height as usize,
+            );
 
             let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
                 &d3d_device,
@@ -684,8 +704,11 @@ impl CaptureEngine {
                     width,
                     height,
                 )?,
+                source_width,
+                source_height,
                 width,
                 height,
+                scale_map,
                 frame_rate: config.frame_rate,
                 video_bitrate_bps: config.video_bitrate_bps,
                 min_interval_ticks: frame_cap_min_interval_ticks(config.frame_rate),
@@ -712,15 +735,15 @@ impl CaptureEngine {
             .map_err(|e| win_error("frame.ContentSize failed", &e))?;
         let content_w = (content_size.Width.max(0) as u32) & !1;
         let content_h = (content_size.Height.max(0) as u32) & !1;
-        if content_w != self.width || content_h != self.height {
+        if content_w != self.source_width || content_h != self.source_height {
             // Resolution/DPI change mid-session: skip for the MVP rather than
             // reconfiguring the encoder. Logged once to avoid spam.
             if !self.logged_size_mismatch {
                 self.logged_size_mismatch = true;
                 capture_runtime::debug_log!(
-                    "[capture-screen] skipping frame with content size {content_w}x{content_h}; encoder fixed at {}x{}",
-                    self.width,
-                    self.height
+                    "[capture-screen] skipping frame with content size {content_w}x{content_h}; source fixed at {}x{}",
+                    self.source_width,
+                    self.source_height
                 );
             }
             return Ok(());
@@ -801,8 +824,11 @@ impl CaptureEngine {
             bgra_to_nv12(
                 mapped.pData as *const u8,
                 mapped.RowPitch as usize,
+                self.source_width as usize,
+                self.source_height as usize,
                 self.width as usize,
                 self.height as usize,
+                &self.scale_map,
                 &mut self.nv12,
             );
 
@@ -865,30 +891,34 @@ impl CaptureEngine {
                 .map_err(|e| win_error("ID3D11DeviceContext.Map(frame export) failed", &e))?;
 
             let src_stride = mapped.RowPitch as usize;
+            let source_width = self.source_width as usize;
+            let source_height = self.source_height as usize;
             let width = self.width as usize;
             let height = self.height as usize;
-            let mapped_bytes =
-                std::slice::from_raw_parts(mapped.pData as *const u8, src_stride * height);
-            let equivalence = captured_frame_equivalence_from_interleaved_bytes(
-                mapped_bytes,
+            bgra_to_rgb_and_rgba_scaled(
+                mapped.pData as *const u8,
                 src_stride,
+                source_width,
+                source_height,
                 width,
                 height,
-                [2, 1, 0, 3],
+                &self.scale_map,
+                &mut runtime.rgb,
+                &mut runtime.rgba_for_equivalence,
+            );
+            let equivalence = captured_frame_equivalence_from_interleaved_bytes(
+                &runtime.rgba_for_equivalence,
+                width * 4,
+                width,
+                height,
+                [0, 1, 2, 3],
             )
             .map(CapturedFrameEquivalenceOutcome::ready)
             .unwrap_or_else(|| {
                 CapturedFrameEquivalenceOutcome::quarantined(
-                    "failed to derive captured frame equivalence from Windows frame readback",
+                    "failed to derive captured frame equivalence from downscaled Windows frame",
                 )
             });
-            bgra_to_rgb(
-                mapped.pData as *const u8,
-                src_stride,
-                width,
-                height,
-                &mut runtime.rgb,
-            );
 
             self.context.Unmap(&staging, 0);
             equivalence
@@ -911,8 +941,9 @@ impl CaptureEngine {
     /// Its dimensions and format are taken from the **source** frame texture, not
     /// the (even-rounded) encoder dimensions: `CopyResource` requires both
     /// resources to be identical in size/format, and the captured surface height
-    /// can be odd (e.g. 2039). The even-rounded `self.width`/`self.height` are
-    /// used only when reading the mapped sub-region for NV12 conversion.
+    /// can be odd (e.g. 2039). `self.source_width`/`self.source_height` select
+    /// the readable source area, while `self.width`/`self.height` are the
+    /// configured output-resolution conversion target.
     fn ensure_staging(&mut self, source: &ID3D11Texture2D) -> Result<(), CaptureErrorResponse> {
         if self.staging.is_some() {
             return Ok(());
@@ -1270,23 +1301,66 @@ fn write_nv12_sample(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct ScaleMap {
+    x: Vec<usize>,
+    y: Vec<usize>,
+}
+
+impl ScaleMap {
+    fn new(src_width: usize, src_height: usize, dst_width: usize, dst_height: usize) -> Self {
+        Self {
+            x: (0..dst_width)
+                .map(|x| scaled_source_index(x, dst_width, src_width))
+                .collect(),
+            y: (0..dst_height)
+                .map(|y| scaled_source_index(y, dst_height, src_height))
+                .collect(),
+        }
+    }
+}
+
+fn scaled_source_index(dst_index: usize, dst_len: usize, src_len: usize) -> usize {
+    if src_len == 0 || dst_len == 0 {
+        return 0;
+    }
+
+    let numerator = (dst_index as u128)
+        .saturating_mul(src_len as u128)
+        .saturating_add((src_len / 2) as u128);
+    ((numerator / dst_len as u128) as usize).min(src_len.saturating_sub(1))
+}
+
 /// Convert a tightly-or-padded BGRA buffer to a contiguous NV12 buffer.
 ///
-/// `src` points to `height * src_stride` bytes of BGRA. `dst` must be sized
-/// `width * height * 3 / 2`. Uses BT.601 full-range-ish integer coefficients;
-/// good enough for the MVP (screen content, not graded video).
-fn bgra_to_nv12(src: *const u8, src_stride: usize, width: usize, height: usize, dst: &mut [u8]) {
-    let y_plane_len = width * height;
-    debug_assert!(dst.len() >= y_plane_len + width * (height / 2));
+/// `src` points to `src_height * src_stride` bytes of BGRA. `dst` must be sized
+/// `dst_width * dst_height * 3 / 2`. Uses nearest-neighbor scaling and BT.601
+/// full-range-ish integer coefficients; good enough for screen content.
+fn bgra_to_nv12(
+    src: *const u8,
+    src_stride: usize,
+    src_width: usize,
+    src_height: usize,
+    dst_width: usize,
+    dst_height: usize,
+    scale_map: &ScaleMap,
+    dst: &mut [u8],
+) {
+    let y_plane_len = dst_width * dst_height;
+    debug_assert!(dst.len() >= y_plane_len + dst_width * (dst_height / 2));
+    debug_assert_eq!(scale_map.x.len(), dst_width);
+    debug_assert_eq!(scale_map.y.len(), dst_height);
 
     // Luma plane.
-    for y in 0..height {
-        let row = unsafe { std::slice::from_raw_parts(src.add(y * src_stride), width * 4) };
-        let y_out = &mut dst[y * width..y * width + width];
-        for x in 0..width {
-            let b = row[x * 4] as i32;
-            let g = row[x * 4 + 1] as i32;
-            let r = row[x * 4 + 2] as i32;
+    for y in 0..dst_height {
+        let src_y = scale_map.y[y].min(src_height.saturating_sub(1));
+        let row = unsafe { std::slice::from_raw_parts(src.add(src_y * src_stride), src_width * 4) };
+        let y_out = &mut dst[y * dst_width..y * dst_width + dst_width];
+        for x in 0..dst_width {
+            let src_x = scale_map.x[x].min(src_width.saturating_sub(1));
+            let b = row[src_x * 4] as i32;
+            let g = row[src_x * 4 + 1] as i32;
+            let r = row[src_x * 4 + 2] as i32;
             y_out[x] = clamp_u8((77 * r + 150 * g + 29 * b) >> 8);
         }
     }
@@ -1294,15 +1368,18 @@ fn bgra_to_nv12(src: *const u8, src_stride: usize, width: usize, height: usize, 
     // Chroma plane: one (U,V) pair per 2x2 block, sampled from the top-left
     // pixel of each block.
     let uv_base = y_plane_len;
-    for by in 0..(height / 2) {
+    for by in 0..(dst_height / 2) {
+        let dst_y = by * 2;
+        let src_y = scale_map.y[dst_y].min(src_height.saturating_sub(1));
         let src_row =
-            unsafe { std::slice::from_raw_parts(src.add(by * 2 * src_stride), width * 4) };
-        let uv_out = &mut dst[uv_base + by * width..uv_base + by * width + width];
-        for bx in 0..(width / 2) {
-            let px = bx * 2;
-            let b = src_row[px * 4] as i32;
-            let g = src_row[px * 4 + 1] as i32;
-            let r = src_row[px * 4 + 2] as i32;
+            unsafe { std::slice::from_raw_parts(src.add(src_y * src_stride), src_width * 4) };
+        let uv_out = &mut dst[uv_base + by * dst_width..uv_base + by * dst_width + dst_width];
+        for bx in 0..(dst_width / 2) {
+            let dst_x = bx * 2;
+            let src_x = scale_map.x[dst_x].min(src_width.saturating_sub(1));
+            let b = src_row[src_x * 4] as i32;
+            let g = src_row[src_x * 4 + 1] as i32;
+            let r = src_row[src_x * 4 + 2] as i32;
             let u = ((-43 * r - 84 * g + 127 * b) >> 8) + 128;
             let v = ((127 * r - 106 * g - 21 * b) >> 8) + 128;
             uv_out[bx * 2] = clamp_u8(u);
@@ -1311,17 +1388,41 @@ fn bgra_to_nv12(src: *const u8, src_stride: usize, width: usize, height: usize, 
     }
 }
 
-/// Convert a tightly-or-padded BGRA buffer to contiguous RGB bytes for JPEG.
-fn bgra_to_rgb(src: *const u8, src_stride: usize, width: usize, height: usize, dst: &mut [u8]) {
-    debug_assert!(dst.len() >= width * height * 3);
+/// Convert a tightly-or-padded BGRA buffer to scaled RGB bytes for JPEG and
+/// scaled RGBA bytes for captured-frame equivalence.
+fn bgra_to_rgb_and_rgba_scaled(
+    src: *const u8,
+    src_stride: usize,
+    src_width: usize,
+    src_height: usize,
+    dst_width: usize,
+    dst_height: usize,
+    scale_map: &ScaleMap,
+    rgb: &mut [u8],
+    rgba: &mut [u8],
+) {
+    debug_assert!(rgb.len() >= dst_width * dst_height * 3);
+    debug_assert!(rgba.len() >= dst_width * dst_height * 4);
+    debug_assert_eq!(scale_map.x.len(), dst_width);
+    debug_assert_eq!(scale_map.y.len(), dst_height);
 
-    for y in 0..height {
-        let row = unsafe { std::slice::from_raw_parts(src.add(y * src_stride), width * 4) };
-        let rgb_out = &mut dst[y * width * 3..y * width * 3 + width * 3];
-        for x in 0..width {
-            rgb_out[x * 3] = row[x * 4 + 2];
-            rgb_out[x * 3 + 1] = row[x * 4 + 1];
-            rgb_out[x * 3 + 2] = row[x * 4];
+    for y in 0..dst_height {
+        let src_y = scale_map.y[y].min(src_height.saturating_sub(1));
+        let row = unsafe { std::slice::from_raw_parts(src.add(src_y * src_stride), src_width * 4) };
+        let rgb_out = &mut rgb[y * dst_width * 3..y * dst_width * 3 + dst_width * 3];
+        let rgba_out = &mut rgba[y * dst_width * 4..y * dst_width * 4 + dst_width * 4];
+        for x in 0..dst_width {
+            let src_x = scale_map.x[x].min(src_width.saturating_sub(1));
+            let b = row[src_x * 4];
+            let g = row[src_x * 4 + 1];
+            let r = row[src_x * 4 + 2];
+            rgb_out[x * 3] = r;
+            rgb_out[x * 3 + 1] = g;
+            rgb_out[x * 3 + 2] = b;
+            rgba_out[x * 4] = r;
+            rgba_out[x * 4 + 1] = g;
+            rgba_out[x * 4 + 2] = b;
+            rgba_out[x * 4 + 3] = 255;
         }
     }
 }
@@ -1433,6 +1534,81 @@ fn capture_thread_gone_error() -> CaptureErrorResponse {
     CaptureErrorResponse {
         code: "capture_thread_unavailable".to_string(),
         message: "Windows capture thread is no longer running".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_bgra_frame(width: usize, height: usize) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(width * height * 4);
+        for y in 0..height {
+            for x in 0..width {
+                frame.push((x + y * width) as u8);
+                frame.push((50 + x + y * width) as u8);
+                frame.push((100 + x + y * width) as u8);
+                frame.push(255);
+            }
+        }
+        frame
+    }
+
+    fn y_from_bgr(b: u8, g: u8, r: u8) -> u8 {
+        clamp_u8((77 * r as i32 + 150 * g as i32 + 29 * b as i32) >> 8)
+    }
+
+    #[test]
+    fn scale_map_samples_nearest_source_centers() {
+        let map = ScaleMap::new(4, 2, 2, 2);
+
+        assert_eq!(map.x, vec![1, 3]);
+        assert_eq!(map.y, vec![0, 1]);
+    }
+
+    #[test]
+    fn bgra_to_rgb_and_rgba_scaled_uses_output_dimensions() {
+        let source = test_bgra_frame(4, 2);
+        let scale_map = ScaleMap::new(4, 2, 2, 2);
+        let mut rgb = vec![0u8; 2 * 2 * 3];
+        let mut rgba = vec![0u8; 2 * 2 * 4];
+
+        bgra_to_rgb_and_rgba_scaled(
+            source.as_ptr(),
+            4 * 4,
+            4,
+            2,
+            2,
+            2,
+            &scale_map,
+            &mut rgb,
+            &mut rgba,
+        );
+
+        assert_eq!(rgb, vec![101, 51, 1, 103, 53, 3, 105, 55, 5, 107, 57, 7,]);
+        assert_eq!(
+            rgba,
+            vec![101, 51, 1, 255, 103, 53, 3, 255, 105, 55, 5, 255, 107, 57, 7, 255,]
+        );
+    }
+
+    #[test]
+    fn bgra_to_nv12_scaled_writes_downscaled_luma_plane() {
+        let source = test_bgra_frame(4, 2);
+        let scale_map = ScaleMap::new(4, 2, 2, 2);
+        let mut nv12 = vec![0u8; 2 * 2 * 3 / 2];
+
+        bgra_to_nv12(source.as_ptr(), 4 * 4, 4, 2, 2, 2, &scale_map, &mut nv12);
+
+        assert_eq!(
+            &nv12[..4],
+            &[
+                y_from_bgr(1, 51, 101),
+                y_from_bgr(3, 53, 103),
+                y_from_bgr(5, 55, 105),
+                y_from_bgr(7, 57, 107),
+            ]
+        );
     }
 }
 
