@@ -766,6 +766,22 @@
     draftCaptureScreen && resolutionSupportPending && draftResolutionMode !== "original"
   );
 
+  // Per-source capability gating. Prefer the backend-reported support over a raw
+  // platform check (see docs/adr/0022). While the lookup is still pending/failed
+  // (captureSupport === null) fall back to the platform so supported sources are
+  // not transiently hidden — macOS supports both audio sources, Windows supports
+  // microphone only.
+  const microphoneSourceSupported = $derived(
+    captureSupport !== null
+      ? captureSupport.supportedSources.microphone
+      : (isMacOS || isWindows)
+  );
+  const systemAudioSourceSupported = $derived(
+    captureSupport !== null
+      ? captureSupport.supportedSources.systemAudio
+      : isMacOS
+  );
+
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
   function syncCaptureSourceDrafts(s: RecordingSettings) {
@@ -3503,12 +3519,14 @@
           label="Screen"
           description="Capture the display"
         />
-        {#if !isWindows}
+        {#if microphoneSourceSupported}
           <Switch
             bind:checked={draftCaptureMicrophone}
             label="Microphone"
             description="Capture audio from microphone"
           />
+        {/if}
+        {#if systemAudioSourceSupported}
           <Switch
             bind:checked={draftCaptureSystemAudio}
             disabled={!draftCaptureScreen}
@@ -3524,7 +3542,7 @@
       </div>
       {#if isWindows}
         <p class="group-hint">
-          Microphone and system-audio capture are macOS-only. Windows records screen video only.
+          System-audio capture is macOS-only. Windows records screen video and microphone audio.
         </p>
       {/if}
     </div>

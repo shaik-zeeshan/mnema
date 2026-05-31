@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-05-30_
+_Last reviewed: 2026-05-31_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -16,10 +16,10 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | --- | --- | --- | --- | --- |
 | Tauri desktop shell | [x] | [~] | [~] | Shell is mostly cross-platform, but window chrome/dock behavior has macOS-specific paths. |
 | Native screen capture | [x] | [~] | [ ] | macOS uses ScreenCaptureKit / AVFoundation fallback. Windows uses WGC for primary-monitor screen capture. |
-| Native microphone capture | [x] | [ ] | [ ] | macOS uses AVFoundation. |
-| Native system-audio capture | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit and currently requires screen capture. |
-| Capture segment lifecycle | [x] | [ ] | [ ] | Lifecycle is generic in shape but active runtime fields are macOS-gated. |
-| Media writers/finalization | [x] | [~] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. Windows uses Media Foundation for H.264 `.mp4` screen output. |
+| Native microphone capture | [x] | [~] | [ ] | macOS uses AVFoundation. Windows captures the default WASAPI endpoint and encodes AAC `.m4a` via Media Foundation (capture-and-store; no audio processing yet). |
+| Native system-audio capture | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit and currently requires screen capture. On Windows system audio is an independent source (ADR 0022) but is a later slice. |
+| Capture segment lifecycle | [x] | [~] | [ ] | Lifecycle is generic in shape; Windows now drives screen and microphone segment rotation off the shared `CaptureClock`/`SegmentSchedule`. |
+| Media writers/finalization | [x] | [~] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. Windows uses Media Foundation for H.264 `.mp4` screen output and AAC `.m4a` microphone output, with an MF Source Reader positive-duration `.m4a` validator. |
 | Screen frame export / frame index | [x] | [~] | [ ] | Windows writes ~1 fps JPEG frame artifacts; frame-index sidecars remain missing. |
 | Exact frame preview from video | [x] | [ ] | [ ] | macOS uses AVAssetImageGenerator. |
 | Scrub preview generation | [x] | [ ] | [ ] | macOS-only today. |
@@ -116,14 +116,14 @@ Research notes:
 - [~] Implement a Windows screen capture backend behind `crates/capture-screen`.
   - Candidate APIs: Windows Graphics Capture or DXGI Desktop Duplication.
   - WGC primary-monitor screen capture exists with frame timing, segment rotation, stop/error reporting, frame export, resolution scaling, in-session frame-pool recreation for resolution/DPI/display-mode changes, and H.264 bitrate control; output activity samples and broader source support remain outstanding.
-- [ ] Implement Windows microphone capture behind `crates/capture-microphone`.
-  - Candidate APIs: WASAPI input, CPAL, or another native audio layer.
-  - Must support device listing, default device tracking, selected-device reconnect policy, and VAD PCM feed.
+- [~] Implement Windows microphone capture behind `crates/capture-microphone`.
+  - Default WASAPI capture endpoint → AAC `.m4a` via Media Foundation, on a dedicated COM thread behind the new platform-neutral `AudioCaptureSession` trait.
+  - Still outstanding: device listing, default-device change tracking, selected-device reconnect policy, and VAD PCM feed.
 - [ ] Implement Windows system-audio capture.
   - Candidate API: WASAPI loopback.
-  - Decide whether system audio requires screen capture on Windows or can become an independent source.
-- [ ] Implement Windows capture session IDs and source-session bookkeeping.
-- [ ] Implement segment rotation without dropping OCR/frame-index invariants.
+  - System audio is modeled as an independent source on Windows (ADR 0022); the capture seam (`active_system_audio_session`) exists, but the WASAPI loopback backend is a later slice.
+- [~] Implement Windows capture session IDs and source-session bookkeeping. Screen and microphone `SourceSessions` metadata are populated (`mic_session`-prefixed ids); system audio is pending.
+- [~] Implement segment rotation without dropping OCR/frame-index invariants. Screen and microphone rotate on the shared 5-minute boundary; an audio-only session rotates without a screen planner/session.
 - [ ] Implement user pause/resume and inactivity pause/resume for each requested source family.
 - [~] Implement capture liveness/error propagation equivalent to ScreenCaptureKit delegate stop errors. Windows now surfaces `GraphicsCaptureItem.Closed` primary-monitor disconnects as failed sessions; broader source recovery is still outstanding.
 - [~] Implement sleep/wake/session-lock recovery. Windows monitor sleep / DPMS-off pauses and resumes WGC frames implicitly, but broader OS sleep/session-lock recovery policy is still outstanding.
@@ -139,7 +139,7 @@ Research notes:
 - [ ] Implement frame-index sidecar generation from finalized video timing.
 - [ ] Implement exact frame preview extraction from video.
 - [ ] Implement scrub preview batch generation.
-- [ ] Implement audio trim/convert/finalization for microphone and system-audio outputs.
+- [~] Implement audio trim/convert/finalization for microphone and system-audio outputs. Windows microphone `.m4a` is finalized and validated via the MF Source Reader positive-duration probe; trim/convert and system-audio remain outstanding.
 - [ ] Implement video-only screen output finalization when audio is muxed or recorded together.
 
 ### Processing

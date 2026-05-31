@@ -1,5 +1,5 @@
 use capture_types::{CaptureErrorResponse, CaptureOutputFiles, CaptureSources};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::collections::BTreeSet;
 #[cfg(target_os = "macos")]
 use std::fs::File;
@@ -49,7 +49,7 @@ const MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX: &str =
 const MISSING_REQUESTED_SCREEN_OUTPUT_AT_PATH_PREFIX: &str =
     "screen output missing: expected screen recording file at ";
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn maybe_remove_intermediate_file(file: &str, label: &str, failures: &mut Vec<String>) {
     match std::fs::remove_file(file) {
         Ok(()) => {}
@@ -136,7 +136,7 @@ fn sync_finalized_screen_output_file(
     true
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn is_usable_audio_output_file(path: &str, unusable_files: &BTreeSet<String>) -> bool {
     is_usable_audio_output_file_with_duration_validator(
         path,
@@ -145,7 +145,7 @@ fn is_usable_audio_output_file(path: &str, unusable_files: &BTreeSet<String>) ->
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn is_usable_audio_output_file_with_duration_validator(
     path: &str,
     unusable_files: &BTreeSet<String>,
@@ -165,6 +165,14 @@ fn is_usable_audio_output_file_with_duration_validator(
     has_positive_duration(path)
 }
 
+/// Windows definition of an openable `.m4a`: the Media Foundation Source Reader
+/// opens it and reports `MF_PD_DURATION > 0`. This is the only new validator
+/// leaf on Windows; the structural finalization helpers above are shared.
+#[cfg(target_os = "windows")]
+fn audio_file_has_positive_duration(path: &str) -> bool {
+    capture_writers::windows_audio_file_has_positive_duration(path)
+}
+
 #[cfg(target_os = "macos")]
 fn audio_file_has_positive_duration(path: &str) -> bool {
     use cidre::{av, ns};
@@ -182,7 +190,7 @@ fn audio_file_has_positive_duration(path: &str) -> bool {
     result
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn maybe_remove_unusable_audio_output_file(
     file: &str,
     label: &str,
@@ -197,7 +205,7 @@ fn maybe_remove_unusable_audio_output_file(
     maybe_remove_intermediate_file(file, cleanup_label.as_str(), failures);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn sync_finalized_audio_output_file(
     current_file: &mut Option<String>,
     files: &mut Vec<String>,
@@ -215,7 +223,7 @@ fn sync_finalized_audio_output_file(
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn sync_finalized_audio_output_file_with_duration_validator(
     current_file: &mut Option<String>,
     files: &mut Vec<String>,
@@ -271,7 +279,7 @@ fn sync_finalized_audio_output_file_with_duration_validator(
     };
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn sync_finalized_microphone_output_files(
     output_files: &mut CaptureOutputFiles,
     unusable_files: &BTreeSet<String>,
@@ -493,6 +501,39 @@ pub(crate) fn finalize_capture_outputs(
     }) {
         failures.clear();
     }
+
+    capture_writers::aggregate_output_processing_failures(failures)
+}
+
+/// Windows capture-output finalization.
+///
+/// Windows writes the final `.m4a` directly via Media Foundation, so there is no
+/// source→`.m4a` conversion or video-only strip step (those are macOS-only). The
+/// only finalization work is validating produced audio outputs through the
+/// shared injectable validator seam — `MF_PD_DURATION > 0` via the MF Source
+/// Reader probe — and dropping any unusable files. The screen `.mp4` is committed
+/// as captured.
+#[cfg(target_os = "windows")]
+pub(crate) fn finalize_capture_outputs(
+    output_files: Option<&mut CaptureOutputFiles>,
+    recording_file: Option<&str>,
+    microphone_recording_file: Option<&str>,
+    system_audio_recording_file: Option<&str>,
+    requested_sources: Option<&CaptureSources>,
+) -> Result<(), CaptureErrorResponse> {
+    let _ = (
+        recording_file,
+        microphone_recording_file,
+        system_audio_recording_file,
+        requested_sources,
+    );
+    let Some(output_files) = output_files else {
+        return Ok(());
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+    let unusable_audio_files: BTreeSet<String> = BTreeSet::new();
+    sync_finalized_microphone_output_files(output_files, &unusable_audio_files, &mut failures);
 
     capture_writers::aggregate_output_processing_failures(failures)
 }

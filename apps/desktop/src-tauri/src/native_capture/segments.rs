@@ -2,8 +2,10 @@ use super::output::{
     append_committed_segment_output_files, set_current_microphone_output_file,
     set_current_screen_output_file, set_current_system_audio_output_file,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use super::output::finalize_capture_outputs;
 #[cfg(target_os = "macos")]
-use super::output::{cleanup_unusable_segment_artifacts, finalize_capture_outputs};
+use super::output::cleanup_unusable_segment_artifacts;
 use super::settings::compute_effective_screen_bitrate_bps;
 use super::{metadata, privacy};
 use capture_microphone as microphone_capture;
@@ -105,7 +107,7 @@ fn persist_capture_session_started(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_native_capture_async<F, R>(context: &'static str, future: F) -> Result<R, String>
 where
     F: std::future::Future<Output = R> + Send + 'static,
@@ -237,6 +239,19 @@ pub(super) fn stop_active_sessions_after_failure(runtime: &mut NativeCaptureRunt
             let _ = session.stop();
         }
         runtime.active_microphone_session = None;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Dropping the boxed session tears the WASAPI/MF capture thread down, but
+        // ask it to finalize first so a partially-written `.m4a` is still openable.
+        if let Some(session) = runtime.active_microphone_session.as_mut() {
+            let _ = session.stop_returning_finalization();
+        }
+        runtime.active_microphone_session = None;
+        if let Some(session) = runtime.active_system_audio_session.as_mut() {
+            let _ = session.stop_returning_finalization();
+        }
+        runtime.active_system_audio_session = None;
     }
 
     let _ = capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
@@ -661,6 +676,7 @@ pub(super) fn segment_loop_sleep_duration(
         .min(SEGMENT_LOOP_IDLE_POLL_INTERVAL)
 }
 
+#[cfg(target_os = "macos")]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(super) struct PlannedSegmentRotation {
     pub(super) next_index: u64,
@@ -670,7 +686,7 @@ pub(super) struct PlannedSegmentRotation {
     pub(super) system_audio_output_path: Option<PathBuf>,
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 pub(super) fn plan_live_rotation_segment(
     runtime: &NativeCaptureRuntime,
     sources: &CaptureSources,
@@ -1116,12 +1132,20 @@ fn spawn_frame_artifact_worker(
     tx
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn rfc3339_from_unix_ms(unix_ms: u64) -> String {
     time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix_ms) * 1_000_000)
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+/// Windows has no AVFoundation duration probe; the segment window falls back to
+/// the scheduled segment duration when `None` is returned. The `.m4a` is still
+/// validated for a positive duration separately via the MF Source Reader probe.
+#[cfg(target_os = "windows")]
+fn audio_file_duration_ms(_file_path: &str) -> Option<u64> {
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -1152,7 +1176,7 @@ pub(super) fn audio_duration_time_to_ms(duration: cidre::cm::Time) -> Option<u64
     u64::try_from(value_ms).ok()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn scheduled_audio_segment_started_at_unix_ms(
     source_session: &SourceSessionMeta,
     segment_index: u64,
@@ -1166,7 +1190,7 @@ fn scheduled_audio_segment_started_at_unix_ms(
     source_session.started_at_unix_ms.saturating_add(offset_ms)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn audio_segment_window_for_file(
     source_session: &SourceSessionMeta,
     segment_index: u64,
@@ -1188,7 +1212,7 @@ fn audio_segment_window_for_file(
     audio_segment_window_from_duration_ms(started_at_unix_ms, duration_ms)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn audio_segment_started_at_unix_ms_for_file(
     source_session: &SourceSessionMeta,
     segment_index: u64,
@@ -1200,7 +1224,7 @@ pub(super) fn audio_segment_started_at_unix_ms_for_file(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn audio_segment_window_from_duration_ms(
     started_at_unix_ms: u64,
     duration_ms: u64,
@@ -1213,7 +1237,7 @@ pub(super) fn audio_segment_window_from_duration_ms(
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn committed_audio_segments_for_output_files(
     source_sessions: Option<&SourceSessions>,
     schedule: Option<&SegmentSchedule>,
@@ -1560,6 +1584,112 @@ pub(super) fn persist_committed_audio_segments(
         let speaker_admission = speaker_analysis_admission_for_app_handle(&app_handle);
         let system_audio_speech_admission =
             system_audio_speech_admission_for_app_handle(&app_handle);
+        for segment in segments {
+            match infra
+                .upsert_audio_segment_and_maybe_enqueue_processing(
+                    &segment,
+                    &transcription_admission,
+                    &speaker_admission,
+                    &system_audio_speech_admission,
+                )
+                .await
+            {
+                Ok(_) => {
+                    persisted_any = true;
+                }
+                Err(error) => {
+                    super::debug_log::log(format!(
+                        "failed to persist native audio segment {}: {}",
+                        segment.file_path, error
+                    ));
+                }
+            }
+        }
+
+        if persisted_any {
+            emit_audio_segments_changed(&app_handle);
+        }
+    });
+
+    if let Err(error) = persistence {
+        super::debug_log::log(format!("native audio segment persistence failed: {error}"));
+    }
+}
+
+/// Map a Windows microphone finalization onto the committed output bookkeeping.
+///
+/// Windows writes the final `.m4a` directly (source == output, no VAD trim), so
+/// this only confirms the closed segment's file or — when the segment captured
+/// no audio — drops it from bookkeeping so an empty `.m4a` is never committed.
+#[cfg(target_os = "windows")]
+pub(super) fn apply_windows_microphone_output_finalization(
+    output_files: Option<&mut CaptureOutputFiles>,
+    finalization: &microphone_capture::MicrophoneOutputFinalization,
+) {
+    let Some(output_files) = output_files else {
+        return;
+    };
+
+    match finalization.output_file.as_deref() {
+        Some(output_file) => {
+            if output_files
+                .microphone_files
+                .iter()
+                .any(|file| file == output_file)
+            {
+                output_files.microphone_file = Some(output_file.to_string());
+            } else {
+                set_current_microphone_output_file(output_files, output_file.to_string());
+            }
+        }
+        None => {
+            if let Some(source_file) = finalization.source_file.as_deref() {
+                output_files.microphone_files.retain(|file| file != source_file);
+            }
+            output_files.microphone_file = output_files.microphone_files.last().cloned();
+        }
+    }
+}
+
+/// Windows audio-segment persistence.
+///
+/// Commits produced microphone Audio Segments to the index but enqueues **no**
+/// audio processing jobs yet — capture-and-store only. Passing disabled
+/// admissions guarantees `upsert_audio_segment_and_maybe_enqueue_processing`
+/// upserts the segment without enqueuing transcription/speaker/system-audio
+/// work; a future audio-decode slice will backfill those jobs.
+#[cfg(target_os = "windows")]
+pub(super) fn persist_committed_audio_segments(
+    app_handle: Option<&tauri::AppHandle>,
+    source_sessions: Option<&SourceSessions>,
+    schedule: Option<&SegmentSchedule>,
+    segment_index: u64,
+    output_files: Option<&CaptureOutputFiles>,
+) {
+    let (Some(app_handle), Some(source_sessions), Some(schedule), Some(output_files)) =
+        (app_handle, source_sessions, schedule, output_files)
+    else {
+        return;
+    };
+    let segments = committed_audio_segments_for_output_files(
+        Some(source_sessions),
+        Some(schedule),
+        segment_index,
+        Some(output_files),
+    );
+
+    if segments.is_empty() {
+        return;
+    }
+
+    let infra = std::sync::Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
+    let app_handle = app_handle.clone();
+    let persistence = run_native_capture_async("audio-segment-persistence", async move {
+        let transcription_admission = ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
+        let speaker_admission = ::app_infra::AudioSegmentSpeakerAnalysisAdmission::disabled();
+        let system_audio_speech_admission =
+            ::app_infra::SystemAudioSpeechActivityAdmission::disabled();
+        let mut persisted_any = false;
         for segment in segments {
             match infra
                 .upsert_audio_segment_and_maybe_enqueue_processing(
@@ -4274,73 +4404,127 @@ pub(super) fn start_capture_runtime(
 
         #[cfg(target_os = "windows")]
         {
-            if sources.microphone || sources.system_audio {
+            // System audio remains a later Windows slice (ADR 0022); reject it
+            // defensively even though the capability gate already hides it.
+            if sources.system_audio {
                 return Err(CaptureErrorResponse {
-                    code: "unsupported_platform".to_string(),
-                    message: "Windows native capture currently supports screen recording only"
-                        .to_string(),
+                    code: "system_audio_unsupported".to_string(),
+                    message: "Windows system-audio capture is not yet supported".to_string(),
                 });
             }
 
             let started = now_unix_ms();
-            let session_id = prefixed_capture_id("screen")?;
             let recordings_root =
                 crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
                     &settings.save_directory,
                 )
                 .recordings_root();
-            let segment_planner = SegmentPlanner::new(
-                recordings_root.to_string_lossy().to_string(),
-                session_id.clone(),
-            );
-            let segment_schedule =
-                SegmentSchedule::new(Duration::from_secs(settings.segment_duration_seconds));
-            let capture_clock = CaptureClock::start_now();
-            let frame_artifact_tx = sources
-                .screen
-                .then(|| spawn_frame_artifact_worker(&app_handle, session_id.clone()));
             std::fs::create_dir_all(&recordings_root).map_err(|error| CaptureErrorResponse {
                 code: "io_error".to_string(),
                 message: format!("Failed to create capture recordings directory: {error}"),
             })?;
 
+            let segment_schedule =
+                SegmentSchedule::new(Duration::from_secs(settings.segment_duration_seconds));
+            let capture_clock = CaptureClock::start_now();
             let segment_index = 1;
-            let first_segment_dir = segment_planner.segment_dir(segment_index);
-            let first_screen_output_file = segment_planner.segment_screen_output(segment_index);
             let effective_screen_bitrate_bps = compute_effective_screen_bitrate_bps(settings);
-            create_segment_output_dirs(&first_segment_dir, None, None, &sources)?;
-
-            let screen_sources = capture_screen::ScreenCaptureSources {
-                screen: sources.screen,
-                system_audio: false,
-            };
-            let screen_capture = capture_screen::start_capture_session_with_options(
-                &first_segment_dir,
-                Some(&first_screen_output_file),
-                None,
-                &screen_sources,
-                settings.screen_frame_rate,
-                &settings.screen_resolution,
-                effective_screen_bitrate_bps,
-                capture_session_options(
-                    frame_artifact_tx.clone(),
-                    Some(metadata::frame_metadata_snapshot_provider(&app_handle)),
-                    0,
-                    None,
-                ),
-            )?;
 
             let mut segment_outputs = empty_output_files();
-            if let Some(screen_file) = screen_capture.output_files.screen_file {
-                set_current_screen_output_file(&mut segment_outputs, screen_file);
+            let mut screen_session_id: Option<String> = None;
+            let mut segment_planner: Option<SegmentPlanner> = None;
+            let mut frame_artifact_tx: Option<mpsc::Sender<FrameArtifactMessage>> = None;
+            let mut recording_file: Option<String> = None;
+            let mut active_screen_session: Option<Box<dyn capture_screen::ScreenCaptureSession>> =
+                None;
+
+            // --- Screen source (optional; audio is now an independent source) ---
+            if sources.screen {
+                let session_id = prefixed_capture_id("screen")?;
+                let planner = SegmentPlanner::new(
+                    recordings_root.to_string_lossy().to_string(),
+                    session_id.clone(),
+                );
+                let tx = spawn_frame_artifact_worker(&app_handle, session_id.clone());
+                let first_segment_dir = planner.segment_dir(segment_index);
+                let first_screen_output_file = planner.segment_screen_output(segment_index);
+                create_segment_output_dirs(&first_segment_dir, None, None, &sources)?;
+
+                let screen_sources = capture_screen::ScreenCaptureSources {
+                    screen: true,
+                    system_audio: false,
+                };
+                let screen_capture = capture_screen::start_capture_session_with_options(
+                    &first_segment_dir,
+                    Some(&first_screen_output_file),
+                    None,
+                    &screen_sources,
+                    settings.screen_frame_rate,
+                    &settings.screen_resolution,
+                    effective_screen_bitrate_bps,
+                    capture_session_options(
+                        Some(tx.clone()),
+                        Some(metadata::frame_metadata_snapshot_provider(&app_handle)),
+                        0,
+                        None,
+                    ),
+                )?;
+
+                if let Some(screen_file) = screen_capture.output_files.screen_file {
+                    set_current_screen_output_file(&mut segment_outputs, screen_file);
+                }
+                recording_file = Some(screen_capture.recording_file);
+                active_screen_session = Some(Box::new(screen_capture.session));
+                frame_artifact_tx = Some(tx);
+                segment_planner = Some(planner);
+                screen_session_id = Some(session_id);
+            }
+
+            // --- Microphone source (optional; WASAPI default endpoint) ---
+            let mut microphone_session_id: Option<String> = None;
+            let mut microphone_planner: Option<SegmentPlanner> = None;
+            let mut microphone_recording_file: Option<String> = None;
+            let mut active_microphone_session: Option<
+                Box<dyn microphone_capture::AudioCaptureSession>,
+            > = None;
+
+            if sources.microphone {
+                let mic_id = prefixed_capture_id("mic")?;
+                let planner = SegmentPlanner::new(
+                    recordings_root.to_string_lossy().to_string(),
+                    mic_id.clone(),
+                );
+                let first_microphone_output_path = planner.microphone_file(segment_index);
+                // Audio segments live in the shared dated `audio/` directory; no
+                // per-segment screen workspace is created for an audio-only session.
+                if let Some(audio_dir) = first_microphone_output_path.parent() {
+                    std::fs::create_dir_all(audio_dir).map_err(|error| CaptureErrorResponse {
+                        code: "io_error".to_string(),
+                        message: format!("Failed to create capture audio directory: {error}"),
+                    })?;
+                }
+                let output_file = first_microphone_output_path.to_string_lossy().to_string();
+                let session =
+                    microphone_capture::start_wasapi_microphone_capture_session_for_file(
+                        &output_file,
+                        microphone_device_id_for_capture.as_deref(),
+                    )?;
+                set_current_microphone_output_file(&mut segment_outputs, output_file.clone());
+                microphone_recording_file = Some(output_file);
+                active_microphone_session = Some(Box::new(session));
+                microphone_planner = Some(planner);
+                microphone_session_id = Some(mic_id);
             }
 
             let source_sessions = SourceSessions {
-                screen: sources.screen.then(|| SourceSessionMeta {
+                screen: screen_session_id.map(|session_id| SourceSessionMeta {
                     session_id,
                     started_at_unix_ms: started,
                 }),
-                microphone: None,
+                microphone: microphone_session_id.map(|session_id| SourceSessionMeta {
+                    session_id,
+                    started_at_unix_ms: started,
+                }),
                 system_audio: None,
             };
             let segment_loop_control = spawn_segment_loop(app_handle.clone());
@@ -4359,14 +4543,16 @@ pub(super) fn start_capture_runtime(
             runtime.segment_loop_control = Some(segment_loop_control);
             runtime.capture_clock = Some(capture_clock);
             runtime.segment_schedule = Some(segment_schedule);
-            runtime.segment_planner = Some(segment_planner);
-            runtime.microphone_planner = None;
+            runtime.segment_planner = segment_planner;
+            runtime.microphone_planner = microphone_planner;
             runtime.system_audio_planner = None;
             runtime.frame_artifact_tx = frame_artifact_tx;
-            runtime.recording_file = Some(screen_capture.recording_file);
-            runtime.microphone_recording_file = None;
+            runtime.recording_file = recording_file;
+            runtime.microphone_recording_file = microphone_recording_file;
             runtime.system_audio_recording_file = None;
-            runtime.active_screen_session = Some(Box::new(screen_capture.session));
+            runtime.active_screen_session = active_screen_session;
+            runtime.active_microphone_session = active_microphone_session;
+            runtime.active_system_audio_session = None;
             apply_runtime_signal(runtime, RuntimeSignal::SourcesReady)?;
             Ok(())
         }
@@ -4510,10 +4696,33 @@ pub(super) fn stop_capture_runtime(
 
     #[cfg(target_os = "windows")]
     {
-        let _ = app_handle;
         if runtime.is_running {
             apply_runtime_signal(runtime, RuntimeSignal::StopRequested)?;
         }
+
+        let mut current_segment_output_files = runtime.current_segment_output_files.clone();
+        let recording_file = runtime.recording_file.clone();
+        let microphone_recording_file = runtime.microphone_recording_file.clone();
+        let requested_sources = runtime.requested_sources.clone();
+
+        // Finalize the in-flight microphone segment so its `.m4a` is openable
+        // before the WASAPI/MF capture thread is torn down.
+        if let Some(session) = runtime.active_microphone_session.as_mut() {
+            match session.stop_returning_finalization() {
+                Ok(finalization) => apply_windows_microphone_output_finalization(
+                    current_segment_output_files.as_mut(),
+                    &finalization,
+                ),
+                Err(error) => {
+                    super::debug_log::log(format!(
+                        "failed to finalize Windows microphone capture on stop: [{}] {}",
+                        error.code, error.message
+                    ));
+                }
+            }
+        }
+        runtime.active_microphone_session = None;
+        runtime.active_system_audio_session = None;
 
         capture_screen::stop_screen_capture_session(StopScreenCaptureSessionArgs {
             active_session: &mut runtime.active_screen_session,
@@ -4524,12 +4733,37 @@ pub(super) fn stop_capture_runtime(
             flush_frame_artifacts(tx);
         }
 
+        // Validate produced audio outputs (openable `.m4a` with positive duration)
+        // through the shared injectable validator seam and drop any unusable ones.
+        if let Err(error) = finalize_capture_outputs(
+            current_segment_output_files.as_mut(),
+            recording_file.as_deref(),
+            microphone_recording_file.as_deref(),
+            None,
+            requested_sources.as_ref(),
+        ) {
+            super::debug_log::log(format!(
+                "Windows capture output finalization reported an issue on stop: [{}] {}",
+                error.code, error.message
+            ));
+        }
+
         if let (Some(committed), Some(segment)) = (
             runtime.output_files.as_mut(),
-            runtime.current_segment_output_files.as_ref(),
+            current_segment_output_files.as_ref(),
         ) {
             append_committed_segment_output_files(committed, segment);
         }
+
+        // Commit produced Audio Segments but do not enqueue processing jobs on
+        // Windows yet (capture-and-store only).
+        persist_committed_audio_segments(
+            app_handle,
+            runtime.source_sessions.as_ref(),
+            runtime.segment_schedule.as_ref(),
+            runtime.current_segment_index,
+            current_segment_output_files.as_ref(),
+        );
 
         if runtime.runtime_state == RuntimeState::Stopping {
             apply_runtime_signal(runtime, RuntimeSignal::SourcesStopped)?;

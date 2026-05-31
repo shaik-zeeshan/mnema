@@ -1,11 +1,12 @@
 use super::activity::current_activity_snapshot;
 use super::output::append_committed_segment_output_files;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use super::output::finalize_capture_outputs;
 #[cfg(target_os = "macos")]
-use super::output::{cleanup_unusable_segment_artifacts, finalize_capture_outputs};
-use super::output::{
-    set_current_microphone_output_file, set_current_screen_output_file,
-    set_current_system_audio_output_file,
-};
+use super::output::cleanup_unusable_segment_artifacts;
+use super::output::{set_current_microphone_output_file, set_current_screen_output_file};
+#[cfg(target_os = "macos")]
+use super::output::set_current_system_audio_output_file;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     current_segment_sources_for_runtime, ensure_system_audio_planner_for_runtime,
@@ -28,9 +29,11 @@ use super::segments::{
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::segments::{
-    cleanup_failed_segment_dirs, create_segment_output_dirs, plan_live_rotation_segment,
-    reanchor_active_segment_timing, stop_active_sessions_after_failure,
+    cleanup_failed_segment_dirs, create_segment_output_dirs, reanchor_active_segment_timing,
+    stop_active_sessions_after_failure,
 };
+#[cfg(target_os = "macos")]
+use super::segments::plan_live_rotation_segment;
 use super::segments::{empty_output_files, start_capture_runtime, stop_capture_runtime};
 use capture_runtime::RuntimeSignal;
 use capture_types::{
@@ -573,16 +576,8 @@ impl RecordingLifecycle {
         TickOutcome::Continue
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     pub(crate) fn tick_rotation(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
-        #[cfg(target_os = "windows")]
-        let _ = app_handle;
-
-        #[cfg(target_os = "windows")]
-        if self.fail_if_windows_screen_capture_stopped() == TickOutcome::StopLoop {
-            return TickOutcome::StopLoop;
-        }
-
         refresh_runtime_planner_dates(&mut self.runtime);
 
         let mut previous_segment_output_files = self.runtime.current_segment_output_files.clone();
@@ -980,6 +975,218 @@ impl RecordingLifecycle {
         if let Err(error) = reanchor_active_segment_timing(&mut self.runtime, "rotating segments") {
             super::debug_log::log(format!(
                 "failed to re-anchor native capture segment timing while rotating segments: [{}] {}",
+                error.code, error.message
+            ));
+            stop_active_sessions_after_failure(&mut self.runtime);
+            mark_runtime_session_failed(&mut self.runtime);
+            return TickOutcome::StopLoop;
+        }
+
+        if apply_runtime_signal(&mut self.runtime, RuntimeSignal::SourcesReady).is_err() {
+            stop_active_sessions_after_failure(&mut self.runtime);
+            mark_runtime_session_failed(&mut self.runtime);
+            return TickOutcome::StopLoop;
+        }
+
+        TickOutcome::Continue
+    }
+
+    /// Windows segment rotation across the independent screen and microphone
+    /// sources (ADR 0022). Unlike macOS, an audio-only session has no screen
+    /// planner/session and no per-segment screen workspace: the screen-stopped
+    /// check and the screen rotation arm are gated on whether screen is actually
+    /// an active source, and the microphone arm rotates the WASAPI/MF session on
+    /// the same wall-clock `CaptureClock`/`SegmentSchedule` boundary.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn tick_rotation(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
+        // Screen liveness is only meaningful when screen is an active source; the
+        // helper is a no-op when there is no active screen session (audio-only).
+        if self.fail_if_windows_screen_capture_stopped() == TickOutcome::StopLoop {
+            return TickOutcome::StopLoop;
+        }
+
+        refresh_runtime_planner_dates(&mut self.runtime);
+
+        let Some(sources) = self.runtime.requested_sources.clone() else {
+            mark_runtime_session_failed(&mut self.runtime);
+            return TickOutcome::StopLoop;
+        };
+        let Some(schedule) = self.runtime.segment_schedule.clone() else {
+            mark_runtime_session_failed(&mut self.runtime);
+            return TickOutcome::StopLoop;
+        };
+        let Some(clock) = self.runtime.capture_clock.clone() else {
+            mark_runtime_session_failed(&mut self.runtime);
+            return TickOutcome::StopLoop;
+        };
+
+        if !schedule.segment_duration_reached(clock.elapsed()) {
+            return TickOutcome::SkipRotation;
+        }
+
+        let active_sources = current_segment_sources_for_runtime(&self.runtime).unwrap_or(sources);
+
+        // A screen planner is required only when screen is an active source; an
+        // audio-only session rotates without one.
+        let screen_planner = screen_planner_for_runtime(&self.runtime).cloned();
+        if active_sources.screen && screen_planner.is_none() {
+            mark_runtime_session_failed(&mut self.runtime);
+            return TickOutcome::StopLoop;
+        }
+        let microphone_planner = microphone_planner_for_runtime(&self.runtime).cloned();
+
+        let next_index =
+            super::segments::next_emitted_segment_index(self.runtime.current_segment_index);
+
+        let recording_file = self.runtime.recording_file.clone();
+        let microphone_recording_file = self.runtime.microphone_recording_file.clone();
+        let requested_sources = self.runtime.requested_sources.clone();
+        let mut previous_segment_output_files = self.runtime.current_segment_output_files.clone();
+
+        if apply_runtime_signal(&mut self.runtime, RuntimeSignal::RotateRequested).is_err() {
+            mark_runtime_session_failed(&mut self.runtime);
+            return TickOutcome::StopLoop;
+        }
+
+        let mut next_segment_outputs = empty_output_files();
+        let mut next_recording_file = self.runtime.recording_file.clone();
+        let mut next_microphone_recording_file = self.runtime.microphone_recording_file.clone();
+        let mut screen_segment_dir: Option<std::path::PathBuf> = None;
+
+        // --- Screen rotation (only when screen is an active source) ---
+        if active_sources.screen {
+            let screen_planner = screen_planner
+                .as_ref()
+                .expect("screen planner is present when screen is an active source");
+            let segment_dir = screen_planner.segment_dir(next_index);
+            let screen_output_file = screen_planner.segment_screen_output(next_index);
+            if let Err(error) =
+                create_segment_output_dirs(&segment_dir, None, None, &active_sources)
+            {
+                super::debug_log::log(format!(
+                    "failed to prepare Windows screen segment directory while rotating: [{}] {}",
+                    error.code, error.message
+                ));
+                mark_runtime_session_failed(&mut self.runtime);
+                return TickOutcome::StopLoop;
+            }
+            screen_segment_dir = Some(segment_dir.clone());
+
+            match capture_screen::rotate_screen_capture_session(
+                capture_screen::RotateScreenCaptureSessionArgs {
+                    active_session: &mut self.runtime.active_screen_session,
+                    segment_dir: &segment_dir,
+                    screen_output_file: Some(&screen_output_file),
+                    system_audio_output_path: None,
+                },
+            ) {
+                Ok(rotated) => {
+                    if let Some(file) = rotated.output_files.screen_file {
+                        set_current_screen_output_file(&mut next_segment_outputs, file);
+                    }
+                    next_recording_file = Some(rotated.recording_file);
+                }
+                Err(_) => {
+                    cleanup_failed_segment_dirs(&segment_dir, None, None);
+                    stop_active_sessions_after_failure(&mut self.runtime);
+                    mark_runtime_session_failed(&mut self.runtime);
+                    return TickOutcome::StopLoop;
+                }
+            }
+        }
+
+        // --- Microphone rotation (only when microphone is an active source) ---
+        if active_sources.microphone {
+            let Some(planner) = microphone_planner.as_ref() else {
+                mark_runtime_session_failed(&mut self.runtime);
+                return TickOutcome::StopLoop;
+            };
+            let microphone_output_path = planner.microphone_file(next_index);
+            if let Some(audio_dir) = microphone_output_path.parent() {
+                if let Err(error) = std::fs::create_dir_all(audio_dir) {
+                    super::debug_log::log(format!(
+                        "failed to prepare Windows microphone audio directory while rotating: {error}"
+                    ));
+                    if let Some(dir) = screen_segment_dir.as_deref() {
+                        cleanup_failed_segment_dirs(dir, None, None);
+                    }
+                    stop_active_sessions_after_failure(&mut self.runtime);
+                    mark_runtime_session_failed(&mut self.runtime);
+                    return TickOutcome::StopLoop;
+                }
+            }
+            let microphone_output_file = microphone_output_path.to_string_lossy().to_string();
+            if let Some(session) = self.runtime.active_microphone_session.as_mut() {
+                match session.rotate_output_file_returning_finalization(&microphone_output_file) {
+                    Ok(finalization) => {
+                        super::segments::apply_windows_microphone_output_finalization(
+                            previous_segment_output_files.as_mut(),
+                            &finalization,
+                        );
+                    }
+                    Err(error) => {
+                        super::debug_log::log(format!(
+                            "failed to rotate Windows microphone capture: [{}] {}",
+                            error.code, error.message
+                        ));
+                        if let Some(dir) = screen_segment_dir.as_deref() {
+                            cleanup_failed_segment_dirs(dir, None, None);
+                        }
+                        stop_active_sessions_after_failure(&mut self.runtime);
+                        mark_runtime_session_failed(&mut self.runtime);
+                        return TickOutcome::StopLoop;
+                    }
+                }
+                set_current_microphone_output_file(
+                    &mut next_segment_outputs,
+                    microphone_output_file.clone(),
+                );
+                next_microphone_recording_file = Some(microphone_output_file);
+            }
+        }
+
+        if let Some(tx) = self.runtime.frame_artifact_tx.as_ref() {
+            super::segments::flush_frame_artifacts(tx);
+        }
+
+        // --- Finalize + commit the segment that just closed ---
+        if let Err(error) = finalize_capture_outputs(
+            previous_segment_output_files.as_mut(),
+            recording_file.as_deref(),
+            microphone_recording_file.as_deref(),
+            None,
+            requested_sources.as_ref(),
+        ) {
+            super::debug_log::log(format!(
+                "Windows capture output finalization reported an issue while rotating: [{}] {}",
+                error.code, error.message
+            ));
+        }
+
+        if let (Some(committed), Some(segment)) = (
+            self.runtime.output_files.as_mut(),
+            previous_segment_output_files.as_ref(),
+        ) {
+            append_committed_segment_output_files(committed, segment);
+        }
+        // Commit Audio Segments without enqueuing audio processing jobs on Windows.
+        super::segments::persist_committed_audio_segments(
+            Some(app_handle),
+            self.runtime.source_sessions.as_ref(),
+            self.runtime.segment_schedule.as_ref(),
+            self.runtime.current_segment_index,
+            previous_segment_output_files.as_ref(),
+        );
+
+        self.runtime.current_segment_index = next_index;
+        self.runtime.current_segment_output_files = Some(next_segment_outputs);
+        self.runtime.current_segment_sources = Some(active_sources);
+        self.runtime.recording_file = next_recording_file;
+        self.runtime.microphone_recording_file = next_microphone_recording_file;
+
+        if let Err(error) = reanchor_active_segment_timing(&mut self.runtime, "rotating segments") {
+            super::debug_log::log(format!(
+                "failed to re-anchor Windows capture segment timing while rotating: [{}] {}",
                 error.code, error.message
             ));
             stop_active_sessions_after_failure(&mut self.runtime);

@@ -211,16 +211,21 @@ fn build_menu_model(
     })
     .collect();
 
+    // The user pause/resume control is not exposed on Windows yet (a later slice
+    // wires up transient capture recovery there). Hide it entirely so the tray
+    // never offers a pause action the backend cannot honour.
+    let pause_supported = !cfg!(target_os = "windows");
+
     StatusBarMenuModel {
         onboarding_complete: true,
         recording_label: Some(recording_label),
         recording_enabled: operation == StatusBarOperation::Idle,
-        pause_label: recording.then_some(if user_paused {
+        pause_label: (pause_supported && recording).then_some(if user_paused {
             "Resume Recording"
         } else {
             "Pause Recording"
         }),
-        pause_enabled: recording && operation == StatusBarOperation::Idle,
+        pause_enabled: pause_supported && recording && operation == StatusBarOperation::Idle,
         source_items,
         tooltip,
     }
@@ -316,21 +321,24 @@ fn build_menu(
     let separator = PredefinedMenuItem::separator(app)?;
     let separator_two = PredefinedMenuItem::separator(app)?;
 
-    Menu::with_items(
-        app,
-        &[
-            &recording,
-            &pause,
-            &sources,
-            &exclude_current,
-            &delete_recent,
-            &separator_two,
-            &open_main,
-            &settings,
-            &separator,
-            &quit,
-        ],
-    )
+    // The pause item is hidden entirely on Windows (no user pause/resume yet).
+    // Everywhere else it stays visible, disabled while not recording, matching
+    // the existing macOS tray behaviour.
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
+        vec![&recording as &dyn tauri::menu::IsMenuItem<tauri::Wry>];
+    if !cfg!(target_os = "windows") {
+        items.push(&pause);
+    }
+    items.push(&sources);
+    items.push(&exclude_current);
+    items.push(&delete_recent);
+    items.push(&separator_two);
+    items.push(&open_main);
+    items.push(&settings);
+    items.push(&separator);
+    items.push(&quit);
+
+    Menu::with_items(app, &items)
 }
 
 pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -781,6 +789,49 @@ mod tests {
             StatusBarOperation::Idle,
         );
         assert!(!model.source_items[2].enabled);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn recording_model_exposes_pause_control_off_windows() {
+        let model = build_menu_model(
+            true,
+            false,
+            false,
+            &settings_with_sources(true, true, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(model.pause_label, Some("Pause Recording"));
+        assert!(model.pause_enabled);
+
+        let paused = build_menu_model(
+            true,
+            true,
+            true,
+            &settings_with_sources(true, true, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(paused.pause_label, Some("Resume Recording"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn pause_control_is_hidden_on_windows() {
+        // Recording or not, paused or not, Windows must never offer pause/resume.
+        for (recording, user_paused) in [(true, false), (true, true), (false, false)] {
+            let model = build_menu_model(
+                true,
+                recording,
+                user_paused,
+                &settings_with_sources(true, true, false),
+                &support_all(),
+                StatusBarOperation::Idle,
+            );
+            assert_eq!(model.pause_label, None);
+            assert!(!model.pause_enabled);
+        }
     }
 
     #[test]

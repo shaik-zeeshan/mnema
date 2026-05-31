@@ -2,6 +2,7 @@
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { platform } from "@tauri-apps/plugin-os";
   import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
@@ -23,6 +24,7 @@
     AudioTranscriptionModelStatus,
     AudioTranscriptionModelStatusResponse,
     AudioTranscriptionProvider,
+    CaptureSupport,
     ExcludedAppEntry,
     GetPermissionsResponse,
     OcrModelDownloadProgress,
@@ -109,6 +111,25 @@
   let activeProcessingPanel = $state<ProcessingPanel>("ocr");
   let settings = $state<RecordingSettings | null>(null);
   let permissions = $state<Record<PermissionKey, PermissionValue> | null>(null);
+  let captureSupport = $state<CaptureSupport | null>(null);
+
+  const isMacOS = platform() === "macos";
+  const isWindows = platform() === "windows";
+
+  // Per-source capability gating (see docs/adr/0022): prefer the backend-reported
+  // support, falling back to the platform while the lookup is pending so supported
+  // sources are not transiently hidden. macOS supports both audio sources; Windows
+  // supports microphone only.
+  const microphoneSourceSupported = $derived(
+    captureSupport !== null
+      ? captureSupport.supportedSources.microphone
+      : (isMacOS || isWindows)
+  );
+  const systemAudioSourceSupported = $derived(
+    captureSupport !== null
+      ? captureSupport.supportedSources.systemAudio
+      : isMacOS
+  );
   let loading = $state(true);
   let saving = $state(false);
   let starting = $state(false);
@@ -301,6 +322,14 @@
       ]);
       settings = loadedSettings;
       permissions = permissionResponse.permissions as Record<PermissionKey, PermissionValue>;
+      // Capability gating drives which capture sources are revealed. A failed
+      // lookup leaves captureSupport null and the derived flags fall back to the
+      // platform, so this is intentionally non-fatal.
+      try {
+        captureSupport = await invoke<CaptureSupport>("get_capture_support");
+      } catch {
+        captureSupport = null;
+      }
       syncDrafts(loadedSettings);
       void appPrivacyExclusion.loadPrivacyAppCandidates();
       void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
@@ -1186,17 +1215,21 @@
 
                   <div class="settings-stack">
                     <Switch bind:checked={draftCaptureScreen} label="Screen" description="Capture the display" />
-                    <div class="settings-divider"></div>
-                    <Switch bind:checked={draftCaptureMicrophone} label="Microphone" description="Capture microphone audio" />
-                    <div class="settings-divider"></div>
-                    <Switch
-                      bind:checked={draftCaptureSystemAudio}
-                      disabled={!draftCaptureScreen}
-                      label="System audio"
-                      description="Capture Mac system audio when supported"
-                    />
+                    {#if microphoneSourceSupported}
+                      <div class="settings-divider"></div>
+                      <Switch bind:checked={draftCaptureMicrophone} label="Microphone" description="Capture microphone audio" />
+                    {/if}
+                    {#if systemAudioSourceSupported}
+                      <div class="settings-divider"></div>
+                      <Switch
+                        bind:checked={draftCaptureSystemAudio}
+                        disabled={!draftCaptureScreen}
+                        label="System audio"
+                        description="Capture Mac system audio when supported"
+                      />
+                    {/if}
                   </div>
-                  {#if !draftCaptureScreen}
+                  {#if systemAudioSourceSupported && !draftCaptureScreen}
                     <p class="hint hint--warn">System audio requires screen capture.</p>
                   {/if}
 

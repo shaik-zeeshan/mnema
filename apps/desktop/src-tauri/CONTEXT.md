@@ -11,7 +11,7 @@ Background work that materializes generated **Scrub Preview** cache artifacts fo
 _Avoid_: scrub-time extraction, exact frame preview generation, thumbnail pipeline
 
 **Recording Lifecycle**:
-The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. Screen and system audio share the screen capture backend, while microphone runs as a separate native session.
+The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. On macOS, screen and system audio share the screen capture backend while microphone runs as a separate native session; on Windows, microphone and system audio are each independent native audio sessions decoupled from screen capture.
 _Avoid_: capture runtime, recorder service, session manager
 
 **Live Privacy Filter**:
@@ -80,6 +80,8 @@ _Avoid_: recording settings, browser local storage, one-time prompt state
 - **Hidden Segment Workspace** cleanup does not wait on **Scrub Preview Generation**; existing frame artifacts are used opportunistically but the finalized segment recording remains the regeneration source.
 - A **Recording Lifecycle** coordinates screen, microphone, and system-audio capture within one recording runtime.
 - A **Recording Lifecycle** applies **App Privacy Exclusion** through the **Live Privacy Filter** when screen capture is requested.
+- Whether system audio requires screen capture is a platform capability, not a fixed rule: macOS couples system audio to the screen backend, while Windows treats system audio as an independent source. See [ADR 0022](../../../docs/adr/0022-system-audio-is-an-independent-source-on-windows.md).
+- On Windows, screen loss from system suspend, session lock, or monitor/display change is a transient liveness condition the **Recording Lifecycle** recovers from by reusing the inactivity pause/resume mechanism with a pause-reason discriminator, not by ending the session. See [ADR 0023](../../../docs/adr/0023-windows-transient-capture-recovery-reuses-inactivity-pause.md).
 - Metadata-derived website, title, private-browser, and per-window decisions must not feed the **Live Privacy Filter**.
 - A **Recording Lifecycle** may pause or resume requested sources based on inactivity policy.
 - A **Recording Lifecycle** commits requested audio sources as **Audio Segment** values.

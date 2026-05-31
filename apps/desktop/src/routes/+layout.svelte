@@ -4,6 +4,7 @@
   import { tick, type Snippet } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { platform } from "@tauri-apps/plugin-os";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
   import { closeCurrentWindow, isDedicatedSurfaceWindow, openDebugWindow, openSettingsWindow } from "$lib/surface-windows";
@@ -51,6 +52,10 @@
   }
 
   let { children }: Props = $props();
+
+  // User pause/resume is not wired up on Windows yet (a later slice handles
+  // transient capture recovery there), so the control stays hidden.
+  const isWindows = platform() === "windows";
 
   const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
@@ -416,6 +421,8 @@
   }
 
   async function pauseResumeRecordingShortcut(): Promise<void> {
+    // Pause/resume is hidden on Windows; do not let the shortcut drive it either.
+    if (isWindows) return;
     if (!isCapturing || captureLoadingPause || captureLoadingStop || captureLoadingStart) return;
     if (captureControls.isUserPaused) {
       await resumeCapture();
@@ -662,17 +669,19 @@
           <span class="titlebar__status-label">{captureStatusLabel}</span>
         </span>
         {#if isCapturing}
-          <button
-            type="button"
-            class="titlebar__record titlebar__record--pause"
-            class:titlebar__record--resume={captureControls.isUserPaused}
-            onclick={captureControls.isUserPaused ? resumeCapture : pauseCapture}
-            disabled={captureLoadingPause}
-            title={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
-            aria-label={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
-          >
-            <span>{captureLoadingPause ? "Working…" : captureControls.isUserPaused ? "Resume" : "Pause"}</span>
-          </button>
+          {#if !isWindows}
+            <button
+              type="button"
+              class="titlebar__record titlebar__record--pause"
+              class:titlebar__record--resume={captureControls.isUserPaused}
+              onclick={captureControls.isUserPaused ? resumeCapture : pauseCapture}
+              disabled={captureLoadingPause}
+              title={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
+              aria-label={captureControls.isUserPaused ? "Resume recording" : "Pause recording"}
+            >
+              <span>{captureLoadingPause ? "Working…" : captureControls.isUserPaused ? "Resume" : "Pause"}</span>
+            </button>
+          {/if}
           <button
             type="button"
             class="titlebar__record titlebar__record--stop"

@@ -98,6 +98,46 @@ pub struct MicrophoneOutputFinalization {
     pub discard_reason: Option<String>,
 }
 
+/// Platform-neutral seam for a running audio capture session (microphone or
+/// system audio), mirroring [`capture_screen::ScreenCaptureSession`].
+///
+/// The Recording Lifecycle owns microphone and system-audio sessions as
+/// `Box<dyn AudioCaptureSession>` so segment rotation, liveness, and
+/// finalization are written once against this trait rather than per backend.
+/// Rotation and stop both surface a [`MicrophoneOutputFinalization`] so the
+/// existing microphone output finalization path is reused unchanged — that is
+/// the type the macOS AVFoundation backend already produces.
+///
+/// Concrete backends (the macOS `AvFoundationMicrophoneCaptureSession` and the
+/// Windows WASAPI session) keep their richer inherent methods; call sites that
+/// need a backend-specific operation reach it through [`AudioCaptureSession::as_any_mut`].
+pub trait AudioCaptureSession: Send + std::fmt::Debug {
+    /// Rotate the live capture onto `output_file`, returning the finalization of
+    /// the segment that just closed.
+    fn rotate_output_file_returning_finalization(
+        &mut self,
+        output_file: &str,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse>;
+
+    /// Stop the capture session, returning the finalization of the final segment.
+    fn stop_returning_finalization(
+        &mut self,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse>;
+
+    /// Whether the underlying audio capture is still live.
+    fn is_live(&self) -> bool;
+
+    /// Take and clear any stop error the backend recorded asynchronously.
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse>;
+
+    /// Downcast hook for reaching backend-specific session operations that are
+    /// intentionally not part of this cross-platform trait.
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Mutable downcast hook (see [`AudioCaptureSession::as_any`]).
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
 #[cfg(target_os = "macos")]
 #[derive(Debug, Default)]
 struct MicrophoneVadPcmFeedState {
@@ -1789,6 +1829,43 @@ pub struct AvFoundationMicrophoneCaptureSession {
 }
 
 #[cfg(target_os = "macos")]
+impl AudioCaptureSession for AvFoundationMicrophoneCaptureSession {
+    fn rotate_output_file_returning_finalization(
+        &mut self,
+        output_file: &str,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+        AvFoundationMicrophoneCaptureSession::rotate_output_file_returning_finalization(
+            self,
+            output_file,
+        )
+    }
+
+    fn stop_returning_finalization(
+        &mut self,
+    ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+        AvFoundationMicrophoneCaptureSession::stop_returning_finalization(self)
+    }
+
+    fn is_live(&self) -> bool {
+        // AVFoundation does not surface async stream death for the microphone
+        // session; liveness is implied while the session object exists.
+        true
+    }
+
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+        None
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+#[cfg(target_os = "macos")]
 impl AvFoundationMicrophoneCaptureSession {
     pub fn stop(&mut self) -> Result<(), CaptureErrorResponse> {
         self.stop_with_inactivity_tail_trim_seconds(0, 0.0)
@@ -2849,12 +2926,38 @@ pub fn ensure_microphone_permission() -> bool {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn microphone_permission_state() -> CapturePermissionState {
+    // WASAPI shared-mode capture of the default endpoint needs no per-app
+    // prompt, so reporting permission is reporting whether a usable default
+    // capture device exists. Mirrors the Windows screen-capture support gate.
+    if windows_microphone::microphone_capture_supported() {
+        CapturePermissionState::Granted
+    } else {
+        CapturePermissionState::Unsupported
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn ensure_microphone_permission() -> bool {
+    windows_microphone::microphone_capture_supported()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn microphone_permission_state() -> CapturePermissionState {
     CapturePermissionState::Unsupported
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn ensure_microphone_permission() -> bool {
     false
 }
+
+/// Windows WASAPI microphone capture backend.
+#[cfg(target_os = "windows")]
+mod windows_microphone;
+
+#[cfg(target_os = "windows")]
+pub use windows_microphone::{
+    start_wasapi_microphone_capture_session_for_file, WasapiMicrophoneCaptureSession,
+};

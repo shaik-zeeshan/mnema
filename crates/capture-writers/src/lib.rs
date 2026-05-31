@@ -1,4 +1,5 @@
 use capture_types::CaptureErrorResponse;
+#[cfg(target_os = "macos")]
 use std::path::Path;
 
 #[cfg(target_os = "macos")]
@@ -2142,3 +2143,262 @@ mod tests {
         );
     }
 }
+
+// ===========================================================================
+// Windows AAC / MPEG-4 (`.m4a`) sink writer
+// ===========================================================================
+//
+// The Windows microphone backend captures default-endpoint PCM on a dedicated
+// capture thread and feeds it here to be encoded to AAC and muxed into a
+// playable `.m4a` via the Media Foundation `IMFSinkWriter`. This mirrors the
+// screen backend's `IMFSinkWriter` usage (`capture-screen::windows_capture`),
+// reusing the same wide-path / memory-buffer / sample-write pattern but for an
+// audio (PCM -> AAC) stream instead of video (NV12 -> H.264).
+//
+// Threading / lifetime: every item here is single-thread-affine COM state that
+// lives on the capture thread; nothing is `Send`. `create` calls `MFStartup`
+// defensively (Media Foundation reference-counts startup/shutdown, so the
+// capture session's own `MFStartup`/`MFShutdown` around the whole session stays
+// balanced) and `finalize` deliberately does NOT call `MFShutdown` — the
+// capture thread owns the matching shutdown so we never double-shutdown.
+
+#[cfg(target_os = "windows")]
+mod windows_aac_m4a {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use capture_types::CaptureErrorResponse;
+    use windows::core::PCWSTR;
+    use windows::Win32::Media::MediaFoundation::{
+        IMFMediaBuffer, IMFSample, IMFSinkWriter, IMFSourceReader, MFAudioFormat_AAC,
+        MFAudioFormat_PCM, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
+        MFCreateSinkWriterFromURL, MFCreateSourceReaderFromURL, MFMediaType_Audio, MFShutdown,
+        MFStartup, MFSTARTUP_FULL, MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, MF_MT_AAC_PAYLOAD_TYPE,
+        MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE,
+        MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
+        MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_PD_DURATION, MF_SOURCE_READER_MEDIASOURCE, MF_VERSION,
+    };
+
+    /// One AAC stream muxed into a `.m4a` via `IMFSinkWriter`.
+    ///
+    /// Owns capture-thread-local Media Foundation state; not `Send`.
+    pub struct WindowsAacM4aSinkWriter {
+        writer: IMFSinkWriter,
+        stream_index: u32,
+    }
+
+    impl WindowsAacM4aSinkWriter {
+        /// Create a sink writer that encodes interleaved 16-bit PCM to AAC and
+        /// writes a playable `.m4a` at `output_path`.
+        pub fn create(
+            output_path: &Path,
+            sample_rate_hz: u32,
+            channels: u16,
+        ) -> Result<Self, CaptureErrorResponse> {
+            // 128 kbps; a valid AAC `MF_MT_AUDIO_AVG_BYTES_PER_SECOND` value.
+            const AAC_AVG_BYTES_PER_SECOND: u32 = 16_000;
+            let block_alignment = channels as u32 * 2;
+
+            let url: Vec<u16> = output_path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+            unsafe {
+                // Defensive, reference-counted MFStartup; the capture thread owns
+                // the balancing MFShutdown for the whole session.
+                MFStartup(MF_VERSION, MFSTARTUP_FULL)
+                    .map_err(|e| win_error("MFStartup failed", &e))?;
+
+                let output_type = MFCreateMediaType()
+                    .map_err(|e| win_error("MFCreateMediaType (AAC output) failed", &e))?;
+                output_type
+                    .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)
+                    .map_err(|e| win_error("set output major type failed", &e))?;
+                output_type
+                    .SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_AAC)
+                    .map_err(|e| win_error("set output subtype failed", &e))?;
+                output_type
+                    .SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)
+                    .map_err(|e| win_error("set output bits per sample failed", &e))?;
+                output_type
+                    .SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, sample_rate_hz)
+                    .map_err(|e| win_error("set output sample rate failed", &e))?;
+                output_type
+                    .SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, channels as u32)
+                    .map_err(|e| win_error("set output channels failed", &e))?;
+                output_type
+                    .SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, AAC_AVG_BYTES_PER_SECOND)
+                    .map_err(|e| win_error("set output avg bytes per second failed", &e))?;
+                output_type
+                    .SetUINT32(&MF_MT_AAC_PAYLOAD_TYPE, 0)
+                    .map_err(|e| win_error("set output AAC payload type failed", &e))?;
+                output_type
+                    .SetUINT32(&MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29)
+                    .map_err(|e| win_error("set output AAC profile level failed", &e))?;
+
+                let writer = MFCreateSinkWriterFromURL(PCWSTR(url.as_ptr()), None, None)
+                    .map_err(|e| win_error("MFCreateSinkWriterFromURL failed", &e))?;
+
+                let stream_index = writer
+                    .AddStream(&output_type)
+                    .map_err(|e| win_error("AddStream failed", &e))?;
+
+                let input_type = MFCreateMediaType()
+                    .map_err(|e| win_error("MFCreateMediaType (PCM input) failed", &e))?;
+                input_type
+                    .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)
+                    .map_err(|e| win_error("set input major type failed", &e))?;
+                input_type
+                    .SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_PCM)
+                    .map_err(|e| win_error("set input subtype failed", &e))?;
+                input_type
+                    .SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)
+                    .map_err(|e| win_error("set input bits per sample failed", &e))?;
+                input_type
+                    .SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, sample_rate_hz)
+                    .map_err(|e| win_error("set input sample rate failed", &e))?;
+                input_type
+                    .SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, channels as u32)
+                    .map_err(|e| win_error("set input channels failed", &e))?;
+                input_type
+                    .SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, block_alignment)
+                    .map_err(|e| win_error("set input block alignment failed", &e))?;
+                input_type
+                    .SetUINT32(
+                        &MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+                        sample_rate_hz * block_alignment,
+                    )
+                    .map_err(|e| win_error("set input avg bytes per second failed", &e))?;
+                input_type
+                    .SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 1)
+                    .map_err(|e| win_error("set input all samples independent failed", &e))?;
+
+                writer
+                    .SetInputMediaType(stream_index, &input_type, None)
+                    .map_err(|e| win_error("SetInputMediaType failed", &e))?;
+                writer
+                    .BeginWriting()
+                    .map_err(|e| win_error("BeginWriting failed", &e))?;
+
+                Ok(Self {
+                    writer,
+                    stream_index,
+                })
+            }
+        }
+
+        /// Append one chunk of interleaved 16-bit little-endian PCM.
+        ///
+        /// `sample_time_100ns` / `duration_100ns` are Media Foundation 100ns ticks.
+        pub fn append_pcm_s16(
+            &mut self,
+            pcm_le_bytes: &[u8],
+            sample_time_100ns: i64,
+            duration_100ns: i64,
+        ) -> Result<(), CaptureErrorResponse> {
+            if pcm_le_bytes.is_empty() {
+                return Ok(());
+            }
+            unsafe {
+                let buffer: IMFMediaBuffer = MFCreateMemoryBuffer(pcm_le_bytes.len() as u32)
+                    .map_err(|e| win_error("MFCreateMemoryBuffer failed", &e))?;
+
+                let mut data_ptr: *mut u8 = std::ptr::null_mut();
+                buffer
+                    .Lock(&mut data_ptr, None, None)
+                    .map_err(|e| win_error("IMFMediaBuffer.Lock failed", &e))?;
+                std::ptr::copy_nonoverlapping(pcm_le_bytes.as_ptr(), data_ptr, pcm_le_bytes.len());
+                buffer
+                    .Unlock()
+                    .map_err(|e| win_error("IMFMediaBuffer.Unlock failed", &e))?;
+                buffer
+                    .SetCurrentLength(pcm_le_bytes.len() as u32)
+                    .map_err(|e| win_error("SetCurrentLength failed", &e))?;
+
+                let sample: IMFSample =
+                    MFCreateSample().map_err(|e| win_error("MFCreateSample failed", &e))?;
+                sample
+                    .AddBuffer(&buffer)
+                    .map_err(|e| win_error("IMFSample.AddBuffer failed", &e))?;
+                sample
+                    .SetSampleTime(sample_time_100ns)
+                    .map_err(|e| win_error("SetSampleTime failed", &e))?;
+                sample
+                    .SetSampleDuration(duration_100ns)
+                    .map_err(|e| win_error("SetSampleDuration failed", &e))?;
+
+                self.writer
+                    .WriteSample(self.stream_index, &sample)
+                    .map_err(|e| win_error("WriteSample failed", &e))?;
+            }
+            Ok(())
+        }
+
+        /// Finalize the MPEG-4 container, flushing the AAC encoder. Does not call
+        /// `MFShutdown` (the capture thread owns the balancing shutdown).
+        pub fn finalize(self) -> Result<(), CaptureErrorResponse> {
+            unsafe {
+                self.writer
+                    .Finalize()
+                    .map_err(|e| win_error("IMFSinkWriter.Finalize failed", &e))?;
+            }
+            Ok(())
+        }
+    }
+
+    /// MF Source Reader positive-duration probe. Opens `path` with
+    /// `MFCreateSourceReaderFromURL` and reads `MF_PD_DURATION`; returns true iff
+    /// it opens and the duration is > 0.
+    pub fn windows_audio_file_has_positive_duration(path: &str) -> bool {
+        let url: Vec<u16> = Path::new(path)
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        unsafe {
+            // The probe reuses the session's Media Foundation startup; call it
+            // defensively here so a standalone probe still works (reference
+            // counted; no unbalanced shutdown).
+            if MFStartup(MF_VERSION, MFSTARTUP_FULL).is_err() {
+                return false;
+            }
+            let result = probe_positive_duration(&url);
+            MFShutdown().ok();
+            result
+        }
+    }
+
+    unsafe fn probe_positive_duration(url: &[u16]) -> bool {
+        let reader: IMFSourceReader =
+            match MFCreateSourceReaderFromURL(PCWSTR(url.as_ptr()), None) {
+                Ok(reader) => reader,
+                Err(_) => return false,
+            };
+
+        let propvariant = match reader
+            .GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_DURATION)
+        {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+
+        // MF_PD_DURATION is a VT_UI8 (100ns ticks). Read the unsigned 64-bit
+        // value directly from the PROPVARIANT union.
+        let duration_100ns = propvariant.Anonymous.Anonymous.Anonymous.uhVal;
+        duration_100ns > 0
+    }
+
+    fn win_error(context: &str, error: &windows::core::Error) -> CaptureErrorResponse {
+        CaptureErrorResponse {
+            code: "windows_audio_writer_failed".to_string(),
+            message: format!("{context}: {error}"),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub use windows_aac_m4a::{windows_audio_file_has_positive_duration, WindowsAacM4aSinkWriter};
+

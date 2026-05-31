@@ -151,6 +151,18 @@ pub struct NativeCaptureRuntime {
     pub active_screen_session: Option<Box<dyn capture_screen::ScreenCaptureSession>>,
     #[cfg(target_os = "macos")]
     pub active_microphone_session: Option<microphone_capture::AvFoundationMicrophoneCaptureSession>,
+    /// The live microphone capture session behind the cross-platform
+    /// [`capture_microphone::AudioCaptureSession`] seam. On Windows the WASAPI
+    /// backend is held here as a boxed trait object, parallel to
+    /// [`Self::active_screen_session`]; macOS keeps its concrete type above.
+    #[cfg(target_os = "windows")]
+    pub active_microphone_session: Option<Box<dyn microphone_capture::AudioCaptureSession>>,
+    /// The live system-audio capture session behind the same audio seam. Windows
+    /// treats system audio as an independent source (ADR 0022); it is held here
+    /// so segment rotation, liveness, and finalization share one path. Populated
+    /// by the system-audio slice; remains `None` for the microphone slice.
+    #[cfg(target_os = "windows")]
+    pub active_system_audio_session: Option<Box<dyn microphone_capture::AudioCaptureSession>>,
     #[cfg(target_os = "macos")]
     pub privacy_capture_suspension: Option<PrivacyCaptureSuspension>,
 }
@@ -371,6 +383,12 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
         runtime.active_microphone_session = None;
         runtime.privacy_capture_suspension = None;
     }
+    #[cfg(target_os = "windows")]
+    {
+        runtime.active_screen_session = None;
+        runtime.active_microphone_session = None;
+        runtime.active_system_audio_session = None;
+    }
 
     runtime.runtime_controller = RuntimeController::default();
     runtime.runtime_state = RuntimeState::Idle;
@@ -443,6 +461,12 @@ pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
         runtime.active_microphone_session = None;
         runtime.privacy_capture_suspension = None;
     }
+    #[cfg(target_os = "windows")]
+    {
+        runtime.active_screen_session = None;
+        runtime.active_microphone_session = None;
+        runtime.active_system_audio_session = None;
+    }
 
     if let Ok(state) = runtime
         .runtime_controller
@@ -503,6 +527,15 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
         runtime.privacy_capture_suspension = None;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        runtime.recording_file = None;
+        runtime.microphone_recording_file = None;
+        runtime.system_audio_recording_file = None;
+        runtime.active_screen_session = None;
+        runtime.active_microphone_session = None;
+        runtime.active_system_audio_session = None;
     }
     runtime.runtime_controller = RuntimeController::default();
     runtime.runtime_state = RuntimeState::Idle;
