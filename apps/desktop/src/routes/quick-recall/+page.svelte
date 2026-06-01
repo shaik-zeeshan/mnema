@@ -2,6 +2,7 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { closeCurrentWindow } from "$lib/surface-windows";
@@ -26,6 +27,19 @@
   let resultsQuery = $state("");
   let thumbnailCache = $state(new Map<number, string>());
 
+  // Roving selection over the flattened result list (frames first, then audio).
+  // -1 means nothing highlighted. The search input keeps DOM focus the whole
+  // time; selection is surfaced via aria-activedescendant + a `selected` class.
+  let selectedIndex = $state(-1);
+
+  // The window is reused across summons (hidden, not destroyed), so its state
+  // persists while it's closed. Re-summoning within 5s resumes where you left
+  // off; once it has been closed for 5s, reset to the empty search state so the
+  // next summon is fresh. Clearing only happens while the window is *not* open.
+  const IDLE_CLEAR_MS = 5000;
+  let windowFocused = $state(true);
+  let idleClearTimer: ReturnType<typeof setTimeout> | null = null;
+
   // Generation token so stale (out-of-order) responses are discarded.
   let searchGeneration = 0;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -49,6 +63,7 @@
       loading = false;
       errorMessage = null;
       resultsQuery = "";
+      selectedIndex = -1;
       return;
     }
 
@@ -83,6 +98,8 @@
       audio = response.audio;
       resultsQuery = trimmed;
       loading = false;
+      // Auto-highlight the top hit so a hurried Enter opens it (spotlight-style).
+      selectedIndex = response.frames.length + response.audio.length > 0 ? 0 : -1;
 
       void loadThumbnails(response.frames, generation);
     } catch (error) {
@@ -93,6 +110,7 @@
       audio = [];
       resultsQuery = trimmed;
       loading = false;
+      selectedIndex = -1;
       errorMessage = error instanceof Error ? error.message : String(error);
     }
   }
@@ -147,6 +165,132 @@
       audioSegmentId: result.audioSegment.id,
     });
     await closeCurrentWindow();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Keyboard navigation (search mode)
+  //
+  // Results render as a single flattened list (frames first, then audio) so the
+  // arrow keys can roam across both sections. `selectedIndex` indexes into that
+  // flattened order; the helpers below translate it back to a concrete result.
+  // ---------------------------------------------------------------------------
+
+  let resultCount = $derived(frames.length + audio.length);
+  const OPTION_ID_PREFIX = "qr-opt-";
+  let activeOptionId = $derived(
+    selectedIndex >= 0 ? `${OPTION_ID_PREFIX}${selectedIndex}` : undefined,
+  );
+
+  // Open the flattened result at `index`, mapping it back to a frame or audio.
+  function openResultAt(index: number): void {
+    if (index < 0 || index >= resultCount) {
+      return;
+    }
+    if (index < frames.length) {
+      void selectFrame(frames[index]);
+    } else {
+      void selectAudio(audio[index - frames.length]);
+    }
+  }
+
+  function moveSelection(delta: number): void {
+    if (resultCount === 0) {
+      return;
+    }
+    // Wrap around the ends; a first ArrowDown from -1 lands on the top result.
+    const base = selectedIndex < 0 ? (delta > 0 ? -1 : 0) : selectedIndex;
+    selectedIndex = (base + delta + resultCount) % resultCount;
+  }
+
+  function handleSearchKeydown(event: KeyboardEvent): void {
+    if (event.isComposing) {
+      return;
+    }
+
+    // Tab (and ⌘/Ctrl+Enter) pivots to Ask AI, carrying the current query as
+    // the seed. Shift+Tab is left to native focus traversal.
+    if (
+      askAvailable &&
+      ((event.key === "Tab" && !event.shiftKey) ||
+        (event.key === "Enter" && (event.metaKey || event.ctrlKey)))
+    ) {
+      event.preventDefault();
+      void activateAskAi();
+      return;
+    }
+
+    // ⌘/Ctrl+1–9 jumps straight to the Nth result.
+    if ((event.metaKey || event.ctrlKey) && /^[1-9]$/.test(event.key)) {
+      const index = Number(event.key) - 1;
+      if (index < resultCount) {
+        event.preventDefault();
+        openResultAt(index);
+      }
+      return;
+    }
+
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        moveSelection(1);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        moveSelection(-1);
+        break;
+      case "Home":
+        if (resultCount > 0) {
+          event.preventDefault();
+          selectedIndex = 0;
+        }
+        break;
+      case "End":
+        if (resultCount > 0) {
+          event.preventDefault();
+          selectedIndex = resultCount - 1;
+        }
+        break;
+      case "Enter":
+        if (selectedIndex >= 0) {
+          event.preventDefault();
+          openResultAt(selectedIndex);
+        }
+        break;
+    }
+  }
+
+  // Put the cursor on whatever field is live for the current mode. Called on
+  // mount and every time the (reused) window regains focus on a fresh summon.
+  function focusActiveField(): void {
+    if (mode === "ask") {
+      if (askSubmitted) {
+        askAreaEl?.focus();
+      } else {
+        askInputEl?.focus();
+      }
+      return;
+    }
+    inputEl?.focus();
+    // Select any leftover query so typing immediately replaces it.
+    inputEl?.select();
+  }
+
+  // Escape steps back: in Ask AI mode the first press returns to search (the
+  // layout's window handler closes the window on a second press from search).
+  function handleRootKeydown(event: KeyboardEvent): void {
+    if (
+      event.key === "Escape" &&
+      mode === "ask" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      !event.isComposing
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      void backToSearch();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -212,6 +356,9 @@
   let askStreaming = $state(false);
 
   let askAnswerEl = $state<HTMLDivElement | null>(null);
+  // The Ask AI answer region; focused on entry so Escape (back-to-search) and
+  // scroll keys are captured even when the seeded path renders no text input.
+  let askAreaEl = $state<HTMLDivElement | null>(null);
 
   function friendlyAskReason(reason: string | null): string {
     switch (reason) {
@@ -315,9 +462,12 @@
     mode = "ask";
 
     if (seed.length > 0) {
-      // Seeded: immediately submit the current query as the question.
+      // Seeded: immediately submit the current query as the question. Focus the
+      // answer region (no text input renders) so Escape/scroll keys are caught.
       askInput = "";
-      await startAsk(seed, seed);
+      void startAsk(seed, seed);
+      await tick();
+      askAreaEl?.focus();
     } else {
       // Unseeded: show an empty ask input for the user to type a question.
       askInput = "";
@@ -328,20 +478,23 @@
     }
   }
 
-  // Submit the typed question from the unseeded ask input (Enter).
-  function submitAskInput(): void {
+  // Submit the typed question from the unseeded ask input (Enter). The input is
+  // replaced by the read-only question, so move focus to the answer region.
+  async function submitAskInput(): Promise<void> {
     const typed = askInput.trim();
     if (typed.length === 0) {
       return;
     }
     void startAsk(typed, null);
+    await tick();
+    askAreaEl?.focus();
   }
 
   function handleAskInputKeydown(event: KeyboardEvent): void {
     // Enter submits; Shift+Enter inserts a newline.
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      submitAskInput();
+      void submitAskInput();
     }
   }
 
@@ -374,6 +527,16 @@
     }
   });
 
+  // Keep the highlighted result within the scroll viewport as it moves.
+  $effect(() => {
+    if (mode !== "search" || selectedIndex < 0) {
+      return;
+    }
+    document
+      .getElementById(`${OPTION_ID_PREFIX}${selectedIndex}`)
+      ?.scrollIntoView({ block: "nearest" });
+  });
+
   let trimmedQuery = $derived(query.trim());
   let belowMinimum = $derived(trimmedQuery.length < MIN_QUERY_LENGTH);
   let hasResults = $derived(frames.length > 0 || audio.length > 0);
@@ -381,8 +544,76 @@
     !belowMinimum && !loading && !errorMessage && !hasResults && resultsQuery.length > 0,
   );
 
-  onMount(() => {
+  // A search or Ask AI operation is in flight — that counts as activity, so the
+  // idle countdown is suspended while it runs.
+  let operationRunning = $derived(loading || askStreaming);
+
+  // There is something to reset: anything other than a pristine, empty search
+  // box. Clearing the pristine state would be a no-op, so the timer only arms
+  // when content (query, results, error, or an Ask AI view) is present.
+  let hasClearableState = $derived(
+    mode === "ask" ||
+      trimmedQuery.length > 0 ||
+      hasResults ||
+      errorMessage !== null ||
+      resultsQuery.length > 0,
+  );
+
+  // Reset the window to the just-summoned empty search state and refocus.
+  async function clearState(): Promise<void> {
+    await cancelActiveAsk();
+    clearDebounce();
+    // Invalidate any in-flight search so a late response can't repopulate.
+    searchGeneration += 1;
+    mode = "search";
+    query = "";
+    frames = [];
+    audio = [];
+    resultsQuery = "";
+    errorMessage = null;
+    loading = false;
+    selectedIndex = -1;
+    askConversationId = null;
+    askQuestion = "";
+    askInput = "";
+    askSubmitted = false;
+    askPhase = "seeding";
+    askAnswer = "";
+    askErrorMessage = null;
+    askSeededResultCount = null;
+    askToolActivity = null;
+    await tick();
     inputEl?.focus();
+  }
+
+  function clearIdleTimer(): void {
+    if (idleClearTimer !== null) {
+      clearTimeout(idleClearTimer);
+      idleClearTimer = null;
+    }
+  }
+
+  function scheduleIdleClear(): void {
+    clearIdleTimer();
+    idleClearTimer = setTimeout(() => {
+      idleClearTimer = null;
+      void clearState();
+    }, IDLE_CLEAR_MS);
+  }
+
+  // Arm the countdown once the window is closed (unfocused) with clearable
+  // content and nothing running. Re-opening it (focus) cancels the timer and
+  // preserves the state for a quick resume.
+  $effect(() => {
+    if (!windowFocused && hasClearableState && !operationRunning) {
+      scheduleIdleClear();
+    } else {
+      clearIdleTimer();
+    }
+  });
+
+  onMount(() => {
+    focusActiveField();
     void loadAskAvailability();
 
     let destroyed = false;
@@ -390,6 +621,21 @@
     let unlistenDelta: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
     let unlistenError: (() => void) | undefined;
+    let unlistenFocus: (() => void) | undefined;
+
+    // The window is hidden/re-shown rather than recreated across summons, so
+    // re-grab focus each time it becomes key — onMount alone fires only once.
+    getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        windowFocused = focused;
+        if (focused) {
+          void tick().then(focusActiveField);
+        }
+      })
+      .then((fn) => {
+        if (destroyed) fn();
+        else unlistenFocus = fn;
+      });
 
     listen<AskAiStatusEvent>("ask_ai_status", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
@@ -449,16 +695,19 @@
       unlistenDelta?.();
       unlistenDone?.();
       unlistenError?.();
+      unlistenFocus?.();
     };
   });
 
   onDestroy(() => {
     clearDebounce();
+    clearIdleTimer();
     void cancelActiveAsk();
   });
 </script>
 
-<div class="quick-recall">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="quick-recall" onkeydown={handleRootKeydown}>
   {#if mode === "search"}
   <div class="quick-recall__field">
     <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
@@ -472,6 +721,11 @@
       spellcheck="false"
       placeholder="Search your captures…"
       aria-label="Search your captures"
+      role="combobox"
+      aria-expanded={resultCount > 0}
+      aria-controls="quick-recall-results-list"
+      aria-activedescendant={activeOptionId}
+      onkeydown={handleSearchKeydown}
     />
     {#if askAvailable}
       <button
@@ -480,7 +734,7 @@
         onclick={() => void activateAskAi()}
         aria-label="Ask AI"
       >
-        Ask AI <span class="quick-recall__ask-key" aria-hidden="true">↵</span>
+        Ask AI <span class="quick-recall__ask-key" aria-hidden="true">⇥</span>
       </button>
     {:else}
       <button
@@ -493,14 +747,18 @@
         Ask AI
       </button>
     {/if}
-    <kbd class="quick-recall__hint">esc</kbd>
   </div>
 
   {#if askUnavailableHint}
     <p class="quick-recall__ask-hint">{askUnavailableHint}</p>
   {/if}
 
-  <div class="quick-recall__results" role="listbox" aria-label="Search results">
+  <div
+    id="quick-recall-results-list"
+    class="quick-recall__results"
+    role="listbox"
+    aria-label="Search results"
+  >
     {#if belowMinimum}
       <p class="quick-recall__state">Type at least {MIN_QUERY_LENGTH} characters to search.</p>
     {:else if loading}
@@ -511,14 +769,16 @@
       <p class="quick-recall__state">No matches for “{resultsQuery}”.</p>
     {:else}
       {#if frames.length > 0}
-        <div class="quick-recall__section">
+        <div class="quick-recall__section" role="presentation">
           <span class="quick-recall__section-label">Screen</span>
-          <div class="quick-recall__list">
-            {#each frames as result (result.groupKey)}
+          <div class="quick-recall__list" role="presentation">
+            {#each frames as result, i (result.groupKey)}
               <SearchResultCard
                 kind="frame"
                 frame={result}
                 thumbnailUrl={thumbnailCache.get(result.thumbnailFrameId) ?? null}
+                id={`${OPTION_ID_PREFIX}${i}`}
+                selected={selectedIndex === i}
                 onselect={() => void selectFrame(result)}
               />
             {/each}
@@ -527,13 +787,15 @@
       {/if}
 
       {#if audio.length > 0}
-        <div class="quick-recall__section">
+        <div class="quick-recall__section" role="presentation">
           <span class="quick-recall__section-label">Audio</span>
-          <div class="quick-recall__list">
-            {#each audio as result (result.groupKey)}
+          <div class="quick-recall__list" role="presentation">
+            {#each audio as result, i (result.groupKey)}
               <SearchResultCard
                 kind="audio"
                 audio={result}
+                id={`${OPTION_ID_PREFIX}${frames.length + i}`}
+                selected={selectedIndex === frames.length + i}
                 onselect={() => void selectAudio(result)}
               />
             {/each}
@@ -568,10 +830,15 @@
         onkeydown={handleAskInputKeydown}
       ></textarea>
     {/if}
-    <kbd class="quick-recall__hint">esc</kbd>
   </div>
 
-  <div class="quick-recall__results quick-recall__answer-area" aria-live="polite">
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <div
+    bind:this={askAreaEl}
+    class="quick-recall__results quick-recall__answer-area"
+    aria-live="polite"
+    tabindex="-1"
+  >
     {#if !askSubmitted}
       <p class="quick-recall__state">Type a question and press Enter to ask.</p>
     {:else if askPhase === "error"}
@@ -610,6 +877,29 @@
     {/if}
   </div>
   {/if}
+
+  <div class="quick-recall__footer" aria-hidden="true">
+    {#if mode === "search"}
+      {#if resultCount > 0}
+        <span class="quick-recall__hint-item"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+        <span class="quick-recall__hint-item"><kbd>↵</kbd> open</span>
+        {#if askAvailable}
+          <span class="quick-recall__hint-item"><kbd>⇥</kbd> Ask AI</span>
+        {/if}
+        <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
+      {:else}
+        {#if askAvailable}
+          <span class="quick-recall__hint-item"><kbd>⇥</kbd> Ask AI</span>
+        {/if}
+        <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
+      {/if}
+    {:else if !askSubmitted}
+      <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
+      <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
+    {:else}
+      <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -663,17 +953,42 @@
     color: var(--app-text-subtle);
   }
 
-  .quick-recall__hint {
+  .quick-recall__footer {
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 14px;
+    border-top: 1px solid var(--app-border);
+    background: var(--app-surface-subtle);
+  }
+
+  .quick-recall__hint-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10.5px;
+    line-height: 1;
+    color: var(--app-text-subtle);
+    white-space: nowrap;
+  }
+
+  .quick-recall__footer kbd {
     font-family: inherit;
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1;
     text-transform: lowercase;
     color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
+    background: var(--app-surface);
     border: 1px solid var(--app-border);
-    border-radius: 6px;
-    padding: 4px 7px;
+    border-radius: 5px;
+    padding: 3px 5px;
+    min-width: 9px;
+    text-align: center;
+  }
+
+  .quick-recall__answer-area:focus {
+    outline: none;
   }
 
   .quick-recall__results {

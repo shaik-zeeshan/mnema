@@ -7,12 +7,16 @@
     frame = null,
     audio = null,
     thumbnailUrl = null,
+    selected = false,
+    id = undefined,
     onselect,
   }: {
     kind: "frame" | "audio";
     frame?: FrameSearchResultDto | null;
     audio?: AudioSearchResultDto | null;
     thumbnailUrl?: string | null;
+    selected?: boolean;
+    id?: string | undefined;
     onselect: () => void;
   } = $props();
 
@@ -31,7 +35,15 @@
 </script>
 
 {#if kind === "frame" && frame}
-  <button class="search-card search-card--frame" onclick={onselect}>
+  <button
+    class="search-card search-card--frame"
+    class:search-card--selected={selected}
+    {id}
+    role="option"
+    aria-selected={selected}
+    tabindex="-1"
+    onclick={onselect}
+  >
     <div class="search-card__thumb">
       {#if thumbnailUrl}
         <img src={thumbnailUrl} alt="" loading="lazy" />
@@ -67,7 +79,15 @@
 {/if}
 
 {#if kind === "audio" && audio}
-  <button class="search-card search-card--audio" onclick={onselect}>
+  <button
+    class="search-card search-card--audio"
+    class:search-card--selected={selected}
+    {id}
+    role="option"
+    aria-selected={selected}
+    tabindex="-1"
+    onclick={onselect}
+  >
     <div
       class="search-card__thumb search-card__thumb--audio"
       class:search-card__thumb--mic={audio.sourceKind === "microphone"}
@@ -131,7 +151,8 @@
     background: var(--app-surface-raised);
   }
 
-  .search-card:focus-visible {
+  .search-card:focus-visible,
+  .search-card--selected {
     outline: none;
     border-color: var(--app-accent-border);
     background: var(--app-surface-raised);
