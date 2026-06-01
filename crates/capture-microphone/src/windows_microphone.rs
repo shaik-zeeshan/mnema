@@ -21,20 +21,28 @@
 //! `capture-screen::windows_capture`, the canonical Windows capture backend.
 
 use std::any::Any;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread::JoinHandle;
+use std::thread::{JoinHandle, ThreadId};
 use std::time::Duration;
 
-use capture_types::CaptureErrorResponse;
+use capture_types::{CaptureErrorResponse, MicrophoneDevice};
 use capture_writers::WindowsAacM4aSinkWriter;
 use wasapi::{
-    get_default_device, initialize_mta, Direction, SampleType, StreamMode, WaveFormat,
+    get_default_device, initialize_mta, DeviceCollection, Direction, SampleType, StreamMode,
+    WaveFormat,
+};
+use windows::Win32::Foundation::PROPERTYKEY;
+use windows::Win32::Media::Audio::{
+    eCapture, DEVICE_STATE, DEVICE_STATEMASK_ALL, EDataFlow, ERole, IMMDeviceEnumerator,
+    IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator,
 };
 use windows::Win32::Media::MediaFoundation::{MFShutdown, MFStartup, MFSTARTUP_FULL, MF_VERSION};
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+use windows_core::{implement, Interface, PCWSTR};
 
 use crate::{AudioCaptureSession, MicrophoneOutputFinalization};
 
@@ -76,6 +84,64 @@ pub fn microphone_capture_supported() -> bool {
         .join()
         .unwrap_or(false)
     })
+}
+
+pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {
+    std::thread::Builder::new()
+        .name("windows-microphone-enumerate".to_string())
+        .spawn(|| {
+            let com_hr = initialize_mta();
+            if com_hr.is_err() {
+                return Err(CaptureErrorResponse {
+                    code: "com_init_failed".to_string(),
+                    message: format!("WASAPI COM MTA init failed: 0x{:08x}", com_hr.0),
+                });
+            }
+            list_microphone_devices_on_initialized_thread()
+        })
+        .map_err(|e| CaptureErrorResponse {
+            code: "capture_thread_spawn_failed".to_string(),
+            message: format!("Failed to spawn Windows microphone enumeration thread: {e}"),
+        })?
+        .join()
+        .unwrap_or_else(|_| {
+            Err(CaptureErrorResponse {
+                code: "windows_microphone_enumeration_failed".to_string(),
+                message: "Windows microphone enumeration thread panicked".to_string(),
+            })
+        })
+}
+
+fn list_microphone_devices_on_initialized_thread() -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {
+    let default_id = get_default_device(&Direction::Capture)
+        .ok()
+        .and_then(|device| device.get_id().ok());
+    let collection = DeviceCollection::new(&Direction::Capture)
+        .map_err(|e| wasapi_error("EnumAudioEndpoints(Capture, ACTIVE) failed", &e))?;
+    let count = collection
+        .get_nbr_devices()
+        .map_err(|e| wasapi_error("IMMDeviceCollection::GetCount failed", &e))?;
+    let mut devices = Vec::with_capacity(count as usize);
+
+    for index in 0..count {
+        let device = collection
+            .get_device_at_index(index)
+            .map_err(|e| wasapi_error("IMMDeviceCollection::Item failed", &e))?;
+        let id = device
+            .get_id()
+            .map_err(|e| wasapi_error("IMMDevice::GetId failed", &e))?;
+        let name = device
+            .get_friendlyname()
+            .map_err(|e| wasapi_error("IMMDevice friendly name lookup failed", &e))?;
+        let is_default = default_id.as_deref() == Some(id.as_str());
+        devices.push(MicrophoneDevice {
+            id,
+            name,
+            is_default,
+        });
+    }
+
+    Ok(devices)
 }
 
 // ---------------------------------------------------------------------------
@@ -226,11 +292,11 @@ impl Drop for WasapiMicrophoneCaptureSession {
 // ---------------------------------------------------------------------------
 
 /// Start a WASAPI microphone capture session writing the first segment to
-/// `output_file`. `device_id` is accepted for API parity but ignored — only the
-/// default capture endpoint is captured for now.
+/// `output_file`. If `device_id` is `Some`, capture that active WASAPI endpoint
+/// by exact endpoint id; otherwise capture the current default endpoint.
 pub fn start_wasapi_microphone_capture_session_for_file(
     output_file: &str,
-    _device_id: Option<&str>,
+    device_id: Option<&str>,
 ) -> Result<WasapiMicrophoneCaptureSession, CaptureErrorResponse> {
     let output_path = PathBuf::from(output_file);
     if let Some(parent) = output_path.parent() {
@@ -248,12 +314,13 @@ pub fn start_wasapi_microphone_capture_session_for_file(
     let shared = Arc::new(SharedState::default());
     let (sender, receiver) = mpsc::channel::<Message>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(), CaptureErrorResponse>>();
+    let device_id = device_id.map(str::to_owned);
 
     let thread_shared = Arc::clone(&shared);
     let join_handle = std::thread::Builder::new()
         .name("windows-microphone".to_string())
         .spawn(move || {
-            capture_thread_main(output_path, receiver, thread_shared, ready_tx);
+            capture_thread_main(output_path, device_id, receiver, thread_shared, ready_tx);
         })
         .map_err(|e| CaptureErrorResponse {
             code: "capture_thread_spawn_failed".to_string(),
@@ -289,6 +356,7 @@ pub fn start_wasapi_microphone_capture_session_for_file(
 
 fn capture_thread_main(
     first_output_path: PathBuf,
+    device_id: Option<String>,
     receiver: Receiver<Message>,
     shared: Arc<SharedState>,
     ready_tx: Sender<Result<(), CaptureErrorResponse>>,
@@ -312,7 +380,7 @@ fn capture_thread_main(
         return;
     }
 
-    match CaptureEngine::new(&first_output_path) {
+    match CaptureEngine::new(&first_output_path, device_id.as_deref()) {
         Ok(mut engine) => {
             let _ = ready_tx.send(Ok(()));
             run_capture_loop(&mut engine, receiver, &shared);
@@ -404,9 +472,8 @@ struct CaptureEngine {
 }
 
 impl CaptureEngine {
-    fn new(output_path: &Path) -> Result<Self, CaptureErrorResponse> {
-        let device = get_default_device(&Direction::Capture)
-            .map_err(|e| wasapi_error("get_default_device(Capture) failed", &e))?;
+    fn new(output_path: &Path, device_id: Option<&str>) -> Result<Self, CaptureErrorResponse> {
+        let device = resolve_capture_device(device_id)?;
         let mut audio_client = device
             .get_iaudioclient()
             .map_err(|e| wasapi_error("get_iaudioclient failed", &e))?;
@@ -592,8 +659,277 @@ impl CaptureEngine {
 }
 
 // ---------------------------------------------------------------------------
+// Device change notifier
+// ---------------------------------------------------------------------------
+
+type DeviceChangeCallback = dyn Fn() + Send + Sync + 'static;
+
+pub struct MicrophoneDeviceChangeNotifier {
+    stop_tx: Option<Sender<()>>,
+    join_handle: Option<JoinHandle<()>>,
+    thread_id: ThreadId,
+}
+
+impl std::fmt::Debug for MicrophoneDeviceChangeNotifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MicrophoneDeviceChangeNotifier")
+            .field("running", &self.stop_tx.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for MicrophoneDeviceChangeNotifier {
+    fn default() -> Self {
+        Self {
+            stop_tx: None,
+            join_handle: None,
+            thread_id: std::thread::current().id(),
+        }
+    }
+}
+
+impl Drop for MicrophoneDeviceChangeNotifier {
+    fn drop(&mut self) {
+        if let Some(stop_tx) = self.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        if self.thread_id != std::thread::current().id() {
+            if let Some(handle) = self.join_handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+}
+
+pub fn start_microphone_device_change_notifier(
+    callback: impl Fn() + Send + Sync + 'static,
+) -> MicrophoneDeviceChangeNotifier {
+    let callback: Arc<DeviceChangeCallback> = Arc::new(callback);
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let thread_callback = Arc::clone(&callback);
+
+    let Ok(join_handle) = std::thread::Builder::new()
+        .name("windows-microphone-device-notifier".to_string())
+        .spawn(move || {
+            device_change_notifier_thread(thread_callback, stop_rx, ready_tx);
+        })
+    else {
+        return MicrophoneDeviceChangeNotifier::default();
+    };
+
+    let thread_id = join_handle.thread().id();
+    match ready_rx.recv() {
+        Ok(true) => MicrophoneDeviceChangeNotifier {
+            stop_tx: Some(stop_tx),
+            join_handle: Some(join_handle),
+            thread_id,
+        },
+        _ => {
+            let _ = join_handle.join();
+            MicrophoneDeviceChangeNotifier::default()
+        }
+    }
+}
+
+fn device_change_notifier_thread(
+    callback: Arc<DeviceChangeCallback>,
+    stop_rx: Receiver<()>,
+    ready_tx: Sender<bool>,
+) {
+    let com_hr = initialize_mta();
+    if com_hr.is_err() {
+        let _ = ready_tx.send(false);
+        return;
+    }
+
+    let enumerator = match create_device_enumerator() {
+        Ok(enumerator) => enumerator,
+        Err(_) => {
+            let _ = ready_tx.send(false);
+            return;
+        }
+    };
+    let known_capture_ids = Arc::new(Mutex::new(capture_endpoint_ids(&enumerator)));
+    let client: IMMNotificationClient = MicrophoneNotificationClient {
+        callback,
+        known_capture_ids,
+    }
+    .into();
+
+    if unsafe { enumerator.RegisterEndpointNotificationCallback(&client) }.is_err() {
+        let _ = ready_tx.send(false);
+        return;
+    }
+
+    let _ = ready_tx.send(true);
+    let _ = stop_rx.recv();
+    let _ = unsafe { enumerator.UnregisterEndpointNotificationCallback(&client) };
+}
+
+#[implement(IMMNotificationClient)]
+struct MicrophoneNotificationClient {
+    callback: Arc<DeviceChangeCallback>,
+    known_capture_ids: Arc<Mutex<HashSet<String>>>,
+}
+
+impl MicrophoneNotificationClient {
+    fn notify(&self) {
+        let callback = Arc::clone(&self.callback);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()));
+    }
+
+    fn notify_if_capture_endpoint(&self, device_id: &PCWSTR) -> windows::core::Result<()> {
+        let Some(device_id) = (unsafe { pcwstr_to_string(device_id) }) else {
+            return Ok(());
+        };
+        let is_capture = device_id_is_capture_endpoint(&device_id).unwrap_or_else(|| {
+            self.known_capture_ids
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&device_id)
+        });
+        if is_capture {
+            self.known_capture_ids
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(device_id);
+            self.notify();
+        }
+        Ok(())
+    }
+}
+
+impl IMMNotificationClient_Impl for MicrophoneNotificationClient_Impl {
+    fn OnDeviceStateChanged(
+        &self,
+        pwstrdeviceid: &PCWSTR,
+        _dwnewstate: DEVICE_STATE,
+    ) -> windows::core::Result<()> {
+        self.notify_if_capture_endpoint(pwstrdeviceid)
+    }
+
+    fn OnDeviceAdded(&self, pwstrdeviceid: &PCWSTR) -> windows::core::Result<()> {
+        self.notify_if_capture_endpoint(pwstrdeviceid)
+    }
+
+    fn OnDeviceRemoved(&self, pwstrdeviceid: &PCWSTR) -> windows::core::Result<()> {
+        let Some(device_id) = (unsafe { pcwstr_to_string(pwstrdeviceid) }) else {
+            return Ok(());
+        };
+        if self
+            .known_capture_ids
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&device_id)
+        {
+            self.notify();
+        }
+        Ok(())
+    }
+
+    fn OnDefaultDeviceChanged(
+        &self,
+        flow: EDataFlow,
+        _role: ERole,
+        _pwstrdefaultdeviceid: &PCWSTR,
+    ) -> windows::core::Result<()> {
+        if flow == eCapture {
+            self.notify();
+        }
+        Ok(())
+    }
+
+    fn OnPropertyValueChanged(
+        &self,
+        pwstrdeviceid: &PCWSTR,
+        _key: &PROPERTYKEY,
+    ) -> windows::core::Result<()> {
+        self.notify_if_capture_endpoint(pwstrdeviceid)
+    }
+}
+
+fn create_device_enumerator() -> windows::core::Result<IMMDeviceEnumerator> {
+    unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+}
+
+fn capture_endpoint_ids(enumerator: &IMMDeviceEnumerator) -> HashSet<String> {
+    let Ok(collection) =
+        (unsafe { enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE(DEVICE_STATEMASK_ALL)) })
+    else {
+        return HashSet::new();
+    };
+    let Ok(count) = (unsafe { collection.GetCount() }) else {
+        return HashSet::new();
+    };
+    let mut ids = HashSet::with_capacity(count as usize);
+    for index in 0..count {
+        let Ok(device) = (unsafe { collection.Item(index) }) else {
+            continue;
+        };
+        let Ok(id) = (unsafe { device.GetId() }) else {
+            continue;
+        };
+        if let Some(id) = unsafe { pcwstr_to_string(&PCWSTR(id.0)) } {
+            ids.insert(id);
+        }
+    }
+    ids
+}
+
+fn device_id_is_capture_endpoint(device_id: &str) -> Option<bool> {
+    let enumerator = create_device_enumerator().ok()?;
+    let wide: Vec<u16> = device_id.encode_utf16().chain(std::iter::once(0)).collect();
+    let device = unsafe { enumerator.GetDevice(PCWSTR(wide.as_ptr())) }.ok()?;
+    let endpoint: windows::Win32::Media::Audio::IMMEndpoint = device.cast().ok()?;
+    let flow = unsafe { endpoint.GetDataFlow() }.ok()?;
+    Some(flow == eCapture)
+}
+
+unsafe fn pcwstr_to_string(value: &PCWSTR) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    let mut len = 0usize;
+    while *value.0.add(len) != 0 {
+        len += 1;
+    }
+    Some(String::from_utf16_lossy(std::slice::from_raw_parts(value.0, len)))
+}
+
+// ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
+
+fn resolve_capture_device(device_id: Option<&str>) -> Result<wasapi::Device, CaptureErrorResponse> {
+    let Some(device_id) = device_id else {
+        return get_default_device(&Direction::Capture)
+            .map_err(|e| wasapi_error("get_default_device(Capture) failed", &e));
+    };
+
+    let collection = DeviceCollection::new(&Direction::Capture)
+        .map_err(|e| wasapi_error("EnumAudioEndpoints(Capture, ACTIVE) failed", &e))?;
+    let count = collection
+        .get_nbr_devices()
+        .map_err(|e| wasapi_error("IMMDeviceCollection::GetCount failed", &e))?;
+
+    for index in 0..count {
+        let device = collection
+            .get_device_at_index(index)
+            .map_err(|e| wasapi_error("IMMDeviceCollection::Item failed", &e))?;
+        let id = device
+            .get_id()
+            .map_err(|e| wasapi_error("IMMDevice::GetId failed", &e))?;
+        if id == device_id {
+            return Ok(device);
+        }
+    }
+
+    Err(CaptureErrorResponse {
+        code: "selected_microphone_unavailable".to_string(),
+        message: format!("Selected Windows microphone endpoint is not active: {device_id}"),
+    })
+}
 
 fn frames_to_ticks(frames: u64, sample_rate_hz: u32) -> i64 {
     if sample_rate_hz == 0 {

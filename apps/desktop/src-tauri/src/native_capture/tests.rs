@@ -11,9 +11,15 @@ use super::inactivity::{
 use super::lifecycle::RecordingLifecycle;
 use super::microphone::microphone_auto_disconnect_transition_failed_event;
 #[cfg(target_os = "macos")]
+use super::microphone::next_microphone_output_file_for_runtime;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::microphone::{
-    next_microphone_output_file_for_runtime, should_move_microphone_capture_to_waiting_state,
-    should_reconnect_waiting_microphone_session,
+    should_move_microphone_capture_to_waiting_state, should_reconnect_waiting_microphone_session,
+};
+#[cfg(target_os = "windows")]
+use super::microphone::{
+    resolve_capture_microphone_device_id,
+    should_restart_active_microphone_session_for_effective_device_change_policy,
 };
 use super::output::set_current_microphone_output_file;
 use super::runtime::{
@@ -2514,6 +2520,164 @@ fn should_move_microphone_capture_to_waiting_state_when_selected_device_missing(
             system_audio: false,
         }),
         true,
+        &state,
+    ));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_default_microphone_capture_tracks_effective_endpoint_id() {
+    let state = MicrophoneControllerState {
+        devices: vec![capture_types::MicrophoneDevice {
+            id: "default-endpoint-1".to_string(),
+            name: "Default endpoint".to_string(),
+            is_default: true,
+        }],
+        preference: MicrophonePreference {
+            mode: MicrophonePreferenceMode::Default,
+            device_id: None,
+        },
+        disconnect_policy: MicrophoneDisconnectPolicy::FallbackToDefault,
+        effective_device: Some(capture_types::MicrophoneDevice {
+            id: "default-endpoint-1".to_string(),
+            name: "Default endpoint".to_string(),
+            is_default: true,
+        }),
+    };
+
+    assert_eq!(
+        resolve_capture_microphone_device_id(&state).as_deref(),
+        Some("default-endpoint-1")
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_wait_for_same_device_policy_moves_active_session_to_waiting() {
+    let state = MicrophoneControllerState {
+        devices: vec![],
+        preference: MicrophonePreference {
+            mode: MicrophonePreferenceMode::SpecificDevice,
+            device_id: Some("selected-endpoint".to_string()),
+        },
+        disconnect_policy: MicrophoneDisconnectPolicy::WaitForSameDevice,
+        effective_device: None,
+    };
+
+    assert!(should_move_microphone_capture_to_waiting_state(
+        true,
+        Some(&CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        true,
+        &state,
+    ));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_wait_for_same_device_policy_reconnects_when_endpoint_returns() {
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        active_microphone_session: None,
+        ..Default::default()
+    };
+    let state = MicrophoneControllerState {
+        devices: vec![capture_types::MicrophoneDevice {
+            id: "selected-endpoint".to_string(),
+            name: "Selected endpoint".to_string(),
+            is_default: false,
+        }],
+        preference: MicrophonePreference {
+            mode: MicrophonePreferenceMode::SpecificDevice,
+            device_id: Some("selected-endpoint".to_string()),
+        },
+        disconnect_policy: MicrophoneDisconnectPolicy::WaitForSameDevice,
+        effective_device: Some(capture_types::MicrophoneDevice {
+            id: "selected-endpoint".to_string(),
+            name: "Selected endpoint".to_string(),
+            is_default: false,
+        }),
+    };
+
+    assert!(should_reconnect_waiting_microphone_session(
+        &runtime, &state
+    ));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_fallback_policy_restarts_when_effective_endpoint_changes() {
+    let state = MicrophoneControllerState {
+        devices: vec![capture_types::MicrophoneDevice {
+            id: "default-endpoint".to_string(),
+            name: "Default endpoint".to_string(),
+            is_default: true,
+        }],
+        preference: MicrophonePreference {
+            mode: MicrophonePreferenceMode::SpecificDevice,
+            device_id: Some("selected-endpoint".to_string()),
+        },
+        disconnect_policy: MicrophoneDisconnectPolicy::FallbackToDefault,
+        effective_device: Some(capture_types::MicrophoneDevice {
+            id: "default-endpoint".to_string(),
+            name: "Default endpoint".to_string(),
+            is_default: true,
+        }),
+    };
+
+    assert!(should_restart_active_microphone_session_for_effective_device_change_policy(
+        true,
+        false,
+        Some(&CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        true,
+        Some("selected-endpoint"),
+        &state,
+    ));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_default_policy_does_not_restart_when_effective_endpoint_unchanged() {
+    let state = MicrophoneControllerState {
+        devices: vec![capture_types::MicrophoneDevice {
+            id: "default-endpoint".to_string(),
+            name: "Default endpoint".to_string(),
+            is_default: true,
+        }],
+        preference: MicrophonePreference {
+            mode: MicrophonePreferenceMode::Default,
+            device_id: None,
+        },
+        disconnect_policy: MicrophoneDisconnectPolicy::FallbackToDefault,
+        effective_device: Some(capture_types::MicrophoneDevice {
+            id: "default-endpoint".to_string(),
+            name: "Default endpoint".to_string(),
+            is_default: true,
+        }),
+    };
+
+    assert!(!should_restart_active_microphone_session_for_effective_device_change_policy(
+        true,
+        false,
+        Some(&CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        true,
+        Some("default-endpoint"),
         &state,
     ));
 }

@@ -2468,7 +2468,12 @@ pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorRe
     Ok(devices)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {
+    windows_microphone::list_microphone_devices()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {
     Ok(Vec::new())
 }
@@ -2688,11 +2693,21 @@ pub fn start_microphone_device_change_notifier(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub use windows_microphone::MicrophoneDeviceChangeNotifier;
+
+#[cfg(target_os = "windows")]
+pub fn start_microphone_device_change_notifier(
+    callback: impl Fn() + Send + Sync + 'static,
+) -> MicrophoneDeviceChangeNotifier {
+    windows_microphone::start_microphone_device_change_notifier(callback)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[derive(Debug, Default)]
 pub struct MicrophoneDeviceChangeNotifier;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn start_microphone_device_change_notifier(
     _callback: impl Fn() + Send + Sync + 'static,
 ) -> MicrophoneDeviceChangeNotifier {
