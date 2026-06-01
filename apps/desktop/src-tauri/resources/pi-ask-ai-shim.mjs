@@ -8,10 +8,11 @@
 // the shim probes the known scopes and an optional override rather than one fixed name.
 //
 // PI's builtin coding-agent bash/file tools stay disabled via `noTools: "builtin"`.
-// On top of that, this slice registers exactly three custom Mnema broker tools —
-// `search`, `timeline`, and `show_text` — whose `execute()` does NOT touch the
-// filesystem itself: each call is brokered back to the Rust host over the stdin/stdout
-// protocol below, so all capture-history access stays inside Rust's enforcement seam.
+// On top of that, this slice registers a small set of custom Mnema broker tools —
+// `search`, `timeline`, `show_text`, and the presentation-only `reference_captures` —
+// whose `execute()` does NOT touch the filesystem itself: each call is brokered back to
+// the Rust host over the stdin/stdout protocol below, so all capture-history access
+// stays inside Rust's enforcement seam.
 //
 // Contract (must stay in sync with the Rust integrator):
 //   - STDIN:  newline-delimited JSON. The stream STAYS OPEN for the whole session
@@ -423,7 +424,7 @@ function callHost(toolName, params, signal) {
 }
 
 /**
- * Build the three custom Mnema broker tools. `Type` is the SDK-resolved TypeBox
+ * Build the custom Mnema broker tools. `Type` is the SDK-resolved TypeBox
  * factory; `defineTool` is the SDK helper. Each tool's `execute` is a thin broker
  * over `callHost` — the host (Rust) runs the actual brokered capture-history op.
  */
@@ -508,7 +509,38 @@ function buildBrokerTools(defineTool, Type) {
     },
   });
 
-  return [searchTool, timelineTool, showTextTool];
+  // `reference_captures` is a PRESENTATION signal, not a data tool: it nominates the
+  // captures (screen frames / audio) that back the answer so the app can surface them
+  // to the user as source cards. It returns NO capture data — only a small ack of how
+  // many ids were accepted/dropped. The model passes the opaque ids it received from
+  // `search` results, ordered most-relevant-first, and calls this once near the end of
+  // the answer (a repeat call replaces the prior set). It does NOT count against the
+  // tool-call budget.
+  const referenceCapturesTool = defineTool({
+    name: "reference_captures",
+    label: "Reference source captures",
+    description:
+      "Presentation signal that nominates the captures (screen frames / audio) behind " +
+      "your answer so the app can show them to the user as source cards. Returns NO " +
+      "capture data — only an acknowledgement of how many were accepted/dropped. Pass " +
+      "the opaque ids you received from `search` results, ordered most-relevant-first, " +
+      "and call this once near the end of your answer (a repeat call replaces the prior " +
+      "set). This does NOT count against the tool-call budget.",
+    parameters: Type.Object(
+      {
+        opaqueIds: Type.Array(
+          Type.String({ description: "An opaque id from a prior search result." }),
+          { description: "Opaque ids of the captures behind the answer, most-relevant-first." },
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      return callHost("reference_captures", params, signal);
+    },
+  });
+
+  return [searchTool, timelineTool, showTextTool, referenceCapturesTool];
 }
 
 // ---- model registry helpers -------------------------------------------------

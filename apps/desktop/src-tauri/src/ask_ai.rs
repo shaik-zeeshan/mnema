@@ -2,7 +2,7 @@ mod pi_agent_session;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use app_infra::brokered_access::{
     BrokerClientIdentity, BrokerClientIdentitySource, BrokerSearchRequest, BrokerSearchResult,
@@ -46,6 +46,11 @@ const ASK_AI_STATUS_EVENT: &str = "ask_ai_status";
 const ASK_AI_DELTA_EVENT: &str = "ask_ai_delta";
 const ASK_AI_DONE_EVENT: &str = "ask_ai_done";
 const ASK_AI_ERROR_EVENT: &str = "ask_ai_error";
+const ASK_AI_SOURCE_EVENT: &str = "ask_ai_source";
+
+/// Per-kind caps on the nominated Answer Source set emitted to the frontend.
+const ASK_AI_SOURCE_FRAME_CAP: usize = 6;
+const ASK_AI_SOURCE_AUDIO_CAP: usize = 4;
 
 /// Translate the persisted `askAiMaxToolCalls` setting (`0` = no cap) into the
 /// per-session cap passed to the agent loop. `0` becomes `usize::MAX` so the
@@ -211,6 +216,176 @@ fn broker_response_to_tool_value(
     }
 }
 
+/// One Answer Source resolved from a nominated opaque id: authoritative
+/// frame/audio identity from the signed reference, plus retained metadata from
+/// the search result the model actually received.
+struct ResolvedAskAiSource {
+    kind: String,
+    frame_id: Option<i64>,
+    audio_segment_id: Option<i64>,
+    app_name: Option<String>,
+    window_title: Option<String>,
+    started_at: String,
+    ended_at: String,
+}
+
+/// Build the capped, de-duped, ordered Answer Source list from nominated opaque
+/// ids. `resolve` returns `None` for any id that fails HMAC validation or has no
+/// retained metadata (dropped). Returns `(sources_json, accepted, dropped)`,
+/// capped to `ASK_AI_SOURCE_FRAME_CAP` frame + `ASK_AI_SOURCE_AUDIO_CAP` audio
+/// sources, preserving nomination order.
+fn build_ask_ai_sources<F>(
+    opaque_ids: &[String],
+    mut resolve: F,
+) -> (Vec<serde_json::Value>, usize, usize)
+where
+    F: FnMut(&str) -> Option<ResolvedAskAiSource>,
+{
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut sources: Vec<serde_json::Value> = Vec::new();
+    let mut frame_count = 0usize;
+    let mut audio_count = 0usize;
+
+    for id in opaque_ids {
+        // Skip duplicates so a repeated nomination is dropped, not double-counted.
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let Some(source) = resolve(id) else {
+            continue;
+        };
+
+        // Classify by authoritative kind; ignore anything that is not a known
+        // frame/audio source, and skip once that kind's cap is full.
+        match source.kind.as_str() {
+            "frame" => {
+                if frame_count >= ASK_AI_SOURCE_FRAME_CAP {
+                    continue;
+                }
+                frame_count += 1;
+            }
+            "audio" => {
+                if audio_count >= ASK_AI_SOURCE_AUDIO_CAP {
+                    continue;
+                }
+                audio_count += 1;
+            }
+            _ => continue,
+        }
+
+        sources.push(serde_json::json!({
+            "kind": source.kind,
+            "frameId": source.frame_id,
+            "audioSegmentId": source.audio_segment_id,
+            "appName": source.app_name,
+            "windowTitle": source.window_title,
+            "startedAt": source.started_at,
+            "endedAt": source.ended_at,
+            // Microphone/system distinction for audio sources. The pure builder
+            // never sets it; a best-effort async post-pass in
+            // `handle_reference_captures` fills audio sources from the DB.
+            "sourceKind": serde_json::Value::Null,
+        }));
+    }
+
+    let accepted = sources.len();
+    let dropped = opaque_ids.len().saturating_sub(accepted);
+    (sources, accepted, dropped)
+}
+
+/// Handle the shim's `reference_captures` presentation tool: validate + decode
+/// the nominated opaque ids, attach retained metadata, cap the set, emit a
+/// single `ask_ai_source` event to the frontend, and ack the shim with
+/// `{ accepted, dropped }`. This never touches the broker dispatch path.
+async fn handle_reference_captures(
+    app_handle: &tauri::AppHandle,
+    conversation_id: &str,
+    search_metadata: &Arc<Mutex<HashMap<String, BrokerSearchResult>>>,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let opaque_ids: Vec<String> = params
+        .get("opaqueIds")
+        .and_then(|value| value.as_array())
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let config_dir = access_config_dir(app_handle)?;
+
+    // Snapshot the retained search-metadata map, then drop the guard so the
+    // resolver closure does not hold the lock across decode work.
+    let snapshot: HashMap<String, BrokerSearchResult> = search_metadata
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
+
+    let (mut sources, accepted, dropped) = build_ask_ai_sources(&opaque_ids, |id| {
+        // Authoritative frame/audio identity via the signed reference. A failed
+        // HMAC validation or unparseable id yields `None` (dropped).
+        let reference =
+            app_infra::brokered_access::signed_opaque_capture_reference(&config_dir, id)
+                .ok()
+                .flatten()?;
+        // The model may only reference ids it actually received from `search`.
+        let result = snapshot.get(id)?;
+        let context = result.context.as_ref();
+        Some(ResolvedAskAiSource {
+            kind: reference.kind,
+            frame_id: reference.frame_id,
+            audio_segment_id: reference.audio_segment_id,
+            app_name: context.and_then(|context| {
+                context
+                    .app_name
+                    .clone()
+                    .or_else(|| context.app_bundle_id.clone())
+            }),
+            window_title: context.and_then(|context| context.window_title.clone()),
+            started_at: result.started_at.clone(),
+            ended_at: result.ended_at.clone(),
+        })
+    });
+
+    // Best-effort enrichment: color each audio source by its real microphone vs
+    // system-audio kind from the DB. The pure builder cannot do this (no async DB
+    // access), so we patch `sourceKind` here. Capped naturally at the audio cap
+    // (≤4 lookups); a missing AppInfra or a single failed lookup just leaves that
+    // source's `sourceKind` null and never aborts the emit.
+    if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
+        for source in sources.iter_mut() {
+            if source.get("kind").and_then(|kind| kind.as_str()) != Some("audio") {
+                continue;
+            }
+            let Some(audio_segment_id) =
+                source.get("audioSegmentId").and_then(|value| value.as_i64())
+            else {
+                continue;
+            };
+            if let Ok(Some(segment)) = infra.get_audio_segment(audio_segment_id).await {
+                let source_kind = match segment.source_kind.as_str() {
+                    "system_audio" => "system",
+                    // `microphone` (and any unexpected value) colors as microphone.
+                    _ => "microphone",
+                };
+                source["sourceKind"] = serde_json::json!(source_kind);
+            }
+        }
+    }
+
+    let _ = app_handle.emit(
+        ASK_AI_SOURCE_EVENT,
+        serde_json::json!({
+            "conversationId": conversation_id,
+            "sources": sources,
+        }),
+    );
+
+    Ok(serde_json::json!({ "accepted": accepted, "dropped": dropped }))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AskAiShowTextRequest {
@@ -352,7 +527,9 @@ filters); `timeline` returns coarse activity intervals for a bounded `from`/`to`
 seeded context below is missing or insufficient to answer, ISSUE follow-up tool calls to gather \
 what you need before answering — prefer a concise `search` first, and use `show_text` sparingly \
 for the specific results you need to read in full. Cite times and apps when useful, but never \
-invent details. If you still cannot answer, say so briefly. Be concise and direct.\n",
+invent details. When the captured text you cite already contains a URL, render it as a labeled \
+Markdown link `[label](url)` rather than bare text so the user can open it. If you still cannot \
+answer, say so briefly. Be concise and direct.\n",
     );
 
     if let Some(seed_query) = seed_query {
@@ -486,17 +663,48 @@ pub async fn ask_ai_start(
     let cancel = AskAiCancel::new();
     register_ask_ai_session(&conversation_id, cancel.clone());
 
-    // Build the brokered tool invoker. Every tool call rides
+    // Build the brokered tool invoker. The three data tools ride
     // `execute_pi_broker_request`, which enforces Ask-AI access readiness plus
     // the All-Retained broker scope and redaction/audit Rust-side; do not
-    // bypass it.
+    // bypass it. The `reference_captures` presentation tool is intercepted
+    // before the broker dispatch and never builds a broker request.
+    //
+    // Search results are recorded into this map keyed by opaque id so a later
+    // `reference_captures` call can attach metadata and prove the model only
+    // references ids it actually received from `search`.
+    let search_metadata: Arc<Mutex<HashMap<String, BrokerSearchResult>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let invoker_app_handle = app_handle.clone();
+    let invoker_conversation_id = conversation_id.clone();
+    let invoker_search_metadata = Arc::clone(&search_metadata);
     let tool_invoker: pi_agent_session::AskAiToolInvoker =
         Box::new(move |tool: String, params: serde_json::Value| {
             let app_handle = invoker_app_handle.clone();
+            let conversation_id = invoker_conversation_id.clone();
+            let search_metadata = Arc::clone(&invoker_search_metadata);
             Box::pin(async move {
+                // Presentation signal: validate/decode + emit `ask_ai_source`,
+                // never dispatched to the broker.
+                if tool == "reference_captures" {
+                    return handle_reference_captures(
+                        &app_handle,
+                        &conversation_id,
+                        &search_metadata,
+                        params,
+                    )
+                    .await;
+                }
+
                 let request = broker_request_from_tool(&tool, params)?;
                 let response = execute_pi_broker_request(app_handle, request).await?;
+                // Retain each search result by opaque id for later nomination.
+                if let BrokeredCaptureResponse::Search(ref response) = response {
+                    if let Ok(mut map) = search_metadata.lock() {
+                        for r in &response.results {
+                            map.insert(r.opaque_id.clone(), r.clone());
+                        }
+                    }
+                }
                 broker_response_to_tool_value(response)
             })
         });
@@ -527,6 +735,11 @@ pub async fn ask_ai_start(
                     );
                 }
                 pi_agent_session::AskAiStreamEvent::ToolCall { tool, params, .. } => {
+                    // `reference_captures` is a presentation signal, not a data
+                    // activity, so it must not appear in the activity chip.
+                    if tool == "reference_captures" {
+                        return;
+                    }
                     // Forward the raw tool name (`search`/`timeline`/`show_text`)
                     // plus its params; the frontend builds the humane working-line
                     // label from these (e.g. `Searching "invoice" · Jun 1`).
@@ -805,6 +1018,144 @@ mod tests {
         let error = broker_request_from_tool("open_in_mnema", serde_json::json!({}))
             .expect_err("open_in_mnema is not an Ask AI tool");
         assert_eq!(error, "unknown Ask AI tool: open_in_mnema");
+    }
+
+    fn frame_source(started_at: &str, ended_at: &str) -> ResolvedAskAiSource {
+        ResolvedAskAiSource {
+            kind: "frame".to_string(),
+            frame_id: Some(42),
+            audio_segment_id: None,
+            app_name: Some("Xcode".to_string()),
+            window_title: Some("ContentView.swift".to_string()),
+            started_at: started_at.to_string(),
+            ended_at: ended_at.to_string(),
+        }
+    }
+
+    fn audio_source(started_at: &str, ended_at: &str) -> ResolvedAskAiSource {
+        ResolvedAskAiSource {
+            kind: "audio".to_string(),
+            frame_id: None,
+            audio_segment_id: Some(7),
+            app_name: Some("Zoom".to_string()),
+            window_title: None,
+            started_at: started_at.to_string(),
+            ended_at: ended_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn build_ask_ai_sources_caps_frames_and_audio() {
+        let mut ids: Vec<String> = (0..8).map(|i| format!("frame-{i}")).collect();
+        ids.extend((0..6).map(|i| format!("audio-{i}")));
+
+        let (sources, accepted, dropped) = build_ask_ai_sources(&ids, |id| {
+            if id.starts_with("frame-") {
+                Some(frame_source("2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z"))
+            } else {
+                Some(audio_source("2026-01-01T11:00:00Z", "2026-01-01T11:05:00Z"))
+            }
+        });
+
+        assert_eq!(accepted, 10);
+        assert_eq!(dropped, ids.len() - 10);
+        let frame_total = sources
+            .iter()
+            .filter(|s| s["kind"] == serde_json::json!("frame"))
+            .count();
+        let audio_total = sources
+            .iter()
+            .filter(|s| s["kind"] == serde_json::json!("audio"))
+            .count();
+        assert_eq!(frame_total, 6);
+        assert_eq!(audio_total, 4);
+        // Frames are nominated first, so they appear before audio in order.
+        assert_eq!(sources[0]["kind"], serde_json::json!("frame"));
+        assert_eq!(sources[6]["kind"], serde_json::json!("audio"));
+    }
+
+    #[test]
+    fn build_ask_ai_sources_drops_invalid_ids() {
+        let ids = vec![
+            "good-1".to_string(),
+            "bad-1".to_string(),
+            "good-2".to_string(),
+            "bad-2".to_string(),
+        ];
+
+        let (sources, accepted, dropped) = build_ask_ai_sources(&ids, |id| {
+            if id.starts_with("good-") {
+                Some(frame_source("2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z"))
+            } else {
+                None
+            }
+        });
+
+        assert_eq!(accepted, 2);
+        assert_eq!(dropped, 2);
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn build_ask_ai_sources_dedupes() {
+        let ids = vec![
+            "dup".to_string(),
+            "dup".to_string(),
+            "other".to_string(),
+            "dup".to_string(),
+        ];
+
+        let (sources, accepted, dropped) = build_ask_ai_sources(&ids, |_id| {
+            Some(frame_source("2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z"))
+        });
+
+        // Two distinct ids resolve once each; the two extra `dup` repeats drop.
+        assert_eq!(accepted, 2);
+        assert_eq!(dropped, 2);
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn build_ask_ai_sources_source_shape() {
+        let ids = vec!["frame-1".to_string(), "audio-1".to_string()];
+        let (sources, _accepted, _dropped) = build_ask_ai_sources(&ids, |id| {
+            if id.starts_with("frame-") {
+                Some(frame_source("2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z"))
+            } else {
+                Some(audio_source("2026-01-01T11:00:00Z", "2026-01-01T11:05:00Z"))
+            }
+        });
+
+        let frame = &sources[0];
+        assert_eq!(frame["kind"], serde_json::json!("frame"));
+        assert_eq!(frame["frameId"], serde_json::json!(42));
+        assert_eq!(frame["audioSegmentId"], serde_json::Value::Null);
+        assert_eq!(frame["appName"], serde_json::json!("Xcode"));
+        assert_eq!(frame["windowTitle"], serde_json::json!("ContentView.swift"));
+        assert_eq!(frame["startedAt"], serde_json::json!("2026-01-01T10:00:00Z"));
+        assert_eq!(frame["endedAt"], serde_json::json!("2026-01-01T10:01:00Z"));
+        // The pure builder never resolves the mic/system distinction; that is the
+        // async post-pass's job, so every source starts with a null `sourceKind`.
+        assert!(frame.as_object().unwrap().contains_key("sourceKind"));
+        assert_eq!(frame["sourceKind"], serde_json::Value::Null);
+
+        let audio = &sources[1];
+        assert_eq!(audio["kind"], serde_json::json!("audio"));
+        assert_eq!(audio["frameId"], serde_json::Value::Null);
+        assert_eq!(audio["audioSegmentId"], serde_json::json!(7));
+        assert_eq!(audio["windowTitle"], serde_json::Value::Null);
+        assert!(audio.as_object().unwrap().contains_key("sourceKind"));
+        assert_eq!(audio["sourceKind"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn broker_request_from_tool_rejects_reference_captures() {
+        let error = broker_request_from_tool(
+            "reference_captures",
+            serde_json::json!({ "opaqueIds": [] }),
+        )
+        .expect_err("reference_captures is not a broker data tool");
+        assert_eq!(error, "unknown Ask AI tool: reference_captures");
     }
 
     #[test]

@@ -5,6 +5,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
+  import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { closeCurrentWindow } from "$lib/surface-windows";
   import { renderMarkdown } from "$lib/markdown";
@@ -175,6 +176,48 @@
       audioSegmentId: result.audioSegment.id,
     });
     await closeCurrentWindow();
+  }
+
+  // Hand off an Ask AI answer source to the main window, mirroring
+  // selectFrame/selectAudio (frame xor audio carried by the source kind).
+  async function selectSource(source: AskAiSource): Promise<void> {
+    await invoke("open_capture_result_in_main_window", {
+      kind: source.kind,
+      frameId: source.frameId,
+      audioSegmentId: source.audioSegmentId,
+    });
+    await closeCurrentWindow();
+  }
+
+  // Load thumbnails for answer-source frames, mirroring loadThumbnails. Best
+  // effort: a card without a cached preview falls back to its glyph. No search
+  // generation guard applies here (these come from the ask stream, not search).
+  async function loadSourceThumbnails(sources: AskAiSource[]): Promise<void> {
+    const frameIds = sources
+      .filter((source) => source.kind === "frame" && source.frameId != null)
+      .map((source) => source.frameId as number)
+      .filter((id) => !thumbnailCache.has(id));
+
+    const uniqueIds = Array.from(new Set(frameIds));
+    if (uniqueIds.length === 0) {
+      return;
+    }
+
+    try {
+      const response = await invoke<FrameScrubPreviewsDto>("get_frame_scrub_previews", {
+        request: { frameIds: uniqueIds },
+      });
+
+      const next = new Map(thumbnailCache);
+      for (const entry of response.previews) {
+        if (entry.preview) {
+          next.set(entry.frameId, framePreviewAssetUrl(entry.preview.filePath));
+        }
+      }
+      thumbnailCache = next;
+    } catch {
+      // Thumbnails are best-effort; the card falls back to its glyph.
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -352,6 +395,25 @@
     message: string;
   };
 
+  // One cited answer source — a captured frame or audio segment the agent drew
+  // on. Arrives already ordered and capped (6 frame / 4 audio) by the host. The
+  // event may fire more than once per conversation; the LAST set replaces prior.
+  type AskAiSource = {
+    kind: "frame" | "audio";
+    frameId: number | null;
+    audioSegmentId: number | null;
+    appName: string | null;
+    windowTitle: string | null;
+    startedAt: string;
+    endedAt: string;
+    sourceKind: "microphone" | "system" | null;
+  };
+
+  type AskAiSourceEvent = {
+    conversationId: string;
+    sources: AskAiSource[];
+  };
+
   type AskAiPhase = "seeding" | "thinking" | "streaming" | "done" | "error";
 
   let mode = $state<"search" | "ask">("search");
@@ -383,6 +445,13 @@
   let askSummaryExpanded = $state(false);
   // True between ask_ai_start resolving and a terminal done/error event.
   let askStreaming = $state(false);
+
+  // Cited answer sources for the current ask, buffered as `ask_ai_source` events
+  // arrive (the last event replaces the set). Always buffered; the markup gates
+  // rendering on askPhase === "done". Split into Screen/Audio for the strip.
+  let askSources = $state<AskAiSource[]>([]);
+  let askFrameSources = $derived(askSources.filter((s) => s.kind === "frame"));
+  let askAudioSources = $derived(askSources.filter((s) => s.kind === "audio"));
 
   // The seed used for the current/last ask, so an error "Try again" can re-run
   // the exact same question + seed pairing. Set inside startAsk.
@@ -640,6 +709,7 @@
     askToolActivities = [];
     askSummaryExpanded = false;
     askCopied = false;
+    askSources = [];
     askStreaming = true;
 
     try {
@@ -791,6 +861,7 @@
     askToolActivities = [];
     askSummaryExpanded = false;
     askCopied = false;
+    askSources = [];
     await tick();
     inputEl?.focus();
   }
@@ -864,6 +935,7 @@
     askToolActivities = [];
     askSummaryExpanded = false;
     askCopied = false;
+    askSources = [];
     await tick();
     inputEl?.focus();
   }
@@ -911,6 +983,7 @@
     let unlistenDelta: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
     let unlistenError: (() => void) | undefined;
+    let unlistenSource: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
 
     // The window is hidden/re-shown rather than recreated across summons, so
@@ -982,6 +1055,17 @@
       else unlistenError = fn;
     });
 
+    listen<AskAiSourceEvent>("ask_ai_source", (event) => {
+      if (event.payload.conversationId !== askConversationId) return;
+      // Buffer always; the last event replaces the prior set. The markup gates
+      // rendering on askPhase === "done", so a mid-stream set still arrives now.
+      askSources = event.payload.sources;
+      void loadSourceThumbnails(event.payload.sources);
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSource = fn;
+    });
+
     return () => {
       destroyed = true;
       motionQuery.removeEventListener("change", onMotionChange);
@@ -989,6 +1073,7 @@
       unlistenDelta?.();
       unlistenDone?.();
       unlistenError?.();
+      unlistenSource?.();
       unlistenFocus?.();
     };
   });
@@ -1305,6 +1390,54 @@
                   class:quick-recall__answer--streaming={askStreaming}
                   onclick={handleAnswerClick}
                 >{@html askAnswerHtml}</div>
+
+                <!-- Answer sources: the captured frames/audio the agent drew on,
+                     surfaced only once the answer is done. Mirrors the search
+                     Screen/Audio split but as horizontally-scrolling card rows. -->
+                {#if askPhase === "done" && askSources.length > 0}
+                  <div class="quick-recall__sources">
+                    <span class="quick-recall__sources-heading">Sources</span>
+                    {#if askFrameSources.length > 0}
+                      <div class="quick-recall__section" role="presentation">
+                        <span class="quick-recall__section-label">Screen</span>
+                        <div class="quick-recall__source-row" role="presentation">
+                          {#each askFrameSources as s, i (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${i}`)}
+                            <AnswerSourceCard
+                              kind="frame"
+                              appName={s.appName}
+                              windowTitle={s.windowTitle}
+                              startedAt={s.startedAt}
+                              endedAt={s.endedAt}
+                              thumbnailUrl={s.frameId != null
+                                ? (thumbnailCache.get(s.frameId) ?? null)
+                                : null}
+                              onselect={() => void selectSource(s)}
+                            />
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+
+                    {#if askAudioSources.length > 0}
+                      <div class="quick-recall__section" role="presentation">
+                        <span class="quick-recall__section-label">Audio</span>
+                        <div class="quick-recall__source-row" role="presentation">
+                          {#each askAudioSources as s, i (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${i}`)}
+                            <AnswerSourceCard
+                              kind="audio"
+                              appName={s.appName}
+                              windowTitle={s.windowTitle}
+                              startedAt={s.startedAt}
+                              endedAt={s.endedAt}
+                              sourceKind={s.sourceKind}
+                              onselect={() => void selectSource(s)}
+                            />
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
               {/if}
               {#if askToolActivity !== null}
                 <!-- Live animated working line: the real tool filter string. -->
@@ -1762,6 +1895,56 @@
   .quick-recall__answer-area {
     gap: 10px;
     position: relative;
+  }
+
+  /* Answer sources strip: sectioned Screen/Audio rows beneath the answer prose.
+     Each section's cards scroll horizontally (AnswerSourceCard is fixed-width),
+     separated from the prose by a hairline rule. */
+  .quick-recall__sources {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 4px;
+    padding-top: 14px;
+    border-top: 1px solid var(--app-border);
+  }
+
+  .quick-recall__sources-heading {
+    font-size: 11px;
+    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--app-text-subtle);
+    padding: 0 2px;
+  }
+
+  /* Horizontally-scrolling card row. The thin scrollbar stays out of the way
+     until hover, matching the quiet terminal aesthetic of the surface. */
+  .quick-recall__source-row {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--app-border) transparent;
+  }
+
+  .quick-recall__source-row::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  .quick-recall__source-row::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .quick-recall__source-row::-webkit-scrollbar-thumb {
+    background: var(--app-border);
+    border-radius: 3px;
+  }
+
+  .quick-recall__source-row::-webkit-scrollbar-thumb:hover {
+    background: var(--app-border-hover);
   }
 
   /* Copy button: pinned to the top-right of the answer region, only visible at

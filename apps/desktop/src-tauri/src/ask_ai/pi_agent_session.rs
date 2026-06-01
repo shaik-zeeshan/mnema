@@ -89,6 +89,14 @@ fn parse_tool_call_line(line: &str) -> Option<ToolCall> {
     Some(ToolCall { id, tool, params })
 }
 
+/// Whether a tool call spends one unit of the per-question data tool-call
+/// budget. `reference_captures` is a presentation signal (it nominates Answer
+/// Sources for the UI and returns no capture data), so it is exempt from the
+/// cap and is never blocked by it; the three brokered data tools all count.
+fn tool_counts_against_cap(tool: &str) -> bool {
+    tool != "reference_captures"
+}
+
 /// Build the `tool_result` stdin line (without trailing newline) for a finished
 /// tool call. `Ok` emits `ok:true` with the `result` value; `Err` emits
 /// `ok:false` with the `error` message.
@@ -268,7 +276,12 @@ where
                     // through the normal `parse_shim_line` event path.
                     if let Some(call) = parse_tool_call_line(&line) {
                         let ToolCall { id, tool, params } = call;
-                        tool_call_count += 1;
+                        // Presentation tools (e.g. `reference_captures`) never
+                        // count against or are blocked by the data tool-call cap.
+                        let counts = tool_counts_against_cap(&tool);
+                        if counts {
+                            tool_call_count += 1;
+                        }
                         on_event(AskAiStreamEvent::ToolCall {
                             id: id.clone(),
                             tool: tool.clone(),
@@ -276,7 +289,7 @@ where
                         });
 
                         let result: Result<serde_json::Value, String> =
-                            if tool_call_count > max_tool_calls {
+                            if counts && tool_call_count > max_tool_calls {
                                 Err(format!(
                                     "Ask AI tool-call limit reached ({max_tool_calls}). Answer using the information already gathered."
                                 ))
@@ -714,6 +727,14 @@ mod tests {
     fn tool_result_line_emits_single_line() {
         let line = tool_result_line(&"c3".to_string(), &Ok(serde_json::Value::Null));
         assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn tool_counts_against_cap_exempts_reference_captures() {
+        assert!(!tool_counts_against_cap("reference_captures"));
+        assert!(tool_counts_against_cap("search"));
+        assert!(tool_counts_against_cap("timeline"));
+        assert!(tool_counts_against_cap("show_text"));
     }
 
     #[test]
