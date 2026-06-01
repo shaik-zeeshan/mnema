@@ -6,6 +6,8 @@
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { closeCurrentWindow } from "$lib/surface-windows";
+  import { renderMarkdown } from "$lib/markdown";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import type {
     SearchCaptureResponse,
     FrameSearchResultDto,
@@ -354,6 +356,27 @@
   let askToolActivity = $state<string | null>(null);
   // True between ask_ai_start resolving and a terminal done/error event.
   let askStreaming = $state(false);
+
+  // The streamed answer is Markdown; render it to HTML for display. Recomputed
+  // on each delta — incomplete Markdown (e.g. an unclosed code fence mid-stream)
+  // renders gracefully and resolves once the closing token arrives.
+  let askAnswerHtml = $derived(askAnswer.length > 0 ? renderMarkdown(askAnswer) : "");
+
+  // Route link clicks inside the rendered answer through the OS browser instead
+  // of navigating the webview. Links are tagged with data-external in markdown.ts.
+  function handleAnswerClick(event: MouseEvent): void {
+    const anchor = (event.target as HTMLElement | null)?.closest(
+      "a[data-external]",
+    ) as HTMLAnchorElement | null;
+    if (anchor === null) {
+      return;
+    }
+    event.preventDefault();
+    const href = anchor.getAttribute("href");
+    if (href !== null && href.length > 0) {
+      void openUrl(href);
+    }
+  }
 
   let askAnswerEl = $state<HTMLDivElement | null>(null);
   // The Ask AI answer region; focused on entry so Escape (back-to-search) and
@@ -865,7 +888,16 @@
         </p>
       {:else}
         {#if askPhase === "streaming" || askPhase === "done"}
-          <div bind:this={askAnswerEl} class="quick-recall__answer">{askAnswer}{#if askStreaming}<span class="quick-recall__caret" aria-hidden="true"></span>{/if}</div>
+          <!-- Click delegation for rendered links; the <a> elements carry their
+               own keyboard semantics (Enter dispatches a click that bubbles here). -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div
+            bind:this={askAnswerEl}
+            class="quick-recall__answer"
+            class:quick-recall__answer--streaming={askStreaming}
+            onclick={handleAnswerClick}
+          >{@html askAnswerHtml}</div>
         {/if}
         {#if askToolActivity !== null}
           <p class="quick-recall__state quick-recall__state--working">
@@ -1181,12 +1213,152 @@
     font-size: 14px;
     line-height: 1.6;
     color: var(--app-text);
-    white-space: pre-wrap;
     word-break: break-word;
     overflow-wrap: anywhere;
   }
 
-  .quick-recall__caret {
+  /* Rendered Markdown blocks. The answer is a flow of <p>/<ul>/<pre>/… so we
+     tame default browser margins and tie everything to the app palette. The
+     `:global()` wrappers are required because this HTML is injected via {@html}
+     and would otherwise be stripped by Svelte's scoped-style pruning. */
+  .quick-recall__answer :global(> :first-child) {
+    margin-top: 0;
+  }
+
+  .quick-recall__answer :global(> :last-child) {
+    margin-bottom: 0;
+  }
+
+  .quick-recall__answer :global(p),
+  .quick-recall__answer :global(ul),
+  .quick-recall__answer :global(ol),
+  .quick-recall__answer :global(blockquote),
+  .quick-recall__answer :global(pre),
+  .quick-recall__answer :global(table) {
+    margin: 0 0 0.7em;
+  }
+
+  .quick-recall__answer :global(h1),
+  .quick-recall__answer :global(h2),
+  .quick-recall__answer :global(h3),
+  .quick-recall__answer :global(h4),
+  .quick-recall__answer :global(h5),
+  .quick-recall__answer :global(h6) {
+    margin: 1.1em 0 0.5em;
+    line-height: 1.3;
+    font-weight: 600;
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__answer :global(h1) {
+    font-size: 1.3em;
+  }
+  .quick-recall__answer :global(h2) {
+    font-size: 1.18em;
+  }
+  .quick-recall__answer :global(h3) {
+    font-size: 1.06em;
+  }
+  .quick-recall__answer :global(h4),
+  .quick-recall__answer :global(h5),
+  .quick-recall__answer :global(h6) {
+    font-size: 1em;
+  }
+
+  .quick-recall__answer :global(strong) {
+    font-weight: 600;
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__answer :global(a) {
+    color: var(--app-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .quick-recall__answer :global(ul),
+  .quick-recall__answer :global(ol) {
+    padding-left: 1.4em;
+  }
+
+  .quick-recall__answer :global(li) {
+    margin: 0.2em 0;
+  }
+
+  .quick-recall__answer :global(li::marker) {
+    color: var(--app-text-muted);
+  }
+
+  .quick-recall__answer :global(li > ul),
+  .quick-recall__answer :global(li > ol) {
+    margin: 0.2em 0;
+  }
+
+  /* Inline code. */
+  .quick-recall__answer :global(code) {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+      monospace;
+    font-size: 0.88em;
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border);
+    color: var(--app-text-strong);
+  }
+
+  /* Fenced code blocks: the <pre> owns the chrome, the inner <code> resets. */
+  .quick-recall__answer :global(pre) {
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--app-surface-raised);
+    border: 1px solid var(--app-border);
+    overflow-x: auto;
+  }
+
+  .quick-recall__answer :global(pre code) {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--app-text);
+    font-size: 0.86em;
+    line-height: 1.5;
+  }
+
+  .quick-recall__answer :global(blockquote) {
+    padding: 0.1em 0 0.1em 0.9em;
+    border-left: 2px solid var(--app-accent-border);
+    color: var(--app-text-muted);
+  }
+
+  .quick-recall__answer :global(hr) {
+    margin: 1em 0;
+    border: none;
+    border-top: 1px solid var(--app-border);
+  }
+
+  .quick-recall__answer :global(table) {
+    border-collapse: collapse;
+    font-size: 0.92em;
+  }
+
+  .quick-recall__answer :global(th),
+  .quick-recall__answer :global(td) {
+    padding: 0.35em 0.7em;
+    border: 1px solid var(--app-border);
+    text-align: left;
+  }
+
+  .quick-recall__answer :global(th) {
+    background: var(--app-surface-subtle);
+    color: var(--app-text-strong);
+    font-weight: 600;
+  }
+
+  /* Streaming cursor: a blinking caret tacked onto the last rendered block so it
+     trails the freshest token instead of dropping to its own line. */
+  .quick-recall__answer--streaming :global(> :last-child::after) {
+    content: "";
     display: inline-block;
     width: 7px;
     height: 1.05em;
