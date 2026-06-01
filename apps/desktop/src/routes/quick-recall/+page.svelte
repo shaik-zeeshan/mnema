@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { closeCurrentWindow } from "$lib/surface-windows";
@@ -148,8 +149,223 @@
     await closeCurrentWindow();
   }
 
+  // ---------------------------------------------------------------------------
+  // Ask AI
+  //
+  // Ask AI pivots from the current Quick Search query into a PI-driven answer
+  // seeded with redacted broker results for that same query. State is fully
+  // ephemeral: a fresh window summon recreates the component, and returning to
+  // search mode resets everything below. Nothing is persisted.
+  // ---------------------------------------------------------------------------
+
+  type AskAiAvailability = {
+    available: boolean;
+    reason: string | null;
+  };
+
+  type AskAiStatusEvent = {
+    conversationId: string;
+    phase: "seeding" | "thinking";
+    seededResultCount?: number;
+  };
+
+  type AskAiDeltaEvent = {
+    conversationId: string;
+    text: string;
+  };
+
+  type AskAiDoneEvent = {
+    conversationId: string;
+  };
+
+  type AskAiErrorEvent = {
+    conversationId: string;
+    message: string;
+  };
+
+  type AskAiPhase = "seeding" | "thinking" | "streaming" | "done" | "error";
+
+  let mode = $state<"search" | "ask">("search");
+
+  // Availability is resolved on mount. Until it resolves the affordance is
+  // treated as unavailable so we never render a dead button that errors.
+  let askAvailability = $state<AskAiAvailability | null>(null);
+
+  // The question being asked (and the read-only header once submitted), plus
+  // the editable input used when Ask AI is opened with no seed query.
+  let askQuestion = $state("");
+  let askInput = $state("");
+  let askInputEl = $state<HTMLTextAreaElement | null>(null);
+  let askSubmitted = $state(false);
+
+  // Streaming state for the active conversation.
+  let askConversationId = $state<string | null>(null);
+  let askPhase = $state<AskAiPhase>("seeding");
+  let askAnswer = $state("");
+  let askErrorMessage = $state<string | null>(null);
+  let askSeededResultCount = $state<number | null>(null);
+  // True between ask_ai_start resolving and a terminal done/error event.
+  let askStreaming = $state(false);
+
+  let askAnswerEl = $state<HTMLDivElement | null>(null);
+
+  function friendlyAskReason(reason: string | null): string {
+    switch (reason) {
+      case "ask_ai_disabled":
+        return "Enable Ask AI in Settings";
+      case "pi_not_found":
+        return "Set up PI to use Ask AI";
+      case "pi_version_too_old":
+        return "Update PI to use Ask AI";
+      case "pi_auth_missing":
+        return "Sign in to PI to use Ask AI";
+      case "pi_no_provider":
+        return "Configure a PI provider to use Ask AI";
+      default:
+        return "Set up PI to use Ask AI";
+    }
+  }
+
+  let askAvailable = $derived(askAvailability?.available === true);
+  let askUnavailableHint = $derived(
+    askAvailability && !askAvailability.available
+      ? friendlyAskReason(askAvailability.reason)
+      : null,
+  );
+
+  async function loadAskAvailability(): Promise<void> {
+    try {
+      askAvailability = await invoke<AskAiAvailability>("ask_ai_availability");
+    } catch (error) {
+      // Treat a failed availability probe as unavailable rather than erroring.
+      askAvailability = {
+        available: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // Begin an Ask AI conversation. `question` is what gets answered; `seedQuery`
+  // seeds the broker search (the prior Quick Search query, or null).
+  async function startAsk(question: string, seedQuery: string | null): Promise<void> {
+    const trimmedQuestion = question.trim();
+    if (trimmedQuestion.length === 0) {
+      return;
+    }
+
+    // Cancel any in-flight stream before starting a new one.
+    if (askStreaming && askConversationId !== null) {
+      await cancelActiveAsk();
+    }
+
+    const conversationId = crypto.randomUUID();
+    askConversationId = conversationId;
+    askQuestion = trimmedQuestion;
+    askSubmitted = true;
+    askPhase = "seeding";
+    askAnswer = "";
+    askErrorMessage = null;
+    askSeededResultCount = null;
+    askStreaming = true;
+
+    try {
+      await invoke<void>("ask_ai_start", {
+        request: {
+          conversationId,
+          question: trimmedQuestion,
+          seedQuery: seedQuery && seedQuery.trim().length > 0 ? seedQuery.trim() : null,
+        },
+      });
+    } catch (error) {
+      // A start that never streamed: ignore stale (superseded) failures.
+      if (askConversationId !== conversationId) {
+        return;
+      }
+      askStreaming = false;
+      askPhase = "error";
+      askErrorMessage = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function cancelActiveAsk(): Promise<void> {
+    const conversationId = askConversationId;
+    if (conversationId === null || !askStreaming) {
+      return;
+    }
+    askStreaming = false;
+    try {
+      await invoke<void>("ask_ai_cancel", { request: { conversationId } });
+    } catch {
+      // Cancellation is best-effort; the conversation is being abandoned.
+    }
+  }
+
+  // Activate the Ask AI affordance from search mode.
+  async function activateAskAi(): Promise<void> {
+    if (!askAvailable) {
+      return;
+    }
+
+    const seed = trimmedQuery;
+    mode = "ask";
+
+    if (seed.length > 0) {
+      // Seeded: immediately submit the current query as the question.
+      askInput = "";
+      await startAsk(seed, seed);
+    } else {
+      // Unseeded: show an empty ask input for the user to type a question.
+      askInput = "";
+      askSubmitted = false;
+      askQuestion = "";
+      await tick();
+      askInputEl?.focus();
+    }
+  }
+
+  // Submit the typed question from the unseeded ask input (Enter).
+  function submitAskInput(): void {
+    const typed = askInput.trim();
+    if (typed.length === 0) {
+      return;
+    }
+    void startAsk(typed, null);
+  }
+
+  function handleAskInputKeydown(event: KeyboardEvent): void {
+    // Enter submits; Shift+Enter inserts a newline.
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submitAskInput();
+    }
+  }
+
+  // Return to search mode, abandoning any in-flight stream and resetting all
+  // ephemeral ask state.
+  async function backToSearch(): Promise<void> {
+    await cancelActiveAsk();
+    mode = "search";
+    askConversationId = null;
+    askQuestion = "";
+    askInput = "";
+    askSubmitted = false;
+    askPhase = "seeding";
+    askAnswer = "";
+    askErrorMessage = null;
+    askSeededResultCount = null;
+    await tick();
+    inputEl?.focus();
+  }
+
   $effect(() => {
     scheduleSearch(query);
+  });
+
+  // Keep the streaming answer scrolled to the latest token.
+  $effect(() => {
+    if (askPhase === "streaming" && askAnswer.length > 0 && askAnswerEl) {
+      askAnswerEl.scrollTop = askAnswerEl.scrollHeight;
+    }
   });
 
   let trimmedQuery = $derived(query.trim());
@@ -161,14 +377,73 @@
 
   onMount(() => {
     inputEl?.focus();
+    void loadAskAvailability();
+
+    let destroyed = false;
+    let unlistenStatus: (() => void) | undefined;
+    let unlistenDelta: (() => void) | undefined;
+    let unlistenDone: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+
+    listen<AskAiStatusEvent>("ask_ai_status", (event) => {
+      if (event.payload.conversationId !== askConversationId) return;
+      if (typeof event.payload.seededResultCount === "number") {
+        askSeededResultCount = event.payload.seededResultCount;
+      }
+      // Don't regress out of streaming once tokens have started arriving.
+      if (askPhase !== "streaming") {
+        askPhase = event.payload.phase;
+      }
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenStatus = fn;
+    });
+
+    listen<AskAiDeltaEvent>("ask_ai_delta", (event) => {
+      if (event.payload.conversationId !== askConversationId) return;
+      askPhase = "streaming";
+      askAnswer += event.payload.text;
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenDelta = fn;
+    });
+
+    listen<AskAiDoneEvent>("ask_ai_done", (event) => {
+      if (event.payload.conversationId !== askConversationId) return;
+      askStreaming = false;
+      askPhase = "done";
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenDone = fn;
+    });
+
+    listen<AskAiErrorEvent>("ask_ai_error", (event) => {
+      if (event.payload.conversationId !== askConversationId) return;
+      askStreaming = false;
+      askPhase = "error";
+      askErrorMessage = event.payload.message;
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenError = fn;
+    });
+
+    return () => {
+      destroyed = true;
+      unlistenStatus?.();
+      unlistenDelta?.();
+      unlistenDone?.();
+      unlistenError?.();
+    };
   });
 
   onDestroy(() => {
     clearDebounce();
+    void cancelActiveAsk();
   });
 </script>
 
 <div class="quick-recall">
+  {#if mode === "search"}
   <div class="quick-recall__field">
     <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
     <input
@@ -182,8 +457,32 @@
       placeholder="Search your captures…"
       aria-label="Search your captures"
     />
+    {#if askAvailable}
+      <button
+        type="button"
+        class="quick-recall__ask-button"
+        onclick={() => void activateAskAi()}
+        aria-label="Ask AI"
+      >
+        Ask AI <span class="quick-recall__ask-key" aria-hidden="true">↵</span>
+      </button>
+    {:else}
+      <button
+        type="button"
+        class="quick-recall__ask-button quick-recall__ask-button--disabled"
+        disabled
+        aria-label={askUnavailableHint ?? "Ask AI unavailable"}
+        title={askUnavailableHint ?? "Ask AI unavailable"}
+      >
+        Ask AI
+      </button>
+    {/if}
     <kbd class="quick-recall__hint">esc</kbd>
   </div>
+
+  {#if askUnavailableHint}
+    <p class="quick-recall__ask-hint">{askUnavailableHint}</p>
+  {/if}
 
   <div class="quick-recall__results" role="listbox" aria-label="Search results">
     {#if belowMinimum}
@@ -227,6 +526,66 @@
       {/if}
     {/if}
   </div>
+  {:else}
+  <div class="quick-recall__field quick-recall__field--ask">
+    <button
+      type="button"
+      class="quick-recall__back"
+      onclick={() => void backToSearch()}
+      aria-label="Back to search"
+    >
+      ← Back
+    </button>
+    {#if askSubmitted}
+      <span class="quick-recall__ask-question" title={askQuestion}>{askQuestion}</span>
+    {:else}
+      <textarea
+        bind:this={askInputEl}
+        bind:value={askInput}
+        class="quick-recall__ask-input"
+        rows="1"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        placeholder="Ask anything about your captures…"
+        aria-label="Ask AI a question"
+        onkeydown={handleAskInputKeydown}
+      ></textarea>
+    {/if}
+    <kbd class="quick-recall__hint">esc</kbd>
+  </div>
+
+  <div class="quick-recall__results quick-recall__answer-area" aria-live="polite">
+    {#if !askSubmitted}
+      <p class="quick-recall__state">Type a question and press Enter to ask.</p>
+    {:else if askPhase === "error"}
+      <p class="quick-recall__state quick-recall__state--error">
+        {askErrorMessage ?? "Ask AI failed."}
+      </p>
+    {:else}
+      {#if askSeededResultCount !== null && askSeededResultCount > 0}
+        <p class="quick-recall__seeded">
+          Seeded with {askSeededResultCount}
+          {askSeededResultCount === 1 ? "result" : "results"}
+        </p>
+      {/if}
+
+      {#if askPhase === "seeding"}
+        <p class="quick-recall__state quick-recall__state--working">
+          <span class="quick-recall__dot" aria-hidden="true"></span>
+          Searching your captures…
+        </p>
+      {:else if askPhase === "thinking"}
+        <p class="quick-recall__state quick-recall__state--working">
+          <span class="quick-recall__dot" aria-hidden="true"></span>
+          Thinking…
+        </p>
+      {:else}
+        <div bind:this={askAnswerEl} class="quick-recall__answer">{askAnswer}{#if askStreaming}<span class="quick-recall__caret" aria-hidden="true"></span>{/if}</div>
+      {/if}
+    {/if}
+  </div>
+  {/if}
 </div>
 
 <style>
@@ -334,5 +693,177 @@
 
   .quick-recall__state--error {
     color: var(--app-accent);
+  }
+
+  .quick-recall__ask-button {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--app-text);
+    background: var(--app-surface-subtle);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    padding: 6px 9px;
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease;
+  }
+
+  .quick-recall__ask-button:hover {
+    border-color: var(--app-accent);
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__ask-key {
+    font-size: 11px;
+    color: var(--app-text-muted);
+  }
+
+  .quick-recall__ask-button--disabled,
+  .quick-recall__ask-button:disabled {
+    color: var(--app-text-subtle);
+    cursor: not-allowed;
+  }
+
+  .quick-recall__ask-button--disabled:hover {
+    border-color: var(--app-border);
+    color: var(--app-text-subtle);
+  }
+
+  .quick-recall__ask-hint {
+    margin: 0;
+    padding: 6px 18px 0;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--app-text-subtle);
+    flex-shrink: 0;
+  }
+
+  .quick-recall__field--ask {
+    gap: 12px;
+  }
+
+  .quick-recall__back {
+    flex-shrink: 0;
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--app-text-muted);
+    background: var(--app-surface-subtle);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    padding: 6px 9px;
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease;
+  }
+
+  .quick-recall__back:hover {
+    border-color: var(--app-accent);
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__ask-question {
+    flex: 1;
+    min-width: 0;
+    font-size: 16px;
+    line-height: 1.4;
+    color: var(--app-text-strong);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .quick-recall__ask-input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--app-text-strong);
+    font-family: inherit;
+    font-size: 16px;
+    line-height: 1.4;
+    padding: 0;
+    resize: none;
+    caret-color: var(--app-accent);
+  }
+
+  .quick-recall__ask-input::placeholder {
+    color: var(--app-text-subtle);
+  }
+
+  .quick-recall__answer-area {
+    gap: 10px;
+  }
+
+  .quick-recall__seeded {
+    margin: 0;
+    padding: 0 2px;
+    font-size: 11px;
+    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--app-text-subtle);
+    flex-shrink: 0;
+  }
+
+  .quick-recall__state--working {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--app-text-muted);
+  }
+
+  .quick-recall__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--app-accent);
+    flex-shrink: 0;
+    animation: quick-recall-pulse 1.1s ease-in-out infinite;
+  }
+
+  @keyframes quick-recall-pulse {
+    0%,
+    100% {
+      opacity: 0.3;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  .quick-recall__answer {
+    margin: 0;
+    padding: 2px 2px 8px;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--app-text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  .quick-recall__caret {
+    display: inline-block;
+    width: 7px;
+    height: 1.05em;
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    background: var(--app-accent);
+    animation: quick-recall-blink 1s steps(2, start) infinite;
+  }
+
+  @keyframes quick-recall-blink {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0;
+    }
   }
 </style>

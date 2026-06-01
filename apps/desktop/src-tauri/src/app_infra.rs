@@ -4124,7 +4124,7 @@ fn executable_name(command: &str) -> String {
     command.to_string()
 }
 
-fn executable_in_shell_path(command: &str) -> Option<PathBuf> {
+pub(crate) fn executable_in_shell_path(command: &str) -> Option<PathBuf> {
     let executable = executable_name(command);
     terminal_shell_path_dirs()
         .into_iter()
