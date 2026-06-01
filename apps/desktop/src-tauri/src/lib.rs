@@ -367,6 +367,7 @@ pub fn run() {
             ask_ai::ask_ai_broker_timeline,
             ask_ai::ask_ai_broker_show_text,
             ask_ai::ask_ai_availability,
+            ask_ai::ask_ai_list_models,
             ask_ai::ask_ai_start,
             ask_ai::ask_ai_cancel,
             broker_authorization_channel::get_pending_cli_access_request,

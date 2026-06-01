@@ -1000,6 +1000,15 @@ fn apply_domain_patch_to_settings(
                 settings.access.ask_ai_max_tool_calls = value;
                 touched = true;
             }
+            if let Some(value) = request.ask_ai_model {
+                let trimmed = value.trim();
+                settings.access.ask_ai_model = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
+                touched = true;
+            }
         }
         RecordingSettingsDomainPatch::Developer(request) => {
             if let Some(value) = request.developer_options_enabled {
@@ -1415,12 +1424,17 @@ mod tests {
             RecordingSettingsDomainPatch::Access(UpdateAccessSettingsRequest {
                 ask_ai_enabled: Some(true),
                 ask_ai_max_tool_calls: Some(0),
+                ask_ai_model: Some("anthropic:claude-opus-4".to_string()),
             }),
         )
         .expect("access patch should validate");
 
         assert!(updated.access.ask_ai_enabled);
         assert_eq!(updated.access.ask_ai_max_tool_calls, 0);
+        assert_eq!(
+            updated.access.ask_ai_model.as_deref(),
+            Some("anthropic:claude-opus-4")
+        );
         assert_eq!(updated.capture_microphone, base.capture_microphone);
         assert_eq!(updated.ocr, base.ocr);
         assert_eq!(updated.appearance, base.appearance);

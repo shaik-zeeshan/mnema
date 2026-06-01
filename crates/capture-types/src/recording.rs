@@ -444,7 +444,7 @@ pub fn default_ask_ai_max_tool_calls() -> u32 {
     12
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessSettings {
     #[serde(default)]
@@ -454,6 +454,11 @@ pub struct AccessSettings {
     /// conversation can pull through the broker.
     #[serde(default = "default_ask_ai_max_tool_calls")]
     pub ask_ai_max_tool_calls: u32,
+    /// PI model id Ask AI should use for Quick Recall, in the form
+    /// `provider:modelId` (e.g. `anthropic:claude-opus-4`). `None`/empty lets
+    /// the PI runtime pick its own configured default model.
+    #[serde(default)]
+    pub ask_ai_model: Option<String>,
 }
 
 impl Default for AccessSettings {
@@ -461,6 +466,7 @@ impl Default for AccessSettings {
         Self {
             ask_ai_enabled: false,
             ask_ai_max_tool_calls: default_ask_ai_max_tool_calls(),
+            ask_ai_model: None,
         }
     }
 }
@@ -685,6 +691,9 @@ pub struct UpdateAccessSettingsRequest {
     pub ask_ai_enabled: Option<bool>,
     /// New per-question tool-call cap (`0` = no cap). `None` leaves it unchanged.
     pub ask_ai_max_tool_calls: Option<u32>,
+    /// New Ask AI model id (`provider:modelId`). `None` leaves it unchanged; an
+    /// empty string clears the selection back to the PI runtime default.
+    pub ask_ai_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

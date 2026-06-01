@@ -10,8 +10,20 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+
+/// One selectable Ask AI model reported by the shim's list mode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AskAiModel {
+    /// Stable `provider:id` value persisted in settings and reselected later.
+    pub value: String,
+    pub provider: String,
+    pub id: String,
+    pub name: String,
+}
 
 /// Boxed async result of one brokered tool invocation.
 pub type AskAiToolFuture =
@@ -163,10 +175,12 @@ impl AskAiCancel {
 /// stderr is drained into a buffer used for diagnostics: a non-zero exit without
 /// a terminal `done`/`error` event surfaces the stderr tail as the error
 /// message. `cancel` kills the child when triggered.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pi_ask_ai_session<F>(
     node_path: &Path,
     shim_path: &Path,
     pi_executable: Option<&str>,
+    model: Option<&str>,
     prompt: &str,
     max_tool_calls: usize,
     mut on_event: F,
@@ -184,6 +198,11 @@ where
 
     if let Some(pi_executable) = pi_executable {
         command.env("MNEMA_PI_EXECUTABLE", pi_executable);
+    }
+    // The selected Quick Recall model ("provider:id"); the shim falls back to the
+    // PI default when this is absent or does not resolve.
+    if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        command.env("MNEMA_PI_ASK_AI_MODEL", model);
     }
     // Pass through PI_CODING_AGENT_DIR only when the parent env already set it.
     if let Some(agent_dir) = std::env::var_os("PI_CODING_AGENT_DIR") {
@@ -353,6 +372,98 @@ where
         )
     };
     Err(message)
+}
+
+/// Spawn `node <shim_path>` in list mode and return the selectable Ask AI models.
+///
+/// Sets `MNEMA_PI_LIST_MODELS=1` so the shim builds the PI model registry, emits
+/// one `{"type":"models","models":[...]}` line, and exits. Returns the parsed
+/// list, or an error message (with the stderr tail) when the shim fails or emits
+/// no models line.
+pub async fn list_pi_models(
+    node_path: &Path,
+    shim_path: &Path,
+    pi_executable: Option<&str>,
+) -> Result<Vec<AskAiModel>, String> {
+    let mut command = Command::new(node_path);
+    command.arg(shim_path);
+    command.stdin(std::process::Stdio::null());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    command.env("MNEMA_PI_LIST_MODELS", "1");
+    if let Some(pi_executable) = pi_executable {
+        command.env("MNEMA_PI_EXECUTABLE", pi_executable);
+    }
+    if let Some(agent_dir) = std::env::var_os("PI_CODING_AGENT_DIR") {
+        command.env("PI_CODING_AGENT_DIR", agent_dir);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to spawn Ask AI shim via node: {error}"))?;
+
+    // Drain stderr for diagnostics.
+    let stderr_buffer = Arc::new(tokio::sync::Mutex::new(String::new()));
+    let stderr_task = child.stderr.take().map(|stderr| {
+        let buffer = Arc::clone(&stderr_buffer);
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut chunk = String::new();
+            let _ = reader.read_to_string(&mut chunk).await;
+            buffer.lock().await.push_str(&chunk);
+        })
+    });
+
+    let mut models: Option<Vec<AskAiModel>> = None;
+    if let Some(stdout) = child.stdout.take() {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(parsed) = parse_models_line(&line) {
+                models = Some(parsed);
+                break;
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| format!("failed to await Ask AI shim: {error}"))?;
+    if let Some(task) = stderr_task {
+        let _ = task.await;
+    }
+
+    if let Some(models) = models {
+        return Ok(models);
+    }
+
+    let stderr_tail = {
+        let guard = stderr_buffer.lock().await;
+        stderr_tail(&guard)
+    };
+    let detail = if stderr_tail.is_empty() {
+        String::new()
+    } else {
+        format!(": {stderr_tail}")
+    };
+    Err(format!(
+        "Ask AI shim did not report any models (exit {}){detail}",
+        describe_exit(&status)
+    ))
+}
+
+/// Parse a `{"type":"models","models":[...]}` line into the model list. Returns
+/// `None` for blank lines, malformed JSON, or non-`models` types.
+fn parse_models_line(line: &str) -> Option<Vec<AskAiModel>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    if value.get("type").and_then(|t| t.as_str()) != Some("models") {
+        return None;
+    }
+    serde_json::from_value(value.get("models")?.clone()).ok()
 }
 
 fn describe_exit(status: &std::process::ExitStatus) -> String {
@@ -598,5 +709,35 @@ mod tests {
     fn tool_result_line_emits_single_line() {
         let line = tool_result_line(&"c3".to_string(), &Ok(serde_json::Value::Null));
         assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn parse_models_line_well_formed() {
+        let models = parse_models_line(
+            r#"{"type":"models","models":[{"value":"anthropic:claude-opus-4","provider":"anthropic","id":"claude-opus-4","name":"Claude Opus 4"}]}"#,
+        )
+        .expect("models line should parse");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].value, "anthropic:claude-opus-4");
+        assert_eq!(models[0].provider, "anthropic");
+        assert_eq!(models[0].id, "claude-opus-4");
+        assert_eq!(models[0].name, "Claude Opus 4");
+    }
+
+    #[test]
+    fn parse_models_line_empty_list() {
+        let models =
+            parse_models_line(r#"{"type":"models","models":[]}"#).expect("empty list parses");
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn parse_models_line_rejects_other_types_and_garbage() {
+        assert_eq!(parse_models_line(r#"{"type":"done"}"#), None);
+        assert_eq!(parse_models_line(r#"{"type":"delta","text":"hi"}"#), None);
+        assert_eq!(parse_models_line(""), None);
+        assert_eq!(parse_models_line("{not json"), None);
+        // Missing `models` field.
+        assert_eq!(parse_models_line(r#"{"type":"models"}"#), None);
     }
 }

@@ -28,6 +28,11 @@
 //             NODE_PATH.
 //             MNEMA_PI_SDK_PACKAGE (optional) — overrides/extends the SDK package name
 //             tried first, for PI builds published under a different npm scope.
+//             MNEMA_PI_ASK_AI_MODEL (optional) — "provider:id" of the model Quick
+//             Recall should use; falls back to the PI default when unset/not found.
+//             MNEMA_PI_LIST_MODELS (optional) — when "1", run in list mode: build the
+//             model registry, emit one {"type":"models","models":[...]} line, exit 0.
+//             No prompt is read and no tools are registered in this mode.
 //             PI_CODING_AGENT_DIR (optional) — passed through by the parent; honored
 //             transparently by AuthStorage.create(), so this shim does not read it.
 //   - STDOUT: newline-delimited JSON, exactly one object per line. Protocol only:
@@ -506,12 +511,96 @@ function buildBrokerTools(defineTool, Type) {
   return [searchTool, timelineTool, showTextTool];
 }
 
+// ---- model registry helpers -------------------------------------------------
+
+/** Stable `provider:id` value used to persist + reselect a model. */
+function modelValue(model) {
+  if (!model || typeof model !== "object") return null;
+  const provider = typeof model.provider === "string" ? model.provider : null;
+  const id = typeof model.id === "string" ? model.id : null;
+  if (!provider || !id) return null;
+  return `${provider}:${id}`;
+}
+
+/**
+ * Enumerate selectable models from the registry. Prefers models that already
+ * have auth configured (`getAvailable`); falls back to all known models so the
+ * picker is never empty just because auth probing varies across PI releases.
+ */
+function collectModels(modelRegistry) {
+  let models = [];
+  try {
+    if (typeof modelRegistry.getAvailable === "function") {
+      models = modelRegistry.getAvailable() ?? [];
+    }
+  } catch (err) {
+    diag("getAvailable failed:", err?.message ?? err);
+  }
+  if (!Array.isArray(models) || models.length === 0) {
+    try {
+      if (typeof modelRegistry.getAll === "function") {
+        models = modelRegistry.getAll() ?? [];
+      }
+    } catch (err) {
+      diag("getAll failed:", err?.message ?? err);
+    }
+  }
+  const seen = new Set();
+  const out = [];
+  for (const model of Array.isArray(models) ? models : []) {
+    const value = modelValue(model);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push({
+      value,
+      provider: model.provider,
+      id: model.id,
+      name: typeof model.name === "string" ? model.name : model.id,
+    });
+  }
+  return out;
+}
+
+/**
+ * Resolve the `provider:id` spec from MNEMA_PI_ASK_AI_MODEL into a Model via the
+ * registry. Returns undefined when unset, malformed, or not found so the caller
+ * falls back to the PI default.
+ */
+function resolveSelectedModel(modelRegistry, spec) {
+  if (typeof spec !== "string") return undefined;
+  const trimmed = spec.trim();
+  if (trimmed.length === 0) return undefined;
+  const sep = trimmed.indexOf(":");
+  if (sep <= 0 || sep >= trimmed.length - 1) {
+    diag("ignoring malformed MNEMA_PI_ASK_AI_MODEL:", trimmed);
+    return undefined;
+  }
+  const provider = trimmed.slice(0, sep);
+  const id = trimmed.slice(sep + 1);
+  try {
+    if (typeof modelRegistry.find === "function") {
+      const found = modelRegistry.find(provider, id);
+      if (found) return found;
+    }
+  } catch (err) {
+    diag("model find failed:", err?.message ?? err);
+  }
+  diag(`configured Ask AI model "${trimmed}" not found in registry; using default`);
+  return undefined;
+}
+
 // ---- main ------------------------------------------------------------------
 
 async function main() {
-  // 1. Begin reading stdin (line-based). The prompt arrives as the first line;
-  //    tool_result lines arrive later. Resolve + import SDK + typebox meanwhile.
-  startStdinReader();
+  // List mode (MNEMA_PI_LIST_MODELS=1) is a separate, prompt-less invocation:
+  // it builds the registry, emits one `{"type":"models",...}` line, and exits.
+  // It never reads a prompt or registers tools.
+  const listMode = process.env.MNEMA_PI_LIST_MODELS === "1";
+
+  // 1. Begin reading stdin (line-based) for an interactive answer session. The
+  //    prompt arrives as the first line; tool_result lines arrive later. Resolve
+  //    + import SDK + typebox meanwhile. List mode needs no stdin.
+  if (!listMode) startStdinReader();
 
   const sdk = await importPiSdk();
   const { AuthStorage, ModelRegistry, createAgentSession, SessionManager, defineTool } = sdk;
@@ -521,6 +610,18 @@ async function main() {
         "(AuthStorage, ModelRegistry, createAgentSession, SessionManager).",
     );
   }
+
+  // Build auth + model registry from the user's existing PI config.
+  const authStorage = AuthStorage.create();
+  const modelRegistry = ModelRegistry.create(authStorage);
+
+  // List mode: enumerate selectable models, emit one line, and exit.
+  if (listMode) {
+    emit({ type: "models", models: collectModels(modelRegistry) });
+    process.exit(0);
+    return;
+  }
+
   if (typeof defineTool !== "function") {
     throw new Error("PI SDK was imported but is missing the `defineTool` export.");
   }
@@ -537,10 +638,6 @@ async function main() {
     throw new Error('stdin must provide a JSON line with a non-empty string "prompt".');
   }
 
-  // 3. Build auth + model registry from the user's existing PI config.
-  const authStorage = AuthStorage.create();
-  const modelRegistry = ModelRegistry.create(authStorage);
-
   // Resolve the user's configured default model, if the registry exposes one.
   // Be defensive: the helper name may vary across PI releases, so probe a few.
   let defaultModel;
@@ -556,6 +653,14 @@ async function main() {
     diag("default model lookup failed:", err?.message ?? err);
   }
 
+  // A user-selected Quick Recall model (MNEMA_PI_ASK_AI_MODEL, "provider:id")
+  // overrides the PI default when it resolves; otherwise fall back to default.
+  const selectedModel = resolveSelectedModel(
+    modelRegistry,
+    process.env.MNEMA_PI_ASK_AI_MODEL,
+  );
+  const chosenModel = selectedModel ?? defaultModel;
+
   // 4. Create the session. Builtin tools stay disabled; the three custom Mnema
   //    broker tools are registered; the session is ephemeral in-memory.
   const customTools = buildBrokerTools(defineTool, Type);
@@ -566,8 +671,8 @@ async function main() {
     modelRegistry,
     sessionManager: SessionManager.inMemory(),
   };
-  if (defaultModel) {
-    sessionOptions.model = defaultModel;
+  if (chosenModel) {
+    sessionOptions.model = chosenModel;
   }
 
   let session;
@@ -577,7 +682,7 @@ async function main() {
   } catch (err) {
     const msg = String(err?.message ?? err);
     // A common failure here is no configured provider/model.
-    if (/model|provider|auth|credential/i.test(msg) && !defaultModel) {
+    if (/model|provider|auth|credential/i.test(msg) && !chosenModel) {
       throw new Error(
         "No PI provider/model is configured. Configure a default model in your " +
           `PI runtime before using Ask AI. (underlying: ${msg})`,

@@ -124,6 +124,21 @@ fn read_ask_ai_max_tool_calls(app_handle: &tauri::AppHandle) -> usize {
     resolve_tool_call_cap(setting)
 }
 
+/// Read the configured Quick Recall model (`provider:id`), or `None` to let the
+/// PI runtime pick its default. Blank values normalize to `None`.
+fn read_ask_ai_model(app_handle: &tauri::AppHandle) -> Option<String> {
+    app_handle
+        .try_state::<crate::native_capture::RecordingSettingsState>()
+        .and_then(|state| {
+            state
+                .lock()
+                .ok()
+                .and_then(|guard| guard.settings.access.ask_ai_model.clone())
+        })
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+}
+
 async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let ask_ai_enabled = read_ask_ai_enabled(app_handle)?;
     let status = crate::app_infra::get_pi_runtime_status_inner(app_handle.clone()).await?;
@@ -465,6 +480,9 @@ pub async fn ask_ai_start(
     // Resolve the per-question tool-call cap from settings (0 => unlimited).
     let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
 
+    // Resolve the selected Quick Recall model (None => PI default).
+    let model = read_ask_ai_model(&app_handle);
+
     let cancel = AskAiCancel::new();
     register_ask_ai_session(&conversation_id, cancel.clone());
 
@@ -494,6 +512,7 @@ pub async fn ask_ai_start(
             &node_path,
             &shim_path,
             pi_executable.as_deref(),
+            model.as_deref(),
             &prompt,
             max_tool_calls,
             |event| match event {
@@ -563,6 +582,21 @@ pub async fn ask_ai_start(
     });
 
     Ok(())
+}
+
+/// Enumerate the PI models selectable for Quick Recall.
+///
+/// Runs the shim in list mode to read the user's PI model registry. Requires a
+/// resolvable `node` + Ask AI shim + `pi` runtime; surfaces a string error the
+/// frontend can degrade to the "PI default" option only.
+#[tauri::command]
+pub async fn ask_ai_list_models(
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<pi_agent_session::AskAiModel>, String> {
+    let node_path = resolve_node_executable()?;
+    let shim_path = resolve_shim_path(&app_handle)?;
+    let status = crate::app_infra::get_pi_runtime_status_inner(app_handle.clone()).await?;
+    pi_agent_session::list_pi_models(&node_path, &shim_path, status.executable_path.as_deref()).await
 }
 
 #[tauri::command]

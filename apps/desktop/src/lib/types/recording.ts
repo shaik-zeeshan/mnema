@@ -18,6 +18,11 @@ export interface AccessSettings {
 	askAiEnabled: boolean;
 	/** Per-question Ask AI tool-call cap. `0` disables the cap (unlimited). */
 	askAiMaxToolCalls: number;
+	/**
+	 * PI model id (`provider:modelId`) Quick Recall should use. `null`/empty lets
+	 * the PI runtime pick its configured default model.
+	 */
+	askAiModel?: string | null;
 }
 
 export interface ExcludedAppEntry {
@@ -128,6 +133,17 @@ export type UpdateDeveloperSettingsRequest = Partial<
 export interface UpdateAccessSettingsRequest {
 	askAiEnabled: boolean;
 	askAiMaxToolCalls: number;
+	/** Selected Quick Recall model (`provider:modelId`); empty clears to default. */
+	askAiModel: string;
+}
+
+/** One PI model selectable for Quick Recall, reported by `ask_ai_list_models`. */
+export interface AskAiModel {
+	/** Stable `provider:modelId` value persisted in settings. */
+	value: string;
+	provider: string;
+	id: string;
+	name: string;
 }
 
 export interface KeyboardBindingsSettings {
