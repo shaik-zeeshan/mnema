@@ -13,6 +13,7 @@ use crate::native_capture;
 
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
+const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
 
 #[cfg(target_os = "macos")]
 static MACOS_TERMINATE_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -34,6 +35,7 @@ enum AppWindow {
     Settings,
     CliAccessRequest,
     Debug,
+    QuickRecall,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -194,6 +196,19 @@ impl AppWindow {
                 shadow: true,
                 macos_corner_radius: Some(12.0),
             },
+            Self::QuickRecall => AppWindowConfig {
+                label: "quick-recall",
+                path: "quick-recall",
+                title: "mnema · Quick Recall",
+                inner_size: (680.0, 420.0),
+                min_inner_size: (480.0, 120.0),
+                gated_by_dev_options: false,
+                decorations: false,
+                overlay_title_bar: false,
+                transparent: true,
+                shadow: true,
+                macos_corner_radius: Some(12.0),
+            },
         }
     }
 
@@ -204,6 +219,7 @@ impl AppWindow {
             "settings" => Some(Self::Settings),
             "cli-access-request" => Some(Self::CliAccessRequest),
             "debug" => Some(Self::Debug),
+            "quick-recall" => Some(Self::QuickRecall),
             _ => None,
         }
     }
@@ -481,6 +497,177 @@ fn apply_macos_rounded_content_view(window: &WebviewWindow, radius: f64) {
     }
 }
 
+// ── Quick Recall non-activating NSPanel ────────────────────────────────
+// A plain NSWindow cannot become key while its owning app is inactive, so we
+// reclass the tao-created window as an NSPanel subclass that reports it can
+// become key, then give it the non-activating style mask + floating level +
+// all-Spaces collection behavior. Summoning makes it key WITHOUT activating
+// Mnema, matching Spotlight/Raycast.
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn quick_recall_panel_class() -> *const objc::runtime::Class {
+    use objc::declare::ClassDecl;
+    use objc::runtime::{Class, Object, Sel, BOOL, YES};
+    use objc::{sel, sel_impl};
+    use std::sync::OnceLock;
+
+    static CLASS_PTR: OnceLock<usize> = OnceLock::new();
+    let ptr = *CLASS_PTR.get_or_init(|| {
+        extern "C" fn yes(_this: &Object, _cmd: Sel) -> BOOL {
+            YES
+        }
+
+        let superclass = objc::class!(NSPanel);
+        let mut decl = ClassDecl::new("MnemaQuickRecallPanel", superclass)
+            .expect("failed to declare MnemaQuickRecallPanel class");
+        unsafe {
+            decl.add_method(
+                sel!(canBecomeKeyWindow),
+                yes as extern "C" fn(&Object, Sel) -> BOOL,
+            );
+            decl.add_method(
+                sel!(canBecomeMainWindow),
+                yes as extern "C" fn(&Object, Sel) -> BOOL,
+            );
+        }
+        decl.register() as *const Class as usize
+    });
+    ptr as *const objc::runtime::Class
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn configure_quick_recall_panel(window: &WebviewWindow) {
+    use cocoa::base::{id, NO, YES};
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+
+    const NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL: u64 = 1 << 7;
+    const NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES: u64 = 1 << 0;
+    const NS_WINDOW_COLLECTION_BEHAVIOR_TRANSIENT: u64 = 1 << 3;
+    const NS_WINDOW_COLLECTION_BEHAVIOR_FULL_SCREEN_AUXILIARY: u64 = 1 << 8;
+    const NS_FLOATING_WINDOW_LEVEL: i64 = 3; // NSFloatingWindowLevel
+
+    unsafe extern "C" {
+        fn object_setClass(obj: id, cls: *const Class) -> *const Class;
+    }
+
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+
+    unsafe {
+        let ns_window = ns_window as id;
+        let _: () = msg_send![ns_window, setReleasedWhenClosed: NO];
+        object_setClass(ns_window, quick_recall_panel_class());
+
+        let mut style_mask: u64 = msg_send![ns_window, styleMask];
+        style_mask |= NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL;
+        let _: () = msg_send![ns_window, setStyleMask: style_mask];
+
+        let _: () = msg_send![ns_window, setLevel: NS_FLOATING_WINDOW_LEVEL];
+        let _: () = msg_send![
+            ns_window,
+            setCollectionBehavior: NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
+                | NS_WINDOW_COLLECTION_BEHAVIOR_TRANSIENT
+                | NS_WINDOW_COLLECTION_BEHAVIOR_FULL_SCREEN_AUXILIARY
+        ];
+        let _: () = msg_send![ns_window, setHidesOnDeactivate: NO];
+        let _: () = msg_send![ns_window, setBecomesKeyOnlyIfNeeded: NO];
+        let _: () = msg_send![ns_window, setFloatingPanel: YES];
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn make_quick_recall_panel_key(window: &WebviewWindow) {
+    use cocoa::base::{id, nil};
+    use objc::{msg_send, sel, sel_impl};
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+    unsafe {
+        let ns_window = ns_window as id;
+        let _: () = msg_send![ns_window, makeKeyAndOrderFront: nil];
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn order_out_quick_recall_panel(window: &WebviewWindow) {
+    use cocoa::base::{id, nil};
+    use objc::{msg_send, sel, sel_impl};
+    let Ok(ns_window) = window.ns_window() else {
+        let _ = window.hide();
+        return;
+    };
+    unsafe {
+        let ns_window = ns_window as id;
+        let _: () = msg_send![ns_window, orderOut: nil];
+    }
+}
+
+fn build_quick_recall_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+    let config = AppWindow::QuickRecall.config();
+    let built = WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(config.path.into()))
+        .title(config.title)
+        .inner_size(config.inner_size.0, config.inner_size.1)
+        .min_inner_size(config.min_inner_size.0, config.min_inner_size.1)
+        .decorations(config.decorations)
+        .transparent(config.transparent)
+        .shadow(config.shadow)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .build()
+        .map_err(|err| err.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        configure_quick_recall_panel(&built);
+        if let Some(radius) = config.macos_corner_radius {
+            apply_macos_rounded_content_view(&built, radius);
+        }
+    }
+
+    Ok(built)
+}
+
+fn summon_quick_recall_window(window: &WebviewWindow) {
+    let _ = window.center();
+    let _ = window.show();
+    #[cfg(target_os = "macos")]
+    make_quick_recall_panel_key(window);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.set_focus();
+    }
+}
+
+fn dismiss_quick_recall_window(window: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    order_out_quick_recall_panel(window);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.hide();
+    }
+}
+
+pub(crate) fn toggle_quick_recall_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window(QUICK_RECALL_WINDOW_LABEL) {
+        if existing.is_visible().unwrap_or(false) {
+            dismiss_quick_recall_window(&existing);
+        } else {
+            summon_quick_recall_window(&existing);
+        }
+        return Ok(());
+    }
+    let window = build_quick_recall_window(app)?;
+    summon_quick_recall_window(&window);
+    Ok(())
+}
+
 fn focus_main_window_if_visible(app: &tauri::AppHandle) {
     if let Some(main) = app.get_webview_window(AppWindow::Main.config().label) {
         if main.is_visible().unwrap_or(false) {
@@ -525,6 +712,7 @@ fn refresh_macos_dock_icon_visibility(app: &tauri::AppHandle) {
     let has_visible_window = app
         .webview_windows()
         .values()
+        .filter(|window| window.label() != QUICK_RECALL_WINDOW_LABEL)
         .any(|window| window.is_visible().unwrap_or(false));
     let _ = app.set_dock_visibility(has_visible_window);
 }
@@ -697,7 +885,7 @@ fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
         Some(AppWindow::Settings | AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
-        Some(AppWindow::CliAccessRequest) => DestroyedWindowAction::None,
+        Some(AppWindow::CliAccessRequest | AppWindow::QuickRecall) => DestroyedWindowAction::None,
         Some(AppWindow::Main) => DestroyedWindowAction::ExitApp,
         None => DestroyedWindowAction::None,
     }
@@ -710,6 +898,10 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
     }
 
     match AppWindow::from_label(&label) {
+        Some(AppWindow::QuickRecall) => {
+            dismiss_quick_recall_window(&window);
+            Ok(())
+        }
         Some(
             AppWindow::Onboarding
             | AppWindow::Settings
@@ -734,6 +926,15 @@ pub fn handle_window_event(
     event: &WindowEvent,
     window: Option<&WebviewWindow>,
 ) {
+    if let WindowEvent::Focused(false) = event {
+        if AppWindow::from_label(label) == Some(AppWindow::QuickRecall) {
+            if let Some(window) = window {
+                dismiss_quick_recall_window(window);
+            }
+        }
+        return;
+    }
+
     if let WindowEvent::CloseRequested { api, .. } = event {
         if AppWindow::from_label(label) == Some(AppWindow::Main) {
             api.prevent_close();
@@ -882,6 +1083,14 @@ mod tests {
         assert!(!close_window_focuses_main_before_close(
             "cli-access-request"
         ));
+    }
+
+    #[test]
+    fn quick_recall_destruction_has_no_side_effect() {
+        assert_eq!(
+            destroyed_window_action("quick-recall"),
+            DestroyedWindowAction::None
+        );
     }
 
     #[test]

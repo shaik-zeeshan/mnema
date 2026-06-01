@@ -6,7 +6,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-export type SurfaceWindowLabel = "main" | "onboarding" | "settings" | "cli-access-request" | "debug";
+export type SurfaceWindowLabel = "main" | "onboarding" | "settings" | "cli-access-request" | "debug" | "quick-recall";
 
 export type SettingsWindowTab =
   | "about"
@@ -61,6 +61,10 @@ export function currentWindowLabel(): SurfaceWindowLabel | string {
 export function isDedicatedSurfaceWindow(): boolean {
   const label = currentWindowLabel();
   return label === "onboarding" || label === "settings" || label === "cli-access-request" || label === "debug";
+}
+
+export function isQuickRecallWindow(): boolean {
+  return currentWindowLabel() === "quick-recall";
 }
 
 export async function closeCurrentWindow(): Promise<void> {

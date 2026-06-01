@@ -135,6 +135,7 @@ export interface GlobalShortcutBindings {
 	toggleRecording: string;
 	pauseResumeRecording: string;
 	toggleMainWindow: string;
+	quickRecall: string;
 }
 
 export interface AppShortcutBindings {
