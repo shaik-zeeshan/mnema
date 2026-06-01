@@ -35,14 +35,18 @@ pub type AskAiToolInvoker =
     Box<dyn FnMut(String, serde_json::Value) -> AskAiToolFuture + Send>;
 
 /// A single streamed event parsed from one line of shim stdout.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AskAiStreamEvent {
     /// `{"type":"ready"}` — session created (optional; may be absent).
     Ready,
     /// `{"type":"delta","text":"..."}` — append text chunk to the streamed answer.
     Delta(String),
     /// A brokered tool call was received and is about to run.
-    ToolCall { id: String, tool: String },
+    ToolCall {
+        id: String,
+        tool: String,
+        params: serde_json::Value,
+    },
     /// A brokered tool call finished (ok=false means it errored or was capped).
     ToolResult { id: String, tool: String, ok: bool },
     /// `{"type":"done"}` — answer complete.
@@ -268,6 +272,7 @@ where
                         on_event(AskAiStreamEvent::ToolCall {
                             id: id.clone(),
                             tool: tool.clone(),
+                            params: params.clone(),
                         });
 
                         let result: Result<serde_json::Value, String> =

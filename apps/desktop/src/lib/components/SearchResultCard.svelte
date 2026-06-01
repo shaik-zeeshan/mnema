@@ -20,6 +20,15 @@
     onselect: () => void;
   } = $props();
 
+  // Fade the thumbnail image in once it decodes so it eases over the reserved
+  // placeholder box instead of hard-popping (and so no layout shift occurs).
+  // Reset whenever the source changes so a recycled card re-fades its new image.
+  let imgLoaded = $state(false);
+  $effect(() => {
+    thumbnailUrl;
+    imgLoaded = false;
+  });
+
   function formatTimestamp(ts: string): string {
     const d = new Date(ts.includes("T") ? ts : ts.replace(" ", "T"));
     if (isNaN(d.getTime())) return ts;
@@ -45,14 +54,20 @@
     onclick={onselect}
   >
     <div class="search-card__thumb">
+      <svg class="search-card__thumb-glyph" width="20" height="20" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" aria-hidden="true">
+        <rect x="1.5" y="2" width="11" height="8" rx="1.5" />
+        <path d="M4 12h6" />
+        <path d="M7 10v2" />
+      </svg>
       {#if thumbnailUrl}
-        <img src={thumbnailUrl} alt="" loading="lazy" />
-      {:else}
-        <svg class="search-card__thumb-glyph" width="20" height="20" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" aria-hidden="true">
-          <rect x="1.5" y="2" width="11" height="8" rx="1.5" />
-          <path d="M4 12h6" />
-          <path d="M7 10v2" />
-        </svg>
+        <img
+          class="search-card__thumb-img"
+          class:search-card__thumb-img--loaded={imgLoaded}
+          src={thumbnailUrl}
+          alt=""
+          loading="lazy"
+          onload={() => (imgLoaded = true)}
+        />
       {/if}
     </div>
     <div class="search-card__body">
@@ -129,10 +144,10 @@
     width: 100%;
     min-width: 0;
     display: grid;
-    grid-template-columns: 116px 1fr;
-    gap: 13px;
+    grid-template-columns: 96px 1fr;
+    gap: 11px;
     align-items: center;
-    padding: 9px 10px;
+    padding: 6px 9px;
     overflow: hidden;
     text-align: left;
     border: 1px solid transparent;
@@ -142,8 +157,9 @@
     font: inherit;
     cursor: pointer;
     transition:
-      background 0.1s,
-      border-color 0.1s;
+      background 0.12s ease,
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
   }
 
   .search-card:hover {
@@ -151,16 +167,25 @@
     background: var(--app-surface-raised);
   }
 
+  /* Selected is the spotlight roving highlight: it must read clearly above a
+     plain hover, so it carries the accent border plus a soft accent ring. */
   .search-card:focus-visible,
   .search-card--selected {
     outline: none;
     border-color: var(--app-accent-border);
     background: var(--app-surface-raised);
-    box-shadow: 0 0 0 1px var(--app-accent-border);
+    box-shadow:
+      0 0 0 1px var(--app-accent-border),
+      0 0 0 4px color-mix(in srgb, var(--app-accent) 12%, transparent);
+  }
+
+  .search-card--selected:hover {
+    background: var(--app-surface-raised);
   }
 
   .search-card__thumb {
-    width: 116px;
+    position: relative;
+    width: 96px;
     aspect-ratio: 16 / 10;
     flex: 0 0 auto;
     display: grid;
@@ -172,10 +197,25 @@
     color: var(--app-text-faint);
   }
 
-  .search-card__thumb img {
+  /* The image sits above the always-present glyph placeholder and fades in once
+     decoded, so the reserved box never flashes from a void and never reflows. */
+  .search-card__thumb-img {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
+    opacity: 0;
+  }
+
+  .search-card__thumb-img--loaded {
+    opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .search-card__thumb-img {
+      transition: opacity 0.18s ease;
+    }
   }
 
   .search-card__thumb-glyph {
@@ -212,7 +252,7 @@
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     overflow: hidden;
   }
 
@@ -230,13 +270,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--app-text-strong);
-    font-size: 12.5px;
+    font-size: 12px;
     font-weight: 600;
   }
 
   .search-card__source {
     flex: 0 0 auto;
-    font-size: 12px;
+    font-size: 11.5px;
     font-weight: 600;
     color: var(--app-text-muted);
   }
@@ -256,14 +296,14 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--app-text-subtle);
-    font-size: 11.5px;
+    font-size: 11px;
   }
 
   .search-card__snippet {
     margin: 0;
     color: var(--app-text);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: 11.5px;
+    line-height: 1.45;
     min-width: 0;
     overflow-wrap: anywhere;
     display: -webkit-box;
@@ -289,7 +329,7 @@
 
   .search-card__time {
     color: var(--app-text-subtle);
-    font-size: 10.5px;
+    font-size: 10px;
     white-space: nowrap;
   }
 
@@ -308,14 +348,20 @@
     color: var(--app-warn);
   }
 
+  @media (prefers-reduced-motion: reduce) {
+    .search-card {
+      transition: none;
+    }
+  }
+
   @media (max-width: 760px) {
     .search-card {
-      grid-template-columns: 88px 1fr;
-      gap: 10px;
+      grid-template-columns: 80px 1fr;
+      gap: 9px;
     }
 
     .search-card__thumb {
-      width: 88px;
+      width: 80px;
     }
   }
 </style>

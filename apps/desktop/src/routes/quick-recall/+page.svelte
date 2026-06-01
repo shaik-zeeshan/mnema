@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
+  import { fade } from "svelte/transition";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -41,6 +42,13 @@
   const IDLE_CLEAR_MS = 5000;
   let windowFocused = $state(true);
   let idleClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Whether the user prefers reduced motion. Drives the JS-side Svelte mode-switch
+  // transition (CSS animations/transitions are gated separately in the style block). Kept
+  // live so a system preference flip mid-session is honored.
+  let prefersReducedMotion = $state(false);
+  // Duration of the hero mode-switch cross-fade; 0 when reduced motion is on.
+  let modeFadeMs = $derived(prefersReducedMotion ? 0 : 140);
 
   // Generation token so stale (out-of-order) responses are discarded.
   let searchGeneration = 0;
@@ -314,6 +322,20 @@
     phase: "seeding" | "thinking" | "tool";
     seededResultCount?: number;
     tool?: string;
+    // Raw camelCase tool params the agent passed (per the slice-1 backend
+    // contract). Shape varies by tool; treated opaquely and narrowed in the
+    // formatting helpers below.
+    params?: Record<string, unknown>;
+  };
+
+  // One recorded brokered tool call: the tool kind plus a humane filter label
+  // (e.g. `Searching "invoice" in Safari · Jun 1`). Accumulated as `phase:"tool"`
+  // events arrive so the collapsed summary can count kinds and the disclosure
+  // can list the individual activities. Fully ephemeral, reset per ask.
+  type AskToolKind = "search" | "timeline" | "show_text" | "other";
+  type AskToolActivityEntry = {
+    kind: AskToolKind;
+    label: string;
   };
 
   type AskAiDeltaEvent = {
@@ -351,11 +373,24 @@
   let askAnswer = $state("");
   let askErrorMessage = $state<string | null>(null);
   let askSeededResultCount = $state<number | null>(null);
-  // Current brokered tool activity label (e.g. "Searching your captures"),
-  // shown as a working line while the agent gathers more context mid-answer.
+  // Current brokered tool activity label (e.g. `Searching "invoice"`), shown as
+  // the live animated working line while the agent gathers context mid-answer.
   let askToolActivity = $state<string | null>(null);
+  // Every tool call that has run this ask, in order. Drives the collapsed,
+  // expandable summary chip once tokens start streaming. Reset per ask.
+  let askToolActivities = $state<AskToolActivityEntry[]>([]);
+  // Disclosure toggle for the collapsed summary chip.
+  let askSummaryExpanded = $state(false);
   // True between ask_ai_start resolving and a terminal done/error event.
   let askStreaming = $state(false);
+
+  // The seed used for the current/last ask, so an error "Try again" can re-run
+  // the exact same question + seed pairing. Set inside startAsk.
+  let askLastSeed = $state<string | null>(null);
+
+  // Copy-confirmation flash for the answer copy button (icon swaps to a check).
+  let askCopied = $state(false);
+  let askCopiedTimer: ReturnType<typeof setTimeout> | null = null;
 
   // The streamed answer is Markdown; render it to HTML for display. Recomputed
   // on each delta — incomplete Markdown (e.g. an unclosed code fence mid-stream)
@@ -400,6 +435,162 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Tool-activity formatting (pure helpers)
+  //
+  // Turn the raw camelCase tool params from a `phase:"tool"` status event into a
+  // single humane line. Dates are short ("Jun 1", "Jun 1–2", "today"/"yesterday")
+  // and times only appear for a sub-day (same calendar day) window. These are
+  // pure aside from `new Date()` (acceptable for a live UI per the plan).
+  // ---------------------------------------------------------------------------
+
+  function readString(params: Record<string, unknown>, key: string): string | null {
+    const value = params[key];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  // Parse a backend date/datetime string. Tolerates "YYYY-MM-DD HH:MM:SS" (space
+  // separator) by normalizing to ISO-ish form, matching SearchResultCard.
+  function parseToolDate(value: string): Date | null {
+    const normalized = value.includes("T") ? value : value.replace(" ", "T");
+    const d = new Date(normalized);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function isSameCalendarDay(a: Date, b: Date): boolean {
+    return (
+      a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate()
+    );
+  }
+
+  // "today" / "yesterday" relative to `now`, else null.
+  function relativeDayWord(d: Date, now: Date): string | null {
+    if (isSameCalendarDay(d, now)) return "today";
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    if (isSameCalendarDay(d, yesterday)) return "yesterday";
+    return null;
+  }
+
+  function shortDate(d: Date): string {
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  function shortTime(d: Date): string {
+    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  }
+
+  // A spoken time span on a single day, collapsing a shared meridiem so the
+  // AM/PM is written once: "5:50 to 6:30 AM" rather than "5:50 AM to 6:30 AM".
+  // Falls back to the full both-sided form when the meridiems differ
+  // ("11:50 AM to 1:30 PM") or the locale has no trailing token (24-hour).
+  function formatTimeSpan(start: Date, end: Date): string {
+    const s = shortTime(start);
+    const e = shortTime(end);
+    const sParts = s.split(" ");
+    const eParts = e.split(" ");
+    if (sParts.length === 2 && eParts.length === 2 && sParts[1] === eParts[1]) {
+      return `${sParts[0]} to ${e}`;
+    }
+    return `${s} to ${e}`;
+  }
+
+  // Humane label for a from/to window. Handles either bound missing, a single
+  // instant, a same-day (sub-day) window with times, or a multi-day range.
+  function formatDateRange(
+    fromRaw: string | null,
+    toRaw: string | null,
+    now: Date,
+  ): string | null {
+    const from = fromRaw ? parseToolDate(fromRaw) : null;
+    const to = toRaw ? parseToolDate(toRaw) : null;
+
+    if (from && to) {
+      if (isSameCalendarDay(from, to)) {
+        // Sub-day window: the day, then a time span (times only when sub-day).
+        const day = relativeDayWord(from, now) ?? shortDate(from);
+        const start = shortTime(from);
+        const end = shortTime(to);
+        if (start === end) {
+          return `${day} ${start}`;
+        }
+        return `${day}, ${formatTimeSpan(from, to)}`;
+      }
+      // Multi-day range: spoken "from X to Y" so mixed relative/absolute tokens
+      // ("from today to Jun 3") read as a human range, not a hyphenated word.
+      const fromLabel = relativeDayWord(from, now) ?? shortDate(from);
+      const toLabel = relativeDayWord(to, now) ?? shortDate(to);
+      return `from ${fromLabel} to ${toLabel}`;
+    }
+
+    const single = from ?? to;
+    if (single) {
+      // Relative words read bare ("today"); an absolute day takes "on 3 Jun".
+      const word = relativeDayWord(single, now);
+      return word ?? `on ${shortDate(single)}`;
+    }
+    return null;
+  }
+
+  // Build the live working-line label for one tool call from its raw params.
+  function formatToolActivity(
+    tool: string | undefined,
+    params: Record<string, unknown> | undefined,
+  ): { kind: AskToolKind; label: string } {
+    const p = params ?? {};
+    const now = new Date();
+
+    if (tool === "search") {
+      const queryText = readString(p, "query");
+      let label = queryText ? `Searching “${queryText}”` : "Searching your captures";
+      const app = readString(p, "app");
+      if (app) label += ` in ${app}`;
+      const range = formatDateRange(readString(p, "from"), readString(p, "to"), now);
+      if (range) label += ` · ${range}`;
+      return { kind: "search", label };
+    }
+
+    if (tool === "timeline") {
+      let label = "Scanning timeline";
+      const range = formatDateRange(readString(p, "from"), readString(p, "to"), now);
+      if (range) label += ` · ${range}`;
+      const app = readString(p, "app");
+      if (app) label += ` in ${app}`;
+      return { kind: "timeline", label };
+    }
+
+    if (tool === "show_text") {
+      return { kind: "show_text", label: "Reading a capture" };
+    }
+
+    return { kind: "other", label: tool ? `Running ${tool}` : "Working" };
+  }
+
+  // Collapsed summary chip text: counts of each tool kind that ran, e.g.
+  // `3 searches · timeline · 1 read`. Empty when no tools ran.
+  let askActivitySummary = $derived.by(() => {
+    if (askToolActivities.length === 0) return null;
+    let searches = 0;
+    let timelines = 0;
+    let reads = 0;
+    let others = 0;
+    for (const entry of askToolActivities) {
+      if (entry.kind === "search") searches += 1;
+      else if (entry.kind === "timeline") timelines += 1;
+      else if (entry.kind === "show_text") reads += 1;
+      else others += 1;
+    }
+    const parts: string[] = [];
+    if (searches > 0) parts.push(`${searches} ${searches === 1 ? "search" : "searches"}`);
+    if (timelines > 0)
+      parts.push(`${timelines} ${timelines === 1 ? "timeline scan" : "timeline scans"}`);
+    if (reads > 0) parts.push(`${reads} ${reads === 1 ? "read" : "reads"}`);
+    if (others > 0) parts.push(`${others} ${others === 1 ? "step" : "steps"}`);
+    return parts.length > 0 ? parts.join(" · ") : null;
+  });
+
   let askAvailable = $derived(askAvailability?.available === true);
   let askUnavailableHint = $derived(
     askAvailability && !askAvailability.available
@@ -432,6 +623,11 @@
       await cancelActiveAsk();
     }
 
+    // Normalize and record the seed so an error "Try again" reuses it exactly.
+    const normalizedSeed =
+      seedQuery && seedQuery.trim().length > 0 ? seedQuery.trim() : null;
+    askLastSeed = normalizedSeed;
+
     const conversationId = crypto.randomUUID();
     askConversationId = conversationId;
     askQuestion = trimmedQuestion;
@@ -441,6 +637,9 @@
     askErrorMessage = null;
     askSeededResultCount = null;
     askToolActivity = null;
+    askToolActivities = [];
+    askSummaryExpanded = false;
+    askCopied = false;
     askStreaming = true;
 
     try {
@@ -448,7 +647,7 @@
         request: {
           conversationId,
           question: trimmedQuestion,
-          seedQuery: seedQuery && seedQuery.trim().length > 0 ? seedQuery.trim() : null,
+          seedQuery: normalizedSeed,
         },
       });
     } catch (error) {
@@ -513,6 +712,60 @@
     askAreaEl?.focus();
   }
 
+  // Re-run the failed ask with the exact same question + seed pairing.
+  async function retryAsk(): Promise<void> {
+    const question = askQuestion;
+    if (question.trim().length === 0) {
+      return;
+    }
+    void startAsk(question, askLastSeed);
+    await tick();
+    askAreaEl?.focus();
+  }
+
+  // Copy the raw Markdown answer (not the rendered HTML) to the clipboard, with
+  // a brief check-icon confirmation. Only meaningful at askPhase === "done".
+  async function copyAnswer(): Promise<void> {
+    if (askAnswer.length === 0) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(askAnswer);
+    } catch {
+      // Clipboard write is best-effort; swallow (no toast surface here).
+      return;
+    }
+    askCopied = true;
+    if (askCopiedTimer !== null) {
+      clearTimeout(askCopiedTimer);
+    }
+    askCopiedTimer = setTimeout(() => {
+      askCopied = false;
+      askCopiedTimer = null;
+    }, 1500);
+  }
+
+  function toggleSummaryExpanded(): void {
+    askSummaryExpanded = !askSummaryExpanded;
+  }
+
+  // ⌘C / Ctrl+C copies the whole answer when the answer region is focused, the
+  // ask is done, and nothing is selected. With a selection, let native copy run.
+  function handleAnswerAreaKeydown(event: KeyboardEvent): void {
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      (event.key === "c" || event.key === "C") &&
+      askPhase === "done" &&
+      askAnswer.length > 0
+    ) {
+      const selection = window.getSelection()?.toString() ?? "";
+      if (selection.length === 0) {
+        event.preventDefault();
+        void copyAnswer();
+      }
+    }
+  }
+
   function handleAskInputKeydown(event: KeyboardEvent): void {
     // Enter submits; Shift+Enter inserts a newline.
     if (event.key === "Enter" && !event.shiftKey) {
@@ -535,6 +788,9 @@
     askErrorMessage = null;
     askSeededResultCount = null;
     askToolActivity = null;
+    askToolActivities = [];
+    askSummaryExpanded = false;
+    askCopied = false;
     await tick();
     inputEl?.focus();
   }
@@ -605,6 +861,9 @@
     askErrorMessage = null;
     askSeededResultCount = null;
     askToolActivity = null;
+    askToolActivities = [];
+    askSummaryExpanded = false;
+    askCopied = false;
     await tick();
     inputEl?.focus();
   }
@@ -639,6 +898,14 @@
     focusActiveField();
     void loadAskAvailability();
 
+    // Track the reduced-motion preference for the JS-driven mode-switch fade.
+    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    prefersReducedMotion = motionQuery.matches;
+    const onMotionChange = (e: MediaQueryListEvent) => {
+      prefersReducedMotion = e.matches;
+    };
+    motionQuery.addEventListener("change", onMotionChange);
+
     let destroyed = false;
     let unlistenStatus: (() => void) | undefined;
     let unlistenDelta: (() => void) | undefined;
@@ -662,10 +929,13 @@
 
     listen<AskAiStatusEvent>("ask_ai_status", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
-      // A "tool" status is mid-answer activity: surface the tool label without
-      // touching askPhase, so any already-streamed answer text stays visible.
+      // A "tool" status is mid-answer activity: surface the real filter label
+      // without touching askPhase, so any already-streamed answer text stays
+      // visible, and record it for the collapsed summary chip.
       if (event.payload.phase === "tool") {
-        askToolActivity = event.payload.tool ?? "Working";
+        const activity = formatToolActivity(event.payload.tool, event.payload.params);
+        askToolActivity = activity.label;
+        askToolActivities = [...askToolActivities, activity];
         return;
       }
       if (typeof event.payload.seededResultCount === "number") {
@@ -714,6 +984,7 @@
 
     return () => {
       destroyed = true;
+      motionQuery.removeEventListener("change", onMotionChange);
       unlistenStatus?.();
       unlistenDelta?.();
       unlistenDone?.();
@@ -725,190 +996,329 @@
   onDestroy(() => {
     clearDebounce();
     clearIdleTimer();
+    if (askCopiedTimer !== null) {
+      clearTimeout(askCopiedTimer);
+      askCopiedTimer = null;
+    }
     void cancelActiveAsk();
   });
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="quick-recall" onkeydown={handleRootKeydown}>
-  {#if mode === "search"}
-  <div class="quick-recall__field">
-    <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
-    <input
-      bind:this={inputEl}
-      bind:value={query}
-      class="quick-recall__input"
-      type="text"
-      autocomplete="off"
-      autocapitalize="off"
-      spellcheck="false"
-      placeholder="Search your captures…"
-      aria-label="Search your captures"
-      role="combobox"
-      aria-expanded={resultCount > 0}
-      aria-controls="quick-recall-results-list"
-      aria-activedescendant={activeOptionId}
-      onkeydown={handleSearchKeydown}
-    />
-    {#if askAvailable}
-      <button
-        type="button"
-        class="quick-recall__ask-button"
-        onclick={() => void activateAskAi()}
-        aria-label="Ask AI"
+  <!-- The search↔Ask AI swap is the one hero transition: a brief cross-fade
+       between the two mode subtrees, gated to instant when reduced-motion is on
+       (modeFadeMs → 0). Each panel fills the mode area so they overlap cleanly
+       during the fade without reflowing the fixed frame. -->
+  <div class="quick-recall__mode">
+    {#if mode === "search"}
+      <div
+        class="quick-recall__panel"
+        in:fade={{ duration: modeFadeMs }}
+        out:fade={{ duration: modeFadeMs }}
       >
-        Ask AI <span class="quick-recall__ask-key" aria-hidden="true">⇥</span>
-      </button>
+        <div class="quick-recall__field">
+          <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
+          <input
+            bind:this={inputEl}
+            bind:value={query}
+            class="quick-recall__input"
+            type="text"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="Search your captures…"
+            aria-label="Search your captures"
+            role="combobox"
+            aria-expanded={resultCount > 0}
+            aria-controls="quick-recall-results-list"
+            aria-activedescendant={activeOptionId}
+            onkeydown={handleSearchKeydown}
+          />
+          {#if askAvailable}
+            <button
+              type="button"
+              class="quick-recall__ask-button"
+              onclick={() => void activateAskAi()}
+              aria-label="Ask AI"
+            >
+              Ask AI <span class="quick-recall__ask-key" aria-hidden="true">⇥</span>
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="quick-recall__ask-button quick-recall__ask-button--disabled"
+              disabled
+              aria-label={askUnavailableHint ?? "Ask AI unavailable"}
+              title={askUnavailableHint ?? "Ask AI unavailable"}
+            >
+              Ask AI
+            </button>
+          {/if}
+        </div>
+
+        {#if askUnavailableHint}
+          <p class="quick-recall__ask-hint">{askUnavailableHint}</p>
+        {/if}
+
+        <div
+          id="quick-recall-results-list"
+          class="quick-recall__results"
+          role="listbox"
+          aria-label="Search results"
+        >
+          {#if belowMinimum}
+            <!-- Slice 4: feature-teaching orientation view for the pristine /
+                 short-query state. No clickable canned queries — calm cues only. -->
+            <div class="quick-recall__orient">
+              <span class="quick-recall__orient-mark" aria-hidden="true">⌕</span>
+              <p class="quick-recall__orient-tagline">
+                Search everything you've captured.
+              </p>
+              <div class="quick-recall__orient-cues">
+                <span class="quick-recall__orient-cue">Screen</span>
+                <span class="quick-recall__orient-cue-dot" aria-hidden="true">·</span>
+                <span class="quick-recall__orient-cue">Audio</span>
+                <span class="quick-recall__orient-cue-dot" aria-hidden="true">·</span>
+                <span class="quick-recall__orient-cue">Ask AI</span>
+              </div>
+              <p class="quick-recall__orient-hint">
+                Type to find a moment{askAvailable ? ", or press " : "."}{#if askAvailable}<kbd
+                    >⇥</kbd
+                  > to ask AI.{/if}
+              </p>
+            </div>
+          {:else if loading}
+            <!-- Slice 6: skeleton rows mirroring SearchResultCard's two-column
+                 layout (116px 16/10 thumb + stacked text lines). -->
+            <div class="quick-recall__skeletons" aria-hidden="true">
+              {#each [0, 1, 2] as row (row)}
+                <div class="quick-recall__skeleton-row">
+                  <div class="quick-recall__skeleton-thumb"></div>
+                  <div class="quick-recall__skeleton-body">
+                    <span
+                      class="quick-recall__skeleton-line quick-recall__skeleton-line--title"
+                    ></span>
+                    <span class="quick-recall__skeleton-line"></span>
+                    <span
+                      class="quick-recall__skeleton-line quick-recall__skeleton-line--short"
+                    ></span>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {:else if errorMessage}
+            <p class="quick-recall__state quick-recall__state--error">{errorMessage}</p>
+          {:else if showEmpty}
+            <p class="quick-recall__state">No matches for “{resultsQuery}”.</p>
+          {:else}
+            {#if frames.length > 0}
+              <div class="quick-recall__section" role="presentation">
+                <span class="quick-recall__section-label">Screen</span>
+                <div class="quick-recall__list" role="presentation">
+                  {#each frames as result, i (result.groupKey)}
+                    <SearchResultCard
+                      kind="frame"
+                      frame={result}
+                      thumbnailUrl={thumbnailCache.get(result.thumbnailFrameId) ?? null}
+                      id={`${OPTION_ID_PREFIX}${i}`}
+                      selected={selectedIndex === i}
+                      onselect={() => void selectFrame(result)}
+                    />
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            {#if audio.length > 0}
+              <div class="quick-recall__section" role="presentation">
+                <span class="quick-recall__section-label">Audio</span>
+                <div class="quick-recall__list" role="presentation">
+                  {#each audio as result, i (result.groupKey)}
+                    <SearchResultCard
+                      kind="audio"
+                      audio={result}
+                      id={`${OPTION_ID_PREFIX}${frames.length + i}`}
+                      selected={selectedIndex === frames.length + i}
+                      onselect={() => void selectAudio(result)}
+                    />
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          {/if}
+        </div>
+      </div>
     {:else}
-      <button
-        type="button"
-        class="quick-recall__ask-button quick-recall__ask-button--disabled"
-        disabled
-        aria-label={askUnavailableHint ?? "Ask AI unavailable"}
-        title={askUnavailableHint ?? "Ask AI unavailable"}
+      <div
+        class="quick-recall__panel"
+        in:fade={{ duration: modeFadeMs }}
+        out:fade={{ duration: modeFadeMs }}
       >
-        Ask AI
-      </button>
-    {/if}
-  </div>
-
-  {#if askUnavailableHint}
-    <p class="quick-recall__ask-hint">{askUnavailableHint}</p>
-  {/if}
-
-  <div
-    id="quick-recall-results-list"
-    class="quick-recall__results"
-    role="listbox"
-    aria-label="Search results"
-  >
-    {#if belowMinimum}
-      <p class="quick-recall__state">Type at least {MIN_QUERY_LENGTH} characters to search.</p>
-    {:else if loading}
-      <p class="quick-recall__state">Searching…</p>
-    {:else if errorMessage}
-      <p class="quick-recall__state quick-recall__state--error">{errorMessage}</p>
-    {:else if showEmpty}
-      <p class="quick-recall__state">No matches for “{resultsQuery}”.</p>
-    {:else}
-      {#if frames.length > 0}
-        <div class="quick-recall__section" role="presentation">
-          <span class="quick-recall__section-label">Screen</span>
-          <div class="quick-recall__list" role="presentation">
-            {#each frames as result, i (result.groupKey)}
-              <SearchResultCard
-                kind="frame"
-                frame={result}
-                thumbnailUrl={thumbnailCache.get(result.thumbnailFrameId) ?? null}
-                id={`${OPTION_ID_PREFIX}${i}`}
-                selected={selectedIndex === i}
-                onselect={() => void selectFrame(result)}
-              />
-            {/each}
-          </div>
+        <div class="quick-recall__field quick-recall__field--ask">
+          <button
+            type="button"
+            class="quick-recall__back"
+            onclick={() => void backToSearch()}
+            aria-label="Back to search"
+          >
+            ← Back
+          </button>
+          {#if askSubmitted}
+            <span class="quick-recall__ask-question" title={askQuestion}>{askQuestion}</span>
+          {:else}
+            <textarea
+              bind:this={askInputEl}
+              bind:value={askInput}
+              class="quick-recall__ask-input"
+              rows="1"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="Ask anything about your captures…"
+              aria-label="Ask AI a question"
+              onkeydown={handleAskInputKeydown}
+            ></textarea>
+          {/if}
         </div>
-      {/if}
 
-      {#if audio.length > 0}
-        <div class="quick-recall__section" role="presentation">
-          <span class="quick-recall__section-label">Audio</span>
-          <div class="quick-recall__list" role="presentation">
-            {#each audio as result, i (result.groupKey)}
-              <SearchResultCard
-                kind="audio"
-                audio={result}
-                id={`${OPTION_ID_PREFIX}${frames.length + i}`}
-                selected={selectedIndex === frames.length + i}
-                onselect={() => void selectAudio(result)}
-              />
-            {/each}
-          </div>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div
+          bind:this={askAreaEl}
+          class="quick-recall__results quick-recall__answer-area"
+          aria-live="polite"
+          tabindex="-1"
+          onkeydown={handleAnswerAreaKeydown}
+        >
+          {#if !askSubmitted}
+            <p class="quick-recall__state">Type a question and press Enter to ask.</p>
+          {:else if askPhase === "error"}
+            <p class="quick-recall__state quick-recall__state--error">
+              {askErrorMessage ?? "Ask AI failed."}
+            </p>
+            <div class="quick-recall__retry-row">
+              <button
+                type="button"
+                class="quick-recall__retry"
+                onclick={() => void retryAsk()}
+              >
+                Try again
+              </button>
+            </div>
+          {:else}
+            {#if askSeededResultCount !== null && askSeededResultCount > 0}
+              <p class="quick-recall__seeded">
+                Seeded with {askSeededResultCount}
+                {askSeededResultCount === 1 ? "result" : "results"}
+              </p>
+            {/if}
+
+            {#if askPhase === "seeding"}
+              <p class="quick-recall__state quick-recall__state--working">
+                <span class="quick-recall__dot" aria-hidden="true"></span>
+                Searching your captures…
+              </p>
+            {:else if askPhase === "thinking" && askToolActivity === null}
+              <p class="quick-recall__state quick-recall__state--working">
+                <span class="quick-recall__dot" aria-hidden="true"></span>
+                Thinking…
+              </p>
+            {:else}
+              {#if askPhase === "streaming" || askPhase === "done"}
+                <!-- Copy button: only on done, never while streaming/seeding/error. -->
+                {#if askPhase === "done" && askAnswer.length > 0}
+                  <button
+                    type="button"
+                    class="quick-recall__copy"
+                    class:quick-recall__copy--copied={askCopied}
+                    onclick={() => void copyAnswer()}
+                    aria-label="Copy answer"
+                    title="Copy answer"
+                  >
+                    {#if askCopied}
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.4"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M2.5 7.5 6 11l5.5-7" />
+                      </svg>
+                    {:else}
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <rect x="4.5" y="4.5" width="7" height="7" rx="1.4" />
+                        <path d="M9.5 4.5V3a1 1 0 0 0-1-1h-5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1H4" />
+                      </svg>
+                    {/if}
+                  </button>
+                {/if}
+
+                <!-- Collapsed, expandable activity summary chip (replaces the
+                     verbose live line once tokens stream). -->
+                {#if askActivitySummary !== null}
+                  <div class="quick-recall__activity">
+                    <button
+                      type="button"
+                      class="quick-recall__activity-chip"
+                      aria-expanded={askSummaryExpanded}
+                      onclick={toggleSummaryExpanded}
+                    >
+                      <span
+                        class="quick-recall__activity-caret"
+                        class:quick-recall__activity-caret--open={askSummaryExpanded}
+                        aria-hidden="true">▸</span
+                      >
+                      <span class="quick-recall__activity-summary">{askActivitySummary}</span>
+                    </button>
+                    {#if askSummaryExpanded}
+                      <ul class="quick-recall__activity-list">
+                        {#each askToolActivities as activity, i (i)}
+                          <li class="quick-recall__activity-item">{activity.label}</li>
+                        {/each}
+                      </ul>
+                    {/if}
+                  </div>
+                {/if}
+
+                <!-- Click delegation for rendered links; the <a> elements carry their
+                     own keyboard semantics (Enter dispatches a click that bubbles here). -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <div
+                  bind:this={askAnswerEl}
+                  class="quick-recall__answer"
+                  class:quick-recall__answer--streaming={askStreaming}
+                  onclick={handleAnswerClick}
+                >{@html askAnswerHtml}</div>
+              {/if}
+              {#if askToolActivity !== null}
+                <!-- Live animated working line: the real tool filter string. -->
+                <p class="quick-recall__state quick-recall__state--working">
+                  <span class="quick-recall__dot" aria-hidden="true"></span>
+                  <span class="quick-recall__working-label">{askToolActivity}</span>
+                </p>
+              {/if}
+            {/if}
+          {/if}
         </div>
-      {/if}
+      </div>
     {/if}
   </div>
-  {:else}
-  <div class="quick-recall__field quick-recall__field--ask">
-    <button
-      type="button"
-      class="quick-recall__back"
-      onclick={() => void backToSearch()}
-      aria-label="Back to search"
-    >
-      ← Back
-    </button>
-    {#if askSubmitted}
-      <span class="quick-recall__ask-question" title={askQuestion}>{askQuestion}</span>
-    {:else}
-      <textarea
-        bind:this={askInputEl}
-        bind:value={askInput}
-        class="quick-recall__ask-input"
-        rows="1"
-        autocomplete="off"
-        autocapitalize="off"
-        spellcheck="false"
-        placeholder="Ask anything about your captures…"
-        aria-label="Ask AI a question"
-        onkeydown={handleAskInputKeydown}
-      ></textarea>
-    {/if}
-  </div>
-
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <div
-    bind:this={askAreaEl}
-    class="quick-recall__results quick-recall__answer-area"
-    aria-live="polite"
-    tabindex="-1"
-  >
-    {#if !askSubmitted}
-      <p class="quick-recall__state">Type a question and press Enter to ask.</p>
-    {:else if askPhase === "error"}
-      <p class="quick-recall__state quick-recall__state--error">
-        {askErrorMessage ?? "Ask AI failed."}
-      </p>
-    {:else}
-      {#if askSeededResultCount !== null && askSeededResultCount > 0}
-        <p class="quick-recall__seeded">
-          Seeded with {askSeededResultCount}
-          {askSeededResultCount === 1 ? "result" : "results"}
-        </p>
-      {/if}
-
-      {#if askPhase === "seeding"}
-        <p class="quick-recall__state quick-recall__state--working">
-          <span class="quick-recall__dot" aria-hidden="true"></span>
-          Searching your captures…
-        </p>
-      {:else if askPhase === "thinking" && askToolActivity === null}
-        <p class="quick-recall__state quick-recall__state--working">
-          <span class="quick-recall__dot" aria-hidden="true"></span>
-          Thinking…
-        </p>
-      {:else}
-        {#if askPhase === "streaming" || askPhase === "done"}
-          <!-- Click delegation for rendered links; the <a> elements carry their
-               own keyboard semantics (Enter dispatches a click that bubbles here). -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <div
-            bind:this={askAnswerEl}
-            class="quick-recall__answer"
-            class:quick-recall__answer--streaming={askStreaming}
-            onclick={handleAnswerClick}
-          >{@html askAnswerHtml}</div>
-        {/if}
-        {#if askToolActivity !== null}
-          <p class="quick-recall__state quick-recall__state--working">
-            <span class="quick-recall__dot" aria-hidden="true"></span>
-            {askToolActivity}…
-          </p>
-        {/if}
-      {/if}
-    {/if}
-  </div>
-  {/if}
 
   <div class="quick-recall__footer" aria-hidden="true">
     {#if mode === "search"}
@@ -950,17 +1360,39 @@
     font-family: inherit;
   }
 
+  /* Mode area: positioning context for the cross-fading panels. flex-1 so it
+     fills the space between the (absent) header and the footer. */
+  .quick-recall__mode {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+
+  /* Each mode subtree fills the mode area absolutely so that, during the hero
+     cross-fade, the incoming and outgoing panels overlap perfectly without
+     reflowing the fixed frame. The mode area has a concrete height (flex-1 in
+     the fixed 420px frame), so absolute fill is well-defined. */
+  .quick-recall__panel {
+    position: absolute;
+    inset: 0;
+    min-height: 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
   .quick-recall__field {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 16px 18px;
+    gap: 10px;
+    padding: 8px 15px;
     flex-shrink: 0;
     border-bottom: 1px solid var(--app-border);
   }
 
   .quick-recall__glyph {
-    font-size: 20px;
+    font-size: 16px;
     line-height: 1;
     color: var(--app-text-muted);
     flex-shrink: 0;
@@ -975,7 +1407,7 @@
     background: transparent;
     color: var(--app-text-strong);
     font-family: inherit;
-    font-size: 18px;
+    font-size: 14px;
     line-height: 1.4;
     padding: 0;
     caret-color: var(--app-accent);
@@ -1057,13 +1489,174 @@
   .quick-recall__state {
     margin: 0;
     padding: 8px 2px;
-    font-size: 13px;
+    font-size: 12px;
     line-height: 1.5;
     color: var(--app-text-muted);
   }
 
   .quick-recall__state--error {
     color: var(--app-accent);
+  }
+
+  /* Slice 4: feature-teaching orientation view shown pre-query (belowMinimum).
+     Centered in the results area so the empty frame reads as deliberate. */
+  .quick-recall__orient {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    text-align: center;
+    padding: 8px 24px 18px;
+  }
+
+  .quick-recall__orient-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    font-size: 20px;
+    line-height: 1;
+    color: var(--app-text-muted);
+    background: var(--app-bg);
+    border: 1px solid var(--app-border);
+    border-radius: 11px;
+    transform: rotate(-45deg);
+  }
+
+  .quick-recall__orient-tagline {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.4;
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__orient-cues {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .quick-recall__orient-cue {
+    font-size: 11px;
+    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--app-text-subtle);
+    background: var(--app-surface-subtle);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    padding: 6px 10px;
+  }
+
+  .quick-recall__orient-cue-dot {
+    color: var(--app-text-subtle);
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  .quick-recall__orient-hint {
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--app-text-subtle);
+  }
+
+  .quick-recall__orient-hint kbd {
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--app-text-muted);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 5px;
+    padding: 2px 5px;
+    margin: 0 1px;
+  }
+
+  /* Slice 6: loading skeleton rows that mirror SearchResultCard's two-column
+     layout — a reserved 116px / 16:10 thumb block plus stacked shimmer lines —
+     so the transition from skeleton to real cards doesn't jump. */
+  .quick-recall__skeletons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .quick-recall__skeleton-row {
+    display: flex;
+    gap: 11px;
+    align-items: stretch;
+    padding: 6px 9px;
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    background: var(--app-surface-subtle);
+  }
+
+  .quick-recall__skeleton-thumb {
+    flex-shrink: 0;
+    width: 96px;
+    aspect-ratio: 16 / 10;
+    border-radius: 6px;
+    background: var(--app-bg);
+    border: 1px solid var(--app-border);
+  }
+
+  .quick-recall__skeleton-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 7px;
+    padding: 2px 0;
+  }
+
+  .quick-recall__skeleton-line {
+    display: block;
+    height: 9px;
+    border-radius: 5px;
+    background: var(--app-surface-raised);
+  }
+
+  .quick-recall__skeleton-line--title {
+    height: 11px;
+    width: 62%;
+  }
+
+  .quick-recall__skeleton-line--short {
+    width: 38%;
+  }
+
+  /* Shimmer sweep over the skeleton blocks (gated off under reduced motion). */
+  .quick-recall__skeleton-thumb,
+  .quick-recall__skeleton-line {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .quick-recall__skeleton-thumb::after,
+  .quick-recall__skeleton-line::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--app-text-subtle) 14%, transparent),
+      transparent
+    );
+    animation: quick-recall-shimmer 1.4s ease-in-out infinite;
+  }
+
+  @keyframes quick-recall-shimmer {
+    100% {
+      transform: translateX(100%);
+    }
   }
 
   .quick-recall__ask-button {
@@ -1139,7 +1732,7 @@
   .quick-recall__ask-question {
     flex: 1;
     min-width: 0;
-    font-size: 16px;
+    font-size: 14px;
     line-height: 1.4;
     color: var(--app-text-strong);
     white-space: nowrap;
@@ -1155,7 +1748,7 @@
     background: transparent;
     color: var(--app-text-strong);
     font-family: inherit;
-    font-size: 16px;
+    font-size: 14px;
     line-height: 1.4;
     padding: 0;
     resize: none;
@@ -1168,6 +1761,134 @@
 
   .quick-recall__answer-area {
     gap: 10px;
+    position: relative;
+  }
+
+  /* Copy button: pinned to the top-right of the answer region, only visible at
+     askPhase === "done" (gated in markup). Quiet by default, accent on hover. */
+  .quick-recall__copy {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    color: var(--app-text-subtle);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .quick-recall__copy:hover {
+    color: var(--app-text-strong);
+    border-color: var(--app-accent);
+  }
+
+  .quick-recall__copy--copied {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+  }
+
+  /* Error "Try again" affordance. */
+  .quick-recall__retry-row {
+    padding: 2px;
+  }
+
+  .quick-recall__retry {
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--app-text);
+    background: var(--app-surface-subtle);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    padding: 7px 11px;
+    cursor: pointer;
+  }
+
+  .quick-recall__retry:hover {
+    border-color: var(--app-accent);
+    color: var(--app-text-strong);
+  }
+
+  /* Collapsed, expandable activity summary chip. */
+  .quick-recall__activity {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .quick-recall__activity-chip {
+    align-self: flex-start;
+    max-width: 100%;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--app-text-muted);
+    background: var(--app-surface-subtle);
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    padding: 5px 9px;
+    cursor: pointer;
+  }
+
+  .quick-recall__activity-chip:hover {
+    border-color: var(--app-border-hover);
+    color: var(--app-text);
+  }
+
+  .quick-recall__activity-caret {
+    flex-shrink: 0;
+    font-size: 9px;
+    color: var(--app-text-subtle);
+    transition: transform 0.12s ease;
+  }
+
+  .quick-recall__activity-caret--open {
+    transform: rotate(90deg);
+  }
+
+  .quick-recall__activity-summary {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .quick-recall__activity-list {
+    margin: 0;
+    padding: 2px 2px 2px 4px;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  /* The expanded disclosure exists to show the full filter detail, so its rows
+     wrap rather than truncate (unlike the one-line live working label). */
+  .quick-recall__activity-item {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--app-text-subtle);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* The live working line's filter string wraps to its full text (the answer
+     area scrolls) rather than truncating, so the user sees exactly what ran. */
+  .quick-recall__working-label {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .quick-recall__seeded {
@@ -1183,7 +1904,7 @@
 
   .quick-recall__state--working {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
     color: var(--app-text-muted);
   }
@@ -1191,6 +1912,8 @@
   .quick-recall__dot {
     width: 7px;
     height: 7px;
+    /* Nudge down so the dot centers on the first line of a wrapping label. */
+    margin-top: 0.4em;
     border-radius: 50%;
     background: var(--app-accent);
     flex-shrink: 0;
@@ -1210,8 +1933,8 @@
   .quick-recall__answer {
     margin: 0;
     padding: 2px 2px 8px;
-    font-size: 14px;
-    line-height: 1.6;
+    font-size: 13px;
+    line-height: 1.55;
     color: var(--app-text);
     word-break: break-word;
     overflow-wrap: anywhere;
@@ -1375,6 +2098,36 @@
     }
     50% {
       opacity: 0;
+    }
+  }
+
+  /* Slice 7: reduced-motion gating for the whole surface. Every animation and
+     transition in this file collapses to an instant/static fallback. The hero
+     mode-switch cross-fade is JS-driven (modeFadeMs → 0 in the script) and so is
+     handled there; everything else is gated here. */
+  @media (prefers-reduced-motion: reduce) {
+    .quick-recall__dot {
+      animation: none;
+      opacity: 1;
+    }
+
+    .quick-recall__answer--streaming :global(> :last-child::after) {
+      animation: none;
+    }
+
+    .quick-recall__skeleton-thumb::after,
+    .quick-recall__skeleton-line::after {
+      animation: none;
+      display: none;
+    }
+
+    .quick-recall__ask-button,
+    .quick-recall__back,
+    .quick-recall__copy,
+    .quick-recall__retry,
+    .quick-recall__activity-chip,
+    .quick-recall__activity-caret {
+      transition: none;
     }
   }
 </style>

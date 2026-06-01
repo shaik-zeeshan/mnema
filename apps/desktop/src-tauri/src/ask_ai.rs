@@ -526,19 +526,17 @@ pub async fn ask_ai_start(
                         }),
                     );
                 }
-                pi_agent_session::AskAiStreamEvent::ToolCall { tool, .. } => {
-                    let friendly = match tool.as_str() {
-                        "search" => "Searching your captures",
-                        "timeline" => "Scanning your timeline",
-                        "show_text" => "Reading a capture",
-                        other => other,
-                    };
+                pi_agent_session::AskAiStreamEvent::ToolCall { tool, params, .. } => {
+                    // Forward the raw tool name (`search`/`timeline`/`show_text`)
+                    // plus its params; the frontend builds the humane working-line
+                    // label from these (e.g. `Searching "invoice" · Jun 1`).
                     let _ = emit_handle.emit(
                         ASK_AI_STATUS_EVENT,
                         serde_json::json!({
                             "conversationId": emit_conversation_id,
                             "phase": "tool",
-                            "tool": friendly,
+                            "tool": tool,
+                            "params": params,
                         }),
                     );
                 }
