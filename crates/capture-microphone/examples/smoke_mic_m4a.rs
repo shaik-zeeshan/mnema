@@ -1,0 +1,117 @@
+//! Windows microphone -> .m4a smoke test (issue #52).
+//!
+//! Drives the *real* WASAPI capture backend + Media Foundation AAC/M4A sink and
+//! validates each produced segment through the same MF positive-duration probe
+//! the runtime finalization seam uses. Records two rotated segments so the
+//! 5-min-boundary rotate path is exercised too (here we rotate manually after a
+//! few seconds rather than wait 5 minutes).
+//!
+//! Run from a PowerShell with the MSVC + Perl/NASM env imported:
+//!   cargo run -p capture-microphone --example smoke_mic_m4a
+
+#[cfg(target_os = "windows")]
+fn main() {
+    use std::time::{Duration, Instant};
+
+    use capture_microphone::{
+        microphone_permission_state, start_wasapi_microphone_capture_session_for_file,
+        AudioCaptureSession,
+    };
+    use capture_types::CapturePermissionState;
+    use capture_writers::windows_audio_file_has_positive_duration;
+
+    fn record_for(label: &str, secs: u64) {
+        println!("  recording {label} for {secs}s ...");
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(secs) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn report(label: &str, path: &str) -> bool {
+        let exists = std::path::Path::new(path).exists();
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let openable = if exists {
+            windows_audio_file_has_positive_duration(path)
+        } else {
+            false
+        };
+        println!(
+            "  [{label}] exists={exists} size={size}B mf_positive_duration={openable}\n         path={path}"
+        );
+        exists && size > 0 && openable
+    }
+
+    println!("== Windows microphone -> .m4a smoke test ==");
+
+    let state = microphone_permission_state();
+    println!("microphone_permission_state = {state:?}");
+    if !matches!(state, CapturePermissionState::Granted) {
+        eprintln!("FAIL: microphone not reported as supported/granted on this machine");
+        std::process::exit(2);
+    }
+
+    let dir = std::env::temp_dir().join("mnema_mic_smoke");
+    let _ = std::fs::create_dir_all(&dir);
+    let seg1 = dir.join("mic_session-segment-0000.m4a");
+    let seg2 = dir.join("mic_session-segment-0001.m4a");
+    let seg1_s = seg1.to_string_lossy().to_string();
+    let seg2_s = seg2.to_string_lossy().to_string();
+    let _ = std::fs::remove_file(&seg1);
+    let _ = std::fs::remove_file(&seg2);
+
+    println!("output dir: {}", dir.display());
+    println!("\nstarting capture session (default capture endpoint) ...");
+    let mut session = match start_wasapi_microphone_capture_session_for_file(&seg1_s, None) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("FAIL: start session: {} / {}", e.code, e.message);
+            std::process::exit(3);
+        }
+    };
+    println!("session started; is_live={}", session.is_live());
+
+    record_for("segment 0", 3);
+
+    println!("\nrotating to segment 1 ...");
+    let fin1 = match session.rotate_output_file_returning_finalization(&seg2_s) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("FAIL: rotate: {} / {}", e.code, e.message);
+            std::process::exit(4);
+        }
+    };
+    println!("  rotate finalization: {fin1:?}");
+
+    record_for("segment 1", 3);
+
+    println!("\nstopping session ...");
+    let fin2 = match session.stop_returning_finalization() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("FAIL: stop: {} / {}", e.code, e.message);
+            std::process::exit(5);
+        }
+    };
+    println!("  stop finalization: {fin2:?}");
+    if let Some(err) = session.take_stop_error() {
+        eprintln!("  WARN async stop error: {} / {}", err.code, err.message);
+    }
+    println!("  is_live after stop = {}", session.is_live());
+
+    println!("\nvalidating produced segments via MF Source Reader duration probe:");
+    let ok1 = report("segment 0", &seg1_s);
+    let ok2 = report("segment 1", &seg2_s);
+
+    if ok1 && ok2 {
+        println!("\nPASS: both rotated segments are openable .m4a files with positive duration.");
+    } else {
+        eprintln!("\nFAIL: at least one segment was missing/empty/unopenable.");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn main() {
+    eprintln!("smoke_mic_m4a is a Windows-only smoke test");
+}
