@@ -362,9 +362,7 @@ fn emit_current_status(app_handle: &tauri::AppHandle) {
 fn update_info_from_update(update: &Update, channel: AppUpdateChannel) -> AppUpdateInfo {
     AppUpdateInfo {
         version: update.version.clone(),
-        date: update
-            .date
-            .and_then(|date| date.format(&Rfc3339).ok()),
+        date: update.date.and_then(|date| date.format(&Rfc3339).ok()),
         notes: update.body.clone(),
         channel,
     }
@@ -454,7 +452,10 @@ fn push_update_available_notification(app_handle: &tauri::AppHandle, update: &Ap
         app_handle,
         APP_UPDATE_AVAILABLE_NOTIFICATION_ID,
         "Mnema update available",
-        &format!("Version {} is ready to install from Settings.", update.version),
+        &format!(
+            "Version {} is ready to install from Settings.",
+            update.version
+        ),
         Some("about"),
         now_unix_ms(),
     );

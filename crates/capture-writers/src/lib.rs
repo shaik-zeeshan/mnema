@@ -113,12 +113,13 @@ pub fn trim_audio_file_to_m4a(
         let mut remaining = frames_to_copy;
         while remaining > 0 {
             let want = remaining.min(16_384) as u32;
-            let mut buffer = av::AudioPcmBuf::with_format(&processing_format, want).ok_or_else(
-                || CaptureErrorResponse {
-                    code: "audio_trim_failed".to_string(),
-                    message: "Failed to allocate audio trim buffer".to_string(),
-                },
-            )?;
+            let mut buffer =
+                av::AudioPcmBuf::with_format(&processing_format, want).ok_or_else(|| {
+                    CaptureErrorResponse {
+                        code: "audio_trim_failed".to_string(),
+                        message: "Failed to allocate audio trim buffer".to_string(),
+                    }
+                })?;
             reader
                 .read_n(&mut buffer, want)
                 .map_err(|error| CaptureErrorResponse {
@@ -129,10 +130,12 @@ pub fn trim_audio_file_to_m4a(
             if read_frames == 0 {
                 break;
             }
-            writer.write(&buffer).map_err(|error| CaptureErrorResponse {
-                code: "audio_trim_failed".to_string(),
-                message: format!("Failed writing trimmed audio {output}: {error}"),
-            })?;
+            writer
+                .write(&buffer)
+                .map_err(|error| CaptureErrorResponse {
+                    code: "audio_trim_failed".to_string(),
+                    message: format!("Failed writing trimmed audio {output}: {error}"),
+                })?;
             remaining = remaining.saturating_sub(read_frames as u64);
             if (read_frames as u64) < (want as u64) {
                 break;
@@ -1715,7 +1718,10 @@ mod tests {
     fn trim_audio_file_to_m4a_extracts_subrange_without_external_tools() {
         let temp = std::env::temp_dir();
         let input = temp
-            .join(format!("mnema-native-trim-input-{}.m4a", std::process::id()))
+            .join(format!(
+                "mnema-native-trim-input-{}.m4a",
+                std::process::id()
+            ))
             .to_string_lossy()
             .to_string();
         let output = temp

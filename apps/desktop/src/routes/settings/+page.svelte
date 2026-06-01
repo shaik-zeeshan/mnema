@@ -122,6 +122,18 @@
     existingTarget: string | null;
   };
 
+  type PiRuntimeStatus = {
+    source: "managed" | "path" | "unmanaged" | "missing";
+    executablePath: string | null;
+    version: string | null;
+    minimumVersion: string;
+    versionOk: boolean;
+    authJsonPath: string;
+    authJsonExists: boolean;
+    ready: boolean;
+    reason: "pi_not_found" | "pi_version_unavailable" | "pi_version_too_old" | "pi_auth_missing" | string | null;
+  };
+
   type RetentionCleanupSummary = {
     policy: string;
     cutoffEndedBefore: string | null;
@@ -264,9 +276,12 @@
   let brokerGrantSaving = $state(false);
   let brokerGrantError = $state<string | null>(null);
   let mnemaCliStatus = $state<MnemaCliStatus | null>(null);
+  let piRuntimeStatus = $state<PiRuntimeStatus | null>(null);
   let mnemaCliLoading = $state(false);
+  let piRuntimeLoading = $state(false);
   let mnemaCliInstalling = $state(false);
   let mnemaCliError = $state<string | null>(null);
+  let piRuntimeError = $state<string | null>(null);
 
   // Appearance draft (system | light | dark). Drives the in-memory theme
   // runtime in `$lib/theme.svelte` and is persisted via recording settings.
@@ -1074,6 +1089,18 @@
     }
   }
 
+  async function loadPiRuntimeStatus() {
+    piRuntimeLoading = true;
+    piRuntimeError = null;
+    try {
+      piRuntimeStatus = await invoke<PiRuntimeStatus>("get_pi_runtime_status");
+    } catch (err) {
+      piRuntimeError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+    } finally {
+      piRuntimeLoading = false;
+    }
+  }
+
   async function installMnemaCli() {
     mnemaCliInstalling = true;
     mnemaCliError = null;
@@ -1341,6 +1368,22 @@
     if (status === "revoked") return "Revoked";
     if (status === "expired") return `Expired ${formatGrantTime(grant.expiresAtUnixMs)}`;
     return `Expires ${formatGrantTime(grant.expiresAtUnixMs)}`;
+  }
+
+  function formatPiRuntimeSource(source: PiRuntimeStatus["source"]): string {
+    if (source === "managed") return "managed";
+    if (source === "path") return "PATH";
+    if (source === "unmanaged") return "configured path";
+    return "not found";
+  }
+
+  function formatPiRuntimeReason(status: PiRuntimeStatus): string {
+    if (status.ready) return "ready";
+    if (status.reason === "pi_not_found") return "pi was not found in PATH";
+    if (status.reason === "pi_version_unavailable") return "pi --version did not return a usable version";
+    if (status.reason === "pi_version_too_old") return `pi ${status.version ?? "unknown"} is older than ${status.minimumVersion}`;
+    if (status.reason === "pi_auth_missing") return `PI auth is missing at ${status.authJsonPath}`;
+    return "PI is not ready";
   }
 
   async function setBrowserUrlMode(mode: string) {
@@ -2771,6 +2814,7 @@
     void appPrivacyExclusion.loadSensitiveCaptureRecommendations();
     loadBrokerGrants();
     loadMnemaCliStatus();
+    loadPiRuntimeStatus();
 
     let unlistenControllerChanged: (() => void) | undefined;
     let unlistenAutoDisconnectFailure: (() => void) | undefined;
@@ -3365,6 +3409,14 @@
                 <p>{mnemaCliStatus.installDir} is not in PATH for this app session.</p>
               {/if}
             {/if}
+            {#if piRuntimeStatus}
+              <p>
+                Ask AI PI: {piRuntimeStatus.ready
+                  ? `ready via ${formatPiRuntimeSource(piRuntimeStatus.source)}${piRuntimeStatus.executablePath ? ` at ${piRuntimeStatus.executablePath}` : ""}`
+                  : formatPiRuntimeReason(piRuntimeStatus)}
+              </p>
+              <p>PI auth: {piRuntimeStatus.authJsonExists ? `found at ${piRuntimeStatus.authJsonPath}` : `not found at ${piRuntimeStatus.authJsonPath}`}</p>
+            {/if}
           </div>
           <section class="access-guide" aria-label="How CLI Access works">
             <div class="access-guide__lead">
@@ -3409,12 +3461,15 @@
             <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
               {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
             </button>
-            <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}>
+            <button class="btn btn--ghost btn--sm" type="button" disabled={brokerGrantSaving || brokerGrantLoading || mnemaCliLoading || piRuntimeLoading} onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); void loadPiRuntimeStatus(); }}>
               Refresh
             </button>
           </div>
           {#if mnemaCliError}
             <p class="error-text">{mnemaCliError}</p>
+          {/if}
+          {#if piRuntimeError}
+            <p class="error-text">{piRuntimeError}</p>
           {/if}
           {#if brokerGrantError}
             <p class="error-text">{brokerGrantError}</p>

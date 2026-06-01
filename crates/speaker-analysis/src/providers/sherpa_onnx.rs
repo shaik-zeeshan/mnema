@@ -496,7 +496,10 @@ where
         }
     }
     let fallback_samples = &all_samples[chunk_start..chunk_start + chunk_len];
-    Ok((try_embed(fallback_samples)?, ClusterEmbeddingSource::WholeChunk))
+    Ok((
+        try_embed(fallback_samples)?,
+        ClusterEmbeddingSource::WholeChunk,
+    ))
 }
 
 #[cfg(feature = "sherpa-onnx")]
@@ -714,8 +717,9 @@ fn agglomerate_local_clusters_impl(
                 .representative_embedding
                 .clone();
             for right in (left + 1)..node_count {
-                let right_node =
-                    nodes[right].as_ref().expect("node is live during initial fill");
+                let right_node = nodes[right]
+                    .as_ref()
+                    .expect("node is live during initial fill");
                 matrix[sim_index(left, right)] =
                     cosine_similarity(&left_embedding, &right_node.representative_embedding);
             }
@@ -893,9 +897,7 @@ fn safe_single_chunk_sample_limit() -> usize {
 /// Convert a per-model minimum turn duration (ms) into a sample count at the
 /// fixed 16 kHz analysis rate, for accuracy #2 sub-second turn filtering.
 fn min_turn_samples(min_turn_ms: u64) -> usize {
-    (min_turn_ms as usize)
-        .saturating_mul(SAMPLE_RATE_HZ as usize)
-        / 1000
+    (min_turn_ms as usize).saturating_mul(SAMPLE_RATE_HZ as usize) / 1000
 }
 
 fn overlap_sample_limit() -> usize {
@@ -1403,7 +1405,10 @@ mod tests {
         // cross-chunk threshold is the DER-benchmark optimum 0.60.
         assert_eq!(selection.clustering_threshold, 0.65_f32);
         assert_eq!(selection.cross_chunk_threshold, 0.60_f32);
-        assert_eq!(selection.cross_chunk_threshold, crate::BALANCED_CROSS_CHUNK_THRESHOLD);
+        assert_eq!(
+            selection.cross_chunk_threshold,
+            crate::BALANCED_CROSS_CHUNK_THRESHOLD
+        );
         assert_eq!(selection.min_turn_ms, crate::DEFAULT_MIN_TURN_MS);
     }
 
@@ -1430,7 +1435,10 @@ mod tests {
     fn resolves_high_accuracy_preset_paths() {
         let selection = selection_for(crate::HIGH_ACCURACY_SHERPA_ONNX_MODEL_ID);
 
-        assert_eq!(selection.model_id, crate::HIGH_ACCURACY_SHERPA_ONNX_MODEL_ID);
+        assert_eq!(
+            selection.model_id,
+            crate::HIGH_ACCURACY_SHERPA_ONNX_MODEL_ID
+        );
         assert_eq!(
             selection.segmentation_model_path,
             PathBuf::from(
@@ -1715,10 +1723,12 @@ mod tests {
             local_cluster(2, vec![0.95, 0.05]),
         ];
 
-        let (_, map) =
-            agglomerate_local_clusters(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
+        let (_, map) = agglomerate_local_clusters(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD);
 
-        assert_eq!(map[&1], map[&2], "finite, near-identical clusters still merge");
+        assert_eq!(
+            map[&1], map[&2],
+            "finite, near-identical clusters still merge"
+        );
         assert_ne!(map[&0], map[&1], "non-finite cluster must not be merged in");
     }
 
@@ -1813,11 +1823,8 @@ mod tests {
             // Recompute fallback: force it with max_dense_nodes = 0 and require
             // the same partition, so the memory-bounded large-n path stays
             // bit-identical to the matrix path.
-            let (_, got_recompute) = agglomerate_local_clusters_impl(
-                &locals,
-                crate::DEFAULT_CROSS_CHUNK_THRESHOLD,
-                0,
-            );
+            let (_, got_recompute) =
+                agglomerate_local_clusters_impl(&locals, crate::DEFAULT_CROSS_CHUNK_THRESHOLD, 0);
             assert_eq!(
                 got_recompute, expected,
                 "recompute partition mismatch at trial {trial} (n={n})"
@@ -1829,7 +1836,9 @@ mod tests {
     // `try_embed` models the extractor: it is only "ready" once it has at least
     // `min_ready` samples, mirroring `compute_embedding`'s `is_ready` gate.
     #[cfg(feature = "sherpa-onnx")]
-    fn embed_with_min_ready(min_ready: usize) -> impl FnMut(&[f32]) -> SpeakerAnalysisResult<Vec<f32>> {
+    fn embed_with_min_ready(
+        min_ready: usize,
+    ) -> impl FnMut(&[f32]) -> SpeakerAnalysisResult<Vec<f32>> {
         move |samples: &[f32]| {
             if samples.len() >= min_ready {
                 // Marker embedding: the sample count actually fed in.

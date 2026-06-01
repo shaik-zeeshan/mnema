@@ -152,7 +152,10 @@ mod tests {
             OcrAdmissionReason::SkippedLowOcrValue,
         ];
         for reason in reasons {
-            assert_eq!(OcrAdmissionReason::from_str(reason.as_str()).unwrap(), reason);
+            assert_eq!(
+                OcrAdmissionReason::from_str(reason.as_str()).unwrap(),
+                reason
+            );
         }
     }
 

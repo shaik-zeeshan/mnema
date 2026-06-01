@@ -16,8 +16,6 @@ use super::microphone::{
     should_reconnect_waiting_microphone_session,
 };
 use super::output::set_current_microphone_output_file;
-#[cfg(target_os = "macos")]
-use super::runtime::{CaptureSuspensionKind, PrivacyCaptureSuspension};
 use super::runtime::{
     active_sources_for_inactivity_paused_state, current_segment_sources_for_runtime,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
@@ -27,6 +25,8 @@ use super::runtime::{
     stopped_session_from_runtime, system_audio_planner_for_runtime,
     system_audio_writer_active_for_runtime, validate_start_request, NativeCaptureRuntime,
 };
+#[cfg(target_os = "macos")]
+use super::runtime::{CaptureSuspensionKind, PrivacyCaptureSuspension};
 #[cfg(target_os = "macos")]
 use super::segments::{
     apply_microphone_output_finalization, audio_duration_time_to_ms,
@@ -1869,7 +1869,10 @@ fn session_from_runtime_reports_running_during_privacy_suspension_with_live_micr
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
-        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(CaptureSuspensionKind::PrivacyFilter, &privacy_error)),
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(
+            CaptureSuspensionKind::PrivacyFilter,
+            &privacy_error,
+        )),
         ..Default::default()
     };
 
@@ -7301,7 +7304,10 @@ fn current_segment_sources_for_runtime_masks_stale_screen_during_privacy_suspens
             system_audio: true,
         }),
         microphone_recording_file: Some("/tmp/privacy-suspended-microphone.m4a".to_string()),
-        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(CaptureSuspensionKind::PrivacyFilter, &privacy_error)),
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(
+            CaptureSuspensionKind::PrivacyFilter,
+            &privacy_error,
+        )),
         ..Default::default()
     };
 
@@ -7358,7 +7364,10 @@ fn pause_microphone_for_inactivity_preserves_privacy_suspended_source_mask() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
-        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(CaptureSuspensionKind::PrivacyFilter, &privacy_error)),
+        privacy_capture_suspension: Some(PrivacyCaptureSuspension::with_kind(
+            CaptureSuspensionKind::PrivacyFilter,
+            &privacy_error,
+        )),
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {

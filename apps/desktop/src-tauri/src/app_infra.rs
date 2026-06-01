@@ -46,7 +46,9 @@ const RETENTION_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 const MNEMA_CLI_COMMAND_NAME: &str = "mnema";
 const MNEMA_CLI_SIDECAR_NAME: &str = "mnema-cli";
-
+const PI_COMMAND_NAME: &str = "pi";
+const PI_CODING_AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
+const MIN_PI_VERSION: &str = "0.65.0";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppInfraInitializeError {
     AlreadyRunning,
@@ -1587,17 +1589,17 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         ),
     )
     .map_err(|error| {
-            crate::native_capture::debug_log::log_error(format!(
+        crate::native_capture::debug_log::log_error(format!(
             "failed to initialize app infrastructure (save_directory='{}', base_dir='{}'): {error}",
             resolved_base_dir.save_directory,
             resolved_base_dir.base_dir.display()
         ));
 
-            AppInfraInitializeError::Other(format!(
-                "failed to initialize app infrastructure at {}: {error}",
-                resolved_base_dir.base_dir.display()
-            ))
-        })?;
+        AppInfraInitializeError::Other(format!(
+            "failed to initialize app infrastructure at {}: {error}",
+            resolved_base_dir.base_dir.display()
+        ))
+    })?;
     let infra = Arc::new(infra);
     crate::ocr_budget::reset_for_base_dir(&resolved_base_dir.base_dir);
     let frame_preview_cache = FramePreviewCacheState::default();
@@ -3930,6 +3932,29 @@ pub struct MnemaCliStatus {
     pub existing_target: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PiRuntimeSource {
+    Managed,
+    Path,
+    Unmanaged,
+    Missing,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiRuntimeStatus {
+    pub source: PiRuntimeSource,
+    pub executable_path: Option<String>,
+    pub version: Option<String>,
+    pub minimum_version: String,
+    pub version_ok: bool,
+    pub auth_json_path: String,
+    pub auth_json_exists: bool,
+    pub ready: bool,
+    pub reason: Option<String>,
+}
+
 fn mnema_cli_sidecar_name() -> String {
     #[cfg(windows)]
     {
@@ -4087,6 +4112,161 @@ fn terminal_shell_path_dirs() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+#[cfg(windows)]
+fn executable_name(command: &str) -> String {
+    format!("{command}.exe")
+}
+
+#[cfg(not(windows))]
+fn executable_name(command: &str) -> String {
+    command.to_string()
+}
+
+fn executable_in_shell_path(command: &str) -> Option<PathBuf> {
+    let executable = executable_name(command);
+    terminal_shell_path_dirs()
+        .into_iter()
+        .map(|dir| dir.join(&executable))
+        .find(|candidate| candidate.is_file())
+}
+
+fn pi_agent_dir_for_home_and_env(
+    home_dir: &Path,
+    env_agent_dir: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    env_agent_dir
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir.join(".pi").join("agent"))
+}
+
+fn pi_auth_json_path_for_home_and_env(
+    home_dir: &Path,
+    env_agent_dir: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    pi_agent_dir_for_home_and_env(home_dir, env_agent_dir).join("auth.json")
+}
+
+fn pi_runtime_version(executable_path: &Path) -> Option<String> {
+    let output = std::process::Command::new(executable_path)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut version_text = String::from_utf8_lossy(&output.stdout).into_owned();
+    version_text.push_str(&String::from_utf8_lossy(&output.stderr));
+    parse_semver_from_text(&version_text)
+}
+
+fn parse_semver_from_text(text: &str) -> Option<String> {
+    text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '+'))
+        .filter_map(|part| {
+            let core = part.split(['-', '+']).next().unwrap_or(part);
+            if core.split('.').count() == 3
+                && core
+                    .split('.')
+                    .all(|piece| !piece.is_empty() && piece.chars().all(|ch| ch.is_ascii_digit()))
+            {
+                Some(core.to_string())
+            } else {
+                None
+            }
+        })
+        .next()
+}
+
+fn version_tuple(version: &str) -> Option<[u64; 3]> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some([major, minor, patch])
+}
+
+fn version_meets_minimum(version: &str, minimum: &str) -> bool {
+    match (version_tuple(version), version_tuple(minimum)) {
+        (Some(version), Some(minimum)) => version >= minimum,
+        _ => false,
+    }
+}
+
+fn pi_runtime_status_for_candidates(
+    home_dir: &Path,
+    unmanaged_path: Option<PathBuf>,
+    managed_path: Option<PathBuf>,
+    path_runtime: Option<PathBuf>,
+    version_lookup: impl Fn(&Path) -> Option<String>,
+) -> PiRuntimeStatus {
+    pi_runtime_status_for_candidates_with_auth_dir_env(
+        home_dir,
+        unmanaged_path,
+        managed_path,
+        path_runtime,
+        std::env::var_os(PI_CODING_AGENT_DIR_ENV).as_deref(),
+        version_lookup,
+    )
+}
+
+fn pi_runtime_status_for_candidates_with_auth_dir_env(
+    home_dir: &Path,
+    unmanaged_path: Option<PathBuf>,
+    managed_path: Option<PathBuf>,
+    path_runtime: Option<PathBuf>,
+    env_agent_dir: Option<&std::ffi::OsStr>,
+    version_lookup: impl Fn(&Path) -> Option<String>,
+) -> PiRuntimeStatus {
+    let selected = unmanaged_path
+        .filter(|path| path.is_file())
+        .map(|path| (PiRuntimeSource::Unmanaged, path))
+        .or_else(|| {
+            managed_path
+                .filter(|path| path.is_file())
+                .map(|path| (PiRuntimeSource::Managed, path))
+        })
+        .or_else(|| path_runtime.map(|path| (PiRuntimeSource::Path, path)));
+    let auth_json_path = pi_auth_json_path_for_home_and_env(home_dir, env_agent_dir);
+    let auth_json_exists = auth_json_path.is_file();
+    let (source, executable_path, version) = match selected {
+        Some((source, path)) => {
+            let version = version_lookup(&path);
+            (source, Some(path), version)
+        }
+        None => (PiRuntimeSource::Missing, None, None),
+    };
+    let version_ok = version
+        .as_deref()
+        .is_some_and(|version| version_meets_minimum(version, MIN_PI_VERSION));
+    let reason = if executable_path.is_none() {
+        Some("pi_not_found".to_string())
+    } else if version.is_none() {
+        Some("pi_version_unavailable".to_string())
+    } else if !version_ok {
+        Some("pi_version_too_old".to_string())
+    } else if !auth_json_exists {
+        Some("pi_auth_missing".to_string())
+    } else {
+        None
+    };
+    let ready = reason.is_none();
+
+    PiRuntimeStatus {
+        source,
+        executable_path: executable_path.map(|path| path.display().to_string()),
+        version,
+        minimum_version: MIN_PI_VERSION.to_string(),
+        version_ok,
+        auth_json_path: auth_json_path.display().to_string(),
+        auth_json_exists,
+        ready,
+        reason,
+    }
+}
+
 fn resolve_link_target(link_path: &Path, target: PathBuf) -> PathBuf {
     if target.is_absolute() {
         target
@@ -4177,6 +4357,22 @@ pub async fn get_cli_status_inner(app_handle: tauri::AppHandle) -> Result<MnemaC
     let install_path = mnema_cli_install_path(&app_handle)?;
     let bundled_cli_path = bundled_mnema_cli_path()?;
     Ok(mnema_cli_status_for_paths(install_path, bundled_cli_path))
+}
+
+pub async fn get_pi_runtime_status_inner(
+    app_handle: tauri::AppHandle,
+) -> Result<PiRuntimeStatus, String> {
+    let home_dir = app_handle
+        .path()
+        .home_dir()
+        .map_err(|error| format!("failed to resolve home dir: {error}"))?;
+    Ok(pi_runtime_status_for_candidates(
+        &home_dir,
+        None,
+        None,
+        executable_in_shell_path(PI_COMMAND_NAME),
+        pi_runtime_version,
+    ))
 }
 
 pub async fn install_cli_inner(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
@@ -4959,6 +5155,97 @@ mod tests {
             mnema_cli_install_path_for_home(Path::new("/Users/tester")),
             PathBuf::from("/Users/tester/.local/bin/mnema")
         );
+    }
+
+    #[test]
+    fn pi_auth_json_path_uses_default_agent_dir() {
+        assert_eq!(
+            pi_auth_json_path_for_home_and_env(Path::new("/Users/tester"), None),
+            PathBuf::from("/Users/tester/.pi/agent/auth.json")
+        );
+    }
+
+    #[test]
+    fn pi_auth_json_path_honors_pi_agent_dir_override() {
+        assert_eq!(
+            pi_auth_json_path_for_home_and_env(
+                Path::new("/Users/tester"),
+                Some(std::ffi::OsStr::new("/tmp/pi-agent"))
+            ),
+            PathBuf::from("/tmp/pi-agent/auth.json")
+        );
+    }
+
+    #[test]
+    fn pi_version_parser_finds_semver_in_cli_output() {
+        assert_eq!(
+            parse_semver_from_text("pi 0.78.0\n").as_deref(),
+            Some("0.78.0")
+        );
+        assert_eq!(
+            parse_semver_from_text("@earendil-works/pi-coding-agent 1.2.3-beta.1").as_deref(),
+            Some("1.2.3")
+        );
+        assert!(parse_semver_from_text("pi dev").is_none());
+    }
+
+    #[test]
+    fn pi_version_comparison_uses_numeric_semver_parts() {
+        assert!(version_meets_minimum("0.65.0", MIN_PI_VERSION));
+        assert!(version_meets_minimum("0.78.0", MIN_PI_VERSION));
+        assert!(version_meets_minimum("1.0.0", MIN_PI_VERSION));
+        assert!(!version_meets_minimum("0.64.9", MIN_PI_VERSION));
+    }
+
+    #[test]
+    fn pi_runtime_status_prefers_unmanaged_then_managed_then_path() {
+        let dir = TestDir::new("pi-runtime-priority");
+        let unmanaged = dir.path().join("unmanaged-pi");
+        let managed = dir.path().join("managed-pi");
+        let path_runtime = dir.path().join("path-pi");
+        fs::write(&unmanaged, b"").expect("unmanaged runtime should be written");
+        fs::write(&managed, b"").expect("managed runtime should be written");
+        fs::write(&path_runtime, b"").expect("path runtime should be written");
+        let auth_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
+        fs::write(auth_dir.join("auth.json"), b"{}").expect("pi auth should be written");
+
+        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
+            dir.path(),
+            Some(unmanaged.clone()),
+            Some(managed),
+            Some(path_runtime),
+            None,
+            |_| Some(MIN_PI_VERSION.to_string()),
+        );
+
+        assert_eq!(status.source, PiRuntimeSource::Unmanaged);
+        assert_eq!(
+            status.executable_path,
+            Some(unmanaged.display().to_string())
+        );
+        assert!(status.ready);
+        assert!(status.reason.is_none());
+    }
+
+    #[test]
+    fn pi_runtime_status_reports_missing_auth_after_valid_runtime() {
+        let dir = TestDir::new("pi-runtime-missing-auth");
+        let path_runtime = dir.path().join("pi");
+        fs::write(&path_runtime, b"").expect("path runtime should be written");
+
+        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
+            dir.path(),
+            None,
+            None,
+            Some(path_runtime),
+            None,
+            |_| Some(MIN_PI_VERSION.to_string()),
+        );
+
+        assert_eq!(status.source, PiRuntimeSource::Path);
+        assert_eq!(status.reason.as_deref(), Some("pi_auth_missing"));
+        assert!(!status.ready);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 mod app_infra;
 mod app_updates;
+mod ask_ai;
 mod audio_transcription_models;
 mod broker_authorization_channel;
 mod cli_access;
@@ -340,6 +341,10 @@ pub fn run() {
             cli_access::get_cli_access_status,
             cli_access::install_cli,
             cli_access::reinstall_cli,
+            ask_ai::get_pi_runtime_status,
+            ask_ai::ask_ai_broker_search,
+            ask_ai::ask_ai_broker_timeline,
+            ask_ai::ask_ai_broker_show_text,
             broker_authorization_channel::get_pending_cli_access_request,
             broker_authorization_channel::approve_pending_cli_access_request,
             broker_authorization_channel::cancel_pending_cli_access_request,

@@ -193,7 +193,9 @@ fn run(args: &Args) -> Result<(), String> {
         request.options.insert("numClusters".to_string(), n.into());
     }
     if let Some(v) = args.min_duration_on {
-        request.options.insert("minDurationOn".to_string(), v.into());
+        request
+            .options
+            .insert("minDurationOn".to_string(), v.into());
     }
     if let Some(v) = args.min_duration_off {
         request
@@ -222,7 +224,8 @@ fn run(args: &Args) -> Result<(), String> {
     let rttm = output_to_rttm(&output, &args.uri);
     match &args.out {
         Some(path) => {
-            fs::write(path, rttm).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+            fs::write(path, rttm)
+                .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
             eprintln!("[diarize_to_rttm] wrote {}", path.display());
         }
         None => print!("{rttm}"),

@@ -680,7 +680,10 @@ mod tests {
             }
 
             // Once the cap is reached, the job is left terminally failed and not requeued again.
-            assert_eq!(last_attempt_count, super::super::OCR_FAILED_JOB_MAX_ATTEMPTS);
+            assert_eq!(
+                last_attempt_count,
+                super::super::OCR_FAILED_JOB_MAX_ATTEMPTS
+            );
             let terminal = store
                 .get_job(queued_job.id)
                 .await
@@ -1001,7 +1004,10 @@ mod tests {
                 .expect("job should be readable")
                 .expect("job should exist");
             assert_eq!(terminal.status, ProcessingJobStatus::Failed);
-            assert_eq!(terminal.attempt_count, super::super::RECLAIM_ATTEMPT_CEILING);
+            assert_eq!(
+                terminal.attempt_count,
+                super::super::RECLAIM_ATTEMPT_CEILING
+            );
             assert_eq!(
                 terminal.failure_count, 0,
                 "reaching the reclaim ceiling is not a failure attempt"

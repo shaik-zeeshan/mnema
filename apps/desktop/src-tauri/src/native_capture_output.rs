@@ -626,7 +626,9 @@ mod tests {
         let frames: u32 = 24_000; // 0.5s @ 48kHz — comfortably positive duration.
         let mut buffer = av::AudioPcmBuf::with_format(&processing_format, frames)
             .expect("test audio buffer should allocate");
-        buffer.set_frame_len(frames).expect("frame length should set");
+        buffer
+            .set_frame_len(frames)
+            .expect("frame length should set");
         if let Some(samples) = buffer.data_f32_mut_at(0) {
             for (index, sample) in samples.iter_mut().enumerate() {
                 *sample = ((index as f32) * 0.05).sin() * 0.1;
