@@ -2943,11 +2943,17 @@ pub fn ensure_microphone_permission() -> bool {
 
 #[cfg(target_os = "windows")]
 pub fn microphone_permission_state() -> CapturePermissionState {
-    // WASAPI shared-mode capture of the default endpoint needs no per-app
-    // prompt, so reporting permission is reporting whether a usable default
-    // capture device exists. Mirrors the Windows screen-capture support gate.
+    // Windows exposes no synchronous query for the per-app microphone privacy
+    // setting (Settings -> Privacy & security -> Microphone). We can only tell
+    // whether a usable default capture endpoint exists; whether desktop apps are
+    // actually allowed to open it is not knowable without attempting capture.
+    // The real denial surfaces at capture start as `microphone_access_denied`
+    // (E_ACCESSDENIED at IAudioClient activation/initialize), so we report a
+    // best-effort `Unknown` here when an endpoint exists. Reporting `Unknown`
+    // (not `Unsupported`) keeps the mic source user-selectable in
+    // `get_capture_support`, which only hides it on `Unsupported`.
     if windows_microphone::microphone_capture_supported() {
-        CapturePermissionState::Granted
+        CapturePermissionState::Unknown
     } else {
         CapturePermissionState::Unsupported
     }

@@ -512,6 +512,12 @@
   ): { label: string; mode: "request" | "settings" } | null {
     if (value === "granted" || value === "unsupported") return null;
     if (value === "denied" || value === "restricted") return { label: "Open Settings", mode: "settings" };
+    // Windows has no programmatic capture-permission prompt: the per-app
+    // microphone privacy toggle can only be changed in Settings, and the
+    // backend can only report a best-effort `unknown` state for it. Routing
+    // through `request_capture_permission` here would be a silent no-op (it
+    // just re-checks for an endpoint), so deep-link to the privacy pane.
+    if (isWindows && value === "unknown") return { label: "Open Settings", mode: "settings" };
     return { label: "Grant access", mode: "request" };
   }
 
@@ -679,6 +685,10 @@
       case "not_determined": return "Not requested";
       case "restricted": return "Restricted";
       case "unsupported": return "Unsupported";
+      // Windows can't read the per-app mic toggle, so the backend reports a
+      // best-effort `unknown`. Surfacing the raw "Unknown" reads as a fault;
+      // frame it as system-controlled instead.
+      case "unknown": return isWindows ? "Managed by Windows" : "Unknown";
       default: return "Unknown";
     }
   }
@@ -686,6 +696,9 @@
   function permissionTone(value: PermissionValue | undefined): "ok" | "pending" | "blocked" {
     if (value === "granted") return "ok";
     if (value === "not_determined") return "pending";
+    // The Windows `unknown` mic state is informational, not a denial — keep it
+    // on the neutral (amber) tone rather than the red "blocked" one.
+    if (isWindows && value === "unknown") return "pending";
     return "blocked";
   }
 
@@ -1191,7 +1204,11 @@
                     {/each}
                   </ul>
 
-                  <p class="hint">Grant each source to arm the recorder now — macOS also prompts when recording starts. Once a permission is denied, use <em>Open Settings</em> to enable it under <em>Privacy &amp; Security</em>.</p>
+                  {#if isWindows}
+                    <p class="hint">Screen capture needs no permission on Windows. Microphone access is managed by the system — use <em>Open Settings</em> to allow desktop apps under <em>Privacy &amp; security → Microphone</em>, then <em>Refresh</em>.</p>
+                  {:else}
+                    <p class="hint">Grant each source to arm the recorder now — macOS also prompts when recording starts. Once a permission is denied, use <em>Open Settings</em> to enable it under <em>Privacy &amp; Security</em>.</p>
+                  {/if}
 
                   <div class="row">
                     <button type="button" class="btn btn--ghost btn--sm" onclick={refreshPermissions} disabled={refreshingPerms}>

@@ -16,7 +16,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | --- | --- | --- | --- | --- |
 | Tauri desktop shell | [x] | [~] | [~] | Shell is mostly cross-platform, but window chrome/dock behavior has macOS-specific paths. |
 | Native screen capture | [x] | [~] | [ ] | macOS uses ScreenCaptureKit / AVFoundation fallback. Windows uses WGC for primary-monitor screen capture. |
-| Native microphone capture | [x] | [~] | [ ] | macOS uses AVFoundation. Windows captures selected/default WASAPI endpoints, tracks device/default changes, and encodes AAC `.m4a` via Media Foundation (capture-and-store; no audio processing yet). |
+| Native microphone capture | [x] | [~] | [ ] | macOS uses AVFoundation. Windows captures selected/default WASAPI endpoints, tracks device/default changes, encodes AAC `.m4a` via Media Foundation (capture-and-store; no audio processing yet), and gracefully surfaces a blocked microphone with a `ms-settings:privacy-microphone` deep link. |
 | Native system-audio capture | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit and currently requires screen capture. On Windows system audio is an independent source (ADR 0022) but is a later slice. |
 | Capture segment lifecycle | [x] | [~] | [ ] | Lifecycle is generic in shape; Windows now drives screen and microphone segment rotation off the shared `CaptureClock`/`SegmentSchedule`. |
 | Media writers/finalization | [x] | [~] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. Windows uses Media Foundation for H.264 `.mp4` screen output and AAC `.m4a` microphone output, with an MF Source Reader positive-duration `.m4a` validator. |
@@ -118,7 +118,8 @@ Research notes:
   - WGC primary-monitor screen capture exists with frame timing, segment rotation, stop/error reporting, frame export, resolution scaling, in-session frame-pool recreation for resolution/DPI/display-mode changes, and H.264 bitrate control; output activity samples and broader source support remain outstanding.
 - [~] Implement Windows microphone capture behind `crates/capture-microphone`.
   - Active WASAPI capture endpoint enumeration, selected/default endpoint capture, default-device tracking, `IMMNotificationClient` device-change notifications, and `FallbackToDefault` / `WaitForSameDevice` reconnect policy are implemented.
-  - Still outstanding: VAD PCM feed, inactivity pause/resume, permission/status UX, audio decode/processing, and on-device disconnect/reconnect smoke-test coverage.
+  - Best-effort permission UX is implemented: a blocked microphone (Windows privacy denial surfacing as `E_ACCESSDENIED` at WASAPI `IAudioClient` activation) is mapped to the recoverable `microphone_access_denied` error at capture start, which raises an app notification deep-linking to `ms-settings:privacy-microphone`. The `microphone` permission reports as `Unknown` (best-effort) since per-app privacy cannot be queried synchronously.
+  - Still outstanding: VAD PCM feed, inactivity pause/resume, audio decode/processing, and on-device disconnect/reconnect smoke-test coverage.
 - [ ] Implement Windows system-audio capture.
   - Candidate API: WASAPI loopback.
   - System audio is modeled as an independent source on Windows (ADR 0022); the capture seam (`active_system_audio_session`) exists, but the WASAPI loopback backend is a later slice.
@@ -155,7 +156,7 @@ Research notes:
 
 ### Permissions, privacy, and metadata
 
-- [ ] Implement microphone permission/status UX and settings deep link, e.g. `ms-settings:privacy-microphone`.
+- [x] Implement microphone permission/status UX and settings deep link, e.g. `ms-settings:privacy-microphone`. Best-effort: capture-start access denial (`E_ACCESSDENIED`) maps to the recoverable `microphone_access_denied` error and an app notification that deep-links to `ms-settings:privacy-microphone`; `microphone` permission reports as `Unknown`. No full permission state machine (per decision #6).
 - [ ] Define Windows screen-capture permission/support semantics.
 - [ ] Define Windows system-audio permission/support semantics.
 - [ ] Implement system idle detection, likely `GetLastInputInfo`.

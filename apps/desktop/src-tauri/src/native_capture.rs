@@ -128,6 +128,7 @@ const APP_ICON_CACHE_DIR: &str = "app-icons";
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppNotificationAction {
     OpenSettingsTab { tab: String },
+    OpenCapturePrivacySettings { kind: String },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -2053,6 +2054,22 @@ fn start_native_capture_inner(
                 error.code,
                 error.message
             ));
+            if error.code == "microphone_access_denied" {
+                push_app_notification(
+                    &app_handle,
+                    app_notifications_state.inner(),
+                    AppNotification {
+                        id: "microphone-access-denied".to_string(),
+                        severity: "warning".to_string(),
+                        title: "Microphone access blocked".to_string(),
+                        message: error.message.clone(),
+                        created_at_unix_ms: runtime::now_unix_ms(),
+                        action: Some(AppNotificationAction::OpenCapturePrivacySettings {
+                            kind: "microphone".to_string(),
+                        }),
+                    },
+                );
+            }
             return Err(error);
         }
     };
@@ -2182,30 +2199,59 @@ pub async fn request_capture_permission(
     Ok(get_capture_permissions(app_handle, state))
 }
 
-/// Open the macOS Privacy & Security pane for a capture source so the user can
-/// flip a permission that was already denied (macOS will not re-prompt once
-/// denied).
+/// Open the platform privacy settings pane for a capture source so the user can
+/// flip a permission that was already denied. On macOS this opens the Privacy &
+/// Security pane via `x-apple.systempreferences:` URLs (macOS will not re-prompt
+/// once denied); on Windows it opens the relevant `ms-settings:` deep link.
 #[tauri::command]
 pub fn open_capture_privacy_settings(
     kind: String,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_plugin_opener::OpenerExt;
 
-    let url = match kind.as_str() {
-        "screen" | "systemAudio" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-        }
-        "microphone" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-        }
-        other => return Err(format!("unknown permission kind: {other}")),
-    };
+        let url = match kind.as_str() {
+            "screen" | "systemAudio" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
+            "microphone" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+            }
+            other => return Err(format!("unknown permission kind: {other}")),
+        };
 
-    app_handle
-        .opener()
-        .open_url(url, None::<String>)
-        .map_err(|error| format!("failed to open privacy settings: {error}"))
+        app_handle
+            .opener()
+            .open_url(url, None::<String>)
+            .map_err(|error| format!("failed to open privacy settings: {error}"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use tauri_plugin_opener::OpenerExt;
+
+        let url = match kind.as_str() {
+            "microphone" => "ms-settings:privacy-microphone",
+            other => {
+                return Err(format!(
+                    "capture privacy settings deep link is not supported on Windows for kind: {other}"
+                ))
+            }
+        };
+
+        app_handle
+            .opener()
+            .open_url(url, None::<String>)
+            .map_err(|error| format!("failed to open privacy settings: {error}"))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (kind, app_handle);
+        Err("opening capture privacy settings is not supported on this platform".to_string())
+    }
 }
 
 #[tauri::command]

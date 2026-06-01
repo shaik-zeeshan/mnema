@@ -35,7 +35,7 @@ use wasapi::{
     get_default_device, initialize_mta, DeviceCollection, Direction, SampleType, StreamMode,
     WaveFormat,
 };
-use windows::Win32::Foundation::PROPERTYKEY;
+use windows::Win32::Foundation::{E_ACCESSDENIED, PROPERTYKEY};
 use windows::Win32::Media::Audio::{
     eCapture, DEVICE_STATE, DEVICE_STATEMASK_ALL, EDataFlow, ERole, IMMDeviceEnumerator,
     IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator,
@@ -943,7 +943,38 @@ fn float_sample_to_i16(sample: f32) -> i16 {
     (clamped * i16::MAX as f32).round() as i16
 }
 
+/// Map a WASAPI failure HRESULT to a recoverable Mnema error code, if it is one
+/// we surface specially. Returns `None` for generic failures.
+///
+/// When the user blocks microphone access under Windows Settings -> Privacy &
+/// security -> Microphone ("Let desktop apps access your microphone"), WASAPI
+/// reports it as `E_ACCESSDENIED` (0x80070005) at `IAudioClient` activation /
+/// `initialize_client`. Surfacing that as a distinct, recoverable code lets the
+/// UI prompt the user to re-enable access rather than showing an opaque failure.
+fn recoverable_code_for_hresult(code: windows_core::HRESULT) -> Option<&'static str> {
+    if code == E_ACCESSDENIED {
+        Some("microphone_access_denied")
+    } else {
+        None
+    }
+}
+
+/// Centralize WASAPI error classification here so that both start-time errors
+/// (`CaptureEngine::new`, `resolve_capture_device`) and mid-session pump-loop
+/// errors classify consistently: a privacy denial surfaces as the recoverable
+/// `microphone_access_denied` regardless of where in the lifecycle WASAPI raised
+/// it, and everything else stays the opaque `windows_microphone_capture_failed`.
 fn wasapi_error(context: &str, error: &wasapi::WasapiError) -> CaptureErrorResponse {
+    if let wasapi::WasapiError::Windows(win) = error {
+        if let Some(code) = recoverable_code_for_hresult(win.code()) {
+            if code == "microphone_access_denied" {
+                return CaptureErrorResponse {
+                    code: code.to_string(),
+                    message: "Microphone access is blocked in Windows privacy settings. Allow microphone access for desktop apps, then start recording again.".to_string(),
+                };
+            }
+        }
+    }
     CaptureErrorResponse {
         code: "windows_microphone_capture_failed".to_string(),
         message: format!("{context}: {error}"),
@@ -954,5 +985,40 @@ fn capture_thread_gone_error() -> CaptureErrorResponse {
     CaptureErrorResponse {
         code: "capture_thread_gone".to_string(),
         message: "Windows microphone capture thread is no longer running".to_string(),
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::E_FAIL;
+
+    #[test]
+    fn access_denied_classifies_as_recoverable() {
+        assert_eq!(
+            recoverable_code_for_hresult(E_ACCESSDENIED),
+            Some("microphone_access_denied")
+        );
+    }
+
+    #[test]
+    fn unrelated_hresult_is_generic() {
+        assert_eq!(recoverable_code_for_hresult(E_FAIL), None);
+    }
+
+    #[test]
+    fn wasapi_error_surfaces_access_denied() {
+        let err = wasapi::WasapiError::Windows(windows_core::Error::from(E_ACCESSDENIED));
+        let response = wasapi_error("ctx", &err);
+        assert_eq!(response.code, "microphone_access_denied");
+        assert!(response.message.contains("privacy settings"));
+    }
+
+    #[test]
+    fn wasapi_error_stays_generic_for_other_failures() {
+        let err = wasapi::WasapiError::Windows(windows_core::Error::from(E_FAIL));
+        let response = wasapi_error("ctx", &err);
+        assert_eq!(response.code, "windows_microphone_capture_failed");
+        assert!(response.message.starts_with("ctx: "));
     }
 }

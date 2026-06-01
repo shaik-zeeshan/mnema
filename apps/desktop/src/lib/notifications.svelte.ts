@@ -1,10 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-export type AppNotificationAction = {
-	type: "open_settings_tab";
-	tab: "about" | "processing" | "shortcuts";
-};
+export type AppNotificationAction =
+	| { type: "open_settings_tab"; tab: "about" | "processing" | "shortcuts" }
+	| { type: "open_capture_privacy_settings"; kind: "microphone" | "screen" | "systemAudio" };
 
 export interface AppNotification {
 	id: string;
