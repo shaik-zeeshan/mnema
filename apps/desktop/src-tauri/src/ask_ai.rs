@@ -65,7 +65,7 @@ async fn execute_pi_broker_request(
 ) -> Result<BrokeredCaptureResponse, String> {
     ensure_ask_ai_access_ready(&app_handle).await?;
     broker_access(&app_handle)?
-        .execute_for_identity(pi_broker_identity()?, request)
+        .execute_for_ask_ai(pi_broker_identity()?, request)
         .await
         .map_err(|error| format!("failed to execute Ask AI broker request: {error}"))
 }
