@@ -69,6 +69,27 @@ fn drain_pending_broker_open_capture_results(
     pending.drain(..).collect()
 }
 
+#[tauri::command]
+fn open_capture_result_in_main_window(
+    kind: String,
+    frame_id: Option<i64>,
+    audio_segment_id: Option<i64>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, BrokerOpenCaptureResultState>,
+) {
+    let payload = BrokerOpenCaptureResultPayload {
+        opaque_id: String::from("quick-recall"),
+        kind,
+        frame_id,
+        audio_segment_id,
+    };
+    if let Ok(mut pending) = state.pending.lock() {
+        pending.push_back(payload.clone());
+    }
+    let _ = windows::open_main_window(&app_handle);
+    let _ = app_handle.emit(BROKER_OPEN_CAPTURE_RESULT_EVENT, payload);
+}
+
 fn is_app_log_target(target: &str) -> bool {
     APP_LOG_TARGET_PREFIXES.iter().any(|prefix| {
         target == *prefix
@@ -461,6 +482,7 @@ pub fn run() {
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
             drain_pending_broker_open_capture_results,
+            open_capture_result_in_main_window,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
