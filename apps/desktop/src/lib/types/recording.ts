@@ -14,6 +14,10 @@ export interface MetadataSettings {
 	browserUrlMode: BrowserUrlMode;
 }
 
+export interface AccessSettings {
+	askAiEnabled: boolean;
+}
+
 export interface ExcludedAppEntry {
 	id: string;
 	enabled: boolean;
@@ -45,6 +49,7 @@ export interface RecordingSettings {
 	audioSpeechDetection: AudioSpeechDetectionSettings;
 	metadata: MetadataSettings;
 	privacy: PrivacySettings;
+	access: AccessSettings;
 	previewCacheTtlSeconds: number;
 	followTimelineLive: boolean;
 	retentionPolicy: RetentionPolicy;
@@ -117,6 +122,10 @@ export type UpdateProcessingSettingsRequest = Partial<
 export type UpdateDeveloperSettingsRequest = Partial<
 	Pick<RecordingSettings, "developerOptionsEnabled" | "nativeCaptureDebugLoggingEnabled">
 >;
+
+export interface UpdateAccessSettingsRequest {
+	askAiEnabled: boolean;
+}
 
 export interface KeyboardBindingsSettings {
 	schemaVersion: number;

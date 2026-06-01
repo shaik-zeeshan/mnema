@@ -3951,6 +3951,8 @@ pub struct PiRuntimeStatus {
     pub version_ok: bool,
     pub auth_json_path: String,
     pub auth_json_exists: bool,
+    pub provider_configured: bool,
+    pub provider_count: usize,
     pub ready: bool,
     pub reason: Option<String>,
 }
@@ -4146,6 +4148,88 @@ fn pi_auth_json_path_for_home_and_env(
 ) -> PathBuf {
     pi_agent_dir_for_home_and_env(home_dir, env_agent_dir).join("auth.json")
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PiAuthProviderStatus {
+    Missing,
+    Empty,
+    Malformed,
+    Misconfigured,
+    Configured(usize),
+}
+
+impl PiAuthProviderStatus {
+    fn provider_count(self) -> usize {
+        match self {
+            Self::Configured(count) => count,
+            Self::Missing | Self::Empty | Self::Malformed | Self::Misconfigured => 0,
+        }
+    }
+
+    fn configured(self) -> bool {
+        matches!(self, Self::Configured(_))
+    }
+
+    fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Missing => Some("pi_auth_missing"),
+            Self::Empty => Some("pi_auth_empty"),
+            Self::Malformed => Some("pi_auth_malformed"),
+            Self::Misconfigured => Some("pi_auth_misconfigured"),
+            Self::Configured(_) => None,
+        }
+    }
+}
+
+fn pi_auth_provider_status(auth_json_path: &Path) -> PiAuthProviderStatus {
+    let Ok(raw) = fs::read_to_string(auth_json_path) else {
+        return PiAuthProviderStatus::Missing;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return PiAuthProviderStatus::Malformed;
+    };
+    let Some(providers) = value.as_object() else {
+        return PiAuthProviderStatus::Malformed;
+    };
+    if providers.is_empty() {
+        return PiAuthProviderStatus::Empty;
+    }
+
+    let provider_count = providers
+        .values()
+        .filter(|value| pi_auth_provider_entry_configured(value))
+        .count();
+    if provider_count == 0 {
+        PiAuthProviderStatus::Misconfigured
+    } else {
+        PiAuthProviderStatus::Configured(provider_count)
+    }
+}
+
+fn pi_auth_credential_value_present(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(value) => *value,
+        serde_json::Value::Number(_) => true,
+        serde_json::Value::String(value) => !value.trim().is_empty(),
+        serde_json::Value::Array(values) => values.iter().any(pi_auth_credential_value_present),
+        serde_json::Value::Object(values) => values.values().any(pi_auth_credential_value_present),
+    }
+}
+
+fn pi_auth_provider_entry_configured(value: &serde_json::Value) -> bool {
+    let Some(entry) = value.as_object() else {
+        return false;
+    };
+    let Some(entry_type) = entry.get("type").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    if entry_type.trim().is_empty() {
+        return false;
+    }
+    entry
+        .iter()
+        .any(|(key, value)| key != "type" && pi_auth_credential_value_present(value))
+}
 
 fn pi_runtime_version(executable_path: &Path) -> Option<String> {
     let output = std::process::Command::new(executable_path)
@@ -4228,9 +4312,10 @@ fn pi_runtime_status_for_candidates_with_auth_dir_env(
                 .filter(|path| path.is_file())
                 .map(|path| (PiRuntimeSource::Managed, path))
         })
-        .or_else(|| path_runtime.map(|path| (PiRuntimeSource::Path, path)));
+        .or_else(|| path_runtime.filter(|path| path.is_file()).map(|path| (PiRuntimeSource::Path, path)));
     let auth_json_path = pi_auth_json_path_for_home_and_env(home_dir, env_agent_dir);
     let auth_json_exists = auth_json_path.is_file();
+    let auth_provider_status = pi_auth_provider_status(&auth_json_path);
     let (source, executable_path, version) = match selected {
         Some((source, path)) => {
             let version = version_lookup(&path);
@@ -4247,12 +4332,14 @@ fn pi_runtime_status_for_candidates_with_auth_dir_env(
         Some("pi_version_unavailable".to_string())
     } else if !version_ok {
         Some("pi_version_too_old".to_string())
-    } else if !auth_json_exists {
-        Some("pi_auth_missing".to_string())
+    } else if let Some(auth_reason) = auth_provider_status.reason() {
+        Some(auth_reason.to_string())
     } else {
         None
     };
-    let ready = reason.is_none();
+    let provider_configured = auth_provider_status.configured();
+    let provider_count = auth_provider_status.provider_count();
+    let ready = reason.is_none() && provider_configured;
 
     PiRuntimeStatus {
         source,
@@ -4262,6 +4349,8 @@ fn pi_runtime_status_for_candidates_with_auth_dir_env(
         version_ok,
         auth_json_path: auth_json_path.display().to_string(),
         auth_json_exists,
+        provider_configured,
+        provider_count,
         ready,
         reason,
     }
@@ -5208,7 +5297,11 @@ mod tests {
         fs::write(&path_runtime, b"").expect("path runtime should be written");
         let auth_dir = dir.path().join(".pi").join("agent");
         fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
-        fs::write(auth_dir.join("auth.json"), b"{}").expect("pi auth should be written");
+        fs::write(
+            auth_dir.join("auth.json"),
+            br#"{ "anthropic": { "type": "api_key", "key": "test-key" } }"#,
+        )
+        .expect("pi auth should be written");
 
         let status = pi_runtime_status_for_candidates_with_auth_dir_env(
             dir.path(),
@@ -5225,6 +5318,8 @@ mod tests {
             Some(unmanaged.display().to_string())
         );
         assert!(status.ready);
+        assert!(status.provider_configured);
+        assert_eq!(status.provider_count, 1);
         assert!(status.reason.is_none());
     }
 
@@ -5246,6 +5341,140 @@ mod tests {
         assert_eq!(status.source, PiRuntimeSource::Path);
         assert_eq!(status.reason.as_deref(), Some("pi_auth_missing"));
         assert!(!status.ready);
+        assert!(!status.provider_configured);
+        assert_eq!(status.provider_count, 0);
+    }
+
+    #[test]
+    fn pi_runtime_status_reports_empty_auth_after_valid_runtime() {
+        let dir = TestDir::new("pi-runtime-empty-auth");
+        let path_runtime = dir.path().join("pi");
+        fs::write(&path_runtime, b"").expect("path runtime should be written");
+        let auth_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
+        fs::write(auth_dir.join("auth.json"), b"{}").expect("pi auth should be written");
+
+        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
+            dir.path(),
+            None,
+            None,
+            Some(path_runtime),
+            None,
+            |_| Some(MIN_PI_VERSION.to_string()),
+        );
+
+        assert_eq!(status.reason.as_deref(), Some("pi_auth_empty"));
+        assert!(!status.provider_configured);
+        assert_eq!(status.provider_count, 0);
+        assert!(!status.ready);
+    }
+
+    #[test]
+    fn pi_runtime_status_reports_malformed_auth_after_valid_runtime() {
+        let dir = TestDir::new("pi-runtime-malformed-auth");
+        let path_runtime = dir.path().join("pi");
+        fs::write(&path_runtime, b"").expect("path runtime should be written");
+        let auth_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
+        fs::write(auth_dir.join("auth.json"), b"not json").expect("pi auth should be written");
+
+        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
+            dir.path(),
+            None,
+            None,
+            Some(path_runtime),
+            None,
+            |_| Some(MIN_PI_VERSION.to_string()),
+        );
+
+        assert_eq!(status.reason.as_deref(), Some("pi_auth_malformed"));
+        assert!(!status.provider_configured);
+        assert_eq!(status.provider_count, 0);
+        assert!(!status.ready);
+    }
+
+    #[test]
+    fn pi_runtime_status_reports_misconfigured_auth_after_valid_runtime() {
+        let dir = TestDir::new("pi-runtime-misconfigured-auth");
+        let path_runtime = dir.path().join("pi");
+        fs::write(&path_runtime, b"").expect("path runtime should be written");
+        let auth_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
+        fs::write(
+            auth_dir.join("auth.json"),
+            br#"{ "anthropic": { "type": "api_key", "key": "" } }"#,
+        )
+        .expect("pi auth should be written");
+
+        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
+            dir.path(),
+            None,
+            None,
+            Some(path_runtime),
+            None,
+            |_| Some(MIN_PI_VERSION.to_string()),
+        );
+
+        assert_eq!(status.reason.as_deref(), Some("pi_auth_misconfigured"));
+        assert!(!status.provider_configured);
+        assert_eq!(status.provider_count, 0);
+        assert!(!status.ready);
+    }
+
+    #[test]
+    fn pi_runtime_status_reports_configured_auth_after_valid_runtime() {
+        let dir = TestDir::new("pi-runtime-configured-auth");
+        let path_runtime = dir.path().join("pi");
+        fs::write(&path_runtime, b"").expect("path runtime should be written");
+        let auth_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
+        fs::write(
+            auth_dir.join("auth.json"),
+            br#"{ "anthropic": { "type": "api_key", "key": "test-key" } }"#,
+        )
+        .expect("pi auth should be written");
+
+        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
+            dir.path(),
+            None,
+            None,
+            Some(path_runtime),
+            None,
+            |_| Some(MIN_PI_VERSION.to_string()),
+        );
+
+        assert!(status.reason.is_none());
+        assert!(status.provider_configured);
+        assert_eq!(status.provider_count, 1);
+        assert!(status.ready);
+    }
+
+    #[test]
+    fn pi_runtime_status_counts_nested_oauth_auth_after_valid_runtime() {
+        let dir = TestDir::new("pi-runtime-oauth-auth");
+        let path_runtime = dir.path().join("pi");
+        fs::write(&path_runtime, b"").expect("path runtime should be written");
+        let auth_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&auth_dir).expect("pi auth dir should be created");
+        fs::write(
+            auth_dir.join("auth.json"),
+            br#"{ "anthropic": { "type": "oauth", "tokens": { "accessToken": "test-token" } } }"#,
+        )
+        .expect("pi auth should be written");
+
+        let status = pi_runtime_status_for_candidates_with_auth_dir_env(
+            dir.path(),
+            None,
+            None,
+            Some(path_runtime),
+            None,
+            |_| Some(MIN_PI_VERSION.to_string()),
+        );
+
+        assert!(status.reason.is_none());
+        assert!(status.provider_configured);
+        assert_eq!(status.provider_count, 1);
+        assert!(status.ready);
     }
 
     #[test]

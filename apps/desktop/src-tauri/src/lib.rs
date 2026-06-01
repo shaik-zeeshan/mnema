@@ -439,6 +439,7 @@ pub fn run() {
             native_capture::update_inactivity_settings,
             native_capture::update_processing_settings,
             native_capture::update_developer_settings,
+            native_capture::update_access_settings,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::remove_privacy_excluded_app,

@@ -48,6 +48,7 @@
     RecordingSettings,
     RecordingSettingsDomainUpdateResponse,
     SettingsOwnershipDomain,
+    UpdateAccessSettingsRequest,
     UpdateCaptureSourceSettingsRequest,
     UpdateCaptureTimingSettingsRequest,
     UpdateDeveloperSettingsRequest,
@@ -132,6 +133,10 @@
     authJsonExists: boolean;
     ready: boolean;
     reason: "pi_not_found" | "pi_version_unavailable" | "pi_version_too_old" | "pi_auth_missing" | string | null;
+    providerCount?: number;
+    providerConfigured?: boolean;
+    authJsonProviderCount?: number;
+    authJsonProviderConfigured?: boolean;
   };
 
   type RetentionCleanupSummary = {
@@ -159,8 +164,8 @@
     | "inactivity"
     | "processing"
     | "developer"
+    | "access"
   >;
-
   type RecordingSettingsDraftDomain = AutosaveRecordingDomain | "app_privacy_exclusion";
 
   type RecordingDomainRequest =
@@ -172,7 +177,8 @@
     | UpdateMetadataSettingsRequest
     | UpdateInactivitySettingsRequest
     | UpdateProcessingSettingsRequest
-    | UpdateDeveloperSettingsRequest;
+    | UpdateDeveloperSettingsRequest
+    | UpdateAccessSettingsRequest;
 
   const RECORDING_AUTOSAVE_DOMAINS: readonly AutosaveRecordingDomain[] = [
     "capture_sources",
@@ -184,6 +190,7 @@
     "inactivity",
     "processing",
     "developer",
+    "access",
   ];
 
   const RECORDING_DRAFT_DOMAINS: readonly RecordingSettingsDraftDomain[] = [
@@ -201,6 +208,7 @@
     inactivity: "update_inactivity_settings",
     processing: "update_processing_settings",
     developer: "update_developer_settings",
+    access: "update_access_settings",
   };
 
   function makeRecordingDomainState<T>(value: T): Record<RecordingSettingsDraftDomain, T> {
@@ -268,6 +276,7 @@
   let draftMetadataEnabled = $state(true);
   let draftBrowserUrlMode = $state<BrowserUrlMode>("sanitized");
   let draftExcludedApps = $state<ExcludedAppEntry[]>([]);
+  let draftAskAiEnabled = $state(false);
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
   let retentionCleanupRunning = $state(false);
   let retentionCleanupError = $state<string | null>(null);
@@ -835,6 +844,10 @@
     draftExcludedApps = [...(s.privacy?.excludedApps ?? [])];
   }
 
+  function syncAccessDrafts(s: RecordingSettings) {
+    draftAskAiEnabled = s.access?.askAiEnabled ?? false;
+  }
+
   function syncInactivityDrafts(s: RecordingSettings) {
     draftPauseCaptureOnInactivity = s.pauseCaptureOnInactivity;
     draftIdleTimeoutSeconds = s.idleTimeoutSeconds;
@@ -917,6 +930,9 @@
         break;
       case "developer":
         syncDeveloperDrafts(s);
+        break;
+      case "access":
+        syncAccessDrafts(s);
         break;
     }
   }
@@ -1039,6 +1055,10 @@
         return {
           developerOptionsEnabled: draftDeveloperOptionsEnabled,
           nativeCaptureDebugLoggingEnabled: draftNativeCaptureDebugLoggingEnabled,
+        };
+      case "access":
+        return {
+          askAiEnabled: draftAskAiEnabled,
         };
     }
   }
@@ -1383,7 +1403,31 @@
     if (status.reason === "pi_version_unavailable") return "pi --version did not return a usable version";
     if (status.reason === "pi_version_too_old") return `pi ${status.version ?? "unknown"} is older than ${status.minimumVersion}`;
     if (status.reason === "pi_auth_missing") return `PI auth is missing at ${status.authJsonPath}`;
+    if (status.reason === "pi_auth_empty") return `PI auth has no providers at ${status.authJsonPath}`;
+    if (status.reason === "pi_auth_malformed") return `PI auth is not valid JSON at ${status.authJsonPath}`;
+    if (status.reason === "pi_auth_misconfigured") return `PI auth has no configured provider at ${status.authJsonPath}`;
     return "PI is not ready";
+  }
+
+  function piProviderConfigured(status: PiRuntimeStatus | null): boolean {
+    return status?.providerConfigured ?? status?.authJsonProviderConfigured ?? false;
+  }
+
+  function piProviderCount(status: PiRuntimeStatus | null): number {
+    return status?.providerCount ?? status?.authJsonProviderCount ?? 0;
+  }
+
+  function askAiStatusLabel(status: PiRuntimeStatus | null): string {
+    return draftAskAiEnabled && status?.ready ? "Available" : "Unavailable";
+  }
+
+  function askAiStatusDetail(status: PiRuntimeStatus | null): string {
+    if (!draftAskAiEnabled) return "Ask AI is off. Enable it here after PI is set up.";
+    if (status === null) return "Checking PI setup.";
+    if (status.ready) return `PI ready via ${formatPiRuntimeSource(status.source)}${status.executablePath ? ` at ${status.executablePath}` : ""}.`;
+    if (!status.versionOk) return formatPiRuntimeReason(status);
+    if (!piProviderConfigured(status)) return `Set up a PI provider in ${status.authJsonPath}; no credentials are collected by Mnema.`;
+    return formatPiRuntimeReason(status);
   }
 
   async function setBrowserUrlMode(mode: string) {
@@ -1406,6 +1450,7 @@
   ): unknown {
     switch (domain) {
       case "capture_sources":
+
         return {
           captureScreen: s.captureScreen,
           captureMicrophone: s.captureMicrophone,
@@ -1462,6 +1507,10 @@
         return {
           developerOptionsEnabled: s.developerOptionsEnabled ?? false,
           nativeCaptureDebugLoggingEnabled: s.nativeCaptureDebugLoggingEnabled ?? false,
+        };
+      case "access":
+        return {
+          askAiEnabled: s.access?.askAiEnabled ?? false,
         };
     }
   }
@@ -3409,14 +3458,6 @@
                 <p>{mnemaCliStatus.installDir} is not in PATH for this app session.</p>
               {/if}
             {/if}
-            {#if piRuntimeStatus}
-              <p>
-                Ask AI PI: {piRuntimeStatus.ready
-                  ? `ready via ${formatPiRuntimeSource(piRuntimeStatus.source)}${piRuntimeStatus.executablePath ? ` at ${piRuntimeStatus.executablePath}` : ""}`
-                  : formatPiRuntimeReason(piRuntimeStatus)}
-              </p>
-              <p>PI auth: {piRuntimeStatus.authJsonExists ? `found at ${piRuntimeStatus.authJsonPath}` : `not found at ${piRuntimeStatus.authJsonPath}`}</p>
-            {/if}
           </div>
           <section class="access-guide" aria-label="How CLI Access works">
             <div class="access-guide__lead">
@@ -3504,6 +3545,53 @@
           {:else}
             <p class="group-hint">No CLI Access grants yet. Tools you approve will appear here.</p>
           {/if}
+        </div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-group">
+        <span class="group-label">Ask AI</span>
+        <div class="settings-stack">
+          <Switch
+            bind:checked={draftAskAiEnabled}
+            label="Enable Ask AI"
+            description="Allow Mnema to send your questions plus redacted capture context to your configured PI provider. Off by default."
+          />
+          <div class="privacy-disclosure">
+            <p>Ask AI can answer with redacted screen text, audio transcripts, and timeline results from your retained history after redaction.</p>
+            <p>When enabled, questions and the redacted context needed to answer them are sent through PI to your configured provider/cloud. Mnema never asks for or stores provider credentials here.</p>
+          </div>
+          <div class="model-status" class:model-status--available={draftAskAiEnabled && piRuntimeStatus?.ready}>
+            <div>
+              <div class="model-status__title">Ask AI {askAiStatusLabel(piRuntimeStatus)}</div>
+              <div class="model-status__meta">{askAiStatusDetail(piRuntimeStatus)}</div>
+            </div>
+            <span class="model-status__pill">{draftAskAiEnabled && piRuntimeStatus?.ready ? "available" : "unavailable"}</span>
+          </div>
+          {#if piRuntimeStatus}
+            <p class="group-hint">
+              PI: {piRuntimeStatus.ready
+                ? `ready via ${formatPiRuntimeSource(piRuntimeStatus.source)}${piRuntimeStatus.executablePath ? ` at ${piRuntimeStatus.executablePath}` : ""}`
+                : formatPiRuntimeReason(piRuntimeStatus)}
+            </p>
+            <p class="group-hint">
+              PI auth: {piRuntimeStatus.authJsonExists ? `found at ${piRuntimeStatus.authJsonPath}` : `not found at ${piRuntimeStatus.authJsonPath}`}.
+              Providers configured: {piProviderCount(piRuntimeStatus)}.
+            </p>
+            {#if draftAskAiEnabled && !piRuntimeStatus.ready}
+              <p class="group-hint group-hint--warn">Set up PI and configure a provider in PI auth, then refresh status. Do not enter provider credentials in Mnema.</p>
+            {/if}
+          {:else if piRuntimeLoading}
+            <p class="group-hint">Checking PI setup…</p>
+          {:else}
+            <p class="group-hint group-hint--warn">Refresh PI status before enabling Ask AI.</p>
+          {/if}
+          <div class="row-actions">
+            <button class="btn btn--ghost btn--sm" type="button" disabled={piRuntimeLoading} onclick={loadPiRuntimeStatus}>
+              {piRuntimeLoading ? "Checking" : "Refresh PI status"}
+            </button>
+          </div>
         </div>
       </div>
     </section>

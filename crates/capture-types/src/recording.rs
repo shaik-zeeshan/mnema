@@ -438,6 +438,13 @@ impl Default for ScreenResolution {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessSettings {
+    #[serde(default)]
+    pub ask_ai_enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingSettings {
@@ -476,6 +483,8 @@ pub struct RecordingSettings {
     pub metadata: MetadataSettings,
     #[serde(default = "default_privacy_settings")]
     pub privacy: PrivacySettings,
+    #[serde(default)]
+    pub access: AccessSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -563,6 +572,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub metadata: MetadataSettings,
     #[serde(default = "default_privacy_settings")]
     pub privacy: PrivacySettings,
+    #[serde(default)]
+    pub access: AccessSettings,
     #[serde(default = "default_pause_capture_on_inactivity")]
     pub pause_capture_on_inactivity: bool,
     #[serde(default = "default_idle_timeout_seconds")]
@@ -646,6 +657,12 @@ pub struct UpdateProcessingSettingsRequest {
     pub transcription: Option<AudioTranscriptionSettings>,
     pub speaker_analysis: Option<SpeakerAnalysisSettings>,
     pub preview_cache_ttl_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAccessSettingsRequest {
+    pub ask_ai_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
