@@ -28,3 +28,22 @@ The Tauri host exposes three Rust-backed commands for the TypeScript shim:
 - `ask_ai_broker_show_text({ opaqueId })` → `BrokeredCaptureRequest::ShowText`.
 
 Each command executes as `BrokerClientIdentity::new("PI", BrokerClientIdentitySource::Inferred)`, matching existing `mnema` CLI identity normalization for PI clients. The response shape is the existing broker response/error envelope, so the shim only translates PI tool parameters/results; it does not implement capture policy.
+
+## Amendment: `reference_captures` is a fourth tool, and it is a presentation signal, not a data tool
+
+The original decision said the agent is bounded to `search`, `timeline`, and `show-text` "with no new tools." That constraint was about **data access** — keeping the redaction/retention boundary tight so the agent can reach no capture data beyond those three broker queries. To let **Ask AI** surface **Answer Sources** (the captures behind an answer, rendered as the dashboard-handoff card strip described in `apps/desktop/CONTEXT.md`), the shim registers a **fourth** custom tool, `reference_captures`, and we clarify that "no new tools" means **no new data-access tools**.
+
+`reference_captures` does not widen that boundary:
+
+- Its input is a list of opaque ids the agent **already received** from `search`/`show-text`; it introduces no way to reach a new capture, frame file, transcript, or app-infra row.
+- It **returns no capture data** to the model — only a small acknowledgement (counts of accepted/dropped ids). The model learns nothing it did not already hold.
+- The host validates each opaque id's HMAC, drops any that fail, decodes the survivors to their **Captured Frame** / **Audio Transcription Span** identity, and emits them to the panel, which hydrates cards from **local full-fidelity** data — the same non-redacted path **Quick Search** already uses, since the cards render in the user's own app.
+
+So it is the batch, non-navigating sibling of `open`: where `open` is an app-mediated dashboard handoff for one capture, `reference_captures` is an app-mediated *presentation* declaration for a set of captures. Both are app-mediated UI signals, not **Brokered Capture Access** data tools.
+
+Consequences:
+
+- `reference_captures` is **exempt from `access.askAiMaxToolCalls`**, because that cap bounds data-access tool calls and this tool reaches no data; counting it would let a long search session starve the model's ability to declare its evidence.
+- It adds **no new access-audit entry**: the nominated captures were already accessed (and audited) through the `search`/`show-text` calls that produced their opaque ids.
+- The rendered strip is capped at **6 frame + 4 audio** **Answer Sources** in the model's nomination order (relevance = order, no score); excess nominations are dropped.
+- A future PI release with first-class RPC host-tool callbacks does not change this classification: `reference_captures` stays a presentation signal regardless of transport.

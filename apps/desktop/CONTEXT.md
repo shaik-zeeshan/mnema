@@ -134,6 +134,10 @@ _Avoid_: brokered search, redacted-snippet search, second search engine
 A **Quick Recall** action that pivots from a **Quick Search** query into a PI Agent SDK conversation seeded with the **Brokered Capture Access** (redacted) results for that same query; the bridge from searching to asking.
 _Avoid_: in-app raw-data assistant, separate chat window, agent with privileged app-infra access
 
+**Answer Source**:
+A brokered capture — a **Captured Frame** or an **Audio Transcription Span** — that the **Ask AI** model explicitly nominated as evidence behind its answer, by declaring it through the `reference_captures` presentation tool. **Answer Sources** are rendered below the finished answer as horizontal Screen/Audio card rows that hand off to the dashboard like a **Quick Search** result.
+_Avoid_: citation, footnote, search result, consulted capture, every frame the agent read
+
 ## Relationships
 
 - **Quick Recall** is a standalone overlay surface, not a **Search Entry Point** into the dashboard search modal; it has its own **Quick Search** results backed by the same `search_capture` engine.
@@ -156,6 +160,16 @@ _Avoid_: in-app raw-data assistant, separate chat window, agent with privileged 
 - **Quick Recall** is ephemeral: each summon opens fresh on the **Quick Search** field, an in-progress **Ask AI** conversation lives only while the panel stays open, and V1 persists no conversation history to disk.
 - **Ask AI** may be invoked without a prior **Quick Search** query; seeding the agent with broker results for the current query is an optimization when a query exists, not a precondition for asking.
 - **Ask AI** inherits the **Brokered Capture Access** precondition that Mnema onboarding is complete.
+- An **Answer Source** is model-nominated evidence, distinct from a **Quick Search** result, from seeded broker context, and from every capture the agent merely consulted: only the captures the model chose to vouch for through `reference_captures` become **Answer Sources**.
+- The agent declares **Answer Sources** by passing back the opaque ids it already received from `search`/`show-text`; `reference_captures` returns no capture data to the model, so it is an app-mediated presentation signal like `open`, not a new **Brokered Capture Access** data tool, and it does not widen the redaction/retention boundary. See [ADR 0024](../../docs/adr/0024-ask-ai-uses-pi-tool-shim-over-installed-runtime.md).
+- The host validates each nominated opaque id (HMAC), drops any that fail, and decodes the rest to their **Captured Frame** / **Audio Transcription Span** identity; **Answer Source** cards are then hydrated from local full-fidelity data (thumbnail by frame id, app/window/time), the same non-redacted path **Quick Search** uses, because the cards render in the user's own app and no raw frame data crosses the model boundary.
+- **Answer Source** relevance is the model's nomination order, not a score: the strip renders most-relevant-first left-to-right, and no numeric relevance is shown.
+- **Answer Sources** split into a horizontal Screen row (**Captured Frame** thumbnail cards) and a separate horizontal Audio row (**Audio Transcription Span** cards), never interleaved in one row, mirroring the **Quick Search** Screen/Audio sections.
+- **Answer Source** cards use a dedicated horizontal card component showing thumbnail, metadata (app/window), and time, distinct from the vertical `SearchResultCard` used by **Quick Search**; they are not the search card reflowed.
+- The decoded **Answer Sources** reach the panel through a single `ask_ai_source` event, held until `ask_ai_done` and emitted once; its payload carries everything the frontend needs to render and hand off — per source the kind, the **Captured Frame** / **Audio Transcription Span** id, app/window metadata, and time span — in the model's nomination order, with the `conversationId` so stale events are ignored. Thumbnails are fetched locally by frame id, not carried in the event.
+- Selecting an **Answer Source** card hands off to the dashboard at its **Search Result Anchor** (frame→timeline, audio→player) and closes **Quick Recall**, exactly like selecting a **Quick Search** result; **Quick Recall** stays a launcher, not an inspection surface.
+- The **Answer Sources** strip is held until the **Ask AI** answer completes and revealed once with the finished answer, below the answer prose; if the model never calls `reference_captures` there is no strip, and a repeat call replaces rather than appends (one authoritative evidence set per answer).
+- Web URLs the **Ask AI** answer references are rendered as labeled Markdown links in the answer prose (opening in the browser), distinct from **Answer Source** cards; URL labeling relies on URLs already present in redacted broker text, not on new browser-metadata exposure through the broker.
 - **Sensitive Capture Protection V1** remains inside **App Privacy Exclusion** and does not promise website-level, private-window, password-page, or secure-field protection.
 - **Sensitive Capture Protection V1** is UX and recovery around **App Privacy Exclusion**, not detection of sensitive screen content.
 - **CLI Access Grant** creation requires completed Mnema onboarding.
