@@ -16,6 +16,8 @@ export interface MetadataSettings {
 
 export interface AccessSettings {
 	askAiEnabled: boolean;
+	/** Per-question Ask AI tool-call cap. `0` disables the cap (unlimited). */
+	askAiMaxToolCalls: number;
 }
 
 export interface ExcludedAppEntry {
@@ -125,6 +127,7 @@ export type UpdateDeveloperSettingsRequest = Partial<
 
 export interface UpdateAccessSettingsRequest {
 	askAiEnabled: boolean;
+	askAiMaxToolCalls: number;
 }
 
 export interface KeyboardBindingsSettings {

@@ -438,11 +438,31 @@ impl Default for ScreenResolution {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Default per-question Ask AI tool-call cap. `0` means "no cap" (unlimited
+/// follow-up brokered queries), so the default is a bounded value rather than 0.
+pub fn default_ask_ai_max_tool_calls() -> u32 {
+    12
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessSettings {
     #[serde(default)]
     pub ask_ai_enabled: bool,
+    /// Maximum brokered tool calls Ask AI may issue per question. `0` disables
+    /// the cap (unlimited). Bounds how much retained capture history a single
+    /// conversation can pull through the broker.
+    #[serde(default = "default_ask_ai_max_tool_calls")]
+    pub ask_ai_max_tool_calls: u32,
+}
+
+impl Default for AccessSettings {
+    fn default() -> Self {
+        Self {
+            ask_ai_enabled: false,
+            ask_ai_max_tool_calls: default_ask_ai_max_tool_calls(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -663,6 +683,8 @@ pub struct UpdateProcessingSettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateAccessSettingsRequest {
     pub ask_ai_enabled: Option<bool>,
+    /// New per-question tool-call cap (`0` = no cap). `None` leaves it unchanged.
+    pub ask_ai_max_tool_calls: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

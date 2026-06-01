@@ -13,6 +13,15 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
+/// Boxed async result of one brokered tool invocation.
+pub type AskAiToolFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
+
+/// Invokes one brokered tool call (tool name + camelCase params object) and
+/// resolves to the broker response value, or an error message string.
+pub type AskAiToolInvoker =
+    Box<dyn FnMut(String, serde_json::Value) -> AskAiToolFuture + Send>;
+
 /// A single streamed event parsed from one line of shim stdout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskAiStreamEvent {
@@ -20,10 +29,69 @@ pub enum AskAiStreamEvent {
     Ready,
     /// `{"type":"delta","text":"..."}` — append text chunk to the streamed answer.
     Delta(String),
+    /// A brokered tool call was received and is about to run.
+    ToolCall { id: String, tool: String },
+    /// A brokered tool call finished (ok=false means it errored or was capped).
+    ToolResult { id: String, tool: String, ok: bool },
     /// `{"type":"done"}` — answer complete.
     Done,
     /// `{"type":"error","message":"..."}` — failure.
     Error(String),
+}
+
+/// A parsed `tool_call` line from shim stdout.
+#[derive(Debug, Clone, PartialEq)]
+struct ToolCall {
+    id: String,
+    tool: String,
+    params: serde_json::Value,
+}
+
+/// Parse a single line of shim stdout into a [`ToolCall`], if it is one.
+///
+/// Returns `None` for blank lines, malformed JSON, non-`tool_call` types, or
+/// `tool_call` lines missing the required `id`/`tool` string fields. A missing
+/// `params` defaults to an empty JSON object.
+fn parse_tool_call_line(line: &str) -> Option<ToolCall> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    if value.get("type").and_then(|t| t.as_str()) != Some("tool_call") {
+        return None;
+    }
+
+    let id = value.get("id")?.as_str()?.to_string();
+    let tool = value.get("tool")?.as_str()?.to_string();
+    let params = value
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    Some(ToolCall { id, tool, params })
+}
+
+/// Build the `tool_result` stdin line (without trailing newline) for a finished
+/// tool call. `Ok` emits `ok:true` with the `result` value; `Err` emits
+/// `ok:false` with the `error` message.
+fn tool_result_line(id: &str, result: &Result<serde_json::Value, String>) -> String {
+    let value = match result {
+        Ok(value) => serde_json::json!({
+            "type": "tool_result",
+            "id": id,
+            "ok": true,
+            "result": value,
+        }),
+        Err(message) => serde_json::json!({
+            "type": "tool_result",
+            "id": id,
+            "ok": false,
+            "error": message,
+        }),
+    };
+    value.to_string()
 }
 
 /// Parse a single line of shim stdout into an [`AskAiStreamEvent`].
@@ -87,17 +155,22 @@ impl AskAiCancel {
 
 /// Spawn `node <shim_path>`, stream its events, and drive `on_event` per event.
 ///
-/// Writes one JSON line `{"prompt":"..."}\n` to the child's stdin then closes
-/// it. Reads newline-delimited JSON from stdout, parsing each line via
-/// [`parse_shim_line`]. stderr is drained into a buffer used for diagnostics:
-/// a non-zero exit without a terminal `done`/`error` event surfaces the stderr
-/// tail as the error message. `cancel` kills the child when triggered.
+/// Writes one JSON line `{"prompt":"..."}\n` to the child's stdin and then keeps
+/// stdin open for the whole session so brokered `tool_result` lines can be
+/// written back. Reads newline-delimited JSON from stdout: `tool_call` lines are
+/// executed via `tool_invoker` (capped at `max_tool_calls`) and answered with a
+/// `tool_result` line, while everything else is parsed via [`parse_shim_line`].
+/// stderr is drained into a buffer used for diagnostics: a non-zero exit without
+/// a terminal `done`/`error` event surfaces the stderr tail as the error
+/// message. `cancel` kills the child when triggered.
 pub async fn run_pi_ask_ai_session<F>(
     node_path: &Path,
     shim_path: &Path,
     pi_executable: Option<&str>,
     prompt: &str,
+    max_tool_calls: usize,
     mut on_event: F,
+    mut tool_invoker: AskAiToolInvoker,
     cancel: AskAiCancel,
 ) -> Result<(), String>
 where
@@ -121,8 +194,10 @@ where
         .spawn()
         .map_err(|error| format!("failed to spawn Ask AI shim via node: {error}"))?;
 
-    // Write the prompt as one JSON line, then close stdin.
-    if let Some(mut stdin) = child.stdin.take() {
+    // Write the prompt as one JSON line, then keep stdin open for the whole
+    // session so brokered `tool_result` lines can be written back.
+    let mut child_stdin = child.stdin.take();
+    if let Some(stdin) = child_stdin.as_mut() {
         let line = serde_json::json!({ "prompt": prompt }).to_string();
         stdin
             .write_all(line.as_bytes())
@@ -136,7 +211,6 @@ where
             .flush()
             .await
             .map_err(|error| format!("failed to flush Ask AI prompt to shim: {error}"))?;
-        // Drop closes stdin.
     }
 
     // Drain stderr into a shared buffer on a background task.
@@ -154,10 +228,11 @@ where
     });
 
     let mut saw_terminal = false;
+    let mut tool_call_count: usize = 0;
 
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout).lines();
-        loop {
+        'read: loop {
             if cancel.is_cancelled() {
                 let _ = child.start_kill();
                 break;
@@ -166,6 +241,50 @@ where
             let next = lines.next_line().await;
             match next {
                 Ok(Some(line)) => {
+                    // A tool_call is handled in-loop (run + answer) rather than
+                    // through the normal `parse_shim_line` event path.
+                    if let Some(call) = parse_tool_call_line(&line) {
+                        let ToolCall { id, tool, params } = call;
+                        tool_call_count += 1;
+                        on_event(AskAiStreamEvent::ToolCall {
+                            id: id.clone(),
+                            tool: tool.clone(),
+                        });
+
+                        let result: Result<serde_json::Value, String> =
+                            if tool_call_count > max_tool_calls {
+                                Err(format!(
+                                    "Ask AI tool-call limit reached ({max_tool_calls}). Answer using the information already gathered."
+                                ))
+                            } else {
+                                tool_invoker(tool.clone(), params).await
+                            };
+                        let ok = result.is_ok();
+
+                        // Answer the child. If stdin is gone or the write fails,
+                        // treat it like EOF (unless we are cancelling).
+                        let mut wrote = false;
+                        if let Some(stdin) = child_stdin.as_mut() {
+                            let mut payload = tool_result_line(&id, &result);
+                            payload.push('\n');
+                            if stdin.write_all(payload.as_bytes()).await.is_ok()
+                                && stdin.flush().await.is_ok()
+                            {
+                                wrote = true;
+                            }
+                        }
+
+                        on_event(AskAiStreamEvent::ToolResult { id, tool, ok });
+
+                        if !wrote {
+                            if cancel.is_cancelled() {
+                                let _ = child.start_kill();
+                            }
+                            break 'read;
+                        }
+                        continue;
+                    }
+
                     if let Some(event) = parse_shim_line(&line) {
                         let terminal =
                             matches!(event, AskAiStreamEvent::Done | AskAiStreamEvent::Error(_));
@@ -183,6 +302,9 @@ where
             }
         }
     }
+
+    // Done reading; close stdin so the child can exit cleanly.
+    drop(child_stdin.take());
 
     if cancel.is_cancelled() {
         let _ = child.start_kill();
@@ -367,5 +489,114 @@ mod tests {
     #[test]
     fn stderr_tail_empty_for_blank() {
         assert_eq!(stderr_tail("   \n  "), "");
+    }
+
+    #[test]
+    fn parse_tool_call_line_well_formed() {
+        let call = parse_tool_call_line(
+            r#"{"type":"tool_call","id":"c1","tool":"search","params":{"query":"hi","maxResults":5}}"#,
+        )
+        .expect("tool_call should parse");
+        assert_eq!(call.id, "c1");
+        assert_eq!(call.tool, "search");
+        assert!(call.params.is_object());
+        assert_eq!(
+            call.params.get("query").and_then(|v| v.as_str()),
+            Some("hi")
+        );
+        assert_eq!(
+            call.params.get("maxResults").and_then(|v| v.as_u64()),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn parse_tool_call_line_missing_params_defaults_empty_object() {
+        let call = parse_tool_call_line(r#"{"type":"tool_call","id":"c2","tool":"timeline"}"#)
+            .expect("tool_call should parse");
+        assert_eq!(call.id, "c2");
+        assert_eq!(call.tool, "timeline");
+        assert_eq!(call.params, serde_json::json!({}));
+    }
+
+    #[test]
+    fn parse_tool_call_line_tolerates_surrounding_whitespace() {
+        let call =
+            parse_tool_call_line("  {\"type\":\"tool_call\",\"id\":\"c3\",\"tool\":\"show-text\"}  ")
+                .expect("tool_call should parse");
+        assert_eq!(call.id, "c3");
+        assert_eq!(call.tool, "show-text");
+    }
+
+    #[test]
+    fn parse_tool_call_line_non_tool_call_is_none() {
+        assert_eq!(parse_tool_call_line(r#"{"type":"done"}"#), None);
+        assert_eq!(
+            parse_tool_call_line(r#"{"type":"delta","text":"hi"}"#),
+            None
+        );
+        assert_eq!(parse_tool_call_line(r#"{"type":"ready"}"#), None);
+    }
+
+    #[test]
+    fn parse_tool_call_line_missing_fields_is_none() {
+        // Missing id.
+        assert_eq!(
+            parse_tool_call_line(r#"{"type":"tool_call","tool":"search"}"#),
+            None
+        );
+        // Missing tool.
+        assert_eq!(
+            parse_tool_call_line(r#"{"type":"tool_call","id":"c1"}"#),
+            None
+        );
+        // Non-string id/tool.
+        assert_eq!(
+            parse_tool_call_line(r#"{"type":"tool_call","id":1,"tool":"search"}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_tool_call_line_blank_and_malformed_is_none() {
+        assert_eq!(parse_tool_call_line(""), None);
+        assert_eq!(parse_tool_call_line("   "), None);
+        assert_eq!(parse_tool_call_line("{not json"), None);
+    }
+
+    #[test]
+    fn tool_result_line_ok_shape() {
+        let line = tool_result_line(&"c1".to_string(), &Ok(serde_json::json!({"hits": 3})));
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid json");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "tool_result",
+                "id": "c1",
+                "ok": true,
+                "result": {"hits": 3},
+            })
+        );
+    }
+
+    #[test]
+    fn tool_result_line_err_shape() {
+        let line = tool_result_line(&"c2".to_string(), &Err("broker down".to_string()));
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid json");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "tool_result",
+                "id": "c2",
+                "ok": false,
+                "error": "broker down",
+            })
+        );
+    }
+
+    #[test]
+    fn tool_result_line_emits_single_line() {
+        let line = tool_result_line(&"c3".to_string(), &Ok(serde_json::Value::Null));
+        assert!(!line.contains('\n'));
     }
 }

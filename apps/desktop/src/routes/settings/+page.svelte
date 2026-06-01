@@ -277,6 +277,19 @@
   let draftBrowserUrlMode = $state<BrowserUrlMode>("sanitized");
   let draftExcludedApps = $state<ExcludedAppEntry[]>([]);
   let draftAskAiEnabled = $state(false);
+  // Tool-call cap. Persisted as a single number where 0 = no cap; the UI splits
+  // that into a "limit on/off" toggle plus the numeric value (kept around for
+  // re-enabling so toggling off then on restores the previous number).
+  const ASK_AI_DEFAULT_TOOL_CALL_LIMIT = 12;
+  let draftAskAiLimitToolCalls = $state(true);
+  let draftAskAiMaxToolCalls = $state(ASK_AI_DEFAULT_TOOL_CALL_LIMIT);
+  // Effective persisted value: 0 when the cap is off, else the chosen number
+  // (floored to 1 so an empty/invalid input never silently becomes unlimited).
+  let effectiveAskAiMaxToolCalls = $derived(
+    draftAskAiLimitToolCalls
+      ? Math.max(1, Math.floor(draftAskAiMaxToolCalls || ASK_AI_DEFAULT_TOOL_CALL_LIMIT))
+      : 0,
+  );
   let retentionCleanupSummary = $state<RetentionCleanupSummary | null>(null);
   let retentionCleanupRunning = $state(false);
   let retentionCleanupError = $state<string | null>(null);
@@ -846,6 +859,9 @@
 
   function syncAccessDrafts(s: RecordingSettings) {
     draftAskAiEnabled = s.access?.askAiEnabled ?? false;
+    const cap = s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT;
+    draftAskAiLimitToolCalls = cap > 0;
+    draftAskAiMaxToolCalls = cap > 0 ? cap : ASK_AI_DEFAULT_TOOL_CALL_LIMIT;
   }
 
   function syncInactivityDrafts(s: RecordingSettings) {
@@ -1059,6 +1075,7 @@
       case "access":
         return {
           askAiEnabled: draftAskAiEnabled,
+          askAiMaxToolCalls: effectiveAskAiMaxToolCalls,
         };
     }
   }
@@ -1511,6 +1528,7 @@
       case "access":
         return {
           askAiEnabled: s.access?.askAiEnabled ?? false,
+          askAiMaxToolCalls: s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
         };
     }
   }
@@ -3562,6 +3580,30 @@
             <p>Ask AI can answer with redacted screen text, audio transcripts, and timeline results from your retained history after redaction.</p>
             <p>When enabled, questions and the redacted context needed to answer them are sent through PI to your configured provider/cloud. Mnema never asks for or stores provider credentials here.</p>
           </div>
+          <Switch
+            bind:checked={draftAskAiLimitToolCalls}
+            label="Limit tool calls per question"
+            description="Cap how many follow-up searches Ask AI can run for one question. Off means no cap."
+          />
+          {#if draftAskAiLimitToolCalls}
+            <label class="field-label" for="ask-ai-max-tool-calls">Max tool calls per question</label>
+            <input
+              id="ask-ai-max-tool-calls"
+              class="text-input"
+              type="number"
+              min="1"
+              max="500"
+              step="1"
+              bind:value={draftAskAiMaxToolCalls}
+            />
+            <p class="group-hint">
+              Each tool call is one brokered query into your redacted capture history. A lower cap bounds how much a single answer can pull; the default is {ASK_AI_DEFAULT_TOOL_CALL_LIMIT}.
+            </p>
+          {:else}
+            <p class="group-hint group-hint--warn">
+              No cap: a single question can issue unlimited brokered queries into your retained capture history.
+            </p>
+          {/if}
           <div class="model-status" class:model-status--available={draftAskAiEnabled && piRuntimeStatus?.ready}>
             <div>
               <div class="model-status__title">Ask AI {askAiStatusLabel(piRuntimeStatus)}</div>

@@ -165,8 +165,9 @@
 
   type AskAiStatusEvent = {
     conversationId: string;
-    phase: "seeding" | "thinking";
+    phase: "seeding" | "thinking" | "tool";
     seededResultCount?: number;
+    tool?: string;
   };
 
   type AskAiDeltaEvent = {
@@ -204,6 +205,9 @@
   let askAnswer = $state("");
   let askErrorMessage = $state<string | null>(null);
   let askSeededResultCount = $state<number | null>(null);
+  // Current brokered tool activity label (e.g. "Searching your captures"),
+  // shown as a working line while the agent gathers more context mid-answer.
+  let askToolActivity = $state<string | null>(null);
   // True between ask_ai_start resolving and a terminal done/error event.
   let askStreaming = $state(false);
 
@@ -266,6 +270,7 @@
     askAnswer = "";
     askErrorMessage = null;
     askSeededResultCount = null;
+    askToolActivity = null;
     askStreaming = true;
 
     try {
@@ -353,6 +358,7 @@
     askAnswer = "";
     askErrorMessage = null;
     askSeededResultCount = null;
+    askToolActivity = null;
     await tick();
     inputEl?.focus();
   }
@@ -387,6 +393,12 @@
 
     listen<AskAiStatusEvent>("ask_ai_status", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
+      // A "tool" status is mid-answer activity: surface the tool label without
+      // touching askPhase, so any already-streamed answer text stays visible.
+      if (event.payload.phase === "tool") {
+        askToolActivity = event.payload.tool ?? "Working";
+        return;
+      }
       if (typeof event.payload.seededResultCount === "number") {
         askSeededResultCount = event.payload.seededResultCount;
       }
@@ -401,6 +413,8 @@
 
     listen<AskAiDeltaEvent>("ask_ai_delta", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
+      // The model resumed answering: clear any in-progress tool activity.
+      askToolActivity = null;
       askPhase = "streaming";
       askAnswer += event.payload.text;
     }).then((fn) => {
@@ -411,6 +425,7 @@
     listen<AskAiDoneEvent>("ask_ai_done", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
       askStreaming = false;
+      askToolActivity = null;
       askPhase = "done";
     }).then((fn) => {
       if (destroyed) fn();
@@ -420,6 +435,7 @@
     listen<AskAiErrorEvent>("ask_ai_error", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
       askStreaming = false;
+      askToolActivity = null;
       askPhase = "error";
       askErrorMessage = event.payload.message;
     }).then((fn) => {
@@ -575,13 +591,21 @@
           <span class="quick-recall__dot" aria-hidden="true"></span>
           Searching your captures…
         </p>
-      {:else if askPhase === "thinking"}
+      {:else if askPhase === "thinking" && askToolActivity === null}
         <p class="quick-recall__state quick-recall__state--working">
           <span class="quick-recall__dot" aria-hidden="true"></span>
           Thinking…
         </p>
       {:else}
-        <div bind:this={askAnswerEl} class="quick-recall__answer">{askAnswer}{#if askStreaming}<span class="quick-recall__caret" aria-hidden="true"></span>{/if}</div>
+        {#if askPhase === "streaming" || askPhase === "done"}
+          <div bind:this={askAnswerEl} class="quick-recall__answer">{askAnswer}{#if askStreaming}<span class="quick-recall__caret" aria-hidden="true"></span>{/if}</div>
+        {/if}
+        {#if askToolActivity !== null}
+          <p class="quick-recall__state quick-recall__state--working">
+            <span class="quick-recall__dot" aria-hidden="true"></span>
+            {askToolActivity}…
+          </p>
+        {/if}
       {/if}
     {/if}
   </div>

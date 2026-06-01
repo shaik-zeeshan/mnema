@@ -442,6 +442,7 @@
       },
       access: {
         askAiEnabled: draftAskAiEnabled,
+        askAiMaxToolCalls: base.access?.askAiMaxToolCalls ?? 12,
       },
     };
   }

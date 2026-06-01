@@ -47,6 +47,17 @@ const ASK_AI_DELTA_EVENT: &str = "ask_ai_delta";
 const ASK_AI_DONE_EVENT: &str = "ask_ai_done";
 const ASK_AI_ERROR_EVENT: &str = "ask_ai_error";
 
+/// Translate the persisted `askAiMaxToolCalls` setting (`0` = no cap) into the
+/// per-session cap passed to the agent loop. `0` becomes `usize::MAX` so the
+/// agent may issue unlimited follow-up brokered queries.
+fn resolve_tool_call_cap(setting: u32) -> usize {
+    if setting == 0 {
+        usize::MAX
+    } else {
+        setting as usize
+    }
+}
+
 fn access_config_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     app_handle
         .path()
@@ -98,6 +109,21 @@ fn read_ask_ai_enabled(app_handle: &tauri::AppHandle) -> Result<bool, String> {
     Ok(enabled)
 }
 
+/// Read the configured per-question tool-call cap (`0` = no cap). Falls back to
+/// the default cap if the settings state is unavailable.
+fn read_ask_ai_max_tool_calls(app_handle: &tauri::AppHandle) -> usize {
+    let setting = app_handle
+        .try_state::<crate::native_capture::RecordingSettingsState>()
+        .and_then(|state| {
+            state
+                .lock()
+                .ok()
+                .map(|guard| guard.settings.access.ask_ai_max_tool_calls)
+        })
+        .unwrap_or_else(capture_types::default_ask_ai_max_tool_calls);
+    resolve_tool_call_cap(setting)
+}
+
 async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let ask_ai_enabled = read_ask_ai_enabled(app_handle)?;
     let status = crate::app_infra::get_pi_runtime_status_inner(app_handle.clone()).await?;
@@ -115,6 +141,59 @@ async fn execute_pi_broker_request(
         .execute_for_ask_ai(pi_broker_identity()?, request)
         .await
         .map_err(|error| format!("failed to execute Ask AI broker request: {error}"))
+}
+
+/// Map an Ask AI tool name + camelCase params object onto a brokered request.
+///
+/// Only the three Ask AI tools (`search`, `timeline`, `show_text`) are
+/// accepted; `open`/`open_in_mnema` and anything else fall into the unknown
+/// branch and are rejected, so they can never be issued as Ask AI data tools.
+fn broker_request_from_tool(
+    tool: &str,
+    params: serde_json::Value,
+) -> Result<BrokeredCaptureRequest, String> {
+    match tool {
+        "search" => {
+            let request: BrokerSearchRequest = serde_json::from_value(params)
+                .map_err(|error| format!("invalid Ask AI search params: {error}"))?;
+            Ok(BrokeredCaptureRequest::Search(request))
+        }
+        "timeline" => {
+            let request: BrokerTimelineRequest = serde_json::from_value(params)
+                .map_err(|error| format!("invalid Ask AI timeline params: {error}"))?;
+            Ok(BrokeredCaptureRequest::Timeline(request))
+        }
+        "show_text" => {
+            let opaque_id = params
+                .get("opaqueId")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Ask AI show_text requires a non-empty opaqueId".to_string())?
+                .to_string();
+            Ok(BrokeredCaptureRequest::ShowText { opaque_id })
+        }
+        other => Err(format!("unknown Ask AI tool: {other}")),
+    }
+}
+
+/// Convert a brokered response into the JSON value handed back to the shim as a
+/// tool result, or an error message (broker error envelopes become `Err`).
+fn broker_response_to_tool_value(
+    response: BrokeredCaptureResponse,
+) -> Result<serde_json::Value, String> {
+    match response {
+        BrokeredCaptureResponse::Search(response) => serde_json::to_value(response)
+            .map_err(|error| format!("failed to serialize Ask AI search result: {error}")),
+        BrokeredCaptureResponse::Timeline(response) => serde_json::to_value(response)
+            .map_err(|error| format!("failed to serialize Ask AI timeline result: {error}")),
+        BrokeredCaptureResponse::ShowText(response) => serde_json::to_value(response)
+            .map_err(|error| format!("failed to serialize Ask AI show_text result: {error}")),
+        BrokeredCaptureResponse::Error(error) => Err(error.message),
+        BrokeredCaptureResponse::AuthStatus(_) | BrokeredCaptureResponse::OpenInMnema(_) => {
+            Err("unexpected Ask AI broker response".to_string())
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,10 +327,17 @@ fn build_ask_ai_prompt(
 ) -> String {
     let mut prompt = String::new();
     prompt.push_str(
-        "You are Mnema's Ask AI assistant. Answer the user's question using ONLY the provided \
-context drawn from their own on-device screen and audio capture history. The context is \
-redacted. If the context is missing or insufficient to answer, say so briefly and do not \
-invent details. Be concise and direct.\n",
+        "You are Mnema's Ask AI assistant. Answer the user's question using their own on-device \
+screen and audio capture history. All data is the user's own, redacted, on-device capture. You \
+have THREE tools, and there is NO way to open files or access anything beyond them: `search` \
+finds redacted snippets plus opaque ids across the user's screen OCR and audio transcript \
+history (optionally narrowed by a `from`/`to` RFC3339 time range and `app`/`windowTitle` \
+filters); `timeline` returns coarse activity intervals for a bounded `from`/`to` window; \
+`show_text` returns the full redacted text for one opaque id returned by `search`. When the \
+seeded context below is missing or insufficient to answer, ISSUE follow-up tool calls to gather \
+what you need before answering — prefer a concise `search` first, and use `show_text` sparingly \
+for the specific results you need to read in full. Cite times and apps when useful, but never \
+invent details. If you still cannot answer, say so briefly. Be concise and direct.\n",
     );
 
     if let Some(seed_query) = seed_query {
@@ -376,8 +462,26 @@ pub async fn ask_ai_start(
     let status = crate::app_infra::get_pi_runtime_status_inner(app_handle.clone()).await?;
     let pi_executable = status.executable_path;
 
+    // Resolve the per-question tool-call cap from settings (0 => unlimited).
+    let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
+
     let cancel = AskAiCancel::new();
     register_ask_ai_session(&conversation_id, cancel.clone());
+
+    // Build the brokered tool invoker. Every tool call rides
+    // `execute_pi_broker_request`, which enforces Ask-AI access readiness plus
+    // the All-Retained broker scope and redaction/audit Rust-side; do not
+    // bypass it.
+    let invoker_app_handle = app_handle.clone();
+    let tool_invoker: pi_agent_session::AskAiToolInvoker =
+        Box::new(move |tool: String, params: serde_json::Value| {
+            let app_handle = invoker_app_handle.clone();
+            Box::pin(async move {
+                let request = broker_request_from_tool(&tool, params)?;
+                let response = execute_pi_broker_request(app_handle, request).await?;
+                broker_response_to_tool_value(response)
+            })
+        });
 
     // Stream on a background task so the command returns promptly after launch.
     let task_app_handle = app_handle.clone();
@@ -391,6 +495,7 @@ pub async fn ask_ai_start(
             &shim_path,
             pi_executable.as_deref(),
             &prompt,
+            max_tool_calls,
             |event| match event {
                 pi_agent_session::AskAiStreamEvent::Ready => {}
                 pi_agent_session::AskAiStreamEvent::Delta(text) => {
@@ -402,6 +507,23 @@ pub async fn ask_ai_start(
                         }),
                     );
                 }
+                pi_agent_session::AskAiStreamEvent::ToolCall { tool, .. } => {
+                    let friendly = match tool.as_str() {
+                        "search" => "Searching your captures",
+                        "timeline" => "Scanning your timeline",
+                        "show_text" => "Reading a capture",
+                        other => other,
+                    };
+                    let _ = emit_handle.emit(
+                        ASK_AI_STATUS_EVENT,
+                        serde_json::json!({
+                            "conversationId": emit_conversation_id,
+                            "phase": "tool",
+                            "tool": friendly,
+                        }),
+                    );
+                }
+                pi_agent_session::AskAiStreamEvent::ToolResult { .. } => {}
                 pi_agent_session::AskAiStreamEvent::Done => {
                     saw_terminal = true;
                     let _ = emit_handle.emit(
@@ -420,6 +542,7 @@ pub async fn ask_ai_start(
                     );
                 }
             },
+            tool_invoker,
             cancel,
         )
         .await;
@@ -456,7 +579,10 @@ pub async fn ask_ai_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use app_infra::brokered_access::BrokerSearchResultContext;
+    use app_infra::brokered_access::{
+        BrokerAuthStatusKind, BrokerErrorResponse, BrokerSearchResponse,
+        BrokerSearchResultContext, BrokerShowTextResponse,
+    };
 
     fn ready_pi_status() -> crate::app_infra::PiRuntimeStatus {
         crate::app_infra::PiRuntimeStatus {
@@ -579,5 +705,121 @@ mod tests {
         })
         .expect("serialize");
         assert_eq!(json, r#"{"available":true}"#);
+    }
+
+    #[test]
+    fn resolve_tool_call_cap_treats_zero_as_unlimited() {
+        assert_eq!(resolve_tool_call_cap(0), usize::MAX);
+        assert_eq!(resolve_tool_call_cap(1), 1);
+        assert_eq!(resolve_tool_call_cap(12), 12);
+        assert_eq!(resolve_tool_call_cap(250), 250);
+    }
+
+    #[test]
+    fn broker_request_from_tool_search_maps_to_search_variant() {
+        let request = broker_request_from_tool(
+            "search",
+            serde_json::json!({ "query": "build", "limit": 5 }),
+        )
+        .expect("search params should parse");
+
+        match request {
+            BrokeredCaptureRequest::Search(search) => {
+                assert_eq!(search.query, "build");
+                assert_eq!(search.limit, Some(5));
+            }
+            other => panic!("expected Search, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn broker_request_from_tool_timeline_maps_to_timeline_variant() {
+        let request = broker_request_from_tool(
+            "timeline",
+            serde_json::json!({
+                "from": "2026-01-01T00:00:00Z",
+                "to": "2026-01-01T01:00:00Z",
+            }),
+        )
+        .expect("timeline params should parse");
+
+        match request {
+            BrokeredCaptureRequest::Timeline(timeline) => {
+                assert_eq!(timeline.from, "2026-01-01T00:00:00Z");
+                assert_eq!(timeline.to, "2026-01-01T01:00:00Z");
+            }
+            other => panic!("expected Timeline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn broker_request_from_tool_show_text_extracts_opaque_id() {
+        let request =
+            broker_request_from_tool("show_text", serde_json::json!({ "opaqueId": "op-7" }))
+                .expect("show_text params should parse");
+
+        match request {
+            BrokeredCaptureRequest::ShowText { opaque_id } => assert_eq!(opaque_id, "op-7"),
+            other => panic!("expected ShowText, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn broker_request_from_tool_rejects_unknown_tool() {
+        let error = broker_request_from_tool("open", serde_json::json!({ "opaqueId": "op-1" }))
+            .expect_err("open is not an Ask AI tool");
+        assert_eq!(error, "unknown Ask AI tool: open");
+
+        let error = broker_request_from_tool("open_in_mnema", serde_json::json!({}))
+            .expect_err("open_in_mnema is not an Ask AI tool");
+        assert_eq!(error, "unknown Ask AI tool: open_in_mnema");
+    }
+
+    #[test]
+    fn broker_request_from_tool_rejects_missing_opaque_id() {
+        let error = broker_request_from_tool("show_text", serde_json::json!({}))
+            .expect_err("missing opaqueId should error");
+        assert_eq!(error, "Ask AI show_text requires a non-empty opaqueId");
+
+        let error = broker_request_from_tool("show_text", serde_json::json!({ "opaqueId": "  " }))
+            .expect_err("blank opaqueId should error");
+        assert_eq!(error, "Ask AI show_text requires a non-empty opaqueId");
+    }
+
+    #[test]
+    fn broker_response_to_tool_value_serializes_search() {
+        let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
+            results: vec![sample_result()],
+            limit: 8,
+        });
+
+        let value = broker_response_to_tool_value(response).expect("search serializes");
+        assert_eq!(value["limit"], serde_json::json!(8));
+        assert_eq!(value["results"][0]["opaqueId"], serde_json::json!("op-1"));
+    }
+
+    #[test]
+    fn broker_response_to_tool_value_serializes_show_text() {
+        let response = BrokeredCaptureResponse::ShowText(BrokerShowTextResponse {
+            opaque_id: "op-1".to_string(),
+            kind: "frame".to_string(),
+            text: "full redacted text".to_string(),
+        });
+
+        let value = broker_response_to_tool_value(response).expect("show_text serializes");
+        assert_eq!(value["opaqueId"], serde_json::json!("op-1"));
+        assert_eq!(value["text"], serde_json::json!("full redacted text"));
+    }
+
+    #[test]
+    fn broker_response_to_tool_value_error_returns_message() {
+        let response = BrokeredCaptureResponse::Error(BrokerErrorResponse {
+            error: BrokerAuthStatusKind::AuthorizationRequired,
+            message: "result is unavailable or outside the grant scope".to_string(),
+        });
+
+        let error = broker_response_to_tool_value(response)
+            .expect_err("error envelope should become Err");
+        assert_eq!(error, "result is unavailable or outside the grant scope");
     }
 }
