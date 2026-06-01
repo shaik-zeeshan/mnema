@@ -122,8 +122,40 @@ _Avoid_: stable update, forced beta, hidden prerelease
 A background **App Update** availability check that runs when Mnema starts without downloading, installing, or restarting by itself.
 _Avoid_: automatic install, forced update, startup restart
 
+**Quick Recall**:
+A global, summon-anywhere overlay window (Spotlight/Raycast-style) for fast lookups and questions over retained capture without opening the main Mnema window. Hosts two connected capabilities: **Quick Search** and **Ask AI**.
+_Avoid_: second dashboard, mini main window, floating settings surface
+
+**Quick Search**:
+Full-fidelity in-app search inside **Quick Recall** that reuses the existing `search_capture` engine (real app/window titles, thumbnails, exact snippets) and is not redacted, because results stay on the machine.
+_Avoid_: brokered search, redacted-snippet search, second search engine
+
+**Ask AI**:
+A **Quick Recall** action that pivots from a **Quick Search** query into a PI Agent SDK conversation seeded with the **Brokered Capture Access** (redacted) results for that same query; the bridge from searching to asking.
+_Avoid_: in-app raw-data assistant, separate chat window, agent with privileged app-infra access
+
 ## Relationships
 
+- **Quick Recall** is a standalone overlay surface, not a **Search Entry Point** into the dashboard search modal; it has its own **Quick Search** results backed by the same `search_capture` engine.
+- **Quick Search** reuses the existing `search_capture` engine rather than the redacted broker path, because **Quick Recall** results stay local to the machine and the user is reading their own data.
+- **Ask AI** seeds the PI agent with **Brokered Capture Access** results for the same query the user just ran in **Quick Search**, so the user sees full-fidelity results while the cloud agent receives only redacted context.
+- Selecting a **Quick Search** result opens the main Mnema window at that **Search Result Anchor** (timeline jump for **Captured Frame** results, audio player for **Audio Transcription Span** results) rather than inspecting inside **Quick Recall**; the dashboard remains the single capture *inspection* surface.
+- **Quick Recall** does not duplicate exact-frame preview, OCR copy/download, or audio playback; those remain dashboard-owned and are reached by handing off to the main window.
+- **Ask AI** is off by default and gated by a standing opt-in **Ask AI Setting** with a disclosure that questions send redacted capture context to PI's cloud model; enabling the setting is the consent gate rather than a time-bounded **CLI Access Grant**, and revoking is turning the setting off. See [ADR 0022](../../docs/adr/0022-ask-ai-sends-redacted-capture-context-to-cloud-agent.md).
+- Once enabled, **Ask AI** does not re-prompt per query; the explicit Ask AI action is the per-use intent, preserving the fast launcher UX.
+- **Ask AI** still reads capture context through **Brokered Capture Access** redaction/retention policy and appears in access audit history even though its consent gate is a setting rather than a broker grant.
+- The **Ask AI** PI agent is tool-enabled: beyond the seeded query it may issue follow-up **Brokered Capture Access** queries (`search`, `timeline`, `show-text`) as tools during the conversation, bounded to that existing broker command set with no new tools, media paths, or raw app-infra access. `open` remains the app-mediated handoff to the dashboard rather than a data tool.
+- The **Ask AI Setting** lives in **Access Settings**, is surfaced during onboarding, and is Rust-owned app configuration rather than recording settings or browser local storage.
+- **Ask AI** holds no provider credentials in Mnema: it delegates entirely to PI's own provider auth (the user's configured PI providers via `pi login` / PI's `auth.json` / env vars), so Mnema ships no API-key field, stores no provider secrets, and runs no OAuth refresh. Mnema operates no backend and no token proxy, so neither captured context nor conversations transit Mnema servers.
+- The **Brokered Capture Access** redaction/retention boundary for **Ask AI** is enforced by the broker tools executing Rust-side (thin Tauri commands wrapping existing broker policy/query code), independent of where PI's agent loop runs.
+- Because PI owns provider auth, **Ask AI** requires a usable PI runtime with at least one configured provider; Mnema detects this the way **Access Settings** detects the installed `mnema` CLI, and otherwise presents **Ask AI** as unavailable with a set-up-PI pointer rather than collecting credentials. Delegating to PI's own auth implies using PI's real Node runtime (driven over RPC) rather than embedding `pi-agent-core` in the panel webview, since PI's auth only exists inside that runtime.
+- **Ask AI** uses the user's already-installed, already-signed-in PI and its stored auth (`~/.pi/agent/auth.json`) as-is; because relying on stored PI auth presumes PI is installed and configured, Mnema uses the installed PI rather than bundling a PI/Node runtime, and stays all-native.
+- PI exposes headless auth only for API keys (`setRuntimeApiKey`) and no-auth local models, not for consumer OAuth subscription sign-in (which is interactive-TUI-only). Rather than build provider auth, V1 **Ask AI** deliberately serves only users who have already set up PI; an in-app non-technical "sign in" waits until PI offers headless OAuth. See [ADR 0023](../../docs/adr/0023-ask-ai-delegates-auth-to-installed-pi.md).
+- **Ask AI** tools operate at **All Retained Broker Scope** rather than the broker's external-client last-day default, because **Quick Search** already spans the user's full retained history and capping the agent at recent history would make it unable to answer about anything the user can search. The **Ask AI Setting** disclosure states plainly that Ask AI can draw on the full retained history (redacted); the redaction/retention guarantees do the protecting, not a scope cap.
+- Summoning **Quick Recall** defaults to the **Keyboard Binding** `CommandOrControl+Alt+Space` (`⌥⌘Space`), a modifier chord like the other native-background bindings, and is user-editable.
+- **Quick Recall** is ephemeral: each summon opens fresh on the **Quick Search** field, an in-progress **Ask AI** conversation lives only while the panel stays open, and V1 persists no conversation history to disk.
+- **Ask AI** may be invoked without a prior **Quick Search** query; seeding the agent with broker results for the current query is an optimization when a query exists, not a precondition for asking.
+- **Ask AI** inherits the **Brokered Capture Access** precondition that Mnema onboarding is complete.
 - **Sensitive Capture Protection V1** remains inside **App Privacy Exclusion** and does not promise website-level, private-window, password-page, or secure-field protection.
 - **Sensitive Capture Protection V1** is UX and recovery around **App Privacy Exclusion**, not detection of sensitive screen content.
 - **CLI Access Grant** creation requires completed Mnema onboarding.
@@ -153,7 +185,7 @@ _Avoid_: automatic install, forced update, startup restart
 - V1 editable **Keyboard Bindings** cover command shortcuts; behavior/accessibility shortcuts such as close-on-Escape and focus trapping remain fixed unless a later design explicitly expands editability.
 - **Keyboard Bindings** use scoped uniqueness: two actions may share a shortcut only when their **Shortcut Scope** values cannot be active together.
 - App-wide/native **Keyboard Bindings** are reserved against conflicting in-app bindings when both could fire in the same foreground context.
-- Native background registration is limited to Start/Stop Recording, **Pause/Resume Recording Shortcut**, and Show/Hide Mnema; other **Keyboard Bindings** are foreground-only even when they are app-wide UI actions.
+- Native background registration is limited to Start/Stop Recording, **Pause/Resume Recording Shortcut**, Show/Hide Mnema, and summoning **Quick Recall**; other **Keyboard Bindings** are foreground-only even when they are app-wide UI actions. Summoning **Quick Recall** is added to the native-background set because a Spotlight-style overlay must be reachable from any app, and like the other native bindings it requires a modifier chord.
 - Foreground **Keyboard Bindings** may use single-key shortcuts or modifier chords, while native/background **Keyboard Bindings** require a modifier chord except for future explicitly-supported safe keys.
 - Foreground **Keyboard Bindings** should remain suppressed while typing in text inputs, textareas, editable content, and equivalent interactive controls.
 - **Keyboard Shortcuts Settings** should support clearing/unsetting an editable action, per-action reset to default, and a confirmed restore-all-defaults action.
@@ -409,3 +441,4 @@ _Avoid_: automatic install, forced update, startup restart
 
 - "**Scrub Preview**" was previously described as a visual representation of a **Captured Frame**; resolved: it is a disposable segment-time preview used during timeline navigation, while exact **Captured Frame** inspection goes through the exact preview path.
 - "settings category" was used ambiguously for both visual tabs and save boundaries; resolved: save boundaries are **Settings Ownership Domain** values, while tabs are only presentation.
+- "the search modal remains the single result surface" was written when the dashboard modal was the only search surface; resolved: that rule governs in-dashboard **Search Entry Point** behavior (contextual searches prefill the modal rather than spawning their own result surfaces) and does not forbid the standalone **Quick Recall** overlay. The dashboard remains the single capture *inspection* surface; **Quick Recall** is a separate *launcher* surface that hands off to it.
