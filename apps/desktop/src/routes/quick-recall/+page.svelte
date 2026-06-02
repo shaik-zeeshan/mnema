@@ -553,18 +553,36 @@
 
   // Put the cursor on whatever field is live for the current mode. Called on
   // mount and every time the (reused) window regains focus on a fresh summon.
-  function focusActiveField(): void {
-    if (mode === "ask") {
-      if (askSubmitted) {
-        askAreaEl?.focus();
-      } else {
-        askInputEl?.focus();
-      }
-      return;
-    }
-    inputEl?.focus();
+  //
+  // On the very first summon the window is built and made key while its webview
+  // is still loading, so the initial focus attempt can fire a frame before the
+  // field is interactable. `retriesLeft` re-attempts on the next frames until the
+  // active element is actually the target, which makes first-open focus reliable
+  // without affecting the already-working reused-window summons.
+  function focusActiveField(retriesLeft = 8): void {
+    const target: HTMLElement | null | undefined =
+      mode === "ask" ? (askSubmitted ? askAreaEl : askInputEl) : inputEl;
+    target?.focus();
     // Select any leftover query so typing immediately replaces it.
-    inputEl?.select();
+    if (mode !== "ask") inputEl?.select();
+
+    if (target && document.activeElement !== target && retriesLeft > 0) {
+      requestAnimationFrame(() => focusActiveField(retriesLeft - 1));
+    }
+  }
+
+  // On the first summon the native panel is made key before this webview has
+  // loaded, so AppKit never routes keyboard focus into it and `focusActiveField`
+  // alone can't recover a caret. Ask the Rust side to make the (now-loaded)
+  // webview the panel's first responder, then place the DOM cursor.
+  async function focusQuickRecall(): Promise<void> {
+    try {
+      await invoke("focus_quick_recall_window");
+    } catch {
+      // Best-effort: non-macOS, or the window/webview isn't ready yet. The
+      // retrying focusActiveField below still does its part.
+    }
+    focusActiveField();
   }
 
   // Escape steps back: in Ask AI mode the first press returns to search (the
@@ -2554,7 +2572,7 @@
   }
 
   onMount(() => {
-    focusActiveField();
+    void focusQuickRecall();
     void loadAskAvailability();
     // Warm the captured-app catalog up front so the App value list (whether
     // reached by typing `app:` or via the picker) has selectable rows on first
@@ -2588,7 +2606,7 @@
       .onFocusChanged(({ payload: focused }) => {
         windowFocused = focused;
         if (focused) {
-          void tick().then(focusActiveField);
+          void tick().then(() => focusQuickRecall());
         }
       })
       .then((fn) => {

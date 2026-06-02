@@ -593,6 +593,56 @@ fn configure_quick_recall_panel(window: &WebviewWindow) {
     }
 }
 
+// A non-activating panel is summoned while Mnema itself stays inactive, so the
+// first click into its WKWebView is an AppKit "first mouse". By default AppKit
+// swallows that click just to order the window forward, so the very first press
+// of a Quick Recall control (e.g. the Ask AI button) never reaches the web layer
+// and WebKit surfaces its context menu instead. Teaching the webview to return
+// YES from `acceptsFirstMouse:` delivers that click straight through as a normal
+// click.
+//
+// We add the method to the live webview class with `class_addMethod` rather than
+// swapping the instance's class via `object_setClass`: WKWebView relies on its
+// own class for KVO / dynamic-property resolution, and reclassing it trips an
+// `NSDynamicProperties` assertion (`NSDP_getComputedPropertyValue`). Adding a
+// method override leaves the class identity intact.
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn configure_quick_recall_webview(window: &WebviewWindow) {
+    use cocoa::base::{id, BOOL, YES};
+    use objc::runtime::{Class, Object, Sel};
+    use objc::{sel, sel_impl};
+    use std::os::raw::c_char;
+
+    extern "C" fn accepts_first_mouse(_this: &Object, _cmd: Sel, _event: *mut Object) -> BOOL {
+        YES
+    }
+
+    unsafe extern "C" {
+        fn object_getClass(obj: id) -> *mut Class;
+        fn class_addMethod(
+            cls: *mut Class,
+            name: Sel,
+            imp: extern "C" fn(&Object, Sel, *mut Object) -> BOOL,
+            types: *const c_char,
+        ) -> BOOL;
+    }
+
+    let _ = window.with_webview(|webview| unsafe {
+        let wv = webview.inner() as id;
+        if wv.is_null() {
+            return;
+        }
+        let class = object_getClass(wv);
+        if class.is_null() {
+            return;
+        }
+        // Objective-C type encoding: BOOL return (`c`), self (`@`), _cmd (`:`),
+        // NSEvent* argument (`@`). A no-op if the method is already present.
+        class_addMethod(class, sel!(acceptsFirstMouse:), accepts_first_mouse, c"c@:@".as_ptr());
+    });
+}
+
 #[cfg(target_os = "macos")]
 #[allow(deprecated, unexpected_cfgs)]
 fn make_quick_recall_panel_key(window: &WebviewWindow) {
@@ -605,6 +655,29 @@ fn make_quick_recall_panel_key(window: &WebviewWindow) {
         let ns_window = ns_window as id;
         let _: () = msg_send![ns_window, makeKeyAndOrderFront: nil];
     }
+}
+
+// Promote the WKWebView to the panel's first responder so keyboard focus (and the
+// search field's JS `.focus()`) actually lands. This must run *after* the webview
+// has loaded: on the first summon the panel is made key while the webview is still
+// loading, so AppKit never routes focus into it and the field opens without a
+// caret. The frontend calls `focus_quick_recall_window` once mounted (and on every
+// re-summon) so this runs against a ready webview.
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn make_quick_recall_webview_first_responder(window: &WebviewWindow) {
+    use cocoa::base::{id, nil, BOOL};
+    use objc::{msg_send, sel, sel_impl};
+    let _ = window.with_webview(|webview| unsafe {
+        let wv = webview.inner() as id;
+        if wv.is_null() {
+            return;
+        }
+        let panel: id = msg_send![wv, window];
+        if panel != nil {
+            let _: BOOL = msg_send![panel, makeFirstResponder: wv];
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]
@@ -641,6 +714,7 @@ fn build_quick_recall_window(app: &tauri::AppHandle) -> Result<WebviewWindow, St
     #[cfg(target_os = "macos")]
     {
         configure_quick_recall_panel(&built);
+        configure_quick_recall_webview(&built);
         if let Some(radius) = config.macos_corner_radius {
             apply_macos_rounded_content_view(&built, radius);
         }
@@ -1032,6 +1106,24 @@ pub fn open_debug_window(
 #[tauri::command]
 pub fn close_current_window(window: WebviewWindow) -> Result<(), String> {
     close_window(window)
+}
+
+/// Re-assert keyboard focus for the Quick Recall window from the web layer once
+/// it is mounted. On the first summon the panel is made key before its webview
+/// finishes loading, so focus never reaches the search field; the frontend calls
+/// this after mount (and on every re-summon) to route focus into the now-ready
+/// webview.
+#[tauri::command]
+pub fn focus_quick_recall_window(window: WebviewWindow) {
+    if window.label() != QUICK_RECALL_WINDOW_LABEL {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    make_quick_recall_webview_first_responder(&window);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.set_focus();
+    }
 }
 
 #[tauri::command]

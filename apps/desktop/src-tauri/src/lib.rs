@@ -480,6 +480,7 @@ pub fn run() {
             windows::open_settings_window_to_tab,
             windows::open_debug_window,
             windows::close_current_window,
+            windows::focus_quick_recall_window,
             windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,
