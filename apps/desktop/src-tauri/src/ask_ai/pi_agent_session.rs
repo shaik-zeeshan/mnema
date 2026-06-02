@@ -97,6 +97,13 @@ fn tool_counts_against_cap(tool: &str) -> bool {
     tool != "reference_captures"
 }
 
+/// Build the `prompt` stdin line (without trailing newline) for one turn. The
+/// resident shim session reads this to start the next turn, retaining prior
+/// turns' history in-memory.
+fn prompt_line(prompt: &str) -> String {
+    serde_json::json!({ "prompt": prompt }).to_string()
+}
+
 /// Build the `tool_result` stdin line (without trailing newline) for a finished
 /// tool call. `Ok` emits `ok:true` with the `result` value; `Err` emits
 /// `ok:false` with the `error` message.
@@ -179,14 +186,27 @@ impl AskAiCancel {
 
 /// Spawn `node <shim_path>`, stream its events, and drive `on_event` per event.
 ///
-/// Writes one JSON line `{"prompt":"..."}\n` to the child's stdin and then keeps
-/// stdin open for the whole session so brokered `tool_result` lines can be
-/// written back. Reads newline-delimited JSON from stdout: `tool_call` lines are
-/// executed via `tool_invoker` (capped at `max_tool_calls`) and answered with a
-/// `tool_result` line, while everything else is parsed via [`parse_shim_line`].
+/// The session is MULTI-TURN over one resident shim child. Writes the first
+/// `{"prompt":"..."}\n` line to the child's stdin and keeps stdin open for the
+/// whole session so brokered `tool_result` lines can be written back. Reads
+/// newline-delimited JSON from stdout: `tool_call` lines are executed via
+/// `tool_invoker` (capped at `max_tool_calls` PER TURN — the counter resets each
+/// time a fresh prompt is written) and answered with a `tool_result` line, while
+/// everything else is parsed via [`parse_shim_line`].
+///
+/// A terminal `done` event finishes the CURRENT TURN (not the session): the loop
+/// emits it, then awaits the next follow-up prompt on `prompt_rx`. When one
+/// arrives it is written as a `{"prompt":...}` line, the per-turn tool-call
+/// counter resets, and the loop reads the next turn's events. When all
+/// `prompt_rx` senders are dropped (the thread is being torn down), `recv()`
+/// returns `None` and the session ends cleanly. An `error` event stays TERMINAL
+/// for the whole session (the shim only emits it on fatal failure + exits).
+///
 /// stderr is drained into a buffer used for diagnostics: a non-zero exit without
 /// a terminal `done`/`error` event surfaces the stderr tail as the error
-/// message. `cancel` kills the child when triggered.
+/// message. `cancel` kills the child when triggered (mid-turn, via the flag
+/// checked at the top of the read loop); between turns, teardown happens by the
+/// senders being dropped.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_pi_ask_ai_session<F>(
     node_path: &Path,
@@ -195,6 +215,7 @@ pub async fn run_pi_ask_ai_session<F>(
     model: Option<&str>,
     prompt: &str,
     max_tool_calls: usize,
+    mut prompt_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     mut on_event: F,
     mut tool_invoker: AskAiToolInvoker,
     cancel: AskAiCancel,
@@ -323,12 +344,47 @@ where
                     }
 
                     if let Some(event) = parse_shim_line(&line) {
-                        let terminal =
-                            matches!(event, AskAiStreamEvent::Done | AskAiStreamEvent::Error(_));
-                        on_event(event);
-                        if terminal {
-                            saw_terminal = true;
-                            break;
+                        match event {
+                            // A `done` event finishes the current turn, not the
+                            // session. Emit it, then wait for the next follow-up
+                            // prompt; writing it starts the next turn and resets
+                            // the per-turn tool-call counter. If every prompt
+                            // sender has been dropped the thread is being torn
+                            // down, so end the session.
+                            AskAiStreamEvent::Done => {
+                                saw_terminal = true;
+                                on_event(AskAiStreamEvent::Done);
+                                match prompt_rx.recv().await {
+                                    Some(next) => {
+                                        let mut wrote = false;
+                                        if let Some(stdin) = child_stdin.as_mut() {
+                                            let mut payload = prompt_line(&next);
+                                            payload.push('\n');
+                                            if stdin.write_all(payload.as_bytes()).await.is_ok()
+                                                && stdin.flush().await.is_ok()
+                                            {
+                                                wrote = true;
+                                            }
+                                        }
+                                        if !wrote {
+                                            // stdin gone / write failed: treat like
+                                            // EOF/teardown and end the session.
+                                            break;
+                                        }
+                                        // Fresh turn: reset the per-turn cap.
+                                        tool_call_count = 0;
+                                        continue;
+                                    }
+                                    None => break,
+                                }
+                            }
+                            // An `error` is fatal for the whole session.
+                            AskAiStreamEvent::Error(message) => {
+                                saw_terminal = true;
+                                on_event(AskAiStreamEvent::Error(message));
+                                break;
+                            }
+                            other => on_event(other),
                         }
                     }
                 }
@@ -691,6 +747,26 @@ mod tests {
         assert_eq!(parse_tool_call_line(""), None);
         assert_eq!(parse_tool_call_line("   "), None);
         assert_eq!(parse_tool_call_line("{not json"), None);
+    }
+
+    #[test]
+    fn prompt_line_shape() {
+        let line = prompt_line("what about in Slack?");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid json");
+        assert_eq!(
+            value,
+            serde_json::json!({ "prompt": "what about in Slack?" })
+        );
+        // One line, no embedded newline before the caller appends one.
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn prompt_line_escapes_control_characters() {
+        let line = prompt_line("line one\nline two");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid json");
+        assert_eq!(value, serde_json::json!({ "prompt": "line one\nline two" }));
+        assert!(!line.contains('\n'));
     }
 
     #[test]

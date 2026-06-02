@@ -13,19 +13,30 @@ use tauri::{Emitter, Manager};
 
 use pi_agent_session::AskAiCancel;
 
-/// Process registry mapping a conversation id to its cancellation handle, so
-/// `ask_ai_cancel` can kill a streaming session started by `ask_ai_start`.
-/// Module-level so it survives across separate Tauri command invocations
-/// without touching lib.rs state wiring.
-static ASK_AI_SESSIONS: OnceLock<Mutex<HashMap<String, AskAiCancel>>> = OnceLock::new();
+/// A live Ask AI thread's control handles: its cancellation flag and the
+/// follow-up prompt sender that feeds raw follow-up questions into the resident
+/// PI session. Dropping `prompt_tx` (by removing the handle) makes the session
+/// task's `prompt_rx.recv()` return `None` and tear the thread down between
+/// turns; `cancel` hard-kills it mid-turn.
+struct AskAiSessionHandle {
+    cancel: AskAiCancel,
+    prompt_tx: tokio::sync::mpsc::UnboundedSender<String>,
+}
 
-fn ask_ai_sessions() -> &'static Mutex<HashMap<String, AskAiCancel>> {
+/// Process registry mapping a conversation id (the whole thread/session) to its
+/// control handles, so `ask_ai_cancel` can kill a streaming thread started by
+/// `ask_ai_start` and `ask_ai_followup` can route a follow-up prompt into the
+/// live session. Module-level so it survives across separate Tauri command
+/// invocations without touching lib.rs state wiring.
+static ASK_AI_SESSIONS: OnceLock<Mutex<HashMap<String, AskAiSessionHandle>>> = OnceLock::new();
+
+fn ask_ai_sessions() -> &'static Mutex<HashMap<String, AskAiSessionHandle>> {
     ASK_AI_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn register_ask_ai_session(conversation_id: &str, cancel: AskAiCancel) {
+fn register_ask_ai_session(conversation_id: &str, handle: AskAiSessionHandle) {
     if let Ok(mut sessions) = ask_ai_sessions().lock() {
-        sessions.insert(conversation_id.to_string(), cancel);
+        sessions.insert(conversation_id.to_string(), handle);
     }
 }
 
@@ -35,11 +46,25 @@ fn remove_ask_ai_session(conversation_id: &str) {
     }
 }
 
-fn take_ask_ai_session(conversation_id: &str) -> Option<AskAiCancel> {
+/// Remove and return the handle for a conversation, dropping its `prompt_tx`
+/// (which tears down the resident session between turns). Used by cancel.
+fn take_ask_ai_session(conversation_id: &str) -> Option<AskAiSessionHandle> {
     ask_ai_sessions()
         .lock()
         .ok()
         .and_then(|mut sessions| sessions.remove(conversation_id))
+}
+
+/// Clone the follow-up prompt sender for a live conversation WITHOUT removing
+/// it, so a follow-up can be routed into the resident session while the thread
+/// stays registered. Returns `None` for an unknown/dead conversation id.
+fn ask_ai_session_prompt_sender(
+    conversation_id: &str,
+) -> Option<tokio::sync::mpsc::UnboundedSender<String>> {
+    ask_ai_sessions()
+        .lock()
+        .ok()
+        .and_then(|sessions| sessions.get(conversation_id).map(|handle| handle.prompt_tx.clone()))
 }
 
 const ASK_AI_STATUS_EVENT: &str = "ask_ai_status";
@@ -439,6 +464,13 @@ pub struct AskAiStartRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AskAiFollowupRequest {
+    conversation_id: String,
+    question: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AskAiCancelRequest {
     conversation_id: String,
 }
@@ -661,7 +693,17 @@ pub async fn ask_ai_start(
     let model = read_ask_ai_model(&app_handle);
 
     let cancel = AskAiCancel::new();
-    register_ask_ai_session(&conversation_id, cancel.clone());
+    // Follow-up prompts flow into the resident session over this channel; the
+    // receiver lives in `run_pi_ask_ai_session`. Removing the registry handle
+    // drops the sender, which tears the thread down between turns.
+    let (prompt_tx, prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    register_ask_ai_session(
+        &conversation_id,
+        AskAiSessionHandle {
+            cancel: cancel.clone(),
+            prompt_tx,
+        },
+    );
 
     // Build the brokered tool invoker. The three data tools ride
     // `execute_pi_broker_request`, which enforces Ask-AI access readiness plus
@@ -723,6 +765,7 @@ pub async fn ask_ai_start(
             model.as_deref(),
             &prompt,
             max_tool_calls,
+            prompt_rx,
             |event| match event {
                 pi_agent_session::AskAiStreamEvent::Ready => {}
                 pi_agent_session::AskAiStreamEvent::Delta(text) => {
@@ -810,13 +853,64 @@ pub async fn ask_ai_list_models(
     pi_agent_session::list_pi_models(&node_path, &shim_path, status.executable_path.as_deref()).await
 }
 
+/// Route a raw follow-up question into the resident PI session for an existing
+/// thread. `conversationId` identifies the whole thread/session started by
+/// `ask_ai_start`. Unlike start, there is NO seeding and NO `seedQuery`: the
+/// resident session already holds turn 1's system instructions plus the prior
+/// turns' history, so the raw trimmed question is fed straight in and the
+/// answer streams back over the same `ask_ai_status`/`ask_ai_delta`/
+/// `ask_ai_source`/`ask_ai_done` events carrying this `conversationId`.
+#[tauri::command]
+pub async fn ask_ai_followup(
+    app_handle: tauri::AppHandle,
+    request: AskAiFollowupRequest,
+) -> Result<(), String> {
+    // Validate access readiness for parity with start.
+    ensure_ask_ai_access_ready(&app_handle).await?;
+
+    let AskAiFollowupRequest {
+        conversation_id,
+        question,
+    } = request;
+
+    let question = question.trim().to_string();
+    if question.is_empty() {
+        return Err("Ask AI follow-up question is empty".to_string());
+    }
+
+    // Look up the live session's follow-up sender without removing it; an absent
+    // handle means the thread was cancelled or already ended.
+    let Some(prompt_tx) = ask_ai_session_prompt_sender(&conversation_id) else {
+        return Err("Ask AI conversation is no longer active".to_string());
+    };
+
+    // Announce a new turn so the frontend re-enters the thinking phase. No
+    // seeding, no broker search — follow-ups send the raw question.
+    let _ = app_handle.emit(
+        ASK_AI_STATUS_EVENT,
+        serde_json::json!({
+            "conversationId": conversation_id,
+            "phase": "thinking",
+        }),
+    );
+
+    // Feed the raw trimmed question into the resident session. A send error
+    // means the receiver was dropped (the session task ended between the lookup
+    // and the send), which is the same dead-thread case.
+    prompt_tx
+        .send(question)
+        .map_err(|_| "Ask AI conversation is no longer active".to_string())?;
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn ask_ai_cancel(
     _app_handle: tauri::AppHandle,
     request: AskAiCancelRequest,
 ) -> Result<(), String> {
-    if let Some(cancel) = take_ask_ai_session(&request.conversation_id) {
-        cancel.cancel();
+    if let Some(handle) = take_ask_ai_session(&request.conversation_id) {
+        handle.cancel.cancel();
     }
     Ok(())
 }
@@ -1192,6 +1286,69 @@ mod tests {
         let value = broker_response_to_tool_value(response).expect("show_text serializes");
         assert_eq!(value["opaqueId"], serde_json::json!("op-1"));
         assert_eq!(value["text"], serde_json::json!("full redacted text"));
+    }
+
+    #[test]
+    fn followup_request_deserializes_camel_case_without_seed_query() {
+        let request: AskAiFollowupRequest = serde_json::from_str(
+            r#"{"conversationId":"conv-1","question":"what about in Slack?"}"#,
+        )
+        .expect("follow-up request should deserialize");
+        assert_eq!(request.conversation_id, "conv-1");
+        assert_eq!(request.question, "what about in Slack?");
+
+        // A follow-up carries no seedQuery: an extra field is ignored, not
+        // required, and the struct exposes only conversation_id + question.
+        let request: AskAiFollowupRequest = serde_json::from_str(
+            r#"{"conversationId":"conv-2","question":"more","seedQuery":"ignored"}"#,
+        )
+        .expect("extra fields are ignored");
+        assert_eq!(request.conversation_id, "conv-2");
+        assert_eq!(request.question, "more");
+    }
+
+    fn test_session_handle() -> AskAiSessionHandle {
+        let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        AskAiSessionHandle {
+            cancel: AskAiCancel::new(),
+            prompt_tx,
+        }
+    }
+
+    #[test]
+    fn prompt_sender_is_none_for_unknown_conversation() {
+        assert!(ask_ai_session_prompt_sender("missing-conv-xyz").is_none());
+    }
+
+    #[test]
+    fn prompt_sender_present_after_register_then_gone_after_take() {
+        let id = "registry-roundtrip-conv";
+        // Keep the receiver alive so the cloned sender stays usable for the test.
+        let (prompt_tx, _prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        register_ask_ai_session(
+            id,
+            AskAiSessionHandle {
+                cancel: AskAiCancel::new(),
+                prompt_tx,
+            },
+        );
+
+        let sender = ask_ai_session_prompt_sender(id).expect("registered session should resolve");
+        // The cloned sender routes into the live receiver.
+        assert!(sender.send("hi".to_string()).is_ok());
+
+        // Taking the session removes it, so the clone-helper no longer finds it.
+        assert!(take_ask_ai_session(id).is_some());
+        assert!(ask_ai_session_prompt_sender(id).is_none());
+    }
+
+    #[test]
+    fn remove_session_clears_prompt_sender() {
+        let id = "remove-clears-conv";
+        register_ask_ai_session(id, test_session_handle());
+        assert!(ask_ai_session_prompt_sender(id).is_some());
+        remove_ask_ai_session(id);
+        assert!(ask_ai_session_prompt_sender(id).is_none());
     }
 
     #[test]

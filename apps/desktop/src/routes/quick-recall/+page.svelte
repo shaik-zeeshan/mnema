@@ -746,49 +746,95 @@
   // treated as unavailable so we never render a dead button that errors.
   let askAvailability = $state<AskAiAvailability | null>(null);
 
-  // The question being asked (and the read-only header once submitted), plus
-  // the editable input used when Ask AI is opened with no seed query.
-  let askQuestion = $state("");
+  // The editable input used when Ask AI is opened with no seed query (turn 1).
+  // `askSubmitted` flips true once the FIRST turn exists (seeded or typed), at
+  // which point the transcript renders and this input is replaced by per-turn
+  // question headers.
   let askInput = $state("");
   let askInputEl = $state<HTMLTextAreaElement | null>(null);
   let askSubmitted = $state(false);
 
-  // Streaming state for the active conversation.
+  // ---------------------------------------------------------------------------
+  // Multi-turn thread (ADR 0026)
+  //
+  // The single one-shot Q&A is now an ephemeral transcript: a vertical list of
+  // self-contained turns. `askConversationId` is the THREAD id (one per thread,
+  // one live PI session server-side), NOT a per-turn id — every stream event
+  // carries it and we ignore any whose id doesn't match (stale-thread guard).
+  // Streaming events route to the LAST turn in `askTurns` (the live one). Only
+  // turn 1 is seeded (via ask_ai_start); follow-ups go raw to ask_ai_followup.
+  // ---------------------------------------------------------------------------
+
+  // One assistant turn in the transcript: its read-only question header, the
+  // streamed Markdown answer, the brokered tool calls it ran, its cited sources
+  // (last ask_ai_source replaces), its phase, and per-turn UI flags. Fully
+  // ephemeral, recreated per thread.
+  type AskTurn = {
+    question: string;
+    answer: string;
+    toolActivities: AskToolActivityEntry[];
+    // The live working-line label for the in-flight tool call (cleared when the
+    // model resumes streaming), shown beneath the answer for the active turn.
+    toolActivity: string | null;
+    sources: AskAiSource[];
+    phase: AskAiPhase;
+    errorMessage: string | null;
+    // Only turn 1 ever has a seeded-result count (follow-ups aren't seeded).
+    seededResultCount: number | null;
+    // Per-turn disclosure toggle for the collapsed tool-activity summary chip.
+    summaryExpanded: boolean;
+    // Per-turn copy-confirmation flash (icon swaps to a check briefly).
+    copied: boolean;
+  };
+
+  // The thread id (one live PI session). null when no thread is open.
   let askConversationId = $state<string | null>(null);
-  let askPhase = $state<AskAiPhase>("seeding");
-  let askAnswer = $state("");
-  let askErrorMessage = $state<string | null>(null);
-  let askSeededResultCount = $state<number | null>(null);
-  // Current brokered tool activity label (e.g. `Searching "invoice"`), shown as
-  // the live animated working line while the agent gathers context mid-answer.
-  let askToolActivity = $state<string | null>(null);
-  // Every tool call that has run this ask, in order. Drives the collapsed,
-  // expandable summary chip once tokens start streaming. Reset per ask.
-  let askToolActivities = $state<AskToolActivityEntry[]>([]);
-  // Disclosure toggle for the collapsed summary chip.
-  let askSummaryExpanded = $state(false);
-  // True between ask_ai_start resolving and a terminal done/error event.
+  // The transcript. The last entry is the live turn that stream events feed.
+  let askTurns = $state<AskTurn[]>([]);
+  // True between a turn starting and that turn's terminal done/error event.
+  // Thread-level: gates the composer (disabled while any turn streams).
   let askStreaming = $state(false);
 
-  // Cited answer sources for the current ask, buffered as `ask_ai_source` events
-  // arrive (the last event replaces the set). Always buffered; the markup gates
-  // rendering on askPhase === "done". Split into Screen/Audio for the strip.
-  let askSources = $state<AskAiSource[]>([]);
-  let askFrameSources = $derived(askSources.filter((s) => s.kind === "frame"));
-  let askAudioSources = $derived(askSources.filter((s) => s.kind === "audio"));
-
-  // The seed used for the current/last ask, so an error "Try again" can re-run
-  // the exact same question + seed pairing. Set inside startAsk.
+  // The seed used for the current thread's FIRST turn, so an error "Try again"
+  // can re-run the exact same question + seed pairing as a fresh thread.
   let askLastSeed = $state<string | null>(null);
 
-  // Copy-confirmation flash for the answer copy button (icon swaps to a check).
-  let askCopied = $state(false);
-  let askCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+  // The first-turn question, kept so retryAsk can rebuild a fresh thread with
+  // the same seeded question after a turn-1 error.
+  let askFirstQuestion = $state("");
 
-  // The streamed answer is Markdown; render it to HTML for display. Recomputed
-  // on each delta — incomplete Markdown (e.g. an unclosed code fence mid-stream)
-  // renders gracefully and resolves once the closing token arrives.
-  let askAnswerHtml = $derived(askAnswer.length > 0 ? renderMarkdown(askAnswer) : "");
+  // Per-turn copy-confirmation timers, keyed by the turn's array index. Cleared
+  // on teardown. Stored outside the turn objects so the flash never leaks into
+  // copied Markdown or re-renders the whole transcript array.
+  let askCopiedTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+  // The live (last) turn, or null when the transcript is empty. Convenience for
+  // markup that needs the streaming turn's phase (e.g. composer focus).
+  let askLiveTurn = $derived<AskTurn | null>(
+    askTurns.length > 0 ? askTurns[askTurns.length - 1] : null,
+  );
+
+  // The composer is available once the FIRST answer has completed and no turn is
+  // currently streaming-or-pending. It stays VISIBLE (but disabled) while a
+  // follow-up streams. Hidden entirely while turn 1 is still seeding / streaming
+  // / errored-with-no-completed-answer.
+  let askHasCompletedTurn = $derived(askTurns.some((t) => t.phase === "done"));
+  let askComposerVisible = $derived(askSubmitted && askHasCompletedTurn);
+
+  // Render one turn's Markdown answer to HTML. Incomplete Markdown (e.g. an
+  // unclosed code fence mid-stream) renders gracefully and resolves once the
+  // closing token arrives. Called inline per turn in the transcript.
+  function renderTurnAnswer(answer: string): string {
+    return answer.length > 0 ? renderMarkdown(answer) : "";
+  }
+
+  // Split a turn's cited sources into the Screen/Audio strip sections.
+  function turnFrameSources(turn: AskTurn): AskAiSource[] {
+    return turn.sources.filter((s) => s.kind === "frame");
+  }
+  function turnAudioSources(turn: AskTurn): AskAiSource[] {
+    return turn.sources.filter((s) => s.kind === "audio");
+  }
 
   // Route link clicks inside the rendered answer through the OS browser instead
   // of navigating the webview. Links are tagged with data-external in markdown.ts.
@@ -806,10 +852,16 @@
     }
   }
 
-  let askAnswerEl = $state<HTMLDivElement | null>(null);
-  // The Ask AI answer region; focused on entry so Escape (back-to-search) and
-  // scroll keys are captured even when the seeded path renders no text input.
+  // The scrollable transcript region; focused on entry so Escape (back-to-search)
+  // and scroll keys are captured even when the seeded path renders no text input.
+  // The scroll-to-bottom effect keeps the live turn / composer in view via this.
   let askAreaEl = $state<HTMLDivElement | null>(null);
+
+  // The follow-up composer (bottom-pinned, present once the first answer is
+  // done). Mirrors the unseeded askInput textarea: Enter submits, Shift+Enter
+  // inserts a newline. Disabled while any turn streams (askStreaming === true).
+  let followupInput = $state("");
+  let followupInputEl = $state<HTMLTextAreaElement | null>(null);
 
   function friendlyAskReason(reason: string | null): string {
     switch (reason) {
@@ -961,15 +1013,16 @@
     return { kind: "other", label: tool ? `Running ${tool}` : "Working" };
   }
 
-  // Collapsed summary chip text: counts of each tool kind that ran, e.g.
-  // `3 searches · timeline · 1 read`. Empty when no tools ran.
-  let askActivitySummary = $derived.by(() => {
-    if (askToolActivities.length === 0) return null;
+  // Collapsed summary chip text for ONE turn: counts of each tool kind that ran,
+  // e.g. `3 searches · timeline · 1 read`. Null when no tools ran. Pure helper
+  // (per-turn) so each transcript turn renders its own activity summary.
+  function activitySummaryFor(toolActivities: AskToolActivityEntry[]): string | null {
+    if (toolActivities.length === 0) return null;
     let searches = 0;
     let timelines = 0;
     let reads = 0;
     let others = 0;
-    for (const entry of askToolActivities) {
+    for (const entry of toolActivities) {
       if (entry.kind === "search") searches += 1;
       else if (entry.kind === "timeline") timelines += 1;
       else if (entry.kind === "show_text") reads += 1;
@@ -982,7 +1035,7 @@
     if (reads > 0) parts.push(`${reads} ${reads === 1 ? "read" : "reads"}`);
     if (others > 0) parts.push(`${others} ${others === 1 ? "step" : "steps"}`);
     return parts.length > 0 ? parts.join(" · ") : null;
-  });
+  }
 
   let askAvailable = $derived(askAvailability?.available === true);
   let askUnavailableHint = $derived(
@@ -1003,15 +1056,41 @@
     }
   }
 
-  // Begin an Ask AI conversation. `question` is what gets answered; `seedQuery`
-  // seeds the broker search (the prior Quick Search query, or null).
+  // Build a fresh, empty turn for a new question. `seeding` for turn 1 (the seed
+  // broker search runs first); `thinking` for follow-ups (no seed phase).
+  function makeAskTurn(question: string, phase: AskAiPhase): AskTurn {
+    return {
+      question,
+      answer: "",
+      toolActivities: [],
+      toolActivity: null,
+      sources: [],
+      phase,
+      errorMessage: null,
+      seededResultCount: null,
+      summaryExpanded: false,
+      copied: false,
+    };
+  }
+
+  // Clear any pending per-turn copy-flash timers (teardown / fresh thread).
+  function clearAskCopiedTimers(): void {
+    for (const timer of askCopiedTimers.values()) {
+      clearTimeout(timer);
+    }
+    askCopiedTimers.clear();
+  }
+
+  // Begin a FRESH Ask AI thread with its first (seeded) turn. `question` is what
+  // gets answered; `seedQuery` seeds the broker search (the prior Quick Search
+  // query, or null). Cancels any in-flight thread and resets the transcript.
   async function startAsk(question: string, seedQuery: string | null): Promise<void> {
     const trimmedQuestion = question.trim();
     if (trimmedQuestion.length === 0) {
       return;
     }
 
-    // Cancel any in-flight stream before starting a new one.
+    // Cancel any in-flight stream before starting a new thread.
     if (askStreaming && askConversationId !== null) {
       await cancelActiveAsk();
     }
@@ -1020,20 +1099,14 @@
     const normalizedSeed =
       seedQuery && seedQuery.trim().length > 0 ? seedQuery.trim() : null;
     askLastSeed = normalizedSeed;
+    askFirstQuestion = trimmedQuestion;
 
     const conversationId = crypto.randomUUID();
     askConversationId = conversationId;
-    askQuestion = trimmedQuestion;
     askSubmitted = true;
-    askPhase = "seeding";
-    askAnswer = "";
-    askErrorMessage = null;
-    askSeededResultCount = null;
-    askToolActivity = null;
-    askToolActivities = [];
-    askSummaryExpanded = false;
-    askCopied = false;
-    askSources = [];
+    // Fresh thread: reset the transcript to a single seeding turn.
+    clearAskCopiedTimers();
+    askTurns = [makeAskTurn(trimmedQuestion, "seeding")];
     askStreaming = true;
 
     try {
@@ -1050,14 +1123,58 @@
         return;
       }
       askStreaming = false;
-      askPhase = "error";
-      askErrorMessage = error instanceof Error ? error.message : String(error);
+      const last = askTurns[askTurns.length - 1];
+      if (last) {
+        last.phase = "error";
+        last.errorMessage = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+
+  // Submit a follow-up question into the LIVE thread (no seed; the agent uses
+  // prior turns + its own tools for context). Appends a new turn and routes the
+  // raw question through ask_ai_followup against the resident session.
+  async function submitFollowup(): Promise<void> {
+    const trimmed = followupInput.trim();
+    if (trimmed.length === 0) {
+      return;
+    }
+    const conversationId = askConversationId;
+    if (conversationId === null || askStreaming) {
+      return;
+    }
+
+    followupInput = "";
+    askTurns = [...askTurns, makeAskTurn(trimmed, "thinking")];
+    const turnIndex = askTurns.length - 1;
+    askStreaming = true;
+    // The composer is about to disable (dimmed) — move focus to the transcript
+    // region so Escape (back-to-search) and scroll keys keep working while the
+    // follow-up streams. The composer refocuses on done via the effect below.
+    await tick();
+    askAreaEl?.focus();
+
+    try {
+      await invoke<void>("ask_ai_followup", {
+        request: { conversationId, question: trimmed },
+      });
+    } catch (error) {
+      // The thread moved on (Escape / fresh ask) — drop a stale failure.
+      if (askConversationId !== conversationId) {
+        return;
+      }
+      askStreaming = false;
+      const turn = askTurns[turnIndex];
+      if (turn) {
+        turn.phase = "error";
+        turn.errorMessage = error instanceof Error ? error.message : String(error);
+      }
     }
   }
 
   async function cancelActiveAsk(): Promise<void> {
     const conversationId = askConversationId;
-    if (conversationId === null || !askStreaming) {
+    if (conversationId === null) {
       return;
     }
     askStreaming = false;
@@ -1097,7 +1214,7 @@
 
     if (seed.length > 0 || question.length > 0) {
       // Seeded: immediately submit the scoped question, seeded by the scoped
-      // operator query. Focus the answer region (no text input renders) so
+      // operator query. Focus the transcript region (no text input renders) so
       // Escape/scroll keys are caught.
       askInput = "";
       void startAsk(question, seed);
@@ -1107,14 +1224,15 @@
       // Unseeded: show an empty ask input for the user to type a question.
       askInput = "";
       askSubmitted = false;
-      askQuestion = "";
+      clearAskCopiedTimers();
+      askTurns = [];
       await tick();
       askInputEl?.focus();
     }
   }
 
-  // Submit the typed question from the unseeded ask input (Enter). The input is
-  // replaced by the read-only question, so move focus to the answer region.
+  // Submit the typed question from the unseeded ask input (Enter). This starts
+  // the thread's first (unseeded) turn; focus moves to the transcript region.
   async function submitAskInput(): Promise<void> {
     const typed = askInput.trim();
     if (typed.length === 0) {
@@ -1125,9 +1243,9 @@
     askAreaEl?.focus();
   }
 
-  // Re-run the failed ask with the exact same question + seed pairing.
+  // Re-run a failed first turn as a FRESH thread with the same question + seed.
   async function retryAsk(): Promise<void> {
-    const question = askQuestion;
+    const question = askFirstQuestion;
     if (question.trim().length === 0) {
       return;
     }
@@ -1136,45 +1254,57 @@
     askAreaEl?.focus();
   }
 
-  // Copy the raw Markdown answer (not the rendered HTML) to the clipboard, with
-  // a brief check-icon confirmation. Only meaningful at askPhase === "done".
-  async function copyAnswer(): Promise<void> {
-    if (askAnswer.length === 0) {
+  // Copy ONE turn's raw Markdown answer (not rendered HTML) to the clipboard,
+  // flashing that turn's copy button. Keyed by the turn's array index so the
+  // flash stays scoped to the copied turn.
+  async function copyTurnAnswer(turnIndex: number): Promise<void> {
+    const turn = askTurns[turnIndex];
+    if (!turn || turn.answer.length === 0) {
       return;
     }
     try {
-      await navigator.clipboard.writeText(askAnswer);
+      await navigator.clipboard.writeText(turn.answer);
     } catch {
       // Clipboard write is best-effort; swallow (no toast surface here).
       return;
     }
-    askCopied = true;
-    if (askCopiedTimer !== null) {
-      clearTimeout(askCopiedTimer);
+    turn.copied = true;
+    const existing = askCopiedTimers.get(turnIndex);
+    if (existing !== undefined) {
+      clearTimeout(existing);
     }
-    askCopiedTimer = setTimeout(() => {
-      askCopied = false;
-      askCopiedTimer = null;
-    }, 1500);
+    askCopiedTimers.set(
+      turnIndex,
+      setTimeout(() => {
+        const t = askTurns[turnIndex];
+        if (t) {
+          t.copied = false;
+        }
+        askCopiedTimers.delete(turnIndex);
+      }, 1500),
+    );
   }
 
-  function toggleSummaryExpanded(): void {
-    askSummaryExpanded = !askSummaryExpanded;
+  function toggleTurnSummary(turn: AskTurn): void {
+    turn.summaryExpanded = !turn.summaryExpanded;
   }
 
-  // ⌘C / Ctrl+C copies the whole answer when the answer region is focused, the
-  // ask is done, and nothing is selected. With a selection, let native copy run.
+  // ⌘C / Ctrl+C copies the LIVE (last) turn's answer when the transcript region
+  // is focused, that turn is done, and nothing is selected. With a selection,
+  // let native copy run.
   function handleAnswerAreaKeydown(event: KeyboardEvent): void {
+    const last = askTurns[askTurns.length - 1];
     if (
       (event.metaKey || event.ctrlKey) &&
       (event.key === "c" || event.key === "C") &&
-      askPhase === "done" &&
-      askAnswer.length > 0
+      last &&
+      last.phase === "done" &&
+      last.answer.length > 0
     ) {
       const selection = window.getSelection()?.toString() ?? "";
       if (selection.length === 0) {
         event.preventDefault();
-        void copyAnswer();
+        void copyTurnAnswer(askTurns.length - 1);
       }
     }
   }
@@ -1187,24 +1317,38 @@
     }
   }
 
-  // Return to search mode, abandoning any in-flight stream and resetting all
-  // ephemeral ask state.
+  // Follow-up composer: Enter submits, Shift+Enter inserts a newline (mirrors
+  // the unseeded ask input). A guard keeps Enter inert while a turn streams (the
+  // composer is disabled then anyway, but a stray keydown shouldn't submit).
+  function handleFollowupKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (!askStreaming) {
+        void submitFollowup();
+      }
+    }
+  }
+
+  // Tear down all ephemeral thread state (transcript, ids, timers, inputs). Does
+  // NOT cancel the live session — callers route through cancelActiveAsk first.
+  function resetAskThreadState(): void {
+    clearAskCopiedTimers();
+    askConversationId = null;
+    askTurns = [];
+    askSubmitted = false;
+    askInput = "";
+    followupInput = "";
+    askLastSeed = null;
+    askFirstQuestion = "";
+    askStreaming = false;
+  }
+
+  // Return to search mode, abandoning the whole thread (a single Escape drops
+  // the user back to search from anywhere, even with half-typed composer text).
   async function backToSearch(): Promise<void> {
     await cancelActiveAsk();
     mode = "search";
-    askConversationId = null;
-    askQuestion = "";
-    askInput = "";
-    askSubmitted = false;
-    askPhase = "seeding";
-    askAnswer = "";
-    askErrorMessage = null;
-    askSeededResultCount = null;
-    askToolActivity = null;
-    askToolActivities = [];
-    askSummaryExpanded = false;
-    askCopied = false;
-    askSources = [];
+    resetAskThreadState();
     await tick();
     inputEl?.focus();
   }
@@ -1213,10 +1357,33 @@
     scheduleSearch(query);
   });
 
-  // Keep the streaming answer scrolled to the latest token.
+  // Keep the live (last) turn and the composer in view as the transcript grows:
+  // pin the scroll region to the bottom on each delta and whenever a new turn is
+  // appended. Reads the live turn's answer length + the turn count so the effect
+  // re-runs on both streaming growth and new follow-up turns.
   $effect(() => {
-    if (askPhase === "streaming" && askAnswer.length > 0 && askAnswerEl) {
-      askAnswerEl.scrollTop = askAnswerEl.scrollHeight;
+    const live = askLiveTurn;
+    // Touch reactive deps so the effect tracks streaming + turn-append growth.
+    const _len = live?.answer.length ?? 0;
+    const _count = askTurns.length;
+    if (mode === "ask" && askAreaEl && _count > 0) {
+      askAreaEl.scrollTop = askAreaEl.scrollHeight;
+    }
+  });
+
+  // After a follow-up finishes streaming, return focus to the (now re-enabled)
+  // composer so the user can immediately type the next follow-up. Only does so
+  // when focus is parked on the transcript region (where submitFollowup left it)
+  // so it never yanks focus away from a manual selection or another element.
+  $effect(() => {
+    if (
+      mode === "ask" &&
+      askComposerVisible &&
+      !askStreaming &&
+      followupInputEl &&
+      document.activeElement === askAreaEl
+    ) {
+      followupInputEl.focus();
     }
   });
 
@@ -2436,19 +2603,9 @@
     // Slice 5: a fresh summon starts with the Filter Picker closed.
     pickerOpen = false;
     pickerIndex = 0;
-    askConversationId = null;
-    askQuestion = "";
-    askInput = "";
-    askSubmitted = false;
-    askPhase = "seeding";
-    askAnswer = "";
-    askErrorMessage = null;
-    askSeededResultCount = null;
-    askToolActivity = null;
-    askToolActivities = [];
-    askSummaryExpanded = false;
-    askCopied = false;
-    askSources = [];
+    // Idle-window expiry tears down the whole ask thread (the live session was
+    // already killed by cancelActiveAsk above).
+    resetAskThreadState();
     await tick();
     inputEl?.focus();
   }
@@ -2614,23 +2771,28 @@
         else unlistenFocus = fn;
       });
 
+    // All stream events route to the LAST (live) turn, guarded on a non-empty
+    // transcript and a matching thread id (stale-thread guard, REQUIRED). The
+    // id is the THREAD id; ask_ai_done now means THIS TURN finished.
     listen<AskAiStatusEvent>("ask_ai_status", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
+      const turn = askTurns[askTurns.length - 1];
+      if (!turn) return;
       // A "tool" status is mid-answer activity: surface the real filter label
-      // without touching askPhase, so any already-streamed answer text stays
-      // visible, and record it for the collapsed summary chip.
+      // without touching the turn phase, so any already-streamed answer text
+      // stays visible, and record it for the collapsed summary chip.
       if (event.payload.phase === "tool") {
         const activity = formatToolActivity(event.payload.tool, event.payload.params);
-        askToolActivity = activity.label;
-        askToolActivities = [...askToolActivities, activity];
+        turn.toolActivity = activity.label;
+        turn.toolActivities = [...turn.toolActivities, activity];
         return;
       }
       if (typeof event.payload.seededResultCount === "number") {
-        askSeededResultCount = event.payload.seededResultCount;
+        turn.seededResultCount = event.payload.seededResultCount;
       }
       // Don't regress out of streaming once tokens have started arriving.
-      if (askPhase !== "streaming") {
-        askPhase = event.payload.phase;
+      if (turn.phase !== "streaming") {
+        turn.phase = event.payload.phase;
       }
     }).then((fn) => {
       if (destroyed) fn();
@@ -2639,10 +2801,12 @@
 
     listen<AskAiDeltaEvent>("ask_ai_delta", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
+      const turn = askTurns[askTurns.length - 1];
+      if (!turn) return;
       // The model resumed answering: clear any in-progress tool activity.
-      askToolActivity = null;
-      askPhase = "streaming";
-      askAnswer += event.payload.text;
+      turn.toolActivity = null;
+      turn.phase = "streaming";
+      turn.answer += event.payload.text;
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenDelta = fn;
@@ -2650,9 +2814,12 @@
 
     listen<AskAiDoneEvent>("ask_ai_done", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
+      const turn = askTurns[askTurns.length - 1];
+      if (!turn) return;
+      // This TURN finished — re-enable the composer (thread-level streaming off).
       askStreaming = false;
-      askToolActivity = null;
-      askPhase = "done";
+      turn.toolActivity = null;
+      turn.phase = "done";
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenDone = fn;
@@ -2660,10 +2827,12 @@
 
     listen<AskAiErrorEvent>("ask_ai_error", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
+      const turn = askTurns[askTurns.length - 1];
+      if (!turn) return;
       askStreaming = false;
-      askToolActivity = null;
-      askPhase = "error";
-      askErrorMessage = event.payload.message;
+      turn.toolActivity = null;
+      turn.phase = "error";
+      turn.errorMessage = event.payload.message;
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenError = fn;
@@ -2671,9 +2840,11 @@
 
     listen<AskAiSourceEvent>("ask_ai_source", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
-      // Buffer always; the last event replaces the prior set. The markup gates
-      // rendering on askPhase === "done", so a mid-stream set still arrives now.
-      askSources = event.payload.sources;
+      const turn = askTurns[askTurns.length - 1];
+      if (!turn) return;
+      // The last event for this turn replaces the prior set. The markup gates
+      // rendering on the turn being done, so a mid-stream set still buffers now.
+      turn.sources = event.payload.sources;
       void loadSourceThumbnails(event.payload.sources);
     }).then((fn) => {
       if (destroyed) fn();
@@ -2698,10 +2869,8 @@
   onDestroy(() => {
     clearDebounce();
     clearIdleTimer();
-    if (askCopiedTimer !== null) {
-      clearTimeout(askCopiedTimer);
-      askCopiedTimer = null;
-    }
+    clearAskCopiedTimers();
+    // Teardown safety: never leave a resident PI session outliving the panel.
     void cancelActiveAsk();
   });
 </script>
@@ -3136,7 +3305,9 @@
             ← Back
           </button>
           {#if askSubmitted}
-            <span class="quick-recall__ask-question" title={askQuestion}>{askQuestion}</span>
+            <!-- Once the thread exists the header is just the Back affordance —
+                 each turn's question renders as its own header in the transcript. -->
+            <span class="quick-recall__ask-thread-label" aria-hidden="true">Ask AI</span>
           {:else}
             <textarea
               bind:this={askInputEl}
@@ -3163,178 +3334,224 @@
         >
           {#if !askSubmitted}
             <p class="quick-recall__state">Type a question and press Enter to ask.</p>
-          {:else if askPhase === "error"}
-            <p class="quick-recall__state quick-recall__state--error">
-              {askErrorMessage ?? "Ask AI failed."}
-            </p>
-            <div class="quick-recall__retry-row">
-              <button
-                type="button"
-                class="quick-recall__retry"
-                onclick={() => void retryAsk()}
-              >
-                Try again
-              </button>
-            </div>
           {:else}
-            {#if askSeededResultCount !== null && askSeededResultCount > 0}
-              <p class="quick-recall__seeded">
-                Seeded with {askSeededResultCount}
-                {askSeededResultCount === 1 ? "result" : "results"}
-              </p>
-            {/if}
-
-            {#if askPhase === "seeding"}
-              <p class="quick-recall__state quick-recall__state--working">
-                <span class="quick-recall__dot" aria-hidden="true"></span>
-                Searching your captures…
-              </p>
-            {:else if askPhase === "thinking" && askToolActivity === null}
-              <p class="quick-recall__state quick-recall__state--working">
-                <span class="quick-recall__dot" aria-hidden="true"></span>
-                Thinking…
-              </p>
-            {:else}
-              {#if askPhase === "streaming" || askPhase === "done"}
-                <!-- Copy button: only on done, never while streaming/seeding/error. -->
-                {#if askPhase === "done" && askAnswer.length > 0}
-                  <button
-                    type="button"
-                    class="quick-recall__copy"
-                    class:quick-recall__copy--copied={askCopied}
-                    onclick={() => void copyAnswer()}
-                    aria-label="Copy answer"
-                    title="Copy answer"
-                  >
-                    {#if askCopied}
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 14 14"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.4"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="M2.5 7.5 6 11l5.5-7" />
-                      </svg>
-                    {:else}
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 14 14"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        aria-hidden="true"
-                      >
-                        <rect x="4.5" y="4.5" width="7" height="7" rx="1.4" />
-                        <path d="M9.5 4.5V3a1 1 0 0 0-1-1h-5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1H4" />
-                      </svg>
-                    {/if}
-                  </button>
-                {/if}
-
-                <!-- Collapsed, expandable activity summary chip (replaces the
-                     verbose live line once tokens stream). -->
-                {#if askActivitySummary !== null}
-                  <div class="quick-recall__activity">
-                    <button
-                      type="button"
-                      class="quick-recall__activity-chip"
-                      aria-expanded={askSummaryExpanded}
-                      onclick={toggleSummaryExpanded}
-                    >
-                      <span
-                        class="quick-recall__activity-caret"
-                        class:quick-recall__activity-caret--open={askSummaryExpanded}
-                        aria-hidden="true">▸</span
-                      >
-                      <span class="quick-recall__activity-summary">{askActivitySummary}</span>
-                    </button>
-                    {#if askSummaryExpanded}
-                      <ul class="quick-recall__activity-list">
-                        {#each askToolActivities as activity, i (i)}
-                          <li class="quick-recall__activity-item">{activity.label}</li>
-                        {/each}
-                      </ul>
-                    {/if}
-                  </div>
-                {/if}
-
-                <!-- Click delegation for rendered links; the <a> elements carry their
-                     own keyboard semantics (Enter dispatches a click that bubbles here). -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <div
-                  bind:this={askAnswerEl}
-                  class="quick-recall__answer"
-                  class:quick-recall__answer--streaming={askStreaming}
-                  onclick={handleAnswerClick}
-                >{@html askAnswerHtml}</div>
-
-                <!-- Answer sources: the captured frames/audio the agent drew on,
-                     surfaced only once the answer is done. Mirrors the search
-                     Screen/Audio split but as horizontally-scrolling card rows. -->
-                {#if askPhase === "done" && askSources.length > 0}
-                  <div class="quick-recall__sources">
-                    <span class="quick-recall__sources-heading">Sources</span>
-                    {#if askFrameSources.length > 0}
-                      <div class="quick-recall__section" role="presentation">
-                        <span class="quick-recall__section-label">Screen</span>
-                        <div class="quick-recall__source-row" role="presentation">
-                          {#each askFrameSources as s, i (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${i}`)}
-                            <AnswerSourceCard
-                              kind="frame"
-                              appName={s.appName}
-                              windowTitle={s.windowTitle}
-                              startedAt={s.startedAt}
-                              endedAt={s.endedAt}
-                              thumbnailUrl={s.frameId != null
-                                ? (thumbnailCache.get(s.frameId) ?? null)
-                                : null}
-                              onselect={() => void selectSource(s)}
-                            />
-                          {/each}
-                        </div>
-                      </div>
-                    {/if}
-
-                    {#if askAudioSources.length > 0}
-                      <div class="quick-recall__section" role="presentation">
-                        <span class="quick-recall__section-label">Audio</span>
-                        <div class="quick-recall__source-row" role="presentation">
-                          {#each askAudioSources as s, i (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${i}`)}
-                            <AnswerSourceCard
-                              kind="audio"
-                              appName={s.appName}
-                              windowTitle={s.windowTitle}
-                              startedAt={s.startedAt}
-                              endedAt={s.endedAt}
-                              sourceKind={s.sourceKind}
-                              onselect={() => void selectSource(s)}
-                            />
-                          {/each}
-                        </div>
-                      </div>
-                    {/if}
-                  </div>
-                {/if}
-              {/if}
-              {#if askToolActivity !== null}
-                <!-- Live animated working line: the real tool filter string. -->
-                <p class="quick-recall__state quick-recall__state--working">
-                  <span class="quick-recall__dot" aria-hidden="true"></span>
-                  <span class="quick-recall__working-label">{askToolActivity}</span>
+            <!-- The transcript: a vertical list of self-contained turns. Each
+                 renders its own question header, answer, sources, tool-activity
+                 summary, and copy/error affordances. Stream events feed the LAST
+                 turn (the live one). Keyed by index — turns are append-only. -->
+            {#each askTurns as turn, ti (ti)}
+              <div class="quick-recall__turn">
+                <p class="quick-recall__turn-question" title={turn.question}>
+                  {turn.question}
                 </p>
-              {/if}
-            {/if}
+
+                {#if turn.phase === "error"}
+                  <p class="quick-recall__state quick-recall__state--error">
+                    {turn.errorMessage ?? "Ask AI failed."}
+                  </p>
+                  {#if ti === 0}
+                    <!-- Turn-1 error retries the whole thread (same question +
+                         seed) as a fresh thread. Follow-up errors have no retry. -->
+                    <div class="quick-recall__retry-row">
+                      <button
+                        type="button"
+                        class="quick-recall__retry"
+                        onclick={() => void retryAsk()}
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  {/if}
+                {:else}
+                  {#if turn.seededResultCount !== null && turn.seededResultCount > 0}
+                    <p class="quick-recall__seeded">
+                      Seeded with {turn.seededResultCount}
+                      {turn.seededResultCount === 1 ? "result" : "results"}
+                    </p>
+                  {/if}
+
+                  {#if turn.phase === "seeding"}
+                    <p class="quick-recall__state quick-recall__state--working">
+                      <span class="quick-recall__dot" aria-hidden="true"></span>
+                      Searching your captures…
+                    </p>
+                  {:else if turn.phase === "thinking" && turn.toolActivity === null}
+                    <p class="quick-recall__state quick-recall__state--working">
+                      <span class="quick-recall__dot" aria-hidden="true"></span>
+                      Thinking…
+                    </p>
+                  {:else}
+                    {#if turn.phase === "streaming" || turn.phase === "done"}
+                      <!-- Per-turn copy: only on done, never while streaming. -->
+                      {#if turn.phase === "done" && turn.answer.length > 0}
+                        <button
+                          type="button"
+                          class="quick-recall__copy"
+                          class:quick-recall__copy--copied={turn.copied}
+                          onclick={() => void copyTurnAnswer(ti)}
+                          aria-label="Copy answer"
+                          title="Copy answer"
+                        >
+                          {#if turn.copied}
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 14 14"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.4"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path d="M2.5 7.5 6 11l5.5-7" />
+                            </svg>
+                          {:else}
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 14 14"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <rect x="4.5" y="4.5" width="7" height="7" rx="1.4" />
+                              <path
+                                d="M9.5 4.5V3a1 1 0 0 0-1-1h-5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1H4"
+                              />
+                            </svg>
+                          {/if}
+                        </button>
+                      {/if}
+
+                      <!-- Per-turn collapsed, expandable activity summary chip. -->
+                      {#if activitySummaryFor(turn.toolActivities) !== null}
+                        <div class="quick-recall__activity">
+                          <button
+                            type="button"
+                            class="quick-recall__activity-chip"
+                            aria-expanded={turn.summaryExpanded}
+                            onclick={() => toggleTurnSummary(turn)}
+                          >
+                            <span
+                              class="quick-recall__activity-caret"
+                              class:quick-recall__activity-caret--open={turn.summaryExpanded}
+                              aria-hidden="true">▸</span
+                            >
+                            <span class="quick-recall__activity-summary"
+                              >{activitySummaryFor(turn.toolActivities)}</span
+                            >
+                          </button>
+                          {#if turn.summaryExpanded}
+                            <ul class="quick-recall__activity-list">
+                              {#each turn.toolActivities as activity, ai (ai)}
+                                <li class="quick-recall__activity-item">{activity.label}</li>
+                              {/each}
+                            </ul>
+                          {/if}
+                        </div>
+                      {/if}
+
+                      <!-- Click delegation for rendered links; the <a> elements carry
+                           their own keyboard semantics (Enter dispatches a click that
+                           bubbles here). -->
+                      <!-- svelte-ignore a11y_no_static_element_interactions -->
+                      <!-- svelte-ignore a11y_click_events_have_key_events -->
+                      <div
+                        class="quick-recall__answer"
+                        class:quick-recall__answer--streaming={turn.phase === "streaming"}
+                        onclick={handleAnswerClick}
+                      >
+                        {@html renderTurnAnswer(turn.answer)}
+                      </div>
+
+                      <!-- Per-turn answer sources: the captures this turn drew on,
+                           surfaced only once the turn is done. -->
+                      {#if turn.phase === "done" && turn.sources.length > 0}
+                        <div class="quick-recall__sources">
+                          <span class="quick-recall__sources-heading">Sources</span>
+                          {#if turnFrameSources(turn).length > 0}
+                            <div class="quick-recall__section" role="presentation">
+                              <span class="quick-recall__section-label">Screen</span>
+                              <div class="quick-recall__source-row" role="presentation">
+                                {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+                                  <AnswerSourceCard
+                                    kind="frame"
+                                    appName={s.appName}
+                                    windowTitle={s.windowTitle}
+                                    startedAt={s.startedAt}
+                                    endedAt={s.endedAt}
+                                    thumbnailUrl={s.frameId != null
+                                      ? (thumbnailCache.get(s.frameId) ?? null)
+                                      : null}
+                                    onselect={() => void selectSource(s)}
+                                  />
+                                {/each}
+                              </div>
+                            </div>
+                          {/if}
+
+                          {#if turnAudioSources(turn).length > 0}
+                            <div class="quick-recall__section" role="presentation">
+                              <span class="quick-recall__section-label">Audio</span>
+                              <div class="quick-recall__source-row" role="presentation">
+                                {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+                                  <AnswerSourceCard
+                                    kind="audio"
+                                    appName={s.appName}
+                                    windowTitle={s.windowTitle}
+                                    startedAt={s.startedAt}
+                                    endedAt={s.endedAt}
+                                    sourceKind={s.sourceKind}
+                                    onselect={() => void selectSource(s)}
+                                  />
+                                {/each}
+                              </div>
+                            </div>
+                          {/if}
+                        </div>
+                      {/if}
+                    {/if}
+                    {#if turn.toolActivity !== null}
+                      <!-- Live animated working line: the real tool filter string. -->
+                      <p class="quick-recall__state quick-recall__state--working">
+                        <span class="quick-recall__dot" aria-hidden="true"></span>
+                        <span class="quick-recall__working-label">{turn.toolActivity}</span>
+                      </p>
+                    {/if}
+                  {/if}
+                {/if}
+              </div>
+            {/each}
           {/if}
         </div>
+
+        <!-- Follow-up composer: pinned beneath the transcript, present once the
+             first answer completes. Disabled while any turn streams. Enter sends,
+             Shift+Enter inserts a newline. Submitting appends a new turn and
+             routes the raw question through ask_ai_followup. -->
+        {#if askComposerVisible}
+          <div class="quick-recall__composer">
+            <textarea
+              bind:this={followupInputEl}
+              bind:value={followupInput}
+              class="quick-recall__composer-input"
+              rows="1"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder={askStreaming
+                ? "Answering…"
+                : "Ask a follow-up…"}
+              aria-label="Ask a follow-up question"
+              disabled={askStreaming}
+              onkeydown={handleFollowupKeydown}
+            ></textarea>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -4100,15 +4317,16 @@
     color: var(--app-text-strong);
   }
 
-  .quick-recall__ask-question {
+  /* The thread header label once a thread is open (the per-turn question
+     headers live in the transcript, so this is just a quiet section marker). */
+  .quick-recall__ask-thread-label {
     flex: 1;
     min-width: 0;
-    font-size: 14px;
-    line-height: 1.4;
-    color: var(--app-text-strong);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: 11px;
+    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--app-text-subtle);
   }
 
   .quick-recall__ask-input {
@@ -4131,8 +4349,69 @@
   }
 
   .quick-recall__answer-area {
-    gap: 10px;
+    gap: 18px;
     position: relative;
+  }
+
+  /* One transcript turn: question header + answer + sources/activity. The turn
+     is the positioning context for its own copy button (top-right). Turns are
+     separated by a hairline rule so the back-and-forth reads as a transcript. */
+  .quick-recall__turn {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .quick-recall__turn:not(:first-child) {
+    padding-top: 18px;
+    border-top: 1px solid var(--app-border);
+  }
+
+  /* Read-only question header above each turn's answer. */
+  .quick-recall__turn-question {
+    margin: 0;
+    padding-right: 34px;
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--app-text-strong);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+
+  /* Follow-up composer: pinned beneath the scrolling transcript. Mirrors the
+     unseeded ask input but framed as its own bottom bar. Disabled (dimmed) while
+     a turn streams. */
+  .quick-recall__composer {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    padding: 10px 15px;
+    border-top: 1px solid var(--app-border);
+  }
+
+  .quick-recall__composer-input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--app-text-strong);
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.4;
+    padding: 0;
+    resize: none;
+    caret-color: var(--app-accent);
+  }
+
+  .quick-recall__composer-input::placeholder {
+    color: var(--app-text-subtle);
+  }
+
+  .quick-recall__composer-input:disabled {
+    color: var(--app-text-muted);
+    cursor: default;
   }
 
   /* Answer sources strip: sectioned Screen/Audio rows beneath the answer prose.

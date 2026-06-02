@@ -16,14 +16,20 @@
 //
 // Contract (must stay in sync with the Rust integrator):
 //   - STDIN:  newline-delimited JSON. The stream STAYS OPEN for the whole session
-//             (do NOT assume EOF). Two line kinds:
-//               First line (no `type` field):
+//             (do NOT assume EOF). The session is MULTI-TURN: each `prompt` line
+//             starts a new turn on the SAME live PI session, which retains prior
+//             turns' conversation history in-memory. Three line kinds:
+//               Prompt lines (no `type` field) — one per turn, in arrival order:
 //                 { "prompt": "<string>" }
-//               Subsequent tool-result lines (replies to a tool_call we emitted):
+//               Tool-result lines (replies to a tool_call we emitted):
 //                 { "type":"tool_result", "id":"<callId>", "ok":true,  "result":<json> }
 //                 { "type":"tool_result", "id":"<callId>", "ok":false, "error":"<message>" }
-//             The prompt already contains any seeded context; the shim fetches nothing
-//             on its own — capture data only flows in through brokered tool_result lines.
+//             Prompts are queued and answered one at a time; a new `prompt` line that
+//             arrives while a turn is running starts the next turn once the current one
+//             finishes. The session ends when stdin closes (EOF) and the queue is
+//             drained, or when the child is killed. The prompt already contains any
+//             seeded context; the shim fetches nothing on its own — capture data only
+//             flows in through brokered tool_result lines.
 //   - ENV:    MNEMA_PI_EXECUTABLE (optional) — absolute path to the user's `pi` binary,
 //             used only to resolve the PI SDK package (and `typebox`) when not on
 //             NODE_PATH.
@@ -39,10 +45,17 @@
 //   - STDOUT: newline-delimited JSON, exactly one object per line. Protocol only:
 //               {"type":"ready"}                                  — session created
 //               {"type":"delta","text":"<chunk>"}                 — one answer text_delta
+//                                                                    (belongs to the
+//                                                                    current turn)
 //               {"type":"tool_call","id":"<callId>",              — a custom tool wants the
 //                  "tool":"<name>","params":<json>}                  host to run a brokered op
-//               {"type":"done"}                                   — answer complete; exit 0
-//               {"type":"error","message":"<human>"}              — any failure; exit non-zero
+//               {"type":"done"}                                   — the CURRENT TURN
+//                                                                    finished; the process
+//                                                                    KEEPS RUNNING for the
+//                                                                    next prompt (repeatable)
+//               {"type":"error","message":"<human>"}              — FATAL failure only; then
+//                                                                    exit non-zero
+//             The process exits 0 (no `done`) when stdin closes and no prompt is pending.
 //             Nothing else is ever written to stdout. All diagnostics go to stderr.
 
 import { readFileSync, realpathSync } from "node:fs";
@@ -65,9 +78,16 @@ const SDK_PACKAGES = (() => {
 })();
 
 // ---- stdout protocol helpers ------------------------------------------------
-
-// Single guard so we never emit a terminal `done`/`error` line twice.
-let terminated = false;
+//
+// Two distinct guards now that the session is multi-turn:
+//   - `ended` is the FATAL / process-winding-down guard. Once a fatal error fires
+//     (or the process is otherwise shutting down) no further protocol output —
+//     `delta`, per-turn `done`, or another `error` — is allowed. It is set only by
+//     `finishError` and the clean-EOF exit path.
+//   - per-turn "done already emitted" guarding lives on each turn's state
+//     (`turn.settled` in the main loop), so a turn's `agent_end` and the loop's own
+//     `done` cannot double-emit, while a NEW turn can still emit its own `done`.
+let ended = false;
 
 /** Write one protocol object as a single newline-terminated JSON line to stdout. */
 function emit(obj) {
@@ -85,41 +105,84 @@ function emitReady() {
 }
 
 function emitDelta(text) {
-  if (terminated) return;
+  if (ended) return;
   emit({ type: "delta", text });
 }
 
-/** Emit the terminal success line at most once and exit 0. */
-function finishOk() {
-  if (terminated) return;
-  terminated = true;
+/**
+ * Emit a turn-level `done` at most once for the given turn, WITHOUT exiting the
+ * process — the session stays alive for the next prompt. `turn.settled` is the
+ * per-turn guard so a turn's `agent_end` and the main loop's own completion can
+ * each call this but only one `done` line is written for that turn.
+ */
+function finishTurn(turn) {
+  if (ended || !turn || turn.settled) return;
+  turn.settled = true;
   emit({ type: "done" });
-  process.exit(0);
 }
 
-/** Emit the terminal error line at most once and exit non-zero. */
+/**
+ * Emit the terminal error line at most once and exit non-zero. This is the only
+ * path that ends the whole process abnormally; it sets `ended` so no further
+ * protocol output escapes after a fatal failure.
+ */
 function finishError(message) {
-  if (terminated) return;
-  terminated = true;
+  if (ended) return;
+  ended = true;
   emit({ type: "error", message: String(message) });
   process.exit(1);
 }
 
+/** Clean shutdown: stdin closed with no pending prompts — exit 0 with no `done`. */
+function finishSession() {
+  if (ended) return;
+  ended = true;
+  process.exit(0);
+}
+
 // ---- stdin: line-based, bidirectional --------------------------------------
 //
-// The stream stays open for the whole session: the first line carries the prompt,
-// and every later line is a brokered tool_result replying to a tool_call we emitted.
-// We can't read-to-EOF anymore, so parse line by line with readline.
+// The stream stays open for the whole multi-turn session. Three line kinds flow in:
+// prompt lines (one per turn), tool_result lines (replies to a tool_call we emitted),
+// and EOF (stdin close). We can't read-to-EOF for a single answer anymore, so parse
+// line by line with readline and feed prompts through a queue the main loop drains.
 
 // Pending tool calls awaiting a host reply: callId -> resolver({ ok, result, error }).
 const pendingToolCalls = new Map();
 
-// Resolves with the first prompt string once its line arrives.
-let resolvePrompt;
-const promptReady = new Promise((resolve) => {
-  resolvePrompt = resolve;
-});
-let promptSeen = false;
+// FIFO queue of prompt strings the main loop has not yet answered. The loop pulls
+// one at a time; new prompt lines push here while a turn is in flight.
+const promptQueue = [];
+// True once stdin has closed (EOF): no more prompts will ever arrive.
+let stdinClosed = false;
+// A re-armable notifier the main loop awaits when the queue is empty. Resolving it
+// wakes the loop so it can pull a freshly-queued prompt or observe EOF.
+let notifyPromptWaiter = null;
+
+/** Wake any loop blocked in `nextPrompt()` so it re-checks the queue / EOF flag. */
+function signalPromptWaiter() {
+  if (notifyPromptWaiter) {
+    const resolve = notifyPromptWaiter;
+    notifyPromptWaiter = null;
+    resolve();
+  }
+}
+
+/**
+ * Pull the next prompt for the main loop. Resolves with the prompt string when one
+ * is available, or with `null` when stdin has closed and the queue is drained (the
+ * loop's clean-exit signal).
+ */
+async function nextPrompt() {
+  for (;;) {
+    if (promptQueue.length > 0) return promptQueue.shift();
+    if (stdinClosed) return null;
+    // Re-arm the waiter and block until a prompt arrives or stdin closes.
+    await new Promise((resolve) => {
+      notifyPromptWaiter = resolve;
+    });
+  }
+}
 
 /** Wire the readline interface that dispatches every stdin line. */
 function startStdinReader() {
@@ -153,16 +216,19 @@ function startStdinReader() {
     }
 
     if (typeof msg.prompt === "string") {
-      // Only the first prompt matters; ignore any later prompt lines.
-      if (!promptSeen) {
-        promptSeen = true;
-        resolvePrompt(msg.prompt);
-      }
+      // Each prompt line starts another turn: enqueue it and wake the main loop.
+      promptQueue.push(msg.prompt);
+      signalPromptWaiter();
       return;
     }
 
     // Anything else is unknown — ignore quietly (diagnostics only).
     diag("ignoring unknown stdin line shape");
+  });
+  rl.on("close", () => {
+    // EOF: no further prompts. Wake a waiting loop so it can drain + exit cleanly.
+    stdinClosed = true;
+    signalPromptWaiter();
   });
   rl.on("error", (err) => {
     finishError(`stdin read error: ${err?.message ?? err}`);
@@ -664,13 +730,7 @@ async function main() {
     throw new Error("Resolved `typebox` but it is missing the expected `Type` factory.");
   }
 
-  // 2. Wait for the first prompt line.
-  const prompt = await promptReady;
-  if (typeof prompt !== "string" || prompt.length === 0) {
-    throw new Error('stdin must provide a JSON line with a non-empty string "prompt".');
-  }
-
-  // Resolve the user's configured default model, if the registry exposes one.
+  // 2. Resolve the user's configured default model, if the registry exposes one.
   // Be defensive: the helper name may vary across PI releases, so probe a few.
   let defaultModel;
   try {
@@ -728,22 +788,41 @@ async function main() {
 
   emitReady();
 
-  // 5. Subscribe BEFORE prompting so we never miss early streamed tokens.
-  //    A tool-enabled agent produces MULTIPLE assistant messages (text, tool call,
-  //    more text), so the per-message `done` is NOT terminal — only the top-level
-  //    `agent_end` event ends the whole run.
+  // The turn currently being answered. Each entry is `{ settled }`:
+  //   - `settled` is the per-turn "done already emitted" guard.
+  // `currentTurn` is the live turn the subscribe handler routes events to; the main
+  // loop swaps in a fresh turn before each `session.prompt()`.
+  let currentTurn = null;
+  // Per-turn completion promise the loop awaits. `agent_end` resolves it for the
+  // active turn; the loop re-arms it at the start of each turn.
+  let resolveTurnComplete = null;
+
+  // 5. Subscribe ONCE, BEFORE the first prompt, so we never miss early streamed
+  //    tokens. The single subscription serves every turn for the life of the
+  //    session (the SDK retains conversation history across `session.prompt()`
+  //    calls). A tool-enabled agent produces MULTIPLE assistant messages per turn
+  //    (text, tool call, more text), so the per-message `done` is NOT terminal —
+  //    only the top-level `agent_end` ends the CURRENT TURN (not the process).
   session.subscribe((event) => {
-    if (terminated) return;
+    if (ended) return;
     try {
       const type = event?.type;
 
-      // The whole run finished — the real terminal signal.
+      // The current turn finished. Emit this turn's `done` and let the main loop
+      // advance to the next prompt — the process keeps running.
       if (type === "agent_end") {
-        finishOk();
+        const turn = currentTurn;
+        finishTurn(turn);
+        if (resolveTurnComplete) {
+          const resolve = resolveTurnComplete;
+          resolveTurnComplete = null;
+          resolve();
+        }
         return;
       }
 
-      // Streaming message updates carry the assistant message sub-events.
+      // Streaming message updates carry the assistant message sub-events. With the
+      // session retaining history, deltas belong to whichever turn is running now.
       if (type === "message_update") {
         const ame = event.assistantMessageEvent;
         if (!ame) return;
@@ -760,6 +839,7 @@ async function main() {
             // calls + further text). Do NOT finish here, or the answer truncates.
             return;
           case "error": {
+            // An assistant-message error is fatal to the whole session.
             const reason = ame.reason ?? "error";
             const detail = ame.error ? ` (${String(ame.error)})` : "";
             finishError(`PI assistant message ${reason}${detail}`);
@@ -774,17 +854,51 @@ async function main() {
     }
   });
 
-  // 6. Drive the prompt. The terminal line is normally emitted from `agent_end`,
-  //    but guard here too in case the run resolves without a terminal event.
-  try {
-    await session.prompt(prompt);
-  } catch (err) {
-    finishError(`PI prompt failed: ${err?.message ?? err}`);
-    return;
-  }
+  // 6. Multi-turn main loop. Pull prompts one at a time; each prompt is a turn on
+  //    the same live session. The loop exits cleanly (0) when stdin closes and no
+  //    prompt is pending; a fatal failure exits non-zero via `finishError`.
+  for (;;) {
+    const prompt = await nextPrompt();
+    if (prompt === null) {
+      // stdin closed and the queue is drained: end the session cleanly.
+      finishSession();
+      return;
+    }
+    if (typeof prompt !== "string" || prompt.length === 0) {
+      throw new Error('stdin must provide a JSON line with a non-empty string "prompt".');
+    }
 
-  // Guarded fallback: a no-op if `agent_end` already finished the run.
-  finishOk();
+    // Start a fresh turn and arm its completion promise BEFORE prompting, so an
+    // `agent_end` that arrives during `session.prompt()` resolves the right turn.
+    const turn = { settled: false };
+    currentTurn = turn;
+    const turnComplete = new Promise((resolve) => {
+      resolveTurnComplete = resolve;
+    });
+
+    try {
+      await session.prompt(prompt);
+    } catch (err) {
+      finishError(`PI prompt failed: ${err?.message ?? err}`);
+      return;
+    }
+
+    // `session.prompt()` may resolve before or after `agent_end`. Resolve the turn
+    // here too so the loop never hangs if `agent_end` never arrives for this turn;
+    // if `agent_end` already resolved it, this is a no-op (`resolveTurnComplete` was
+    // cleared). Then await the turn's completion and, if a fatal error fired
+    // mid-turn, bail out.
+    if (resolveTurnComplete) {
+      const resolve = resolveTurnComplete;
+      resolveTurnComplete = null;
+      resolve();
+    }
+    await turnComplete;
+    if (ended) return;
+    // `finishTurn` is idempotent per turn, so emitting the turn's `done` here is a
+    // guarded fallback when no `agent_end` produced it.
+    finishTurn(turn);
+  }
 }
 
 // Top-level safety net: any uncaught error becomes a protocol error line.
