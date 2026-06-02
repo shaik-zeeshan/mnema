@@ -517,6 +517,17 @@ fn quick_recall_panel_class() -> *const objc::runtime::Class {
             YES
         }
 
+        // Suppress NSPanel's built-in "Escape dismisses the panel" so the web
+        // layer owns the Escape key. By default an NSPanel closes when Escape
+        // reaches `cancelOperation:` via the responder chain — and WebKit forwards
+        // Escape there even when the page calls `preventDefault()` (Escape is a
+        // special key), so the whole Quick Recall window was closing instead of
+        // letting the launcher close just its open filter sub-surface first. With
+        // this no-op override, Escape stays in the web layer: the Filter Picker /
+        // Value List close themselves, and a plain-search Escape is closed by the
+        // shell's own `dismissQuickRecallOnEscape` window handler.
+        extern "C" fn cancel_operation(_this: &Object, _cmd: Sel, _sender: *mut Object) {}
+
         let superclass = objc::class!(NSPanel);
         let mut decl = ClassDecl::new("MnemaQuickRecallPanel", superclass)
             .expect("failed to declare MnemaQuickRecallPanel class");
@@ -528,6 +539,10 @@ fn quick_recall_panel_class() -> *const objc::runtime::Class {
             decl.add_method(
                 sel!(canBecomeMainWindow),
                 yes as extern "C" fn(&Object, Sel) -> BOOL,
+            );
+            decl.add_method(
+                sel!(cancelOperation:),
+                cancel_operation as extern "C" fn(&Object, Sel, *mut Object),
             );
         }
         decl.register() as *const Class as usize
