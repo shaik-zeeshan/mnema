@@ -785,6 +785,12 @@
     summaryExpanded: boolean;
     // Per-turn copy-confirmation flash (icon swaps to a check briefly).
     copied: boolean;
+    // Memoized Markdown render cache (FIX #6): `renderTurnAnswer` re-parses only
+    // when `answer` actually changed, so a streaming delta re-renders just the
+    // live turn and completed turns are never re-parsed. Tied to the turn object,
+    // so the cache is GC'd with the turn (no unbounded cross-turn cache).
+    _renderedAnswer: string | null;
+    _renderedHtml: string;
   };
 
   // The thread id (one live PI session). null when no thread is open.
@@ -821,11 +827,23 @@
   let askHasCompletedTurn = $derived(askTurns.some((t) => t.phase === "done"));
   let askComposerVisible = $derived(askSubmitted && askHasCompletedTurn);
 
-  // Render one turn's Markdown answer to HTML. Incomplete Markdown (e.g. an
-  // unclosed code fence mid-stream) renders gracefully and resolves once the
-  // closing token arrives. Called inline per turn in the transcript.
-  function renderTurnAnswer(answer: string): string {
-    return answer.length > 0 ? renderMarkdown(answer) : "";
+  // Render one turn's Markdown answer to HTML, memoized per turn (FIX #6). The
+  // `{@html}` binding re-invokes this for EVERY turn on any reactive update, so a
+  // single streamed delta would otherwise re-parse the whole accumulated Markdown
+  // of every turn (O(n²) over the stream). We cache the last (answer, html) on the
+  // turn object and only re-parse when that turn's `answer` actually changed, so
+  // the live/growing turn re-renders incrementally while completed turns are never
+  // re-parsed. The cache lives on the turn, so it's GC'd with the turn. Incomplete
+  // Markdown (e.g. an unclosed code fence mid-stream) renders gracefully and
+  // resolves once the closing token arrives.
+  function renderTurnAnswer(turn: AskTurn): string {
+    if (turn._renderedAnswer === turn.answer) {
+      return turn._renderedHtml;
+    }
+    const html = turn.answer.length > 0 ? renderMarkdown(turn.answer) : "";
+    turn._renderedAnswer = turn.answer;
+    turn._renderedHtml = html;
+    return html;
   }
 
   // Split a turn's cited sources into the Screen/Audio strip sections.
@@ -848,6 +866,11 @@
     event.preventDefault();
     const href = anchor.getAttribute("href");
     if (href !== null && href.length > 0) {
+      // Opening a link activates the OS browser, which blurs this non-activating
+      // panel and fires `Focused(false)`. Suppress the very next blur-dismiss FIRST
+      // so the launcher (and the in-flight Ask AI session being read) survives the
+      // hand-off; the flag is one-shot, so ordinary click-away still dismisses.
+      void invoke("quick_recall_suppress_blur_dismiss");
       void openUrl(href);
     }
   }
@@ -1074,6 +1097,8 @@
       seededResultCount: null,
       summaryExpanded: false,
       copied: false,
+      _renderedAnswer: null,
+      _renderedHtml: "",
     };
   }
 
@@ -1185,6 +1210,11 @@
       return;
     }
     askStreaming = false;
+    // Drop the thread id so any buffered ask_ai_* events that arrive AFTER cancel
+    // (deltas the backend already queued) no longer match the id guard and stop
+    // appending to the cancelled turn. The delta listener also bails on
+    // !askStreaming, covering the instant between this line and the await below.
+    askConversationId = null;
     try {
       await invoke<void>("ask_ai_cancel", { request: { conversationId } });
     } catch {
@@ -1368,14 +1398,34 @@
   // pin the scroll region to the bottom on each delta and whenever a new turn is
   // appended. Reads the live turn's answer length + the turn count so the effect
   // re-runs on both streaming growth and new follow-up turns.
+  //
+  // FIX #6: the bottom-pin is coalesced into a single requestAnimationFrame so a
+  // burst of streamed deltas writes `scrollTop` at most once per frame instead of
+  // reading `scrollHeight` + writing `scrollTop` on every token (which forced a
+  // synchronous reflow per delta). A pending frame is reused/cancelled so we never
+  // queue more than one outstanding scroll.
+  let pendingScrollFrame: number | null = null;
   $effect(() => {
     const live = askLiveTurn;
     // Touch reactive deps so the effect tracks streaming + turn-append growth.
     const _len = live?.answer.length ?? 0;
     const _count = askTurns.length;
-    if (mode === "ask" && askAreaEl && _count > 0) {
-      askAreaEl.scrollTop = askAreaEl.scrollHeight;
+    if (mode !== "ask" || !askAreaEl || _count === 0) {
+      return;
     }
+    // Collapse a burst of deltas into one outstanding frame: while a scroll frame
+    // is already queued, further effect runs just ride it (the frame reads the
+    // freshest scrollHeight when it fires), so scrollTop is written at most once
+    // per animation frame regardless of how many tokens arrived.
+    if (pendingScrollFrame !== null) {
+      return;
+    }
+    pendingScrollFrame = requestAnimationFrame(() => {
+      pendingScrollFrame = null;
+      if (mode === "ask" && askAreaEl) {
+        askAreaEl.scrollTop = askAreaEl.scrollHeight;
+      }
+    });
   });
 
   // After a follow-up finishes streaming, return focus to the (now re-enabled)
@@ -2887,6 +2937,10 @@
 
     listen<AskAiDeltaEvent>("ask_ai_delta", (event) => {
       if (event.payload.conversationId !== askConversationId) return;
+      // Defensive: a delta the backend already queued can arrive in the window
+      // between a cancel (askStreaming → false) and askConversationId clearing.
+      // Ignore it so a cancelled turn never keeps growing after the user left.
+      if (!askStreaming) return;
       const turn = askTurns[askTurns.length - 1];
       if (!turn) return;
       // The model resumed answering: clear any in-progress tool activity.
@@ -2928,10 +2982,15 @@
       if (event.payload.conversationId !== askConversationId) return;
       const turn = askTurns[askTurns.length - 1];
       if (!turn) return;
-      // The last event for this turn replaces the prior set. The markup gates
+      // The last non-empty event for this turn replaces the prior set. The
+      // reference_captures tool is repeatable, and a later call can resolve to an
+      // empty list; that empty resolution must NOT blank already-cited source
+      // cards — sources only accumulate/refine, never clear. The markup gates
       // rendering on the turn being done, so a mid-stream set still buffers now.
-      turn.sources = event.payload.sources;
-      void loadSourceThumbnails(event.payload.sources);
+      if (event.payload.sources.length > 0) {
+        turn.sources = event.payload.sources;
+        void loadSourceThumbnails(event.payload.sources);
+      }
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenSource = fn;
@@ -2956,6 +3015,11 @@
     clearDebounce();
     clearIdleTimer();
     clearAskCopiedTimers();
+    // FIX #6: drop any queued bottom-pin scroll frame so it can't fire post-teardown.
+    if (pendingScrollFrame !== null) {
+      cancelAnimationFrame(pendingScrollFrame);
+      pendingScrollFrame = null;
+    }
     // Teardown safety: never leave a resident PI session outliving the panel.
     void cancelActiveAsk();
   });
@@ -3551,7 +3615,7 @@
                         class:quick-recall__answer--streaming={turn.phase === "streaming"}
                         onclick={handleAnswerClick}
                       >
-                        {@html renderTurnAnswer(turn.answer)}
+                        {@html renderTurnAnswer(turn)}
                       </div>
 
                       <!-- Per-turn answer sources: the captures this turn drew on,

@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { FrameSearchResultDto, AudioSearchResultDto } from "$lib/types/app-infra";
   import { parseSearchSnippet } from "$lib/search-snippet";
+  import { formatTimestampCompact } from "$lib/format-time";
+  import AudioWaveform from "$lib/components/AudioWaveform.svelte";
 
   let {
     kind,
@@ -29,11 +31,6 @@
     imgLoaded = false;
   });
 
-  function formatTimestamp(ts: string): string {
-    const d = new Date(ts.includes("T") ? ts : ts.replace(" ", "T"));
-    if (isNaN(d.getTime())) return ts;
-    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  }
   function formatDuration(seconds: number): string {
     if (!Number.isFinite(seconds) || seconds < 0) return "—";
     const total = Math.round(seconds);
@@ -81,7 +78,7 @@
         {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
       </p>
       <div class="search-card__foot">
-        <span class="search-card__time">{formatTimestamp(frame.groupEndAt)}</span>
+        <span class="search-card__time">{formatTimestampCompact(frame.groupEndAt)}</span>
         {#if frame.matchCount > 1}
           <span class="search-card__badge">{frame.matchCount} matches</span>
         {/if}
@@ -108,11 +105,7 @@
       class:search-card__thumb--mic={audio.sourceKind === "microphone"}
       class:search-card__thumb--sysaudio={audio.sourceKind !== "microphone"}
     >
-      <svg class="search-card__wave" viewBox="0 0 44 24" aria-hidden="true">
-        {#each [7, 13, 20, 10, 23, 9, 16, 12, 8] as barHeight, barIndex (barIndex)}
-          <rect x={2 + barIndex * 4.8} y={(24 - barHeight) / 2} width="2.4" height={barHeight} rx="1.2" />
-        {/each}
-      </svg>
+      <AudioWaveform class="search-card__wave" widthPercent={62} />
     </div>
     <div class="search-card__body">
       <div class="search-card__line">
@@ -127,7 +120,7 @@
         {#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}
       </p>
       <div class="search-card__foot">
-        <span class="search-card__time">{formatTimestamp(audio.absoluteStartAt)}</span>
+        <span class="search-card__time">{formatTimestampCompact(audio.absoluteStartAt)}</span>
         {#if audio.matchCount > 1}
           <span class="search-card__badge">{audio.matchCount} adjacent</span>
         {/if}
@@ -239,12 +232,6 @@
     border-color: var(--app-source-sysaudio-border);
     background: var(--app-source-sysaudio-bg);
     color: var(--app-source-sysaudio);
-  }
-
-  .search-card__wave {
-    width: 62%;
-    height: auto;
-    fill: currentColor;
   }
 
   .search-card__body {

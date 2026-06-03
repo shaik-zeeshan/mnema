@@ -5,7 +5,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Mutex, MutexGuard, OnceLock,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
@@ -14,6 +14,25 @@ use crate::native_capture;
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
 const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
+
+// The Quick Recall surface is a non-activating NSPanel that emits a spurious
+// `Focused(false)` while AppKit promotes its webview to first responder on the
+// first summon. A blur within this grace window of the last summon is treated as
+// that transient setup blur, not a genuine click-away, so the freshly-summoned
+// launcher is not torn down out from under the user.
+const QUICK_RECALL_SUMMON_BLUR_GRACE: Duration = Duration::from_millis(300);
+
+// The wall-clock instant of the most recent Quick Recall summon, used to honor
+// the `QUICK_RECALL_SUMMON_BLUR_GRACE` window in the `Focused(false)` handler.
+static LAST_QUICK_RECALL_SUMMON: Mutex<Option<Instant>> = Mutex::new(None);
+
+// One-shot suppression of the very next Quick Recall blur-dismiss. The frontend
+// sets this (via `quick_recall_suppress_blur_dismiss`) immediately before opening
+// an answer link in the OS browser: activating the browser blurs the panel, and
+// without this flag that blur would dismiss the launcher and tear down the
+// in-flight Ask AI session the user is reading. Consumed by the next blur only,
+// so ordinary click-away dismissal is unaffected.
+static SUPPRESS_NEXT_QUICK_RECALL_BLUR_DISMISS: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "macos")]
 static MACOS_TERMINATE_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -724,6 +743,12 @@ fn build_quick_recall_window(app: &tauri::AppHandle) -> Result<WebviewWindow, St
 }
 
 fn summon_quick_recall_window(window: &WebviewWindow) {
+    // Record the summon instant so the `Focused(false)` handler can ignore the
+    // transient first-responder-setup blur that fires right after a fresh summon
+    // (see `QUICK_RECALL_SUMMON_BLUR_GRACE`).
+    if let Ok(mut last) = LAST_QUICK_RECALL_SUMMON.lock() {
+        *last = Some(Instant::now());
+    }
     let _ = window.center();
     let _ = window.show();
     #[cfg(target_os = "macos")]
@@ -741,6 +766,34 @@ fn dismiss_quick_recall_window(window: &WebviewWindow) {
     {
         let _ = window.hide();
     }
+}
+
+// Decide whether a Quick Recall `Focused(false)` should dismiss the launcher.
+// Two transient blurs must NOT dismiss it:
+//   (a) the first-summon blur: AppKit makes the non-activating panel key before
+//       its webview is first responder, firing a spurious `Focused(false)`; a
+//       blur within `QUICK_RECALL_SUMMON_BLUR_GRACE` of the last summon is that
+//       setup blur, not a click-away.
+//   (b) an answer-link click: `handleAnswerClick` flags
+//       `SUPPRESS_NEXT_QUICK_RECALL_BLUR_DISMISS` right before activating the OS
+//       browser, so the browser-activation blur is consumed here instead of
+//       tearing down the in-flight Ask AI session.
+// Both guards are one-shot/time-bounded, so ordinary click-away dismissal still
+// fires immediately.
+fn should_dismiss_quick_recall_on_blur() -> bool {
+    if SUPPRESS_NEXT_QUICK_RECALL_BLUR_DISMISS.swap(false, Ordering::SeqCst) {
+        return false;
+    }
+
+    if let Ok(last) = LAST_QUICK_RECALL_SUMMON.lock() {
+        if let Some(summoned_at) = *last {
+            if summoned_at.elapsed() < QUICK_RECALL_SUMMON_BLUR_GRACE {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 pub(crate) fn toggle_quick_recall_window(app: &tauri::AppHandle) -> Result<(), String> {
@@ -1018,7 +1071,9 @@ pub fn handle_window_event(
     if let WindowEvent::Focused(false) = event {
         if AppWindow::from_label(label) == Some(AppWindow::QuickRecall) {
             if let Some(window) = window {
-                dismiss_quick_recall_window(window);
+                if should_dismiss_quick_recall_on_blur() {
+                    dismiss_quick_recall_window(window);
+                }
             }
         }
         return;
@@ -1124,6 +1179,17 @@ pub fn focus_quick_recall_window(window: WebviewWindow) {
     {
         let _ = window.set_focus();
     }
+}
+
+/// Suppress the very next Quick Recall blur-dismiss. The frontend calls this from
+/// `handleAnswerClick` immediately before opening an answer link in the OS
+/// browser: that activation blurs the non-activating panel, and without this
+/// one-shot flag the resulting `Focused(false)` would dismiss the launcher and
+/// tear down the in-flight Ask AI session the user is reading. Only the next blur
+/// consumes the flag, so ordinary click-away dismissal still works.
+#[tauri::command]
+pub fn quick_recall_suppress_blur_dismiss() {
+    SUPPRESS_NEXT_QUICK_RECALL_BLUR_DISMISS.store(true, Ordering::SeqCst);
 }
 
 #[tauri::command]

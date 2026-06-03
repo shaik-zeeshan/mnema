@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { formatTimestampCompact } from "$lib/format-time";
+  import AudioWaveform from "$lib/components/AudioWaveform.svelte";
+
   let {
     kind,
     appName = null,
@@ -31,12 +34,6 @@
   // Anything that is not an explicit microphone source reads as system audio,
   // matching the mic/sysaudio split used by SearchResultCard and the timeline.
   let isMic = $derived(sourceKind === "microphone");
-
-  function formatTimestamp(ts: string): string {
-    const d = new Date(ts.includes("T") ? ts : ts.replace(" ", "T"));
-    if (isNaN(d.getTime())) return ts;
-    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  }
 </script>
 
 <button
@@ -74,11 +71,7 @@
       class:source-card__thumb--mic={isMic}
       class:source-card__thumb--sysaudio={!isMic}
     >
-      <svg class="source-card__wave" viewBox="0 0 44 24" aria-hidden="true">
-        {#each [7, 13, 20, 10, 23, 9, 16, 12, 8] as barHeight, barIndex (barIndex)}
-          <rect x={2 + barIndex * 4.8} y={(24 - barHeight) / 2} width="2.4" height={barHeight} rx="1.2" />
-        {/each}
-      </svg>
+      <AudioWaveform class="source-card__wave" widthPercent={48} />
     </div>
   {/if}
 
@@ -97,7 +90,7 @@
     {#if windowTitle}
       <span class="source-card__sub" title={windowTitle}>{windowTitle}</span>
     {/if}
-    <span class="source-card__time">{formatTimestamp(startedAt)}</span>
+    <span class="source-card__time">{formatTimestampCompact(startedAt)}</span>
   </div>
 </button>
 
@@ -193,12 +186,6 @@
     border-color: var(--app-source-sysaudio-border);
     background: var(--app-source-sysaudio-bg);
     color: var(--app-source-sysaudio);
-  }
-
-  .source-card__wave {
-    width: 48%;
-    height: auto;
-    fill: currentColor;
   }
 
   .source-card__body {

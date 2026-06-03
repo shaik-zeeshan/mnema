@@ -2,6 +2,7 @@ mod pi_agent_session;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use app_infra::brokered_access::{
@@ -13,14 +14,26 @@ use tauri::{Emitter, Manager};
 
 use pi_agent_session::AskAiCancel;
 
+/// Monotonic counter minting a unique ownership token per session registration.
+/// Lets a finishing session task remove only its own registry entry and never
+/// evict a newer session that reused the same conversation id.
+static ASK_AI_SESSION_TOKEN: AtomicU64 = AtomicU64::new(0);
+
 /// A live Ask AI thread's control handles: its cancellation flag and the
 /// follow-up prompt sender that feeds raw follow-up questions into the resident
 /// PI session. Dropping `prompt_tx` (by removing the handle) makes the session
 /// task's `prompt_rx.recv()` return `None` and tear the thread down between
 /// turns; `cancel` hard-kills it mid-turn.
+///
+/// `token` is a per-registration ownership stamp assigned by
+/// `register_ask_ai_session` (the value passed at construction is overwritten):
+/// a session task only removes the registry entry whose token matches the one
+/// register returned, so two `ask_ai_start` calls sharing a conversation id
+/// don't let the first to finish evict the second's still-live handle.
 struct AskAiSessionHandle {
     cancel: AskAiCancel,
     prompt_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    token: u64,
 }
 
 /// Process registry mapping a conversation id (the whole thread/session) to its
@@ -34,12 +47,46 @@ fn ask_ai_sessions() -> &'static Mutex<HashMap<String, AskAiSessionHandle>> {
     ASK_AI_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn register_ask_ai_session(conversation_id: &str, handle: AskAiSessionHandle) {
+/// Register (or replace) the handle for a conversation, stamping it with a fresh
+/// unique ownership token that the caller records for a later owner-checked
+/// removal. If an existing live handle is overwritten — two `ask_ai_start` calls
+/// racing on one conversation id — its `prompt_tx` is dropped here, tearing the
+/// old resident session down between turns so its PI child does not run
+/// orphaned alongside the newer one. Returns the minted token.
+fn register_ask_ai_session(conversation_id: &str, mut handle: AskAiSessionHandle) -> u64 {
+    // Stamp the registration with a fresh unique token so a finishing session can
+    // later remove only its own entry.
+    let token = next_ask_ai_session_token();
+    handle.token = token;
     if let Ok(mut sessions) = ask_ai_sessions().lock() {
+        // `insert` returns and drops any prior handle, releasing its `prompt_tx`
+        // so the displaced session winds down rather than lingering.
         sessions.insert(conversation_id.to_string(), handle);
+    }
+    token
+}
+
+/// Mint the next unique session ownership token.
+fn next_ask_ai_session_token() -> u64 {
+    ASK_AI_SESSION_TOKEN.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Remove the registry entry for a conversation only if it still holds the
+/// handle stamped with `token`. A finishing session task calls this so it never
+/// evicts a newer session that reused the same conversation id (the newer
+/// registration carries a different token).
+fn remove_ask_ai_session_if_owner(conversation_id: &str, token: u64) {
+    if let Ok(mut sessions) = ask_ai_sessions().lock() {
+        if sessions
+            .get(conversation_id)
+            .is_some_and(|handle| handle.token == token)
+        {
+            sessions.remove(conversation_id);
+        }
     }
 }
 
+#[cfg(test)]
 fn remove_ask_ai_session(conversation_id: &str) {
     if let Ok(mut sessions) = ask_ai_sessions().lock() {
         sessions.remove(conversation_id);
@@ -379,24 +426,48 @@ async fn handle_reference_captures(
     // access), so we patch `sourceKind` here. Capped naturally at the audio cap
     // (≤4 lookups); a missing AppInfra or a single failed lookup just leaves that
     // source's `sourceKind` null and never aborts the emit.
+    //
+    // The lookups are issued concurrently rather than sequentially: the audio cap
+    // bounds them at ≤4, but a per-source await chain serializes them needlessly.
+    // We first collect `(index, audio_segment_id)` from an immutable read of
+    // `sources`, drive the cloned-`Arc` lookups through `join_all`, then apply the
+    // resolved kinds back by index (the only mutable borrow of `sources`).
     if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
-        for source in sources.iter_mut() {
-            if source.get("kind").and_then(|kind| kind.as_str()) != Some("audio") {
-                continue;
-            }
-            let Some(audio_segment_id) =
-                source.get("audioSegmentId").and_then(|value| value.as_i64())
-            else {
+        // Own a cloned `Arc<AppInfra>` so each concurrent lookup future can hold it
+        // for the life of its `await` without borrowing the Tauri `State` guard.
+        let infra = Arc::clone(&*infra);
+        let audio_lookups: Vec<(usize, i64)> = sources
+            .iter()
+            .enumerate()
+            .filter_map(|(index, source)| {
+                if source.get("kind").and_then(|kind| kind.as_str()) != Some("audio") {
+                    return None;
+                }
+                let audio_segment_id = source
+                    .get("audioSegmentId")
+                    .and_then(|value| value.as_i64())?;
+                Some((index, audio_segment_id))
+            })
+            .collect();
+
+        let segments = futures_util::future::join_all(audio_lookups.into_iter().map(
+            |(index, audio_segment_id)| {
+                let infra = Arc::clone(&infra);
+                async move { (index, infra.get_audio_segment(audio_segment_id).await) }
+            },
+        ))
+        .await;
+
+        for (index, lookup) in segments {
+            let Ok(Some(segment)) = lookup else {
                 continue;
             };
-            if let Ok(Some(segment)) = infra.get_audio_segment(audio_segment_id).await {
-                let source_kind = match segment.source_kind.as_str() {
-                    "system_audio" => "system",
-                    // `microphone` (and any unexpected value) colors as microphone.
-                    _ => "microphone",
-                };
-                source["sourceKind"] = serde_json::json!(source_kind);
-            }
+            let source_kind = match segment.source_kind.as_str() {
+                "system_audio" => "system",
+                // `microphone` (and any unexpected value) colors as microphone.
+                _ => "microphone",
+            };
+            sources[index]["sourceKind"] = serde_json::json!(source_kind);
         }
     }
 
@@ -510,6 +581,14 @@ fn resolve_shim_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 /// Build a single seed-context line for one broker search result.
+///
+/// The line surfaces the result's `opaqueId` the same way a tool-call `search`
+/// result exposes it to the model (each `search` result JSON carries an
+/// `opaqueId` field). Without it, a model answering purely from seeded context —
+/// never calling `search` — would have no id to hand to `reference_captures`, so
+/// the answer would render zero Answer Source cards. The ids minted by the
+/// broker seed search are HMAC-signed identically to tool-call search ids, so a
+/// nominated seed id validates through the same `reference_captures` resolver.
 fn format_seed_result_line(index: usize, result: &BrokerSearchResult) -> String {
     let app_label = result
         .context
@@ -530,13 +609,14 @@ fn format_seed_result_line(index: usize, result: &BrokerSearchResult) -> String 
         .unwrap_or_default();
 
     format!(
-        "{}. [{} · {}{} · {}–{}] {}",
+        "{}. [{} · {}{} · {}–{} · opaqueId={}] {}",
         index + 1,
         result.kind,
         app_label,
         window_segment,
         result.started_at,
         result.ended_at,
+        result.opaque_id,
         result.snippet
     )
 }
@@ -714,11 +794,15 @@ pub async fn ask_ai_start(
     // receiver lives in `run_pi_ask_ai_session`. Removing the registry handle
     // drops the sender, which tears the thread down between turns.
     let (prompt_tx, prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    register_ask_ai_session(
+    // `register_ask_ai_session` mints and returns this registration's ownership
+    // token (overwriting the placeholder); the spawned task uses it to remove
+    // only its own entry on completion.
+    let session_token = register_ask_ai_session(
         &conversation_id,
         AskAiSessionHandle {
             cancel: cancel.clone(),
             prompt_tx,
+            token: 0,
         },
     );
 
@@ -733,6 +817,19 @@ pub async fn ask_ai_start(
     // references ids it actually received from `search`.
     let search_metadata: Arc<Mutex<HashMap<String, BrokerSearchResult>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    // Seed results are citable too: register them under the same opaque-id keying
+    // the tool-call `search` path uses, so a model answering purely from seeded
+    // context (never calling `search`) can still nominate them to
+    // `reference_captures`. The seed line surfaces each `opaqueId` for exactly
+    // this. Their ids are minted by the same broker search path, so they validate
+    // identically in the resolver.
+    if !seed_results.is_empty() {
+        if let Ok(mut map) = search_metadata.lock() {
+            for result in &seed_results {
+                map.insert(result.opaque_id.clone(), result.clone());
+            }
+        }
+    }
     let invoker_app_handle = app_handle.clone();
     let invoker_conversation_id = conversation_id.clone();
     let invoker_search_metadata = Arc::clone(&search_metadata);
@@ -849,7 +946,10 @@ pub async fn ask_ai_start(
             }
         }
 
-        remove_ask_ai_session(&task_conversation_id);
+        // Remove only our own registration: if a newer `ask_ai_start` reused this
+        // conversation id while we were running, it holds a different token and
+        // must survive our teardown.
+        remove_ask_ai_session_if_owner(&task_conversation_id, session_token);
     });
 
     Ok(())
@@ -1024,7 +1124,7 @@ mod tests {
         let prompt = build_ask_ai_prompt("Did the build pass?", Some("build"), &[sample_result()]);
         assert!(prompt.contains("Context from the user's captures for \"build\":"));
         assert!(prompt.contains(
-            "1. [frame · Xcode · \"ContentView.swift\" · 2026-01-01T10:00:00Z–2026-01-01T10:01:00Z] build passed"
+            "1. [frame · Xcode · \"ContentView.swift\" · 2026-01-01T10:00:00Z–2026-01-01T10:01:00Z · opaqueId=op-1] build passed"
         ));
         assert!(prompt.ends_with("Question: Did the build pass?"));
     }
@@ -1044,6 +1144,14 @@ mod tests {
         result.context = None;
         let line = format_seed_result_line(2, &result);
         assert!(line.starts_with("3. [frame · unknown app ·"));
+    }
+
+    #[test]
+    fn seed_line_surfaces_opaque_id_for_nomination() {
+        // The opaque id must appear in the seed line so a model answering from
+        // seeded context alone can still nominate it to `reference_captures`.
+        let line = format_seed_result_line(0, &sample_result());
+        assert!(line.contains("opaqueId=op-1"));
     }
 
     #[test]
@@ -1329,6 +1437,8 @@ mod tests {
         AskAiSessionHandle {
             cancel: AskAiCancel::new(),
             prompt_tx,
+            // `register_ask_ai_session` overwrites this with the minted token.
+            token: 0,
         }
     }
 
@@ -1347,6 +1457,7 @@ mod tests {
             AskAiSessionHandle {
                 cancel: AskAiCancel::new(),
                 prompt_tx,
+                token: 0,
             },
         );
 
@@ -1365,6 +1476,47 @@ mod tests {
         register_ask_ai_session(id, test_session_handle());
         assert!(ask_ai_session_prompt_sender(id).is_some());
         remove_ask_ai_session(id);
+        assert!(ask_ai_session_prompt_sender(id).is_none());
+    }
+
+    #[test]
+    fn remove_if_owner_spares_session_that_reused_the_id() {
+        let id = "owner-token-conv";
+
+        // First registration; capture the token register mints for it. Keep the
+        // receiver alive so the registered sender stays usable.
+        let (first_tx, _first_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let first_token = register_ask_ai_session(
+            id,
+            AskAiSessionHandle {
+                cancel: AskAiCancel::new(),
+                prompt_tx: first_tx,
+                token: 0,
+            },
+        );
+
+        // A second `ask_ai_start` reuses the id, overwriting the entry with a new
+        // token. Keep the receiver alive so the registered sender stays usable.
+        let (second_tx, _second_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let second_token = register_ask_ai_session(
+            id,
+            AskAiSessionHandle {
+                cancel: AskAiCancel::new(),
+                prompt_tx: second_tx,
+                token: 0,
+            },
+        );
+        assert_ne!(first_token, second_token);
+
+        // The first session finishing must NOT evict the newer registration.
+        remove_ask_ai_session_if_owner(id, first_token);
+        assert!(
+            ask_ai_session_prompt_sender(id).is_some(),
+            "stale owner removal should leave the newer session registered"
+        );
+
+        // The owning (newer) session's removal clears it.
+        remove_ask_ai_session_if_owner(id, second_token);
         assert!(ask_ai_session_prompt_sender(id).is_none());
     }
 

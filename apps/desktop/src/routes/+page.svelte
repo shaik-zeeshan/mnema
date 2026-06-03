@@ -19,6 +19,7 @@
   } from "$lib/capture-controls.svelte";
   import { developerOptions } from "$lib/developer-options.svelte";
   import SearchResultCard from "$lib/components/SearchResultCard.svelte";
+  import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import {
     activeExactPreviewDelayMs,
@@ -3001,10 +3002,6 @@
     void resolveTimelineAppIcons(bundleIds);
   });
 
-  function parseCapturedAt(ts: string): Date {
-    return new Date(ts.includes("T") ? ts : ts.replace(" ", "T"));
-  }
-
   function normalizedTimelineAppBundleId(frame: FrameDto): string | null {
     const bundleId = frame.appBundleId?.trim();
     return bundleId ? bundleId : null;
@@ -3246,15 +3243,11 @@
     return d.toLocaleString();
   }
 
+  // Delegates to the shared compact formatter (identical behavior to the
+  // answer-source / search-result cards). Kept as a thin local wrapper so the
+  // many `formatCapturedAtCompact(...)` call sites in this file stay stable.
   function formatCapturedAtCompact(ts: string): string {
-    const d = parseCapturedAt(ts);
-    if (isNaN(d.getTime())) return ts;
-    return d.toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
+    return formatTimestampCompact(ts);
   }
 
   function formatUnixMs(ms: number): string {

@@ -5,9 +5,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -3941,7 +3941,7 @@ pub enum PiRuntimeSource {
     Missing,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiRuntimeStatus {
     pub source: PiRuntimeSource,
@@ -4083,28 +4083,39 @@ fn mnema_cli_install_path_for_home(home_dir: &Path) -> PathBuf {
         .join(MNEMA_CLI_COMMAND_NAME)
 }
 
+// Resolving the login-shell PATH spawns the user's full profile (100ms-1s) and is
+// invoked many times per Ask AI session (pi/node resolution, ~8+/session). PATH is
+// stable for the life of the process (nothing in this tree calls std::env::set_var),
+// so it is safe to memoize the resolved dirs once and clone them on later calls.
+#[cfg(not(windows))]
+static TERMINAL_SHELL_PATH_DIRS_CACHE: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
 #[cfg(not(windows))]
 fn terminal_shell_path_dirs() -> Vec<PathBuf> {
-    let shell = std::env::var_os("SHELL")
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "/bin/zsh".into());
-    let shell_path = std::process::Command::new(shell)
-        .args(["-lc", "printf %s \"$PATH\""])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok());
+    TERMINAL_SHELL_PATH_DIRS_CACHE
+        .get_or_init(|| {
+            let shell = std::env::var_os("SHELL")
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "/bin/zsh".into());
+            let shell_path = std::process::Command::new(shell)
+                .args(["-lc", "printf %s \"$PATH\""])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok());
 
-    let mut path_dirs: Vec<PathBuf> = shell_path
-        .as_deref()
-        .map(std::env::split_paths)
-        .into_iter()
-        .flatten()
-        .collect();
-    if let Some(process_path) = std::env::var_os("PATH") {
-        path_dirs.extend(std::env::split_paths(&process_path));
-    }
-    path_dirs
+            let mut path_dirs: Vec<PathBuf> = shell_path
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten()
+                .collect();
+            if let Some(process_path) = std::env::var_os("PATH") {
+                path_dirs.extend(std::env::split_paths(&process_path));
+            }
+            path_dirs
+        })
+        .clone()
 }
 
 #[cfg(windows)]
@@ -4448,20 +4459,56 @@ pub async fn get_cli_status_inner(app_handle: tauri::AppHandle) -> Result<MnemaC
     Ok(mnema_cli_status_for_paths(install_path, bundled_cli_path))
 }
 
+// `get_pi_runtime_status_inner` is called per brokered Ask AI tool call (default up to
+// 12/question) plus on seeding and several times at startup. Each computation spawns a
+// login shell (now cached, see TERMINAL_SHELL_PATH_DIRS_CACHE), runs `pi --version`
+// (subprocess), and reads auth.json — all genuinely blocking. A short TTL collapses the
+// repeated within-an-answer checks onto one computation while staying short enough that a
+// user fixing their pi/node/auth setup sees the change reflected within a few seconds.
+const PI_RUNTIME_STATUS_CACHE_TTL: Duration = Duration::from_secs(3);
+
+static PI_RUNTIME_STATUS_CACHE: OnceLock<Mutex<Option<(Instant, PiRuntimeStatus)>>> =
+    OnceLock::new();
+
 pub async fn get_pi_runtime_status_inner(
     app_handle: tauri::AppHandle,
 ) -> Result<PiRuntimeStatus, String> {
+    // Resolve the home dir up front: `app_handle` is not safe to move into spawn_blocking,
+    // but the derived `PathBuf` is Send and is the only app-handle input the blocking work
+    // needs.
     let home_dir = app_handle
         .path()
         .home_dir()
         .map_err(|error| format!("failed to resolve home dir: {error}"))?;
-    Ok(pi_runtime_status_for_candidates(
-        &home_dir,
-        None,
-        None,
-        executable_in_shell_path(PI_COMMAND_NAME),
-        pi_runtime_version,
-    ))
+
+    let cache = PI_RUNTIME_STATUS_CACHE.get_or_init(|| Mutex::new(None));
+    if let Some((computed_at, status)) = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+    {
+        if computed_at.elapsed() < PI_RUNTIME_STATUS_CACHE_TTL {
+            return Ok(status.clone());
+        }
+    }
+
+    let status = tokio::task::spawn_blocking(move || {
+        pi_runtime_status_for_candidates(
+            &home_dir,
+            None,
+            None,
+            executable_in_shell_path(PI_COMMAND_NAME),
+            pi_runtime_version,
+        )
+    })
+    .await
+    .map_err(|error| format!("failed to resolve pi runtime status: {error}"))?;
+
+    *cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((Instant::now(), status.clone()));
+
+    Ok(status)
 }
 
 pub async fn install_cli_inner(app_handle: tauri::AppHandle) -> Result<MnemaCliStatus, String> {
