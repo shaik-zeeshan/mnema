@@ -4122,7 +4122,9 @@ fn compute_terminal_shell_path_dirs() -> Vec<PathBuf> {
 #[cfg(not(windows))]
 fn terminal_shell_path_dirs() -> Vec<PathBuf> {
     let cache = TERMINAL_SHELL_PATH_DIRS_CACHE.get_or_init(|| Mutex::new(None));
-    let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard
         .get_or_insert_with(compute_terminal_shell_path_dirs)
         .clone()
@@ -4135,7 +4137,9 @@ fn terminal_shell_path_dirs() -> Vec<PathBuf> {
 fn refresh_terminal_shell_path_dirs() -> Vec<PathBuf> {
     let dirs = compute_terminal_shell_path_dirs();
     let cache = TERMINAL_SHELL_PATH_DIRS_CACHE.get_or_init(|| Mutex::new(None));
-    *cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(dirs.clone());
+    *cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(dirs.clone());
     dirs
 }
 
@@ -4306,10 +4310,19 @@ fn pi_auth_provider_entry_configured(value: &serde_json::Value) -> bool {
 }
 
 fn pi_runtime_version(executable_path: &Path) -> Option<String> {
-    let output = std::process::Command::new(executable_path)
-        .arg("--version")
-        .output()
-        .ok()?;
+    pi_runtime_version_with_path_dirs(executable_path, terminal_shell_path_dirs())
+}
+
+fn pi_runtime_version_with_path_dirs(
+    executable_path: &Path,
+    path_dirs: Vec<PathBuf>,
+) -> Option<String> {
+    let mut command = std::process::Command::new(executable_path);
+    command.arg("--version");
+    if let Ok(path) = std::env::join_paths(path_dirs) {
+        command.env("PATH", path);
+    }
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -4386,7 +4399,11 @@ fn pi_runtime_status_for_candidates_with_auth_dir_env(
                 .filter(|path| path.is_file())
                 .map(|path| (PiRuntimeSource::Managed, path))
         })
-        .or_else(|| path_runtime.filter(|path| path.is_file()).map(|path| (PiRuntimeSource::Path, path)));
+        .or_else(|| {
+            path_runtime
+                .filter(|path| path.is_file())
+                .map(|path| (PiRuntimeSource::Path, path))
+        });
     let auth_json_path = pi_auth_json_path_for_home_and_env(home_dir, env_agent_dir);
     let auth_json_exists = auth_json_path.is_file();
     let auth_provider_status = pi_auth_provider_status(&auth_json_path);
@@ -4575,13 +4592,7 @@ pub async fn get_pi_runtime_status_inner_with_options(
         } else {
             executable_in_shell_path(PI_COMMAND_NAME)
         };
-        pi_runtime_status_for_candidates(
-            &home_dir,
-            None,
-            None,
-            pi_executable,
-            pi_runtime_version,
-        )
+        pi_runtime_status_for_candidates(&home_dir, None, None, pi_executable, pi_runtime_version)
     })
     .await
     .map_err(|error| format!("failed to resolve pi runtime status: {error}"))?;
@@ -5405,6 +5416,38 @@ mod tests {
             Some("1.2.3")
         );
         assert!(parse_semver_from_text("pi dev").is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pi_runtime_version_uses_resolved_shell_path_for_env_shebang() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TestDir::new("pi-version-env-shebang");
+        let bin_dir = dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).expect("bin dir should be created");
+
+        let interpreter = bin_dir.join("mnema-test-node");
+        fs::write(&interpreter, b"#!/bin/sh\nprintf '0.73.1\\n'\n")
+            .expect("interpreter should be written");
+        let mut permissions = fs::metadata(&interpreter)
+            .expect("interpreter metadata should be readable")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&interpreter, permissions).expect("interpreter should be executable");
+
+        let pi = dir.path().join("pi");
+        fs::write(&pi, b"#!/usr/bin/env mnema-test-node\n").expect("pi shim should be written");
+        let mut permissions = fs::metadata(&pi)
+            .expect("pi shim metadata should be readable")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&pi, permissions).expect("pi shim should be executable");
+
+        assert_eq!(
+            pi_runtime_version_with_path_dirs(&pi, vec![bin_dir]).as_deref(),
+            Some("0.73.1")
+        );
     }
 
     #[test]

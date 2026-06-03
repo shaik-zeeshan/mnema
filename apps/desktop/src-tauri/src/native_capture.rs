@@ -27,9 +27,10 @@ use capture_types::{
     NativeCaptureDebugLogStatus, NativeCaptureSessionResponse, OcrProvider, OcrSettings,
     RecordingSettings, RecordingSettingsDomainUpdateResponse, ScreenResolution,
     ScreenResolutionPreset, SettingsOwnershipDomain, StartNativeCaptureRequest,
-    UpdateAccessSettingsRequest, UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
-    UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
-    UpdateMetadataSettingsRequest, UpdateMicrophoneControllerRequest, UpdateProcessingSettingsRequest,
+    UpdateAccessSettingsRequest, UpdateCaptureSourceSettingsRequest,
+    UpdateCaptureTimingSettingsRequest, UpdateDeveloperSettingsRequest,
+    UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest, UpdateMetadataSettingsRequest,
+    UpdateMicrophoneControllerRequest, UpdateProcessingSettingsRequest,
     UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest, UpdateVideoSettingsRequest,
     VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };

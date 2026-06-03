@@ -31,8 +31,7 @@ pub type AskAiToolFuture =
 
 /// Invokes one brokered tool call (tool name + camelCase params object) and
 /// resolves to the broker response value, or an error message string.
-pub type AskAiToolInvoker =
-    Box<dyn FnMut(String, serde_json::Value) -> AskAiToolFuture + Send>;
+pub type AskAiToolInvoker = Box<dyn FnMut(String, serde_json::Value) -> AskAiToolFuture + Send>;
 
 /// A single streamed event parsed from one line of shim stdout.
 #[derive(Debug, Clone, PartialEq)]
@@ -316,14 +315,15 @@ where
                             params: params.clone(),
                         });
 
-                        let result: Result<serde_json::Value, String> =
-                            if counts && tool_call_count > max_tool_calls {
-                                Err(format!(
+                        let result: Result<serde_json::Value, String> = if counts
+                            && tool_call_count > max_tool_calls
+                        {
+                            Err(format!(
                                     "Ask AI tool-call limit reached ({max_tool_calls}). Answer using the information already gathered."
                                 ))
-                            } else {
-                                tool_invoker(tool.clone(), params).await
-                            };
+                        } else {
+                            tool_invoker(tool.clone(), params).await
+                        };
                         let ok = result.is_ok();
 
                         // Answer the child. If stdin is gone or the write fails,
@@ -739,9 +739,10 @@ mod tests {
 
     #[test]
     fn parse_tool_call_line_tolerates_surrounding_whitespace() {
-        let call =
-            parse_tool_call_line("  {\"type\":\"tool_call\",\"id\":\"c3\",\"tool\":\"show-text\"}  ")
-                .expect("tool_call should parse");
+        let call = parse_tool_call_line(
+            "  {\"type\":\"tool_call\",\"id\":\"c3\",\"tool\":\"show-text\"}  ",
+        )
+        .expect("tool_call should parse");
         assert_eq!(call.id, "c3");
         assert_eq!(call.tool, "show-text");
     }

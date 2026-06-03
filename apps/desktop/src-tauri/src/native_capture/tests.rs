@@ -71,8 +71,8 @@ use capture_types::{
     InactivityActivityMode, MicrophoneControllerState, MicrophoneDisconnectPolicy,
     MicrophonePreference, MicrophonePreferenceMode, OcrProvider, RecordingSettings,
     ScreenResolution, ScreenResolutionPreset, SourceSessionMeta, SourceSessions,
-    StartNativeCaptureRequest, UpdateRecordingSettingsRequest, VideoBitrateMode, VideoBitratePreset,
-    VideoBitrateSettings,
+    StartNativeCaptureRequest, UpdateRecordingSettingsRequest, VideoBitrateMode,
+    VideoBitratePreset, VideoBitrateSettings,
 };
 use capture_vad::{MicrophonePcmVadFrame, MicrophoneVadRuntime};
 use std::{

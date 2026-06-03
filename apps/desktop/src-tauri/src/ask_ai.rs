@@ -122,10 +122,11 @@ fn take_ask_ai_session(conversation_id: &str) -> Option<AskAiSessionHandle> {
 fn ask_ai_session_prompt_sender(
     conversation_id: &str,
 ) -> Option<tokio::sync::mpsc::UnboundedSender<String>> {
-    ask_ai_sessions()
-        .lock()
-        .ok()
-        .and_then(|sessions| sessions.get(conversation_id).map(|handle| handle.prompt_tx.clone()))
+    ask_ai_sessions().lock().ok().and_then(|sessions| {
+        sessions
+            .get(conversation_id)
+            .map(|handle| handle.prompt_tx.clone())
+    })
 }
 
 const ASK_AI_STATUS_EVENT: &str = "ask_ai_status";
@@ -175,10 +176,7 @@ fn validate_ask_ai_access_ready(
         return Err("Ask AI access is disabled in settings".to_string());
     }
     if !status.ready {
-        let reason = status
-            .reason
-            .as_deref()
-            .unwrap_or("pi_unavailable");
+        let reason = status.reason.as_deref().unwrap_or("pi_unavailable");
         return Err(format!("Ask AI requires a ready PI runtime ({reason})"));
     }
 
@@ -686,7 +684,11 @@ pub async fn ask_ai_availability(
     if !status.ready {
         return Ok(AskAiAvailability {
             available: false,
-            reason: Some(status.reason.unwrap_or_else(|| "pi_unavailable".to_string())),
+            reason: Some(
+                status
+                    .reason
+                    .unwrap_or_else(|| "pi_unavailable".to_string()),
+            ),
         });
     }
 
@@ -994,7 +996,8 @@ pub async fn ask_ai_list_models(
     let node_path = resolve_node_executable()?;
     let shim_path = resolve_shim_path(&app_handle)?;
     let status = crate::app_infra::get_pi_runtime_status_inner(app_handle.clone()).await?;
-    pi_agent_session::list_pi_models(&node_path, &shim_path, status.executable_path.as_deref()).await
+    pi_agent_session::list_pi_models(&node_path, &shim_path, status.executable_path.as_deref())
+        .await
 }
 
 /// Route a raw follow-up question into the resident PI session for an existing
@@ -1063,8 +1066,8 @@ pub async fn ask_ai_cancel(
 mod tests {
     use super::*;
     use app_infra::brokered_access::{
-        BrokerAuthStatusKind, BrokerErrorResponse, BrokerSearchResponse,
-        BrokerSearchResultContext, BrokerShowTextResponse,
+        BrokerAuthStatusKind, BrokerErrorResponse, BrokerSearchResponse, BrokerSearchResultContext,
+        BrokerShowTextResponse,
     };
 
     fn ready_pi_status() -> crate::app_infra::PiRuntimeStatus {
@@ -1106,10 +1109,13 @@ mod tests {
         status.ready = false;
         status.reason = Some("pi_auth_missing".to_string());
 
-        let error = validate_ask_ai_access_ready(true, &status)
-            .expect_err("unready PI should be rejected");
+        let error =
+            validate_ask_ai_access_ready(true, &status).expect_err("unready PI should be rejected");
 
-        assert_eq!(error, "Ask AI requires a ready PI runtime (pi_auth_missing)");
+        assert_eq!(
+            error,
+            "Ask AI requires a ready PI runtime (pi_auth_missing)"
+        );
     }
 
     #[test]
@@ -1387,7 +1393,10 @@ mod tests {
         assert_eq!(frame["audioSegmentId"], serde_json::Value::Null);
         assert_eq!(frame["appName"], serde_json::json!("Xcode"));
         assert_eq!(frame["windowTitle"], serde_json::json!("ContentView.swift"));
-        assert_eq!(frame["startedAt"], serde_json::json!("2026-01-01T10:00:00Z"));
+        assert_eq!(
+            frame["startedAt"],
+            serde_json::json!("2026-01-01T10:00:00Z")
+        );
         assert_eq!(frame["endedAt"], serde_json::json!("2026-01-01T10:01:00Z"));
         // The pure builder never resolves the mic/system distinction; that is the
         // async post-pass's job, so every source starts with a null `sourceKind`.
@@ -1411,11 +1420,9 @@ mod tests {
 
     #[test]
     fn broker_request_from_tool_rejects_reference_captures() {
-        let error = broker_request_from_tool(
-            "reference_captures",
-            serde_json::json!({ "opaqueIds": [] }),
-        )
-        .expect_err("reference_captures is not a broker data tool");
+        let error =
+            broker_request_from_tool("reference_captures", serde_json::json!({ "opaqueIds": [] }))
+                .expect_err("reference_captures is not a broker data tool");
         assert_eq!(error, "unknown Ask AI tool: reference_captures");
     }
 
@@ -1611,8 +1618,8 @@ mod tests {
             message: "result is unavailable or outside the grant scope".to_string(),
         });
 
-        let error = broker_response_to_tool_value(response)
-            .expect_err("error envelope should become Err");
+        let error =
+            broker_response_to_tool_value(response).expect_err("error envelope should become Err");
         assert_eq!(error, "result is unavailable or outside the grant scope");
     }
 }

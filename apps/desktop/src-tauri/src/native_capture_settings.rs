@@ -10,14 +10,14 @@ use capture_types::{
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
     default_system_audio_activity_sensitivity, default_video_bitrate, AccessSettings,
     AudioSpeechDetectionSettings, AudioSpeechDetector, AudioTranscriptionProvider,
-    AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider, OcrRecognitionMode,
-    OcrSettings, RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
+    AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
+    RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
     SettingsOwnershipDomain, SpeakerAnalysisSettings, UpdateAccessSettingsRequest,
     UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
     UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
     UpdateMetadataSettingsRequest, UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
-    UpdateStorageSettingsRequest,
-    UpdateVideoSettingsRequest, VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    UpdateStorageSettingsRequest, UpdateVideoSettingsRequest, VideoBitrateMode, VideoBitratePreset,
+    VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

@@ -663,7 +663,12 @@ fn configure_quick_recall_webview(window: &WebviewWindow) {
         }
         // Objective-C type encoding: BOOL return (`c`), self (`@`), _cmd (`:`),
         // NSEvent* argument (`@`). A no-op if the method is already present.
-        class_addMethod(class, sel!(acceptsFirstMouse:), accepts_first_mouse, c"c@:@".as_ptr());
+        class_addMethod(
+            class,
+            sel!(acceptsFirstMouse:),
+            accepts_first_mouse,
+            c"c@:@".as_ptr(),
+        );
     });
 }
 
