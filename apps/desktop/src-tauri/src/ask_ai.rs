@@ -486,7 +486,11 @@ async fn handle_reference_captures(
 pub async fn get_pi_runtime_status(
     app_handle: tauri::AppHandle,
 ) -> Result<crate::app_infra::PiRuntimeStatus, String> {
-    crate::app_infra::get_pi_runtime_status_inner(app_handle).await
+    // This command backs the explicit Settings → "Refresh PI status" action, so force a
+    // fresh login-shell PATH read: a user who fixed pi/node (e.g. added a dir to their
+    // shell profile) after launch must see it without restarting the app. Hot/background
+    // callers use `get_pi_runtime_status_inner` (cached) instead.
+    crate::app_infra::get_pi_runtime_status_inner_with_options(app_handle, true).await
 }
 
 // NOTE: the brokered data tools (`search`, `timeline`, `show_text`) are NOT
@@ -696,6 +700,28 @@ pub async fn ask_ai_start(
         .map(|query| query.trim().to_string())
         .filter(|query| !query.is_empty());
 
+    // Register the cancellable session handle BEFORE the awaitable seeding so a
+    // cancel arriving mid-seed (the user dismisses Quick Recall while the broker
+    // search is still in flight) is honored: `ask_ai_cancel` finds this handle,
+    // sets `cancel`, and removes the entry. Without early registration the cancel
+    // would be a no-op against an unregistered conversation, and we would later
+    // spawn a resident PI child nobody could stop. The follow-up prompt channel is
+    // created here too so the sender can live in the handle; the receiver is moved
+    // into the streaming task below.
+    let cancel = AskAiCancel::new();
+    let (prompt_tx, prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // `register_ask_ai_session` mints and returns this registration's ownership
+    // token (overwriting the placeholder); the spawned task uses it to remove only
+    // its own entry on completion.
+    let session_token = register_ask_ai_session(
+        &conversation_id,
+        AskAiSessionHandle {
+            cancel: cancel.clone(),
+            prompt_tx,
+            token: 0,
+        },
+    );
+
     // Best-effort seeding via the broker search path.
     let mut seed_results: Vec<BrokerSearchResult> = Vec::new();
     if let Some(seed_query) = seed_query.as_deref() {
@@ -740,6 +766,15 @@ pub async fn ask_ai_start(
         );
     }
 
+    // If a cancel arrived during seeding it set `cancel` and removed our handle.
+    // Honor it now: skip the PI child spawn entirely so no resident process is
+    // launched for a conversation the frontend already dropped. Drop our own
+    // registry entry too in case the cancel raced just after registration.
+    if cancel.is_cancelled() {
+        remove_ask_ai_session_if_owner(&conversation_id, session_token);
+        return Ok(());
+    }
+
     let _ = app_handle.emit(
         ASK_AI_STATUS_EVENT,
         serde_json::json!({
@@ -762,22 +797,10 @@ pub async fn ask_ai_start(
     // Resolve the selected Quick Recall model (None => PI default).
     let model = read_ask_ai_model(&app_handle);
 
-    let cancel = AskAiCancel::new();
-    // Follow-up prompts flow into the resident session over this channel; the
-    // receiver lives in `run_pi_ask_ai_session`. Removing the registry handle
-    // drops the sender, which tears the thread down between turns.
-    let (prompt_tx, prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    // `register_ask_ai_session` mints and returns this registration's ownership
-    // token (overwriting the placeholder); the spawned task uses it to remove
-    // only its own entry on completion.
-    let session_token = register_ask_ai_session(
-        &conversation_id,
-        AskAiSessionHandle {
-            cancel: cancel.clone(),
-            prompt_tx,
-            token: 0,
-        },
-    );
+    // The cancellable session handle (`cancel` flag + follow-up `prompt_tx`) was
+    // registered before seeding so a mid-seed cancel is honored; `prompt_rx` (the
+    // receiver) lives in `run_pi_ask_ai_session` below. Removing the registry
+    // handle drops the sender, which tears the thread down between turns.
 
     // Build the brokered tool invoker. The three data tools ride
     // `execute_pi_broker_request`, which enforces Ask-AI access readiness plus

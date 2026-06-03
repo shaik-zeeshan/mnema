@@ -101,6 +101,12 @@
     // any in-flight search and leave the current results state intact underneath.
     if (isTrailingOperatorPartial(raw)) {
       searchGeneration += 1;
+      // Clear any in-flight loading state: the invalidated response will be
+      // dropped by the generation guard and never reach `loading = false`, so
+      // without this the panel stays stuck "running" — keeping the value list
+      // owner from rendering cleanly and blocking the idle-clear teardown
+      // (operationRunning would never fall back to false).
+      loading = false;
       return;
     }
 
@@ -137,15 +143,24 @@
     try {
       // Slice 1: narrow the per-section limits to the active scope so a
       // source-restricted query doesn't waste a slot fetching the other kind.
-      // Scope is only known AFTER a response, so we read `sectionLimits` (a
-      // $derived off the PREVIOUS response's appliedRefinements) optimistically:
-      // the FIRST query after a scope change runs at the prior limits and the
-      // section narrows on the next keystroke once appliedRefinements catches up.
-      // This is the simplest correct approach — the backend still honors the
-      // operators in the raw query regardless of these limits, and over-fetching
-      // by one section for a single keystroke is harmless. `refinements` stays
-      // empty: the operators live in the query TEXT, not this struct.
-      const limits = sectionLimits;
+      // Scope is only known AFTER a response, so `sectionLimits` is a $derived
+      // off the PREVIOUS response's appliedRefinements. `appliedRefinements`
+      // always belongs to `resultsQuery`, so the narrowing is only trustworthy
+      // when the pending query MATCHES that prior query (a same-query re-run /
+      // pagination). When the query CHANGED, the cached scope is stale and could
+      // zero out the section the new query actually scopes to (e.g. switching
+      // from `source:screen` to `source:mic …` would send audioLimit:0, the
+      // backend would return no audio rows, and nothing reruns since only
+      // appliedRefinements changed — a valid search looks empty). Over-fetching
+      // is harmless (the backend honors the raw query's operators regardless of
+      // these limits), so for a changed query we fetch both sections at full
+      // limit and let the scope settle on the next keystroke. `refinements`
+      // stays empty: the operators live in the query TEXT, not this struct.
+      const scopeMatchesPendingQuery =
+        appliedRefinements !== null && resultsQuery === trimmed;
+      const limits = scopeMatchesPendingQuery
+        ? sectionLimits
+        : { frameLimit: 5, audioLimit: 5 };
       const response = await invoke<SearchCaptureResponse>("search_capture", {
         request: {
           query: trimmed,
@@ -856,7 +871,7 @@
 
   // Route link clicks inside the rendered answer through the OS browser instead
   // of navigating the webview. Links are tagged with data-external in markdown.ts.
-  function handleAnswerClick(event: MouseEvent): void {
+  async function handleAnswerClick(event: MouseEvent): Promise<void> {
     const anchor = (event.target as HTMLElement | null)?.closest(
       "a[data-external]",
     ) as HTMLAnchorElement | null;
@@ -870,7 +885,16 @@
       // panel and fires `Focused(false)`. Suppress the very next blur-dismiss FIRST
       // so the launcher (and the in-flight Ask AI session being read) survives the
       // hand-off; the flag is one-shot, so ordinary click-away still dismisses.
-      void invoke("quick_recall_suppress_blur_dismiss");
+      // AWAIT the suppression before opening: both are separate IPC round-trips,
+      // and if `openUrl` activated the browser before Rust set the one-shot flag,
+      // the resulting `Focused(false)` would reach the blur handler unsuppressed
+      // and dismiss the panel out from under the user. Awaiting orders the flag
+      // strictly before the activation. A failed suppress still opens the link.
+      try {
+        await invoke("quick_recall_suppress_blur_dismiss");
+      } catch {
+        // Best-effort: proceed to open even if the suppression call failed.
+      }
       void openUrl(href);
     }
   }

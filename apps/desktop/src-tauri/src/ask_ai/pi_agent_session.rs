@@ -179,7 +179,7 @@ impl AskAiCancel {
         self.flag.store(true, Ordering::SeqCst);
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub fn is_cancelled(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
     }
 }

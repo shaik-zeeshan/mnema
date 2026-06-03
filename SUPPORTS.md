@@ -34,6 +34,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Active app/window metadata | [x] | [ ] | [ ] | macOS uses NSWorkspace/CoreGraphics. |
 | Browser URL metadata | [x] | [ ] | [ ] | macOS uses AppleScript for supported browsers. |
 | Recommended app exclusions | [x] | [ ] | [ ] | Current catalog uses macOS bundle IDs. |
+| Quick Recall launcher panel | [x] | [~] | [~] | macOS summons a non-activating NSPanel (key without activating Mnema, like Spotlight/Raycast); non-macOS falls back to a plain shown/focused always-on-top window without non-activating semantics. |
 | Status bar / tray | [x] | [~] | [~] | Tauri tray exists cross-platform; current UX includes macOS-only Exclude Current App behavior. |
 | Global shortcuts | [x] | [~] | [~] | Uses Tauri global shortcut plugin for background start/stop, pause/resume, and show/hide; platform behavior needs verification. |
 | Encrypted Capture Index key store | [x] | [ ] | [ ] | macOS uses Keychain. Windows/Linux platform key stores are missing. |
@@ -81,6 +82,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Exclude Current App tray action.
 - [x] Recommended sensitive app exclusion catalog using macOS bundle IDs.
 - [x] Native status-bar tray menu.
+- [x] Quick Recall non-activating NSPanel launcher: reclassed `NSPanel` that becomes key without activating Mnema, floating window level, all-Spaces/full-screen-auxiliary collection behavior, `acceptsFirstMouse:` click pass-through, web-layer-owned Escape, and order-out/blur-grace dismissal.
 - [x] Dock visibility and macOS terminate handling.
 - [x] Global shortcuts through Tauri plugin for background start/stop recording, pause/resume recording, and show/hide Mnema.
 
@@ -176,6 +178,7 @@ Research notes:
   - Candidate transports: named pipes, localhost loopback, or another app-mediated IPC.
 - [ ] Update `crates/cli` authorization request path for Windows.
 - [ ] Verify deep links and app launch fallback on Windows.
+- [~] Verify Quick Recall launcher behavior on Windows. The non-macOS fallback shows/focuses a plain always-on-top window (no non-activating panel), so verify summon-without-stealing-foreground, focus-into-search-field, and click-away/blur dismissal, or implement a Windows-native equivalent.
 - [ ] Verify tray/menu behavior on Windows.
 - [ ] Verify global shortcut registration and default shortcut labels on Windows.
 - [ ] Add Windows release workflow and update manifest generation.
@@ -237,6 +240,7 @@ Linux support is not the immediate target, but these are the likely seams if/whe
 - [ ] Implement Linux Capture Index Key Store using Secret Service/libsecret/KWallet or a clear unsupported flow.
 - [~] Broker Authorization Channel can likely reuse Unix socket shape, but needs Linux config-dir/runtime-dir review.
 - [ ] Verify CLI sidecar packaging and app-mediated authorization flow on Linux.
+- [~] Verify Quick Recall launcher behavior across desktop environments/compositors. The non-macOS fallback shows/focuses a plain always-on-top window (no non-activating panel); verify summon focus, always-on-top/all-workspaces behavior, and click-away/blur dismissal under Wayland/X11, or implement a compositor-appropriate equivalent.
 - [ ] Verify tray/menu behavior across desktop environments.
 - [ ] Verify global shortcuts; Linux support may depend on desktop environment/portal support.
 - [ ] Add Linux release workflow and updater artifacts if supported.
@@ -261,7 +265,7 @@ Use this map when turning checklist items into implementation slices.
 | `crates/audio-transcription/src/providers/apple_speech.rs` | Apple Speech | Disable on non-Apple; default to local providers/cloud if introduced |
 | `crates/app-infra/src/capture_index_key_store.rs` | macOS Keychain through `security` CLI | Windows Credential Manager/DPAPI; Linux Secret Service/KWallet |
 | `apps/desktop/src-tauri/src/broker_authorization_channel.rs`, `crates/cli/src/main.rs` | Unix socket app-mediated authorization | Windows named pipe/TCP; Linux runtime-dir Unix socket validation |
-| `apps/desktop/src-tauri/src/windows.rs` | macOS rounded content views, Dock visibility, terminate interception | Windows/Linux window behavior equivalents or no-ops |
+| `apps/desktop/src-tauri/src/windows.rs` | macOS rounded content views, Dock visibility, terminate interception, Quick Recall non-activating NSPanel (reclass, style mask, floating level, first-mouse, key/first-responder, order-out) | Windows/Linux window behavior equivalents or no-ops; Quick Recall falls back to a plain shown/focused always-on-top window |
 | `.github/workflows/*`, `docs/release-process.md`, `scripts/stage-macos-release-artifacts.sh` | macOS-only release pipeline | Windows/Linux release pipelines and docs |
 
 ## Cross-platform implementation principles

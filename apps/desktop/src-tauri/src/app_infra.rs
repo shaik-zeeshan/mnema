@@ -4085,37 +4085,58 @@ fn mnema_cli_install_path_for_home(home_dir: &Path) -> PathBuf {
 
 // Resolving the login-shell PATH spawns the user's full profile (100ms-1s) and is
 // invoked many times per Ask AI session (pi/node resolution, ~8+/session). PATH is
-// stable for the life of the process (nothing in this tree calls std::env::set_var),
-// so it is safe to memoize the resolved dirs once and clone them on later calls.
+// stable for the life of the process under normal use (nothing in this tree calls
+// std::env::set_var), so the resolved dirs are memoized once and cloned on later
+// calls. The one exception is the user fixing their setup *after* launch (e.g.
+// adding a new dir to their shell profile so pi/node land on PATH) and then hitting
+// Settings → "Refresh PI status": that explicit user action recomputes the PATH via
+// `refresh_terminal_shell_path_dirs` so the cached fast path cannot strand a now-fixed
+// setup as `pi_not_found`/`node_unavailable` until app restart.
 #[cfg(not(windows))]
-static TERMINAL_SHELL_PATH_DIRS_CACHE: OnceLock<Vec<PathBuf>> = OnceLock::new();
+static TERMINAL_SHELL_PATH_DIRS_CACHE: OnceLock<Mutex<Option<Vec<PathBuf>>>> = OnceLock::new();
+
+#[cfg(not(windows))]
+fn compute_terminal_shell_path_dirs() -> Vec<PathBuf> {
+    let shell = std::env::var_os("SHELL")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/bin/zsh".into());
+    let shell_path = std::process::Command::new(shell)
+        .args(["-lc", "printf %s \"$PATH\""])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok());
+
+    let mut path_dirs: Vec<PathBuf> = shell_path
+        .as_deref()
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .collect();
+    if let Some(process_path) = std::env::var_os("PATH") {
+        path_dirs.extend(std::env::split_paths(&process_path));
+    }
+    path_dirs
+}
 
 #[cfg(not(windows))]
 fn terminal_shell_path_dirs() -> Vec<PathBuf> {
-    TERMINAL_SHELL_PATH_DIRS_CACHE
-        .get_or_init(|| {
-            let shell = std::env::var_os("SHELL")
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "/bin/zsh".into());
-            let shell_path = std::process::Command::new(shell)
-                .args(["-lc", "printf %s \"$PATH\""])
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .and_then(|output| String::from_utf8(output.stdout).ok());
-
-            let mut path_dirs: Vec<PathBuf> = shell_path
-                .as_deref()
-                .map(std::env::split_paths)
-                .into_iter()
-                .flatten()
-                .collect();
-            if let Some(process_path) = std::env::var_os("PATH") {
-                path_dirs.extend(std::env::split_paths(&process_path));
-            }
-            path_dirs
-        })
+    let cache = TERMINAL_SHELL_PATH_DIRS_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard
+        .get_or_insert_with(compute_terminal_shell_path_dirs)
         .clone()
+}
+
+// Force a re-read of the login-shell PATH, overwriting the memoized value. Reserved
+// for the explicit user-driven "Refresh PI status" path so a setup fixed after launch
+// is reflected without an app restart; hot paths keep using the cached fast path.
+#[cfg(not(windows))]
+fn refresh_terminal_shell_path_dirs() -> Vec<PathBuf> {
+    let dirs = compute_terminal_shell_path_dirs();
+    let cache = TERMINAL_SHELL_PATH_DIRS_CACHE.get_or_init(|| Mutex::new(None));
+    *cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(dirs.clone());
+    dirs
 }
 
 #[cfg(windows)]
@@ -4123,6 +4144,13 @@ fn terminal_shell_path_dirs() -> Vec<PathBuf> {
     std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default()
+}
+
+// On Windows the process PATH is the source of truth and is not memoized, so there is
+// nothing to invalidate; the refresh path resolves the same way as the hot path.
+#[cfg(windows)]
+fn refresh_terminal_shell_path_dirs() -> Vec<PathBuf> {
+    terminal_shell_path_dirs()
 }
 
 #[cfg(windows)]
@@ -4135,12 +4163,22 @@ fn executable_name(command: &str) -> String {
     command.to_string()
 }
 
-pub(crate) fn executable_in_shell_path(command: &str) -> Option<PathBuf> {
+fn find_executable_in_dirs(command: &str, dirs: Vec<PathBuf>) -> Option<PathBuf> {
     let executable = executable_name(command);
-    terminal_shell_path_dirs()
-        .into_iter()
+    dirs.into_iter()
         .map(|dir| dir.join(&executable))
         .find(|candidate| candidate.is_file())
+}
+
+pub(crate) fn executable_in_shell_path(command: &str) -> Option<PathBuf> {
+    find_executable_in_dirs(command, terminal_shell_path_dirs())
+}
+
+// Like `executable_in_shell_path` but forces a fresh login-shell PATH read first, so a
+// setup the user fixed after launch is seen. Reserved for the explicit "Refresh PI
+// status" path; everything else should use the cached `executable_in_shell_path`.
+fn executable_in_refreshed_shell_path(command: &str) -> Option<PathBuf> {
+    find_executable_in_dirs(command, refresh_terminal_shell_path_dirs())
 }
 
 fn pi_agent_dir_for_home_and_env(
@@ -4473,6 +4511,18 @@ static PI_RUNTIME_STATUS_CACHE: OnceLock<Mutex<Option<(Instant, PiRuntimeStatus)
 pub async fn get_pi_runtime_status_inner(
     app_handle: tauri::AppHandle,
 ) -> Result<PiRuntimeStatus, String> {
+    get_pi_runtime_status_inner_with_options(app_handle, false).await
+}
+
+// `force_refresh` is set only by the explicit user-driven "Refresh PI status" action:
+// it bypasses the short TTL cache AND re-reads the login-shell PATH (the cached PATH
+// otherwise persists for the life of the process), so a pi/node setup the user fixed
+// after launch is reflected without an app restart. Background/hot callers leave it
+// false and ride both caches.
+pub async fn get_pi_runtime_status_inner_with_options(
+    app_handle: tauri::AppHandle,
+    force_refresh: bool,
+) -> Result<PiRuntimeStatus, String> {
     // Resolve the home dir up front: `app_handle` is not safe to move into spawn_blocking,
     // but the derived `PathBuf` is Send and is the only app-handle input the blocking work
     // needs.
@@ -4482,22 +4532,29 @@ pub async fn get_pi_runtime_status_inner(
         .map_err(|error| format!("failed to resolve home dir: {error}"))?;
 
     let cache = PI_RUNTIME_STATUS_CACHE.get_or_init(|| Mutex::new(None));
-    if let Some((computed_at, status)) = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-    {
-        if computed_at.elapsed() < PI_RUNTIME_STATUS_CACHE_TTL {
-            return Ok(status.clone());
+    if !force_refresh {
+        if let Some((computed_at, status)) = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            if computed_at.elapsed() < PI_RUNTIME_STATUS_CACHE_TTL {
+                return Ok(status.clone());
+            }
         }
     }
 
     let status = tokio::task::spawn_blocking(move || {
+        let pi_executable = if force_refresh {
+            executable_in_refreshed_shell_path(PI_COMMAND_NAME)
+        } else {
+            executable_in_shell_path(PI_COMMAND_NAME)
+        };
         pi_runtime_status_for_candidates(
             &home_dir,
             None,
             None,
-            executable_in_shell_path(PI_COMMAND_NAME),
+            pi_executable,
             pi_runtime_version,
         )
     })
