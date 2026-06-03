@@ -218,6 +218,15 @@ pub struct BrokerSearchResult {
     pub ended_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<BrokerSearchResultContext>,
+    // Audio Search Result Anchor: sub-segment match timing + aligned frame for
+    // audio results so consumers can land on the cited moment rather than the
+    // segment start. Always `None` for frame results (no sub-segment anchor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_start_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_end_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aligned_frame_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1668,6 +1677,10 @@ fn map_search_response(
                     frame.app_name,
                     frame.window_title,
                 ),
+                // Frame results have no sub-segment audio anchor.
+                span_start_ms: None,
+                span_end_ms: None,
+                aligned_frame_id: None,
             });
             if results.len() >= limit as usize {
                 break;
@@ -1686,6 +1699,11 @@ fn map_search_response(
                 started_at: audio_result.absolute_start_at,
                 ended_at: audio_result.absolute_end_at,
                 context: None,
+                // Audio Search Result Anchor: carry the match span + aligned
+                // frame so a consumer can land on the cited transcript moment.
+                span_start_ms: Some(audio_result.span_start_ms as i64),
+                span_end_ms: Some(audio_result.span_end_ms as i64),
+                aligned_frame_id: audio_result.aligned_frame.as_ref().map(|frame| frame.id),
             });
         }
         if results.len() == before {

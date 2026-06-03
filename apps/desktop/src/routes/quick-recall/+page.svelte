@@ -266,10 +266,15 @@
   // Hand off an Ask AI answer source to the main window, mirroring
   // selectFrame/selectAudio (frame xor audio carried by the source kind).
   async function selectSource(source: AskAiSource): Promise<void> {
+    // Carry the Audio Search Result Anchor for audio sources (frame sources
+    // leave these null), mirroring selectAudio so the dashboard lands on the
+    // cited transcript match rather than the segment start.
     await invoke("open_capture_result_in_main_window", {
       kind: source.kind,
       frameId: source.frameId,
       audioSegmentId: source.audioSegmentId,
+      spanStartMs: source.spanStartMs ?? null,
+      alignedFrameId: source.alignedFrameId ?? null,
     });
     await closeCurrentWindow();
   }
@@ -751,6 +756,11 @@
     startedAt: string;
     endedAt: string;
     sourceKind: "microphone" | "system" | null;
+    // Audio Search Result Anchor: present only for audio sources, so the
+    // dashboard can land on the cited transcript moment (mirrors
+    // AudioSearchResultDto.spanStartMs / alignedFrame.id).
+    spanStartMs?: number | null;
+    alignedFrameId?: number | null;
   };
 
   type AskAiSourceEvent = {

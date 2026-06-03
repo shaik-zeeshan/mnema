@@ -50,18 +50,32 @@ fn ask_ai_sessions() -> &'static Mutex<HashMap<String, AskAiSessionHandle>> {
 /// Register (or replace) the handle for a conversation, stamping it with a fresh
 /// unique ownership token that the caller records for a later owner-checked
 /// removal. If an existing live handle is overwritten — two `ask_ai_start` calls
-/// racing on one conversation id — its `prompt_tx` is dropped here, tearing the
-/// old resident session down between turns so its PI child does not run
-/// orphaned alongside the newer one. Returns the minted token.
+/// racing on one conversation id — the prior handle is hard-cancelled here (its
+/// `cancel` flag set AND its `prompt_tx` dropped) so the displaced session winds
+/// down rather than running orphaned alongside the newer one. Dropping
+/// `prompt_tx` alone only tears the old session down BETWEEN turns
+/// (`prompt_rx.recv()` returns `None`); a session that is mid-turn is blocked
+/// reading shim stdout and is only stopped by the cancel flag, which the spawned
+/// task checks at the top of its read loop. Without setting it, the displaced
+/// streamer would keep emitting `ask_ai_delta`/`ask_ai_done` events tagged with
+/// the SAME conversation id as the newer session, interleaving output, and would
+/// be unreachable by `ask_ai_cancel` (which now resolves the newer handle).
+/// Returns the minted token.
 fn register_ask_ai_session(conversation_id: &str, mut handle: AskAiSessionHandle) -> u64 {
     // Stamp the registration with a fresh unique token so a finishing session can
     // later remove only its own entry.
     let token = next_ask_ai_session_token();
     handle.token = token;
     if let Ok(mut sessions) = ask_ai_sessions().lock() {
-        // `insert` returns and drops any prior handle, releasing its `prompt_tx`
-        // so the displaced session winds down rather than lingering.
-        sessions.insert(conversation_id.to_string(), handle);
+        // `insert` returns any prior handle. Hard-cancel it (set its `cancel`
+        // flag) before dropping it, so a displaced session that is mid-turn is
+        // killed rather than only winding down between turns; dropping the
+        // returned handle also releases its `prompt_tx`. The flag is the same
+        // `Arc<AtomicBool>` the displaced streaming task polls, so this reaches a
+        // task that is no longer in the registry.
+        if let Some(previous) = sessions.insert(conversation_id.to_string(), handle) {
+            previous.cancel.cancel();
+        }
     }
     token
 }
@@ -299,6 +313,11 @@ struct ResolvedAskAiSource {
     window_title: Option<String>,
     started_at: String,
     ended_at: String,
+    // Audio Search Result Anchor: sub-segment match timing + aligned frame for
+    // audio sources so the dashboard lands on the cited moment rather than the
+    // segment start. Always `None` for frame sources.
+    span_start_ms: Option<i64>,
+    aligned_frame_id: Option<i64>,
 }
 
 /// Build the capped, de-duped, ordered Answer Source list from nominated opaque
@@ -353,6 +372,13 @@ where
             "windowTitle": source.window_title,
             "startedAt": source.started_at,
             "endedAt": source.ended_at,
+            // Audio Search Result Anchor: sub-segment match span + aligned frame
+            // so the dashboard lands on the cited moment (frame sources: null).
+            // Field names mirror `selectAudio`'s open payload so the dashboard
+            // consumer (`payload.spanStartMs`, `payload.alignedFrameId`) works
+            // unchanged.
+            "spanStartMs": source.span_start_ms,
+            "alignedFrameId": source.aligned_frame_id,
             // Microphone/system distinction for audio sources. The pure builder
             // never sets it; a best-effort async post-pass in
             // `handle_reference_captures` fills audio sources from the DB.
@@ -418,6 +444,11 @@ async fn handle_reference_captures(
             window_title: context.and_then(|context| context.window_title.clone()),
             started_at: result.started_at.clone(),
             ended_at: result.ended_at.clone(),
+            // Audio Search Result Anchor retained from the search result the
+            // model received. Present only for audio results; the search mapper
+            // leaves these `None` for frames.
+            span_start_ms: result.span_start_ms,
+            aligned_frame_id: result.aligned_frame_id,
         })
     });
 
@@ -1099,6 +1130,9 @@ mod tests {
                 app_name: Some("Xcode".to_string()),
                 window_title: Some("ContentView.swift".to_string()),
             }),
+            span_start_ms: None,
+            span_end_ms: None,
+            aligned_frame_id: None,
         }
     }
 
@@ -1244,6 +1278,8 @@ mod tests {
             window_title: Some("ContentView.swift".to_string()),
             started_at: started_at.to_string(),
             ended_at: ended_at.to_string(),
+            span_start_ms: None,
+            aligned_frame_id: None,
         }
     }
 
@@ -1256,6 +1292,10 @@ mod tests {
             window_title: None,
             started_at: started_at.to_string(),
             ended_at: ended_at.to_string(),
+            // Audio Search Result Anchor: a mid-segment match span + aligned
+            // frame, as a real audio search result would carry.
+            span_start_ms: Some(3_000),
+            aligned_frame_id: Some(99),
         }
     }
 
@@ -1353,6 +1393,9 @@ mod tests {
         // async post-pass's job, so every source starts with a null `sourceKind`.
         assert!(frame.as_object().unwrap().contains_key("sourceKind"));
         assert_eq!(frame["sourceKind"], serde_json::Value::Null);
+        // Frame sources carry no Audio Search Result Anchor.
+        assert_eq!(frame["spanStartMs"], serde_json::Value::Null);
+        assert_eq!(frame["alignedFrameId"], serde_json::Value::Null);
 
         let audio = &sources[1];
         assert_eq!(audio["kind"], serde_json::json!("audio"));
@@ -1361,6 +1404,9 @@ mod tests {
         assert_eq!(audio["windowTitle"], serde_json::Value::Null);
         assert!(audio.as_object().unwrap().contains_key("sourceKind"));
         assert_eq!(audio["sourceKind"], serde_json::Value::Null);
+        // Audio sources carry the anchor so the dashboard lands mid-segment.
+        assert_eq!(audio["spanStartMs"], serde_json::json!(3_000));
+        assert_eq!(audio["alignedFrameId"], serde_json::json!(99));
     }
 
     #[test]
@@ -1514,6 +1560,48 @@ mod tests {
         // The owning (newer) session's removal clears it.
         remove_ask_ai_session_if_owner(id, second_token);
         assert!(ask_ai_session_prompt_sender(id).is_none());
+    }
+
+    #[test]
+    fn register_cancels_the_displaced_session_handle() {
+        let id = "displaced-cancel-conv";
+
+        // First registration: capture its cancel handle so we can observe whether
+        // a racing second start hard-cancels it. Keep the receiver alive so the
+        // first handle's sender stays valid until it is displaced.
+        let first_cancel = AskAiCancel::new();
+        let (first_tx, _first_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        register_ask_ai_session(
+            id,
+            AskAiSessionHandle {
+                cancel: first_cancel.clone(),
+                prompt_tx: first_tx,
+                token: 0,
+            },
+        );
+        assert!(!first_cancel.is_cancelled());
+
+        // A second `ask_ai_start` reuses the id. Replacing the entry must set the
+        // displaced handle's cancel flag so a mid-turn streamer (blocked reading
+        // shim stdout, unreachable by dropping `prompt_tx` alone) is killed and
+        // stops interleaving output under the now-newer conversation id.
+        let (second_tx, _second_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        register_ask_ai_session(
+            id,
+            AskAiSessionHandle {
+                cancel: AskAiCancel::new(),
+                prompt_tx: second_tx,
+                token: 0,
+            },
+        );
+
+        assert!(
+            first_cancel.is_cancelled(),
+            "displacing a session must cancel the prior handle, not only drop its prompt_tx"
+        );
+
+        // Clean up the registry so the static map does not leak into other tests.
+        let _ = take_ask_ai_session(id);
     }
 
     #[test]

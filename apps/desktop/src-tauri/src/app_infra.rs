@@ -4153,21 +4153,46 @@ fn refresh_terminal_shell_path_dirs() -> Vec<PathBuf> {
     terminal_shell_path_dirs()
 }
 
+// On Windows a command on PATH can be exposed under any of the PATHEXT
+// extensions, not just `.exe`. npm in particular installs CLI shims as
+// `<command>.cmd` (e.g. `pi.cmd`), so probing `<command>.exe` alone would
+// report `pi_not_found` even when `pi` runs fine from the user's shell.
+// We honor the PATHEXT env var when present and fall back to the standard
+// Windows default list otherwise. Bare `<command>` (no extension) is also
+// tried so an already-suffixed input or extension-less executable resolves.
 #[cfg(windows)]
-fn executable_name(command: &str) -> String {
-    format!("{command}.exe")
+fn executable_name_candidates(command: &str) -> Vec<String> {
+    const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| DEFAULT_PATHEXT.to_string());
+
+    let mut candidates = Vec::new();
+    candidates.push(command.to_string());
+    for ext in pathext.split(';') {
+        let ext = ext.trim();
+        if ext.is_empty() {
+            continue;
+        }
+        // PATHEXT entries are conventionally written with a leading dot.
+        let ext = ext.strip_prefix('.').unwrap_or(ext);
+        candidates.push(format!("{command}.{ext}"));
+    }
+    candidates
 }
 
 #[cfg(not(windows))]
-fn executable_name(command: &str) -> String {
-    command.to_string()
+fn executable_name_candidates(command: &str) -> Vec<String> {
+    vec![command.to_string()]
 }
 
 fn find_executable_in_dirs(command: &str, dirs: Vec<PathBuf>) -> Option<PathBuf> {
-    let executable = executable_name(command);
-    dirs.into_iter()
-        .map(|dir| dir.join(&executable))
-        .find(|candidate| candidate.is_file())
+    let candidates = executable_name_candidates(command);
+    dirs.into_iter().find_map(|dir| {
+        candidates
+            .iter()
+            .map(|executable| dir.join(executable))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 pub(crate) fn executable_in_shell_path(command: &str) -> Option<PathBuf> {

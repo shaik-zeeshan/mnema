@@ -69,7 +69,6 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { createInterface } from "node:readline";
 
 // PI's SDK has shipped under multiple npm scopes; probe each known name (plus an
 // optional MNEMA_PI_SDK_PACKAGE override, tried first) until one resolves.
@@ -152,7 +151,15 @@ function finishSession() {
 // The stream stays open for the whole multi-turn session. Three line kinds flow in:
 // prompt lines (one per turn), tool_result lines (replies to a tool_call we emitted),
 // and EOF (stdin close). We can't read-to-EOF for a single answer anymore, so parse
-// line by line with readline and feed prompts through a queue the main loop drains.
+// line by line and feed prompts through a queue the main loop drains.
+//
+// Framing splits on literal LF (\n) bytes ONLY — NOT via readline. The inbound JSON
+// lines are produced by `serde_json` on the Rust side, which (like JSON.stringify)
+// leaves the Unicode line separators U+2028 / U+2029 RAW (unescaped) inside string
+// values. Node's `readline` treats U+2028 / U+2029 as line terminators, so a prompt
+// or tool_result carrying copied/captured text with those code points would be split
+// mid-JSON, fail JSON.parse, and be dropped — silently failing the ask or leaving a
+// tool call unresolved. Splitting on \n only keeps each serde_json line intact.
 
 // Pending tool calls awaiting a host reply: callId -> resolver({ ok, result, error }).
 const pendingToolCalls = new Map();
@@ -191,53 +198,79 @@ async function nextPrompt() {
   }
 }
 
-/** Wire the readline interface that dispatches every stdin line. */
+/** Dispatch one already-split stdin line (no trailing LF). */
+function dispatchStdinLine(line) {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return; // ignore blank lines
+  let msg;
+  try {
+    msg = JSON.parse(trimmed);
+  } catch (err) {
+    diag("ignoring malformed stdin line:", err?.message ?? err);
+    return;
+  }
+  if (!msg || typeof msg !== "object") return;
+
+  if (msg.type === "tool_result") {
+    const id = msg.id;
+    const resolver = id != null ? pendingToolCalls.get(id) : undefined;
+    if (!resolver) {
+      diag("tool_result for unknown id:", id);
+      return;
+    }
+    pendingToolCalls.delete(id);
+    resolver({
+      ok: msg.ok === true,
+      result: msg.result,
+      error: typeof msg.error === "string" ? msg.error : undefined,
+    });
+    return;
+  }
+
+  if (typeof msg.prompt === "string") {
+    // Each prompt line starts another turn: enqueue it and wake the main loop.
+    promptQueue.push(msg.prompt);
+    signalPromptWaiter();
+    return;
+  }
+
+  // Anything else is unknown — ignore quietly (diagnostics only).
+  diag("ignoring unknown stdin line shape");
+}
+
+/**
+ * Read stdin and dispatch every LF-delimited line. Frames on literal LF (\n)
+ * bytes ONLY (not readline), so raw U+2028 / U+2029 inside a serde_json string
+ * value can never split a line mid-JSON. Partial lines buffer across chunk
+ * boundaries, and a trailing \r is stripped for Windows CRLF safety.
+ */
 function startStdinReader() {
-  const rl = createInterface({ input: process.stdin });
-  rl.on("line", (line) => {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) return; // ignore blank lines
-    let msg;
-    try {
-      msg = JSON.parse(trimmed);
-    } catch (err) {
-      diag("ignoring malformed stdin line:", err?.message ?? err);
-      return;
+  process.stdin.setEncoding("utf8");
+  let buffer = "";
+  process.stdin.on("data", (chunk) => {
+    buffer += chunk;
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+      let line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      // Strip a trailing \r (Windows CRLF) before dispatching.
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      dispatchStdinLine(line);
     }
-    if (!msg || typeof msg !== "object") return;
-
-    if (msg.type === "tool_result") {
-      const id = msg.id;
-      const resolver = id != null ? pendingToolCalls.get(id) : undefined;
-      if (!resolver) {
-        diag("tool_result for unknown id:", id);
-        return;
-      }
-      pendingToolCalls.delete(id);
-      resolver({
-        ok: msg.ok === true,
-        result: msg.result,
-        error: typeof msg.error === "string" ? msg.error : undefined,
-      });
-      return;
-    }
-
-    if (typeof msg.prompt === "string") {
-      // Each prompt line starts another turn: enqueue it and wake the main loop.
-      promptQueue.push(msg.prompt);
-      signalPromptWaiter();
-      return;
-    }
-
-    // Anything else is unknown — ignore quietly (diagnostics only).
-    diag("ignoring unknown stdin line shape");
   });
-  rl.on("close", () => {
+  process.stdin.on("end", () => {
+    // Flush any final line that arrived without a trailing newline.
+    if (buffer.length > 0) {
+      let line = buffer;
+      buffer = "";
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      dispatchStdinLine(line);
+    }
     // EOF: no further prompts. Wake a waiting loop so it can drain + exit cleanly.
     stdinClosed = true;
     signalPromptWaiter();
   });
-  rl.on("error", (err) => {
+  process.stdin.on("error", (err) => {
     finishError(`stdin read error: ${err?.message ?? err}`);
   });
 }
