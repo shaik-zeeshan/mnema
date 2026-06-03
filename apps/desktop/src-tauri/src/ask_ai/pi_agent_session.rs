@@ -411,7 +411,16 @@ where
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    return Err(format!("failed to read Ask AI shim output: {error}"));
+                    // Emit the error through `on_event` before returning. In a
+                    // multi-turn session the caller tracks terminal state
+                    // session-wide, so a read failure on a follow-up turn (after an
+                    // earlier turn already emitted `done`) would otherwise be
+                    // swallowed by the caller's `saw_terminal` guard, leaving the
+                    // conversation stuck in the streaming state. Announcing it here
+                    // makes the stream surface its own failure regardless.
+                    let message = format!("failed to read Ask AI shim output: {error}");
+                    on_event(AskAiStreamEvent::Error(message.clone()));
+                    return Err(message);
                 }
             }
         }

@@ -482,12 +482,6 @@ async fn handle_reference_captures(
     Ok(serde_json::json!({ "accepted": accepted, "dropped": dropped }))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AskAiShowTextRequest {
-    opaque_id: String,
-}
-
 #[tauri::command]
 pub async fn get_pi_runtime_status(
     app_handle: tauri::AppHandle,
@@ -495,35 +489,14 @@ pub async fn get_pi_runtime_status(
     crate::app_infra::get_pi_runtime_status_inner(app_handle).await
 }
 
-#[tauri::command]
-pub async fn ask_ai_broker_search(
-    app_handle: tauri::AppHandle,
-    request: BrokerSearchRequest,
-) -> Result<BrokeredCaptureResponse, String> {
-    execute_pi_broker_request(app_handle, BrokeredCaptureRequest::Search(request)).await
-}
-
-#[tauri::command]
-pub async fn ask_ai_broker_timeline(
-    app_handle: tauri::AppHandle,
-    request: BrokerTimelineRequest,
-) -> Result<BrokeredCaptureResponse, String> {
-    execute_pi_broker_request(app_handle, BrokeredCaptureRequest::Timeline(request)).await
-}
-
-#[tauri::command]
-pub async fn ask_ai_broker_show_text(
-    app_handle: tauri::AppHandle,
-    request: AskAiShowTextRequest,
-) -> Result<BrokeredCaptureResponse, String> {
-    execute_pi_broker_request(
-        app_handle,
-        BrokeredCaptureRequest::ShowText {
-            opaque_id: request.opaque_id,
-        },
-    )
-    .await
-}
+// NOTE: the brokered data tools (`search`, `timeline`, `show_text`) are NOT
+// exposed as Tauri commands. They are reachable only through the PI Ask AI
+// session via the in-process `tool_invoker` (see `run_pi_ask_ai_session`), which
+// routes every call through `execute_pi_broker_request` AND the per-question
+// tool-call cap. Registering them as renderer-callable commands would let any
+// webview (or an XSS in Quick Recall) issue All-Retained broker queries directly,
+// bypassing both the PI flow and the cap while audit still attributed access to
+// PI. Keep them internal.
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

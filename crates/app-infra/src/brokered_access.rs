@@ -537,7 +537,10 @@ impl BrokeredCaptureAccess {
                     "failed to resolve Mnema saveDirectory from recording settings".to_string(),
                 )
             })?;
-        AppInfra::initialize(save_directory).await
+        // Brokered access is a read-only consumer that never spawns workers, so it
+        // must not run startup maintenance (orphaned-job reconciliation) against a
+        // database the live desktop app may be actively processing. See ADR 0020.
+        AppInfra::initialize_read_only(save_directory).await
     }
 
     fn audit_result(
@@ -1281,7 +1284,9 @@ pub async fn authorize_active_opaque_capture_reference(
     let Some(save_directory) = default_save_directory_from_config(config_dir)? else {
         return Ok(None);
     };
-    let infra = AppInfra::initialize(save_directory).await?;
+    // Read-only authorization: skip startup maintenance so this never reconciles
+    // the live desktop app's running jobs (see ADR 0020 / `initialize_read_only`).
+    let infra = AppInfra::initialize_read_only(save_directory).await?;
     match broker_authorize_opaque_reference(config_dir, &infra, &grants, opaque_id).await? {
         Ok(reference) => Ok(Some(reference)),
         Err(_) => Ok(None),

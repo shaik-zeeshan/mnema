@@ -753,11 +753,24 @@ async function main() {
   );
   const chosenModel = selectedModel ?? defaultModel;
 
-  // 4. Create the session. Builtin tools stay disabled; the three custom Mnema
-  //    broker tools are registered; the session is ephemeral in-memory.
+  // 4. Create the session. Only the Mnema broker tools are reachable; the session
+  //    is ephemeral in-memory.
   const customTools = buildBrokerTools(defineTool, Type);
+  // Restrict the session to EXACTLY the Mnema broker tools via an explicit
+  // allowlist. `noTools: "builtin"` is NOT sufficient: per the PI SDK it only
+  // disables the builtin coding tools (read/bash/edit/write) and KEEPS any
+  // user-installed extension tools enabled, which would leak arbitrary machine
+  // tools into Ask AI and violate the shim's "no file/bash/other tools" contract.
+  // The SDK applies the `tools` allowlist uniformly to builtin, extension, AND
+  // custom tools, so listing only our tool names drops builtins + extensions while
+  // our custom tools (matched by name) survive the same filter.
+  const allowedToolNames = customTools
+    .map((tool) => tool?.name)
+    .filter((name) => typeof name === "string" && name.length > 0);
   const sessionOptions = {
-    noTools: "builtin",
+    // Belt-and-suspenders: start from no tools, then allowlist only ours.
+    noTools: "all",
+    tools: allowedToolNames,
     customTools,
     authStorage,
     modelRegistry,

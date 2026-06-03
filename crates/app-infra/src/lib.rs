@@ -278,6 +278,22 @@ impl AppInfra {
         Ok(infra)
     }
 
+    /// Read-only initialization for brokered-access consumers (the `mnema` CLI and
+    /// the in-app Ask AI agent).
+    ///
+    /// Opens the database and builds every store but, unlike [`Self::initialize`],
+    /// does **not** run [`Self::run_startup_maintenance`]. Brokered access only
+    /// issues read queries (search / timeline / show-text / opaque-reference
+    /// authorization) and never spawns processing workers, so it must not run the
+    /// startup maintenance scans — in particular orphaned-job reconciliation, which
+    /// is only safe while nothing is executing those jobs (see ADR 0020). Running
+    /// it against a database whose live owner (the desktop app) has workers
+    /// actively processing would requeue legitimately-`running` jobs and cause
+    /// duplicate processing.
+    pub async fn initialize_read_only<P: AsRef<Path>>(base_dir: P) -> Result<Self> {
+        Self::initialize_fast_with_processing_registry(base_dir, default_processing_registry()).await
+    }
+
     /// Fast initialization path: opens the database and constructs every store
     /// and runtime, but does **not** run the startup maintenance scans
     /// (frame-equivalence / search-projection backfills, orphaned-job
