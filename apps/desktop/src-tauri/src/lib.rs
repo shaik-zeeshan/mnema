@@ -52,6 +52,14 @@ struct BrokerOpenCaptureResultPayload {
     kind: String,
     frame_id: Option<i64>,
     audio_segment_id: Option<i64>,
+    /// Audio Search Result Anchor: the match span start within the segment (ms)
+    /// and the aligned frame id, so an audio handoff lands on the selected
+    /// transcript match instead of the segment start. Absent for the broker-URL
+    /// path, which only resolves a capture reference (kind/frame/segment id).
+    #[serde(default)]
+    span_start_ms: Option<i64>,
+    #[serde(default)]
+    aligned_frame_id: Option<i64>,
 }
 
 #[derive(Default)]
@@ -74,6 +82,8 @@ fn open_capture_result_in_main_window(
     kind: String,
     frame_id: Option<i64>,
     audio_segment_id: Option<i64>,
+    span_start_ms: Option<i64>,
+    aligned_frame_id: Option<i64>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, BrokerOpenCaptureResultState>,
 ) {
@@ -82,6 +92,8 @@ fn open_capture_result_in_main_window(
         kind,
         frame_id,
         audio_segment_id,
+        span_start_ms,
+        aligned_frame_id,
     };
     if let Ok(mut pending) = state.pending.lock() {
         pending.push_back(payload.clone());
@@ -133,6 +145,10 @@ async fn broker_payload_from_url(
         frame_id: capture_ref.frame_id,
         audio_segment_id: capture_ref.audio_segment_id,
         kind: capture_ref.kind,
+        // The broker-URL handoff resolves only a capture reference, so it carries
+        // no search-result anchor; the audio receiver falls back to the segment start.
+        span_start_ms: None,
+        aligned_frame_id: None,
     })
 }
 

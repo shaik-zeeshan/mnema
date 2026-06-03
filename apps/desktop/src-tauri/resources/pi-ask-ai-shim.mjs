@@ -7,7 +7,14 @@
 // npm scope (`@mariozechner/pi-coding-agent`, `@earendil-works/pi-coding-agent`), so
 // the shim probes the known scopes and an optional override rather than one fixed name.
 //
-// PI's builtin coding-agent bash/file tools stay disabled via `noTools: "builtin"`.
+// PI's builtin coding-agent bash/file tools stay disabled via `noTools: "all"` plus an
+// explicit `tools` allowlist of ONLY the Mnema broker tool names, and the user's
+// extensions/skills/prompt-templates/context files are kept out entirely by passing an
+// explicitly empty `resourceLoader` (a `DefaultResourceLoader` constructed with
+// `noExtensions/noSkills/noPromptTemplates/noThemes/noContextFiles`). Omitting the
+// resource loader would let `createAgentSession` build the DefaultResourceLoader and load
+// the user's configured extensions/skills/context — whose hooks and prompt context would
+// then run inside an Ask AI session carrying seeded capture history — so we never omit it.
 // On top of that, this slice registers a small set of custom Mnema broker tools —
 // `search`, `timeline`, `show_text`, and the presentation-only `reference_captures` —
 // whose `execute()` does NOT touch the filesystem itself: each call is brokered back to
@@ -701,7 +708,15 @@ async function main() {
   if (!listMode) startStdinReader();
 
   const sdk = await importPiSdk();
-  const { AuthStorage, ModelRegistry, createAgentSession, SessionManager, defineTool } = sdk;
+  const {
+    AuthStorage,
+    ModelRegistry,
+    createAgentSession,
+    SessionManager,
+    defineTool,
+    DefaultResourceLoader,
+    getAgentDir,
+  } = sdk;
   if (!AuthStorage || !ModelRegistry || !createAgentSession || !SessionManager) {
     throw new Error(
       "PI SDK was imported but is missing expected exports " +
@@ -767,11 +782,54 @@ async function main() {
   const allowedToolNames = customTools
     .map((tool) => tool?.name)
     .filter((name) => typeof name === "string" && name.length > 0);
+
+  // The tools allowlist is NOT enough on its own. When `resourceLoader` is omitted,
+  // `createAgentSession` builds a `DefaultResourceLoader` and `await`s its `reload()`,
+  // which discovers and LOADS the user's configured extensions, skills, prompt
+  // templates, and context (AGENTS) files. The allowlist only filters which *tools*
+  // are active; loaded extensions still get their hooks wired (e.g.
+  // `before_provider_request`, `context`, `before_agent_start`) and their skills /
+  // system-prompt / context files injected into the model context. That extension
+  // code/prompt context would run inside an Ask AI session carrying seeded capture
+  // history. So we pass an explicitly empty resource loader: no extensions, skills,
+  // prompt templates, themes, or context files are loaded for Ask AI.
+  let resourceLoader;
+  if (typeof DefaultResourceLoader === "function") {
+    try {
+      const agentDir = typeof getAgentDir === "function" ? getAgentDir() : undefined;
+      const loader = new DefaultResourceLoader({
+        cwd: process.cwd(),
+        agentDir,
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+      });
+      await loader.reload();
+      resourceLoader = loader;
+    } catch (err) {
+      // If we cannot build the disabled loader, fail closed rather than silently
+      // falling back to the DefaultResourceLoader that loads user extensions.
+      throw new Error(
+        `Failed to build the disabled Ask AI resource loader (refusing to fall back ` +
+          `to user extensions): ${err?.message ?? err}`,
+      );
+    }
+  } else {
+    throw new Error(
+      "PI SDK is missing the `DefaultResourceLoader` export needed to disable " +
+        "extension/skill/context loading for Ask AI.",
+    );
+  }
+
   const sessionOptions = {
     // Belt-and-suspenders: start from no tools, then allowlist only ours.
     noTools: "all",
     tools: allowedToolNames,
     customTools,
+    // Empty resource loader: never load the user's extensions/skills/context.
+    resourceLoader,
     authStorage,
     modelRegistry,
     sessionManager: SessionManager.inMemory(),

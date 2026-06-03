@@ -250,10 +250,15 @@
   }
 
   async function selectAudio(result: AudioSearchResultDto): Promise<void> {
+    // Carry the Audio Search Result Anchor (match span start + aligned frame)
+    // so the dashboard lands on the selected transcript match rather than the
+    // segment start, mirroring the in-dashboard selectAudioSearchResult path.
     await invoke("open_capture_result_in_main_window", {
       kind: "audio",
       frameId: null,
       audioSegmentId: result.audioSegment.id,
+      spanStartMs: result.spanStartMs,
+      alignedFrameId: result.alignedFrame?.id ?? null,
     });
     await closeCurrentWindow();
   }

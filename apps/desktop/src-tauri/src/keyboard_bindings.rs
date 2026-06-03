@@ -14,7 +14,7 @@ const KEYBOARD_BINDINGS_CHANGED_EVENT: &str = "keyboard_bindings_settings_change
 const TOGGLE_RECORDING_DEFAULT: &str = "CommandOrControl+Alt+R";
 const PAUSE_RESUME_RECORDING_DEFAULT: &str = "CommandOrControl+Alt+P";
 const TOGGLE_MAIN_WINDOW_DEFAULT: &str = "CommandOrControl+Alt+M";
-const TOGGLE_QUICK_RECALL_DEFAULT: &str = "CommandOrControl+Shift+Space";
+const TOGGLE_QUICK_RECALL_DEFAULT: &str = "CommandOrControl+Alt+Space";
 const REGISTRATION_WARNING_ID: &str = "global-shortcuts-registration-failed";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

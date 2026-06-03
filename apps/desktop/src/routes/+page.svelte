@@ -453,6 +453,11 @@
     kind: "frame" | "audio";
     frameId: number | null;
     audioSegmentId: number | null;
+    // Audio Search Result Anchor carried by the Quick Recall handoff so an audio
+    // open lands on the selected transcript match (span start + aligned frame)
+    // instead of the segment start. Null for the broker-URL path.
+    spanStartMs?: number | null;
+    alignedFrameId?: number | null;
   };
   type AppIconResolution = {
     bundleId: string;
@@ -4812,7 +4817,16 @@
       }
       selectedAudioSegmentPinned = mapped;
       selectedAudioSegmentId = audio?.id ?? payload.audioSegmentId;
-      pendingAudioSeekMs = 0;
+      // Mirror the in-dashboard selectAudioSearchResult: seek to the selected
+      // match span (falling back to the segment start) and jump the timeline to
+      // the aligned frame so mid-segment / out-of-window matches land correctly.
+      pendingAudioSeekMs = payload.spanStartMs ?? 0;
+      if (payload.alignedFrameId != null) {
+        const alignedFrame = await invoke<FrameDto | null>("get_frame", {
+          request: { frameId: payload.alignedFrameId },
+        });
+        if (alignedFrame) await jumpToFrame(alignedFrame, false);
+      }
     }
   }
 
