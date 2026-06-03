@@ -197,10 +197,17 @@ impl AskAiCancel {
 /// A terminal `done` event finishes the CURRENT TURN (not the session): the loop
 /// emits it, then awaits the next follow-up prompt on `prompt_rx`. When one
 /// arrives it is written as a `{"prompt":...}` line, the per-turn tool-call
-/// counter resets, and the loop reads the next turn's events. When all
-/// `prompt_rx` senders are dropped (the thread is being torn down), `recv()`
-/// returns `None` and the session ends cleanly. An `error` event stays TERMINAL
-/// for the whole session (the shim only emits it on fatal failure + exits).
+/// counter resets, the per-turn terminal flag clears, and the loop reads the
+/// next turn's events. When all `prompt_rx` senders are dropped (the thread is
+/// being torn down), `recv()` returns `None` and the session ends cleanly. An
+/// `error` event is fatal for the whole session (the shim only emits it on fatal
+/// failure + exits).
+///
+/// Terminal state is tracked PER TURN, not session-wide: if the CURRENT turn
+/// ends without its own `done`/`error` (a crash, EOF, or a follow-up prompt we
+/// could not hand off), the loop emits a synthetic `error` event through
+/// `on_event` and returns `Err` — so a follow-up failure after an earlier
+/// successful turn is reported rather than silently treated as success.
 ///
 /// stderr is drained into a buffer used for diagnostics: a non-zero exit without
 /// a terminal `done`/`error` event surfaces the stderr tail as the error
@@ -356,6 +363,17 @@ where
                                 on_event(AskAiStreamEvent::Done);
                                 match prompt_rx.recv().await {
                                     Some(next) => {
+                                        // A fresh turn begins: it has not yet
+                                        // produced its own terminal event, and its
+                                        // tool-call budget resets. Clearing
+                                        // `saw_terminal` here makes it mean "the
+                                        // CURRENT turn terminated", so a follow-up
+                                        // that dies before its own `done`/`error`
+                                        // is surfaced as a failure by the post-loop
+                                        // path instead of inheriting turn 1's
+                                        // success.
+                                        saw_terminal = false;
+                                        tool_call_count = 0;
                                         let mut wrote = false;
                                         if let Some(stdin) = child_stdin.as_mut() {
                                             let mut payload = prompt_line(&next);
@@ -367,12 +385,15 @@ where
                                             }
                                         }
                                         if !wrote {
-                                            // stdin gone / write failed: treat like
-                                            // EOF/teardown and end the session.
+                                            // Could not hand the follow-up to the
+                                            // shim. Unless we are cancelling, this
+                                            // is a started turn that failed before
+                                            // it began; fall through to the
+                                            // post-loop error path (saw_terminal is
+                                            // now false) rather than a silent clean
+                                            // exit.
                                             break;
                                         }
-                                        // Fresh turn: reset the per-turn cap.
-                                        tool_call_count = 0;
                                         continue;
                                     }
                                     None => break,
@@ -421,23 +442,24 @@ where
         return Ok(());
     }
 
-    // No terminal event was seen. A clean exit with no output is itself an
-    // error; a non-zero exit surfaces the stderr tail.
+    // The current turn ended without a terminal `done`/`error` event: a clean
+    // exit with no output, a crash, or a follow-up we could not hand off. Build
+    // a diagnostic and surface it as an error EVENT too — in a multi-turn
+    // session the caller tracks terminal state session-wide and so cannot tell a
+    // failed follow-up from turn 1's earlier success; emitting through
+    // `on_event` makes the stream announce its own failure regardless.
     let stderr_tail = {
         let guard = stderr_buffer.lock().await;
         stderr_tail(&guard)
     };
 
-    if status.success() {
-        let message = if stderr_tail.is_empty() {
+    let message = if status.success() {
+        if stderr_tail.is_empty() {
             "Ask AI shim exited without producing an answer".to_string()
         } else {
             format!("Ask AI shim exited without producing an answer: {stderr_tail}")
-        };
-        return Err(message);
-    }
-
-    let message = if stderr_tail.is_empty() {
+        }
+    } else if stderr_tail.is_empty() {
         format!("Ask AI shim failed (exit {})", describe_exit(&status))
     } else {
         format!(
@@ -445,6 +467,8 @@ where
             describe_exit(&status)
         )
     };
+
+    on_event(AskAiStreamEvent::Error(message.clone()));
     Err(message)
 }
 

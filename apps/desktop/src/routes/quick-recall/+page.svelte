@@ -875,6 +875,10 @@
         return "Sign in to PI to use Ask AI";
       case "pi_no_provider":
         return "Configure a PI provider to use Ask AI";
+      case "node_unavailable":
+        return "Node.js (from your PI install) isn't on PATH";
+      case "shim_unavailable":
+        return "Ask AI is unavailable on this build";
       default:
         return "Set up PI to use Ask AI";
     }
@@ -1090,8 +1094,11 @@
       return;
     }
 
-    // Cancel any in-flight stream before starting a new thread.
-    if (askStreaming && askConversationId !== null) {
+    // Tear down any existing thread before starting a new one. This must fire
+    // even when the prior thread is NOT streaming: after a turn completes the
+    // backend session stays resident (waiting for a follow-up), so replacing
+    // `askConversationId` without cancelling would orphan that PI process.
+    if (askConversationId !== null) {
       await cancelActiveAsk();
     }
 
@@ -1563,17 +1570,96 @@
     }
   }
 
-  // Remove every whitespace-delimited token from `raw` whose lowercased text
-  // starts with one of `prefixes`, then collapse the leftover whitespace and
-  // trim. Pure: used by removeChip and reusable by later picker-commit slices.
-  function stripOperatorTokens(raw: string, prefixes: string[]): string {
-    const kept = raw
-      .split(/\s+/)
-      .filter((token) => token.length > 0)
-      .filter((token) => {
-        const lower = token.toLowerCase();
-        return !prefixes.some((prefix) => lower.startsWith(prefix));
-      });
+  // Split `raw` into whitespace-delimited tokens, but keep a double-quoted run
+  // as ONE token so a quoted operator value containing spaces (e.g.
+  // `app:"Google Chrome"`) is never shredded mid-value. An unterminated quote
+  // still flushes its trailing run rather than dropping it.
+  function tokenizeQuery(raw: string): string[] {
+    const tokens: string[] = [];
+    let current = "";
+    let inQuotes = false;
+    for (const ch of raw) {
+      if (ch === '"') {
+        inQuotes = !inQuotes;
+        current += ch;
+      } else if (!inQuotes && /\s/.test(ch)) {
+        if (current.length > 0) {
+          tokens.push(current);
+          current = "";
+        }
+      } else {
+        current += ch;
+      }
+    }
+    if (current.length > 0) {
+      tokens.push(current);
+    }
+    return tokens;
+  }
+
+  // The operator values (lowercased, unquoted) that identify THIS chip's token,
+  // or null for a date chip — which owns the whole `date:`/`after:`/`before:`
+  // range and so removes its family wholesale. Source chips accept their short
+  // and long spellings so a `source:mic` token still matches a microphone chip.
+  function chipTokenValues(chip: ActiveFilterChip): string[] | null {
+    switch (chip.kind) {
+      case "app":
+        return [chip.data.value.toLowerCase()];
+      case "source":
+        if (chip.data.source === "screen") return ["screen"];
+        return chip.data.source === "microphone"
+          ? ["microphone", "mic"]
+          : ["system", "system_audio"];
+      case "date":
+        return null;
+    }
+  }
+
+  // Whether `token` is an operator token of one of `prefixes` whose unquoted,
+  // lowercased value is one of `values`.
+  function tokenMatchesChipValue(
+    token: string,
+    prefixes: string[],
+    values: string[],
+  ): boolean {
+    const lower = token.toLowerCase();
+    const prefix = prefixes.find((p) => lower.startsWith(p));
+    if (prefix === undefined) {
+      return false;
+    }
+    const unquoted = token.slice(prefix.length).replace(/^"(.*)"$/, "$1").toLowerCase();
+    return values.includes(unquoted);
+  }
+
+  // Remove a single chip's operator token(s) from `raw`, quote-aware. Prefers a
+  // TARGETED removal — drop only the token whose value matches this chip, so
+  // removing one `app:`/`source:` chip leaves any sibling chips of the same kind
+  // intact. The query may carry the user's own spelling, which can differ from
+  // the backend's desugared value, so when no token matches we fall back to
+  // dropping every token of that operator family (the original defensive
+  // behavior) rather than leaving the chip un-removable. Either path is
+  // quote-aware, so `app:"Google Chrome"` is removed cleanly instead of leaving
+  // a dangling `Chrome"`. Pure: used by removeChip.
+  function stripChipTokens(raw: string, chip: ActiveFilterChip): string {
+    const tokens = tokenizeQuery(raw);
+    const prefixes = operatorPrefixesForChip(chip);
+
+    const values = chipTokenValues(chip);
+    if (values !== null) {
+      const index = tokens.findIndex((token) =>
+        tokenMatchesChipValue(token, prefixes, values),
+      );
+      if (index >= 0) {
+        tokens.splice(index, 1);
+        return tokens.join(" ").trim();
+      }
+    }
+
+    // Fallback: drop every token of this operator family (spelling-tolerant).
+    const kept = tokens.filter((token) => {
+      const lower = token.toLowerCase();
+      return !prefixes.some((prefix) => lower.startsWith(prefix));
+    });
     return kept.join(" ").trim();
   }
 
@@ -1581,7 +1667,7 @@
   // rerun the search (which re-derives chips and restores sections via
   // sectionLimits). Refocus the input so removal keeps keyboard flow.
   function removeChip(chip: ActiveFilterChip): void {
-    query = stripOperatorTokens(query, operatorPrefixesForChip(chip));
+    query = stripChipTokens(query, chip);
     inputEl?.focus();
   }
 

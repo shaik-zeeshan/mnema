@@ -443,6 +443,10 @@
       access: {
         askAiEnabled: draftAskAiEnabled,
         askAiMaxToolCalls: base.access?.askAiMaxToolCalls ?? 12,
+        // `access` is sent whole and is authoritative, so we must round-trip the
+        // Ask AI model selection (chosen on the Settings page); omitting it would
+        // reset the selection back to the PI runtime default on every full save.
+        askAiModel: base.access?.askAiModel ?? null,
       },
     };
   }

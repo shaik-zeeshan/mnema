@@ -595,17 +595,34 @@ pub async fn ask_ai_availability(
     }
 
     let status = crate::app_infra::get_pi_runtime_status_inner(app_handle.clone()).await?;
-    if status.ready {
-        Ok(AskAiAvailability {
-            available: true,
-            reason: None,
-        })
-    } else {
-        Ok(AskAiAvailability {
+    if !status.ready {
+        return Ok(AskAiAvailability {
             available: false,
             reason: Some(status.reason.unwrap_or_else(|| "pi_unavailable".to_string())),
-        })
+        });
     }
+
+    // `ask_ai_start` also needs a resolvable `node` on the shell PATH and the
+    // bundled shim resource; a ready PI runtime alone is not enough. Surface
+    // these as distinct unavailable reasons so the UI does not advertise Ask AI
+    // and then fail at launch.
+    if resolve_node_executable().is_err() {
+        return Ok(AskAiAvailability {
+            available: false,
+            reason: Some("node_unavailable".to_string()),
+        });
+    }
+    if resolve_shim_path(&app_handle).is_err() {
+        return Ok(AskAiAvailability {
+            available: false,
+            reason: Some("shim_unavailable".to_string()),
+        });
+    }
+
+    Ok(AskAiAvailability {
+        available: true,
+        reason: None,
+    })
 }
 
 #[tauri::command]
