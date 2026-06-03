@@ -2240,7 +2240,7 @@
             // Completing to a name with a space: re-emit the whole value quoted,
             // so the trailing token becomes app:"Full Name". The suffix replaces
             // the unquoted partial entirely (the accept handler swaps the token).
-            return `"${name}" `;
+            return `"${name}"\0`;
           }
           return name.slice(typedValue.length);
         }
@@ -2288,7 +2288,7 @@
   });
 
   // Whether the active ghost is a quoted app-value replacement (sentinel form).
-  let ghostIsQuotedAppValue = $derived(ghostRaw !== null && ghostRaw.endsWith(" "));
+  let ghostIsQuotedAppValue = $derived(ghostRaw !== null && ghostRaw.endsWith("\0"));
 
   // The display suffix (dimmed text shown after the typed text). For the quoted
   // app-value case we still want the overlay to read sensibly: the typed partial
@@ -2892,6 +2892,7 @@
     let unlistenError: (() => void) | undefined;
     let unlistenSource: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
+    let unlistenDismiss: (() => void) | undefined;
 
     // The window is hidden/re-shown rather than recreated across summons, so
     // re-grab focus each time it becomes key — onMount alone fires only once.
@@ -2899,6 +2900,11 @@
       .onFocusChanged(({ payload: focused }) => {
         windowFocused = focused;
         if (focused) {
+          // The panel is hidden/re-shown rather than recreated, so re-probe Ask
+          // AI availability each time it becomes key — onMount fires only once,
+          // and the user may have enabled Ask AI or fixed PI/auth since the last
+          // summon. Without this the stale disabled hint would persist forever.
+          void loadAskAvailability();
           void tick().then(() => focusQuickRecall());
         }
       })
@@ -2996,6 +3002,21 @@
       else unlistenSource = fn;
     });
 
+    // The Rust dismiss chokepoint (`dismiss_quick_recall_window`) emits this when
+    // the panel is ordered out / hidden. The webview is NOT destroyed on dismiss,
+    // so the component `onDestroy` does not run — without this teardown, a resident
+    // PI session from a completed Ask AI turn would outlive the panel until the
+    // next ask or app exit. Cancel the thread and fall back to a fresh search.
+    listen("quick_recall_dismissed", () => {
+      void cancelActiveAsk().then(() => {
+        resetAskThreadState();
+        mode = "search";
+      });
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenDismiss = fn;
+    });
+
     return () => {
       destroyed = true;
       window.removeEventListener("keydown", handleLauncherCaptureKeydown, {
@@ -3008,6 +3029,7 @@
       unlistenError?.();
       unlistenSource?.();
       unlistenFocus?.();
+      unlistenDismiss?.();
     };
   });
 

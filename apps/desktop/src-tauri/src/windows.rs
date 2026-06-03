@@ -14,6 +14,11 @@ use crate::native_capture;
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
 const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
+// Emitted to the Quick Recall webview whenever the panel is dismissed (ordered
+// out / hidden). The webview is reused across summons rather than destroyed, so
+// the Svelte `onDestroy` teardown never runs on dismiss; the panel listens for
+// this to cancel any resident Ask AI PI session.
+const QUICK_RECALL_DISMISSED_EVENT: &str = "quick_recall_dismissed";
 
 // The Quick Recall surface is a non-activating NSPanel that emits a spurious
 // `Focused(false)` while AppKit promotes its webview to first responder on the
@@ -766,6 +771,11 @@ fn dismiss_quick_recall_window(window: &WebviewWindow) {
     {
         let _ = window.hide();
     }
+    // The webview is hidden, not destroyed, so the Svelte `onDestroy` teardown
+    // never runs on dismiss. Notify the panel so it cancels any resident Ask AI
+    // PI session instead of leaving that child process alive until the next ask
+    // or app exit.
+    let _ = window.emit(QUICK_RECALL_DISMISSED_EVENT, ());
 }
 
 // Decide whether a Quick Recall `Focused(false)` should dismiss the launcher.
