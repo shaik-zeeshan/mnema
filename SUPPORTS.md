@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-05-26_
+_Last reviewed: 2026-06-03_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -35,6 +35,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Browser URL metadata | [x] | [ ] | [ ] | macOS uses AppleScript for supported browsers. |
 | Recommended app exclusions | [x] | [ ] | [ ] | Current catalog uses macOS bundle IDs. |
 | Quick Recall launcher panel | [x] | [~] | [~] | macOS summons a non-activating NSPanel (key without activating Mnema, like Spotlight/Raycast); non-macOS falls back to a plain shown/focused always-on-top window without non-activating semantics. |
+| Ask AI (PI runtime integration) | [x] | [~] | [~] | Delegates model/auth/session to the user's installed PI runtime through a bundled Node SDK shim; brokered `search`/`timeline`/`show_text` tools run under the All-Retained Ask AI broker scope. `pi`/`node` are discovered by spawning a login-shell PATH on macOS (packaged apps lack the shell PATH); Windows resolves through process PATH + PATHEXT shims (e.g. `pi.cmd`) and Linux would reuse the unix login-shell path, but non-macOS resolution and shim spawn are unverified. |
 | Status bar / tray | [x] | [~] | [~] | Tauri tray exists cross-platform; current UX includes macOS-only Exclude Current App behavior. |
 | Global shortcuts | [x] | [~] | [~] | Uses Tauri global shortcut plugin for background start/stop, pause/resume, and show/hide; platform behavior needs verification. |
 | Encrypted Capture Index key store | [x] | [ ] | [ ] | macOS uses Keychain. Windows/Linux platform key stores are missing. |
@@ -90,6 +91,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 
 - [x] Encrypted Capture Index key stored in macOS Keychain.
 - [x] Broker Authorization Channel over per-user Unix socket.
+- [x] Ask AI brokered tool-calling session: delegates model/auth/session to the user's installed PI runtime through a bundled Node SDK shim (`apps/desktop/src-tauri/resources/pi-ask-ai-shim.mjs`) with the coding-agent's builtin tools disabled, exposing only the `search`/`timeline`/`show_text` brokered tools enforced through the All-Retained Ask AI broker scope. `pi`/`node` are resolved through a spawned login-shell PATH so packaged apps find Homebrew-installed binaries, with a user-driven "Refresh PI status" path to re-read PATH after a post-launch setup fix.
 - [x] Deep-link app reopen fallback.
 - [x] Mnema CLI sidecar for Apple targets.
 - [x] macOS release workflow for Apple Silicon.
@@ -178,6 +180,7 @@ Research notes:
   - Candidate transports: named pipes, localhost loopback, or another app-mediated IPC.
 - [ ] Update `crates/cli` authorization request path for Windows.
 - [ ] Verify deep links and app launch fallback on Windows.
+- [~] Verify Ask AI PI runtime integration on Windows. `pi`/`node` resolution already honors process PATH + PATHEXT shims (e.g. `pi.cmd`), but verify the bundled Node SDK shim spawns under Windows, brokered `search`/`timeline`/`show_text` tool calls round-trip, the All-Retained broker scope/redaction holds, and PI runtime status / "Refresh PI status" report correctly.
 - [~] Verify Quick Recall launcher behavior on Windows. The non-macOS fallback shows/focuses a plain always-on-top window (no non-activating panel), so verify summon-without-stealing-foreground, focus-into-search-field, and click-away/blur dismissal, or implement a Windows-native equivalent.
 - [ ] Verify tray/menu behavior on Windows.
 - [ ] Verify global shortcut registration and default shortcut labels on Windows.
@@ -240,6 +243,7 @@ Linux support is not the immediate target, but these are the likely seams if/whe
 - [ ] Implement Linux Capture Index Key Store using Secret Service/libsecret/KWallet or a clear unsupported flow.
 - [~] Broker Authorization Channel can likely reuse Unix socket shape, but needs Linux config-dir/runtime-dir review.
 - [ ] Verify CLI sidecar packaging and app-mediated authorization flow on Linux.
+- [~] Verify Ask AI PI runtime integration on Linux. The unix login-shell PATH resolution for `pi`/`node` should reuse the macOS shape, but verify the bundled Node SDK shim spawns, brokered `search`/`timeline`/`show_text` tool calls round-trip under the All-Retained broker scope, and PI runtime status detection works across desktop environments.
 - [~] Verify Quick Recall launcher behavior across desktop environments/compositors. The non-macOS fallback shows/focuses a plain always-on-top window (no non-activating panel); verify summon focus, always-on-top/all-workspaces behavior, and click-away/blur dismissal under Wayland/X11, or implement a compositor-appropriate equivalent.
 - [ ] Verify tray/menu behavior across desktop environments.
 - [ ] Verify global shortcuts; Linux support may depend on desktop environment/portal support.
@@ -265,6 +269,7 @@ Use this map when turning checklist items into implementation slices.
 | `crates/audio-transcription/src/providers/apple_speech.rs` | Apple Speech | Disable on non-Apple; default to local providers/cloud if introduced |
 | `crates/app-infra/src/capture_index_key_store.rs` | macOS Keychain through `security` CLI | Windows Credential Manager/DPAPI; Linux Secret Service/KWallet |
 | `apps/desktop/src-tauri/src/broker_authorization_channel.rs`, `crates/cli/src/main.rs` | Unix socket app-mediated authorization | Windows named pipe/TCP; Linux runtime-dir Unix socket validation |
+| `apps/desktop/src-tauri/src/ask_ai.rs`, `apps/desktop/src-tauri/src/ask_ai/pi_agent_session.rs`, `apps/desktop/src-tauri/resources/pi-ask-ai-shim.mjs`, `executable_in_shell_path`/`terminal_shell_path_dirs` in `apps/desktop/src-tauri/src/app_infra.rs` | Ask AI brokered session spawns the user-installed PI via a Node SDK shim; `pi`/`node` discovered by spawning the macOS login-shell PATH | Verify PI/node discovery and shim spawn per OS (Windows process PATH + PATHEXT `.cmd` shims already handled; Linux reuses the unix login-shell path) |
 | `apps/desktop/src-tauri/src/windows.rs` | macOS rounded content views, Dock visibility, terminate interception, Quick Recall non-activating NSPanel (reclass, style mask, floating level, first-mouse, key/first-responder, order-out) | Windows/Linux window behavior equivalents or no-ops; Quick Recall falls back to a plain shown/focused always-on-top window |
 | `.github/workflows/*`, `docs/release-process.md`, `scripts/stage-macos-release-artifacts.sh` | macOS-only release pipeline | Windows/Linux release pipelines and docs |
 
