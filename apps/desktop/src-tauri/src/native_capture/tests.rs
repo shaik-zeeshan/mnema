@@ -51,11 +51,16 @@ use super::segments::{
     stop_capture_runtime, StartedSegmentState,
 };
 #[cfg(target_os = "windows")]
+use super::activity::build_runtime_sources_status;
+#[cfg(target_os = "windows")]
+use super::runtime::{apply_runtime_signal, stopped_session_from_runtime};
+#[cfg(target_os = "windows")]
 use super::segments::{
     pause_runtime_for_inactivity_with_app_handle, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity, resume_screen_from_inactivity,
     set_windows_microphone_start_hook_for_test, set_windows_screen_start_hook_for_test,
-    set_windows_system_audio_start_hook_for_test,
+    set_windows_system_audio_start_hook_for_test, start_windows_active_segment,
+    stop_capture_runtime,
 };
 use super::segments::{
     flush_frame_artifacts, try_forward_frame_artifact, FrameArtifactEnvelope,
@@ -4559,9 +4564,13 @@ fn active_sources_for_inactivity_excludes_screen_when_screen_paused() {
 
     assert!(!active.screen);
     assert!(active.microphone);
-    // system_audio depends on the screen session backend, so it is also
-    // inactive when the screen session is stopped.
+    // On macOS system_audio is captured through the screen session backend,
+    // so it is also inactive when the screen session is stopped. On Windows
+    // it is an independent WASAPI source (ADR 0022) and keeps recording.
+    #[cfg(target_os = "macos")]
     assert!(!active.system_audio);
+    #[cfg(not(target_os = "macos"))]
+    assert!(active.system_audio);
 }
 
 #[test]
@@ -6147,6 +6156,478 @@ fn windows_multi_family_resume_failure_rolls_back_started_audio_artifacts() {
         before_paused
     );
     assert_eq!(runtime.source_sessions, before_source_sessions);
+}
+
+// Regression coverage for issue #61: a user pause followed by a user resume must
+// restart segments for the active sources through the shared
+// `start_windows_active_segment` primitive — mirroring the Windows bodies of
+// `pause_user_capture`/`resume_user_capture` (lifecycle.rs), which cannot be
+// driven here without a real `tauri::AppHandle`.
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_user_resume_restarts_segments_via_shared_primitive() {
+    let dir = TestDir::new("windows-user-resume-restarts-segments");
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let root = dir.path().to_string_lossy().to_string();
+    let live_microphone_file = dir
+        .path()
+        .join("2026/06/04/audio/windows-microphone-session-segment-0003.m4a")
+        .to_string_lossy()
+        .to_string();
+    let live_system_audio_file = dir
+        .path()
+        .join("2026/06/04/audio/windows-system-audio-session-segment-0003.m4a")
+        .to_string_lossy()
+        .to_string();
+    fs::create_dir_all(Path::new(&live_microphone_file).parent().unwrap())
+        .expect("test audio dir should exist");
+    fs::write(&live_microphone_file, b"live microphone").expect("live microphone file");
+    fs::write(&live_system_audio_file, b"live system audio").expect("live system-audio file");
+
+    let requested_sources = CaptureSources {
+        screen: false,
+        microphone: true,
+        system_audio: true,
+    };
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(requested_sources.clone()),
+        current_segment_sources: Some(requested_sources.clone()),
+        current_segment_index: 3,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        microphone_planner: Some(SegmentPlanner::with_date_prefix(
+            root.clone(),
+            "windows-microphone-session",
+            "2026/06/04",
+        )),
+        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
+            root,
+            "windows-system-audio-session",
+            "2026/06/04",
+        )),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(live_microphone_file.clone()),
+            microphone_files: vec![live_microphone_file.clone()],
+            system_audio_file: Some(live_system_audio_file.clone()),
+            system_audio_files: vec![live_system_audio_file.clone()],
+        }),
+        output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        microphone_recording_file: Some(live_microphone_file.clone()),
+        system_audio_recording_file: Some(live_system_audio_file.clone()),
+        active_microphone_session: Some(WindowsTestAudioSession::boxed(
+            live_microphone_file.clone(),
+        )),
+        active_system_audio_session: Some(WindowsTestAudioSession::boxed(
+            live_system_audio_file.clone(),
+        )),
+        source_sessions: Some(SourceSessions {
+            screen: None,
+            microphone: Some(SourceSessionMeta {
+                session_id: "windows-microphone-session".to_string(),
+                started_at_unix_ms: 111,
+            }),
+            system_audio: Some(SourceSessionMeta {
+                session_id: "windows-system-audio-session".to_string(),
+                started_at_unix_ms: 222,
+            }),
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: windows_inactivity_state(),
+        ..Default::default()
+    };
+
+    // --- Simulate `pause_user_capture` (Windows body) ---------------------
+    stop_capture_runtime(&mut runtime, None)
+        .expect("user pause should tear down the live capture sessions");
+    runtime.user_capture_paused = true;
+    runtime.current_segment_sources = Some(CaptureSources {
+        screen: false,
+        microphone: false,
+        system_audio: false,
+    });
+
+    // After pause the live sessions are gone and the segment is marked inactive,
+    // but the session still reports running so the resume control stays visible.
+    assert!(runtime.user_capture_paused);
+    assert!(runtime.active_microphone_session.is_none());
+    assert!(runtime.active_system_audio_session.is_none());
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: false,
+        })
+    );
+    let paused_session = session_from_runtime(&runtime);
+    assert!(paused_session.is_running);
+    assert!(paused_session.is_user_paused);
+    let index_after_pause = runtime.current_segment_index;
+
+    // --- Simulate `resume_user_capture` (Windows body) --------------------
+    let resume_microphone_file = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let resume_microphone_file_for_hook = std::sync::Arc::clone(&resume_microphone_file);
+    let _microphone_hook =
+        set_windows_microphone_start_hook_for_test(move |output_file, _device_id| {
+            *resume_microphone_file_for_hook.lock().unwrap() = Some(output_file.clone());
+            Ok(WindowsTestAudioSession::boxed(output_file))
+        });
+    let resume_system_audio_file = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let resume_system_audio_file_for_hook = std::sync::Arc::clone(&resume_system_audio_file);
+    let _system_audio_hook = set_windows_system_audio_start_hook_for_test(move |output_file| {
+        *resume_system_audio_file_for_hook.lock().unwrap() = Some(output_file.clone());
+        Ok(WindowsTestAudioSession::boxed(output_file))
+    });
+
+    let sources = runtime
+        .requested_sources
+        .clone()
+        .expect("paused runtime should retain its requested sources for resume");
+    runtime.output_files.get_or_insert_with(|| CaptureOutputFiles {
+        screen_file: None,
+        screen_files: Vec::new(),
+        microphone_file: None,
+        microphone_files: Vec::new(),
+        system_audio_file: None,
+        system_audio_files: Vec::new(),
+    });
+    runtime.runtime_controller = RuntimeController::default();
+    apply_runtime_signal(&mut runtime, RuntimeSignal::StartRequested)
+        .expect("idle controller should accept the resume start request");
+    start_windows_active_segment(None, &mut runtime, &sources, "resuming user pause")
+        .expect("user resume should restart segments through the shared primitive");
+    apply_runtime_signal(&mut runtime, RuntimeSignal::SourcesReady)
+        .expect("starting controller should report sources ready after resume");
+    runtime.user_capture_paused = false;
+    runtime.current_segment_sources = runtime.requested_sources.clone();
+
+    // Resume bumps to a fresh emitted segment because every source went down on
+    // pause, restores the requested sources, and clears the user-pause flag.
+    assert_eq!(runtime.current_segment_index, index_after_pause + 1);
+    assert!(!runtime.user_capture_paused);
+    assert_eq!(runtime.runtime_state, RuntimeState::Running);
+    assert_eq!(runtime.current_segment_sources, Some(requested_sources));
+    assert!(runtime.active_microphone_session.is_some());
+    assert!(runtime.active_system_audio_session.is_some());
+    let resumed_microphone_file = resume_microphone_file
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("resume should start a microphone session via the shared primitive");
+    assert!(
+        resumed_microphone_file.ends_with("windows-microphone-session-segment-0004.m4a"),
+        "resumed microphone should open the next clean segment: {resumed_microphone_file}"
+    );
+    assert_eq!(
+        runtime.microphone_recording_file.as_deref(),
+        Some(resumed_microphone_file.as_str())
+    );
+    let resumed_system_audio_file = resume_system_audio_file
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("resume should start a system-audio session via the shared primitive");
+    assert!(
+        resumed_system_audio_file.ends_with("windows-system-audio-session-segment-0004.m4a"),
+        "resumed system audio should open the next clean segment: {resumed_system_audio_file}"
+    );
+    assert_eq!(
+        runtime.system_audio_recording_file.as_deref(),
+        Some(resumed_system_audio_file.as_str())
+    );
+    let resumed_session = session_from_runtime(&runtime);
+    assert!(resumed_session.is_running);
+    assert!(!resumed_session.is_user_paused);
+}
+
+// Regression coverage: clicking Stop while a recording is *user-paused* must
+// finalize in a single call. `pause_user_capture` drives the Windows
+// RuntimeController all the way to `Idle` (via StopRequested -> Stopping ->
+// SourcesStopped) while keeping `is_running == true` so the resume control
+// stays visible. A subsequent Stop re-enters the Windows branch of
+// `stop_capture_runtime`, which (pre-fix) issued `StopRequested` against an
+// already-`Idle` controller — an invalid `(Idle, StopRequested)` transition
+// that errored out the first click and left the UI showing Resume/Stop until a
+// second click. This mirrors the Windows bodies of `pause_user_capture` and
+// `NativeCaptureLifecycle::stop` (lifecycle.rs), which need a real
+// `tauri::AppHandle` and so cannot be driven directly here.
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_stop_while_user_paused_succeeds_in_one_call() {
+    let dir = TestDir::new("windows-stop-while-user-paused");
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let root = dir.path().to_string_lossy().to_string();
+    let live_microphone_file = dir
+        .path()
+        .join("2026/06/04/audio/windows-microphone-session-segment-0003.m4a")
+        .to_string_lossy()
+        .to_string();
+    let live_system_audio_file = dir
+        .path()
+        .join("2026/06/04/audio/windows-system-audio-session-segment-0003.m4a")
+        .to_string_lossy()
+        .to_string();
+    fs::create_dir_all(Path::new(&live_microphone_file).parent().unwrap())
+        .expect("test audio dir should exist");
+    fs::write(&live_microphone_file, b"live microphone").expect("live microphone file");
+    fs::write(&live_system_audio_file, b"live system audio").expect("live system-audio file");
+
+    let requested_sources = CaptureSources {
+        screen: false,
+        microphone: true,
+        system_audio: true,
+    };
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(requested_sources.clone()),
+        current_segment_sources: Some(requested_sources.clone()),
+        current_segment_index: 3,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        microphone_planner: Some(SegmentPlanner::with_date_prefix(
+            root.clone(),
+            "windows-microphone-session",
+            "2026/06/04",
+        )),
+        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
+            root,
+            "windows-system-audio-session",
+            "2026/06/04",
+        )),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(live_microphone_file.clone()),
+            microphone_files: vec![live_microphone_file.clone()],
+            system_audio_file: Some(live_system_audio_file.clone()),
+            system_audio_files: vec![live_system_audio_file.clone()],
+        }),
+        output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        microphone_recording_file: Some(live_microphone_file.clone()),
+        system_audio_recording_file: Some(live_system_audio_file.clone()),
+        active_microphone_session: Some(WindowsTestAudioSession::boxed(
+            live_microphone_file.clone(),
+        )),
+        active_system_audio_session: Some(WindowsTestAudioSession::boxed(
+            live_system_audio_file.clone(),
+        )),
+        source_sessions: Some(SourceSessions {
+            screen: None,
+            microphone: Some(SourceSessionMeta {
+                session_id: "windows-microphone-session".to_string(),
+                started_at_unix_ms: 111,
+            }),
+            system_audio: Some(SourceSessionMeta {
+                session_id: "windows-system-audio-session".to_string(),
+                started_at_unix_ms: 222,
+            }),
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: windows_inactivity_state(),
+        ..Default::default()
+    };
+
+    // --- Simulate `pause_user_capture` (Windows body) ---------------------
+    // Mirrors lifecycle.rs: stop the live capture, mark the user pause, and
+    // mark every source inactive — *without* clearing `is_running`, so the
+    // resume control stays visible.
+    stop_capture_runtime(&mut runtime, None)
+        .expect("user pause should tear down the live capture sessions");
+    runtime.user_capture_paused = true;
+    runtime.current_segment_sources = Some(CaptureSources {
+        screen: false,
+        microphone: false,
+        system_audio: false,
+    });
+
+    // The pause drove the controller to Idle but kept the session running.
+    assert!(runtime.is_running);
+    assert_eq!(runtime.runtime_state, RuntimeState::Idle);
+    let paused_session = session_from_runtime(&runtime);
+    assert!(paused_session.is_running);
+    assert!(paused_session.is_user_paused);
+
+    // --- Click Stop while paused (the stop-while-paused path) --------------
+    // This is the single-click Stop that must succeed. Pre-fix the Windows
+    // branch issued `(Idle, StopRequested)` and returned Err here.
+    stop_capture_runtime(&mut runtime, None)
+        .expect("stopping a user-paused session must succeed in one call");
+
+    // Mirror `NativeCaptureLifecycle::stop`'s success path so we observe the
+    // post-stop session state the UI would render after one click.
+    mark_runtime_session_stopped(&mut runtime);
+    let stopped_session = stopped_session_from_runtime(&runtime);
+    assert!(!runtime.is_running);
+    assert!(!stopped_session.is_running);
+    assert!(!stopped_session.is_user_paused);
+}
+
+// The title-bar per-source pills derive their visual state from
+// `runtime_sources`: a pill shows the red recording dot only when
+// `session_active && writer_active`, and the pause bars only when `paused`.
+// The pre-fix Windows stub reported `session_active: None` /
+// `writer_active: None`, leaving every pill stuck in the gray "starting"
+// state while live and after a user pause.
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_runtime_sources_report_live_sessions_as_running() {
+    let requested_sources = CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: true,
+    };
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(requested_sources.clone()),
+        current_segment_sources: Some(requested_sources),
+        recording_file: Some("C:/captures/screen-segment-0001.mov".to_string()),
+        microphone_recording_file: Some("C:/captures/microphone-segment-0001.m4a".to_string()),
+        system_audio_recording_file: Some("C:/captures/system-audio-segment-0001.m4a".to_string()),
+        active_screen_session: Some(WindowsTestScreenSession::boxed()),
+        active_microphone_session: Some(WindowsTestAudioSession::boxed(
+            "C:/captures/microphone-segment-0001.m4a".to_string(),
+        )),
+        active_system_audio_session: Some(WindowsTestAudioSession::boxed(
+            "C:/captures/system-audio-segment-0001.m4a".to_string(),
+        )),
+        runtime_controller: running_runtime_controller(),
+        runtime_state: RuntimeState::Running,
+        inactivity: windows_inactivity_state(),
+        ..Default::default()
+    };
+
+    let status = build_runtime_sources_status(&runtime);
+
+    for (label, source) in [
+        ("screen", &status.screen),
+        ("microphone", &status.microphone),
+        ("system audio", &status.system_audio),
+    ] {
+        assert!(source.requested, "{label} should be requested");
+        assert!(!source.paused, "{label} should not report paused");
+        assert_eq!(
+            source.session_active,
+            Some(true),
+            "{label} session should be active"
+        );
+        assert_eq!(
+            source.writer_active,
+            Some(true),
+            "{label} writer should be active"
+        );
+        assert_eq!(source.reason, None, "{label} should carry no reason");
+    }
+    assert_eq!(
+        status.screen.output_path.as_deref(),
+        Some("C:/captures/screen-segment-0001.mov")
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_runtime_sources_report_inactivity_paused_families() {
+    let requested_sources = CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: true,
+    };
+    let mut inactivity = windows_inactivity_state();
+    inactivity.microphone_paused = true;
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(requested_sources.clone()),
+        current_segment_sources: Some(requested_sources),
+        recording_file: Some("C:/captures/screen-segment-0001.mov".to_string()),
+        system_audio_recording_file: Some("C:/captures/system-audio-segment-0001.m4a".to_string()),
+        active_screen_session: Some(WindowsTestScreenSession::boxed()),
+        active_system_audio_session: Some(WindowsTestAudioSession::boxed(
+            "C:/captures/system-audio-segment-0001.m4a".to_string(),
+        )),
+        runtime_controller: running_runtime_controller(),
+        runtime_state: RuntimeState::Running,
+        inactivity,
+        ..Default::default()
+    };
+
+    let status = build_runtime_sources_status(&runtime);
+
+    // The inactivity-paused microphone shows pause bars; its writer is down.
+    assert!(status.microphone.paused);
+    assert_eq!(status.microphone.writer_active, Some(false));
+    // The other families keep recording.
+    assert!(!status.screen.paused);
+    assert_eq!(status.screen.writer_active, Some(true));
+    assert!(!status.system_audio.paused);
+    assert_eq!(status.system_audio.writer_active, Some(true));
+}
+
+// User Capture Pause tears the live sessions down while the Capture Session
+// stays running, so the pills must report "paused" — not fall through to
+// "starting" just because the sessions are gone.
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_runtime_sources_report_user_pause_as_paused() {
+    let requested_sources = CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: true,
+    };
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        user_capture_paused: true,
+        requested_sources: Some(requested_sources),
+        current_segment_sources: Some(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: false,
+        }),
+        runtime_controller: running_runtime_controller(),
+        runtime_state: RuntimeState::Running,
+        inactivity: windows_inactivity_state(),
+        ..Default::default()
+    };
+
+    let status = build_runtime_sources_status(&runtime);
+
+    for (label, source) in [
+        ("screen", &status.screen),
+        ("microphone", &status.microphone),
+        ("system audio", &status.system_audio),
+    ] {
+        assert!(source.requested, "{label} should stay requested");
+        assert!(source.paused, "{label} should report paused after user pause");
+        assert_eq!(
+            source.session_active,
+            Some(false),
+            "{label} session should be down while user-paused"
+        );
+        assert_eq!(
+            source.writer_active,
+            Some(false),
+            "{label} writer should be down while user-paused"
+        );
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -8409,6 +8890,11 @@ fn pause_audio_restart_screen_fails_fast_on_no_planner() {
 
 // --- Slice 3b7: current_segment_sources_for_runtime reflects actual backend state ---
 
+// The output-files/session fallback inside `current_segment_sources_for_runtime`
+// is macOS-only (privacy/wake recovery can clear `current_segment_sources`
+// while sessions live on); the Windows lifecycle always sets the segment
+// sources explicitly, so these fallback tests are macOS-gated.
+#[cfg(target_os = "macos")]
 #[test]
 fn current_segment_sources_for_runtime_fallback_respects_audio_paused() {
     // When current_segment_sources is None but sessions/outputs exist, the
@@ -8510,6 +8996,7 @@ fn current_segment_sources_for_runtime_fallback_respects_screen_paused() {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn current_segment_sources_for_runtime_fallback_returns_all_when_nothing_paused() {
     let runtime = NativeCaptureRuntime {
@@ -8661,9 +9148,10 @@ fn pause_microphone_for_inactivity_preserves_privacy_suspended_source_mask() {
 
 #[test]
 fn active_sources_for_inactivity_excludes_system_audio_when_screen_paused() {
-    // system_audio is captured through the screen session backend, so it
-    // must be inactive whenever the screen session is stopped, even when
-    // the audio family is not paused.
+    // On macOS system_audio is captured through the screen session backend,
+    // so it must be inactive whenever the screen session is stopped, even
+    // when the audio family is not paused. On Windows it is an independent
+    // WASAPI source (ADR 0022) and survives a screen pause.
     let requested = CaptureSources {
         screen: true,
         microphone: false,
@@ -8672,6 +9160,7 @@ fn active_sources_for_inactivity_excludes_system_audio_when_screen_paused() {
 
     let active = active_sources_for_inactivity_paused_state(&requested, true, false, false);
 
+    #[cfg(target_os = "macos")]
     // With screen paused and no microphone, only system_audio was requested
     // for the audio side — but it cannot be active without the screen session,
     // so the result should be None (no active sources).
@@ -8679,6 +9168,15 @@ fn active_sources_for_inactivity_excludes_system_audio_when_screen_paused() {
         active.is_none(),
         "system_audio-only audio subset should be None when screen is paused"
     );
+    #[cfg(not(target_os = "macos"))]
+    {
+        let active = active.expect("independent system audio should stay active");
+        assert!(!active.screen);
+        assert!(
+            active.system_audio,
+            "independent system audio should survive a screen pause"
+        );
+    }
 }
 
 #[test]
@@ -8689,12 +9187,20 @@ fn active_sources_for_inactivity_system_audio_requires_both_families_active() {
         system_audio: true,
     };
 
-    // screen_paused=true, microphone/system_audio_paused=false → system_audio should be false
+    // screen_paused=true, microphone/system_audio_paused=false → on macOS
+    // system_audio rides the screen session and goes down with it; on
+    // Windows it is independent (ADR 0022) and stays active.
     let active = active_sources_for_inactivity_paused_state(&requested, true, false, false)
         .expect("microphone should keep sources non-empty");
+    #[cfg(target_os = "macos")]
     assert!(
         !active.system_audio,
         "system_audio needs live screen session"
+    );
+    #[cfg(not(target_os = "macos"))]
+    assert!(
+        active.system_audio,
+        "independent system audio should survive a screen pause"
     );
     assert!(active.microphone);
 

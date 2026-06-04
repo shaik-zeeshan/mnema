@@ -5867,9 +5867,12 @@ pub(super) fn stop_capture_runtime(
 
     #[cfg(target_os = "windows")]
     {
-        if runtime.is_running {
-            apply_runtime_signal(runtime, RuntimeSignal::StopRequested)?;
-        }
+        // Tolerate an already-Idle/Stopping controller (e.g. a user pause drove
+        // the controller to Idle via StopRequested -> Stopping -> SourcesStopped
+        // while keeping `is_running == true`), mirroring the macOS branch. Issuing
+        // a bare StopRequested here would hit the invalid `(Idle, StopRequested)`
+        // transition and fail the first Stop click while paused.
+        request_runtime_stop_transition_if_needed(runtime)?;
 
         let mut current_segment_output_files = runtime.current_segment_output_files.clone();
         let recording_file = runtime.recording_file.clone();
@@ -5966,7 +5969,7 @@ pub(super) fn stop_capture_runtime(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn request_runtime_stop_transition_if_needed(
     runtime: &mut NativeCaptureRuntime,
 ) -> Result<(), CaptureErrorResponse> {

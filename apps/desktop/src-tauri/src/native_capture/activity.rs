@@ -12,7 +12,7 @@ use capture_types::{
 use capture_vad::{configured_adapter_as_str, MicrophonePcmVadFrame};
 use std::sync::MutexGuard;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::runtime::{
     microphone_backend_active_for_runtime, microphone_probe_active_for_runtime,
     system_audio_writer_active_for_runtime,
@@ -432,7 +432,9 @@ fn idle_debug_audio_projection(
     }
 }
 
-fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSourcesStatus {
+pub(super) fn build_runtime_sources_status(
+    runtime: &NativeCaptureRuntime,
+) -> RuntimeSourcesStatus {
     let requested_screen = runtime.requested_sources.as_ref().is_some_and(|s| s.screen);
     let requested_mic = runtime
         .requested_sources
@@ -442,6 +444,12 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
         .requested_sources
         .as_ref()
         .is_some_and(|s| s.system_audio);
+    // User Capture Pause tears down the live sessions while the Capture
+    // Session stays alive, so the per-source pills must report "paused"
+    // rather than falling through to the "starting" state the dead
+    // sessions would otherwise imply.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let user_paused = runtime.user_capture_paused;
 
     #[cfg(target_os = "macos")]
     {
@@ -466,7 +474,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
         RuntimeSourcesStatus {
             screen: RuntimeSourceStatus {
                 requested: requested_screen,
-                paused: runtime.inactivity.is_screen_paused(),
+                paused: user_paused || runtime.inactivity.is_screen_paused(),
                 session_active: Some(screen_session),
                 writer_active: Some(screen_writer),
                 output_path: runtime.recording_file.clone(),
@@ -478,7 +486,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
             },
             microphone: RuntimeSourceStatus {
                 requested: requested_mic,
-                paused: runtime.inactivity.is_microphone_paused(),
+                paused: user_paused || runtime.inactivity.is_microphone_paused(),
                 session_active: Some(mic_session),
                 writer_active: Some(mic_writer),
                 output_path: runtime.microphone_recording_file.clone(),
@@ -490,7 +498,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
             },
             system_audio: RuntimeSourceStatus {
                 requested: requested_sys,
-                paused: runtime.inactivity.is_system_audio_paused(),
+                paused: user_paused || runtime.inactivity.is_system_audio_paused(),
                 session_active: Some(sys_session),
                 writer_active: Some(sys_writer),
                 output_path: runtime.system_audio_recording_file.clone(),
@@ -503,7 +511,58 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // Windows mirrors the macOS truths with one structural difference:
+        // system audio is an independent WASAPI source (ADR 0022) with its
+        // own session, so its "session active" checks that session instead
+        // of riding on the screen session.
+        let screen_session =
+            capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref());
+        let mic_session = microphone_probe_active_for_runtime(runtime);
+        let sys_session = runtime.active_system_audio_session.is_some();
+
+        let screen_writer = screen_session && !runtime.inactivity.is_screen_paused();
+        let mic_writer = microphone_backend_active_for_runtime(runtime);
+        let sys_writer = system_audio_writer_active_for_runtime(runtime);
+
+        let reason_for = |requested: bool| {
+            if requested {
+                None
+            } else {
+                Some("not_requested".to_string())
+            }
+        };
+
+        RuntimeSourcesStatus {
+            screen: RuntimeSourceStatus {
+                requested: requested_screen,
+                paused: user_paused || runtime.inactivity.is_screen_paused(),
+                session_active: Some(screen_session),
+                writer_active: Some(screen_writer),
+                output_path: runtime.recording_file.clone(),
+                reason: reason_for(requested_screen),
+            },
+            microphone: RuntimeSourceStatus {
+                requested: requested_mic,
+                paused: user_paused || runtime.inactivity.is_microphone_paused(),
+                session_active: Some(mic_session),
+                writer_active: Some(mic_writer),
+                output_path: runtime.microphone_recording_file.clone(),
+                reason: reason_for(requested_mic),
+            },
+            system_audio: RuntimeSourceStatus {
+                requested: requested_sys,
+                paused: user_paused || runtime.inactivity.is_system_audio_paused(),
+                session_active: Some(sys_session),
+                writer_active: Some(sys_writer),
+                output_path: runtime.system_audio_recording_file.clone(),
+                reason: reason_for(requested_sys),
+            },
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let stub = |requested: bool, paused: bool| RuntimeSourceStatus {
             requested,
@@ -511,7 +570,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
             session_active: None,
             writer_active: None,
             output_path: None,
-            reason: Some("non_macos".to_string()),
+            reason: Some("unsupported_platform".to_string()),
         };
         RuntimeSourcesStatus {
             screen: stub(requested_screen, runtime.inactivity.is_screen_paused()),

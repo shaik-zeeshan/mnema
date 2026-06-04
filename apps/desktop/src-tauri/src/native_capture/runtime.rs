@@ -845,7 +845,7 @@ pub(super) fn current_segment_sources_for_runtime(
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn microphone_backend_active_for_runtime(runtime: &NativeCaptureRuntime) -> bool {
     !runtime.inactivity.is_microphone_paused()
         && runtime.active_microphone_session.is_some()
@@ -853,7 +853,7 @@ pub(super) fn microphone_backend_active_for_runtime(runtime: &NativeCaptureRunti
         && current_segment_sources_for_runtime(runtime).is_some_and(|sources| sources.microphone)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn microphone_probe_active_for_runtime(runtime: &NativeCaptureRuntime) -> bool {
     runtime.active_microphone_session.is_some()
 }
@@ -863,6 +863,17 @@ pub(super) fn system_audio_writer_active_for_runtime(runtime: &NativeCaptureRunt
     !runtime.inactivity.is_system_audio_paused()
         && !runtime.inactivity.is_screen_paused()
         && capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref())
+        && runtime.system_audio_recording_file.is_some()
+        && current_segment_sources_for_runtime(runtime).is_some_and(|sources| sources.system_audio)
+}
+
+/// Windows treats system audio as an independent WASAPI source (ADR 0022), so
+/// its writer truth checks the dedicated session instead of riding on the
+/// screen session the way macOS does.
+#[cfg(target_os = "windows")]
+pub(super) fn system_audio_writer_active_for_runtime(runtime: &NativeCaptureRuntime) -> bool {
+    !runtime.inactivity.is_system_audio_paused()
+        && runtime.active_system_audio_session.is_some()
         && runtime.system_audio_recording_file.is_some()
         && current_segment_sources_for_runtime(runtime).is_some_and(|sources| sources.system_audio)
 }
