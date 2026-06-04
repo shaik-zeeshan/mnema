@@ -63,6 +63,7 @@ use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CMONITORS};
 
 use crate::frame_schedule::{
     boundary_clamped_lookahead_duration_ticks, frame_cap_min_interval_ticks,
@@ -140,6 +141,55 @@ fn format_guid_lower(guid: &GUID) -> String {
         "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         guid.data1, guid.data2, guid.data3, d4[0], d4[1], d4[2], d4[3], d4[4], d4[5], d4[6], d4[7]
     )
+}
+
+// ---------------------------------------------------------------------------
+// Transient-liveness classification
+// ---------------------------------------------------------------------------
+
+/// Stop-error code recorded when the captured monitor goes away mid-recording
+/// (`GraphicsCaptureItem.Closed`, e.g. monitor disconnect, lid close, session
+/// lock blanking WGC). Per ADR 0023 this is a *transient liveness* loss the
+/// runtime should ride out by suspending screen capture and auto-resuming, not
+/// a genuine failure that ends the session — so it is named here once and shared
+/// between the `Message::Closed` handler and the classification predicate rather
+/// than duplicated as a bare string literal across the crate boundary.
+pub const SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE: &str = "screen_capture_item_closed";
+
+/// Whether a screen stop-error code denotes a transient liveness loss (the
+/// display went away) rather than a genuine capture failure.
+///
+/// The desktop lifecycle uses this to decide whether to enter a
+/// `TransientLiveness` suspension (suspend screen, keep the session alive, probe
+/// for a returning display via [`windows_display_present`]) instead of failing
+/// the session. Keeping the predicate next to the producer means callers never
+/// re-encode the error-code string (ADR 0023).
+pub fn screen_capture_stop_error_is_transient_liveness(code: &str) -> bool {
+    code == SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE
+}
+
+// ---------------------------------------------------------------------------
+// Cheap display-present probe
+// ---------------------------------------------------------------------------
+
+/// Whether at least one display monitor is present/attachable right now.
+///
+/// This is the Windows liveness signal for ADR 0023's display-unavailable
+/// trigger: while every monitor is asleep, the lid is closed, the session is
+/// locked, or the only monitor is unplugged, this returns `false`, so a
+/// `TransientLiveness` suspension can wait quietly and only re-attempt WGC
+/// capture once a display returns — mirroring macOS's `screen_display_available`
+/// (`CGGetActiveDisplayList`) gate.
+///
+/// It uses `GetSystemMetrics(SM_CMONITORS)`, a single non-allocating Win32 call
+/// that returns the number of display monitors, deliberately *not*
+/// `EnumDisplayMonitors` (which runs a per-monitor callback) and with no COM /
+/// WinRT / D3D session setup, so it is cheap enough to poll every ~2s from the
+/// 1s segment-loop tick.
+pub fn windows_display_present() -> bool {
+    // SAFETY: `GetSystemMetrics` is a pure read of a system metric with no
+    // pointer arguments and no initialization requirements.
+    unsafe { GetSystemMetrics(SM_CMONITORS) > 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +521,7 @@ fn run_message_loop(
                 record_stop_error(
                     shared,
                     CaptureErrorResponse {
-                        code: "screen_capture_item_closed".to_string(),
+                        code: SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE.to_string(),
                         message: "The captured monitor became unavailable (display disconnected or session closed)".to_string(),
                     },
                 );
@@ -1891,6 +1941,24 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn transient_liveness_predicate_matches_item_closed_code() {
+        assert!(screen_capture_stop_error_is_transient_liveness(
+            SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE
+        ));
+        assert!(!screen_capture_stop_error_is_transient_liveness(
+            "windows_capture_failed"
+        ));
+        assert!(!screen_capture_stop_error_is_transient_liveness(""));
+    }
+
+    // Smoke-level: any machine running this test has a display attached, so the
+    // cheap `GetSystemMetrics(SM_CMONITORS)` probe must report one present.
+    #[test]
+    fn windows_display_present_reports_attached_display() {
+        assert!(windows_display_present());
     }
 
     #[test]

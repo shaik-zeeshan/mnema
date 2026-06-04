@@ -28,6 +28,11 @@ pub mod frame_schedule;
 mod windows_capture;
 #[cfg(target_os = "windows")]
 pub use windows_capture::ActiveCaptureSession;
+#[cfg(target_os = "windows")]
+pub use windows_capture::{
+    screen_capture_stop_error_is_transient_liveness, windows_display_present,
+    SCREEN_CAPTURE_ITEM_CLOSED_ERROR_CODE,
+};
 
 #[cfg(target_os = "macos")]
 use std::ffi::c_void;
@@ -1263,7 +1268,18 @@ pub fn screen_display_available() -> bool {
     status == 0 && display_count > 0
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows display-present gate for ADR 0023's display-unavailable recovery.
+///
+/// Delegates to [`windows_capture::windows_display_present`]
+/// (`GetSystemMetrics(SM_CMONITORS)`), the Windows analogue of the macOS
+/// `CGGetActiveDisplayList` count check above, so a transient-liveness
+/// suspension waits quietly while every monitor is asleep/locked/unplugged.
+#[cfg(target_os = "windows")]
+pub fn screen_display_available() -> bool {
+    windows_capture::windows_display_present()
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn screen_display_available() -> bool {
     true
 }
