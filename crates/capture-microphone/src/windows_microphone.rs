@@ -38,8 +38,8 @@ use wasapi::{
 };
 use windows::Win32::Foundation::{E_ACCESSDENIED, PROPERTYKEY};
 use windows::Win32::Media::Audio::{
-    eCapture, DEVICE_STATE, DEVICE_STATEMASK_ALL, EDataFlow, ERole, IMMDeviceEnumerator,
-    IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator,
+    eCapture, eRender, EDataFlow, ERole, IMMDeviceEnumerator, IMMNotificationClient,
+    IMMNotificationClient_Impl, MMDeviceEnumerator, DEVICE_STATE, DEVICE_STATEMASK_ALL,
 };
 use windows::Win32::Media::MediaFoundation::{MFShutdown, MFStartup, MFSTARTUP_FULL, MF_VERSION};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
@@ -128,7 +128,8 @@ pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorRe
         })
 }
 
-fn list_microphone_devices_on_initialized_thread() -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {
+fn list_microphone_devices_on_initialized_thread(
+) -> Result<Vec<MicrophoneDevice>, CaptureErrorResponse> {
     let default_id = get_default_device(&Direction::Capture)
         .ok()
         .and_then(|device| device.get_id().ok());
@@ -173,6 +174,9 @@ enum Message {
     /// Finalize the final segment and tear the session down.
     Stop {
         reply: Sender<Result<MicrophoneOutputFinalization, CaptureErrorResponse>>,
+    },
+    DefaultRenderDeviceChanged {
+        endpoint_id: Option<String>,
     },
 }
 
@@ -399,7 +403,10 @@ pub fn start_wasapi_microphone_capture_session_for_file(
 pub fn start_wasapi_system_audio_capture_session_for_file(
     output_file: &str,
 ) -> Result<WasapiSystemAudioCaptureSession, CaptureErrorResponse> {
-    start_wasapi_audio_capture_session_for_file(output_file, AudioCaptureSource::SystemAudioLoopback)
+    start_wasapi_audio_capture_session_for_file(
+        output_file,
+        AudioCaptureSource::SystemAudioLoopback,
+    )
 }
 
 fn start_wasapi_audio_capture_session_for_file(
@@ -425,10 +432,18 @@ fn start_wasapi_audio_capture_session_for_file(
     let source_label = source.label();
 
     let thread_shared = Arc::clone(&shared);
+    let notification_sender = sender.clone();
     let join_handle = std::thread::Builder::new()
         .name(thread_name.to_string())
         .spawn(move || {
-            capture_thread_main(output_path, source, receiver, thread_shared, ready_tx);
+            capture_thread_main(
+                output_path,
+                source,
+                receiver,
+                notification_sender,
+                thread_shared,
+                ready_tx,
+            );
         })
         .map_err(|e| CaptureErrorResponse {
             code: "capture_thread_spawn_failed".to_string(),
@@ -467,6 +482,7 @@ fn capture_thread_main(
     first_output_path: PathBuf,
     source: AudioCaptureSource,
     receiver: Receiver<Message>,
+    notification_sender: Sender<Message>,
     shared: Arc<SharedState>,
     ready_tx: Sender<Result<(), CaptureErrorResponse>>,
 ) {
@@ -489,7 +505,7 @@ fn capture_thread_main(
         return;
     }
 
-    match CaptureEngine::new(&first_output_path, source) {
+    match CaptureEngine::new(&first_output_path, source, notification_sender) {
         Ok(mut engine) => {
             let _ = ready_tx.send(Ok(()));
             run_capture_loop(&mut engine, receiver, &shared);
@@ -517,12 +533,14 @@ fn run_capture_loop(
         }
 
         match receiver.try_recv() {
-            Ok(Message::Rotate {
-                output_path,
-                reply,
-            }) => {
+            Ok(Message::Rotate { output_path, reply }) => {
                 let result = engine.rotate(&output_path);
                 let _ = reply.send(result);
+            }
+            Ok(Message::DefaultRenderDeviceChanged { endpoint_id }) => {
+                if let Err(error) = engine.handle_default_render_device_changed(endpoint_id) {
+                    record_stop_error(shared, error);
+                }
             }
             Ok(Message::Stop { reply }) => {
                 shared.live.store(false, Ordering::Relaxed);
@@ -556,6 +574,7 @@ fn record_stop_error(shared: &Arc<SharedState>, error: CaptureErrorResponse) {
 
 /// Owns the WASAPI capture client and the current AAC `.m4a` segment writer.
 struct CaptureEngine {
+    audio_client: wasapi::AudioClient,
     capture_client: wasapi::AudioCaptureClient,
     /// Mix-format sample rate (Hz) used both for client init and MF timing.
     sample_rate_hz: u32,
@@ -571,6 +590,9 @@ struct CaptureEngine {
     raw: VecDeque<u8>,
     /// Whether captured packets should update microphone activity/VAD state.
     records_microphone_activity: bool,
+    source: AudioCaptureSource,
+    current_render_endpoint_id: Option<String>,
+    _default_render_notifier: Option<SystemAudioDefaultDeviceChangeRegistration>,
 
     /// Active segment writer; `None` once stopped.
     writer: Option<WindowsAacM4aSinkWriter>,
@@ -582,11 +604,135 @@ struct CaptureEngine {
     failed: bool,
 }
 
+struct CaptureStream {
+    audio_client: wasapi::AudioClient,
+    capture_client: wasapi::AudioCaptureClient,
+    endpoint_id: Option<String>,
+    sample_rate_hz: u32,
+    source_channels: u16,
+    output_channels: u16,
+    source_is_float: bool,
+    source_bytes_per_frame: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CaptureStreamFormat {
+    sample_rate_hz: u32,
+    source_channels: u16,
+    output_channels: u16,
+    source_is_float: bool,
+    source_bytes_per_frame: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DefaultRenderEndpointChange {
+    Ignore,
+    Reattach,
+}
+
+fn classify_default_render_endpoint_change(
+    current_endpoint_id: Option<&str>,
+    notified_endpoint_id: Option<&str>,
+) -> DefaultRenderEndpointChange {
+    if let Some(notified_endpoint_id) = notified_endpoint_id {
+        if Some(notified_endpoint_id) == current_endpoint_id {
+            return DefaultRenderEndpointChange::Ignore;
+        }
+    }
+
+    DefaultRenderEndpointChange::Reattach
+}
+
+fn can_continue_active_writer(
+    active: CaptureStreamFormat,
+    replacement: CaptureStreamFormat,
+) -> bool {
+    let CaptureStreamFormat {
+        sample_rate_hz: active_sample_rate_hz,
+        source_channels: _,
+        output_channels: active_output_channels,
+        source_is_float: _,
+        source_bytes_per_frame: _,
+    } = active;
+    let CaptureStreamFormat {
+        sample_rate_hz: replacement_sample_rate_hz,
+        source_channels: _,
+        output_channels: replacement_output_channels,
+        source_is_float: _,
+        source_bytes_per_frame: _,
+    } = replacement;
+
+    active_sample_rate_hz == replacement_sample_rate_hz
+        && active_output_channels == replacement_output_channels
+}
+
+impl CaptureStream {
+    fn format(&self) -> CaptureStreamFormat {
+        CaptureStreamFormat {
+            sample_rate_hz: self.sample_rate_hz,
+            source_channels: self.source_channels,
+            output_channels: self.output_channels,
+            source_is_float: self.source_is_float,
+            source_bytes_per_frame: self.source_bytes_per_frame,
+        }
+    }
+}
+
 impl CaptureEngine {
-    fn new(output_path: &Path, source: AudioCaptureSource) -> Result<Self, CaptureErrorResponse> {
+    fn new(
+        output_path: &Path,
+        source: AudioCaptureSource,
+        notification_sender: Sender<Message>,
+    ) -> Result<Self, CaptureErrorResponse> {
         let records_microphone_activity = source.records_microphone_activity();
+        let stream = Self::open_capture_stream(&source)?;
+        let writer = WindowsAacM4aSinkWriter::create(
+            output_path,
+            stream.sample_rate_hz,
+            stream.output_channels,
+        )?;
+        let default_render_notifier = if matches!(source, AudioCaptureSource::SystemAudioLoopback) {
+            Some(SystemAudioDefaultDeviceChangeRegistration::register(
+                notification_sender,
+            )?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            audio_client: stream.audio_client,
+            capture_client: stream.capture_client,
+            sample_rate_hz: stream.sample_rate_hz,
+            source_channels: stream.source_channels,
+            output_channels: stream.output_channels,
+            source_is_float: stream.source_is_float,
+            source_bytes_per_frame: stream.source_bytes_per_frame,
+            raw: VecDeque::new(),
+            records_microphone_activity,
+            source,
+            current_render_endpoint_id: stream.endpoint_id,
+            _default_render_notifier: default_render_notifier,
+            writer: Some(writer),
+            current_path: output_path.to_path_buf(),
+            frames_in_segment: 0,
+            failed: false,
+        })
+    }
+
+    fn open_capture_stream(
+        source: &AudioCaptureSource,
+    ) -> Result<CaptureStream, CaptureErrorResponse> {
         let client_direction = source.client_direction();
-        let device = resolve_audio_capture_device(&source)?;
+        let device = resolve_audio_capture_device(source)?;
+        let endpoint_id = if matches!(source, AudioCaptureSource::SystemAudioLoopback) {
+            Some(
+                device
+                    .get_id()
+                    .map_err(|e| wasapi_error("IMMDevice::GetId failed", &e))?,
+            )
+        } else {
+            None
+        };
         let mut audio_client = device
             .get_iaudioclient()
             .map_err(|e| wasapi_error("get_iaudioclient failed", &e))?;
@@ -596,11 +742,9 @@ impl CaptureEngine {
 
         let sample_rate_hz = mix_format.get_samplespersec();
         let source_channels = mix_format.get_nchannels();
-        let source_is_float = matches!(
-            mix_format.get_subformat(),
-            Ok(SampleType::Float)
-        );
+        let source_is_float = matches!(mix_format.get_subformat(), Ok(SampleType::Float));
         let output_channels = source_channels.min(MAX_AAC_CHANNELS).max(1);
+        let source_bytes_per_frame = WaveFormat::get_blockalign(&mix_format) as usize;
 
         audio_client
             .initialize_client(
@@ -620,22 +764,15 @@ impl CaptureEngine {
             .start_stream()
             .map_err(|e| wasapi_error("start_stream failed", &e))?;
 
-        let writer =
-            WindowsAacM4aSinkWriter::create(output_path, sample_rate_hz, output_channels)?;
-
-        Ok(Self {
+        Ok(CaptureStream {
+            audio_client,
             capture_client,
+            endpoint_id,
             sample_rate_hz,
             source_channels,
             output_channels,
             source_is_float,
-            source_bytes_per_frame: WaveFormat::get_blockalign(&mix_format) as usize,
-            raw: VecDeque::new(),
-            records_microphone_activity,
-            writer: Some(writer),
-            current_path: output_path.to_path_buf(),
-            frames_in_segment: 0,
-            failed: false,
+            source_bytes_per_frame,
         })
     }
 
@@ -670,11 +807,7 @@ impl CaptureEngine {
     /// Microphone sessions additionally emit the debug-visible Audio Activity
     /// Sample and feed mono VAD PCM; system-audio loopback deliberately does not
     /// mutate microphone activity state.
-    fn append_raw_frames(
-        &mut self,
-        raw: &[u8],
-        silent: bool,
-    ) -> Result<(), CaptureErrorResponse> {
+    fn append_raw_frames(&mut self, raw: &[u8], silent: bool) -> Result<(), CaptureErrorResponse> {
         // Segment-relative start time of THIS packet, captured before we advance
         // `frames_in_segment`, so the VAD frame's media timeline matches the
         // writer's sample-time stamp.
@@ -759,8 +892,11 @@ impl CaptureEngine {
     ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         let finalization = self.finalize_segment()?;
 
-        let writer =
-            WindowsAacM4aSinkWriter::create(output_path, self.sample_rate_hz, self.output_channels)?;
+        let writer = WindowsAacM4aSinkWriter::create(
+            output_path,
+            self.sample_rate_hz,
+            self.output_channels,
+        )?;
         self.writer = Some(writer);
         self.current_path = output_path.to_path_buf();
         self.frames_in_segment = 0;
@@ -768,8 +904,71 @@ impl CaptureEngine {
         Ok(finalization)
     }
 
+    fn handle_default_render_device_changed(
+        &mut self,
+        notified_endpoint_id: Option<String>,
+    ) -> Result<(), CaptureErrorResponse> {
+        if self.failed || !matches!(self.source, AudioCaptureSource::SystemAudioLoopback) {
+            return Ok(());
+        }
+        if classify_default_render_endpoint_change(
+            self.current_render_endpoint_id.as_deref(),
+            notified_endpoint_id.as_deref(),
+        ) == DefaultRenderEndpointChange::Ignore
+        {
+            return Ok(());
+        }
+        let mut stream = match Self::open_capture_stream(&self.source) {
+            Ok(stream) => stream,
+            Err(error) => {
+                self.failed = true;
+                return Err(error);
+            }
+        };
+        if self.current_render_endpoint_id.as_deref() == stream.endpoint_id.as_deref() {
+            let _ = stream.audio_client.stop_stream();
+            return Ok(());
+        }
+
+        if !can_continue_active_writer(
+            CaptureStreamFormat {
+                sample_rate_hz: self.sample_rate_hz,
+                source_channels: self.source_channels,
+                output_channels: self.output_channels,
+                source_is_float: self.source_is_float,
+                source_bytes_per_frame: self.source_bytes_per_frame,
+            },
+            stream.format(),
+        ) {
+            let _ = stream.audio_client.stop_stream();
+            self.failed = true;
+            return Err(CaptureErrorResponse {
+                code: "windows_system_audio_format_changed".to_string(),
+                message: format!(
+                    "Windows system audio default endpoint changed from {} Hz/{} channel(s) to {} Hz/{} channel(s); continuing the active .m4a segment would require resampling/remuxing that this backend does not perform",
+                    self.sample_rate_hz,
+                    self.output_channels,
+                    stream.sample_rate_hz,
+                    stream.output_channels
+                ),
+            });
+        }
+
+        let _ = self.audio_client.stop_stream();
+        self.audio_client = stream.audio_client;
+        self.capture_client = stream.capture_client;
+        self.source_channels = stream.source_channels;
+        self.source_is_float = stream.source_is_float;
+        self.source_bytes_per_frame = stream.source_bytes_per_frame;
+        self.current_render_endpoint_id = stream.endpoint_id.take();
+        self.raw.clear();
+
+        Ok(())
+    }
+
     /// Finalize the current segment and tear down capture.
     fn stop(&mut self) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
+        let _ = self.audio_client.stop_stream();
         self.finalize_segment()
     }
 }
@@ -881,6 +1080,86 @@ fn device_change_notifier_thread(
     let _ = ready_tx.send(true);
     let _ = stop_rx.recv();
     let _ = unsafe { enumerator.UnregisterEndpointNotificationCallback(&client) };
+}
+
+struct SystemAudioDefaultDeviceChangeRegistration {
+    enumerator: IMMDeviceEnumerator,
+    client: IMMNotificationClient,
+}
+
+impl SystemAudioDefaultDeviceChangeRegistration {
+    fn register(sender: Sender<Message>) -> Result<Self, CaptureErrorResponse> {
+        let enumerator = create_device_enumerator().map_err(|e| CaptureErrorResponse {
+            code: "windows_system_audio_device_notifier_failed".to_string(),
+            message: format!("MMDeviceEnumerator creation failed for system audio notifier: {e}"),
+        })?;
+        let client: IMMNotificationClient =
+            SystemAudioDefaultRenderNotificationClient { sender }.into();
+        unsafe { enumerator.RegisterEndpointNotificationCallback(&client) }.map_err(|e| {
+            CaptureErrorResponse {
+                code: "windows_system_audio_device_notifier_failed".to_string(),
+                message: format!(
+                    "RegisterEndpointNotificationCallback failed for system audio notifier: {e}"
+                ),
+            }
+        })?;
+        Ok(Self { enumerator, client })
+    }
+}
+
+impl Drop for SystemAudioDefaultDeviceChangeRegistration {
+    fn drop(&mut self) {
+        let _ = unsafe {
+            self.enumerator
+                .UnregisterEndpointNotificationCallback(&self.client)
+        };
+    }
+}
+
+#[implement(IMMNotificationClient)]
+struct SystemAudioDefaultRenderNotificationClient {
+    sender: Sender<Message>,
+}
+
+impl IMMNotificationClient_Impl for SystemAudioDefaultRenderNotificationClient_Impl {
+    fn OnDeviceStateChanged(
+        &self,
+        _pwstrdeviceid: &PCWSTR,
+        _dwnewstate: DEVICE_STATE,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnDeviceAdded(&self, _pwstrdeviceid: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnDeviceRemoved(&self, _pwstrdeviceid: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnDefaultDeviceChanged(
+        &self,
+        flow: EDataFlow,
+        _role: ERole,
+        pwstrdefaultdeviceid: &PCWSTR,
+    ) -> windows::core::Result<()> {
+        if flow == eRender {
+            let endpoint_id = unsafe { pcwstr_to_string(pwstrdefaultdeviceid) };
+            let _ = self
+                .sender
+                .send(Message::DefaultRenderDeviceChanged { endpoint_id });
+        }
+        Ok(())
+    }
+
+    fn OnPropertyValueChanged(
+        &self,
+        _pwstrdeviceid: &PCWSTR,
+        _key: &PROPERTYKEY,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
 }
 
 #[implement(IMMNotificationClient)]
@@ -1010,7 +1289,9 @@ unsafe fn pcwstr_to_string(value: &PCWSTR) -> Option<String> {
     while *value.0.add(len) != 0 {
         len += 1;
     }
-    Some(String::from_utf16_lossy(std::slice::from_raw_parts(value.0, len)))
+    Some(String::from_utf16_lossy(std::slice::from_raw_parts(
+        value.0, len,
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -1235,6 +1516,60 @@ mod tests {
     use super::*;
     use windows::Win32::Foundation::E_FAIL;
 
+    fn capture_stream_format(
+        sample_rate_hz: u32,
+        source_channels: u16,
+        output_channels: u16,
+        source_is_float: bool,
+        source_bytes_per_frame: usize,
+    ) -> CaptureStreamFormat {
+        CaptureStreamFormat {
+            sample_rate_hz,
+            source_channels,
+            output_channels,
+            source_is_float,
+            source_bytes_per_frame,
+        }
+    }
+
+    #[test]
+    fn duplicate_default_render_endpoint_notification_is_ignored() {
+        assert_eq!(
+            classify_default_render_endpoint_change(Some("endpoint-a"), Some("endpoint-a")),
+            DefaultRenderEndpointChange::Ignore
+        );
+    }
+
+    #[test]
+    fn different_default_render_endpoint_notification_requests_reattach() {
+        assert_eq!(
+            classify_default_render_endpoint_change(Some("endpoint-a"), Some("endpoint-b")),
+            DefaultRenderEndpointChange::Reattach
+        );
+    }
+
+    #[test]
+    fn writer_format_changes_are_incompatible_with_active_segment() {
+        let active = capture_stream_format(48_000, 2, 2, false, 4);
+
+        assert!(!can_continue_active_writer(
+            active,
+            capture_stream_format(44_100, 2, 2, false, 4)
+        ));
+        assert!(!can_continue_active_writer(
+            active,
+            capture_stream_format(48_000, 2, 1, false, 4)
+        ));
+    }
+
+    #[test]
+    fn source_format_changes_are_compatible_when_writer_format_is_stable() {
+        assert!(can_continue_active_writer(
+            capture_stream_format(48_000, 2, 2, false, 4),
+            capture_stream_format(48_000, 6, 2, true, 24)
+        ));
+    }
+
     #[test]
     fn access_denied_classifies_as_recoverable() {
         assert_eq!(
@@ -1309,8 +1644,7 @@ mod tests {
         let mut raw = Vec::new();
         raw.extend_from_slice(&16384i16.to_le_bytes());
         raw.extend_from_slice(&16384i16.to_le_bytes());
-        let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, true);
+        let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, true);
         assert_eq!(pcm_to_i16(&pcm), vec![16384, 16384]);
         assert_eq!(mono.len(), 1);
         assert!((mono[0] - 0.5).abs() < 1e-6, "mono {} != 0.5", mono[0]);
@@ -1323,8 +1657,7 @@ mod tests {
         let mut raw = Vec::new();
         raw.extend_from_slice(&0.75f32.to_le_bytes());
         raw.extend_from_slice(&(-0.5f32).to_le_bytes());
-        let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 1, 1, true, false, true);
+        let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(&raw, 4, 1, 1, true, false, true);
         // mono equals the source samples for a single channel.
         assert_eq!(mono.len(), 2);
         assert!((mono[0] - 0.75).abs() < 1e-6, "mono0 {}", mono[0]);
@@ -1341,8 +1674,7 @@ mod tests {
     fn decode_silent_returns_zeroed_without_reading_raw() {
         // Pass junk raw of the right length (2 frames * 4 bytes); must be ignored.
         let raw = vec![0xABu8; 8];
-        let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, true, true);
+        let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, true, true);
         // 2 frames * 2 output channels * 2 bytes = 8 zero bytes.
         assert_eq!(pcm, vec![0u8; 8]);
         assert_eq!(mono, vec![0.0f32, 0.0f32]);
@@ -1354,8 +1686,7 @@ mod tests {
         // 1 source channel but 2 output channels: both output channels map to ch 0.
         let mut raw = Vec::new();
         raw.extend_from_slice(&8192i16.to_le_bytes());
-        let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 2, 1, 2, false, false, true);
+        let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(&raw, 2, 1, 2, false, false, true);
         // Both output channels carry the single source sample.
         assert_eq!(pcm_to_i16(&pcm), vec![8192, 8192]);
         assert_eq!(mono.len(), 1);
@@ -1363,14 +1694,12 @@ mod tests {
         assert!((peak - 0.25).abs() < 1e-6, "peak {peak} != 0.25");
     }
 
-
     #[test]
     fn decode_can_skip_mono_peak_for_system_audio() {
         let mut raw = Vec::new();
         raw.extend_from_slice(&16384i16.to_le_bytes());
         raw.extend_from_slice(&16384i16.to_le_bytes());
-        let (pcm, mono, peak) =
-            decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, false);
+        let (pcm, mono, peak) = decode_packet_to_pcm_and_mono(&raw, 4, 2, 2, false, false, false);
         assert_eq!(pcm_to_i16(&pcm), vec![16384, 16384]);
         assert!(mono.is_empty());
         assert_eq!(peak, 0.0);

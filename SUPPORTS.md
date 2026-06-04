@@ -122,9 +122,10 @@ Research notes:
   - The microphone capture callback now emits a VAD PCM feed and peak-since-last-poll Audio Activity Samples (debug-visible raw samples via the `get_idle_debug` surface); this emission is not yet wired into pause/resume decisions (consumers arrive in a later inactivity slice).
   - Still outstanding: inactivity pause/resume, audio decode/processing, and on-device disconnect/reconnect smoke-test coverage.
 - [~] Implement Windows system-audio capture.
-  - WASAPI loopback captures the default render endpoint as an independent source when the default render endpoint support probe succeeds.
+  - WASAPI loopback captures the default render endpoint as an independent source when the support probe succeeds, tracks default render-endpoint changes via `IMMNotificationClient`, and re-attaches loopback mid-recording when the default changes.
   - System audio is modeled as an independent source on Windows (ADR 0022); backend source validation allows system-audio-only sessions instead of requiring screen capture.
   - `get_capture_support.systemAudioRequiresScreen` is false on Windows and true on macOS; settings, onboarding, and the native tray use that capability so Windows users can keep/select system audio when screen is unchecked.
+  - On-device default-render switch smoke coverage was verified on Windows 11 by switching from LG ULTRAGEAR to Realtek Digital Output and back during loopback capture; both rotated `.m4a` segments remained openable with positive duration.
 - [~] Implement Windows capture session IDs and source-session bookkeeping. Screen and microphone `SourceSessions` metadata are populated; Windows system audio uses `sysaudio_session`-prefixed source ids when loopback capture is active.
 - [~] Implement segment rotation without dropping OCR/frame-index invariants. Screen, microphone, and independent system audio rotate on the shared 5-minute boundary; an audio-only session rotates without a screen planner/session.
 - [ ] Implement user pause/resume and inactivity pause/resume for each requested source family.
