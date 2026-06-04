@@ -56,12 +56,14 @@ use super::activity::build_runtime_sources_status;
 use super::runtime::{apply_runtime_signal, stopped_session_from_runtime};
 #[cfg(target_os = "windows")]
 use super::segments::{
-    pause_runtime_for_inactivity_with_app_handle, resume_microphone_from_inactivity,
-    resume_runtime_from_inactivity, resume_screen_from_inactivity,
-    set_windows_microphone_start_hook_for_test, set_windows_screen_start_hook_for_test,
-    set_windows_system_audio_start_hook_for_test, start_windows_active_segment,
-    stop_capture_runtime,
+    pause_runtime_for_inactivity_with_app_handle, pause_screen_for_transient_liveness,
+    resume_microphone_from_inactivity, resume_runtime_from_inactivity,
+    resume_screen_from_inactivity, set_windows_microphone_start_hook_for_test,
+    set_windows_screen_start_hook_for_test, set_windows_system_audio_start_hook_for_test,
+    start_windows_active_segment, stop_capture_runtime,
 };
+#[cfg(target_os = "windows")]
+use super::inactivity::{ScreenPauseReason, TransientLivenessTrigger};
 use super::segments::{
     flush_frame_artifacts, try_forward_frame_artifact, FrameArtifactEnvelope,
     FrameArtifactForwardingResult, FrameArtifactMessage,
@@ -6352,6 +6354,133 @@ fn windows_user_resume_restarts_segments_via_shared_primitive() {
     assert!(!resumed_session.is_user_paused);
 }
 
+// Finding 3 (SHOULD-FIX) regression: a user resume while the screen is
+// transient-paused must clear the stale inactivity family-pause state (including
+// `screen_pause_reason` and the pause-start timestamp) around starting the fresh
+// segment. Otherwise the screen would stay `screen_paused` with a
+// `TransientLiveness` reason against a live session — the display probe would run
+// against a live screen and the activity resume-all path would stay wrongly gated.
+// This mirrors the Windows body of `resume_user_capture` (lifecycle.rs), which
+// needs a real `tauri::AppHandle` and so cannot be driven directly here; the
+// load-bearing line is the `set_family_paused_states(false, false, false)` the fix
+// adds after `start_windows_active_segment`.
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_user_resume_clears_stale_transient_screen_pause_state() {
+    let dir = TestDir::new("windows-user-resume-clears-transient");
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let root = dir.path().to_string_lossy().to_string();
+
+    // Microphone-only requested source keeps the segment start off the real WGC
+    // backend; the transient screen pause seeded below is the stale leftover that a
+    // user resume must clear regardless of which families are live.
+    let requested_sources = CaptureSources {
+        screen: false,
+        microphone: true,
+        system_audio: false,
+    };
+    let mut inactivity = windows_inactivity_state();
+    inactivity.set_family_paused_states_with_reason(
+        true,
+        false,
+        false,
+        ScreenPauseReason::TransientLiveness {
+            trigger: TransientLivenessTrigger::DisplayUnavailable,
+        },
+    );
+    inactivity.mark_screen_pause_started_with_reason(
+        5_000,
+        ScreenPauseReason::TransientLiveness {
+            trigger: TransientLivenessTrigger::DisplayUnavailable,
+        },
+    );
+    inactivity.mark_transient_liveness_probe(5_000);
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        user_capture_paused: true,
+        requested_sources: Some(requested_sources.clone()),
+        current_segment_sources: Some(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: false,
+        }),
+        current_segment_index: 3,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        microphone_planner: Some(SegmentPlanner::with_date_prefix(
+            root,
+            "windows-microphone-session",
+            "2026/06/04",
+        )),
+        runtime_controller,
+        runtime_state,
+        inactivity,
+        ..Default::default()
+    };
+
+    assert!(
+        runtime.inactivity.is_screen_paused(),
+        "precondition: screen is transient-paused before resume"
+    );
+    assert!(matches!(
+        runtime.inactivity.screen_pause_reason(),
+        Some(ScreenPauseReason::TransientLiveness { .. })
+    ));
+
+    // --- Simulate `resume_user_capture` (Windows body) --------------------
+    let resume_microphone_file = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let resume_microphone_file_for_hook = std::sync::Arc::clone(&resume_microphone_file);
+    let _microphone_hook =
+        set_windows_microphone_start_hook_for_test(move |output_file, _device_id| {
+            *resume_microphone_file_for_hook.lock().unwrap() = Some(output_file.clone());
+            Ok(WindowsTestAudioSession::boxed(output_file))
+        });
+    let sources = runtime
+        .requested_sources
+        .clone()
+        .expect("paused runtime should retain its requested sources for resume");
+    runtime.output_files.get_or_insert_with(|| CaptureOutputFiles {
+        screen_file: None,
+        screen_files: Vec::new(),
+        microphone_file: None,
+        microphone_files: Vec::new(),
+        system_audio_file: None,
+        system_audio_files: Vec::new(),
+    });
+    runtime.runtime_controller = RuntimeController::default();
+    apply_runtime_signal(&mut runtime, RuntimeSignal::StartRequested)
+        .expect("idle controller should accept the resume start request");
+    start_windows_active_segment(None, &mut runtime, &sources, "resuming user pause")
+        .expect("user resume should run the shared primitive");
+    // The load-bearing fix: clear the stale family-pause state.
+    runtime
+        .inactivity
+        .set_family_paused_states(false, false, false);
+    apply_runtime_signal(&mut runtime, RuntimeSignal::SourcesReady)
+        .expect("starting controller should report sources ready after resume");
+    runtime.user_capture_paused = false;
+
+    assert!(
+        !runtime.inactivity.is_screen_paused(),
+        "user resume must clear the stale screen family-pause flag"
+    );
+    assert_eq!(
+        runtime.inactivity.screen_pause_reason(),
+        None,
+        "user resume must clear the stale transient-liveness screen reason"
+    );
+    assert_eq!(
+        runtime.inactivity.screen_paused_at_monotonic_ms, None,
+        "user resume must clear the stale screen pause-start timestamp"
+    );
+    assert!(
+        !runtime.inactivity.is_paused,
+        "no family should remain paused after a user resume to a live session"
+    );
+}
+
 // Regression coverage: clicking Stop while a recording is *user-paused* must
 // finalize in a single call. `pause_user_capture` drives the Windows
 // RuntimeController all the way to `Idle` (via StopRequested -> Stopping ->
@@ -6663,6 +6792,348 @@ fn windows_inactivity_policy_keeps_unrequested_sources_ineligible() {
             system_audio: false,
         })
     );
+}
+
+// Acceptance criterion 6 (ADR 0023): a screen transient suspension on a
+// screen+microphone session leaves the microphone session live and its
+// source-session bookkeeping intact, while the screen family is recorded paused
+// for `TransientLiveness { DisplayUnavailable }`. Audio keeps recording through
+// the screen-only outage (ADR 0022 independent sources).
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_transient_screen_suspension_keeps_microphone_session_live() {
+    let dir = TestDir::new("windows-transient-suspension-keeps-mic-live");
+    let root = dir.path().to_string_lossy().to_string();
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let screen_file = dir
+        .path()
+        .join("2026/06/04/windows-screen-session-segment-0003.mp4")
+        .to_string_lossy()
+        .to_string();
+    let microphone_file = dir
+        .path()
+        .join("2026/06/04/audio/windows-microphone-session-segment-0003.m4a")
+        .to_string_lossy()
+        .to_string();
+    fs::create_dir_all(Path::new(&microphone_file).parent().unwrap())
+        .expect("test audio dir should exist");
+    fs::write(&screen_file, b"screen").expect("screen file");
+    fs::write(&microphone_file, b"microphone").expect("microphone file");
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        }),
+        current_segment_index: 3,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        segment_planner: Some(SegmentPlanner::with_date_prefix(
+            root.clone(),
+            "windows-screen-session",
+            "2026/06/04",
+        )),
+        microphone_planner: Some(SegmentPlanner::with_date_prefix(
+            root,
+            "windows-microphone-session",
+            "2026/06/04",
+        )),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: Some(screen_file.clone()),
+            screen_files: vec![screen_file.clone()],
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        recording_file: Some(screen_file.clone()),
+        microphone_recording_file: Some(microphone_file.clone()),
+        active_screen_session: Some(WindowsTestScreenSession::boxed()),
+        active_microphone_session: Some(WindowsTestAudioSession::boxed(microphone_file.clone())),
+        source_sessions: Some(SourceSessions {
+            screen: Some(SourceSessionMeta {
+                session_id: "windows-screen-session".to_string(),
+                started_at_unix_ms: 111,
+            }),
+            microphone: Some(SourceSessionMeta {
+                session_id: "windows-microphone-session".to_string(),
+                started_at_unix_ms: 222,
+            }),
+            system_audio: None,
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: windows_inactivity_state(),
+        ..Default::default()
+    };
+    let before_source_sessions = runtime.source_sessions.clone();
+
+    pause_screen_for_transient_liveness(&mut runtime, TransientLivenessTrigger::DisplayUnavailable)
+        .expect("transient-liveness screen suspension should tolerate the dead screen session");
+
+    // Screen family is paused for transient liveness; its recording file is gone.
+    assert!(runtime.inactivity.is_screen_paused());
+    assert_eq!(
+        runtime.inactivity.screen_pause_reason(),
+        Some(ScreenPauseReason::TransientLiveness {
+            trigger: TransientLivenessTrigger::DisplayUnavailable,
+        })
+    );
+    assert!(runtime.recording_file.is_none());
+    // Microphone keeps recording: its session stays live and its bookkeeping is
+    // untouched (ADR 0022 independent sources).
+    assert!(!runtime.inactivity.is_microphone_paused());
+    assert!(runtime
+        .active_microphone_session
+        .as_ref()
+        .is_some_and(|session| session.is_live()));
+    assert_eq!(runtime.microphone_recording_file.as_deref(), Some(microphone_file.as_str()));
+    assert_eq!(runtime.source_sessions, before_source_sessions);
+    // The live audio-only continuation segment still carries the microphone output.
+    assert_eq!(
+        runtime
+            .current_segment_output_files
+            .as_ref()
+            .and_then(|outputs| outputs.microphone_file.as_deref()),
+        Some(microphone_file.as_str())
+    );
+    assert!(runtime
+        .current_segment_output_files
+        .as_ref()
+        .is_some_and(|outputs| outputs.screen_file.is_none()));
+}
+
+// Acceptance criterion 5 (ADR 0023): a screen-only session that loses its display
+// survives as a transient suspension. The screen family is paused for transient
+// liveness with no other live family, so the active segment sources collapse to
+// nothing — meaning the rotation tick has no live source to rotate (it skips) —
+// while the session stays running for the throttled display-present probe to
+// auto-resume.
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_screen_only_transient_suspension_survives_and_skips_rotation() {
+    let dir = TestDir::new("windows-screen-only-transient-suspension");
+    let root = dir.path().to_string_lossy().to_string();
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let screen_file = dir
+        .path()
+        .join("2026/06/04/windows-screen-session-segment-0003.mp4")
+        .to_string_lossy()
+        .to_string();
+    fs::create_dir_all(Path::new(&screen_file).parent().unwrap())
+        .expect("test screen dir should exist");
+    fs::write(&screen_file, b"screen").expect("screen file");
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        }),
+        current_segment_index: 3,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        segment_planner: Some(SegmentPlanner::with_date_prefix(
+            root,
+            "windows-screen-session",
+            "2026/06/04",
+        )),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: Some(screen_file.clone()),
+            screen_files: vec![screen_file.clone()],
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        recording_file: Some(screen_file.clone()),
+        active_screen_session: Some(WindowsTestScreenSession::boxed()),
+        source_sessions: Some(SourceSessions {
+            screen: Some(SourceSessionMeta {
+                session_id: "windows-screen-session".to_string(),
+                started_at_unix_ms: 111,
+            }),
+            microphone: None,
+            system_audio: None,
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: windows_inactivity_state(),
+        ..Default::default()
+    };
+
+    pause_screen_for_transient_liveness(&mut runtime, TransientLivenessTrigger::DisplayUnavailable)
+        .expect("screen-only transient suspension should not fail the session");
+
+    assert!(runtime.is_running, "session must survive screen-only display loss");
+    assert!(runtime.inactivity.is_screen_paused());
+    assert!(matches!(
+        runtime.inactivity.screen_pause_reason(),
+        Some(ScreenPauseReason::TransientLiveness { .. })
+    ));
+    // No live family remains, so the active segment sources collapse and rotation
+    // has nothing to rotate.
+    let active = current_segment_sources_for_runtime(&runtime);
+    assert!(
+        active
+            .as_ref()
+            .map(|sources| !sources.screen && !sources.microphone && !sources.system_audio)
+            .unwrap_or(true),
+        "no requested family should be live while screen-only transient-paused: {active:?}"
+    );
+    assert!(runtime.recording_file.is_none());
+    assert!(runtime.active_screen_session.is_none());
+}
+
+// Acceptance criterion 7 (ADR 0023): a failed transient resume is tolerated. When
+// the screen start-segment fails (display raced away again / WGC re-init error),
+// `resume_screen_from_inactivity` returns Err; the caller
+// (`try_resume_windows_screen_from_transient_liveness`) logs and leaves the screen
+// suspended with its `TransientLiveness` reason intact for the next probe — it
+// never fails the session. This drives the resume primitive with a failing screen
+// hook and asserts the screen stays paused with its reason preserved.
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_failed_transient_screen_resume_leaves_reason_intact_for_retry() {
+    let dir = TestDir::new("windows-failed-transient-resume");
+    let root = dir.path().to_string_lossy().to_string();
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        }),
+        current_segment_sources: None,
+        current_segment_index: 3,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        segment_planner: Some(SegmentPlanner::with_date_prefix(
+            root,
+            "windows-screen-session",
+            "2026/06/04",
+        )),
+        output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        source_sessions: Some(SourceSessions {
+            screen: Some(SourceSessionMeta {
+                session_id: "windows-screen-session".to_string(),
+                started_at_unix_ms: 111,
+            }),
+            microphone: None,
+            system_audio: None,
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            screen_paused: true,
+            is_paused: true,
+            screen_paused_at_monotonic_ms: Some(0),
+            screen_pause_reason: Some(ScreenPauseReason::TransientLiveness {
+                trigger: TransientLivenessTrigger::DisplayUnavailable,
+            }),
+            ..windows_inactivity_state()
+        },
+        ..Default::default()
+    };
+
+    // Simulate the display racing away again: the screen start-segment fails.
+    let _screen_hook = set_windows_screen_start_hook_for_test(|_segment_dir, _screen_output_file| {
+        Err(CaptureErrorResponse {
+            code: "windows_screen_capture_start_failed".to_string(),
+            message: "display unavailable during resume attempt".to_string(),
+        })
+    });
+
+    let resume_result = resume_screen_from_inactivity(&mut runtime, None);
+    assert!(
+        resume_result.is_err(),
+        "a failing screen start-segment must surface an error to the tolerant caller"
+    );
+
+    // The tolerant caller never fails the session; the screen stays suspended with
+    // its transient reason intact so the next throttled probe retries.
+    assert!(runtime.is_running, "a failed transient resume must not end the session");
+    assert!(runtime.inactivity.is_screen_paused());
+    assert_eq!(
+        runtime.inactivity.screen_pause_reason(),
+        Some(ScreenPauseReason::TransientLiveness {
+            trigger: TransientLivenessTrigger::DisplayUnavailable,
+        }),
+        "the transient-liveness reason must survive a failed resume for the next probe"
+    );
+
+    // A later retry with a healthy display succeeds and clears the pause, proving
+    // the suspension was genuinely retryable.
+    drop(_screen_hook);
+    let resumed_screen_file = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let resumed_screen_file_for_hook = std::sync::Arc::clone(&resumed_screen_file);
+    let _ok_hook = set_windows_screen_start_hook_for_test(move |_segment_dir, screen_output_file| {
+        fs::create_dir_all(screen_output_file.parent().unwrap()).ok();
+        fs::write(&screen_output_file, b"screen").expect("retry screen file");
+        let screen_file = screen_output_file.to_string_lossy().to_string();
+        *resumed_screen_file_for_hook.lock().unwrap() = Some(screen_file.clone());
+        Ok((
+            WindowsTestScreenSession::boxed(),
+            screen_file.clone(),
+            CaptureOutputFiles {
+                screen_file: Some(screen_file.clone()),
+                screen_files: vec![screen_file],
+                microphone_file: None,
+                microphone_files: Vec::new(),
+                system_audio_file: None,
+                system_audio_files: Vec::new(),
+            },
+        ))
+    });
+
+    resume_screen_from_inactivity(&mut runtime, None)
+        .expect("a later retry with a healthy display should resume the screen");
+    assert!(!runtime.inactivity.is_screen_paused());
+    assert_eq!(runtime.inactivity.screen_pause_reason(), None);
+    assert!(resumed_screen_file.lock().unwrap().is_some());
 }
 
 #[cfg(target_os = "macos")]

@@ -605,6 +605,10 @@ pub fn maybe_run_windows_inactivity_smoke_and_exit() {
     }
 }
 
+pub fn maybe_run_windows_transient_liveness_smoke_and_exit() {
+    native_capture::windows_transient_liveness_smoke::maybe_run_from_args_and_exit();
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

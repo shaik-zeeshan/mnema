@@ -5,6 +5,7 @@ pub(crate) mod debug_log;
 pub(crate) mod inactivity;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_inactivity_smoke;
+pub(crate) mod windows_transient_liveness_smoke;
 mod lifecycle;
 #[path = "native_capture_metadata.rs"]
 pub(crate) mod metadata;
