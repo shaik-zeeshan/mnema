@@ -21,7 +21,10 @@ fn main() {
     };
 
     println!("== Windows microphone permission smoke test ==");
-    println!("microphone_permission_state = {:?}", microphone_permission_state());
+    println!(
+        "microphone_permission_state = {:?}",
+        microphone_permission_state()
+    );
 
     let dir = std::env::temp_dir().join("mnema_mic_permission_smoke");
     let _ = std::fs::create_dir_all(&dir);
@@ -34,7 +37,10 @@ fn main() {
 
     match start_wasapi_microphone_capture_session_for_file(&seg_s, None) {
         Ok(mut session) => {
-            println!("capture started (access granted); is_live={}", session.is_live());
+            println!(
+                "capture started (access granted); is_live={}",
+                session.is_live()
+            );
             // Stop and clean up; we only care that activation succeeded.
             if let Err(e) = session.stop_returning_finalization() {
                 eprintln!("  WARN stop: {} / {}", e.code, e.message);

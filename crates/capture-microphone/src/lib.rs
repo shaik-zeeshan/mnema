@@ -31,10 +31,10 @@ use std::sync::mpsc;
 use std::sync::Arc;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::sync::{Mutex, OnceLock};
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use std::time::Instant;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::time::Instant;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 static LAST_MICROPHONE_ACTIVITY_UNIX_MS: AtomicU64 = AtomicU64::new(0);

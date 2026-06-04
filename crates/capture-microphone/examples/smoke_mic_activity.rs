@@ -15,9 +15,8 @@ fn main() {
     use std::time::{Duration, Instant};
 
     use capture_microphone::{
-        last_microphone_activity_unix_ms, microphone_activity_level,
-        microphone_permission_state, microphone_vad_pcm_frame_count,
-        peek_microphone_activity_window_peak_level,
+        last_microphone_activity_unix_ms, microphone_activity_level, microphone_permission_state,
+        microphone_vad_pcm_frame_count, peek_microphone_activity_window_peak_level,
         start_wasapi_microphone_capture_session_for_file, take_microphone_vad_pcm_frames,
         AudioCaptureSession, MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT,
         MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ,
