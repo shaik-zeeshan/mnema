@@ -9,10 +9,13 @@ use super::output::{
     set_current_system_audio_output_file,
 };
 use super::runtime::{
-    active_sources_for_inactivity_paused_state, apply_runtime_signal,
-    current_segment_sources_for_runtime, ensure_system_audio_planner_for_runtime,
-    mark_runtime_session_failed, microphone_planner_for_runtime, refresh_runtime_planner_dates,
-    screen_planner_for_runtime, system_audio_planner_for_runtime,
+    apply_runtime_signal, current_segment_sources_for_runtime, mark_runtime_session_failed,
+    microphone_planner_for_runtime, refresh_runtime_planner_dates, screen_planner_for_runtime,
+    system_audio_planner_for_runtime,
+};
+#[cfg(target_os = "macos")]
+use super::runtime::{
+    active_sources_for_inactivity_paused_state, ensure_system_audio_planner_for_runtime,
 };
 use super::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
@@ -20,13 +23,19 @@ use super::runtime::{
 };
 #[cfg(target_os = "macos")]
 use super::segments::{
-    apply_microphone_output_finalization, handle_inactivity_resume_error,
+    handle_inactivity_resume_error, pause_microphone_for_inactivity_with_app_handle,
+    pause_runtime_for_inactivity_with_app_handle, pause_screen_for_inactivity_with_app_handle,
+    pause_system_audio_for_inactivity_with_app_handle, recover_from_segment_finalize_error,
+    recover_screen_capture_after_wake, resume_microphone_from_inactivity,
+    resume_runtime_from_inactivity, resume_screen_from_inactivity, resume_system_audio_from_inactivity,
+    start_segment_with_current_privacy_filter,
+};
+#[cfg(target_os = "windows")]
+use super::segments::{
     pause_microphone_for_inactivity_with_app_handle, pause_runtime_for_inactivity_with_app_handle,
     pause_screen_for_inactivity_with_app_handle, pause_system_audio_for_inactivity_with_app_handle,
-    recover_from_segment_finalize_error, recover_screen_capture_after_wake,
-    resume_microphone_from_inactivity, resume_runtime_from_inactivity,
-    resume_screen_from_inactivity, resume_system_audio_from_inactivity,
-    start_segment_with_current_privacy_filter,
+    resume_microphone_from_inactivity, resume_runtime_from_inactivity, resume_screen_from_inactivity,
+    resume_system_audio_from_inactivity,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::segments::{
@@ -35,6 +44,8 @@ use super::segments::{
 };
 #[cfg(target_os = "macos")]
 use super::segments::plan_live_rotation_segment;
+#[cfg(target_os = "windows")]
+use super::segments::start_windows_active_segment;
 use super::segments::{empty_output_files, start_capture_runtime, stop_capture_runtime};
 use capture_runtime::RuntimeSignal;
 use capture_types::{
@@ -91,6 +102,19 @@ impl RecordingLifecycle {
         }
 
         TickOutcome::Continue
+    }
+
+    #[cfg(target_os = "windows")]
+    fn all_requested_families_paused_for_inactivity(&self) -> bool {
+        let Some(sources) = self.runtime.requested_sources.as_ref() else {
+            return false;
+        };
+
+        let has_requested_source = sources.screen || sources.microphone || sources.system_audio;
+        has_requested_source
+            && (!sources.screen || self.runtime.inactivity.is_screen_paused())
+            && (!sources.microphone || self.runtime.inactivity.is_microphone_paused())
+            && (!sources.system_audio || self.runtime.inactivity.is_system_audio_paused())
     }
 
     #[cfg(target_os = "macos")]
@@ -302,6 +326,31 @@ impl RecordingLifecycle {
             apply_runtime_signal(&mut self.runtime, RuntimeSignal::StartRequested)?;
             apply_runtime_signal(&mut self.runtime, RuntimeSignal::SourcesReady)?;
         }
+        #[cfg(target_os = "windows")]
+        {
+            let sources =
+                self.runtime
+                    .requested_sources
+                    .clone()
+                    .ok_or_else(|| CaptureErrorResponse {
+                        code: "capture_resume_missing_sources".to_string(),
+                        message:
+                            "Cannot resume recording because the requested sources are missing"
+                                .to_string(),
+                    })?;
+            self.runtime
+                .output_files
+                .get_or_insert_with(empty_output_files);
+            self.runtime.runtime_controller = Default::default();
+            apply_runtime_signal(&mut self.runtime, RuntimeSignal::StartRequested)?;
+            start_windows_active_segment(
+                Some(app_handle),
+                &mut self.runtime,
+                &sources,
+                "resuming user pause",
+            )?;
+            apply_runtime_signal(&mut self.runtime, RuntimeSignal::SourcesReady)?;
+        }
         self.runtime.user_capture_paused = false;
         self.runtime.current_segment_sources = self.runtime.requested_sources.clone();
         if let Some(control) = self.runtime.segment_loop_control.as_ref() {
@@ -350,19 +399,22 @@ impl RecordingLifecycle {
         if self.runtime.user_capture_paused {
             return TickOutcome::SkipRotation;
         }
-        if let Some(error) = capture_screen::take_screen_capture_session_stop_error(
-            self.runtime.active_screen_session.as_mut(),
-        ) {
-            if self.runtime.inactivity.is_screen_paused() {
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(error) = capture_screen::take_screen_capture_session_stop_error(
+                self.runtime.active_screen_session.as_mut(),
+            ) {
+                if self.runtime.inactivity.is_screen_paused() {
+                    let _ = self.clear_screen_state_for_sleep_or_stop();
+                    return TickOutcome::SkipRotation;
+                }
+                super::debug_log::log(format!(
+                    "screen capture stream stopped unexpectedly; reconciling runtime state: [{}] {}",
+                    error.code, error.message
+                ));
                 let _ = self.clear_screen_state_for_sleep_or_stop();
                 return TickOutcome::SkipRotation;
             }
-            super::debug_log::log(format!(
-                "screen capture stream stopped unexpectedly; reconciling runtime state: [{}] {}",
-                error.code, error.message
-            ));
-            let _ = self.clear_screen_state_for_sleep_or_stop();
-            return TickOutcome::SkipRotation;
         }
 
         let now = super::runtime::now_monotonic_marker_ms();
@@ -377,7 +429,11 @@ impl RecordingLifecycle {
             .inactivity
             .should_resume_microphone_from_inactivity(now, activity_snapshot)
         {
-            if let Err(error) = resume_microphone_from_inactivity(&mut self.runtime) {
+            #[cfg(target_os = "macos")]
+            let resume_result = resume_microphone_from_inactivity(&mut self.runtime);
+            #[cfg(target_os = "windows")]
+            let resume_result = resume_microphone_from_inactivity(&mut self.runtime, Some(app_handle));
+            if let Err(error) = resume_result {
                 super::debug_log::log(format!(
                     "failed to resume microphone capture after activity: [{}] {}",
                     error.code, error.message
@@ -427,7 +483,12 @@ impl RecordingLifecycle {
             .inactivity
             .should_resume_system_audio_from_inactivity(now, activity_snapshot)
         {
-            if let Err(error) = resume_system_audio_from_inactivity(&mut self.runtime) {
+            #[cfg(target_os = "macos")]
+            let resume_result = resume_system_audio_from_inactivity(&mut self.runtime);
+            #[cfg(target_os = "windows")]
+            let resume_result =
+                resume_system_audio_from_inactivity(&mut self.runtime, Some(app_handle));
+            if let Err(error) = resume_result {
                 super::debug_log::log(format!(
                     "failed to resume system audio capture after activity: [{}] {}",
                     error.code, error.message
@@ -473,7 +534,10 @@ impl RecordingLifecycle {
             }
         }
 
+        #[cfg(target_os = "macos")]
         let privacy_suspended = self.runtime.privacy_capture_suspension.is_some();
+        #[cfg(target_os = "windows")]
+        let privacy_suspended = false;
 
         if !privacy_suspended
             && self
@@ -577,6 +641,268 @@ impl RecordingLifecycle {
         TickOutcome::Continue
     }
 
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn tick_inactivity(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
+        if self.runtime.user_capture_paused {
+            return TickOutcome::SkipRotation;
+        }
+        if self.fail_if_windows_screen_capture_stopped() == TickOutcome::StopLoop {
+            return TickOutcome::StopLoop;
+        }
+
+        let now = super::runtime::now_monotonic_marker_ms();
+        let activity_snapshot = current_activity_snapshot(&mut self.runtime);
+        let effective_idle = self
+            .runtime
+            .inactivity
+            .effective_idle_for_snapshot(now, activity_snapshot);
+
+        if self.all_requested_families_paused_for_inactivity()
+            && effective_idle.idle_ms
+                < self
+                    .runtime
+                    .inactivity
+                    .idle_timeout_seconds
+                    .saturating_mul(1000)
+        {
+            if let Err(error) =
+                resume_runtime_from_inactivity(&mut self.runtime, Some(app_handle))
+            {
+                super::debug_log::log(format!(
+                    "failed to resume Windows native capture after activity: [{}] {}",
+                    error.code, error.message
+                ));
+                stop_active_sessions_after_failure(&mut self.runtime);
+                mark_runtime_session_failed(&mut self.runtime);
+                return TickOutcome::StopLoop;
+            }
+            super::debug_log::log(format!(
+                "resumed Windows native capture after activity (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
+                effective_idle.idle_ms,
+                effective_idle.source.as_str(),
+                self.runtime.inactivity.idle_timeout_seconds
+            ));
+            return TickOutcome::SkipRotation;
+        }
+
+        if self
+            .runtime
+            .inactivity
+            .should_resume_microphone_from_inactivity(now, activity_snapshot)
+        {
+            if let Err(error) = resume_microphone_from_inactivity(&mut self.runtime, Some(app_handle))
+            {
+                super::debug_log::log(format!(
+                    "failed to resume Windows microphone capture after activity: [{}] {}",
+                    error.code, error.message
+                ));
+            } else {
+                let mic_eval = self
+                    .runtime
+                    .inactivity
+                    .evaluate_microphone_policy_for_snapshot(now, activity_snapshot);
+                super::debug_log::log(format!(
+                    "resumed Windows microphone capture after activity (microphone_effective_idle_ms={}, microphone_effective_source={}, idle_timeout_seconds={})",
+                    mic_eval.effective_idle.idle_ms,
+                    mic_eval.effective_idle.source.as_str(),
+                    self.runtime.inactivity.idle_timeout_seconds
+                ));
+            }
+        }
+
+        if self
+            .runtime
+            .inactivity
+            .should_pause_microphone_for_inactivity(now, activity_snapshot)
+        {
+            if let Err(error) =
+                pause_microphone_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))
+            {
+                super::debug_log::log(format!(
+                    "failed to pause Windows microphone capture for inactivity: [{}] {}",
+                    error.code, error.message
+                ));
+            } else {
+                let mic_eval = self
+                    .runtime
+                    .inactivity
+                    .evaluate_microphone_policy_for_snapshot(now, activity_snapshot);
+                super::debug_log::log(format!(
+                    "paused Windows microphone capture for inactivity threshold crossing (microphone_effective_idle_ms={}, microphone_effective_source={}, idle_timeout_seconds={})",
+                    mic_eval.effective_idle.idle_ms,
+                    mic_eval.effective_idle.source.as_str(),
+                    self.runtime.inactivity.idle_timeout_seconds
+                ));
+            }
+        }
+
+        if self
+            .runtime
+            .inactivity
+            .should_resume_system_audio_from_inactivity(now, activity_snapshot)
+        {
+            if let Err(error) =
+                resume_system_audio_from_inactivity(&mut self.runtime, Some(app_handle))
+            {
+                super::debug_log::log(format!(
+                    "failed to resume Windows system-audio capture after activity: [{}] {}",
+                    error.code, error.message
+                ));
+            } else {
+                let sa_eval = self
+                    .runtime
+                    .inactivity
+                    .evaluate_system_audio_policy_for_snapshot(now, activity_snapshot);
+                super::debug_log::log(format!(
+                    "resumed Windows system-audio capture after activity (system_audio_effective_idle_ms={}, system_audio_effective_source={}, idle_timeout_seconds={})",
+                    sa_eval.effective_idle.idle_ms,
+                    sa_eval.effective_idle.source.as_str(),
+                    self.runtime.inactivity.idle_timeout_seconds
+                ));
+            }
+        }
+
+        if self
+            .runtime
+            .inactivity
+            .should_pause_system_audio_for_inactivity(now, activity_snapshot)
+        {
+            if let Err(error) = pause_system_audio_for_inactivity_with_app_handle(
+                &mut self.runtime,
+                Some(app_handle),
+            ) {
+                super::debug_log::log(format!(
+                    "failed to pause Windows system-audio capture for inactivity: [{}] {}",
+                    error.code, error.message
+                ));
+            } else {
+                let sa_eval = self
+                    .runtime
+                    .inactivity
+                    .evaluate_system_audio_policy_for_snapshot(now, activity_snapshot);
+                super::debug_log::log(format!(
+                    "paused Windows system-audio capture for inactivity threshold crossing (system_audio_effective_idle_ms={}, system_audio_effective_source={}, idle_timeout_seconds={})",
+                    sa_eval.effective_idle.idle_ms,
+                    sa_eval.effective_idle.source.as_str(),
+                    self.runtime.inactivity.idle_timeout_seconds
+                ));
+            }
+        }
+
+        if self
+            .runtime
+            .inactivity
+            .should_resume_screen_from_inactivity(now, activity_snapshot)
+        {
+            if let Err(error) = resume_screen_from_inactivity(&mut self.runtime, Some(app_handle)) {
+                super::debug_log::log(format!(
+                    "failed to resume Windows screen capture after activity: [{}] {}",
+                    error.code, error.message
+                ));
+                stop_active_sessions_after_failure(&mut self.runtime);
+                mark_runtime_session_failed(&mut self.runtime);
+                return TickOutcome::StopLoop;
+            } else {
+                let screen_eval = self
+                    .runtime
+                    .inactivity
+                    .evaluate_screen_policy_for_snapshot(now, activity_snapshot);
+                super::debug_log::log(format!(
+                    "resumed Windows screen capture after activity (screen_effective_idle_ms={}, screen_effective_source={}, idle_timeout_seconds={})",
+                    screen_eval.effective_idle.idle_ms,
+                    screen_eval.effective_idle.source.as_str(),
+                    self.runtime.inactivity.idle_timeout_seconds
+                ));
+            }
+        }
+
+        if self
+            .runtime
+            .inactivity
+            .should_pause_screen_for_inactivity(now, activity_snapshot)
+        {
+            if let Err(error) =
+                pause_screen_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))
+            {
+                super::debug_log::log(format!(
+                    "failed to pause Windows screen capture for inactivity: [{}] {}",
+                    error.code, error.message
+                ));
+                stop_active_sessions_after_failure(&mut self.runtime);
+                mark_runtime_session_failed(&mut self.runtime);
+                return TickOutcome::StopLoop;
+            } else {
+                let screen_eval = self
+                    .runtime
+                    .inactivity
+                    .evaluate_screen_policy_for_snapshot(now, activity_snapshot);
+                super::debug_log::log(format!(
+                    "paused Windows screen capture for inactivity threshold crossing (screen_effective_idle_ms={}, screen_effective_source={}, idle_timeout_seconds={})",
+                    screen_eval.effective_idle.idle_ms,
+                    screen_eval.effective_idle.source.as_str(),
+                    self.runtime.inactivity.idle_timeout_seconds
+                ));
+            }
+        }
+
+        if self
+            .runtime
+            .inactivity
+            .should_resume_from_inactivity(now, activity_snapshot)
+        {
+            if let Err(error) = resume_runtime_from_inactivity(&mut self.runtime, Some(app_handle)) {
+                super::debug_log::log(format!(
+                    "failed to resume Windows native capture after activity: [{}] {}",
+                    error.code, error.message
+                ));
+                stop_active_sessions_after_failure(&mut self.runtime);
+                mark_runtime_session_failed(&mut self.runtime);
+                return TickOutcome::StopLoop;
+            } else {
+                super::debug_log::log(format!(
+                    "resumed Windows native capture after activity (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
+                    effective_idle.idle_ms,
+                    effective_idle.source.as_str(),
+                    self.runtime.inactivity.idle_timeout_seconds
+                ));
+            }
+        }
+
+        if self
+            .runtime
+            .inactivity
+            .should_pause_for_inactivity(now, activity_snapshot)
+        {
+            if let Err(error) =
+                pause_runtime_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))
+            {
+                super::debug_log::log(format!(
+                    "failed to pause Windows native capture for inactivity: [{}] {}",
+                    error.code, error.message
+                ));
+                stop_active_sessions_after_failure(&mut self.runtime);
+                mark_runtime_session_failed(&mut self.runtime);
+                return TickOutcome::StopLoop;
+            } else {
+                super::debug_log::log(format!(
+                    "paused Windows native capture for inactivity threshold crossing (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
+                    effective_idle.idle_ms,
+                    effective_idle.source.as_str(),
+                    self.runtime.inactivity.idle_timeout_seconds
+                ));
+            }
+
+            return TickOutcome::SkipRotation;
+        }
+
+        if self.runtime.inactivity.is_paused && self.runtime.current_segment_output_files.is_none()
+        {
+            return TickOutcome::SkipRotation;
+        }
+
+        TickOutcome::Continue
+    }
     #[cfg(target_os = "macos")]
     pub(crate) fn tick_rotation(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
         refresh_runtime_planner_dates(&mut self.runtime);
@@ -1008,7 +1334,7 @@ impl RecordingLifecycle {
 
         refresh_runtime_planner_dates(&mut self.runtime);
 
-        let Some(sources) = self.runtime.requested_sources.clone() else {
+        let Some(_sources) = self.runtime.requested_sources.clone() else {
             mark_runtime_session_failed(&mut self.runtime);
             return TickOutcome::StopLoop;
         };
@@ -1025,7 +1351,15 @@ impl RecordingLifecycle {
             return TickOutcome::SkipRotation;
         }
 
-        let active_sources = current_segment_sources_for_runtime(&self.runtime).unwrap_or(sources);
+        let active_sources =
+            current_segment_sources_for_runtime(&self.runtime).unwrap_or(CaptureSources {
+                screen: false,
+                microphone: false,
+                system_audio: false,
+            });
+        if !active_sources.screen && !active_sources.microphone && !active_sources.system_audio {
+            return TickOutcome::SkipRotation;
+        }
 
         // A screen planner is required only when screen is an active source; an
         // audio-only session rotates without one.

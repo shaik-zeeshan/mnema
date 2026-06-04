@@ -3,6 +3,8 @@ mod activity;
 pub(crate) mod debug_log;
 #[path = "native_capture_inactivity.rs"]
 pub(crate) mod inactivity;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows_inactivity_smoke;
 mod lifecycle;
 #[path = "native_capture_metadata.rs"]
 pub(crate) mod metadata;
@@ -49,7 +51,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
-use tauri::{path::BaseDirectory, Emitter, Manager};
+#[cfg(target_os = "macos")]
+use tauri::path::BaseDirectory;
+use tauri::{Emitter, Manager};
 
 pub use capture_types::IdleDebugInfo;
 pub(crate) use debug_log::install_panic_hook;
@@ -2187,11 +2191,11 @@ pub fn get_capture_support() -> CaptureSupportResponse {
 
 #[tauri::command]
 pub fn get_capture_permissions(
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     state: tauri::State<'_, NativeCaptureState>,
 ) -> CapturePermissionsResponse {
     #[cfg(target_os = "macos")]
-    recover_screen_capture_after_possible_missed_wake(app_handle);
+    recover_screen_capture_after_possible_missed_wake(_app_handle);
 
     let runtime = state.lock().expect("native capture state poisoned");
     let permissions = CapturePermissions {

@@ -582,13 +582,16 @@ pub(super) fn active_sources_for_inactivity_paused_state(
     microphone_paused: bool,
     system_audio_paused: bool,
 ) -> Option<CaptureSources> {
-    // system_audio is captured through the screen session backend, so it
-    // requires both the screen session to be live (!screen_paused) AND the
-    // system audio family to be active (!system_audio_paused).
+    #[cfg(target_os = "macos")]
+    let system_audio_active =
+        requested_sources.system_audio && !system_audio_paused && !screen_paused;
+    #[cfg(not(target_os = "macos"))]
+    let system_audio_active = requested_sources.system_audio && !system_audio_paused;
+
     let active_sources = CaptureSources {
         screen: requested_sources.screen && !screen_paused,
         microphone: requested_sources.microphone && !microphone_paused,
-        system_audio: requested_sources.system_audio && !system_audio_paused && !screen_paused,
+        system_audio: system_audio_active,
     };
 
     has_any_capture_sources(&active_sources).then_some(active_sources)

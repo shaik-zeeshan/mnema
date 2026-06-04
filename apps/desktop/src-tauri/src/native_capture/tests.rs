@@ -24,10 +24,13 @@ use super::microphone::{
 use super::output::set_current_microphone_output_file;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, current_segment_sources_for_runtime,
+    mark_runtime_session_stopped, reset_runtime_after_start_error, session_from_runtime,
+    should_recover_from_segment_finalize_error, validate_start_request, NativeCaptureRuntime,
+};
+#[cfg(target_os = "macos")]
+use super::runtime::{
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
-    mark_runtime_session_stopped, microphone_planner_for_runtime, reset_runtime_after_start_error,
-    session_from_runtime, should_recover_from_segment_finalize_error, stopped_session_from_runtime,
-    system_audio_planner_for_runtime, validate_start_request, NativeCaptureRuntime,
+    microphone_planner_for_runtime, stopped_session_from_runtime, system_audio_planner_for_runtime,
 };
 #[cfg(target_os = "macos")]
 use super::runtime::{
@@ -47,6 +50,13 @@ use super::segments::{
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
     stop_capture_runtime, StartedSegmentState,
 };
+#[cfg(target_os = "windows")]
+use super::segments::{
+    pause_runtime_for_inactivity_with_app_handle, resume_microphone_from_inactivity,
+    resume_runtime_from_inactivity, resume_screen_from_inactivity,
+    set_windows_microphone_start_hook_for_test, set_windows_screen_start_hook_for_test,
+    set_windows_system_audio_start_hook_for_test,
+};
 use super::segments::{
     flush_frame_artifacts, try_forward_frame_artifact, FrameArtifactEnvelope,
     FrameArtifactForwardingResult, FrameArtifactMessage,
@@ -64,7 +74,11 @@ use super::{
     AppNotificationsRuntime,
 };
 #[cfg(target_os = "macos")]
-use capture_runtime::{current_date_prefix, CaptureClock, SegmentSchedule};
+use capture_runtime::current_date_prefix;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use capture_runtime::{CaptureClock, SegmentSchedule};
+#[cfg(target_os = "windows")]
+use capture_microphone as microphone_capture;
 use capture_runtime::{RuntimeController, RuntimeSignal, RuntimeState, SegmentPlanner};
 use capture_types::{
     default_appearance, default_audio_speech_detection_settings,
@@ -85,9 +99,10 @@ use capture_vad::{MicrophonePcmVadFrame, MicrophoneVadRuntime};
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 struct TestDir {
@@ -941,7 +956,7 @@ fn fresh_start_inactivity_valid_active_audio_outputs_survive_db_payload_planning
         .any(|segment| segment.file_path == system_audio_file));
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn running_runtime_controller() -> RuntimeController {
     let mut controller = RuntimeController::default();
     controller
@@ -951,6 +966,26 @@ fn running_runtime_controller() -> RuntimeController {
         .apply(RuntimeSignal::SourcesReady)
         .expect("starting runtime should become running");
     controller
+}
+
+#[cfg(target_os = "windows")]
+fn assert_capture_output_files_match(
+    actual: &Option<CaptureOutputFiles>,
+    expected: &Option<CaptureOutputFiles>,
+) {
+    match (actual.as_ref(), expected.as_ref()) {
+        (Some(actual), Some(expected)) => {
+            assert_eq!(&actual.screen_file, &expected.screen_file);
+            assert_eq!(&actual.screen_files, &expected.screen_files);
+            assert_eq!(&actual.microphone_file, &expected.microphone_file);
+            assert_eq!(&actual.microphone_files, &expected.microphone_files);
+            assert_eq!(&actual.system_audio_file, &expected.system_audio_file);
+            assert_eq!(&actual.system_audio_files, &expected.system_audio_files);
+        }
+        (None, None) => {}
+        (Some(_), None) => panic!("expected no capture output files"),
+        (None, Some(_)) => panic!("expected capture output files"),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1773,7 +1808,7 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
 
 #[test]
 fn user_paused_screen_session_still_reports_running_for_resume_controls() {
-    let mut runtime = NativeCaptureRuntime {
+    let runtime = NativeCaptureRuntime {
         is_running: true,
         requested_sources: Some(CaptureSources {
             screen: true,
@@ -1781,13 +1816,12 @@ fn user_paused_screen_session_still_reports_running_for_resume_controls() {
             system_audio: false,
         }),
         user_capture_paused: true,
+        #[cfg(target_os = "macos")]
+        recording_file: None,
+        #[cfg(target_os = "macos")]
+        active_screen_session: None,
         ..Default::default()
     };
-    #[cfg(target_os = "macos")]
-    {
-        runtime.recording_file = None;
-        runtime.active_screen_session = None;
-    }
 
     let session = session_from_runtime(&runtime);
 
@@ -5231,6 +5265,925 @@ fn pause_screen_for_inactivity_noop_when_screen_not_requested() {
     );
 }
 
+#[cfg(target_os = "windows")]
+fn windows_audio_activity(enabled: bool, idle_ms: Option<u64>, level: Option<f32>) -> AudioActivitySourceState {
+    AudioActivitySourceState {
+        enabled,
+        idle_ms,
+        latest_normalized_level: level,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_inactivity_state() -> InactivityState {
+    InactivityState {
+        enabled: true,
+        idle_timeout_seconds: 10,
+        activity_mode: InactivityActivityMode::SystemInputOrScreenOrAudio,
+        last_activity_monotonic_ms: 0,
+        ..InactivityState::default()
+    }
+}
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct WindowsTestScreenSession {
+    live: bool,
+    stopped_tx: Option<std::sync::mpsc::Sender<()>>,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsTestScreenSession {
+    fn boxed() -> Box<dyn capture_screen::ScreenCaptureSession> {
+        Box::new(Self {
+            live: true,
+            stopped_tx: None,
+        })
+    }
+
+    fn boxed_with_stop_signal(
+        stopped_tx: std::sync::mpsc::Sender<()>,
+    ) -> Box<dyn capture_screen::ScreenCaptureSession> {
+        Box::new(Self {
+            live: true,
+            stopped_tx: Some(stopped_tx),
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl capture_screen::ScreenCaptureSession for WindowsTestScreenSession {
+    fn rotate(
+        &mut self,
+        _segment_dir: &Path,
+        _screen_output_file: Option<&Path>,
+        _system_audio_output_path: Option<&Path>,
+    ) -> Result<capture_screen::RotatedCaptureOutputs, CaptureErrorResponse> {
+        Err(CaptureErrorResponse {
+            code: "unsupported_test_operation".to_string(),
+            message: "test screen session does not rotate".to_string(),
+        })
+    }
+
+    fn stop(&mut self, _inactivity_tail_trim_seconds: u64) -> Result<(), CaptureErrorResponse> {
+        self.live = false;
+        if let Some(tx) = self.stopped_tx.take() {
+            let _ = tx.send(());
+        }
+        Ok(())
+    }
+
+    fn is_live(&self) -> bool {
+        self.live
+    }
+
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+        None
+    }
+
+    fn supports_frame_export(&self) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct WindowsTestAudioSession {
+    output_file: String,
+    live: bool,
+    remove_on_stop: bool,
+    stopped_tx: Option<std::sync::mpsc::Sender<String>>,
+    fail_rotate: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsTestAudioSession {
+    fn boxed(output_file: String) -> Box<dyn microphone_capture::AudioCaptureSession> {
+        Box::new(Self {
+            output_file,
+            live: true,
+            remove_on_stop: false,
+            stopped_tx: None,
+            fail_rotate: false,
+        })
+    }
+
+    fn boxed_with_stop_cleanup(
+        output_file: String,
+        stopped_tx: std::sync::mpsc::Sender<String>,
+    ) -> Box<dyn microphone_capture::AudioCaptureSession> {
+        Box::new(Self {
+            output_file,
+            live: true,
+            remove_on_stop: true,
+            stopped_tx: Some(stopped_tx),
+            fail_rotate: false,
+        })
+    }
+
+    fn boxed_with_rotate_failure(
+        output_file: String,
+    ) -> Box<dyn microphone_capture::AudioCaptureSession> {
+        Box::new(Self {
+            output_file,
+            live: true,
+            remove_on_stop: false,
+            stopped_tx: None,
+            fail_rotate: true,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl microphone_capture::AudioCaptureSession for WindowsTestAudioSession {
+    fn rotate_output_file_returning_finalization(
+        &mut self,
+        output_file: &str,
+    ) -> Result<microphone_capture::MicrophoneOutputFinalization, CaptureErrorResponse> {
+        if self.fail_rotate {
+            return Err(CaptureErrorResponse {
+                code: "test_audio_rotate_failed".to_string(),
+                message: "test audio rotation failed".to_string(),
+            });
+        }
+        let finalized = self.output_file.clone();
+        self.output_file = output_file.to_string();
+        Ok(microphone_capture::MicrophoneOutputFinalization {
+            source_file: Some(finalized.clone()),
+            output_file: Some(finalized),
+            speech_detected: true,
+            trim_start_offset_ms: 0,
+            discard_reason: None,
+        })
+    }
+
+    fn stop_returning_finalization(
+        &mut self,
+    ) -> Result<microphone_capture::MicrophoneOutputFinalization, CaptureErrorResponse> {
+        self.live = false;
+        if self.remove_on_stop {
+            let _ = fs::remove_file(&self.output_file);
+        }
+        if let Some(tx) = self.stopped_tx.take() {
+            let _ = tx.send(self.output_file.clone());
+        }
+        Ok(microphone_capture::MicrophoneOutputFinalization {
+            source_file: Some(self.output_file.clone()),
+            output_file: Some(self.output_file.clone()),
+            speech_detected: true,
+            trim_start_offset_ms: 0,
+            discard_reason: None,
+        })
+    }
+
+    fn is_live(&self) -> bool {
+        self.live
+    }
+
+    fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
+        None
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_audio_resume_runtime_fixture(dir: &TestDir) -> NativeCaptureRuntime {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let root = dir.path().to_string_lossy().to_string();
+    let system_audio_file = dir
+        .path()
+        .join("2026/06/04/audio/windows-system-audio-session-segment-0003.m4a")
+        .to_string_lossy()
+        .to_string();
+
+    NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        }),
+        current_segment_index: 3,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        microphone_planner: Some(SegmentPlanner::with_date_prefix(
+            root.clone(),
+            "windows-microphone-session",
+            "2026/06/04",
+        )),
+        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
+            root,
+            "windows-system-audio-session",
+            "2026/06/04",
+        )),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: Some(system_audio_file.clone()),
+            system_audio_files: vec![system_audio_file.clone()],
+        }),
+        system_audio_recording_file: Some(system_audio_file.clone()),
+        active_system_audio_session: Some(WindowsTestAudioSession::boxed(system_audio_file)),
+        source_sessions: Some(SourceSessions {
+            screen: None,
+            microphone: Some(SourceSessionMeta {
+                session_id: "windows-microphone-session".to_string(),
+                started_at_unix_ms: 111,
+            }),
+            system_audio: Some(SourceSessionMeta {
+                session_id: "windows-system-audio-session".to_string(),
+                started_at_unix_ms: 222,
+            }),
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            microphone_paused: true,
+            is_paused: true,
+            ..windows_inactivity_state()
+        },
+        ..Default::default()
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_inactivity_policy_pauses_each_enabled_family_after_timeout() {
+    let idle_snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(20_000),
+        screen_activity_enabled: true,
+        screen_activity_idle_ms: Some(20_000),
+        microphone_activity: windows_audio_activity(true, Some(20_000), Some(0.0)),
+        system_audio_activity: windows_audio_activity(true, Some(20_000), Some(0.0)),
+    };
+
+    let mut screen_state = windows_inactivity_state();
+    assert!(screen_state.should_pause_screen_for_inactivity(20_000, idle_snapshot));
+
+    let mut microphone_state = windows_inactivity_state();
+    assert!(microphone_state.should_pause_microphone_for_inactivity(20_000, idle_snapshot));
+
+    let mut system_audio_state = windows_inactivity_state();
+    assert!(system_audio_state.should_pause_system_audio_for_inactivity(20_000, idle_snapshot));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_inactivity_policy_resumes_paused_families_after_activity() {
+    let active_snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(100),
+        screen_activity_enabled: true,
+        screen_activity_idle_ms: Some(100),
+        microphone_activity: windows_audio_activity(true, Some(100), Some(1.0)),
+        system_audio_activity: windows_audio_activity(true, Some(100), Some(1.0)),
+    };
+    let mut state = InactivityState {
+        screen_paused: true,
+        microphone_paused: true,
+        system_audio_paused: true,
+        is_paused: true,
+        screen_paused_at_monotonic_ms: Some(0),
+        ..windows_inactivity_state()
+    };
+
+    assert!(state.should_resume_screen_from_inactivity(20_000, active_snapshot));
+    assert!(state.should_resume_microphone_from_inactivity(20_000, active_snapshot));
+    assert!(state.should_resume_system_audio_from_inactivity(20_000, active_snapshot));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_screen_resume_joins_live_audio_segment_without_rotating_audio() {
+    let dir = TestDir::new("windows-screen-resume-joins-live-audio");
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let root = dir.path().to_string_lossy().to_string();
+    let old_screen_file = dir
+        .path()
+        .join("2026/06/04/windows-screen-session-segment-0003.mp4")
+        .to_string_lossy()
+        .to_string();
+    let old_microphone_file = dir
+        .path()
+        .join("2026/06/04/audio/windows-microphone-session-segment-0003.m4a")
+        .to_string_lossy()
+        .to_string();
+    let old_system_audio_file = dir
+        .path()
+        .join("2026/06/04/audio/windows-system-audio-session-segment-0003.m4a")
+        .to_string_lossy()
+        .to_string();
+    fs::create_dir_all(Path::new(&old_microphone_file).parent().unwrap())
+        .expect("test audio dir should exist");
+    fs::write(&old_screen_file, b"old screen").expect("old screen file should exist");
+    fs::write(&old_microphone_file, b"old microphone").expect("old microphone file should exist");
+    fs::write(&old_system_audio_file, b"old system audio")
+        .expect("old system-audio file should exist");
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_index: 3,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        segment_planner: Some(SegmentPlanner::with_date_prefix(
+            root.clone(),
+            "windows-screen-session",
+            "2026/06/04",
+        )),
+        microphone_planner: Some(SegmentPlanner::with_date_prefix(
+            root.clone(),
+            "windows-microphone-session",
+            "2026/06/04",
+        )),
+        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
+            root,
+            "windows-system-audio-session",
+            "2026/06/04",
+        )),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(old_microphone_file.clone()),
+            microphone_files: vec![old_microphone_file.clone()],
+            system_audio_file: Some(old_system_audio_file.clone()),
+            system_audio_files: vec![old_system_audio_file.clone()],
+        }),
+        output_files: Some(CaptureOutputFiles {
+            screen_file: Some(old_screen_file.clone()),
+            screen_files: vec![old_screen_file.clone()],
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        microphone_recording_file: Some(old_microphone_file.clone()),
+        system_audio_recording_file: Some(old_system_audio_file.clone()),
+        active_microphone_session: Some(WindowsTestAudioSession::boxed(old_microphone_file.clone())),
+        active_system_audio_session: Some(WindowsTestAudioSession::boxed(old_system_audio_file.clone())),
+        source_sessions: Some(SourceSessions {
+            screen: Some(SourceSessionMeta {
+                session_id: "windows-screen-session".to_string(),
+                started_at_unix_ms: 111,
+            }),
+            microphone: Some(SourceSessionMeta {
+                session_id: "windows-microphone-session".to_string(),
+                started_at_unix_ms: 222,
+            }),
+            system_audio: Some(SourceSessionMeta {
+                session_id: "windows-system-audio-session".to_string(),
+                started_at_unix_ms: 333,
+            }),
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            screen_paused: true,
+            is_paused: true,
+            ..windows_inactivity_state()
+        },
+        ..Default::default()
+    };
+    let before_source_sessions = runtime.source_sessions.clone();
+
+    let _screen_hook = set_windows_screen_start_hook_for_test(|_segment_dir, screen_output_file| {
+        fs::write(&screen_output_file, b"screen").expect("test screen file should be written");
+        let screen_file = screen_output_file.to_string_lossy().to_string();
+        Ok((
+            WindowsTestScreenSession::boxed(),
+            screen_file.clone(),
+            CaptureOutputFiles {
+                screen_file: Some(screen_file.clone()),
+                screen_files: vec![screen_file],
+                microphone_file: None,
+                microphone_files: Vec::new(),
+                system_audio_file: None,
+                system_audio_files: Vec::new(),
+            },
+        ))
+    });
+
+    resume_screen_from_inactivity(&mut runtime, None)
+        .expect("screen resume should join the live audio segment");
+
+    assert_eq!(runtime.current_segment_index, 3);
+    assert_eq!(runtime.source_sessions, before_source_sessions);
+    assert!(!runtime.inactivity.is_screen_paused());
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("current segment outputs should exist");
+    let screen_file = outputs
+        .screen_file
+        .as_ref()
+        .expect("screen resume should publish a screen output");
+    let screen_name = Path::new(screen_file)
+        .file_name()
+        .expect("screen output should have a file name")
+        .to_string_lossy();
+    assert_ne!(screen_file, &old_screen_file);
+    assert!(screen_name.starts_with("windows-screen-session-segment-0003-"));
+    assert!(screen_name.ends_with(".mp4"));
+    assert_eq!(outputs.screen_files, vec![screen_file.clone()]);
+    assert_eq!(outputs.microphone_file, Some(old_microphone_file.clone()));
+    assert_eq!(outputs.microphone_files, vec![old_microphone_file.clone()]);
+    assert_eq!(outputs.system_audio_file, Some(old_system_audio_file.clone()));
+    assert_eq!(outputs.system_audio_files, vec![old_system_audio_file.clone()]);
+    assert_eq!(runtime.microphone_recording_file, Some(old_microphone_file));
+    assert_eq!(runtime.system_audio_recording_file, Some(old_system_audio_file));
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        })
+    );
+    assert_eq!(
+        runtime.output_files.as_ref().map(|outputs| &outputs.screen_files),
+        Some(&vec![old_screen_file])
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_screen_resume_with_live_system_audio_does_not_enter_audio_rotation_rollback_path() {
+    let dir = TestDir::new("windows-screen-resume-bypasses-audio-rotation-rollback");
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let root = dir.path().to_string_lossy().to_string();
+    let old_system_audio_file = dir
+        .path()
+        .join("2026/06/04/audio/windows-system-audio-session-segment-0003.m4a")
+        .to_string_lossy()
+        .to_string();
+    fs::create_dir_all(Path::new(&old_system_audio_file).parent().unwrap())
+        .expect("test audio dir should exist");
+    fs::write(&old_system_audio_file, b"old system audio")
+        .expect("old system-audio file should exist");
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: true,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        }),
+        current_segment_index: 3,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        segment_planner: Some(SegmentPlanner::with_date_prefix(
+            root.clone(),
+            "windows-screen-session",
+            "2026/06/04",
+        )),
+        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
+            root,
+            "windows-system-audio-session",
+            "2026/06/04",
+        )),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: Some(old_system_audio_file.clone()),
+            system_audio_files: vec![old_system_audio_file.clone()],
+        }),
+        system_audio_recording_file: Some(old_system_audio_file.clone()),
+        active_system_audio_session: Some(WindowsTestAudioSession::boxed_with_rotate_failure(
+            old_system_audio_file.clone(),
+        )),
+        source_sessions: Some(SourceSessions {
+            screen: Some(SourceSessionMeta {
+                session_id: "windows-screen-session".to_string(),
+                started_at_unix_ms: 111,
+            }),
+            microphone: None,
+            system_audio: Some(SourceSessionMeta {
+                session_id: "windows-system-audio-session".to_string(),
+                started_at_unix_ms: 222,
+            }),
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            screen_paused: true,
+            is_paused: true,
+            ..windows_inactivity_state()
+        },
+        ..Default::default()
+    };
+    let before_index = runtime.current_segment_index;
+    let before_system_audio_recording_file = runtime.system_audio_recording_file.clone();
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    let screen_path = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let screen_path_for_hook = std::sync::Arc::clone(&screen_path);
+    let _screen_hook = set_windows_screen_start_hook_for_test(
+        move |_segment_dir, screen_output_file| {
+            fs::write(&screen_output_file, b"screen").expect("test screen file should be written");
+            let screen_file = screen_output_file.to_string_lossy().to_string();
+            *screen_path_for_hook.lock().unwrap() = Some(screen_file.clone());
+            Ok((
+                WindowsTestScreenSession::boxed_with_stop_signal(stopped_tx.clone()),
+                screen_file.clone(),
+                CaptureOutputFiles {
+                    screen_file: Some(screen_file.clone()),
+                    screen_files: vec![screen_file],
+                    microphone_file: None,
+                    microphone_files: Vec::new(),
+                    system_audio_file: None,
+                    system_audio_files: Vec::new(),
+                },
+            ))
+        },
+    );
+
+    resume_screen_from_inactivity(&mut runtime, None)
+        .expect("screen resume should not rotate live system-audio");
+
+    assert!(
+        stopped_rx.try_recv().is_err(),
+        "screen session should remain live because rollback was not entered"
+    );
+    let screen_file = screen_path
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("screen hook should record the started file");
+    assert!(
+        Path::new(&screen_file).exists(),
+        "joined screen artifact should remain after successful resume"
+    );
+    assert_eq!(runtime.current_segment_index, before_index);
+    assert_eq!(runtime.recording_file, Some(screen_file));
+    assert_eq!(runtime.system_audio_recording_file, before_system_audio_recording_file);
+    assert!(!runtime.inactivity.is_screen_paused());
+    assert!(runtime.active_screen_session.is_some());
+    assert!(runtime.active_system_audio_session.is_some());
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_whole_runtime_pause_marks_all_requested_families_inactive() {
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: Some("/tmp/windows-screen.mov".to_string()),
+            screen_files: vec!["/tmp/windows-screen.mov".to_string()],
+            microphone_file: Some("/tmp/windows-microphone.m4a".to_string()),
+            microphone_files: vec!["/tmp/windows-microphone.m4a".to_string()],
+            system_audio_file: Some("/tmp/windows-system-audio.m4a".to_string()),
+            system_audio_files: vec!["/tmp/windows-system-audio.m4a".to_string()],
+        }),
+        recording_file: Some("/tmp/windows-screen.mov".to_string()),
+        microphone_recording_file: Some("/tmp/windows-microphone.m4a".to_string()),
+        system_audio_recording_file: Some("/tmp/windows-system-audio.m4a".to_string()),
+        inactivity: windows_inactivity_state(),
+        ..Default::default()
+    };
+
+    pause_runtime_for_inactivity_with_app_handle(&mut runtime, None)
+        .expect("whole-runtime inactivity pause should reconcile requested Windows families");
+
+    assert!(runtime.inactivity.is_screen_paused());
+    assert!(runtime.inactivity.is_microphone_paused());
+    assert!(runtime.inactivity.is_system_audio_paused());
+    assert!(runtime.inactivity.is_paused);
+    assert!(runtime.current_segment_sources.is_none());
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_microphone_resume_joins_live_system_audio_segment_without_reanchoring() {
+    let dir = TestDir::new("windows-microphone-resume-existing-segment");
+    let mut runtime = windows_audio_resume_runtime_fixture(&dir);
+    let original_outputs = runtime.current_segment_output_files.clone();
+    let original_system_audio_recording_file = runtime.system_audio_recording_file.clone();
+    let original_system_audio_started_at = runtime
+        .source_sessions
+        .as_ref()
+        .and_then(|sessions| sessions.system_audio.as_ref())
+        .map(|session| session.started_at_unix_ms);
+
+    let _microphone_hook = set_windows_microphone_start_hook_for_test(|output_file, _device_id| {
+        Ok(WindowsTestAudioSession::boxed(output_file))
+    });
+
+    resume_microphone_from_inactivity(&mut runtime, None)
+        .expect("microphone resume should start through the test audio seam");
+
+    assert_eq!(runtime.current_segment_index, 3);
+    assert!(!runtime.inactivity.is_microphone_paused());
+    assert!(!runtime.inactivity.is_system_audio_paused());
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: true,
+        })
+    );
+    assert_eq!(runtime.system_audio_recording_file, original_system_audio_recording_file);
+    assert_eq!(
+        runtime
+            .current_segment_output_files
+            .as_ref()
+            .and_then(|outputs| outputs.system_audio_file.as_deref()),
+        original_outputs
+            .as_ref()
+            .and_then(|outputs| outputs.system_audio_file.as_deref())
+    );
+    assert_eq!(
+        runtime
+            .source_sessions
+            .as_ref()
+            .and_then(|sessions| sessions.system_audio.as_ref())
+            .map(|session| session.started_at_unix_ms),
+        original_system_audio_started_at
+    );
+
+    let microphone_file = runtime
+        .microphone_recording_file
+        .as_deref()
+        .expect("microphone resume should allocate a recording file");
+    assert!(
+        microphone_file.contains("windows-microphone-session-segment-0003-"),
+        "resumed microphone should use collision-safe reconnect naming in the current segment: {microphone_file}"
+    );
+    assert!(
+        !microphone_file.ends_with("windows-microphone-session-segment-0003.m4a"),
+        "resumed microphone must not reuse the clean segment filename"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_whole_runtime_resume_starts_clean_segment_and_bookkeeping() {
+    let dir = TestDir::new("windows-whole-runtime-resume-clean-segment");
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let root = dir.path().to_string_lossy().to_string();
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: true,
+        }),
+        current_segment_sources: None,
+        current_segment_index: 3,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        microphone_planner: Some(SegmentPlanner::with_date_prefix(
+            root.clone(),
+            "windows-microphone-session",
+            "2026/06/04",
+        )),
+        system_audio_planner: Some(SegmentPlanner::with_date_prefix(
+            root,
+            "windows-system-audio-session",
+            "2026/06/04",
+        )),
+        source_sessions: Some(SourceSessions {
+            screen: None,
+            microphone: Some(SourceSessionMeta {
+                session_id: "windows-microphone-session".to_string(),
+                started_at_unix_ms: 111,
+            }),
+            system_audio: Some(SourceSessionMeta {
+                session_id: "windows-system-audio-session".to_string(),
+                started_at_unix_ms: 222,
+            }),
+        }),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            microphone_paused: true,
+            system_audio_paused: true,
+            is_paused: true,
+            ..windows_inactivity_state()
+        },
+        ..Default::default()
+    };
+
+    let _microphone_hook = set_windows_microphone_start_hook_for_test(|output_file, _device_id| {
+        Ok(WindowsTestAudioSession::boxed(output_file))
+    });
+    let _system_audio_hook = set_windows_system_audio_start_hook_for_test(|output_file| {
+        Ok(WindowsTestAudioSession::boxed(output_file))
+    });
+
+    resume_runtime_from_inactivity(&mut runtime, None)
+        .expect("whole-runtime resume should start through the test audio seams");
+
+    assert_eq!(runtime.current_segment_index, 4);
+    assert!(!runtime.inactivity.is_paused);
+    assert!(!runtime.inactivity.is_microphone_paused());
+    assert!(!runtime.inactivity.is_system_audio_paused());
+    assert_eq!(
+        runtime.current_segment_sources,
+        Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: true,
+        })
+    );
+    assert!(
+        runtime
+            .microphone_recording_file
+            .as_deref()
+            .is_some_and(|path| path.ends_with("windows-microphone-session-segment-0004.m4a"))
+    );
+    assert!(
+        runtime
+            .system_audio_recording_file
+            .as_deref()
+            .is_some_and(|path| path.ends_with("windows-system-audio-session-segment-0004.m4a"))
+    );
+    let sessions = runtime
+        .source_sessions
+        .as_ref()
+        .expect("source sessions should remain present");
+    assert_ne!(
+        sessions
+            .microphone
+            .as_ref()
+            .expect("microphone session metadata should exist")
+            .started_at_unix_ms,
+        111
+    );
+    assert_ne!(
+        sessions
+            .system_audio
+            .as_ref()
+            .expect("system audio session metadata should exist")
+            .started_at_unix_ms,
+        222
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_multi_family_resume_failure_rolls_back_started_audio_artifacts() {
+    let dir = TestDir::new("windows-multi-family-resume-rollback");
+    let mut runtime = windows_audio_resume_runtime_fixture(&dir);
+    runtime.current_segment_sources = None;
+    runtime.inactivity.system_audio_paused = true;
+    runtime.active_system_audio_session = None;
+    runtime.system_audio_recording_file = None;
+    runtime.current_segment_output_files = None;
+
+    let before_index = runtime.current_segment_index;
+    let before_outputs = runtime.current_segment_output_files.clone();
+    let before_sources = runtime.current_segment_sources.clone();
+    let before_microphone_recording_file = runtime.microphone_recording_file.clone();
+    let before_system_audio_recording_file = runtime.system_audio_recording_file.clone();
+    let before_paused = (
+        runtime.inactivity.screen_paused,
+        runtime.inactivity.microphone_paused,
+        runtime.inactivity.system_audio_paused,
+        runtime.inactivity.is_paused,
+    );
+    let before_source_sessions = runtime.source_sessions.clone();
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+
+    let _microphone_hook = set_windows_microphone_start_hook_for_test(move |output_file, _device_id| {
+        fs::write(&output_file, b"started microphone artifact")
+            .expect("test microphone artifact should be written");
+        Ok(WindowsTestAudioSession::boxed_with_stop_cleanup(
+            output_file,
+            stopped_tx.clone(),
+        ))
+    });
+    let _system_audio_hook = set_windows_system_audio_start_hook_for_test(|_output_file| {
+        Err(CaptureErrorResponse {
+            code: "test_system_audio_start_failed".to_string(),
+            message: "test system audio start failed".to_string(),
+        })
+    });
+
+    let result = resume_runtime_from_inactivity(&mut runtime, None);
+
+    assert_eq!(
+        result.expect_err("later system-audio start should fail").code,
+        "test_system_audio_start_failed"
+    );
+    let stopped_file = stopped_rx
+        .try_recv()
+        .expect("rollback should stop the newly-started microphone session");
+    assert!(
+        !Path::new(&stopped_file).exists(),
+        "rollback should remove the newly-started microphone artifact"
+    );
+    assert_eq!(runtime.current_segment_index, before_index);
+    assert_capture_output_files_match(&runtime.current_segment_output_files, &before_outputs);
+    assert_eq!(runtime.current_segment_sources, before_sources);
+    assert_eq!(runtime.microphone_recording_file, before_microphone_recording_file);
+    assert_eq!(runtime.system_audio_recording_file, before_system_audio_recording_file);
+    assert!(runtime.active_microphone_session.is_none());
+    assert!(runtime.active_system_audio_session.is_none());
+    assert_eq!(
+        (
+            runtime.inactivity.screen_paused,
+            runtime.inactivity.microphone_paused,
+            runtime.inactivity.system_audio_paused,
+            runtime.inactivity.is_paused,
+        ),
+        before_paused
+    );
+    assert_eq!(runtime.source_sessions, before_source_sessions);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_inactivity_policy_keeps_unrequested_sources_ineligible() {
+    let idle_snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(20_000),
+        screen_activity_enabled: false,
+        screen_activity_idle_ms: Some(20_000),
+        microphone_activity: windows_audio_activity(false, Some(20_000), Some(1.0)),
+        system_audio_activity: windows_audio_activity(false, Some(20_000), Some(1.0)),
+    };
+    let mut state = windows_inactivity_state();
+
+    assert!(!state.should_pause_screen_for_inactivity(20_000, idle_snapshot));
+    assert!(!state.should_pause_microphone_for_inactivity(20_000, idle_snapshot));
+    assert!(!state.should_pause_system_audio_for_inactivity(20_000, idle_snapshot));
+
+    assert_eq!(
+        active_sources_for_inactivity_paused_state(
+            &CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: false,
+            },
+            false,
+            false,
+            false,
+        ),
+        Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        })
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn resume_system_audio_from_inactivity_noop_when_system_audio_not_requested() {
@@ -7507,6 +8460,7 @@ fn current_segment_sources_for_runtime_fallback_respects_audio_paused() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn current_segment_sources_for_runtime_fallback_respects_screen_paused() {
     // When current_segment_sources is None but output files exist, the fallback

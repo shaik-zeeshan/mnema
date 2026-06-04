@@ -592,6 +592,19 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
     speaker_analysis_runtime::maybe_run_subprocess_helper_and_exit();
 }
 
+#[cfg(target_os = "windows")]
+pub fn maybe_run_windows_inactivity_smoke_and_exit() {
+    native_capture::windows_inactivity_smoke::maybe_run_from_args_and_exit();
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn maybe_run_windows_inactivity_smoke_and_exit() {
+    if std::env::args().any(|arg| arg == "--windows-inactivity-smoke") {
+        eprintln!("Windows inactivity smoke is Windows-only");
+        std::process::exit(2);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

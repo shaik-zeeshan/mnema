@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager};
 #[cfg(test)]
 use time::{format_description, PrimitiveDateTime};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+#[cfg(any(target_os = "macos", test))]
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use tokio::sync::watch;
 
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
@@ -2803,6 +2805,7 @@ fn active_workspace_dirs_for_hidden_workspace_repair(
     active_workspace_dirs
 }
 
+#[cfg(target_os = "macos")]
 fn hidden_workspace_dir_for_screen_recording_file(screen_file: &str) -> Option<String> {
     let path = Path::new(screen_file);
     if let Some(parent) = path.parent() {
@@ -2929,7 +2932,7 @@ async fn process_pending_speaker_analysis_jobs_once(
 }
 
 fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBaseDir, String> {
-    let settings = crate::native_capture::settings::load_recording_settings_or_default(app_handle);
+    let settings = crate::native_capture::current_recording_settings_from_app_handle(app_handle);
     let base_dir = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
         &settings.save_directory,
     )

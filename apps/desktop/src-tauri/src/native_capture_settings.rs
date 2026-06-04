@@ -764,11 +764,6 @@ pub(crate) fn load_recording_settings_from_disk(
     load_recording_settings_from_path(&recording_settings_file_path(app_handle))
 }
 
-pub(crate) fn load_recording_settings_or_default(
-    app_handle: &tauri::AppHandle,
-) -> RecordingSettings {
-    load_recording_settings_from_disk(app_handle).unwrap_or_else(default_recording_settings)
-}
 
 pub(crate) fn initialize_recording_settings_state_from_disk(
     app_handle: &tauri::AppHandle,

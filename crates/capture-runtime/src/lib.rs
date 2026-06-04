@@ -188,6 +188,34 @@ impl SegmentPlanner {
         ))
     }
 
+    /// Collision-safe screen resume path for rejoining a live segment.
+    /// `<save_root>/YYYY/MM/DD/<session_id>-segment-####-<ts>.<ext>`
+    ///
+    /// If the base timestamp path already exists (e.g. two resumes in the same
+    /// millisecond), an incrementing suffix is appended to guarantee uniqueness.
+    pub fn screen_resume_file(&self, segment_index: u64, resumed_at_unix_ms: u64) -> PathBuf {
+        let date_dir = self.date_dir();
+        let extension = screen_segment_extension();
+        let base = date_dir.join(format!(
+            "{}-segment-{segment_index:04}-{resumed_at_unix_ms}.{extension}",
+            self.session_id
+        ));
+        if !base.exists() {
+            return base;
+        }
+        let mut counter = 1u32;
+        loop {
+            let candidate = date_dir.join(format!(
+                "{}-segment-{segment_index:04}-{resumed_at_unix_ms}-{counter}.{extension}",
+                self.session_id
+            ));
+            if !candidate.exists() {
+                return candidate;
+            }
+            counter += 1;
+        }
+    }
+
     /// Legacy alias – returns the workspace dir so existing callers that
     /// create child directories (e.g. `frames/`) keep working.
     pub fn segment_dir(&self, segment_index: u64) -> PathBuf {
@@ -522,6 +550,41 @@ mod tests {
         assert_eq!(
             third,
             audio_dir.join("sess-col-segment-0001-1700000000000-2.m4a")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn screen_resume_file_avoids_collision() {
+        let dir = std::env::temp_dir().join("capture-runtime-test-screen-resume-collision");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("2026/01/01")).unwrap();
+
+        let ts: u64 = 1700000000000;
+        let planner =
+            SegmentPlanner::with_date_prefix(dir.to_str().unwrap(), "sess-screen", "2026/01/01");
+        let date_dir = dir.join("2026/01/01");
+        let extension = screen_segment_extension();
+
+        let first = planner.screen_resume_file(1, ts);
+        assert_eq!(
+            first,
+            date_dir.join(format!("sess-screen-segment-0001-1700000000000.{extension}"))
+        );
+
+        std::fs::write(&first, b"").unwrap();
+        let second = planner.screen_resume_file(1, ts);
+        assert_eq!(
+            second,
+            date_dir.join(format!("sess-screen-segment-0001-1700000000000-1.{extension}"))
+        );
+
+        std::fs::write(&second, b"").unwrap();
+        let third = planner.screen_resume_file(1, ts);
+        assert_eq!(
+            third,
+            date_dir.join(format!("sess-screen-segment-0001-1700000000000-2.{extension}"))
         );
 
         let _ = std::fs::remove_dir_all(&dir);
